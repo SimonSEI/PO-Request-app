@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.db
+*.sqlite
+*.sqlite3
+venv/
+env/
+.env
+.DS_Store
+invoice_uploads/
+bulk_uploads/
+po_requests.db
+.pytest_cache/
+.vscode/
