@@ -10,7 +10,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 app = Flask(__name__)
-app.secret_key = 'irrigation-po-system-secret-key-2024'
+app.secret_key = os.environ.get('SECRET_KEY', 'irrigation-po-system-secret-key-2024')
 # Multi-session support
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=24)
@@ -41,7 +41,7 @@ def before_request():
     cleanup_expired_sessions()
     session.permanent = True
 
-BASE_DIR = '/home/simonweardon3'
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app.config['UPLOAD_FOLDER'] = os.path.join(BASE_DIR, 'invoice_uploads')
 app.config['BULK_UPLOAD_FOLDER'] = os.path.join(BASE_DIR, 'bulk_uploads')
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB for bulk uploads
@@ -79,7 +79,7 @@ SMTP_SERVER = 'smtp.gmail.com'
 SMTP_PORT = 587
 EMAIL_ADDRESS = 'YOUR_EMAIL@gmail.com'
 EMAIL_PASSWORD = 'YOUR_APP_PASSWORD'
-WEBSITE_URL = 'https://simonweardon3.pythonanywhere.com'
+WEBSITE_URL = os.environ.get('WEBSITE_URL', 'http://localhost:5000')
 
 # ... rest of your code continues ...
 
