@@ -5740,6 +5740,9 @@ ADMIN_USERS_TEMPLATE = ADMIN_USERS_TEMPLATE if 'ADMIN_USERS_TEMPLATE' in dir() e
 ADMIN_EDIT_USER_TEMPLATE = ADMIN_EDIT_USER_TEMPLATE if 'ADMIN_EDIT_USER_TEMPLATE' in dir() else ''
 ADMIN_CREATE_USER_TEMPLATE = ADMIN_CREATE_USER_TEMPLATE if 'ADMIN_CREATE_USER_TEMPLATE' in dir() else ''
 
+init_db()
+print("✓ Database initialized on startup")
+
 if __name__ == '__main__':
-    init_db()
     app.run(debug=True)
+```
