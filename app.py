@@ -2727,32 +2727,32 @@ TECH_DASHBOARD_TEMPLATE = '''
                     return;
                 }
 
-                // EXACTLY ONE MATCH - AUTO-FILL IT IMMEDIATELY!
+                // Multiple matches or exact match handling
                 if (matches.length === 1) {
                     const match = matches[0];
-                    console.log('🎯 Auto-filling:', match.name);
-                    this.value = match.name;
-                    this.style.borderColor = '#28a745'; // Green border
-                    validJobSelected = true;
-                    suggestionsDiv.style.display = 'none';
-                    if (hintText) {
-                        hintText.innerHTML = `✓ Selected: ${match.name} (${match.year})`;
-                        hintText.style.color = '#28a745';
+                    const queryLower = query.toLowerCase();
+                    const matchLower = match.name.toLowerCase();
+                    
+                    // Only auto-fill if it's an EXACT match (not just a partial match)
+                    if (matchLower === queryLower) {
+                        console.log('🎯 Auto-filling exact match:', match.name);
+                        this.value = match.name;
+                        this.style.borderColor = '#28a745'; // Green border
+                        validJobSelected = true;
+                        suggestionsDiv.style.display = 'none';
+                        if (hintText) {
+                            hintText.innerHTML = `✓ Selected: ${match.name} (${match.year})`;
+                            hintText.style.color = '#28a745';
+                        }
+                        return;
                     }
-                    return;
+                    
+                    // If not exact match, show it in dropdown instead of auto-filling
+                    console.log('Showing single match in dropdown (not exact)');
                 }
-
-                // Multiple matches - show dropdown with highlighting
-                let html = '<div style="padding: 8px; background: #f0f4ff; font-weight: bold; color: #667eea; font-size: 12px;">';
-                html += `📋 ${matches.length} matching job${matches.length > 1 ? 's' : ''} - click to select:</div>`;
-
-                matches.slice(0, 10).forEach(job => {
-                    // Highlight matching text
-                    const jobNameLower = job.name.toLowerCase();
-                    const matchIndex = jobNameLower.indexOf(queryLower);
-                    let displayName = job.name;
-
-                    if (matchIndex >= 0) {
+                
+                // Show dropdown for all non-exact matches
+                if (matches.length > 0) {
                         const before = job.name.substring(0, matchIndex);
                         const matchText = job.name.substring(matchIndex, matchIndex + query.length);
                         const after = job.name.substring(matchIndex + query.length);
