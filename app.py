@@ -2604,6 +2604,7 @@ TECH_DASHBOARD_TEMPLATE = '''
     {% endwith %}
 
     <div class="card">
+        <!-- Form Updated: 2026-01-20 - Custom PO numbers can be reused -->
         <h2>📝 Submit New PO Request</h2>
         <form method="POST" action="{{ url_for('submit_request') }}">
             <div class="form-group">
@@ -2621,10 +2622,10 @@ TECH_DASHBOARD_TEMPLATE = '''
 
             <div class="form-group" id="custom-po-field" style="display: none;">
                 <label>Custom PO Number</label>
-                <input type="number" id="custom_po_number" name="custom_po_number" placeholder="e.g., 9810" min="1">
-                <small style="color: #666;">Enter specific PO number (must be 9000 or higher)</small>
+                <input type="number" id="custom_po_number" name="custom_po_number" placeholder="e.g., 9999" min="1">
+                <small style="color: #28a745; font-weight: bold;">✓ You can reuse the same PO number multiple times (e.g., multiple requests with PO #9999)</small>
             </div>
-            
+
             <div class="form-group">
                 <label>Job/Project Name <span style="color: red;">*</span></label>
                 <div style="position: relative;">
@@ -2655,12 +2656,23 @@ TECH_DASHBOARD_TEMPLATE = '''
     </div>
 
 <script>
+    // UPDATED: 2026-01-20 - Custom PO numbers can now be reused
     // Global variables
     let allJobs = [];
     let validJobSelected = false;
 
     window.addEventListener('DOMContentLoaded', function() {
-        console.log('Page loaded, initializing...');
+        console.log('Page loaded, initializing... (v2026-01-20)');
+
+        // IMPORTANT: Remove any validation on custom PO number field
+        // Multiple requests can have the same custom PO number
+        const customPoInput = document.getElementById('custom_po_number');
+        if (customPoInput) {
+            // Remove any existing event listeners by cloning the element
+            const newCustomPoInput = customPoInput.cloneNode(true);
+            customPoInput.parentNode.replaceChild(newCustomPoInput, customPoInput);
+            console.log('✓ Custom PO field initialized - duplicates allowed');
+        }
 
         const searchInput = document.getElementById('job_search');
         const suggestionsDiv = document.getElementById('job_suggestions');
