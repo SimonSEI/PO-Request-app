@@ -804,15 +804,17 @@ def submit_request():
     if custom_po_number:
         try:
             po_id = int(custom_po_number)
-
-            # Check if this PO number already exists
-            c.execute("SELECT id FROM po_requests WHERE id=?", (po_id,))
-            if c.fetchone():
-                conn.close()
-                flash(f'❌ ERROR: PO #{po_id:04d} already exists. Please choose a different number.')
-                return redirect(url_for('tech_dashboard'))
-
-            # Insert with EXPLICIT ID
+    
+            # Check how many times this number has been used
+            c.execute("SELECT COUNT(*) FROM po_requests WHERE id=?", (po_id,))
+            count = c.fetchone()[0]
+            
+            if count > 0:
+                # Add a suffix to track duplicates
+                suffix = chr(65 + count)  # A, B, C, etc.
+                flash(f'⚠️ PO #{po_id:04d} already exists. Creating as #{po_id:04d}-{suffix}')
+            
+            # Insert with EXPLICIT ID (database still uses same number)
             c.execute("""INSERT INTO po_requests
                          (id, tech_username, tech_name, job_name, store_name, estimated_cost,
                           description, status, request_date)
