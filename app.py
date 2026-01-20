@@ -1292,6 +1292,23 @@ def manage_jobs():
     except Exception as e:
         return f"Error: {str(e)}"
 
+@app.route('/get_jobs', methods=['GET'])
+def get_jobs():
+    """API endpoint to get all active jobs for dropdown"""
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        # ONLY return active jobs (active=1)
+        c.execute("SELECT job_name, year FROM jobs WHERE active=1 ORDER BY year DESC, job_name ASC")
+        jobs = [{'name': row[0], 'year': row[1], 'display': f"{row[0]} ({row[1]})"} for row in c.fetchall()]
+        conn.close()
+        return jsonify({'success': True, 'jobs': jobs})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
 @app.route('/get_job_details/<int:job_id>')
 def get_job_details(job_id):
     """Get detailed invoice list for a specific job"""
@@ -2606,7 +2623,7 @@ TECH_DASHBOARD_TEMPLATE = '''
                 <input type="number" id="custom_po_number" name="custom_po_number" placeholder="e.g., 9810" min="1">
                 <small style="color: #666;">Enter specific PO number (must be 9000 or higher)</small>
             </div>
-
+            
             <div class="form-group">
                 <label>Job/Project Name <span style="color: red;">*</span></label>
                 <div style="position: relative;">
