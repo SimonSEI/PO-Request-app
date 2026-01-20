@@ -2676,56 +2676,85 @@ TECH_DASHBOARD_TEMPLATE = '''
                 }
             });
 
-        if (searchInput && suggestionsDiv) {
-            // Real-time autocomplete as user types
-            searchInput.addEventListener('input', function(e) {
-                const query = this.value.trim();
-                validJobSelected = false; // Reset on any change
+        // Show suggestions as user types
+searchInput.addEventListener('input', function(e) {
+    const query = this.value.trim();
+    console.log('→ User typed:', query);
 
-                // Show/hide clear button
-                if (clearBtn) {
-                    clearBtn.style.display = query.length > 0 ? 'block' : 'none';
-                }
+    // Show/hide clear button
+    if (clearBtn) {
+        clearBtn.style.display = query.length > 0 ? 'block' : 'none';
+    }
 
-                // Reset styles
-                this.style.borderColor = '#ddd';
-                if (hintText) {
-                    hintText.style.color = '#666';
-                    hintText.innerHTML = `💡 ${allJobs.length} active jobs available - start typing to search`;
-                }
+    // Hide suggestions if empty
+    if (query.length < 1) {
+        suggestionsDiv.style.display = 'none';
+        this.style.borderColor = '#ddd';
+        return;
+    }
 
-                // Hide suggestions if empty
-                if (query.length < 1) {
-                    suggestionsDiv.style.display = 'none';
-                    return;
-                }
+    // Find matching jobs
+    const queryLower = query.toLowerCase();
+    const matches = allJobs.filter(job =>
+        job.name.toLowerCase().includes(queryLower)
+    );
 
-                // Find matching jobs (case-insensitive, only active jobs)
-                const queryLower = query.toLowerCase();
-                const matches = allJobs.filter(job =>
-                    job.name.toLowerCase().includes(queryLower)
-                ).sort((a, b) => {
-                    // Prioritize exact starts, then alphabetical
-                    const aStarts = a.name.toLowerCase().startsWith(queryLower);
-                    const bStarts = b.name.toLowerCase().startsWith(queryLower);
-                    if (aStarts && !bStarts) return -1;
-                    if (!aStarts && bStarts) return 1;
-                    return a.name.localeCompare(b.name);
-                });
+    console.log('→ Found matches:', matches.length);
 
-                console.log('Typed:', query, '| Matches:', matches.length);
+    // No matches
+    if (matches.length === 0) {
+        suggestionsDiv.innerHTML = '<div class="job-suggestion-item" style="color: #dc3545;">❌ No jobs match "' + query + '"</div>';
+        suggestionsDiv.style.display = 'block';
+        this.style.borderColor = '#dc3545';
+        return;
+    }
 
-                // No matches found - show error
-                if (matches.length === 0) {
-                    suggestionsDiv.innerHTML = '<div class="job-suggestion-item" style="color: #dc3545; cursor: default; font-weight: bold;">❌ No active jobs match "' + query + '"</div>';
-                    suggestionsDiv.style.display = 'block';
-                    this.style.borderColor = '#dc3545'; // Red border
-                    if (hintText) {
-                        hintText.innerHTML = '❌ No matching active jobs found';
-                        hintText.style.color = '#dc3545';
-                    }
-                    return;
-                }
+    // AUTO-FILL: If exact match found, fill it automatically
+    const exactMatch = matches.find(job => 
+        job.name.toLowerCase() === queryLower
+    );
+
+    if (exactMatch) {
+        console.log('✓ Exact match found - auto-filling:', exactMatch.name);
+        this.value = exactMatch.name;
+        this.style.borderColor = '#28a745'; // Green
+        suggestionsDiv.style.display = 'none';
+        if (hintText) {
+            hintText.innerHTML = `✓ Selected: ${exactMatch.name} (${exactMatch.year})`;
+            hintText.style.color = '#28a745';
+        }
+        return;
+    }
+
+    // Show matches in dropdown
+    let html = '';
+    matches.forEach(job => {
+        // Highlight the matching part
+        const jobNameLower = job.name.toLowerCase();
+        const matchIndex = jobNameLower.indexOf(queryLower);
+        let displayName = job.name;
+
+        if (matchIndex >= 0) {
+            const before = job.name.substring(0, matchIndex);
+            const matchText = job.name.substring(matchIndex, matchIndex + query.length);
+            const after = job.name.substring(matchIndex + query.length);
+            displayName = before + '<span style="background: #ffeb3b; font-weight: bold;">' + matchText + '</span>' + after;
+        }
+
+        html += `<div class="job-suggestion-item" onclick="selectJob('${job.name.replace(/'/g, "\\'")}')">`;
+        html += `${displayName} <span style="color: #999;">(${job.year})</span>`;
+        html += '</div>';
+    });
+
+    suggestionsDiv.innerHTML = html;
+    suggestionsDiv.style.display = 'block';
+    this.style.borderColor = '#667eea';
+
+    if (hintText) {
+        hintText.innerHTML = `💡 ${matches.length} job${matches.length > 1 ? 's' : ''} match - type full name or click to select`;
+        hintText.style.color = '#667eea';
+    }
+});    
 
                 // Multiple matches or exact match handling
                 if (matches.length === 1) {
