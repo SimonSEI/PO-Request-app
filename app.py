@@ -5793,6 +5793,43 @@ def check_database_schema():
 
     return html
 
+@app.route('/verify_code_version')
+def verify_code_version():
+    """Verify what version of code is actually running"""
+    import inspect
+    import hashlib
+
+    # Get the submit_request function source code
+    source = inspect.getsource(submit_request)
+
+    # Calculate hash of the function
+    code_hash = hashlib.md5(source.encode()).hexdigest()[:8]
+
+    # Check if validation exists
+    has_duplicate_check = "already exists" in source.lower() and "choose" in source.lower()
+
+    html = "<h1>🔍 Code Version Verification</h1>"
+    html += f"<p><strong>Code Hash:</strong> {code_hash}</p>"
+    html += f"<p><strong>Expected Hash:</strong> Should be different if code changed</p>"
+    html += f"<p><strong>Has 'already exists' validation:</strong> {has_duplicate_check}</p>"
+
+    if has_duplicate_check:
+        html += "<div style='background:#f8d7da;padding:20px;margin:20px;border-radius:5px;'>"
+        html += "<h2 style='color:#dc3545;'>❌ OLD CODE IS RUNNING</h2>"
+        html += "<p>The server is still running the OLD version with duplicate validation!</p>"
+        html += "<p><strong>YOU NEED TO RESTART THE WEB SERVER</strong></p>"
+        html += "</div>"
+    else:
+        html += "<div style='background:#d4edda;padding:20px;margin:20px;border-radius:5px;'>"
+        html += "<h2 style='color:#28a745;'>✅ NEW CODE IS RUNNING</h2>"
+        html += "<p>The server has the updated code without duplicate validation.</p>"
+        html += "</div>"
+
+    html += "<h3>Submit Request Function (first 500 chars):</h3>"
+    html += f"<pre style='background:#f5f5f5;padding:15px;overflow:auto;'>{source[:500]}...</pre>"
+
+    return html
+
 @app.route('/test_duplicate_custom_po')
 def test_duplicate_custom_po():
     """Test if database allows duplicate custom PO numbers"""
