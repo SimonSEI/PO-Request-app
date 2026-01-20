@@ -47,11 +47,25 @@ def before_request():
     session.permanent = True
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-app.config['UPLOAD_FOLDER'] = os.path.join(BASE_DIR, 'invoice_uploads')
-app.config['BULK_UPLOAD_FOLDER'] = os.path.join(BASE_DIR, 'bulk_uploads')
+
+# Use /data directory for persistent storage on Railway
+# This directory should be mounted as a volume to persist across deployments
+DATA_DIR = os.environ.get('DATA_DIR', '/data')
+if not os.path.exists(DATA_DIR):
+    # Fallback to local directory if /data doesn't exist (development)
+    DATA_DIR = os.path.join(BASE_DIR, 'data')
+    print(f"⚠ Using local data directory: {DATA_DIR}")
+else:
+    print(f"✓ Using persistent data directory: {DATA_DIR}")
+
+app.config['UPLOAD_FOLDER'] = os.path.join(DATA_DIR, 'invoice_uploads')
+app.config['BULK_UPLOAD_FOLDER'] = os.path.join(DATA_DIR, 'bulk_uploads')
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB for bulk uploads
 
 try:
+    if not os.path.exists(DATA_DIR):
+        os.makedirs(DATA_DIR, mode=0o755)
+        print(f"✓ Created data directory: {DATA_DIR}")
     if not os.path.exists(app.config['UPLOAD_FOLDER']):
         os.makedirs(app.config['UPLOAD_FOLDER'], mode=0o755)
         print(f"✓ Created folder: {app.config['UPLOAD_FOLDER']}")
@@ -61,7 +75,8 @@ try:
 except Exception as e:
     print(f"✗ ERROR with folder: {e}")
 
-DB_PATH = os.path.join(BASE_DIR, 'po_requests.db')
+DB_PATH = os.path.join(DATA_DIR, 'po_requests.db')
+print(f"✓ Database path: {DB_PATH}")
 
 # Check if PDF libraries are available
 try:

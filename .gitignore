@@ -30,5 +30,8 @@ Thumbs.db
 invoice_uploads/
 bulk_uploads/
 
+# Persistent data directory
+data/
+
 # Environment variables
 .env
