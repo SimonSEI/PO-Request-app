@@ -2687,84 +2687,84 @@ TECH_DASHBOARD_TEMPLATE = '''
             });
 
         // Show suggestions as user types
-searchInput.addEventListener('input', function(e) {
-    const query = this.value.trim();
-    console.log('→ User typed:', query);
+        searchInput.addEventListener('input', function(e) {
+            const query = this.value.trim();
+            console.log('→ User typed:', query);
 
-    // Show/hide clear button
-    if (clearBtn) {
-        clearBtn.style.display = query.length > 0 ? 'block' : 'none';
-    }
+            // Show/hide clear button
+            if (clearBtn) {
+                clearBtn.style.display = query.length > 0 ? 'block' : 'none';
+            }
 
-    // Hide suggestions if empty
-    if (query.length < 1) {
-        suggestionsDiv.style.display = 'none';
-        this.style.borderColor = '#ddd';
-        return;
-    }
+            // Hide suggestions if empty
+            if (query.length < 1) {
+                suggestionsDiv.style.display = 'none';
+                this.style.borderColor = '#ddd';
+                return;
+            }
 
-    // Find matching jobs
-    const queryLower = query.toLowerCase();
-    const matches = allJobs.filter(job =>
-        job.name.toLowerCase().includes(queryLower)
-    );
+            // Find matching jobs
+            const queryLower = query.toLowerCase();
+            const matches = allJobs.filter(job =>
+                job.name.toLowerCase().includes(queryLower)
+            );
 
-    console.log('→ Found matches:', matches.length);
+            console.log('→ Found matches:', matches.length);
 
-    // No matches
-    if (matches.length === 0) {
-        suggestionsDiv.innerHTML = '<div class="job-suggestion-item" style="color: #dc3545;">❌ No jobs match "' + query + '"</div>';
-        suggestionsDiv.style.display = 'block';
-        this.style.borderColor = '#dc3545';
-        return;
-    }
+            // No matches
+            if (matches.length === 0) {
+                suggestionsDiv.innerHTML = '<div class="job-suggestion-item" style="color: #dc3545;">❌ No jobs match "' + query + '"</div>';
+                suggestionsDiv.style.display = 'block';
+                this.style.borderColor = '#dc3545';
+                return;
+            }
 
-    // AUTO-FILL: If exact match found, fill it automatically
-    const exactMatch = matches.find(job => 
-        job.name.toLowerCase() === queryLower
-    );
+            // AUTO-FILL: If exact match found, fill it automatically
+            const exactMatch = matches.find(job =>
+                job.name.toLowerCase() === queryLower
+            );
 
-    if (exactMatch) {
-        console.log('✓ Exact match found - auto-filling:', exactMatch.name);
-        this.value = exactMatch.name;
-        this.style.borderColor = '#28a745'; // Green
-        suggestionsDiv.style.display = 'none';
-        if (hintText) {
-            hintText.innerHTML = `✓ Selected: ${exactMatch.name} (${exactMatch.year})`;
-            hintText.style.color = '#28a745';
-        }
-        return;
-    }
+            if (exactMatch) {
+                console.log('✓ Exact match found - auto-filling:', exactMatch.name);
+                this.value = exactMatch.name;
+                this.style.borderColor = '#28a745'; // Green
+                suggestionsDiv.style.display = 'none';
+                if (hintText) {
+                    hintText.innerHTML = `✓ Selected: ${exactMatch.name} (${exactMatch.year})`;
+                    hintText.style.color = '#28a745';
+                }
+                return;
+            }
 
-    // Show matches in dropdown
-    let html = '';
-    matches.forEach(job => {
-        // Highlight the matching part
-        const jobNameLower = job.name.toLowerCase();
-        const matchIndex = jobNameLower.indexOf(queryLower);
-        let displayName = job.name;
+            // Show matches in dropdown
+            let html = '';
+            matches.forEach(job => {
+                // Highlight the matching part
+                const jobNameLower = job.name.toLowerCase();
+                const matchIndex = jobNameLower.indexOf(queryLower);
+                let displayName = job.name;
 
-        if (matchIndex >= 0) {
-            const before = job.name.substring(0, matchIndex);
-            const matchText = job.name.substring(matchIndex, matchIndex + query.length);
-            const after = job.name.substring(matchIndex + query.length);
-            displayName = before + '<span style="background: #ffeb3b; font-weight: bold;">' + matchText + '</span>' + after;
-        }
+                if (matchIndex >= 0) {
+                    const before = job.name.substring(0, matchIndex);
+                    const matchText = job.name.substring(matchIndex, matchIndex + query.length);
+                    const after = job.name.substring(matchIndex + query.length);
+                    displayName = before + '<span style="background: #ffeb3b; font-weight: bold;">' + matchText + '</span>' + after;
+                }
 
-        html += `<div class="job-suggestion-item" onclick="selectJob('${job.name.replace(/'/g, "\\'")}')">`;
-        html += `${displayName} <span style="color: #999;">(${job.year})</span>`;
-        html += '</div>';
-    });
+                html += `<div class="job-suggestion-item" onclick="selectJob('${job.name.replace(/'/g, "\\'")}')">`;
+                html += `${displayName} <span style="color: #999;">(${job.year})</span>`;
+                html += '</div>';
+            });
 
-    suggestionsDiv.innerHTML = html;
-    suggestionsDiv.style.display = 'block';
-    this.style.borderColor = '#667eea';
+            suggestionsDiv.innerHTML = html;
+            suggestionsDiv.style.display = 'block';
+            this.style.borderColor = '#667eea';
 
-    if (hintText) {
-        hintText.innerHTML = `💡 ${matches.length} job${matches.length > 1 ? 's' : ''} match - type full name or click to select`;
-        hintText.style.color = '#667eea';
-    }
-});
+            if (hintText) {
+                hintText.innerHTML = `💡 ${matches.length} job${matches.length > 1 ? 's' : ''} match - type full name or click to select`;
+                hintText.style.color = '#667eea';
+            }
+        });
 
         // Close suggestions when clicking outside
         document.addEventListener('click', function(e) {
