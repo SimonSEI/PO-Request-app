@@ -214,7 +214,8 @@ def init_db():
                   estimated_cost REAL, description TEXT, status TEXT DEFAULT 'pending',
                   request_date TEXT, approval_date TEXT, approval_notes TEXT,
                   approved_by TEXT, invoice_filename TEXT, invoice_number TEXT,
-                  invoice_cost TEXT, invoice_date TEXT, invoice_upload_date TEXT)''')
+                  invoice_cost TEXT, invoice_date TEXT, invoice_upload_date TEXT,
+                  display_po_number INTEGER)''')
 
     # Jobs table
     c.execute('''CREATE TABLE IF NOT EXISTS jobs
@@ -319,6 +320,13 @@ def update_database_schema():
                       timestamp TEXT)''')
         print("✓ Activity log table created")
 
+        # Add display_po_number column to po_requests if it doesn't exist
+        try:
+            c.execute("ALTER TABLE po_requests ADD COLUMN display_po_number INTEGER")
+            print("✓ Added display_po_number column")
+        except sqlite3.OperationalError:
+            print("display_po_number column already exists")
+
         conn.commit()
         conn.close()
 
@@ -326,11 +334,14 @@ def update_database_schema():
     except Exception as e:
         return f"Error: {str(e)}"
 
-def format_po_number(po_id, job_name):
-    """Format PO number with S prefix for Service jobs"""
+def format_po_number(po_id, job_name, display_po_number=None):
+    """Format PO number with S prefix for Service jobs, using custom display number if provided"""
+    # Use display_po_number if provided, otherwise use po_id
+    number_to_display = display_po_number if display_po_number is not None else po_id
+
     if job_name and job_name.lower() == 'service':
-        return f"S{po_id:04d}"
-    return f"{po_id:04d}"
+        return f"S{number_to_display:04d}"
+    return f"{number_to_display:04d}"
 
 # Make this available to templates
 app.jinja_env.globals.update(format_po_number=format_po_number)
@@ -646,6 +657,7 @@ def tech_dashboard():
     inv_number_idx = columns.get('invoice_number', 13)
     inv_cost_idx = columns.get('invoice_cost', 14)
     inv_upload_idx = columns.get('invoice_upload_date', 16)
+    display_po_idx = columns.get('display_po_number', 17)
 
     return render_template_string(TECH_DASHBOARD_TEMPLATE,
                                 username=session['username'],
@@ -653,7 +665,8 @@ def tech_dashboard():
                                 inv_filename_idx=inv_filename_idx,
                                 inv_number_idx=inv_number_idx,
                                 inv_cost_idx=inv_cost_idx,
-                                inv_upload_idx=inv_upload_idx)
+                                inv_upload_idx=inv_upload_idx,
+                                display_po_idx=display_po_idx)
 
 @app.route('/office_dashboard')
 def office_dashboard():
@@ -673,6 +686,7 @@ def office_dashboard():
     inv_cost_idx = columns.get('invoice_cost', 14)
     inv_upload_idx = columns.get('invoice_upload_date', 16)
     approved_by_idx = columns.get('approved_by', 11)
+    display_po_idx = columns.get('display_po_number', 17)
 
     c.execute("SELECT * FROM po_requests WHERE status='pending' ORDER BY id DESC")
     pending = c.fetchall()
@@ -723,7 +737,8 @@ def office_dashboard():
                                 inv_number_idx=inv_number_idx,
                                 inv_cost_idx=inv_cost_idx,
                                 inv_upload_idx=inv_upload_idx,
-                                approved_by_idx=approved_by_idx)
+                                approved_by_idx=approved_by_idx,
+                                display_po_idx=display_po_idx)
 
 @app.route('/activity_log')
 def activity_log():
@@ -803,32 +818,27 @@ def submit_request():
     # HANDLE CUSTOM PO NUMBER
     if custom_po_number:
         try:
-            po_id = int(custom_po_number)
-    
-            # Check how many times this number has been used
-            c.execute("SELECT COUNT(*) FROM po_requests WHERE id=?", (po_id,))
-            count = c.fetchone()[0]
-            
-            if count > 0:
-                # Add a suffix to track duplicates
-                suffix = chr(65 + count)  # A, B, C, etc.
-                flash(f'⚠️ PO #{po_id:04d} already exists. Creating as #{po_id:04d}-{suffix}')
-            
-            # Insert with EXPLICIT ID (database still uses same number)
+            custom_po_id = int(custom_po_number)
+
+            # Insert with auto-increment ID but store custom number in display_po_number
             c.execute("""INSERT INTO po_requests
-                         (id, tech_username, tech_name, job_name, store_name, estimated_cost,
-                          description, status, request_date)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
-                     (po_id, session['username'], tech_name, job_name, store_name,
-                      estimated_cost, description, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                         (tech_username, tech_name, job_name, store_name, estimated_cost,
+                          description, status, request_date, display_po_number)
+                         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+                     (session['username'], tech_name, job_name, store_name,
+                      estimated_cost, description, datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                      custom_po_id))
+
+            # Get the actual generated ID
+            actual_id = c.lastrowid
 
             conn.commit()
             conn.close()
 
-            # Send Telegram notification
-            send_telegram_notification(po_id, tech_name, job_name, estimated_cost)
+            # Send Telegram notification with custom PO number
+            send_telegram_notification(custom_po_id, tech_name, job_name, estimated_cost)
 
-            flash(f'✅ PO Request #{po_id:04d} (CUSTOM) submitted successfully!')
+            flash(f'✅ PO Request #{custom_po_id:04d} (CUSTOM) submitted successfully!')
             return redirect(url_for('tech_dashboard'))
 
         except ValueError:
@@ -1000,7 +1010,7 @@ def upload_invoice(po_id):
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
 
-        c.execute("SELECT status, job_name FROM po_requests WHERE id=?", (po_id,))
+        c.execute("SELECT status, job_name, display_po_number FROM po_requests WHERE id=?", (po_id,))
         po = c.fetchone()
 
         if not po:
@@ -1014,7 +1024,7 @@ def upload_invoice(po_id):
         formatted_cost = f"{cost_float:.2f}"
 
         # ✅ NEW: Update BOTH invoice fields AND estimated_cost
-        po_number_formatted = format_po_number(po_id, po[1])
+        po_number_formatted = format_po_number(po_id, po[1], po[2])
         auto_categorized = False
 
         if po_number_formatted.upper().startswith('S'):
@@ -1672,11 +1682,12 @@ def save_invoice_pages(pdf_reader, invoice_data, page_indices, timestamp, cursor
     invoice_number = invoice_data['invoice_number']
     invoice_cost = invoice_data['cost']
 
-    # Get job name and estimated cost for display
-    cursor.execute("SELECT job_name, estimated_cost FROM po_requests WHERE id=?", (po_id,))
+    # Get job name, estimated cost, and display_po_number for display
+    cursor.execute("SELECT job_name, estimated_cost, display_po_number FROM po_requests WHERE id=?", (po_id,))
     job_result = cursor.fetchone()
     job_name = job_result[0] if job_result else "Unknown Job"
     estimated_cost = job_result[1] if job_result else 0.00
+    display_po = job_result[2] if job_result and len(job_result) > 2 else None
 
     pdf_writer = PyPDF2.PdfWriter()
     for page_idx in page_indices:
@@ -1697,7 +1708,7 @@ def save_invoice_pages(pdf_reader, invoice_data, page_indices, timestamp, cursor
                   datetime.now().strftime('%Y-%m-%d %H:%M:%S'), float(invoice_cost), po_id))
 
     # Check if PO NUMBER starts with "S" (not invoice number)
-    po_number_formatted = format_po_number(po_id, job_name)
+    po_number_formatted = format_po_number(po_id, job_name, display_po)
 
     # Only auto-categorize as Service if the PO number itself starts with S
     if po_id >= 9000:
@@ -2891,7 +2902,7 @@ TECH_DASHBOARD_TEMPLATE = '''
             {% for req in requests %}
                 <div class="request-item {{ req[7] }}">
                     <span class="status {{ req[7] }}">{{ req[7]|upper }}</span>
-                    <h3>PO #{{ format_po_number(req[0], req[3]) }} - {{ req[4] }}</h3>
+                    <h3>PO #{{ format_po_number(req[0], req[3], req[display_po_idx] if display_po_idx is not none and display_po_idx < req|length else none) }} - {{ req[4] }}</h3>
                     <p><strong>Technician:</strong> {{ req[2] }}</p>
                     <p><strong>Job:</strong> {{ req[3] }}</p>
                     <p><strong>Estimated Amount:</strong> ${{ "%.2f"|format(req[5]) }}</p>
@@ -3670,7 +3681,7 @@ function searchInTab(tabId, searchInputId) {
                 <input type="checkbox" class="po-checkbox" data-po-id="{{ req[0] }}"
                        onchange="togglePOSelection({{ req[0] }}, this)">
                 <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
-                <h3>PO #{{ format_po_number(req[0], req[3]) }} - {{ req[3] }} - ${{ "%.2f"|format(req[5]) }}</h3>
+                <h3>PO #{{ format_po_number(req[0], req[3], req[display_po_idx] if display_po_idx is not none and display_po_idx < req|length else none) }} - {{ req[3] }} - ${{ "%.2f"|format(req[5]) }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
                 <p><strong>Description:</strong> {{ req[6] }}</p>
@@ -3706,7 +3717,7 @@ function searchInTab(tabId, searchInputId) {
                     <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
                     <button onclick="undoApproval({{ req[0] }})" class="delete-btn" style="right: 120px; background: #ffc107;">↩️ Undo</button>
                     <span class="status approved">APPROVED</span>
-                    <h3>PO #{{ format_po_number(req[0], req[3]) }} - {{ req[3] }} - ${{ "%.2f"|format(req[5]) }}</h3>
+                    <h3>PO #{{ format_po_number(req[0], req[3], req[display_po_idx] if display_po_idx is not none and display_po_idx < req|length else none) }} - {{ req[3] }} - ${{ "%.2f"|format(req[5]) }}</h3>
                     <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                     <p><strong>Job:</strong> {{ req[3] }}</p>
                     <p><strong>Description:</strong> {{ req[6] }}</p>
@@ -3741,7 +3752,7 @@ function searchInTab(tabId, searchInputId) {
                 <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
                 <button onclick="deleteInvoice({{ req[0] }})" class="delete-btn" style="right: 120px; background: #ff9800;">🗑️ Remove Invoice</button>
                 <span class="status approved">APPROVED WITH INVOICE</span>
-                <h3>PO #{{ format_po_number(req[0], req[3]) }} - {{ req[3] }} - ${{ "%.2f"|format(req[5]) }}</h3>
+                <h3>PO #{{ format_po_number(req[0], req[3], req[display_po_idx] if display_po_idx is not none and display_po_idx < req|length else none) }} - {{ req[3] }} - ${{ "%.2f"|format(req[5]) }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
                 <p><strong>Description:</strong> {{ req[6] }}</p>
@@ -3794,7 +3805,7 @@ function searchInTab(tabId, searchInputId) {
                 <div class="request-item">
                     <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
                     <span class="status denied">DENIED</span>
-                    <h3>PO #{{ format_po_number(req[0], req[3]) }} - {{ req[3] }} - ${{ "%.2f"|format(req[5]) }}</h3>
+                    <h3>PO #{{ format_po_number(req[0], req[3], req[display_po_idx] if display_po_idx is not none and display_po_idx < req|length else none) }} - {{ req[3] }} - ${{ "%.2f"|format(req[5]) }}</h3>
                     <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                     <p><strong>Job:</strong> {{ req[3] }}</p>
                     <p><strong>Description:</strong> {{ req[6] }}</p>
