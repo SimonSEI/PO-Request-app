@@ -9,7 +9,12 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
+print("=" * 50)
+print("🚀 PO Request App - Starting initialization")
+print("=" * 50)
+
 app = Flask(__name__)
+print("✓ Flask app created")
 app.secret_key = os.environ.get('SECRET_KEY', 'irrigation-po-system-secret-key-2024')
 # Multi-session support
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
@@ -573,6 +578,11 @@ def validate_job():
 
     except Exception as e:
         return jsonify({'valid': False, 'error': str(e)})
+
+@app.route('/health')
+def health():
+    """Health check endpoint for Railway"""
+    return jsonify({'status': 'healthy', 'message': 'PO Request App is running'}), 200
 
 @app.route('/')
 def index():
@@ -5720,9 +5730,17 @@ ADMIN_USERS_TEMPLATE = ADMIN_USERS_TEMPLATE if 'ADMIN_USERS_TEMPLATE' in dir() e
 ADMIN_EDIT_USER_TEMPLATE = ADMIN_EDIT_USER_TEMPLATE if 'ADMIN_EDIT_USER_TEMPLATE' in dir() else ''
 ADMIN_CREATE_USER_TEMPLATE = ADMIN_CREATE_USER_TEMPLATE if 'ADMIN_CREATE_USER_TEMPLATE' in dir() else ''
 
-init_db()
-print("✓ Database initialized on startup")
+try:
+    init_db()
+    print("✓ Database initialized on startup")
+except Exception as e:
+    print(f"⚠ Database initialization error: {e}")
+    print("App will continue but may have limited functionality")
+
+print("=" * 50)
+print("✅ App initialization complete - ready to accept connections")
+print("=" * 50)
 
 if __name__ == '__main__':
-       port = int(os.environ.get('PORT', 5000))
-       app.run(host='0.0.0.0', port=port, debug=False)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
