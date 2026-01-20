@@ -5775,4 +5775,5 @@ init_db()
 print("✓ Database initialized on startup")
 
 if __name__ == '__main__':
-       app.run(debug=False)  # Change to False for production
+       port = int(os.environ.get('PORT', 5000))
+       app.run(host='0.0.0.0', port=port, debug=False)
