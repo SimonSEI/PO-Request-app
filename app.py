@@ -584,6 +584,29 @@ def health():
     """Health check endpoint for Railway"""
     return jsonify({'status': 'healthy', 'message': 'PO Request App is running'}), 200
 
+@app.route('/debug_users')
+def debug_users():
+    """Debug endpoint to check existing users - REMOVE IN PRODUCTION"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT username, role, email, full_name FROM users")
+        users = c.fetchall()
+        conn.close()
+
+        users_list = []
+        for user in users:
+            users_list.append({
+                'username': user[0],
+                'role': user[1],
+                'email': user[2],
+                'full_name': user[3]
+            })
+
+        return jsonify({'success': True, 'users': users_list, 'count': len(users_list)})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
 @app.route('/')
 def index():
     return redirect(url_for('login'))
