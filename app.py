@@ -2497,6 +2497,10 @@ TECH_DASHBOARD_TEMPLATE = '''
 <head>
     <title>Technician Dashboard</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- CACHE BUSTER v20260120-1800 - FORCE RELOAD -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
@@ -2662,7 +2666,18 @@ TECH_DASHBOARD_TEMPLATE = '''
     let validJobSelected = false;
 
     window.addEventListener('DOMContentLoaded', function() {
-        console.log('Page loaded, initializing... (v2026-01-20)');
+        const VERSION = '2026-01-20-1800-DUPLICATES-ALLOWED';
+        console.log('========================================');
+        console.log('PAGE VERSION: ' + VERSION);
+        console.log('Custom PO numbers: DUPLICATES ALLOWED');
+        console.log('========================================');
+
+        // Show version banner
+        const banner = document.createElement('div');
+        banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#28a745;color:white;padding:10px;text-align:center;z-index:10000;font-weight:bold;';
+        banner.textContent = '✓ LATEST VERSION LOADED - Duplicate Custom PO Numbers Now Allowed!';
+        document.body.insertBefore(banner, document.body.firstChild);
+        setTimeout(() => banner.remove(), 5000);
 
         // IMPORTANT: Remove any validation on custom PO number field
         // Multiple requests can have the same custom PO number
