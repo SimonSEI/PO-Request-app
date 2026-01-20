@@ -845,6 +845,13 @@ def submit_request():
             conn.close()
             flash('❌ ERROR: Invalid PO number format')
             return redirect(url_for('tech_dashboard'))
+        except sqlite3.OperationalError as e:
+            conn.close()
+            if 'no column named display_po_number' in str(e).lower() or 'no such column' in str(e).lower():
+                flash('❌ ERROR: Database needs to be updated. Please visit /update_database_schema to add required columns.')
+            else:
+                flash(f'❌ ERROR creating custom PO: {str(e)}')
+            return redirect(url_for('tech_dashboard'))
         except Exception as e:
             conn.close()
             flash(f'❌ ERROR creating custom PO: {str(e)}')
@@ -5686,6 +5693,52 @@ def debug_check_po():
     for approved_po in all_approved:
         html += f"<li>PO #{approved_po[0]:04d} - {approved_po[1]} - Status: {approved_po[2]}</li>"
     html += "</ul>"
+
+    return html
+
+@app.route('/check_database_schema')
+def check_database_schema():
+    """Check if database has display_po_number column"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    # Get po_requests table schema
+    c.execute("PRAGMA table_info(po_requests)")
+    columns = c.fetchall()
+
+    # Check if display_po_number exists
+    has_display_po = any(col[1] == 'display_po_number' for col in columns)
+
+    # Get some sample data
+    c.execute("SELECT id, display_po_number FROM po_requests ORDER BY id DESC LIMIT 10")
+    sample_data = c.fetchall()
+
+    conn.close()
+
+    html = "<h2>🔍 Database Schema Check</h2>"
+    html += "<div style='background: #e7f3ff; padding: 20px; border-radius: 5px; margin: 20px;'>"
+
+    if has_display_po:
+        html += "<h3 style='color: #28a745;'>✅ display_po_number column EXISTS</h3>"
+        html += "<p>Your database is up to date!</p>"
+    else:
+        html += "<h3 style='color: #dc3545;'>❌ display_po_number column MISSING</h3>"
+        html += "<p><strong>Action Required:</strong> Visit <a href='/update_database_schema'>/update_database_schema</a> to add the column.</p>"
+
+    html += "</div>"
+
+    html += "<h3>Table Schema:</h3><ul>"
+    for col in columns:
+        html += f"<li>{col[1]} ({col[2]})</li>"
+    html += "</ul>"
+
+    if has_display_po:
+        html += "<h3>Recent PO Requests (showing ID vs display_po_number):</h3><table border='1' cellpadding='10'>"
+        html += "<tr><th>Internal ID</th><th>Display PO Number</th></tr>"
+        for row in sample_data:
+            display_val = row[1] if row[1] is not None else "(auto)"
+            html += f"<tr><td>{row[0]}</td><td>{display_val}</td></tr>"
+        html += "</table>"
 
     return html
 
