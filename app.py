@@ -5725,6 +5725,20 @@ def check_database_schema():
     c.execute("SELECT id, display_po_number FROM po_requests ORDER BY id DESC LIMIT 10")
     sample_data = c.fetchall()
 
+    # Check for duplicates
+    if has_display_po:
+        c.execute("""SELECT display_po_number, COUNT(*) as count
+                     FROM po_requests
+                     WHERE display_po_number IS NOT NULL
+                     GROUP BY display_po_number
+                     HAVING count > 1""")
+        duplicates = c.fetchall()
+    else:
+        duplicates = []
+
+    # Get schema info for display_po_number specifically
+    display_po_col = next((col for col in columns if col[1] == 'display_po_number'), None)
+
     conn.close()
 
     html = "<h2>🔍 Database Schema Check</h2>"
@@ -5733,11 +5747,21 @@ def check_database_schema():
     if has_display_po:
         html += "<h3 style='color: #28a745;'>✅ display_po_number column EXISTS</h3>"
         html += "<p>Your database is up to date!</p>"
+        if display_po_col:
+            html += f"<p><strong>Column Info:</strong> Type={display_po_col[2]}, NotNull={display_po_col[3]}, DefaultValue={display_po_col[4]}, PrimaryKey={display_po_col[5]}</p>"
     else:
         html += "<h3 style='color: #dc3545;'>❌ display_po_number column MISSING</h3>"
         html += "<p><strong>Action Required:</strong> Visit <a href='/update_database_schema'>/update_database_schema</a> to add the column.</p>"
 
     html += "</div>"
+
+    if duplicates:
+        html += "<div style='background: #d4edda; padding: 20px; border-radius: 5px; margin: 20px;'>"
+        html += "<h3 style='color: #28a745;'>✅ Duplicate Custom PO Numbers Found (This is GOOD!)</h3>"
+        html += "<p>The following custom PO numbers are used multiple times:</p><ul>"
+        for dup in duplicates:
+            html += f"<li>PO #{dup[0]:04d} - used {dup[1]} times</li>"
+        html += "</ul></div>"
 
     html += "<h3>Table Schema:</h3><ul>"
     for col in columns:
@@ -5753,6 +5777,63 @@ def check_database_schema():
         html += "</table>"
 
     return html
+
+@app.route('/test_duplicate_custom_po')
+def test_duplicate_custom_po():
+    """Test if database allows duplicate custom PO numbers"""
+    if 'username' not in session:
+        return "Please login first"
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Try to insert 3 test PO requests all with display_po_number = 9999
+        test_results = []
+        for i in range(3):
+            try:
+                c.execute("""INSERT INTO po_requests
+                             (tech_username, tech_name, job_name, store_name, estimated_cost,
+                              description, status, request_date, display_po_number)
+                             VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+                         (session['username'], 'TEST USER', 'Service', 'TEST STORE',
+                          100.00, f'TEST DESCRIPTION #{i+1}', datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                          9999))
+                conn.commit()
+                inserted_id = c.lastrowid
+                test_results.append(f"✅ SUCCESS: Created test PO with internal ID {inserted_id}, display PO #9999")
+            except Exception as e:
+                test_results.append(f"❌ FAILED: {str(e)}")
+
+        # Show what was created
+        c.execute("SELECT id, display_po_number FROM po_requests WHERE display_po_number = 9999")
+        all_9999 = c.fetchall()
+
+        conn.close()
+
+        html = "<h2>🧪 Test: Creating Duplicate Custom PO Numbers</h2>"
+        html += "<div style='background: #fff3cd; padding: 20px; border-radius: 5px; margin: 20px;'>"
+        html += "<p>Attempting to create 3 test PO requests, all with custom PO #9999...</p>"
+        html += "</div>"
+
+        html += "<h3>Results:</h3><ul>"
+        for result in test_results:
+            html += f"<li>{result}</li>"
+        html += "</ul>"
+
+        html += f"<h3>All PO Requests with display_po_number = 9999:</h3>"
+        html += f"<p>Found {len(all_9999)} requests</p>"
+        html += "<table border='1' cellpadding='10'><tr><th>Internal ID</th><th>Display PO</th></tr>"
+        for row in all_9999:
+            html += f"<tr><td>{row[0]}</td><td>#{row[1]:04d}</td></tr>"
+        html += "</table>"
+
+        html += "<br><p><a href='/check_database_schema'>← Back to Schema Check</a></p>"
+
+        return html
+
+    except Exception as e:
+        return f"<h2>Error</h2><p>{str(e)}</p>"
 
 @app.route('/debug_pdf_text')
 def debug_pdf_text():
