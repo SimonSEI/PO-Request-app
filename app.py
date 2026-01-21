@@ -2657,10 +2657,9 @@ TECH_DASHBOARD_TEMPLATE = '''
 
             <div class="form-group">
                 <label>Job/Project Name <span style="color: red;">*</span></label>
-                <input type="text" id="job_input" name="job_name" list="job_list"
-                       placeholder="Type job name..." autocomplete="off" required
-                       style="width: 100%; padding: 10px; border: 2px solid #ddd; border-radius: 5px; font-size: 16px;">
-                <datalist id="job_list"></datalist>
+                <select id="job_select" name="job_name" required style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 5px; font-size: 16px; background: white; cursor: pointer;">
+                    <option value="">-- Select a Job --</option>
+                </select>
                 <small id="job_hint" style="color: #666; display: block; margin-top: 5px;">💡 Loading jobs...</small>
             </div>
 
@@ -2684,16 +2683,15 @@ TECH_DASHBOARD_TEMPLATE = '''
     </div>
 
 <script>
-    // Native HTML5 autocomplete with datalist
+    // Strict dropdown - ONLY valid jobs can be selected
     window.addEventListener('DOMContentLoaded', function() {
-        console.log('🚀 Loading jobs for autocomplete...');
+        console.log('🚀 Loading jobs into dropdown...');
 
-        const jobInput = document.getElementById('job_input');
-        const jobList = document.getElementById('job_list');
+        const jobSelect = document.getElementById('job_select');
         const hintText = document.getElementById('job_hint');
 
-        if (!jobInput || !jobList) {
-            console.error('❌ Job input or datalist not found!');
+        if (!jobSelect) {
+            console.error('❌ Job select not found!');
             return;
         }
 
@@ -2706,37 +2704,31 @@ TECH_DASHBOARD_TEMPLATE = '''
                     const jobs = data.jobs;
                     console.log('✅ Loaded', jobs.length, 'active jobs');
 
-                    // Populate datalist with job options
-                    jobList.innerHTML = '';
+                    // Populate dropdown - keep "Select a Job" option at top
                     jobs.forEach(job => {
                         const option = document.createElement('option');
                         option.value = job.name;
                         option.textContent = `${job.name} (${job.year})`;
-                        jobList.appendChild(option);
+                        jobSelect.appendChild(option);
                     });
 
                     // Update hint
                     if (hintText) {
-                        hintText.innerHTML = `✅ ${jobs.length} active jobs - start typing to autocomplete`;
+                        hintText.innerHTML = `✅ ${jobs.length} active jobs - select one from the dropdown`;
                         hintText.style.color = '#28a745';
                     }
 
-                    // Update hint when user types/selects
-                    jobInput.addEventListener('input', function() {
-                        const value = this.value.trim();
-                        if (value && hintText) {
-                            const match = jobs.find(j => j.name.toLowerCase() === value.toLowerCase());
-                            if (match) {
-                                hintText.innerHTML = `✓ Selected: ${match.name} (${match.year})`;
+                    // Show selected job
+                    jobSelect.addEventListener('change', function() {
+                        if (this.value && hintText) {
+                            const selected = jobs.find(j => j.name === this.value);
+                            if (selected) {
+                                hintText.innerHTML = `✓ Selected: ${selected.name} (${selected.year})`;
                                 hintText.style.color = '#28a745';
                                 this.style.borderColor = '#28a745';
-                            } else {
-                                hintText.innerHTML = `💡 Keep typing or select from suggestions`;
-                                hintText.style.color = '#667eea';
-                                this.style.borderColor = '#667eea';
                             }
                         } else if (hintText) {
-                            hintText.innerHTML = `✅ ${jobs.length} active jobs - start typing to autocomplete`;
+                            hintText.innerHTML = `✅ ${jobs.length} active jobs - select one from the dropdown`;
                             hintText.style.color = '#666';
                             this.style.borderColor = '#ddd';
                         }
