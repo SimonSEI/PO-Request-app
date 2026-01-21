@@ -2811,12 +2811,22 @@ TECH_DASHBOARD_TEMPLATE = '''
                     displayName = before + '<span style="background: #ffeb3b; font-weight: bold;">' + matchText + '</span>' + after;
                 }
 
-                html += `<div class="job-suggestion-item" onclick="selectJob('${job.name.replace(/'/g, "\\'")}')">`;
+                html += `<div class="job-suggestion-item" data-job-name="${job.name.replace(/"/g, '&quot;')}" style="cursor: pointer;">`;
                 html += `${displayName} <span style="color: #999;">(${job.year})</span>`;
                 html += '</div>';
             });
 
             suggestionsDiv.innerHTML = html;
+
+            // Attach click handlers to suggestion items
+            const suggestionItems = suggestionsDiv.querySelectorAll('.job-suggestion-item');
+            suggestionItems.forEach(item => {
+                item.addEventListener('click', function() {
+                    const jobName = this.getAttribute('data-job-name');
+                    selectJob(jobName);
+                });
+            });
+
             suggestionsDiv.style.display = 'block';
             this.style.borderColor = '#667eea';
 
