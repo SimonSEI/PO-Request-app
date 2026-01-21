@@ -2657,9 +2657,15 @@ TECH_DASHBOARD_TEMPLATE = '''
 
             <div class="form-group">
                 <label>Job/Project Name <span style="color: red;">*</span></label>
-                <select id="job_select" name="job_name" required style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 5px; font-size: 16px; background: white; cursor: pointer;">
-                    <option value="">-- Select a Job --</option>
-                </select>
+                <div style="position: relative;">
+                    <input type="text" id="job_input" name="job_name" placeholder="Start typing job name..."
+                           autocomplete="off" required
+                           style="width: 100%; padding: 12px 50px 12px 12px; border: 2px solid #ddd; border-radius: 5px; font-size: 16px;">
+                    <button type="button" id="clear_job" onclick="clearJob()"
+                            style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+                                   background: #dc3545; color: white; border: none; border-radius: 4px;
+                                   padding: 6px 12px; cursor: pointer; font-weight: bold; display: none;">✕</button>
+                </div>
                 <small id="job_hint" style="color: #666; display: block; margin-top: 5px;">💡 Loading jobs...</small>
             </div>
 
@@ -2683,15 +2689,18 @@ TECH_DASHBOARD_TEMPLATE = '''
     </div>
 
 <script>
-    // Strict dropdown - ONLY valid jobs can be selected
-    window.addEventListener('DOMContentLoaded', function() {
-        console.log('🚀 Loading jobs into dropdown...');
+    // Autocomplete with auto-fill and field locking
+    let allJobs = [];
 
-        const jobSelect = document.getElementById('job_select');
+    window.addEventListener('DOMContentLoaded', function() {
+        console.log('🚀 Loading jobs for autocomplete...');
+
+        const jobInput = document.getElementById('job_input');
+        const clearBtn = document.getElementById('clear_job');
         const hintText = document.getElementById('job_hint');
 
-        if (!jobSelect) {
-            console.error('❌ Job select not found!');
+        if (!jobInput) {
+            console.error('❌ Job input not found!');
             return;
         }
 
@@ -2701,39 +2710,13 @@ TECH_DASHBOARD_TEMPLATE = '''
             .then(data => {
                 console.log('📦 Jobs data received:', data);
                 if (data.success && data.jobs) {
-                    const jobs = data.jobs;
-                    console.log('✅ Loaded', jobs.length, 'active jobs');
+                    allJobs = data.jobs;
+                    console.log('✅ Loaded', allJobs.length, 'active jobs');
 
-                    // Populate dropdown - keep "Select a Job" option at top
-                    jobs.forEach(job => {
-                        const option = document.createElement('option');
-                        option.value = job.name;
-                        option.textContent = `${job.name} (${job.year})`;
-                        jobSelect.appendChild(option);
-                    });
-
-                    // Update hint
                     if (hintText) {
-                        hintText.innerHTML = `✅ ${jobs.length} active jobs - select one from the dropdown`;
+                        hintText.innerHTML = `✅ ${allJobs.length} active jobs - start typing to auto-fill`;
                         hintText.style.color = '#28a745';
                     }
-
-                    // Show selected job
-                    jobSelect.addEventListener('change', function() {
-                        if (this.value && hintText) {
-                            const selected = jobs.find(j => j.name === this.value);
-                            if (selected) {
-                                hintText.innerHTML = `✓ Selected: ${selected.name} (${selected.year})`;
-                                hintText.style.color = '#28a745';
-                                this.style.borderColor = '#28a745';
-                            }
-                        } else if (hintText) {
-                            hintText.innerHTML = `✅ ${jobs.length} active jobs - select one from the dropdown`;
-                            hintText.style.color = '#666';
-                            this.style.borderColor = '#ddd';
-                        }
-                    });
-
                 } else {
                     console.error('❌ Failed to load jobs:', data);
                     if (hintText) {
@@ -2749,7 +2732,88 @@ TECH_DASHBOARD_TEMPLATE = '''
                     hintText.style.color = '#dc3545';
                 }
             });
+
+        // Auto-fill as user types
+        jobInput.addEventListener('input', function(e) {
+            const query = this.value.trim();
+            console.log('User typed:', query);
+
+            if (query.length < 1) {
+                if (hintText) {
+                    hintText.innerHTML = `✅ ${allJobs.length} active jobs - start typing to auto-fill`;
+                    hintText.style.color = '#666';
+                }
+                this.style.borderColor = '#ddd';
+                return;
+            }
+
+            // Find matching jobs (case-insensitive)
+            const queryLower = query.toLowerCase();
+            const matches = allJobs.filter(job =>
+                job.name.toLowerCase().includes(queryLower)
+            );
+
+            console.log('Found', matches.length, 'matches');
+
+            // If exactly ONE match, auto-fill and LOCK the field
+            if (matches.length === 1) {
+                const match = matches[0];
+                console.log('✅ Single match - auto-filling and locking:', match.name);
+
+                this.value = match.name;
+                this.readOnly = true; // LOCK the field
+                this.style.borderColor = '#28a745'; // Green
+                this.style.backgroundColor = '#f0fff0'; // Light green background
+
+                if (clearBtn) {
+                    clearBtn.style.display = 'block'; // Show clear button
+                }
+
+                if (hintText) {
+                    hintText.innerHTML = `✓ Locked: ${match.name} (${match.year}) - Click ✕ to change`;
+                    hintText.style.color = '#28a745';
+                }
+            } else if (matches.length === 0) {
+                if (hintText) {
+                    hintText.innerHTML = `❌ No jobs match "${query}"`;
+                    hintText.style.color = '#dc3545';
+                }
+                this.style.borderColor = '#dc3545';
+            } else {
+                if (hintText) {
+                    hintText.innerHTML = `💡 ${matches.length} matches - keep typing`;
+                    hintText.style.color = '#667eea';
+                }
+                this.style.borderColor = '#667eea';
+            }
+        });
     });
+
+    // Clear button function
+    function clearJob() {
+        const jobInput = document.getElementById('job_input');
+        const clearBtn = document.getElementById('clear_job');
+        const hintText = document.getElementById('job_hint');
+
+        if (jobInput) {
+            jobInput.value = '';
+            jobInput.readOnly = false; // UNLOCK the field
+            jobInput.style.borderColor = '#ddd';
+            jobInput.style.backgroundColor = 'white';
+            jobInput.focus();
+        }
+
+        if (clearBtn) {
+            clearBtn.style.display = 'none';
+        }
+
+        if (hintText) {
+            hintText.innerHTML = `✅ ${allJobs.length} active jobs - start typing to auto-fill`;
+            hintText.style.color = '#666';
+        }
+
+        console.log('Job cleared - field unlocked');
+    }
 </script>
 
     <div class="card">
