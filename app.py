@@ -2757,18 +2757,15 @@ TECH_DASHBOARD_TEMPLATE = '''
                 return;
             }
 
-            // AUTO-FILL: If exact match found, fill it automatically
-            const exactMatch = matches.find(job =>
-                job.name.toLowerCase() === queryLower
-            );
-
-            if (exactMatch) {
-                console.log('✓ Exact match found - auto-filling:', exactMatch.name);
-                this.value = exactMatch.name;
+            // AUTO-FILL: If only ONE match found, fill it automatically
+            if (matches.length === 1) {
+                const match = matches[0];
+                console.log('✓ Single match found - auto-filling:', match.name);
+                this.value = match.name;
                 this.style.borderColor = '#28a745'; // Green
                 suggestionsDiv.style.display = 'none';
                 if (hintText) {
-                    hintText.innerHTML = `✓ Selected: ${exactMatch.name} (${exactMatch.year})`;
+                    hintText.innerHTML = `✓ Selected: ${match.name} (${match.year})`;
                     hintText.style.color = '#28a745';
                 }
                 return;
