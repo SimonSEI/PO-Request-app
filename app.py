@@ -2690,26 +2690,45 @@ TECH_DASHBOARD_TEMPLATE = '''
     let validJobSelected = false;
 
     window.addEventListener('DOMContentLoaded', function() {
-        console.log('Page loaded, initializing...');
+        console.log('🚀 Page loaded, initializing autocomplete...');
 
         const searchInput = document.getElementById('job_search');
         const suggestionsDiv = document.getElementById('job_suggestions');
         const clearBtn = document.getElementById('clear-job');
         const hintText = document.getElementById('job_hint');
 
+        // Debug: Check if elements exist
+        console.log('Elements found:', {
+            searchInput: !!searchInput,
+            suggestionsDiv: !!suggestionsDiv,
+            clearBtn: !!clearBtn,
+            hintText: !!hintText
+        });
+
+        if (!searchInput) {
+            console.error('❌ CRITICAL: job_search input not found!');
+            return;
+        }
+
+        if (!suggestionsDiv) {
+            console.error('❌ CRITICAL: job_suggestions div not found!');
+            return;
+        }
+
         // Fetch jobs from server
+        console.log('📡 Fetching jobs from /get_jobs...');
         fetch('/get_jobs')
             .then(response => response.json())
             .then(data => {
-                console.log('Jobs loaded:', data);
+                console.log('📦 Jobs data received:', data);
                 if (data.success && data.jobs) {
                     allJobs = data.jobs;
-                    console.log('✓ Available jobs:', allJobs.length);
+                    console.log('✅ Loaded', allJobs.length, 'active jobs:', allJobs.map(j => j.name).join(', '));
                     if (hintText && allJobs.length > 0) {
                         hintText.innerHTML = `💡 ${allJobs.length} active jobs available - start typing to search`;
                     }
                 } else {
-                    console.error('Failed to load jobs:', data);
+                    console.error('❌ Failed to load jobs:', data);
                     if (hintText) {
                         hintText.innerHTML = '⚠️ Could not load jobs - please refresh the page';
                         hintText.style.color = '#dc3545';
@@ -2725,9 +2744,10 @@ TECH_DASHBOARD_TEMPLATE = '''
             });
 
         // Show suggestions as user types
+        console.log('✅ Attaching input event listener to job_search field...');
         searchInput.addEventListener('input', function(e) {
             const query = this.value.trim();
-            console.log('→ User typed:', query);
+            console.log('⌨️  User typed:', query, '(length:', query.length, ')');
 
             // Show/hide clear button
             if (clearBtn) {
@@ -2743,11 +2763,13 @@ TECH_DASHBOARD_TEMPLATE = '''
 
             // Find matching jobs
             const queryLower = query.toLowerCase();
+            console.log('🔍 Searching for jobs matching:', queryLower);
+            console.log('   Total jobs to search:', allJobs.length);
             const matches = allJobs.filter(job =>
                 job.name.toLowerCase().includes(queryLower)
             );
 
-            console.log('→ Found matches:', matches.length);
+            console.log('✨ Found', matches.length, 'matches:', matches.map(m => m.name).join(', '));
 
             // No matches
             if (matches.length === 0) {
@@ -2760,7 +2782,7 @@ TECH_DASHBOARD_TEMPLATE = '''
             // AUTO-FILL: If only ONE match found, fill it automatically
             if (matches.length === 1) {
                 const match = matches[0];
-                console.log('✓ Single match found - auto-filling:', match.name);
+                console.log('🎯 SINGLE MATCH - AUTO-FILLING:', match.name);
                 this.value = match.name;
                 this.style.borderColor = '#28a745'; // Green
                 suggestionsDiv.style.display = 'none';
@@ -2768,8 +2790,11 @@ TECH_DASHBOARD_TEMPLATE = '''
                     hintText.innerHTML = `✓ Selected: ${match.name} (${match.year})`;
                     hintText.style.color = '#28a745';
                 }
+                console.log('✅ Auto-fill complete!');
                 return;
             }
+
+            console.log('📋 Multiple matches found - showing dropdown');
 
             // Show matches in dropdown
             let html = '';
