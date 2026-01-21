@@ -2654,15 +2654,13 @@ TECH_DASHBOARD_TEMPLATE = '''
                 <input type="number" id="custom_po_number" name="custom_po_number" placeholder="e.g., 9810" min="1">
                 <small style="color: #666;">Enter specific PO number (must be 9000 or higher)</small>
             </div>
-            
+
             <div class="form-group">
                 <label>Job/Project Name <span style="color: red;">*</span></label>
-                <div style="position: relative;">
-                    <input type="text" id="job_search" name="job_name" placeholder="Start typing job name..." autocomplete="off" required style="padding-right: 40px;">
-                    <button type="button" id="clear-job" onclick="clearJobName()" style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: #dc3545; color: white; border: none; border-radius: 3px; padding: 5px 10px; cursor: pointer; display: none; font-size: 14px; font-weight: bold;">✕</button>
-                </div>
-                <div id="job_suggestions" style="display: none;"></div>
-                <small id="job_hint" style="color: #666; display: block; margin-top: 5px;">💡 Type to search active jobs - auto-fills as you type</small>
+                <select id="job_select" name="job_name" required style="width: 100%; padding: 10px; border: 2px solid #ddd; border-radius: 5px; font-size: 16px;">
+                    <option value="">-- Select a Job --</option>
+                </select>
+                <small id="job_hint" style="color: #666; display: block; margin-top: 5px;">💡 Loading jobs...</small>
             </div>
 
             <div class="form-group">
@@ -2685,48 +2683,58 @@ TECH_DASHBOARD_TEMPLATE = '''
     </div>
 
 <script>
-    // Global variables
-    let allJobs = [];
-    let validJobSelected = false;
-
+    // Simple dropdown population - no autocomplete
     window.addEventListener('DOMContentLoaded', function() {
-        console.log('🚀 Page loaded, initializing autocomplete...');
+        console.log('🚀 Loading jobs into dropdown...');
 
-        const searchInput = document.getElementById('job_search');
-        const suggestionsDiv = document.getElementById('job_suggestions');
-        const clearBtn = document.getElementById('clear-job');
+        const jobSelect = document.getElementById('job_select');
         const hintText = document.getElementById('job_hint');
 
-        // Debug: Check if elements exist
-        console.log('Elements found:', {
-            searchInput: !!searchInput,
-            suggestionsDiv: !!suggestionsDiv,
-            clearBtn: !!clearBtn,
-            hintText: !!hintText
-        });
-
-        if (!searchInput) {
-            console.error('❌ CRITICAL: job_search input not found!');
-            return;
-        }
-
-        if (!suggestionsDiv) {
-            console.error('❌ CRITICAL: job_suggestions div not found!');
+        if (!jobSelect) {
+            console.error('❌ Job select dropdown not found!');
             return;
         }
 
         // Fetch jobs from server
-        console.log('📡 Fetching jobs from /get_jobs...');
         fetch('/get_jobs')
             .then(response => response.json())
             .then(data => {
                 console.log('📦 Jobs data received:', data);
                 if (data.success && data.jobs) {
-                    allJobs = data.jobs;
-                    console.log('✅ Loaded', allJobs.length, 'active jobs:', allJobs.map(j => j.name).join(', '));
-                    if (hintText && allJobs.length > 0) {
-                        hintText.innerHTML = `💡 ${allJobs.length} active jobs available - start typing to search`;
+                    const jobs = data.jobs;
+                    console.log('✅ Loaded', jobs.length, 'active jobs');
+
+                    // Clear existing options (keep the first "Select a Job" option)
+                    jobSelect.innerHTML = '<option value="">-- Select a Job --</option>';
+
+                    // Add job options
+                    jobs.forEach(job => {
+                        const option = document.createElement('option');
+                        option.value = job.name;
+                        option.textContent = `${job.name} (${job.year})`;
+                        jobSelect.appendChild(option);
+                    });
+
+                    // Update hint
+                    if (hintText) {
+                        hintText.innerHTML = `✅ ${jobs.length} active jobs loaded`;
+                        hintText.style.color = '#28a745';
                     }
+
+                    // Change hint when user selects
+                    jobSelect.addEventListener('change', function() {
+                        if (this.value && hintText) {
+                            const selected = jobs.find(j => j.name === this.value);
+                            if (selected) {
+                                hintText.innerHTML = `✓ Selected: ${selected.name} (${selected.year})`;
+                                hintText.style.color = '#28a745';
+                            }
+                        } else if (hintText) {
+                            hintText.innerHTML = `✅ ${jobs.length} active jobs loaded`;
+                            hintText.style.color = '#666';
+                        }
+                    });
+
                 } else {
                     console.error('❌ Failed to load jobs:', data);
                     if (hintText) {
@@ -2736,232 +2744,12 @@ TECH_DASHBOARD_TEMPLATE = '''
                 }
             })
             .catch(error => {
-                console.error('Error loading jobs:', error);
+                console.error('❌ Error loading jobs:', error);
                 if (hintText) {
                     hintText.innerHTML = '⚠️ Error loading jobs - please refresh the page';
                     hintText.style.color = '#dc3545';
                 }
             });
-
-        // Show suggestions as user types
-        console.log('✅ Attaching input event listener to job_search field...');
-        searchInput.addEventListener('input', function(e) {
-            const query = this.value.trim();
-            console.log('⌨️  User typed:', query, '(length:', query.length, ')');
-
-            // Show/hide clear button
-            if (clearBtn) {
-                clearBtn.style.display = query.length > 0 ? 'block' : 'none';
-            }
-
-            // Hide suggestions if empty
-            if (query.length < 1) {
-                suggestionsDiv.style.display = 'none';
-                this.style.borderColor = '#ddd';
-                return;
-            }
-
-            // Find matching jobs
-            const queryLower = query.toLowerCase();
-            console.log('🔍 Searching for jobs matching:', queryLower);
-            console.log('   Total jobs to search:', allJobs.length);
-            const matches = allJobs.filter(job =>
-                job.name.toLowerCase().includes(queryLower)
-            );
-
-            console.log('✨ Found', matches.length, 'matches:', matches.map(m => m.name).join(', '));
-
-            // No matches
-            if (matches.length === 0) {
-                suggestionsDiv.innerHTML = '<div class="job-suggestion-item" style="color: #dc3545;">❌ No jobs match "' + query + '"</div>';
-                suggestionsDiv.style.display = 'block';
-                this.style.borderColor = '#dc3545';
-                return;
-            }
-
-            // AUTO-FILL: If only ONE match found, fill it automatically
-            if (matches.length === 1) {
-                const match = matches[0];
-                console.log('🎯 SINGLE MATCH - AUTO-FILLING:', match.name);
-                this.value = match.name;
-                this.style.borderColor = '#28a745'; // Green
-                suggestionsDiv.style.display = 'none';
-                if (hintText) {
-                    hintText.innerHTML = `✓ Selected: ${match.name} (${match.year})`;
-                    hintText.style.color = '#28a745';
-                }
-                console.log('✅ Auto-fill complete!');
-                return;
-            }
-
-            console.log('📋 Multiple matches found - showing dropdown');
-
-            // Show matches in dropdown
-            let html = '';
-            matches.forEach(job => {
-                // Highlight the matching part
-                const jobNameLower = job.name.toLowerCase();
-                const matchIndex = jobNameLower.indexOf(queryLower);
-                let displayName = job.name;
-
-                if (matchIndex >= 0) {
-                    const before = job.name.substring(0, matchIndex);
-                    const matchText = job.name.substring(matchIndex, matchIndex + query.length);
-                    const after = job.name.substring(matchIndex + query.length);
-                    displayName = before + '<span style="background: #ffeb3b; font-weight: bold;">' + matchText + '</span>' + after;
-                }
-
-                html += `<div class="job-suggestion-item" data-job-name="${job.name.replace(/"/g, '&quot;')}" style="cursor: pointer;">`;
-                html += `${displayName} <span style="color: #999;">(${job.year})</span>`;
-                html += '</div>';
-            });
-
-            suggestionsDiv.innerHTML = html;
-
-            // Attach click handlers to suggestion items
-            const suggestionItems = suggestionsDiv.querySelectorAll('.job-suggestion-item');
-            suggestionItems.forEach(item => {
-                item.addEventListener('click', function() {
-                    const jobName = this.getAttribute('data-job-name');
-                    selectJob(jobName);
-                });
-            });
-
-            suggestionsDiv.style.display = 'block';
-            this.style.borderColor = '#667eea';
-
-            if (hintText) {
-                hintText.innerHTML = `💡 ${matches.length} job${matches.length > 1 ? 's' : ''} match - type full name or click to select`;
-                hintText.style.color = '#667eea';
-            }
-        });
-
-        // Close suggestions when clicking outside
-        document.addEventListener('click', function(e) {
-            if (!searchInput.contains(e.target) && !suggestionsDiv.contains(e.target)) {
-                suggestionsDiv.style.display = 'none';
-            }
-        });
-
-        // Handle keyboard navigation (Enter key)
-        searchInput.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') {
-                const currentValue = this.value.trim();
-                const exactMatch = allJobs.find(job =>
-                    job.name.toLowerCase() === currentValue.toLowerCase()
-                );
-
-                if (exactMatch) {
-                    selectJob(exactMatch.name);
-                    e.preventDefault(); // Prevent form submission
-                }
-            }
-        });
-    });
-
-    function selectJob(jobName) {
-        const searchInput = document.getElementById('job_search');
-        const suggestionsDiv = document.getElementById('job_suggestions');
-        const clearBtn = document.getElementById('clear-job');
-        const hintText = document.getElementById('job_hint');
-
-        if (searchInput) {
-            searchInput.value = jobName;
-            searchInput.style.borderColor = '#28a745'; // Green
-            validJobSelected = true;
-        }
-        if (suggestionsDiv) {
-            suggestionsDiv.style.display = 'none';
-        }
-        if (clearBtn) {
-            clearBtn.style.display = 'block';
-        }
-
-        const selectedJob = allJobs.find(job => job.name === jobName);
-        if (hintText && selectedJob) {
-            hintText.innerHTML = `✓ Selected: ${selectedJob.name} (${selectedJob.year})`;
-            hintText.style.color = '#28a745';
-        }
-
-        console.log('✓ Selected:', jobName);
-    }
-
-    function clearJobName() {
-        const searchInput = document.getElementById('job_search');
-        const clearBtn = document.getElementById('clear-job');
-        const hintText = document.getElementById('job_hint');
-
-        searchInput.value = '';
-        searchInput.style.borderColor = '#ddd';
-        validJobSelected = false;
-        if (clearBtn) clearBtn.style.display = 'none';
-        if (hintText) {
-            hintText.innerHTML = `💡 ${allJobs.length} active jobs available - start typing to search`;
-            hintText.style.color = '#666';
-        }
-        searchInput.focus();
-    }
-
-    // STRICT form validation - prevents submission with invalid job names
-    document.addEventListener('DOMContentLoaded', function() {
-        const form = document.querySelector('form[action="{{ url_for(\'submit_request\') }}"]');
-        if (form) {
-            form.addEventListener('submit', function(e) {
-                const jobInput = document.getElementById('job_search');
-                const jobName = jobInput.value.trim();
-
-                if (!jobName) {
-                    e.preventDefault();
-                    alert('❌ ERROR: Please enter a job name');
-                    jobInput.focus();
-                    return false;
-                }
-
-                // Verify job exists EXACTLY in active jobs list
-                const exactMatch = allJobs.find(job =>
-                    job.name.toLowerCase() === jobName.toLowerCase()
-                );
-
-                if (!exactMatch) {
-                    e.preventDefault();
-
-                    // Find similar jobs to suggest
-                    const similar = allJobs.filter(job =>
-                        job.name.toLowerCase().includes(jobName.toLowerCase())
-                    ).slice(0, 3);
-
-                    let msg = '❌ INVALID JOB NAME\\n\\n';
-                    msg += 'The job "' + jobName + '" is not an active job in the system.\\n\\n';
-
-                    if (similar.length > 0) {
-                        msg += 'Did you mean one of these?\\n';
-                        similar.forEach(job => {
-                            msg += '  • ' + job.name + ' (' + job.year + ')\\n';
-                        });
-                        msg += '\\nPlease select a job from the dropdown list.';
-                    } else {
-                        msg += 'Please type a job name and select from the dropdown list.\\n';
-                        msg += 'Only active jobs can be used for PO requests.';
-                    }
-
-                    alert(msg);
-                    jobInput.focus();
-                    jobInput.select();
-                    jobInput.style.borderColor = '#dc3545';
-
-                    const hintText = document.getElementById('job_hint');
-                    if (hintText) {
-                        hintText.innerHTML = '❌ Invalid job - must select from active jobs list';
-                        hintText.style.color = '#dc3545';
-                    }
-
-                    return false;
-                }
-
-                console.log('✅ Form submitted with valid job:', exactMatch.name);
-                return true;
-            });
-        }
     });
 </script>
 
