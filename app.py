@@ -2529,7 +2529,7 @@ TECH_DASHBOARD_TEMPLATE = '''
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+        body { font-family: Arial, sans-serif; background: #4169E1; padding: 20px; }
         .header {
             background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
             box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex;
