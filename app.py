@@ -1669,18 +1669,35 @@ def process_bulk_pdf(pdf_path, timestamp):
                 pdf_writer.write(output_file)
 
             # Update database
-            c.execute("""UPDATE po_requests
-                         SET invoice_filename=?, invoice_number=?, invoice_cost=?,
-                             invoice_date=?, invoice_upload_date=?, estimated_cost=?
-                         WHERE id=?""",
-                     (filename, inv_num, invoice_data['cost'], 'N/A',
-                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                      float(invoice_data['cost']), po_id))
+            # Check if PO number starts with S and auto-categorize as Service
+            po_info = po_map.get(po_id, {})
+            current_job_name = po_info.get('job_name', '')
+            po_number_formatted = format_po_number(po_id, current_job_name)
+
+            if po_number_formatted.upper().startswith('S'):
+                # Auto-categorize as Service
+                c.execute("""UPDATE po_requests
+                             SET invoice_filename=?, invoice_number=?, invoice_cost=?,
+                                 invoice_date=?, invoice_upload_date=?, estimated_cost=?, job_name=?
+                             WHERE id=?""",
+                         (filename, inv_num, invoice_data['cost'], 'N/A',
+                          datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                          float(invoice_data['cost']), 'Service', po_id))
+                job_name = 'Service'  # Update for results display
+            else:
+                # Normal update - keep existing job
+                c.execute("""UPDATE po_requests
+                             SET invoice_filename=?, invoice_number=?, invoice_cost=?,
+                                 invoice_date=?, invoice_upload_date=?, estimated_cost=?
+                             WHERE id=?""",
+                         (filename, inv_num, invoice_data['cost'], 'N/A',
+                          datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                          float(invoice_data['cost']), po_id))
+                job_name = current_job_name
 
             results['matched'] += 1
 
-            po_info = po_map.get(po_id, {})
-            job_name = po_info.get('job_name', 'Unknown')
+            # job_name is already set above based on S-prefix check
             estimated_cost = po_info.get('estimated_cost', 0.00)
 
             results['details'].append({
