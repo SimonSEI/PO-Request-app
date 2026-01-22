@@ -256,8 +256,15 @@ def init_db():
                   job_name TEXT UNIQUE,
                   year INTEGER,
                   created_date TEXT,
-                  active INTEGER DEFAULT 1)''')
+                  active INTEGER DEFAULT 1,
+                  budget REAL DEFAULT 0)''')
 
+    # Add budget column if it doesn't exist (for existing databases)
+    try:
+        c.execute("ALTER TABLE jobs ADD COLUMN budget REAL DEFAULT 0")
+        print("✓ Added budget column to jobs table")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
     # Activity log table - THIS WAS MISSING!
     c.execute('''CREATE TABLE IF NOT EXISTS activity_log
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1349,10 +1356,11 @@ def manage_jobs():
                 COALESCE(SUM(CASE WHEN p.invoice_cost IS NOT NULL THEN CAST(p.invoice_cost AS REAL) ELSE 0 END), 0) as total_invoiced,
                 COUNT(CASE WHEN p.invoice_filename IS NOT NULL THEN 1 END) as invoice_count,
                 COALESCE(SUM(p.estimated_cost), 0) as total_estimated,
-                COUNT(p.id) as po_count
+                COUNT(p.id) as po_count,
+                COALESCE(j.budget, 0) as budget
             FROM jobs j
             LEFT JOIN po_requests p ON j.job_name = p.job_name
-            GROUP BY j.id, j.job_name, j.year, j.created_date, j.active
+            GROUP BY j.id, j.job_name, j.year, j.created_date, j.active, j.budget
             ORDER BY j.active DESC, j.year DESC, j.job_name ASC
         """)
         jobs = c.fetchall()
@@ -1494,6 +1502,34 @@ def toggle_job():
     conn.close()
 
     return jsonify({'success': True, 'status': 'active' if new_status == 1 else 'inactive'})
+
+@app.route('/update_budget', methods=['POST'])
+def update_budget():
+    """Update budget for a job"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    data = request.get_json()
+    job_id = data.get('job_id')
+    budget = data.get('budget')
+
+    if job_id is None or budget is None:
+        return jsonify({'success': False, 'error': 'Job ID and budget required'})
+
+    try:
+        budget = float(budget)
+        if budget < 0:
+            return jsonify({'success': False, 'error': 'Budget cannot be negative'})
+    except ValueError:
+        return jsonify({'success': False, 'error': 'Invalid budget amount'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE jobs SET budget=? WHERE id=?", (budget, job_id))
+    conn.commit()
+    conn.close()
+
+    return jsonify({'success': True, 'message': f'Budget updated to ${budget:,.2f}'})
 
 @app.route('/delete_job', methods=['POST'])
 def delete_job():
@@ -2214,6 +2250,36 @@ JOB_MANAGEMENT_TEMPLATE = '''
             });
         }
 
+        function setBudget(id, jobName, currentBudget, event) {
+            event.stopPropagation();
+            const newBudget = prompt('Set budget for "' + jobName + '":', currentBudget);
+            if (newBudget === null) return; // User cancelled
+
+            const budgetValue = parseFloat(newBudget);
+            if (isNaN(budgetValue) || budgetValue < 0) {
+                alert('Please enter a valid positive number');
+                return;
+            }
+
+            fetch('/update_budget', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    job_id: id,
+                    budget: budgetValue
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert(data.message);
+                    location.reload();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            });
+        }
+
         function toggleJobDetails(jobId) {
             const detailsRow = document.getElementById('details-' + jobId);
             const icon = document.getElementById('icon-' + jobId);
@@ -2350,22 +2416,25 @@ JOB_MANAGEMENT_TEMPLATE = '''
 
             let html = '';
             filtered.forEach(job => {
-                const diff = job[5] - job[7];
-                const diffClass = diff > 0 ? 'money-negative' : 'money-positive';
-                const diffSign = diff > 0 ? '+' : '';
+                const budget = job[9] || 0;
+                const spent = job[5] || 0;
+                const remaining = budget - spent;
+                const remainingClass = remaining < 0 ? 'money-negative' : 'money-positive';
+                const remainingSign = remaining < 0 ? '-' : '';
 
                 html += `<tr onclick="toggleJobDetails(${job[0]})">
                     <td><span class="expand-icon" id="icon-${job[0]}">▶</span></td>
                     <td><strong>${job[1]}</strong></td>
                     <td>${job[2]}</td>
                     <td>${job[8]} POs (${job[6]} invoiced)</td>
-                    <td>$${job[7].toFixed(2)}</td>
-                    <td>$${job[5].toFixed(2)}</td>
-                    <td><span class="${diffClass}">${diffSign}$${diff.toFixed(2)}</span></td>
+                    <td>$${budget.toFixed(2)}</td>
+                    <td>$${spent.toFixed(2)}</td>
+                    <td><span class="${remainingClass}">${remainingSign}$${Math.abs(remaining).toFixed(2)}</span></td>
                     <td><span class="status-badge ${job[4] === 1 ? 'status-active' : 'status-inactive'}">
                         ${job[4] === 1 ? 'Active' : 'Inactive'}
                     </span></td>
                     <td>
+                        <button onclick="setBudget(${job[0]}, '${job[1]}', ${budget}, event)" class="btn btn-primary" style="padding: 5px 10px; margin-right: 5px;">Set Budget</button>
                         <button onclick="editJob(${job[0]}, '${job[1]}', ${job[2]}, event)" class="btn btn-primary" style="padding: 5px 10px; margin-right: 5px;">Edit</button>
                         <button onclick="toggleJob(${job[0]}, event)" class="btn btn-secondary" style="padding: 5px 10px; margin-right: 5px;">
                             ${job[4] === 1 ? 'Deactivate' : 'Activate'}
@@ -2453,9 +2522,9 @@ JOB_MANAGEMENT_TEMPLATE = '''
                     <th>Job Name</th>
                     <th>Year</th>
                     <th>POs</th>
-                    <th>Total Estimated</th>
-                    <th>Total Invoiced</th>
-                    <th>Difference</th>
+                    <th>Budget</th>
+                    <th>Total Spent</th>
+                    <th>Remaining</th>
                     <th>Status</th>
                     <th>Actions</th>
                 </tr>
