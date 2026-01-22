@@ -51,12 +51,26 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Use /data directory for persistent storage on Railway
 # This directory should be mounted as a volume to persist across deployments
 DATA_DIR = os.environ.get('DATA_DIR', '/data')
-if not os.path.exists(DATA_DIR):
+USING_PERSISTENT_STORAGE = os.path.exists(DATA_DIR)
+
+if not USING_PERSISTENT_STORAGE:
     # Fallback to local directory if /data doesn't exist (development)
     DATA_DIR = os.path.join(BASE_DIR, 'data')
-    print(f"⚠ Using local data directory: {DATA_DIR}")
+    print("=" * 80)
+    print("⚠️  WARNING: PERSISTENT STORAGE NOT CONFIGURED!")
+    print("=" * 80)
+    print(f"Using local data directory: {DATA_DIR}")
+    print("❌ DATA WILL BE DELETED ON EVERY DEPLOYMENT!")
+    print("")
+    print("To prevent data loss on Railway:")
+    print("1. Go to Railway Dashboard → Your Service → Settings")
+    print("2. Add a Volume with mount path: /data")
+    print("3. Redeploy after adding the volume")
+    print("=" * 80)
 else:
-    print(f"✓ Using persistent data directory: {DATA_DIR}")
+    print(f"✅ Using persistent data directory: {DATA_DIR}")
+    print("✅ Data will persist across deployments")
+
 
 app.config['UPLOAD_FOLDER'] = os.path.join(DATA_DIR, 'invoice_uploads')
 app.config['BULK_UPLOAD_FOLDER'] = os.path.join(DATA_DIR, 'bulk_uploads')
@@ -596,8 +610,17 @@ def validate_job():
 
 @app.route('/health')
 def health():
-    """Health check endpoint for Railway"""
-    return jsonify({'status': 'healthy', 'message': 'PO Request App is running'}), 200
+    """Health check endpoint for Railway with storage status"""
+    db_exists = os.path.exists(DB_PATH)
+
+    return jsonify({
+        'status': 'healthy',
+        'message': 'PO Request App is running',
+        'persistent_storage': USING_PERSISTENT_STORAGE,
+        'data_directory': DATA_DIR,
+        'database_exists': db_exists,
+        'warning': None if USING_PERSISTENT_STORAGE else '⚠️ Data will be lost on redeploy - configure Railway volume at /data'
+    }), 200
 
 @app.route('/debug_users')
 def debug_users():

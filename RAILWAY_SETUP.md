@@ -1,54 +1,94 @@
-# Railway Persistent Storage Setup
+# 🚨 CRITICAL: Railway Persistent Storage Setup
 
-## ⚠️ CRITICAL: Your database is being reset on every deployment!
+## ⚠️ YOUR DATA IS BEING DELETED ON EVERY DEPLOYMENT!
 
-Railway's filesystem is **ephemeral** - files are deleted when your app redeploys. This is why your jobs data disappeared.
+**Problem:** Railway's filesystem is **ephemeral** - ALL files (including your database) are deleted on every deployment. This is why your jobs, PO requests, and invoices keep disappearing.
 
-## Solution: Add a Persistent Volume
+**Solution:** Configure a persistent volume RIGHT NOW to stop data loss.
 
-Follow these steps to prevent future data loss:
+---
 
-### 1. Add a Volume in Railway
+## 📋 Quick Setup (5 minutes)
 
-1. Go to your Railway project dashboard
-2. Click on your service (PO-Request-app)
-3. Click the **"Variables"** tab
-4. Scroll down and click **"+ New Volume"**
-5. Configure the volume:
-   - **Mount Path**: `/data`
-   - **Name**: `po-data` (or any name you prefer)
-6. Click **"Add"**
+### Step 1: Add Volume in Railway
 
-### 2. Redeploy Your App
+1. **Go to Railway Dashboard**: https://railway.app/dashboard
+2. **Select your project**: PO-Request-app
+3. **Click on your service** (the deployed app)
+4. **Go to "Settings"** tab (or "Volumes" tab if available)
+5. **Click "+ New Volume"** or **"Add Volume"**
+6. **Configure**:
+   ```
+   Mount Path: /data
+   Name: po-data
+   ```
+7. **Click "Add"** or **"Create"**
 
-After adding the volume, Railway will automatically redeploy your app. The database and uploads will now persist across deployments.
+### Step 2: Verify It's Working
 
-### 3. Verify Persistent Storage
+After Railway redeploys (2-3 minutes):
 
-After redeployment:
-- Check the Railway logs for: `✓ Using persistent data directory: /data`
-- If you see: `⚠ Using local data directory`, the volume isn't mounted correctly
+**Option A: Check Railway Logs**
+- Go to **Deployments** → **View Logs**
+- Look for: `✅ Using persistent data directory: /data`
+- ✅ If you see this → **SUCCESS!** Data will persist
+- ❌ If you see `⚠️ WARNING: PERSISTENT STORAGE NOT CONFIGURED!` → Volume not mounted correctly
 
-## What Gets Saved in the Volume
+**Option B: Check Health Endpoint**
+- Visit: `https://your-app-url/health`
+- Look for: `"persistent_storage": true`
+- ✅ If true → **SUCCESS!**
+- ❌ If false → Volume not configured
 
-With the volume mounted at `/data`, these will persist:
-- ✅ Database (`po_requests.db`) - All jobs, PO requests, users
-- ✅ Invoice uploads (`invoice_uploads/`)
-- ✅ Bulk uploads (`bulk_uploads/`)
+---
 
-## Restoring Your Lost Jobs
+## ✅ What Gets Protected Once Volume is Configured
 
-Unfortunately, the jobs that were deleted cannot be automatically recovered. You will need to:
+With the volume mounted at `/data`:
 
-1. Re-add your jobs through the Office Dashboard → Manage Jobs
-2. Or contact your database administrator if you have backups
+| Data Type | Location | Status |
+|-----------|----------|--------|
+| **Jobs** | Database | ✅ Will persist |
+| **PO Requests** | Database | ✅ Will persist |
+| **Users/Accounts** | Database | ✅ Will persist |
+| **Invoice Files** | `invoice_uploads/` | ✅ Will persist |
+| **Bulk Uploads** | `bulk_uploads/` | ✅ Will persist |
 
-## Alternative: Use PostgreSQL
+**Without the volume:** ❌ ALL of the above gets deleted on EVERY deployment!
 
-For production use, consider using Railway's PostgreSQL database instead of SQLite:
-- More robust for concurrent users
-- Built-in backups
-- Better performance
-- Automatic persistence
+---
 
-Contact your developer to migrate from SQLite to PostgreSQL if needed.
+## 🔍 Troubleshooting
+
+### "I added the volume but data still disappears"
+
+1. **Check mount path is exactly**: `/data` (lowercase, no trailing slash)
+2. **Redeploy** after adding volume: Railway → Service → Settings → Redeploy
+3. **Check logs** for the success message
+
+### "Can I recover my deleted data?"
+
+Unfortunately, no. Once deleted, the data is gone. You need to:
+- Re-enter all jobs through Office Dashboard → Manage Jobs
+- Re-enter any lost PO requests
+- Re-register office accounts
+
+---
+
+## 🎯 Summary
+
+**DO THIS NOW:**
+1. ✅ Add Railway volume with mount path `/data`
+2. ✅ Verify it's working (check logs or /health endpoint)
+3. ✅ Re-enter your jobs and data (one-time)
+4. ✅ From now on, all data persists across deployments
+
+**Without this setup:**
+- ❌ Every code change = data loss
+- ❌ Every deployment = database reset
+- ❌ Jobs, POs, invoices = deleted
+
+**With this setup:**
+- ✅ Code changes preserve data
+- ✅ Deployments keep your database
+- ✅ Jobs, POs, invoices = safe forever
