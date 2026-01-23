@@ -1878,8 +1878,10 @@ def extract_invoice_data(text, po_map):
     else:
         # Fallback patterns
         order_patterns = [
-            r'INVOICE\s*#\s*([A-Z0-9\-]+)',
-            r'Invoice\s*#\s*([A-Z0-9\-]+)',
+            r'INVOICE\s*#[:\s]*([A-Z0-9\-]+)',
+            r'Invoice\s*#[:\s]*([A-Z0-9\-]+)',
+            r'Invoice\s+Number[:\s]*([A-Z0-9\-]+)',
+            r'Order\s*#[:\s]*([A-Z0-9\-]+)',
         ]
 
         for pattern_num, pattern in enumerate(order_patterns, 1):
@@ -1887,7 +1889,8 @@ def extract_invoice_data(text, po_map):
             if match:
                 candidate = match.group(1).strip()
                 # Skip short numbers (likely customer number) and common false positives
-                if candidate.lower() not in ['date', 'time', 'page'] and len(candidate) > 5:
+                # Relaxed minimum length to 4 to catch more invoices (was 5)
+                if candidate.lower() not in ['date', 'time', 'page', 'number'] and len(candidate) >= 4:
                     invoice_number = candidate
                     print(f"  ✅ Found Invoice Number (Pattern {pattern_num}): {invoice_number}")
                     break
@@ -1902,17 +1905,34 @@ def extract_invoice_data(text, po_map):
 
     po_number = None
 
-    # METHOD 1: Look for "PO #" header and extract value
+    # METHOD 1: Look for "PO #" or "PO Number" header and extract value
     print("\n  Method 1: Table column approach")
-    po_header_match = re.search(r'(ORDER\s*#\s*)(PO\s*#)', text, re.IGNORECASE)
+    # Try multiple header patterns
+    header_patterns = [
+        r'(ORDER\s*#\s*)(PO\s*#)',
+        r'(ORDER\s*#\s*)(PO\s+Number)',
+        r'PO\s+Number',
+        r'Purchase\s+Order',
+    ]
+
+    po_header_match = None
+    for header_pattern in header_patterns:
+        po_header_match = re.search(header_pattern, text, re.IGNORECASE)
+        if po_header_match:
+            break
 
     if po_header_match:
-        print(f"    ✓ Found 'PO #' header at position {po_header_match.start(2)}")
-        po_column_start = po_header_match.start(2)
+        print(f"    ✓ Found PO header at position {po_header_match.start()}")
+        # Determine the column start position
+        if po_header_match.lastindex and po_header_match.lastindex >= 2:
+            po_column_start = po_header_match.start(2)
+        else:
+            po_column_start = po_header_match.start()
+
         text_after = text[po_column_start:]
         lines = text_after.split('\n')
 
-        print(f"    Lines after 'PO #':")
+        print(f"    Lines after PO header:")
         for i, line in enumerate(lines[:3]):
             print(f"      Line {i}: {line[:80]}")
 
@@ -1922,9 +1942,9 @@ def extract_invoice_data(text, po_map):
 
             # IMPROVED: Extract ALL sequences that start with digits
             number_patterns = [
-                r'S-(\d{4,})',           # S-4016 format
-                r'\b(\d{4,})[A-Z]+',     # 9717WBPH2B format
-                r'\b(\d{4,})\b'          # Plain 4016 format
+                r'S-?(\d{4,})',           # S-4016 or S4016 format
+                r'\b(\d{4,})[A-Z]+',      # 9717WBPH2B format
+                r'\b(\d{4,})\b'           # Plain 4016 format
             ]
 
             for pattern in number_patterns:
@@ -1950,9 +1970,20 @@ def extract_invoice_data(text, po_map):
     if not po_number:
         print("\n  Method 2: Pattern matching (fallback)")
         po_patterns = [
+            # Handle "PO #: S-XXXX" format
             (r'PO\s*#?\s*[:\s]*S-(\d{4,})', 'PO: S-XXXX'),
+            # Handle "PO #: XXXXABC" format
             (r'PO\s*#?\s*[:\s]*(\d{4,})[A-Z]+', 'PO: XXXXABC'),
+            # Handle "PO #: XXXX" format
             (r'PO\s*#?\s*[:\s]*(\d{4,})', 'PO: XXXX'),
+            # Handle "Purchase Order: XXXX" or "Purchase Order/Job Name: XXXX" format
+            (r'Purchase\s+Order[/\s]*(?:Job\s+Name)?[:\s]*(\d{4,})', 'Purchase Order: XXXX'),
+            # Handle "Order #: SXXXXX" format (extract digits only)
+            (r'Order\s*#?\s*[:\s]*S-?(\d{4,})', 'Order #: SXXXX'),
+            # Handle "Order #: XXXX" format
+            (r'Order\s*#?\s*[:\s]*(\d{4,})', 'Order #: XXXX'),
+            # Handle "PO Number: XXXX [anything]" format (number followed by space and text)
+            (r'PO\s+Number[:\s]*(\d{4,})', 'PO Number: XXXX'),
         ]
 
         for pattern, desc in po_patterns:
