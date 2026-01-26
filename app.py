@@ -1790,49 +1790,67 @@ def extract_invoice_data(text, po_map):
 
     po_number = None
 
-    # METHOD 1: Look for "PO #" header and extract value
+    # METHOD 1: Look for table headers with PO information
     print("\n  Method 1: Table column approach")
-    po_header_match = re.search(r'(ORDER\s*#\s*)(PO\s*#)', text, re.IGNORECASE)
 
-    if po_header_match:
-        print(f"    ✓ Found 'PO #' header at position {po_header_match.start(2)}")
-        po_column_start = po_header_match.start(2)
-        text_after = text[po_column_start:]
-        lines = text_after.split('\n')
+    # Try multiple header patterns
+    header_patterns = [
+        (r'(ORDER\s*#\s*)(PO\s*#)', 'ORDER # / PO #'),
+        (r'(Purchase\s+Order[/\s]*Job\s+Name)', 'Purchase Order/Job Name'),
+        (r'(PO\s*Number)', 'PO Number'),
+    ]
 
-        print(f"    Lines after 'PO #':")
-        for i, line in enumerate(lines[:3]):
-            print(f"      Line {i}: {line[:80]}")
+    for header_pattern, header_desc in header_patterns:
+        if po_number:
+            break
 
-        if len(lines) > 1:
-            values_line = lines[1]
-            print(f"    → Values line: {values_line[:80]}")
+        po_header_match = re.search(header_pattern, text, re.IGNORECASE)
 
-            # IMPROVED: Extract ALL sequences that start with digits
-            number_patterns = [
-                r'S-(\d{4,})',           # S-4016 format
-                r'\b(\d{4,})[A-Z]+',     # 9717WBPH2B format
-                r'\b(\d{4,})\b'          # Plain 4016 format
-            ]
+        if po_header_match:
+            print(f"    ✓ Found '{header_desc}' header at position {po_header_match.start()}")
+            po_column_start = po_header_match.start()
+            text_after = text[po_column_start:]
+            lines = text_after.split('\n')
 
-            for pattern in number_patterns:
-                matches = re.finditer(pattern, values_line)
-                for match in matches:
-                    num_str = match.group(1)
-                    try:
-                        candidate = int(num_str)
-                        print(f"      Testing: {candidate}")
-                        if candidate in po_map:
-                            po_number = candidate
-                            print(f"      ✅ MATCHED! PO {po_number}")
-                            break
-                        else:
-                            print(f"      ⚠ {candidate} not in approved list (may already have invoice)")
-                    except ValueError:
-                        continue
+            print(f"    Lines after header:")
+            for i, line in enumerate(lines[:3]):
+                print(f"      Line {i}: {line[:80]}")
 
+            # Check line 0 (same line) and line 1 (next line) for values
+            lines_to_check = [lines[0]] if lines else []
+            if len(lines) > 1:
+                lines_to_check.append(lines[1])
+
+            for line_idx, values_line in enumerate(lines_to_check):
                 if po_number:
                     break
+                print(f"    → Checking line {line_idx}: {values_line[:80]}")
+
+                # Extract ALL sequences that could be PO numbers
+                number_patterns = [
+                    r'S-(\d{4,})',           # S-4016 format
+                    r'\b(\d{4,})[A-Z]+',     # 9860HERONSGLEN format
+                    r':\s*(\d{4,})\s+[A-Z]', # PO Number: 1012 SOMERVILLE format
+                    r'\b(\d{4,})\b'          # Plain 4016 format
+                ]
+
+                for pattern in number_patterns:
+                    if po_number:
+                        break
+                    matches = re.finditer(pattern, values_line)
+                    for match in matches:
+                        num_str = match.group(1)
+                        try:
+                            candidate = int(num_str)
+                            print(f"      Testing: {candidate}")
+                            if candidate in po_map:
+                                po_number = candidate
+                                print(f"      ✅ MATCHED! PO {po_number}")
+                                break
+                            else:
+                                print(f"      ⚠ {candidate} not in approved list (may already have invoice)")
+                        except ValueError:
+                            continue
 
     # METHOD 2: Pattern matching (fallback)
     if not po_number:
@@ -1841,6 +1859,12 @@ def extract_invoice_data(text, po_map):
             (r'PO\s*#?\s*[:\s]*S-(\d{4,})', 'PO: S-XXXX'),
             (r'PO\s*#?\s*[:\s]*(\d{4,})[A-Z]+', 'PO: XXXXABC'),
             (r'PO\s*#?\s*[:\s]*(\d{4,})', 'PO: XXXX'),
+            # Home Depot format: "Purchase Order/Job Name" with "9860HERONSGLEN"
+            (r'Purchase\s+Order[/\s]+Job\s+Name.*?(\d{4,})[A-Z]+', 'Purchase Order/Job Name: XXXXJOBNAME'),
+            # Shine On format: "PO Number: 1012 SOMERVILLE" (number followed by space then text)
+            (r'PO\s*Number[:\s]+(\d{4,})\s+[A-Z]', 'PO Number: XXXX JOBNAME'),
+            # Generic: any 4+ digit number followed by job name text (letters)
+            (r'\b(\d{4,})[A-Z]{3,}', 'XXXXJOBNAME pattern'),
         ]
 
         for pattern, desc in po_patterns:
