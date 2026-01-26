@@ -1796,21 +1796,27 @@ def extract_invoice_data(text, po_map):
         invoice_number = match.group(1).strip()
         print(f"  ✅ Found Invoice Number (CUSTOMER/INVOICE format): {invoice_number}")
     else:
-        # Fallback patterns
+        # Fallback patterns - handle various invoice/order number formats
         order_patterns = [
-            r'INVOICE\s*#\s*([A-Z0-9\-]+)',
-            r'Invoice\s*#\s*([A-Z0-9\-]+)',
+            (r'INVOICE\s*#\s*:?\s*([A-Z0-9\-]+)', 'Invoice #:'),  # Home Depot: "Invoice #: 6051349"
+            (r'Invoice\s*#\s*:?\s*([A-Z0-9\-]+)', 'Invoice #'),
+            (r'Order\s*#\s*:?\s*([A-Z0-9\-]+)', 'Order #'),       # Shine On: "Order # S45922"
+            (r'Order\s*Num\s*:?\s*([A-Z0-9\-]+)', 'Order Num'),   # Shine On table: "Order Num 45922"
+            (r'ORDER\s*NUMBER\s*:?\s*([A-Z0-9\-]+)', 'ORDER NUMBER'),
         ]
 
-        for pattern_num, pattern in enumerate(order_patterns, 1):
+        for pattern, desc in order_patterns:
+            print(f"  Trying pattern: {desc}")
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 candidate = match.group(1).strip()
                 # Skip short numbers (likely customer number) and common false positives
-                if candidate.lower() not in ['date', 'time', 'page'] and len(candidate) > 5:
+                if candidate.lower() not in ['date', 'time', 'page'] and len(candidate) >= 5:
                     invoice_number = candidate
-                    print(f"  ✅ Found Invoice Number (Pattern {pattern_num}): {invoice_number}")
+                    print(f"  ✅ Found Invoice Number ({desc}): {invoice_number}")
                     break
+                else:
+                    print(f"    Skipped '{candidate}' (too short or false positive)")
 
     if not invoice_number:
         print("  ❌ No invoice number found")
