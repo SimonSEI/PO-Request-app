@@ -11,6 +11,7 @@ from email.mime.multipart import MIMEMultipart
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'irrigation-po-system-secret-key-2024')
+APP_VERSION = "1.1.0"  # Added persistent storage support
 # Multi-session support
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=24)
@@ -42,11 +43,20 @@ def before_request():
     session.permanent = True
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-app.config['UPLOAD_FOLDER'] = os.path.join(BASE_DIR, 'invoice_uploads')
-app.config['BULK_UPLOAD_FOLDER'] = os.path.join(BASE_DIR, 'bulk_uploads')
+
+# Use persistent data directory from environment variable (for Railway volumes)
+# This prevents data loss on app updates/redeployments
+DATA_DIR = os.environ.get('DATA_DIR', BASE_DIR)
+print(f"✓ Using data directory: {DATA_DIR}")
+
+app.config['UPLOAD_FOLDER'] = os.path.join(DATA_DIR, 'invoice_uploads')
+app.config['BULK_UPLOAD_FOLDER'] = os.path.join(DATA_DIR, 'bulk_uploads')
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB for bulk uploads
 
 try:
+    if not os.path.exists(DATA_DIR):
+        os.makedirs(DATA_DIR, mode=0o755)
+        print(f"✓ Created data directory: {DATA_DIR}")
     if not os.path.exists(app.config['UPLOAD_FOLDER']):
         os.makedirs(app.config['UPLOAD_FOLDER'], mode=0o755)
         print(f"✓ Created folder: {app.config['UPLOAD_FOLDER']}")
@@ -56,7 +66,9 @@ try:
 except Exception as e:
     print(f"✗ ERROR with folder: {e}")
 
-DB_PATH = os.path.join(BASE_DIR, 'po_requests.db')
+# Database path - use persistent data directory to prevent data loss
+DB_PATH = os.path.join(DATA_DIR, 'po_requests.db')
+print(f"✓ Database path: {DB_PATH}")
 
 # Check if PDF libraries are available
 try:
@@ -67,6 +79,33 @@ try:
 except ImportError:
     PDF_SUPPORT = False
     print("⚠ PDF processing not available - install with: pip3 install --user PyPDF2 pdfplumber")
+
+# Check if OCR libraries are available (for scanned PDFs)
+try:
+    import pytesseract
+    from pdf2image import convert_from_path
+    from PIL import Image
+    OCR_SUPPORT = True
+    print("✓ OCR libraries available (can process scanned PDFs)")
+except ImportError:
+    OCR_SUPPORT = False
+    print("⚠ OCR not available - scanned PDFs won't be processed")
+
+def extract_text_with_ocr(pdf_path, page_num):
+    """Extract text from a scanned PDF page using OCR"""
+    if not OCR_SUPPORT:
+        return ''
+    try:
+        # Convert specific page to image (page_num is 1-indexed)
+        images = convert_from_path(pdf_path, first_page=page_num, last_page=page_num, dpi=300)
+        if images:
+            # Use Tesseract to extract text
+            text = pytesseract.image_to_string(images[0])
+            print(f"  📷 OCR extracted {len(text)} chars from page {page_num}")
+            return text
+    except Exception as e:
+        print(f"  ⚠ OCR failed for page {page_num}: {e}")
+    return ''
 
 # Telegram Configuration
 TELEGRAM_ENABLED = True
@@ -1551,6 +1590,11 @@ def process_bulk_pdf(pdf_path, timestamp):
                 print(f"📄 PAGE {page_num}")
                 print(f"{'='*60}")
 
+                # If no text extracted, try OCR (for scanned PDFs)
+                if not text.strip() and OCR_SUPPORT:
+                    print(f"  📷 No embedded text, trying OCR...")
+                    text = extract_text_with_ocr(pdf_path, page_num)
+
                 # Extract invoice data from this page
                 invoice_data = extract_invoice_data(text, po_map)
 
@@ -1778,49 +1822,67 @@ def extract_invoice_data(text, po_map):
 
     po_number = None
 
-    # METHOD 1: Look for "PO #" header and extract value
+    # METHOD 1: Look for table headers with PO information
     print("\n  Method 1: Table column approach")
-    po_header_match = re.search(r'(ORDER\s*#\s*)(PO\s*#)', text, re.IGNORECASE)
 
-    if po_header_match:
-        print(f"    ✓ Found 'PO #' header at position {po_header_match.start(2)}")
-        po_column_start = po_header_match.start(2)
-        text_after = text[po_column_start:]
-        lines = text_after.split('\n')
+    # Try multiple header patterns
+    header_patterns = [
+        (r'(ORDER\s*#\s*)(PO\s*#)', 'ORDER # / PO #'),
+        (r'(Purchase\s+Order[/\s]*Job\s+Name)', 'Purchase Order/Job Name'),
+        (r'(PO\s*Number)', 'PO Number'),
+    ]
 
-        print(f"    Lines after 'PO #':")
-        for i, line in enumerate(lines[:3]):
-            print(f"      Line {i}: {line[:80]}")
+    for header_pattern, header_desc in header_patterns:
+        if po_number:
+            break
 
-        if len(lines) > 1:
-            values_line = lines[1]
-            print(f"    → Values line: {values_line[:80]}")
+        po_header_match = re.search(header_pattern, text, re.IGNORECASE)
 
-            # IMPROVED: Extract ALL sequences that start with digits
-            number_patterns = [
-                r'S-(\d{4,})',           # S-4016 format
-                r'\b(\d{4,})[A-Z]+',     # 9717WBPH2B format
-                r'\b(\d{4,})\b'          # Plain 4016 format
-            ]
+        if po_header_match:
+            print(f"    ✓ Found '{header_desc}' header at position {po_header_match.start()}")
+            po_column_start = po_header_match.start()
+            text_after = text[po_column_start:]
+            lines = text_after.split('\n')
 
-            for pattern in number_patterns:
-                matches = re.finditer(pattern, values_line)
-                for match in matches:
-                    num_str = match.group(1)
-                    try:
-                        candidate = int(num_str)
-                        print(f"      Testing: {candidate}")
-                        if candidate in po_map:
-                            po_number = candidate
-                            print(f"      ✅ MATCHED! PO {po_number}")
-                            break
-                        else:
-                            print(f"      ⚠ {candidate} not in approved list (may already have invoice)")
-                    except ValueError:
-                        continue
+            print(f"    Lines after header:")
+            for i, line in enumerate(lines[:3]):
+                print(f"      Line {i}: {line[:80]}")
 
+            # Check line 0 (same line) and line 1 (next line) for values
+            lines_to_check = [lines[0]] if lines else []
+            if len(lines) > 1:
+                lines_to_check.append(lines[1])
+
+            for line_idx, values_line in enumerate(lines_to_check):
                 if po_number:
                     break
+                print(f"    → Checking line {line_idx}: {values_line[:80]}")
+
+                # Extract ALL sequences that could be PO numbers
+                number_patterns = [
+                    r'S-(\d{4,})',           # S-4016 format
+                    r'\b(\d{4,})[A-Z]+',     # 9860HERONSGLEN format
+                    r':\s*(\d{4,})\s+[A-Z]', # PO Number: 1012 SOMERVILLE format
+                    r'\b(\d{4,})\b'          # Plain 4016 format
+                ]
+
+                for pattern in number_patterns:
+                    if po_number:
+                        break
+                    matches = re.finditer(pattern, values_line)
+                    for match in matches:
+                        num_str = match.group(1)
+                        try:
+                            candidate = int(num_str)
+                            print(f"      Testing: {candidate}")
+                            if candidate in po_map:
+                                po_number = candidate
+                                print(f"      ✅ MATCHED! PO {po_number}")
+                                break
+                            else:
+                                print(f"      ⚠ {candidate} not in approved list (may already have invoice)")
+                        except ValueError:
+                            continue
 
     # METHOD 2: Pattern matching (fallback)
     if not po_number:
@@ -1829,6 +1891,12 @@ def extract_invoice_data(text, po_map):
             (r'PO\s*#?\s*[:\s]*S-(\d{4,})', 'PO: S-XXXX'),
             (r'PO\s*#?\s*[:\s]*(\d{4,})[A-Z]+', 'PO: XXXXABC'),
             (r'PO\s*#?\s*[:\s]*(\d{4,})', 'PO: XXXX'),
+            # Home Depot format: "Purchase Order/Job Name" with "9860HERONSGLEN"
+            (r'Purchase\s+Order[/\s]+Job\s+Name.*?(\d{4,})[A-Z]+', 'Purchase Order/Job Name: XXXXJOBNAME'),
+            # Shine On format: "PO Number: 1012 SOMERVILLE" (number followed by space then text)
+            (r'PO\s*Number[:\s]+(\d{4,})\s+[A-Z]', 'PO Number: XXXX JOBNAME'),
+            # Generic: any 4+ digit number followed by job name text (letters)
+            (r'\b(\d{4,})[A-Z]{3,}', 'XXXXJOBNAME pattern'),
         ]
 
         for pattern, desc in po_patterns:

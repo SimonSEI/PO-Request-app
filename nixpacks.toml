@@ -1,0 +1,5 @@
+# Nixpacks configuration for Railway
+# Installs system dependencies needed for OCR on scanned PDFs
+
+[phases.setup]
+nixPkgs = ["tesseract", "poppler_utils"]
