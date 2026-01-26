@@ -2,4 +2,5 @@
 # Installs system dependencies needed for OCR on scanned PDFs
 
 [phases.setup]
-nixPkgs = ["tesseract", "poppler_utils"]
+nixPkgs = ["tesseract4", "poppler_utils"]
+aptPkgs = ["tesseract-ocr", "tesseract-ocr-eng", "poppler-utils"]
