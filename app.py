@@ -11,6 +11,7 @@ from email.mime.multipart import MIMEMultipart
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'irrigation-po-system-secret-key-2024')
+APP_VERSION = "1.1.0"  # Added persistent storage support
 # Multi-session support
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=24)
