@@ -1788,14 +1788,23 @@ def extract_invoice_data(text, po_map):
     print("\n🔍 STEP 1: Looking for Invoice Number...")
     invoice_number = None
 
-    # Pattern specifically for "CUSTOMER # INVOICE #" format - grabs the SECOND number
-    customer_invoice_pattern = r'CUSTOMER\s*#\s*INVOICE\s*#\s*\d+\s+([A-Z0-9\-]+)'
-    match = re.search(customer_invoice_pattern, text, re.IGNORECASE)
+    # Pattern specifically for "CUSTOMER # INVOICE #" format (SiteOne) - handles table headers
+    # This pattern handles both same-line and multiline formats
+    customer_invoice_patterns = [
+        r'CUSTOMER\s*#\s*INVOICE\s*#[\s\S]*?(\d{5,}[A-Z0-9\-]*)',  # SiteOne table format
+        r'INVOICE\s*#[\s:]*(\d{5,}[A-Z0-9\-]*)',  # Simple Invoice # format
+    ]
 
-    if match:
-        invoice_number = match.group(1).strip()
-        print(f"  ✅ Found Invoice Number (CUSTOMER/INVOICE format): {invoice_number}")
-    else:
+    for pattern in customer_invoice_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            candidate = match.group(1).strip()
+            if len(candidate) >= 5:
+                invoice_number = candidate
+                print(f"  ✅ Found Invoice Number (primary pattern): {invoice_number}")
+                break
+
+    if not invoice_number:
         # Fallback patterns - handle various invoice/order number formats
         order_patterns = [
             # Invoice patterns
@@ -1967,10 +1976,20 @@ def extract_invoice_data(text, po_map):
         for po_id, po_info in po_map.items():
             po_str = str(po_id)
             job_name = po_info.get('job_name', '').upper()
+            job_name_no_spaces = job_name.replace(' ', '').replace('-', '').replace('_', '')
+
+            print(f"    Checking PO {po_id} (job: {job_name})")
 
             # Look for the PO number in the text
             if po_str in text:
-                print(f"    Found PO ID {po_id} in text")
+                print(f"      Found PO ID {po_id} in text")
+
+                # Check for concatenated format like "9860HERONSGLEN"
+                concat_pattern = rf'{po_str}\s*{job_name_no_spaces}'
+                if re.search(concat_pattern, text_upper):
+                    po_number = po_id
+                    print(f"      ✅ MATCHED! PO {po_number} (concatenated format)")
+                    break
 
                 # Verify by checking if job name (or parts of it) also appears
                 job_parts = job_name.replace('-', ' ').replace('_', ' ').split()
@@ -1987,7 +2006,7 @@ def extract_invoice_data(text, po_map):
                     break
                 else:
                     # Even without job name match, check if PO is in context of PO/Order fields
-                    po_context_pattern = rf'(?:PO|Purchase\s*Order|Order)[^0-9]*{po_str}'
+                    po_context_pattern = rf'(?:PO|Purchase\s*Order|Order|Job)[^0-9]*{po_str}'
                     if re.search(po_context_pattern, text, re.IGNORECASE):
                         po_number = po_id
                         print(f"      ✅ MATCHED! PO {po_number} (found in PO context)")
