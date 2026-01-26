@@ -80,6 +80,33 @@ except ImportError:
     PDF_SUPPORT = False
     print("⚠ PDF processing not available - install with: pip3 install --user PyPDF2 pdfplumber")
 
+# Check if OCR libraries are available (for scanned PDFs)
+try:
+    import pytesseract
+    from pdf2image import convert_from_path
+    from PIL import Image
+    OCR_SUPPORT = True
+    print("✓ OCR libraries available (can process scanned PDFs)")
+except ImportError:
+    OCR_SUPPORT = False
+    print("⚠ OCR not available - scanned PDFs won't be processed")
+
+def extract_text_with_ocr(pdf_path, page_num):
+    """Extract text from a scanned PDF page using OCR"""
+    if not OCR_SUPPORT:
+        return ''
+    try:
+        # Convert specific page to image (page_num is 1-indexed)
+        images = convert_from_path(pdf_path, first_page=page_num, last_page=page_num, dpi=300)
+        if images:
+            # Use Tesseract to extract text
+            text = pytesseract.image_to_string(images[0])
+            print(f"  📷 OCR extracted {len(text)} chars from page {page_num}")
+            return text
+    except Exception as e:
+        print(f"  ⚠ OCR failed for page {page_num}: {e}")
+    return ''
+
 # Telegram Configuration
 TELEGRAM_ENABLED = True
 TELEGRAM_BOT_TOKEN = '8311194615:AAFoTZmMtjZMIeIWoY8JPUs6ofC9PCbAzQM'
@@ -1562,6 +1589,11 @@ def process_bulk_pdf(pdf_path, timestamp):
                 print(f"\n{'='*60}")
                 print(f"📄 PAGE {page_num}")
                 print(f"{'='*60}")
+
+                # If no text extracted, try OCR (for scanned PDFs)
+                if not text.strip() and OCR_SUPPORT:
+                    print(f"  📷 No embedded text, trying OCR...")
+                    text = extract_text_with_ocr(pdf_path, page_num)
 
                 # Extract invoice data from this page
                 invoice_data = extract_invoice_data(text, po_map)
