@@ -1798,11 +1798,21 @@ def extract_invoice_data(text, po_map):
     else:
         # Fallback patterns - handle various invoice/order number formats
         order_patterns = [
-            (r'INVOICE\s*#\s*:?\s*([A-Z0-9\-]+)', 'Invoice #:'),  # Home Depot: "Invoice #: 6051349"
-            (r'Invoice\s*#\s*:?\s*([A-Z0-9\-]+)', 'Invoice #'),
-            (r'Order\s*#\s*:?\s*([A-Z0-9\-]+)', 'Order #'),       # Shine On: "Order # S45922"
-            (r'Order\s*Num\s*:?\s*([A-Z0-9\-]+)', 'Order Num'),   # Shine On table: "Order Num 45922"
-            (r'ORDER\s*NUMBER\s*:?\s*([A-Z0-9\-]+)', 'ORDER NUMBER'),
+            # Invoice patterns
+            (r'INVOICE\s*#\s*:?\s*([A-Z0-9\-]+)', 'Invoice #'),
+            (r'INVOICE\s*(?:NO|NUM|NUMBER)\s*:?\s*([A-Z0-9\-]+)', 'Invoice No/Num'),
+            # Order patterns
+            (r'Order\s*#\s*:?\s*([A-Z0-9\-]+)', 'Order #'),
+            (r'Order\s*(?:NO|NUM|NUMBER)\s*:?\s*([A-Z0-9\-]+)', 'Order No/Num'),
+            (r'Sales\s*Order\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Sales Order'),
+            (r'Work\s*Order\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Work Order'),
+            # Reference/Ticket patterns
+            (r'Reference\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Reference #'),
+            (r'Ticket\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Ticket #'),
+            (r'Document\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Document #'),
+            (r'Receipt\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Receipt #'),
+            (r'Confirmation\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Confirmation #'),
+            (r'Transaction\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Transaction #'),
         ]
 
         for pattern, desc in order_patterns:
@@ -1836,6 +1846,14 @@ def extract_invoice_data(text, po_map):
         (r'(ORDER\s*#\s*)(PO\s*#)', 'ORDER # / PO #'),
         (r'(Purchase\s+Order[/\s]*Job\s+Name)', 'Purchase Order/Job Name'),
         (r'(PO\s*Number)', 'PO Number'),
+        (r'(PO\s*#)', 'PO #'),
+        (r'(Customer\s*PO)', 'Customer PO'),
+        (r'(Job\s*#)', 'Job #'),
+        (r'(Job\s*Name)', 'Job Name'),
+        (r'(Job\s*Number)', 'Job Number'),
+        (r'(Work\s*Order)', 'Work Order'),
+        (r'(Project\s*#)', 'Project #'),
+        (r'(Reference)', 'Reference'),
     ]
 
     for header_pattern, header_desc in header_patterns:
@@ -1895,10 +1913,19 @@ def extract_invoice_data(text, po_map):
     if not po_number:
         print("\n  Method 2: Pattern matching (fallback)")
         po_patterns = [
+            # PO # formats
             (r'PO\s*#?\s*[:\s]*S-(\d{4,})', 'PO: S-XXXX', 0),
             (r'PO\s*#?\s*[:\s]*(\d{4,})[A-Za-z]+', 'PO: XXXXABC', 0),
             (r'PO\s*#?\s*[:\s]*(\d{4,})\s+[A-Za-z]', 'PO: XXXX JOBNAME', 0),
             (r'PO\s*#?\s*[:\s]*(\d{4,})', 'PO: XXXX', 0),
+            # Customer PO formats
+            (r'Customer\s*PO\s*#?\s*[:\s]*(\d{4,})', 'Customer PO', 0),
+            # Job # formats
+            (r'Job\s*#\s*[:\s]*(\d{4,})', 'Job #', 0),
+            (r'Job\s*(?:Name|Number)\s*[:\s]*(\d{4,})', 'Job Name/Number', 0),
+            # Project/Work Order formats
+            (r'Project\s*#?\s*[:\s]*(\d{4,})', 'Project #', 0),
+            (r'Work\s*Order\s*#?\s*[:\s]*(\d{4,})', 'Work Order', 0),
             # Home Depot format: "Purchase Order/Job Name" with "9860HERONSGLEN" (handles newlines)
             (r'Purchase\s+Order[/\s]+Job\s+Name[\s\S]*?(\d{4,})[A-Za-z]+', 'Purchase Order/Job Name: XXXXJOBNAME', 0),
             # Shine On format: "PO Number: 1012 SOMERVILLE" (number followed by space then text)
