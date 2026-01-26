@@ -1800,19 +1800,20 @@ def extract_invoice_data(text, po_map):
         order_patterns = [
             # Invoice patterns
             (r'INVOICE\s*#\s*:?\s*([A-Z0-9\-]+)', 'Invoice #'),
-            (r'INVOICE\s*(?:NO|NUM|NUMBER)\s*:?\s*([A-Z0-9\-]+)', 'Invoice No/Num'),
+            (r'INVOICE\s*(?:NO|NUM|NUMBER)\s*[:\s]*([A-Z0-9\-]+)', 'Invoice No/Num'),
+            (r'Invoice\s+No\s*[:\s]*([A-Z0-9\-]+)', 'Invoice No'),  # Davis: "Invoice No: FM10979-3"
             # Order patterns
             (r'Order\s*#\s*:?\s*([A-Z0-9\-]+)', 'Order #'),
             (r'Order\s*(?:NO|NUM|NUMBER)\s*:?\s*([A-Z0-9\-]+)', 'Order No/Num'),
             (r'Sales\s*Order\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Sales Order'),
             (r'Work\s*Order\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Work Order'),
-            # Reference/Ticket patterns
+            # Reference/Ticket/Transaction patterns
             (r'Reference\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Reference #'),
             (r'Ticket\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Ticket #'),
             (r'Document\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Document #'),
             (r'Receipt\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Receipt #'),
             (r'Confirmation\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Confirmation #'),
-            (r'Transaction\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Transaction #'),
+            (r'Transaction\s*(?:ID|#)?\s*[:\s]*([A-Z0-9\-]+)', 'Transaction ID'),  # Davis: "Transaction ID: 81429863207"
         ]
 
         for pattern, desc in order_patterns:
