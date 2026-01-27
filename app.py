@@ -9,6 +9,18 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
+# Claude API for intelligent invoice matching
+try:
+    import anthropic
+    ANTHROPIC_AVAILABLE = True
+except ImportError:
+    ANTHROPIC_AVAILABLE = False
+    print("⚠ anthropic package not installed - Claude API matching disabled")
+
+# Claude API configuration
+ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
+USE_CLAUDE_MATCHING = os.environ.get('USE_CLAUDE_MATCHING', 'true').lower() == 'true'
+
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'irrigation-po-system-secret-key-2024')
 APP_VERSION = "1.1.0"  # Added persistent storage support
@@ -553,6 +565,123 @@ def get_active_job_names():
     except Exception as e:
         print(f"Error getting active jobs: {e}")
         return []
+
+
+def match_invoice_with_claude(invoice_text, active_jobs, po_map):
+    """
+    Use Claude API to intelligently match invoice text to a job name and PO number.
+
+    This handles:
+    - Misspellings (e.g., "HERONS GELN" -> "Herons Glen")
+    - OCR errors (e.g., "Her0ns Glen" -> "Herons Glen")
+    - Spacing issues (e.g., "HERONSGLEN" or "HER ONS GLEN")
+    - Abbreviations and variations
+
+    Returns: (po_number, job_name, confidence) or (None, None, 0) if no match
+    """
+    if not ANTHROPIC_AVAILABLE or not ANTHROPIC_API_KEY or not USE_CLAUDE_MATCHING:
+        print("  ⚠ Claude API matching not available (missing API key or package)")
+        return (None, None, 0)
+
+    if not active_jobs or not po_map:
+        return (None, None, 0)
+
+    # Build context about available POs
+    po_info_list = []
+    for po_id, info in po_map.items():
+        po_info_list.append(f"PO #{po_id}: Job '{info.get('job_name', 'Unknown')}'")
+
+    po_context = "\n".join(po_info_list)
+    jobs_list = ", ".join(active_jobs)
+
+    # Limit invoice text to avoid token limits
+    invoice_excerpt = invoice_text[:3000] if len(invoice_text) > 3000 else invoice_text
+
+    prompt = f"""Analyze this invoice text and find which job it belongs to.
+
+ACTIVE JOB NAMES IN SYSTEM:
+{jobs_list}
+
+APPROVED PO NUMBERS WAITING FOR INVOICES:
+{po_context}
+
+INVOICE TEXT:
+{invoice_excerpt}
+
+TASK:
+1. Find any job name from the active jobs list that appears in the invoice (even if misspelled, has OCR errors, spacing issues, or is abbreviated)
+2. Find the PO number associated with that job in the invoice
+3. Match it to one of the approved PO numbers listed above
+
+IMPORTANT:
+- Job names may be misspelled (e.g., "HERONS GELN" instead of "Herons Glen")
+- Job names may have spacing issues (e.g., "HERONSGLEN" or "HER ONS GLEN")
+- Job names may have OCR errors (e.g., "Her0ns G1en" with zeros instead of O's)
+- The PO number is usually a 3-5 digit number near the job name
+- Only match to PO numbers from the approved list above
+
+Respond in EXACTLY this format (nothing else):
+MATCHED: [yes/no]
+JOB_NAME: [the job name from the active list, or "none"]
+PO_NUMBER: [the PO number from approved list, or "none"]
+CONFIDENCE: [high/medium/low]
+REASONING: [brief explanation of how you matched it]"""
+
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=300,
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
+        )
+
+        response_text = message.content[0].text
+        print(f"  🤖 Claude response:\n{response_text}")
+
+        # Parse the response
+        lines = response_text.strip().split('\n')
+        result = {}
+        for line in lines:
+            if ':' in line:
+                key, value = line.split(':', 1)
+                result[key.strip().upper()] = value.strip()
+
+        matched = result.get('MATCHED', 'no').lower() == 'yes'
+        job_name = result.get('JOB_NAME', 'none')
+        po_number_str = result.get('PO_NUMBER', 'none')
+        confidence = result.get('CONFIDENCE', 'low')
+        reasoning = result.get('REASONING', '')
+
+        if not matched or job_name.lower() == 'none' or po_number_str.lower() == 'none':
+            print(f"  ⚠ Claude found no match. Reasoning: {reasoning}")
+            return (None, None, 0)
+
+        # Convert PO number to int and verify it exists
+        try:
+            po_number = int(po_number_str)
+            if po_number not in po_map:
+                print(f"  ⚠ Claude suggested PO {po_number} but it's not in approved list")
+                return (None, None, 0)
+        except ValueError:
+            print(f"  ⚠ Claude returned invalid PO number: {po_number_str}")
+            return (None, None, 0)
+
+        confidence_score = {'high': 0.95, 'medium': 0.80, 'low': 0.60}.get(confidence.lower(), 0.5)
+
+        print(f"  ✅ Claude matched: PO {po_number}, Job '{job_name}', Confidence: {confidence}")
+        print(f"     Reasoning: {reasoning}")
+
+        return (po_number, job_name, confidence_score)
+
+    except anthropic.APIError as e:
+        print(f"  ❌ Claude API error: {e}")
+        return (None, None, 0)
+    except Exception as e:
+        print(f"  ❌ Error calling Claude API: {e}")
+        return (None, None, 0)
 
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -2274,6 +2403,19 @@ def extract_invoice_data(text, po_map):
                             po_number = po_id
                             print(f"      ✅ MATCHED! PO {po_number} (found in text with matching job name)")
                             break
+
+    # METHOD 5: Claude API intelligent matching (most powerful, handles OCR errors and misspellings)
+    if not po_number and po_map and ANTHROPIC_AVAILABLE and ANTHROPIC_API_KEY and USE_CLAUDE_MATCHING:
+        print("\n  Method 5: Claude API intelligent matching")
+        active_jobs = get_active_job_names()
+
+        claude_po, claude_job, confidence = match_invoice_with_claude(text, active_jobs, po_map)
+
+        if claude_po and confidence >= 0.6:
+            po_number = claude_po
+            print(f"    ✅ Claude matched PO {po_number} for job '{claude_job}' (confidence: {confidence:.0%})")
+        elif claude_po:
+            print(f"    ⚠ Claude suggested PO {claude_po} but confidence too low ({confidence:.0%})")
 
     # === STEP 3: Find Total Cost ===
     print(f"\n🔍 STEP 3: Looking for Total Cost...")
