@@ -374,6 +374,187 @@ def format_po_number(po_id, job_name):
 # Make this available to templates
 app.jinja_env.globals.update(format_po_number=format_po_number)
 
+
+def normalize_text_for_matching(text):
+    """
+    Normalize text for fuzzy matching:
+    - Convert to uppercase
+    - Remove extra spaces
+    - Remove common punctuation
+    """
+    if not text:
+        return ""
+    # Convert to uppercase
+    text = text.upper()
+    # Replace multiple spaces with single space
+    text = re.sub(r'\s+', ' ', text)
+    # Remove common punctuation but keep alphanumeric and spaces
+    text = re.sub(r'[^\w\s]', '', text)
+    return text.strip()
+
+
+def fuzzy_match_score(text1, text2):
+    """
+    Calculate a similarity score between two strings.
+    Returns a score from 0 to 1, where 1 is an exact match.
+    Uses character-based matching that tolerates:
+    - Extra/missing spaces
+    - Minor misspellings
+    - Character transpositions
+    """
+    if not text1 or not text2:
+        return 0.0
+
+    # Normalize both texts
+    t1 = normalize_text_for_matching(text1)
+    t2 = normalize_text_for_matching(text2)
+
+    if not t1 or not t2:
+        return 0.0
+
+    # Exact match after normalization
+    if t1 == t2:
+        return 1.0
+
+    # Also try without any spaces (handles "HERONS GLEN" vs "HERONSGLEN")
+    t1_no_space = t1.replace(' ', '')
+    t2_no_space = t2.replace(' ', '')
+
+    if t1_no_space == t2_no_space:
+        return 0.98  # Very high score for space-only differences
+
+    # Calculate Levenshtein-like similarity
+    # Use the longer string as the reference
+    longer = t1_no_space if len(t1_no_space) >= len(t2_no_space) else t2_no_space
+    shorter = t2_no_space if len(t1_no_space) >= len(t2_no_space) else t1_no_space
+
+    if len(longer) == 0:
+        return 0.0
+
+    # Simple edit distance calculation
+    distance = levenshtein_distance(shorter, longer)
+
+    # Convert to similarity score (0 to 1)
+    max_len = len(longer)
+    similarity = 1.0 - (distance / max_len)
+
+    return max(0.0, similarity)
+
+
+def levenshtein_distance(s1, s2):
+    """
+    Calculate the Levenshtein distance between two strings.
+    This is the minimum number of single-character edits needed
+    to transform one string into the other.
+    """
+    if len(s1) < len(s2):
+        return levenshtein_distance(s2, s1)
+
+    if len(s2) == 0:
+        return len(s1)
+
+    previous_row = range(len(s2) + 1)
+
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            # Cost is 0 if characters match, 1 otherwise
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+
+    return previous_row[-1]
+
+
+def find_job_name_in_text(text, job_name, threshold=0.75):
+    """
+    Search for a job name in text using fuzzy matching.
+    Returns (found, position, matched_text, score) tuple.
+
+    Handles:
+    - Misspellings (e.g., "HERONS GELN" for "HERONS GLEN")
+    - Extra spaces (e.g., "HERONS  GLEN" or "HER ONS GLEN")
+    - Missing spaces (e.g., "HERONSGLEN" for "HERONS GLEN")
+    """
+    if not text or not job_name:
+        return (False, -1, None, 0.0)
+
+    text_upper = text.upper()
+    job_upper = job_name.upper().strip()
+    job_no_spaces = job_upper.replace(' ', '').replace('-', '').replace('_', '')
+
+    # First, try exact match (with normalization)
+    job_normalized = normalize_text_for_matching(job_name)
+
+    # Try exact substring match
+    if job_normalized in normalize_text_for_matching(text):
+        pos = text_upper.find(job_upper)
+        if pos == -1:
+            # Try without spaces
+            pos = text_upper.replace(' ', '').find(job_no_spaces)
+        return (True, pos if pos >= 0 else 0, job_normalized, 1.0)
+
+    # Try finding job name without spaces in text without spaces
+    text_no_spaces = text_upper.replace(' ', '')
+    if job_no_spaces in text_no_spaces:
+        # Find approximate position in original text
+        pos = text_no_spaces.find(job_no_spaces)
+        return (True, pos, job_no_spaces, 0.98)
+
+    # Sliding window fuzzy match
+    # Use window sizes based on job name length
+    job_len = len(job_no_spaces)
+    best_score = 0.0
+    best_pos = -1
+    best_match = None
+
+    # Create a version of text without spaces for matching
+    # but keep track of positions
+    words = text_upper.split()
+
+    # Try matching against consecutive word groups
+    for window_size in range(1, min(5, len(words) + 1)):
+        for i in range(len(words) - window_size + 1):
+            window_words = words[i:i + window_size]
+            window_text = ''.join(window_words)  # No spaces for comparison
+
+            # Only consider windows of similar length
+            if abs(len(window_text) - job_len) > max(3, job_len * 0.3):
+                continue
+
+            score = fuzzy_match_score(window_text, job_no_spaces)
+
+            if score > best_score and score >= threshold:
+                best_score = score
+                best_match = ' '.join(window_words)
+                # Find position in original text
+                try:
+                    best_pos = text_upper.find(window_words[0])
+                except:
+                    best_pos = 0
+
+    if best_score >= threshold:
+        return (True, best_pos, best_match, best_score)
+
+    return (False, -1, None, best_score)
+
+
+def get_active_job_names():
+    """Get all active job names from the database"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT job_name FROM jobs WHERE active=1")
+        jobs = [row[0] for row in c.fetchall()]
+        conn.close()
+        return jobs
+    except Exception as e:
+        print(f"Error getting active jobs: {e}")
+        return []
+
+
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     """Office manager self-registration"""
@@ -2011,6 +2192,88 @@ def extract_invoice_data(text, po_map):
                         po_number = po_id
                         print(f"      ✅ MATCHED! PO {po_number} (found in PO context)")
                         break
+
+    # METHOD 4: Fuzzy job name scanning - find job names in text and extract nearby PO numbers
+    if not po_number and po_map:
+        print("\n  Method 4: Fuzzy job name scanning")
+        active_jobs = get_active_job_names()
+        print(f"    Active jobs to search for: {active_jobs}")
+
+        text_upper = text.upper()
+
+        for job_name in active_jobs:
+            if po_number:
+                break
+
+            # Use fuzzy matching to find job name in text
+            found, pos, matched_text, score = find_job_name_in_text(text, job_name, threshold=0.75)
+
+            if found:
+                print(f"    ✓ Found job '{job_name}' in text (matched: '{matched_text}', score: {score:.2f})")
+
+                # Look for numbers near the matched job name
+                # Search in a window around the match position
+                search_start = max(0, pos - 100)
+                search_end = min(len(text), pos + len(job_name) + 100)
+                context = text[search_start:search_end]
+
+                print(f"      Context around match: {context[:150]}...")
+
+                # Find all 3-5 digit numbers in the context
+                number_matches = re.findall(r'\b(\d{3,5})\b', context)
+                print(f"      Numbers found near job name: {number_matches}")
+
+                for num_str in number_matches:
+                    try:
+                        candidate = int(num_str)
+                        # Check if this number is a PO for this job
+                        if candidate in po_map:
+                            po_info = po_map[candidate]
+                            po_job = po_info.get('job_name', '').upper()
+
+                            # Verify the PO's job name matches (using fuzzy matching)
+                            job_match_score = fuzzy_match_score(po_job, job_name)
+
+                            if job_match_score >= 0.75:
+                                po_number = candidate
+                                print(f"      ✅ MATCHED! PO {po_number} (fuzzy job match, score: {job_match_score:.2f})")
+                                break
+                            else:
+                                print(f"      ⚠ PO {candidate} exists but job '{po_job}' doesn't match '{job_name}' (score: {job_match_score:.2f})")
+                        else:
+                            print(f"      ⚠ {candidate} not in approved PO list")
+                    except ValueError:
+                        continue
+
+        # If still no match, try a broader approach: scan entire text for any active job name
+        # and then look for PO numbers anywhere that match POs with that job
+        if not po_number:
+            print("\n    Method 4b: Broader fuzzy scan - checking if any job name appears anywhere")
+            for job_name in active_jobs:
+                if po_number:
+                    break
+
+                found, pos, matched_text, score = find_job_name_in_text(text, job_name, threshold=0.70)
+
+                if found:
+                    print(f"    ✓ Found job '{job_name}' (matched: '{matched_text}', score: {score:.2f})")
+
+                    # Find all POs in po_map that have this job name
+                    matching_pos = []
+                    for po_id, po_info in po_map.items():
+                        po_job = po_info.get('job_name', '')
+                        if fuzzy_match_score(po_job, job_name) >= 0.75:
+                            matching_pos.append(po_id)
+
+                    print(f"      POs with this job: {matching_pos}")
+
+                    # Look for these specific PO numbers in the text
+                    for po_id in matching_pos:
+                        po_str = str(po_id)
+                        if po_str in text:
+                            po_number = po_id
+                            print(f"      ✅ MATCHED! PO {po_number} (found in text with matching job name)")
+                            break
 
     # === STEP 3: Find Total Cost ===
     print(f"\n🔍 STEP 3: Looking for Total Cost...")
