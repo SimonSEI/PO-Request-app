@@ -1788,29 +1788,55 @@ def extract_invoice_data(text, po_map):
     print("\n🔍 STEP 1: Looking for Invoice Number...")
     invoice_number = None
 
-    # Pattern specifically for "CUSTOMER # INVOICE #" format - grabs the SECOND number
-    customer_invoice_pattern = r'CUSTOMER\s*#\s*INVOICE\s*#\s*\d+\s+([A-Z0-9\-]+)'
-    match = re.search(customer_invoice_pattern, text, re.IGNORECASE)
+    # Pattern specifically for "CUSTOMER # INVOICE #" format (SiteOne) - handles table headers
+    # This pattern handles both same-line and multiline formats
+    customer_invoice_patterns = [
+        r'CUSTOMER\s*#\s*INVOICE\s*#[\s\S]*?(\d{5,}[A-Z0-9\-]*)',  # SiteOne table format
+        r'INVOICE\s*#[\s:]*(\d{5,}[A-Z0-9\-]*)',  # Simple Invoice # format
+    ]
 
-    if match:
-        invoice_number = match.group(1).strip()
-        print(f"  ✅ Found Invoice Number (CUSTOMER/INVOICE format): {invoice_number}")
-    else:
-        # Fallback patterns
+    for pattern in customer_invoice_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            candidate = match.group(1).strip()
+            if len(candidate) >= 5:
+                invoice_number = candidate
+                print(f"  ✅ Found Invoice Number (primary pattern): {invoice_number}")
+                break
+
+    if not invoice_number:
+        # Fallback patterns - handle various invoice/order number formats
         order_patterns = [
-            r'INVOICE\s*#\s*([A-Z0-9\-]+)',
-            r'Invoice\s*#\s*([A-Z0-9\-]+)',
+            # Invoice patterns
+            (r'INVOICE\s*#\s*:?\s*([A-Z0-9\-]+)', 'Invoice #'),
+            (r'INVOICE\s*(?:NO|NUM|NUMBER)\s*[:\s]*([A-Z0-9\-]+)', 'Invoice No/Num'),
+            (r'Invoice\s+No\s*[:\s]*([A-Z0-9\-]+)', 'Invoice No'),  # Davis: "Invoice No: FM10979-3"
+            # Order patterns
+            (r'Order\s*#\s*:?\s*([A-Z0-9\-]+)', 'Order #'),
+            (r'Order\s*(?:NO|NUM|NUMBER)\s*:?\s*([A-Z0-9\-]+)', 'Order No/Num'),
+            (r'Sales\s*Order\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Sales Order'),
+            (r'Work\s*Order\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Work Order'),
+            # Reference/Ticket/Transaction patterns
+            (r'Reference\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Reference #'),
+            (r'Ticket\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Ticket #'),
+            (r'Document\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Document #'),
+            (r'Receipt\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Receipt #'),
+            (r'Confirmation\s*#?\s*:?\s*([A-Z0-9\-]+)', 'Confirmation #'),
+            (r'Transaction\s*(?:ID|#)?\s*[:\s]*([A-Z0-9\-]+)', 'Transaction ID'),  # Davis: "Transaction ID: 81429863207"
         ]
 
-        for pattern_num, pattern in enumerate(order_patterns, 1):
+        for pattern, desc in order_patterns:
+            print(f"  Trying pattern: {desc}")
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 candidate = match.group(1).strip()
                 # Skip short numbers (likely customer number) and common false positives
-                if candidate.lower() not in ['date', 'time', 'page'] and len(candidate) > 5:
+                if candidate.lower() not in ['date', 'time', 'page'] and len(candidate) >= 5:
                     invoice_number = candidate
-                    print(f"  ✅ Found Invoice Number (Pattern {pattern_num}): {invoice_number}")
+                    print(f"  ✅ Found Invoice Number ({desc}): {invoice_number}")
                     break
+                else:
+                    print(f"    Skipped '{candidate}' (too short or false positive)")
 
     if not invoice_number:
         print("  ❌ No invoice number found")
@@ -1830,6 +1856,14 @@ def extract_invoice_data(text, po_map):
         (r'(ORDER\s*#\s*)(PO\s*#)', 'ORDER # / PO #'),
         (r'(Purchase\s+Order[/\s]*Job\s+Name)', 'Purchase Order/Job Name'),
         (r'(PO\s*Number)', 'PO Number'),
+        (r'(PO\s*#)', 'PO #'),
+        (r'(Customer\s*PO)', 'Customer PO'),
+        (r'(Job\s*#)', 'Job #'),
+        (r'(Job\s*Name)', 'Job Name'),
+        (r'(Job\s*Number)', 'Job Number'),
+        (r'(Work\s*Order)', 'Work Order'),
+        (r'(Project\s*#)', 'Project #'),
+        (r'(Reference)', 'Reference'),
     ]
 
     for header_pattern, header_desc in header_patterns:
@@ -1861,15 +1895,16 @@ def extract_invoice_data(text, po_map):
                 # Extract ALL sequences that could be PO numbers
                 number_patterns = [
                     r'S-(\d{4,})',           # S-4016 format
-                    r'\b(\d{4,})[A-Z]+',     # 9860HERONSGLEN format
-                    r':\s*(\d{4,})\s+[A-Z]', # PO Number: 1012 SOMERVILLE format
+                    r'\b(\d{4,})[A-Za-z]+',  # 9860HERONSGLEN format (case insensitive)
+                    r':\s*(\d{4,})\s+[A-Za-z]', # PO Number: 1012 SOMERVILLE format
+                    r'\b(\d{4,})\s+[A-Za-z]{3,}', # 1012 SOMERVILLE format (space between)
                     r'\b(\d{4,})\b'          # Plain 4016 format
                 ]
 
                 for pattern in number_patterns:
                     if po_number:
                         break
-                    matches = re.finditer(pattern, values_line)
+                    matches = re.finditer(pattern, values_line, re.IGNORECASE)
                     for match in matches:
                         num_str = match.group(1)
                         try:
@@ -1888,20 +1923,33 @@ def extract_invoice_data(text, po_map):
     if not po_number:
         print("\n  Method 2: Pattern matching (fallback)")
         po_patterns = [
-            (r'PO\s*#?\s*[:\s]*S-(\d{4,})', 'PO: S-XXXX'),
-            (r'PO\s*#?\s*[:\s]*(\d{4,})[A-Z]+', 'PO: XXXXABC'),
-            (r'PO\s*#?\s*[:\s]*(\d{4,})', 'PO: XXXX'),
-            # Home Depot format: "Purchase Order/Job Name" with "9860HERONSGLEN"
-            (r'Purchase\s+Order[/\s]+Job\s+Name.*?(\d{4,})[A-Z]+', 'Purchase Order/Job Name: XXXXJOBNAME'),
+            # PO # formats
+            (r'PO\s*#?\s*[:\s]*S-(\d{4,})', 'PO: S-XXXX', 0),
+            (r'PO\s*#?\s*[:\s]*(\d{4,})[A-Za-z]+', 'PO: XXXXABC', 0),
+            (r'PO\s*#?\s*[:\s]*(\d{4,})\s+[A-Za-z]', 'PO: XXXX JOBNAME', 0),
+            (r'PO\s*#?\s*[:\s]*(\d{4,})', 'PO: XXXX', 0),
+            # Customer PO formats
+            (r'Customer\s*PO\s*#?\s*[:\s]*(\d{4,})', 'Customer PO', 0),
+            # Job # formats
+            (r'Job\s*#\s*[:\s]*(\d{4,})', 'Job #', 0),
+            (r'Job\s*(?:Name|Number)\s*[:\s]*(\d{4,})', 'Job Name/Number', 0),
+            # Project/Work Order formats
+            (r'Project\s*#?\s*[:\s]*(\d{4,})', 'Project #', 0),
+            (r'Work\s*Order\s*#?\s*[:\s]*(\d{4,})', 'Work Order', 0),
+            # Home Depot format: "Purchase Order/Job Name" with "9860HERONSGLEN" (handles newlines)
+            (r'Purchase\s+Order[/\s]+Job\s+Name[\s\S]*?(\d{4,})[A-Za-z]+', 'Purchase Order/Job Name: XXXXJOBNAME', 0),
             # Shine On format: "PO Number: 1012 SOMERVILLE" (number followed by space then text)
-            (r'PO\s*Number[:\s]+(\d{4,})\s+[A-Z]', 'PO Number: XXXX JOBNAME'),
+            (r'PO\s*Number[:\s]+(\d{4,})\s+[A-Za-z]', 'PO Number: XXXX JOBNAME', 0),
+            (r'PO\s*Number[:\s]+(\d{4,})', 'PO Number: XXXX', 0),
             # Generic: any 4+ digit number followed by job name text (letters)
-            (r'\b(\d{4,})[A-Z]{3,}', 'XXXXJOBNAME pattern'),
+            (r'\b(\d{4,})[A-Za-z]{3,}', 'XXXXJOBNAME pattern', 0),
+            # Number with space then job name (like "1012 SOMERVILLE")
+            (r'\b(\d{4,})\s+(?:SOMERVILLE|HERONS?\s*GLEN|SERVICE)', 'XXXX known job name', 0),
         ]
 
-        for pattern, desc in po_patterns:
+        for pattern, desc, flags in po_patterns:
             print(f"    Trying pattern: {desc}")
-            matches = re.finditer(pattern, text, re.IGNORECASE)
+            matches = re.finditer(pattern, text, re.IGNORECASE | flags)
 
             for match in matches:
                 try:
@@ -1919,6 +1967,50 @@ def extract_invoice_data(text, po_map):
 
             if po_number:
                 break
+
+    # METHOD 3: Direct search for known PO IDs from po_map
+    if not po_number and po_map:
+        print("\n  Method 3: Direct search for known PO IDs")
+        text_upper = text.upper()
+
+        for po_id, po_info in po_map.items():
+            po_str = str(po_id)
+            job_name = po_info.get('job_name', '').upper()
+            job_name_no_spaces = job_name.replace(' ', '').replace('-', '').replace('_', '')
+
+            print(f"    Checking PO {po_id} (job: {job_name})")
+
+            # Look for the PO number in the text
+            if po_str in text:
+                print(f"      Found PO ID {po_id} in text")
+
+                # Check for concatenated format like "9860HERONSGLEN"
+                concat_pattern = rf'{po_str}\s*{job_name_no_spaces}'
+                if re.search(concat_pattern, text_upper):
+                    po_number = po_id
+                    print(f"      ✅ MATCHED! PO {po_number} (concatenated format)")
+                    break
+
+                # Verify by checking if job name (or parts of it) also appears
+                job_parts = job_name.replace('-', ' ').replace('_', ' ').split()
+                job_found = False
+                for part in job_parts:
+                    if len(part) >= 3 and part in text_upper:
+                        job_found = True
+                        print(f"      ✓ Job name part '{part}' also found in text")
+                        break
+
+                if job_found:
+                    po_number = po_id
+                    print(f"      ✅ MATCHED! PO {po_number} (verified with job name)")
+                    break
+                else:
+                    # Even without job name match, check if PO is in context of PO/Order fields
+                    po_context_pattern = rf'(?:PO|Purchase\s*Order|Order|Job)[^0-9]*{po_str}'
+                    if re.search(po_context_pattern, text, re.IGNORECASE):
+                        po_number = po_id
+                        print(f"      ✅ MATCHED! PO {po_number} (found in PO context)")
+                        break
 
     # === STEP 3: Find Total Cost ===
     print(f"\n🔍 STEP 3: Looking for Total Cost...")
