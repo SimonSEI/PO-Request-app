@@ -23,7 +23,7 @@ USE_CLAUDE_MATCHING = os.environ.get('USE_CLAUDE_MATCHING', 'true').lower() == '
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'irrigation-po-system-secret-key-2024')
-APP_VERSION = "1.1.0"  # Added persistent storage support
+APP_VERSION = "1.2.0"  # Added API verify endpoint
 # Multi-session support
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=24)
