@@ -9,6 +9,18 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
+# Claude API for intelligent invoice matching
+try:
+    import anthropic
+    ANTHROPIC_AVAILABLE = True
+except ImportError:
+    ANTHROPIC_AVAILABLE = False
+    print("⚠ anthropic package not installed - Claude API matching disabled")
+
+# Claude API configuration
+ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
+USE_CLAUDE_MATCHING = os.environ.get('USE_CLAUDE_MATCHING', 'true').lower() == 'true'
+
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'irrigation-po-system-secret-key-2024')
 APP_VERSION = "1.1.0"  # Added persistent storage support
@@ -283,6 +295,42 @@ def init_db():
                   expires_at TEXT,
                   used INTEGER DEFAULT 0)''')
 
+    # App settings table
+    c.execute('''CREATE TABLE IF NOT EXISTS app_settings
+                 (key TEXT PRIMARY KEY,
+                  value TEXT,
+                  updated_at TEXT)''')
+
+    # Claude API usage log
+    c.execute('''CREATE TABLE IF NOT EXISTS claude_api_log
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  timestamp TEXT,
+                  invoice_text_preview TEXT,
+                  matched_po INTEGER,
+                  matched_job TEXT,
+                  confidence REAL,
+                  input_tokens INTEGER,
+                  output_tokens INTEGER,
+                  cost_estimate REAL,
+                  success INTEGER)''')
+
+    # Add match_method column to po_requests if it doesn't exist
+    try:
+        c.execute("ALTER TABLE po_requests ADD COLUMN match_method TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+    # Default settings
+    default_settings = [
+        ('claude_matching_enabled', 'true', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+    ]
+    for key, value, updated_at in default_settings:
+        try:
+            c.execute("INSERT OR IGNORE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
+                     (key, value, updated_at))
+        except:
+            pass
+
     # Default users (techs only - office users register themselves)
     users = [
         ('tech1', 'tech123', 'technician', None, 'Tech One', datetime.now().strftime('%Y-%m-%d'), None),
@@ -553,6 +601,202 @@ def get_active_job_names():
     except Exception as e:
         print(f"Error getting active jobs: {e}")
         return []
+
+
+def get_setting(key, default=None):
+    """Get an app setting from the database"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT value FROM app_settings WHERE key=?", (key,))
+        row = c.fetchone()
+        conn.close()
+        return row[0] if row else default
+    except Exception as e:
+        print(f"Error getting setting {key}: {e}")
+        return default
+
+
+def set_setting(key, value):
+    """Set an app setting in the database"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""INSERT OR REPLACE INTO app_settings (key, value, updated_at)
+                     VALUES (?, ?, ?)""",
+                 (key, value, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Error setting {key}: {e}")
+        return False
+
+
+def is_claude_matching_enabled():
+    """Check if Claude API matching is enabled"""
+    if not ANTHROPIC_AVAILABLE or not ANTHROPIC_API_KEY:
+        return False
+    setting = get_setting('claude_matching_enabled', 'true')
+    return setting.lower() == 'true'
+
+
+def log_claude_api_usage(invoice_text, matched_po, matched_job, confidence, input_tokens, output_tokens, success):
+    """Log Claude API usage for tracking costs"""
+    try:
+        # Estimate cost (Claude Sonnet pricing: $3/M input, $15/M output)
+        cost_estimate = (input_tokens * 3 / 1_000_000) + (output_tokens * 15 / 1_000_000)
+
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""INSERT INTO claude_api_log
+                     (timestamp, invoice_text_preview, matched_po, matched_job, confidence,
+                      input_tokens, output_tokens, cost_estimate, success)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 (datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                  invoice_text[:200] if invoice_text else '',
+                  matched_po,
+                  matched_job,
+                  confidence,
+                  input_tokens,
+                  output_tokens,
+                  cost_estimate,
+                  1 if success else 0))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error logging Claude API usage: {e}")
+
+
+def match_invoice_with_claude(invoice_text, active_jobs, po_map):
+    """
+    Use Claude API to intelligently match invoice text to a job name and PO number.
+
+    This handles:
+    - Misspellings (e.g., "HERONS GELN" -> "Herons Glen")
+    - OCR errors (e.g., "Her0ns Glen" -> "Herons Glen")
+    - Spacing issues (e.g., "HERONSGLEN" or "HER ONS GLEN")
+    - Abbreviations and variations
+
+    Returns: (po_number, job_name, confidence) or (None, None, 0) if no match
+    """
+    # Check if Claude matching is enabled (checks both env vars and DB setting)
+    if not is_claude_matching_enabled():
+        print("  ⚠ Claude API matching not available or disabled")
+        return (None, None, 0)
+
+    if not active_jobs or not po_map:
+        return (None, None, 0)
+
+    # Build context about available POs
+    po_info_list = []
+    for po_id, info in po_map.items():
+        po_info_list.append(f"PO #{po_id}: Job '{info.get('job_name', 'Unknown')}'")
+
+    po_context = "\n".join(po_info_list)
+    jobs_list = ", ".join(active_jobs)
+
+    # Limit invoice text to avoid token limits
+    invoice_excerpt = invoice_text[:3000] if len(invoice_text) > 3000 else invoice_text
+
+    prompt = f"""Analyze this invoice text and find which job it belongs to.
+
+ACTIVE JOB NAMES IN SYSTEM:
+{jobs_list}
+
+APPROVED PO NUMBERS WAITING FOR INVOICES:
+{po_context}
+
+INVOICE TEXT:
+{invoice_excerpt}
+
+TASK:
+1. Find any job name from the active jobs list that appears in the invoice (even if misspelled, has OCR errors, spacing issues, or is abbreviated)
+2. Find the PO number associated with that job in the invoice
+3. Match it to one of the approved PO numbers listed above
+
+IMPORTANT:
+- Job names may be misspelled (e.g., "HERONS GELN" instead of "Herons Glen")
+- Job names may have spacing issues (e.g., "HERONSGLEN" or "HER ONS GLEN")
+- Job names may have OCR errors (e.g., "Her0ns G1en" with zeros instead of O's)
+- The PO number is usually a 3-5 digit number near the job name
+- Only match to PO numbers from the approved list above
+
+Respond in EXACTLY this format (nothing else):
+MATCHED: [yes/no]
+JOB_NAME: [the job name from the active list, or "none"]
+PO_NUMBER: [the PO number from approved list, or "none"]
+CONFIDENCE: [high/medium/low]
+REASONING: [brief explanation of how you matched it]"""
+
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=300,
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
+        )
+
+        response_text = message.content[0].text
+        print(f"  🤖 Claude response:\n{response_text}")
+
+        # Get token usage for logging
+        input_tokens = message.usage.input_tokens if hasattr(message, 'usage') else 0
+        output_tokens = message.usage.output_tokens if hasattr(message, 'usage') else 0
+
+        # Parse the response
+        lines = response_text.strip().split('\n')
+        result = {}
+        for line in lines:
+            if ':' in line:
+                key, value = line.split(':', 1)
+                result[key.strip().upper()] = value.strip()
+
+        matched = result.get('MATCHED', 'no').lower() == 'yes'
+        job_name = result.get('JOB_NAME', 'none')
+        po_number_str = result.get('PO_NUMBER', 'none')
+        confidence = result.get('CONFIDENCE', 'low')
+        reasoning = result.get('REASONING', '')
+
+        if not matched or job_name.lower() == 'none' or po_number_str.lower() == 'none':
+            print(f"  ⚠ Claude found no match. Reasoning: {reasoning}")
+            # Log unsuccessful attempt
+            log_claude_api_usage(invoice_text, None, None, 0, input_tokens, output_tokens, False)
+            return (None, None, 0)
+
+        # Convert PO number to int and verify it exists
+        try:
+            po_number = int(po_number_str)
+            if po_number not in po_map:
+                print(f"  ⚠ Claude suggested PO {po_number} but it's not in approved list")
+                log_claude_api_usage(invoice_text, po_number, job_name, 0, input_tokens, output_tokens, False)
+                return (None, None, 0)
+        except ValueError:
+            print(f"  ⚠ Claude returned invalid PO number: {po_number_str}")
+            log_claude_api_usage(invoice_text, None, job_name, 0, input_tokens, output_tokens, False)
+            return (None, None, 0)
+
+        confidence_score = {'high': 0.95, 'medium': 0.80, 'low': 0.60}.get(confidence.lower(), 0.5)
+
+        print(f"  ✅ Claude matched: PO {po_number}, Job '{job_name}', Confidence: {confidence}")
+        print(f"     Reasoning: {reasoning}")
+
+        # Log successful match
+        log_claude_api_usage(invoice_text, po_number, job_name, confidence_score, input_tokens, output_tokens, True)
+
+        return (po_number, job_name, confidence_score)
+
+    except anthropic.APIError as e:
+        print(f"  ❌ Claude API error: {e}")
+        log_claude_api_usage(invoice_text, None, None, 0, 0, 0, False)
+        return (None, None, 0)
+    except Exception as e:
+        print(f"  ❌ Error calling Claude API: {e}")
+        log_claude_api_usage(invoice_text, None, None, 0, 0, 0, False)
+        return (None, None, 0)
 
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -1848,11 +2092,13 @@ def process_bulk_pdf(pdf_path, timestamp):
             # Update database
             c.execute("""UPDATE po_requests
                          SET invoice_filename=?, invoice_number=?, invoice_cost=?,
-                             invoice_date=?, invoice_upload_date=?, estimated_cost=?
+                             invoice_date=?, invoice_upload_date=?, estimated_cost=?,
+                             match_method=?
                          WHERE id=?""",
                      (filename, inv_num, invoice_data['cost'], 'N/A',
                       datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                      float(invoice_data['cost']), po_id))
+                      float(invoice_data['cost']),
+                      invoice_data.get('match_method', 'Unknown'), po_id))
 
             results['matched'] += 1
 
@@ -1896,6 +2142,7 @@ def save_invoice_pages(pdf_reader, invoice_data, page_indices, timestamp, cursor
     po_id = invoice_data['po_id']
     invoice_number = invoice_data['invoice_number']
     invoice_cost = invoice_data['cost']
+    match_method = invoice_data.get('match_method', 'Unknown')
 
     # Get job name and estimated cost for display
     cursor.execute("SELECT job_name, estimated_cost FROM po_requests WHERE id=?", (po_id,))
@@ -1916,10 +2163,12 @@ def save_invoice_pages(pdf_reader, invoice_data, page_indices, timestamp, cursor
     # ✅ NEW: Update BOTH invoice fields AND estimated_cost
     cursor.execute("""UPDATE po_requests
                      SET invoice_filename=?, invoice_number=?, invoice_cost=?,
-                         invoice_date=?, invoice_upload_date=?, estimated_cost=?
+                         invoice_date=?, invoice_upload_date=?, estimated_cost=?,
+                         match_method=?
                      WHERE id=?""",
                  (page_filename, invoice_number, invoice_cost, 'N/A',
-                  datetime.now().strftime('%Y-%m-%d %H:%M:%S'), float(invoice_cost), po_id))
+                  datetime.now().strftime('%Y-%m-%d %H:%M:%S'), float(invoice_cost),
+                  match_method, po_id))
 
     # Check if PO NUMBER starts with "S" (not invoice number)
     po_number_formatted = format_po_number(po_id, job_name)
@@ -2028,6 +2277,7 @@ def extract_invoice_data(text, po_map):
     print(f"  Available approved POs (without invoices): {sorted(po_map.keys())}")
 
     po_number = None
+    match_method = None  # Track which method successfully matched
 
     # METHOD 1: Look for table headers with PO information
     print("\n  Method 1: Table column approach")
@@ -2093,6 +2343,7 @@ def extract_invoice_data(text, po_map):
                             print(f"      Testing: {candidate}")
                             if candidate in po_map:
                                 po_number = candidate
+                                match_method = "Table Column"
                                 print(f"      ✅ MATCHED! PO {po_number}")
                                 break
                             else:
@@ -2139,6 +2390,7 @@ def extract_invoice_data(text, po_map):
 
                     if candidate in po_map:
                         po_number = candidate
+                        match_method = "Pattern Match"
                         print(f"      ✅ MATCHED! PO {po_number}")
                         break
                     else:
@@ -2169,6 +2421,7 @@ def extract_invoice_data(text, po_map):
                 concat_pattern = rf'{po_str}\s*{job_name_no_spaces}'
                 if re.search(concat_pattern, text_upper):
                     po_number = po_id
+                    match_method = "Direct Search"
                     print(f"      ✅ MATCHED! PO {po_number} (concatenated format)")
                     break
 
@@ -2183,6 +2436,7 @@ def extract_invoice_data(text, po_map):
 
                 if job_found:
                     po_number = po_id
+                    match_method = "Direct Search"
                     print(f"      ✅ MATCHED! PO {po_number} (verified with job name)")
                     break
                 else:
@@ -2190,6 +2444,7 @@ def extract_invoice_data(text, po_map):
                     po_context_pattern = rf'(?:PO|Purchase\s*Order|Order|Job)[^0-9]*{po_str}'
                     if re.search(po_context_pattern, text, re.IGNORECASE):
                         po_number = po_id
+                        match_method = "Direct Search"
                         print(f"      ✅ MATCHED! PO {po_number} (found in PO context)")
                         break
 
@@ -2236,6 +2491,7 @@ def extract_invoice_data(text, po_map):
 
                             if job_match_score >= 0.75:
                                 po_number = candidate
+                                match_method = "Fuzzy Match"
                                 print(f"      ✅ MATCHED! PO {po_number} (fuzzy job match, score: {job_match_score:.2f})")
                                 break
                             else:
@@ -2272,8 +2528,23 @@ def extract_invoice_data(text, po_map):
                         po_str = str(po_id)
                         if po_str in text:
                             po_number = po_id
+                            match_method = "Fuzzy Match"
                             print(f"      ✅ MATCHED! PO {po_number} (found in text with matching job name)")
                             break
+
+    # METHOD 5: Claude API intelligent matching (most powerful, handles OCR errors and misspellings)
+    if not po_number and po_map and is_claude_matching_enabled():
+        print("\n  Method 5: Claude API intelligent matching")
+        active_jobs = get_active_job_names()
+
+        claude_po, claude_job, confidence = match_invoice_with_claude(text, active_jobs, po_map)
+
+        if claude_po and confidence >= 0.6:
+            po_number = claude_po
+            match_method = "Claude AI"
+            print(f"    ✅ Claude matched PO {po_number} for job '{claude_job}' (confidence: {confidence:.0%})")
+        elif claude_po:
+            print(f"    ⚠ Claude suggested PO {claude_po} but confidence too low ({confidence:.0%})")
 
     # === STEP 3: Find Total Cost ===
     print(f"\n🔍 STEP 3: Looking for Total Cost...")
@@ -2317,13 +2588,15 @@ def extract_invoice_data(text, po_map):
     print(f"   Invoice Number: {invoice_number}")
     print(f"   Matched PO: {po_number}")
     print(f"   Total Cost: ${cost}")
+    print(f"   Match Method: {match_method or 'Unknown'}")
     print(f"{'='*60}\n")
 
     return {
         'po_id': po_number,
         'po_number': po_number,
         'invoice_number': invoice_number,
-        'cost': cost
+        'cost': cost,
+        'match_method': match_method
     }
 
 
@@ -4066,6 +4339,7 @@ function searchInTab(tabId, searchInputId) {
         <h1>🏢 Office Dashboard - {{ username }}</h1>
         <div>
             <a href="{{ url_for('manage_jobs') }}" style="background: #17a2b8; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin-right: 10px; font-size: 14px;">📋 Manage Jobs</a>
+            <a href="{{ url_for('settings_page') }}" style="background: #6c757d; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin-right: 10px; font-size: 14px;">⚙️ Settings</a>
             <a href="{{ url_for('logout') }}" class="logout-btn">Logout</a>
         </div>
     </div>
@@ -6183,6 +6457,314 @@ def debug_pdf_text():
     except Exception as e:
         import traceback
         return f"<h2>Error:</h2><pre>{str(e)}\n\n{traceback.format_exc()}</pre>"
+
+# ============================================================================
+# SETTINGS ROUTES
+# ============================================================================
+
+SETTINGS_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Settings - PO Request System</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+        .header {
+            background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex;
+            justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
+        }
+        h1 { color: #333; font-size: 24px; }
+        h2 { color: #667eea; font-size: 18px; margin-bottom: 15px; }
+        .btn {
+            padding: 10px 20px; border-radius: 5px; text-decoration: none;
+            font-weight: bold; border: none; cursor: pointer; font-size: 14px;
+        }
+        .btn-primary { background: #667eea; color: white; }
+        .btn-secondary { background: #6c757d; color: white; }
+        .btn-success { background: #28a745; color: white; }
+        .btn-danger { background: #dc3545; color: white; }
+        .card {
+            background: white; padding: 20px; border-radius: 10px;
+            margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .setting-row {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 15px 0; border-bottom: 1px solid #eee;
+        }
+        .setting-row:last-child { border-bottom: none; }
+        .setting-info { flex: 1; }
+        .setting-name { font-weight: bold; color: #333; }
+        .setting-desc { color: #666; font-size: 13px; margin-top: 5px; }
+        .toggle-switch {
+            position: relative; width: 60px; height: 30px;
+        }
+        .toggle-switch input { opacity: 0; width: 0; height: 0; }
+        .slider {
+            position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+            background-color: #ccc; transition: .3s; border-radius: 30px;
+        }
+        .slider:before {
+            position: absolute; content: ""; height: 22px; width: 22px; left: 4px; bottom: 4px;
+            background-color: white; transition: .3s; border-radius: 50%;
+        }
+        input:checked + .slider { background-color: #28a745; }
+        input:checked + .slider:before { transform: translateX(30px); }
+        .stats-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px;
+        }
+        .stat-box {
+            background: #f8f9fa; padding: 15px; border-radius: 8px; text-align: center;
+        }
+        .stat-value { font-size: 24px; font-weight: bold; color: #667eea; }
+        .stat-label { color: #666; font-size: 12px; margin-top: 5px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #eee; }
+        th { background: #f8f9fa; font-weight: bold; color: #333; }
+        .success { color: #28a745; }
+        .error { color: #dc3545; }
+        .badge {
+            display: inline-block; padding: 3px 8px; border-radius: 12px;
+            font-size: 11px; font-weight: bold;
+        }
+        .badge-success { background: #d4edda; color: #155724; }
+        .badge-danger { background: #f8d7da; color: #721c24; }
+        .badge-info { background: #cce5ff; color: #004085; }
+        .api-status {
+            display: inline-flex; align-items: center; gap: 8px;
+            padding: 8px 15px; border-radius: 20px; font-weight: bold;
+        }
+        .api-status.available { background: #d4edda; color: #155724; }
+        .api-status.unavailable { background: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>⚙️ Settings</h1>
+        <a href="{{ url_for('office_dashboard') }}" class="btn btn-secondary">← Back to Dashboard</a>
+    </div>
+
+    <div class="card">
+        <h2>🤖 Claude AI Matching</h2>
+
+        <div class="api-status {{ 'available' if api_available else 'unavailable' }}">
+            {% if api_available %}
+                ✅ Claude API Connected
+            {% else %}
+                ❌ Claude API Not Configured
+            {% endif %}
+        </div>
+
+        {% if not api_available %}
+        <p style="margin-top: 15px; color: #666;">
+            To enable Claude AI matching, set the <code>ANTHROPIC_API_KEY</code> environment variable.
+        </p>
+        {% endif %}
+
+        <div class="setting-row">
+            <div class="setting-info">
+                <div class="setting-name">Enable Claude AI Matching</div>
+                <div class="setting-desc">
+                    Use Claude AI as a fallback when other matching methods fail.
+                    Handles misspellings, OCR errors, and spacing issues intelligently.
+                </div>
+            </div>
+            <label class="toggle-switch">
+                <input type="checkbox" id="claudeEnabled" {{ 'checked' if claude_enabled else '' }}
+                       onchange="toggleClaude(this.checked)" {{ 'disabled' if not api_available else '' }}>
+                <span class="slider"></span>
+            </label>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>📊 Claude API Usage Statistics</h2>
+
+        <div class="stats-grid">
+            <div class="stat-box">
+                <div class="stat-value">{{ usage_stats.total_calls }}</div>
+                <div class="stat-label">Total API Calls</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value">{{ usage_stats.successful }}</div>
+                <div class="stat-label">Successful Matches</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value">{{ "%.0f"|format(usage_stats.success_rate) }}%</div>
+                <div class="stat-label">Success Rate</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value">${{ "%.4f"|format(usage_stats.total_cost) }}</div>
+                <div class="stat-label">Estimated Cost</div>
+            </div>
+        </div>
+
+        {% if recent_logs %}
+        <h3 style="margin-top: 20px; margin-bottom: 10px;">Recent API Calls</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Result</th>
+                    <th>PO</th>
+                    <th>Job</th>
+                    <th>Confidence</th>
+                    <th>Cost</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for log in recent_logs %}
+                <tr>
+                    <td>{{ log.timestamp }}</td>
+                    <td>
+                        {% if log.success %}
+                            <span class="badge badge-success">✓ Matched</span>
+                        {% else %}
+                            <span class="badge badge-danger">✗ No Match</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ log.matched_po or '-' }}</td>
+                    <td>{{ log.matched_job or '-' }}</td>
+                    <td>{{ "%.0f"|format(log.confidence * 100) if log.confidence else '-' }}%</td>
+                    <td>${{ "%.4f"|format(log.cost_estimate) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p style="color: #666; margin-top: 15px;">No API calls recorded yet.</p>
+        {% endif %}
+    </div>
+
+    <div class="card">
+        <h2>📈 Invoice Match Methods</h2>
+        <p style="color: #666; margin-bottom: 15px;">
+            Shows which methods have been used to match invoices to POs.
+        </p>
+
+        <div class="stats-grid">
+            {% for method, count in match_method_stats.items() %}
+            <div class="stat-box">
+                <div class="stat-value">{{ count }}</div>
+                <div class="stat-label">{{ method }}</div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <script>
+        function toggleClaude(enabled) {
+            fetch('/settings/toggle_claude', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: enabled })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Visual feedback
+                    const status = document.querySelector('.api-status');
+                    if (status) {
+                        status.innerHTML = enabled ? '✅ Claude AI Enabled' : '⏸️ Claude AI Disabled';
+                    }
+                } else {
+                    alert('Failed to update setting: ' + (data.error || 'Unknown error'));
+                    // Revert checkbox
+                    document.getElementById('claudeEnabled').checked = !enabled;
+                }
+            })
+            .catch(error => {
+                alert('Error: ' + error);
+                document.getElementById('claudeEnabled').checked = !enabled;
+            });
+        }
+    </script>
+</body>
+</html>
+'''
+
+
+@app.route('/settings')
+def settings_page():
+    """Settings page for configuring Claude AI matching and viewing usage stats"""
+    if 'user' not in session or session.get('role') != 'office':
+        flash('Access denied')
+        return redirect(url_for('login'))
+
+    # Check API availability
+    api_available = ANTHROPIC_AVAILABLE and bool(ANTHROPIC_API_KEY)
+    claude_enabled = is_claude_matching_enabled()
+
+    # Get usage statistics
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    # Claude API usage stats
+    c.execute("""SELECT
+                    COUNT(*) as total,
+                    SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successful,
+                    SUM(cost_estimate) as total_cost
+                 FROM claude_api_log""")
+    row = c.fetchone()
+    usage_stats = {
+        'total_calls': row[0] or 0,
+        'successful': row[1] or 0,
+        'total_cost': row[2] or 0,
+        'success_rate': (row[1] / row[0] * 100) if row[0] and row[0] > 0 else 0
+    }
+
+    # Recent API logs
+    c.execute("""SELECT timestamp, matched_po, matched_job, confidence, cost_estimate, success
+                 FROM claude_api_log
+                 ORDER BY timestamp DESC
+                 LIMIT 20""")
+    recent_logs = []
+    for row in c.fetchall():
+        recent_logs.append({
+            'timestamp': row[0],
+            'matched_po': row[1],
+            'matched_job': row[2],
+            'confidence': row[3] or 0,
+            'cost_estimate': row[4] or 0,
+            'success': row[5]
+        })
+
+    # Match method stats
+    c.execute("""SELECT match_method, COUNT(*) as count
+                 FROM po_requests
+                 WHERE match_method IS NOT NULL
+                 GROUP BY match_method
+                 ORDER BY count DESC""")
+    match_method_stats = {}
+    for row in c.fetchall():
+        match_method_stats[row[0] or 'Unknown'] = row[1]
+
+    conn.close()
+
+    return render_template_string(SETTINGS_TEMPLATE,
+                                  api_available=api_available,
+                                  claude_enabled=claude_enabled,
+                                  usage_stats=usage_stats,
+                                  recent_logs=recent_logs,
+                                  match_method_stats=match_method_stats)
+
+
+@app.route('/settings/toggle_claude', methods=['POST'])
+def toggle_claude_setting():
+    """Toggle Claude AI matching on/off"""
+    if 'user' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    try:
+        data = request.get_json()
+        enabled = data.get('enabled', False)
+        set_setting('claude_matching_enabled', 'true' if enabled else 'false')
+        return jsonify({'success': True, 'enabled': enabled})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
 
 # ============================================================================
 # END DEBUG ROUTES
