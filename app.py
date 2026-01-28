@@ -2279,8 +2279,25 @@ def extract_invoice_data(text, po_map):
     po_number = None
     match_method = None  # Track which method successfully matched
 
-    # METHOD 1: Look for table headers with PO information
-    print("\n  Method 1: Table column approach")
+    # PRIMARY METHOD: Claude AI (when enabled) - Most accurate, handles misspellings/OCR errors
+    if po_map and is_claude_matching_enabled():
+        print("\n  🤖 PRIMARY: Claude AI intelligent matching")
+        active_jobs = get_active_job_names()
+
+        claude_po, claude_job, confidence = match_invoice_with_claude(text, active_jobs, po_map)
+
+        if claude_po and confidence >= 0.6:
+            po_number = claude_po
+            match_method = "Claude AI"
+            print(f"    ✅ Claude matched PO {po_number} for job '{claude_job}' (confidence: {confidence:.0%})")
+        elif claude_po:
+            print(f"    ⚠ Claude suggested PO {claude_po} but confidence too low ({confidence:.0%}), trying other methods...")
+        else:
+            print(f"    ⚠ Claude couldn't find a match, trying fallback methods...")
+
+    # FALLBACK METHOD 1: Look for table headers with PO information
+    if not po_number:
+        print("\n  Method 1: Table column approach")
 
     # Try multiple header patterns
     header_patterns = [
@@ -2531,20 +2548,6 @@ def extract_invoice_data(text, po_map):
                             match_method = "Fuzzy Match"
                             print(f"      ✅ MATCHED! PO {po_number} (found in text with matching job name)")
                             break
-
-    # METHOD 5: Claude API intelligent matching (most powerful, handles OCR errors and misspellings)
-    if not po_number and po_map and is_claude_matching_enabled():
-        print("\n  Method 5: Claude API intelligent matching")
-        active_jobs = get_active_job_names()
-
-        claude_po, claude_job, confidence = match_invoice_with_claude(text, active_jobs, po_map)
-
-        if claude_po and confidence >= 0.6:
-            po_number = claude_po
-            match_method = "Claude AI"
-            print(f"    ✅ Claude matched PO {po_number} for job '{claude_job}' (confidence: {confidence:.0%})")
-        elif claude_po:
-            print(f"    ⚠ Claude suggested PO {claude_po} but confidence too low ({confidence:.0%})")
 
     # === STEP 3: Find Total Cost ===
     print(f"\n🔍 STEP 3: Looking for Total Cost...")
