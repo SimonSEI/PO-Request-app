@@ -320,6 +320,12 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # Column already exists
 
+    # Add delivery_notes column to po_requests if it doesn't exist
+    try:
+        c.execute("ALTER TABLE po_requests ADD COLUMN delivery_notes TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     # Default settings
     default_settings = [
         ('claude_matching_enabled', 'true', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
@@ -666,6 +672,104 @@ def log_claude_api_usage(invoice_text, matched_po, matched_job, confidence, inpu
         conn.close()
     except Exception as e:
         print(f"Error logging Claude API usage: {e}")
+
+
+def detect_packing_slip(text):
+    """
+    Detect if a document is a packing slip rather than an invoice.
+    Returns True if the document appears to be a packing slip.
+    """
+    if not text:
+        return False
+    text_upper = text.upper()
+    packing_indicators = [
+        'PACKING SLIP', 'PACKING LIST', 'PACK SLIP', 'PACKSLIP',
+        'SHIPPING SLIP', 'DELIVERY SLIP', 'DELIVERY NOTE',
+        'BILL OF LADING', 'SHIP NOTICE', 'SHIPPING NOTICE',
+        'SHIPMENT NOTICE', 'SHIPMENT CONFIRMATION',
+    ]
+    for indicator in packing_indicators:
+        if indicator in text_upper:
+            return True
+    return False
+
+
+def match_packing_slip_to_po(text, po_map):
+    """
+    Try to match a packing slip to an approved PO.
+    Uses the same PO number and job name detection as invoice matching,
+    but also tries Claude AI for intelligent matching.
+
+    Returns: (po_id, order_number, vendor) or (None, None, None)
+    """
+    if not text or not po_map:
+        return (None, None, None)
+
+    text_upper = text.upper()
+
+    # Try to extract an order/reference number from the packing slip
+    order_number = None
+    order_patterns = [
+        r'Order\s*#\s*:?\s*([A-Z0-9\-]+)',
+        r'Order\s*(?:NO|NUM|NUMBER)\s*:?\s*([A-Z0-9\-]+)',
+        r'Sales\s*Order\s*#?\s*:?\s*([A-Z0-9\-]+)',
+        r'Shipment\s*#?\s*:?\s*([A-Z0-9\-]+)',
+        r'Tracking\s*#?\s*:?\s*([A-Z0-9\-]+)',
+    ]
+    for pattern in order_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            order_number = match.group(1).strip()
+            break
+
+    # Try to extract vendor name (usually near the top of the document)
+    vendor = None
+    lines = text.strip().split('\n')
+    for line in lines[:10]:
+        line_stripped = line.strip()
+        if line_stripped and len(line_stripped) > 3 and not re.match(r'^[\d\s\-/]+$', line_stripped):
+            # Skip common headers
+            if not any(skip in line_stripped.upper() for skip in ['PACKING', 'BILL TO', 'SHIP TO', 'DATE', 'ORDER', 'PAGE']):
+                vendor = line_stripped
+                break
+
+    # Method 1: Look for PO number directly in text
+    po_patterns = [
+        r'PO\s*Number[:\s]+(\d{3,})',
+        r'PO\s*#?\s*[:\s]*(\d{3,})',
+        r'Customer\s*PO\s*#?\s*[:\s]*(\d{3,})',
+        r'Purchase\s*Order[:\s]+(\d{3,})',
+    ]
+    for pattern in po_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            try:
+                candidate = int(match.group(1))
+                if candidate in po_map:
+                    print(f"  Packing slip matched to PO {candidate} via pattern")
+                    return (candidate, order_number, vendor)
+            except ValueError:
+                continue
+
+    # Method 2: Look for job names in the text
+    for po_id, po_info in po_map.items():
+        job_name = po_info.get('job_name', '')
+        if not job_name:
+            continue
+        found, _, _, score = find_job_name_in_text(text, job_name, threshold=0.75)
+        if found:
+            print(f"  Packing slip matched to PO {po_id} via job name '{job_name}' (score: {score:.2f})")
+            return (po_id, order_number, vendor)
+
+    # Method 3: Use Claude AI for matching
+    if is_claude_matching_enabled():
+        active_jobs = get_active_job_names()
+        claude_po, claude_job, confidence = match_invoice_with_claude(text, active_jobs, po_map)
+        if claude_po and confidence >= 0.6:
+            print(f"  Packing slip matched to PO {claude_po} via Claude AI (confidence: {confidence:.0%})")
+            return (claude_po, order_number, vendor)
+
+    return (None, order_number, vendor)
 
 
 def match_invoice_with_claude(invoice_text, active_jobs, po_map):
@@ -1137,6 +1241,7 @@ def office_dashboard():
     inv_cost_idx = columns.get('invoice_cost', 14)
     inv_upload_idx = columns.get('invoice_upload_date', 16)
     approved_by_idx = columns.get('approved_by', 11)
+    delivery_notes_idx = columns.get('delivery_notes', -1)
 
     c.execute("SELECT * FROM po_requests WHERE status='pending' ORDER BY id DESC")
     pending = c.fetchall()
@@ -1187,7 +1292,8 @@ def office_dashboard():
                                 inv_number_idx=inv_number_idx,
                                 inv_cost_idx=inv_cost_idx,
                                 inv_upload_idx=inv_upload_idx,
-                                approved_by_idx=approved_by_idx)
+                                approved_by_idx=approved_by_idx,
+                                delivery_notes_idx=delivery_notes_idx)
 
 @app.route('/activity_log')
 def activity_log():
@@ -2020,6 +2126,66 @@ def process_bulk_pdf(pdf_path, timestamp):
                     print(f"  📷 No embedded text, trying OCR...")
                     text = extract_text_with_ocr(pdf_path, page_num)
 
+                # Check if this is a packing slip BEFORE trying invoice matching
+                if detect_packing_slip(text):
+                    print(f"  📦 PACKING SLIP detected on page {page_num}")
+                    po_id, order_number, vendor = match_packing_slip_to_po(text, po_map)
+
+                    if po_id:
+                        # Save packing slip PDF
+                        slip_filename = f"PO{po_id:04d}_{timestamp}_PACKSLIP_page{page_num}.pdf"
+                        slip_path = os.path.join(app.config['UPLOAD_FOLDER'], slip_filename)
+                        pdf_writer = PyPDF2.PdfWriter()
+                        pdf_writer.add_page(pdf_reader.pages[page_num - 1])
+                        with open(slip_path, 'wb') as f:
+                            pdf_writer.write(f)
+
+                        # Build delivery note
+                        note_parts = [f"Packing slip received {datetime.now().strftime('%Y-%m-%d %H:%M')}"]
+                        if vendor:
+                            note_parts.append(f"Vendor: {vendor}")
+                        if order_number:
+                            note_parts.append(f"Order #: {order_number}")
+                        note_parts.append("Package delivered - awaiting invoice.")
+                        delivery_note = " | ".join(note_parts)
+
+                        # Update PO with delivery note (append if existing notes)
+                        c.execute("SELECT delivery_notes FROM po_requests WHERE id=?", (po_id,))
+                        existing = c.fetchone()
+                        if existing and existing[0]:
+                            delivery_note = existing[0] + "\n" + delivery_note
+                        c.execute("UPDATE po_requests SET delivery_notes=? WHERE id=?",
+                                  (delivery_note, po_id))
+                        conn.commit()
+
+                        po_info = po_map.get(po_id, {})
+                        print(f"  ✅ Packing slip matched to PO {po_id} ({po_info.get('job_name', 'Unknown')})")
+
+                        if 'packing_slips' not in results:
+                            results['packing_slips'] = []
+                        results['packing_slips'].append({
+                            'page': page_num,
+                            'po_number': po_id,
+                            'job_name': po_info.get('job_name', 'Unknown'),
+                            'order_number': order_number,
+                            'vendor': vendor,
+                            'filename': slip_filename
+                        })
+                    else:
+                        print(f"  ⚠ Packing slip detected but could not match to any PO")
+                        unmatched_filename = f"UNMATCHED_PACKSLIP_{timestamp}_page{page_num}.pdf"
+                        unmatched_path = os.path.join(app.config['UPLOAD_FOLDER'], unmatched_filename)
+                        pdf_writer = PyPDF2.PdfWriter()
+                        pdf_writer.add_page(pdf_reader.pages[page_num - 1])
+                        with open(unmatched_path, 'wb') as f:
+                            pdf_writer.write(f)
+                        results['unmatched'].append({
+                            'page': page_num,
+                            'text_preview': f"[PACKING SLIP] {text[:150]}",
+                            'filename': unmatched_filename
+                        })
+                    continue  # Skip regular invoice processing for packing slips
+
                 # Extract invoice data from this page
                 invoice_data = extract_invoice_data(text, po_map)
 
@@ -2122,10 +2288,19 @@ def process_bulk_pdf(pdf_path, timestamp):
 
         # Build result message
         error_count = len(results['errors'])
+        packing_slip_count = len(results.get('packing_slips', []))
+        msg_parts = [f'Processed {results["processed"]} pages.']
+        if results['matched'] > 0:
+            msg_parts.append(f'Matched {results["matched"]} invoice(s).')
+        if packing_slip_count > 0:
+            slip_details = []
+            for slip in results.get('packing_slips', []):
+                slip_details.append(f"PO #{slip['po_number']:04d} ({slip['job_name']})")
+            msg_parts.append(f'Detected {packing_slip_count} packing slip(s) - delivery noted on: {", ".join(slip_details)}.')
         if error_count > 0:
-            results['message'] = f'⚠ Processed {results["processed"]} pages. Matched {results["matched"]} invoices. {error_count} invoice(s) found but NO MATCHING PO!'
-        else:
-            results['message'] = f'✅ Processed {results["processed"]} pages. Successfully matched {results["matched"]} invoices.'
+            msg_parts.append(f'{error_count} invoice(s) found but NO MATCHING PO!')
+        icon = '✅' if error_count == 0 else '⚠'
+        results['message'] = f'{icon} {" ".join(msg_parts)}'
 
     except Exception as e:
         import traceback
@@ -4465,6 +4640,14 @@ function searchInTab(tabId, searchInputId) {
                     <p><strong>Approved:</strong> {{ req[9] }} by {{ req[approved_by_idx] if req|length > approved_by_idx else 'N/A' }}</p>
                     {% if req[10] %}
                         <p><strong>Notes:</strong> {{ req[10] }}</p>
+                    {% endif %}
+                    {% if delivery_notes_idx >= 0 and req|length > delivery_notes_idx and req[delivery_notes_idx] %}
+                        <div style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 10px 15px; margin: 10px 0;">
+                            <strong>📦 Delivery Status:</strong>
+                            {% for note_line in req[delivery_notes_idx].split('\n') %}
+                                <div style="margin-top: 4px;">{{ note_line }}</div>
+                            {% endfor %}
+                        </div>
                     {% endif %}
                     <div class="invoice-upload-section">
                         <h4>📄 Add Invoice Details</h4>
