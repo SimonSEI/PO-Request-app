@@ -6846,6 +6846,62 @@ def verify_api_setup():
 
     return jsonify(results)
 
+@app.route('/api/debug_matching')
+def debug_matching():
+    """Debug endpoint to check matching status and logs"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    # Get all PO requests with their status
+    c.execute("""SELECT id, tech_name, job_name, status, estimated_cost,
+                        invoice_filename, invoice_number, match_method
+                 FROM po_requests ORDER BY id DESC""")
+    pos = []
+    for row in c.fetchall():
+        pos.append({
+            'id': row[0], 'tech': row[1], 'job': row[2], 'status': row[3],
+            'cost': row[4], 'invoice_file': row[5], 'invoice_num': row[6],
+            'match_method': row[7]
+        })
+
+    # Get approved POs without invoices (what bulk upload would see)
+    c.execute("""SELECT id, job_name FROM po_requests
+                 WHERE status='approved'
+                 AND (invoice_filename IS NULL OR invoice_filename = '')""")
+    available_for_matching = [{'id': r[0], 'job': r[1]} for r in c.fetchall()]
+
+    # Get active jobs
+    c.execute("SELECT job_name FROM jobs WHERE active=1")
+    active_jobs = [r[0] for r in c.fetchall()]
+
+    # Get recent Claude API logs
+    c.execute("""SELECT timestamp, invoice_text_preview, matched_po, matched_job,
+                        confidence, cost_estimate, success
+                 FROM claude_api_log ORDER BY timestamp DESC LIMIT 10""")
+    api_logs = []
+    for row in c.fetchall():
+        api_logs.append({
+            'timestamp': row[0], 'text_preview': row[1], 'matched_po': row[2],
+            'matched_job': row[3], 'confidence': row[4], 'cost': row[5],
+            'success': row[6]
+        })
+
+    # Check Claude status
+    claude_status = {
+        'anthropic_available': ANTHROPIC_AVAILABLE,
+        'api_key_set': bool(ANTHROPIC_API_KEY),
+        'matching_enabled': is_claude_matching_enabled()
+    }
+
+    conn.close()
+    return jsonify({
+        'all_pos': pos,
+        'available_for_matching': available_for_matching,
+        'active_jobs': active_jobs,
+        'claude_status': claude_status,
+        'recent_api_logs': api_logs
+    })
+
 # ============================================================================
 # END DEBUG ROUTES
 # ============================================================================
