@@ -6770,6 +6770,83 @@ def toggle_claude_setting():
 
 
 # ============================================================================
+# API VERIFICATION ENDPOINT
+# ============================================================================
+
+@app.route('/api/verify')
+def verify_api_setup():
+    """Public endpoint to verify API and environment configuration.
+    Visit /api/verify to check if everything is set up correctly."""
+    results = {}
+
+    # 1. Check Anthropic package
+    results['anthropic_package_installed'] = ANTHROPIC_AVAILABLE
+
+    # 2. Check API key is set (don't reveal the key)
+    api_key_set = bool(ANTHROPIC_API_KEY)
+    results['anthropic_api_key_set'] = api_key_set
+    if api_key_set:
+        results['anthropic_api_key_preview'] = ANTHROPIC_API_KEY[:7] + '...'
+
+    # 3. Check Claude matching enabled
+    results['claude_matching_enabled'] = is_claude_matching_enabled()
+
+    # 4. Test actual API connectivity
+    results['anthropic_api_connected'] = False
+    if ANTHROPIC_AVAILABLE and api_key_set:
+        try:
+            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            message = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=10,
+                messages=[{"role": "user", "content": "Reply with OK"}]
+            )
+            results['anthropic_api_connected'] = True
+            results['anthropic_api_response'] = message.content[0].text.strip()
+        except Exception as e:
+            results['anthropic_api_error'] = str(e)
+
+    # 5. Check other environment variables
+    results['secret_key_set'] = bool(os.environ.get('SECRET_KEY'))
+    results['data_dir_set'] = bool(os.environ.get('DATA_DIR'))
+    results['website_url'] = os.environ.get('WEBSITE_URL', 'not set')
+    results['telegram_bot_configured'] = bool(os.environ.get('TELEGRAM_BOT_TOKEN'))
+    results['telegram_chat_configured'] = bool(os.environ.get('TELEGRAM_CHAT_ID'))
+
+    # 6. Check database
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM users")
+        user_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM jobs")
+        job_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM po_requests")
+        po_count = c.fetchone()[0]
+        conn.close()
+        results['database_connected'] = True
+        results['database_counts'] = {
+            'users': user_count,
+            'jobs': job_count,
+            'po_requests': po_count
+        }
+    except Exception as e:
+        results['database_connected'] = False
+        results['database_error'] = str(e)
+
+    # Overall status
+    all_good = (
+        results['anthropic_package_installed']
+        and results['anthropic_api_key_set']
+        and results['anthropic_api_connected']
+        and results['database_connected']
+        and results['secret_key_set']
+    )
+    results['overall_status'] = 'ALL SYSTEMS GO' if all_good else 'ISSUES DETECTED'
+
+    return jsonify(results)
+
+# ============================================================================
 # END DEBUG ROUTES
 # ============================================================================
 
