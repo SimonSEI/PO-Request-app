@@ -326,6 +326,12 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # Column already exists
 
+    # Add order_number column to po_requests if it doesn't exist
+    try:
+        c.execute("ALTER TABLE po_requests ADD COLUMN order_number TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     # Default settings
     default_settings = [
         ('claude_matching_enabled', 'true', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
@@ -1242,6 +1248,7 @@ def office_dashboard():
     inv_upload_idx = columns.get('invoice_upload_date', 16)
     approved_by_idx = columns.get('approved_by', 11)
     delivery_notes_idx = columns.get('delivery_notes', -1)
+    order_number_idx = columns.get('order_number', -1)
 
     c.execute("SELECT * FROM po_requests WHERE status='pending' ORDER BY id DESC")
     pending = c.fetchall()
@@ -1293,7 +1300,8 @@ def office_dashboard():
                                 inv_cost_idx=inv_cost_idx,
                                 inv_upload_idx=inv_upload_idx,
                                 approved_by_idx=approved_by_idx,
-                                delivery_notes_idx=delivery_notes_idx)
+                                delivery_notes_idx=delivery_notes_idx,
+                                order_number_idx=order_number_idx)
 
 @app.route('/activity_log')
 def activity_log():
@@ -2154,8 +2162,12 @@ def process_bulk_pdf(pdf_path, timestamp):
                         existing = c.fetchone()
                         if existing and existing[0]:
                             delivery_note = existing[0] + "\n" + delivery_note
-                        c.execute("UPDATE po_requests SET delivery_notes=? WHERE id=?",
-                                  (delivery_note, po_id))
+                        if order_number:
+                            c.execute("UPDATE po_requests SET delivery_notes=?, order_number=? WHERE id=?",
+                                      (delivery_note, order_number, po_id))
+                        else:
+                            c.execute("UPDATE po_requests SET delivery_notes=? WHERE id=?",
+                                      (delivery_note, po_id))
                         conn.commit()
 
                         po_info = po_map.get(po_id, {})
@@ -4644,6 +4656,9 @@ function searchInTab(tabId, searchInputId) {
                     {% if delivery_notes_idx >= 0 and req|length > delivery_notes_idx and req[delivery_notes_idx] %}
                         <div style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 10px 15px; margin: 10px 0;">
                             <strong>📦 Delivery Status:</strong>
+                            {% if order_number_idx >= 0 and req|length > order_number_idx and req[order_number_idx] %}
+                                <div style="margin-top: 4px;"><strong>Order #:</strong> {{ req[order_number_idx] }}</div>
+                            {% endif %}
                             {% for note_line in req[delivery_notes_idx].split('\n') %}
                                 <div style="margin-top: 4px;">{{ note_line }}</div>
                             {% endfor %}
@@ -4683,6 +4698,11 @@ function searchInTab(tabId, searchInputId) {
                 <p><strong>Approved:</strong> {{ req[9] }} by {{ req[approved_by_idx] if req|length > approved_by_idx else 'N/A' }}</p>
                 {% if req[10] %}
                     <p><strong>Notes:</strong> {{ req[10] }}</p>
+                {% endif %}
+                {% if order_number_idx >= 0 and req|length > order_number_idx and req[order_number_idx] %}
+                    <div style="background: #d4edda; border: 1px solid #28a745; border-radius: 8px; padding: 10px 15px; margin: 10px 0;">
+                        <strong>📦 Order #:</strong> {{ req[order_number_idx] }}
+                    </div>
                 {% endif %}
                 <div class="invoice-data">
                     <h4>📄 Invoice Details</h4>
