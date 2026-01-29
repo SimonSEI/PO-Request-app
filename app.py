@@ -709,18 +709,42 @@ def match_packing_slip_to_po(text, po_map):
 
     # Try to extract an order/reference number from the packing slip
     order_number = None
-    order_patterns = [
-        r'Order\s*#\s*:?\s*([A-Z0-9\-]+)',
-        r'Order\s*(?:NO|NUM|NUMBER)\s*:?\s*([A-Z0-9\-]+)',
-        r'Sales\s*Order\s*#?\s*:?\s*([A-Z0-9\-]+)',
-        r'Shipment\s*#?\s*:?\s*([A-Z0-9\-]+)',
-        r'Tracking\s*#?\s*:?\s*([A-Z0-9\-]+)',
+    # False positives to skip when extracting order numbers
+    false_positives = {'DATE', 'TIME', 'PAGE', 'NUM', 'NUMBER', 'QTY', 'TOTAL',
+                       'DESCRIPTION', 'ITEM', 'AMOUNT', 'STATUS', 'TYPE', 'SHIP'}
+
+    # First try: patterns that grab value on same line (e.g. "Order #: S45922")
+    order_patterns_inline = [
+        r'Order\s*#\s*:?\s*([A-Z0-9][A-Z0-9\-]{3,})',
+        r'Order\s*(?:NO|NUM|NUMBER)\s*:?\s*([A-Z0-9][A-Z0-9\-]{3,})',
+        r'Sales\s*Order\s*#?\s*:?\s*([A-Z0-9][A-Z0-9\-]{3,})',
+        r'Shipment\s*#?\s*:?\s*([A-Z0-9][A-Z0-9\-]{3,})',
+        r'Tracking\s*#?\s*:?\s*([A-Z0-9][A-Z0-9\-]{3,})',
     ]
-    for pattern in order_patterns:
+    for pattern in order_patterns_inline:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            order_number = match.group(1).strip()
-            break
+            candidate = match.group(1).strip()
+            if candidate.upper() not in false_positives:
+                order_number = candidate
+                break
+
+    # Second try: table header format where value is on next line
+    # e.g. "Order #     Date\nS45922      01/19/2026"
+    if not order_number:
+        header_match = re.search(r'Order\s*(?:#|Num|Number)', text, re.IGNORECASE)
+        if header_match:
+            # Get the rest of text after the header line
+            after_header = text[header_match.start():]
+            lines_after = after_header.split('\n')
+            if len(lines_after) > 1:
+                next_line = lines_after[1].strip()
+                # Extract first alphanumeric token from next line
+                token_match = re.match(r'([A-Z0-9][A-Z0-9\-]{3,})', next_line, re.IGNORECASE)
+                if token_match:
+                    candidate = token_match.group(1)
+                    if candidate.upper() not in false_positives:
+                        order_number = candidate
 
     # Try to extract vendor name (usually near the top of the document)
     vendor = None
