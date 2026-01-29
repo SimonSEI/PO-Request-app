@@ -711,51 +711,89 @@ def match_packing_slip_to_po(text, po_map):
     order_number = None
     # False positives to skip when extracting order numbers
     false_positives = {'DATE', 'TIME', 'PAGE', 'NUM', 'NUMBER', 'QTY', 'TOTAL',
-                       'DESCRIPTION', 'ITEM', 'AMOUNT', 'STATUS', 'TYPE', 'SHIP'}
+                       'DESCRIPTION', 'ITEM', 'AMOUNT', 'STATUS', 'TYPE', 'SHIP',
+                       'CARRIER', 'ORIGIN', 'FEDEX', 'UPS', 'USPS'}
 
-    # First try: patterns that grab value on same line (e.g. "Order #: S45922")
-    order_patterns_inline = [
-        r'Order\s*#\s*:?\s*([A-Z0-9][A-Z0-9\-]{3,})',
-        r'Order\s*(?:NO|NUM|NUMBER)\s*:?\s*([A-Z0-9][A-Z0-9\-]{3,})',
-        r'Sales\s*Order\s*#?\s*:?\s*([A-Z0-9][A-Z0-9\-]{3,})',
-        r'Shipment\s*#?\s*:?\s*([A-Z0-9][A-Z0-9\-]{3,})',
-        r'Tracking\s*#?\s*:?\s*([A-Z0-9][A-Z0-9\-]{3,})',
+    # Method A: Look for "Order #" header, then find the value on the SAME line
+    # after skipping other header words, OR on the next line
+    order_header = re.search(r'Order\s*(?:#|Num\b|Number)', text, re.IGNORECASE)
+    if order_header:
+        # Get the line containing the header
+        header_pos = order_header.start()
+        line_start = text.rfind('\n', 0, header_pos) + 1
+        line_end = text.find('\n', header_pos)
+        if line_end == -1:
+            line_end = len(text)
+        header_line = text[line_start:line_end]
+
+        # Look for an order-like value on the same line AFTER the header match
+        after_match = text[order_header.end():line_end].strip()
+        # Split by whitespace and find first token that looks like an order number
+        tokens = after_match.split()
+        for token in tokens:
+            cleaned = re.sub(r'[^A-Z0-9\-]', '', token.upper())
+            if cleaned and len(cleaned) >= 4 and cleaned not in false_positives:
+                # Must contain at least one digit to be an order number
+                if re.search(r'\d', cleaned):
+                    order_number = token.strip()
+                    break
+
+        # If not found on same line, check next line
+        if not order_number and line_end < len(text):
+            next_line_end = text.find('\n', line_end + 1)
+            if next_line_end == -1:
+                next_line_end = len(text)
+            next_line = text[line_end + 1:next_line_end].strip()
+            tokens = next_line.split()
+            for token in tokens:
+                cleaned = re.sub(r'[^A-Z0-9\-]', '', token.upper())
+                if cleaned and len(cleaned) >= 4 and cleaned not in false_positives:
+                    if re.search(r'\d', cleaned):
+                        order_number = token.strip()
+                        break
+
+    # Method B: Fallback patterns for other formats
+    if not order_number:
+        fallback_patterns = [
+            r'Sales\s*Order\s*#?\s*:?\s*([A-Z0-9][A-Z0-9\-]{3,})',
+            r'Shipment\s*#?\s*:?\s*([A-Z0-9][A-Z0-9\-]{3,})',
+            r'Tracking\s*#?\s*:?\s*([A-Z0-9][A-Z0-9\-]{3,})',
+        ]
+        for pattern in fallback_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                candidate = match.group(1).strip()
+                if candidate.upper() not in false_positives and re.search(r'\d', candidate):
+                    order_number = candidate
+                    break
+
+    # Try to extract vendor name from the document
+    vendor = None
+    # Look for known vendor identifiers (website, company patterns)
+    vendor_patterns = [
+        r'(?:www\.|http[s]?://)([A-Z0-9\-]+\.[A-Z]{2,})',  # Website URL
+        r'([A-Z][A-Z0-9\-]*(?:\.[A-Z]{2,}))',  # Domain-style name like SHINEON.LIGHTING
+        r'FOR QUOTES/ORDERS:\s*\n?\s*([^\n]+)',  # Contact line
+        r'FOR ACCOUNTING/INVOICES:\s*\n?\s*([^\n]+)',  # Accounting contact
     ]
-    for pattern in order_patterns_inline:
+    for pattern in vendor_patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            candidate = match.group(1).strip()
-            if candidate.upper() not in false_positives:
-                order_number = candidate
-                break
+            vendor = match.group(1).strip()
+            break
 
-    # Second try: table header format where value is on next line
-    # e.g. "Order #     Date\nS45922      01/19/2026"
-    if not order_number:
-        header_match = re.search(r'Order\s*(?:#|Num|Number)', text, re.IGNORECASE)
-        if header_match:
-            # Get the rest of text after the header line
-            after_header = text[header_match.start():]
-            lines_after = after_header.split('\n')
-            if len(lines_after) > 1:
-                next_line = lines_after[1].strip()
-                # Extract first alphanumeric token from next line
-                token_match = re.match(r'([A-Z0-9][A-Z0-9\-]{3,})', next_line, re.IGNORECASE)
-                if token_match:
-                    candidate = token_match.group(1)
-                    if candidate.upper() not in false_positives:
-                        order_number = candidate
-
-    # Try to extract vendor name (usually near the top of the document)
-    vendor = None
-    lines = text.strip().split('\n')
-    for line in lines[:10]:
-        line_stripped = line.strip()
-        if line_stripped and len(line_stripped) > 3 and not re.match(r'^[\d\s\-/]+$', line_stripped):
-            # Skip common headers
-            if not any(skip in line_stripped.upper() for skip in ['PACKING', 'BILL TO', 'SHIP TO', 'DATE', 'ORDER', 'PAGE']):
-                vendor = line_stripped
-                break
+    # Fallback: scan first lines for a company-looking name
+    if not vendor:
+        skip_words = ['PACKING', 'BILL TO', 'SHIP TO', 'DATE', 'ORDER', 'PAGE',
+                       'LAS VEGAS', 'TEXAS', 'FLORIDA', 'NORTHEAST', 'UNITED STATES',
+                       'PHONE', 'FAX', 'FOR QUOTES', 'FOR ACCOUNTING', 'SAME-DAY']
+        lines = text.strip().split('\n')
+        for line in lines[:15]:
+            line_stripped = line.strip()
+            if line_stripped and len(line_stripped) > 3 and not re.match(r'^[\d\s\-/]+$', line_stripped):
+                if not any(skip in line_stripped.upper() for skip in skip_words):
+                    vendor = line_stripped
+                    break
 
     # Method 1: Look for PO number directly in text
     po_patterns = [
