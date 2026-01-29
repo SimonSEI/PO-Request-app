@@ -3633,17 +3633,44 @@ searchInput.addEventListener('input', function(e) {
 
     // Find matching jobs
     const queryLower = query.toLowerCase();
-    const matches = allJobs.filter(job =>
+    const queryWords = queryLower.split(/\s+/).filter(w => w.length > 0);
+
+    // Prefix matches: jobs whose name starts with what the tech typed
+    const prefixMatches = allJobs.filter(job =>
+        job.name.toLowerCase().startsWith(queryLower)
+    );
+
+    // Also collect broader substring matches
+    const substringMatches = allJobs.filter(job =>
         job.name.toLowerCase().includes(queryLower)
     );
 
-    console.log('→ Found matches:', matches.length);
+    // Word-prefix matches: first N words of the job start with the typed words
+    const wordPrefixMatches = allJobs.filter(job => {
+        const jobWords = job.name.toLowerCase().split(/\s+/);
+        if (queryWords.length > jobWords.length) return false;
+        return queryWords.every((qw, i) => jobWords[i].startsWith(qw));
+    });
+
+    // Combine all matches (deduplicated), preferring prefix > word-prefix > substring
+    const seenNames = new Set();
+    const matches = [];
+    [prefixMatches, wordPrefixMatches, substringMatches].forEach(list => {
+        list.forEach(job => {
+            if (!seenNames.has(job.name)) {
+                seenNames.add(job.name);
+                matches.push(job);
+            }
+        });
+    });
+
+    console.log('→ Found matches:', matches.length, '(prefix:', prefixMatches.length, ', word-prefix:', wordPrefixMatches.length, ', substring:', substringMatches.length, ')');
 
     // If no substring matches, try fuzzy matching
     if (matches.length === 0) {
         const fuzzyResults = fuzzyMatchJobs(query, allJobs, 0.5);
         if (fuzzyResults.length > 0) {
-            // High-confidence fuzzy match (>=0.85) with single best result: auto-fill
+            // High-confidence fuzzy match (>=0.85): auto-fill
             if (fuzzyResults[0].score >= 0.85) {
                 const best = fuzzyResults[0].job;
                 console.log('✓ Fuzzy auto-fill (score=' + fuzzyResults[0].score.toFixed(2) + '):', best.name);
@@ -3681,7 +3708,7 @@ searchInput.addEventListener('input', function(e) {
         return;
     }
 
-    // AUTO-FILL: If exact match found, fill it automatically
+    // AUTO-FILL: exact full-name match
     const exactMatch = matches.find(job =>
         job.name.toLowerCase() === queryLower
     );
@@ -3689,7 +3716,7 @@ searchInput.addEventListener('input', function(e) {
     if (exactMatch) {
         console.log('✓ Exact match found - auto-filling:', exactMatch.name);
         this.value = exactMatch.name;
-        this.style.borderColor = '#28a745'; // Green
+        this.style.borderColor = '#28a745';
         validJobSelected = true;
         suggestionsDiv.style.display = 'none';
         if (hintText) {
@@ -3699,10 +3726,27 @@ searchInput.addEventListener('input', function(e) {
         return;
     }
 
+    // AUTO-FILL: if the typed text uniquely matches exactly one job
+    // by prefix or word-prefix, and the tech has typed at least 3 chars,
+    // auto-populate the full job name
+    const uniquePrefixPool = prefixMatches.length > 0 ? prefixMatches : wordPrefixMatches;
+    if (uniquePrefixPool.length === 1 && query.length >= 3) {
+        const best = uniquePrefixPool[0];
+        console.log('✓ Unique prefix match - auto-filling:', best.name);
+        this.value = best.name;
+        this.style.borderColor = '#28a745';
+        validJobSelected = true;
+        suggestionsDiv.style.display = 'none';
+        if (hintText) {
+            hintText.innerHTML = `✓ Auto-filled: ${best.name} (${best.year})`;
+            hintText.style.color = '#28a745';
+        }
+        return;
+    }
+
     // Show matches in dropdown
     let html = '';
     matches.forEach(job => {
-        // Highlight the matching part
         const jobNameLower = job.name.toLowerCase();
         const matchIndex = jobNameLower.indexOf(queryLower);
         let displayName = job.name;
@@ -3724,7 +3768,7 @@ searchInput.addEventListener('input', function(e) {
     this.style.borderColor = '#667eea';
 
     if (hintText) {
-        hintText.innerHTML = `💡 ${matches.length} job${matches.length > 1 ? 's' : ''} match - type full name or click to select`;
+        hintText.innerHTML = `💡 ${matches.length} job${matches.length > 1 ? 's' : ''} match - keep typing or click to select`;
         hintText.style.color = '#667eea';
     }
 });    
