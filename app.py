@@ -359,6 +359,7 @@ def init_db():
             ('Chase Bank', 2024),
             ('Seven Lakes', 2025),
             ('Downtown Plaza', 2025),
+            ('Herons Glen', 2025),
         ]
         for job_name, year in default_jobs:
             c.execute("INSERT INTO jobs (job_name, year, created_date) VALUES (?, ?, ?)",
