@@ -359,6 +359,7 @@ def init_db():
             ('Chase Bank', 2024),
             ('Seven Lakes', 2025),
             ('Downtown Plaza', 2025),
+            ('Herons Glen', 2025),
         ]
         for job_name, year in default_jobs:
             c.execute("INSERT INTO jobs (job_name, year, created_date) VALUES (?, ?, ?)",
@@ -1142,6 +1143,72 @@ def validate_job():
     except Exception as e:
         return jsonify({'valid': False, 'error': str(e)})
 
+
+@app.route('/fuzzy_match_job', methods=['POST'])
+def fuzzy_match_job():
+    """Find the closest matching active job name using fuzzy matching.
+    Used for auto-correcting misspelled job names typed by technicians."""
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    try:
+        data = request.get_json()
+        query = data.get('query', '').strip()
+
+        if not query or len(query) < 2:
+            return jsonify({'success': False, 'matches': []})
+
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT job_name, year FROM jobs WHERE active=1")
+        jobs = c.fetchall()
+        conn.close()
+
+        # First check for exact case-insensitive match
+        for job_name, year in jobs:
+            if job_name.lower() == query.lower():
+                return jsonify({
+                    'success': True,
+                    'exact': True,
+                    'matches': [{'name': job_name, 'year': year, 'score': 1.0}]
+                })
+
+        # Fuzzy match against all active jobs
+        scored_matches = []
+        for job_name, year in jobs:
+            score = fuzzy_match_score(query, job_name)
+            if score >= 0.55:  # Lower threshold to catch more typos
+                scored_matches.append({
+                    'name': job_name,
+                    'year': year,
+                    'score': round(score, 3)
+                })
+
+        # Sort by score descending
+        scored_matches.sort(key=lambda x: x['score'], reverse=True)
+
+        # Also include substring matches that fuzzy might miss
+        query_lower = query.lower()
+        for job_name, year in jobs:
+            if query_lower in job_name.lower() or job_name.lower() in query_lower:
+                already_included = any(m['name'] == job_name for m in scored_matches)
+                if not already_included:
+                    scored_matches.append({
+                        'name': job_name,
+                        'year': year,
+                        'score': 0.6
+                    })
+
+        # Return top 5 matches
+        return jsonify({
+            'success': True,
+            'exact': False,
+            'matches': scored_matches[:5]
+        })
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e), 'matches': []})
+
 @app.route('/')
 def index():
     return redirect(url_for('login'))
@@ -1363,9 +1430,25 @@ def submit_request():
     valid_job = c.fetchone()
 
     if not valid_job:
-        conn.close()
-        flash('❌ ERROR: This job does not exist, is deactivated, or is spelled incorrectly. Please check the job list and try again.')
-        return redirect(url_for('tech_dashboard'))
+        # Try fuzzy matching to auto-correct misspelled job names
+        c.execute("SELECT job_name FROM jobs WHERE active=1")
+        all_active_jobs = [row[0] for row in c.fetchall()]
+        best_match = None
+        best_score = 0.0
+        for active_job in all_active_jobs:
+            score = fuzzy_match_score(job_name, active_job)
+            if score > best_score:
+                best_score = score
+                best_match = active_job
+
+        if best_match and best_score >= 0.70:
+            # Auto-correct to the closest matching job
+            valid_job = (best_match,)
+            flash(f'Auto-corrected job name from "{job_name}" to "{best_match}"')
+        else:
+            conn.close()
+            flash('❌ ERROR: This job does not exist, is deactivated, or is spelled incorrectly. Please check the job list and try again.')
+            return redirect(url_for('tech_dashboard'))
 
     # Use the correct spelling from database
     job_name = valid_job[0]
@@ -3488,7 +3571,7 @@ TECH_DASHBOARD_TEMPLATE = '''
                     <button type="button" id="clear-job" onclick="clearJobName()" style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: #dc3545; color: white; border: none; border-radius: 3px; padding: 5px 10px; cursor: pointer; display: none; font-size: 14px; font-weight: bold;">✕</button>
                 </div>
                 <div id="job_suggestions" style="display: none;"></div>
-                <small id="job_hint" style="color: #666; display: block; margin-top: 5px;">💡 Type to search active jobs - auto-fills as you type</small>
+                <small id="job_hint" style="color: #666; display: block; margin-top: 5px;">💡 Type to search active jobs - auto-corrects misspellings</small>
             </div>
 
             <div class="form-group">
@@ -3575,8 +3658,53 @@ searchInput.addEventListener('input', function(e) {
 
     console.log('→ Found matches:', matches.length);
 
-    // No matches
+    // No substring matches - try fuzzy matching for auto-correction
     if (matches.length === 0) {
+        // Client-side fuzzy matching using Levenshtein distance
+        const fuzzyMatches = allJobs.map(job => {
+            const score = fuzzyMatchScore(query, job.name);
+            return { ...job, score: score };
+        }).filter(job => job.score >= 0.55)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 5);
+
+        if (fuzzyMatches.length > 0) {
+            const bestMatch = fuzzyMatches[0];
+
+            // If very high confidence (>= 0.80), auto-correct immediately
+            if (bestMatch.score >= 0.80) {
+                console.log('🔧 Auto-correcting to:', bestMatch.name, '(score:', bestMatch.score, ')');
+                this.value = bestMatch.name;
+                this.style.borderColor = '#28a745';
+                suggestionsDiv.style.display = 'none';
+                validJobSelected = true;
+                if (hintText) {
+                    hintText.innerHTML = `🔧 Auto-corrected to: ${bestMatch.name} (${bestMatch.year})`;
+                    hintText.style.color = '#28a745';
+                }
+                return;
+            }
+
+            // Otherwise show fuzzy suggestions with "Did you mean?" prompt
+            let html = '<div style="padding: 8px 15px; color: #856404; background: #fff3cd; border-bottom: 1px solid #ffc107; font-size: 13px;">🔧 Did you mean one of these?</div>';
+            fuzzyMatches.forEach(job => {
+                const confidence = Math.round(job.score * 100);
+                html += `<div class="job-suggestion-item" onclick="selectJob('${job.name.replace(/'/g, "\\'")}')">`;
+                html += `${job.name} <span style="color: #999;">(${job.year})</span>`;
+                html += `<span style="float: right; color: #28a745; font-size: 12px;">${confidence}% match</span>`;
+                html += '</div>';
+            });
+            suggestionsDiv.innerHTML = html;
+            suggestionsDiv.style.display = 'block';
+            this.style.borderColor = '#ffc107'; // Yellow for "close match"
+            if (hintText) {
+                hintText.innerHTML = '🔧 No exact match - showing closest matches. Click to select.';
+                hintText.style.color = '#856404';
+            }
+            return;
+        }
+
+        // Truly no matches at all
         suggestionsDiv.innerHTML = '<div class="job-suggestion-item" style="color: #dc3545;">❌ No jobs match "' + query + '"</div>';
         suggestionsDiv.style.display = 'block';
         this.style.borderColor = '#dc3545';
@@ -3687,22 +3815,115 @@ searchInput.addEventListener('input', function(e) {
                 }
             });
 
-            // Handle keyboard navigation (Enter key)
+            // Handle keyboard navigation (Enter key) with fuzzy auto-correct
             searchInput.addEventListener('keydown', function(e) {
                 if (e.key === 'Enter') {
                     const currentValue = this.value.trim();
+                    if (!currentValue) return;
+
                     const exactMatch = allJobs.find(job =>
                         job.name.toLowerCase() === currentValue.toLowerCase()
                     );
 
                     if (exactMatch) {
                         selectJob(exactMatch.name);
-                        e.preventDefault(); // Prevent form submission
+                        e.preventDefault();
+                    } else {
+                        // Try fuzzy auto-correct on Enter
+                        const fuzzyMatches = allJobs.map(job => ({
+                            ...job,
+                            score: fuzzyMatchScore(currentValue, job.name)
+                        })).filter(job => job.score >= 0.70)
+                          .sort((a, b) => b.score - a.score);
+
+                        if (fuzzyMatches.length > 0) {
+                            e.preventDefault();
+                            selectJob(fuzzyMatches[0].name);
+                            if (hintText) {
+                                hintText.innerHTML = `🔧 Auto-corrected to: ${fuzzyMatches[0].name} (${fuzzyMatches[0].year})`;
+                                hintText.style.color = '#28a745';
+                            }
+                        }
+                    }
+                }
+            });
+
+            // Auto-correct on blur (when user clicks away from the field)
+            searchInput.addEventListener('blur', function() {
+                const currentValue = this.value.trim();
+                if (!currentValue) return;
+
+                // Already a valid job? No action needed
+                const exactMatch = allJobs.find(job =>
+                    job.name.toLowerCase() === currentValue.toLowerCase()
+                );
+                if (exactMatch) {
+                    this.value = exactMatch.name;
+                    this.style.borderColor = '#28a745';
+                    validJobSelected = true;
+                    return;
+                }
+
+                // Try fuzzy auto-correct
+                const fuzzyMatches = allJobs.map(job => ({
+                    ...job,
+                    score: fuzzyMatchScore(currentValue, job.name)
+                })).filter(job => job.score >= 0.70)
+                  .sort((a, b) => b.score - a.score);
+
+                if (fuzzyMatches.length > 0) {
+                    const bestMatch = fuzzyMatches[0];
+                    console.log('🔧 Blur auto-correct:', currentValue, '->', bestMatch.name, '(score:', bestMatch.score, ')');
+                    this.value = bestMatch.name;
+                    this.style.borderColor = '#28a745';
+                    validJobSelected = true;
+                    suggestionsDiv.style.display = 'none';
+                    if (hintText) {
+                        hintText.innerHTML = `🔧 Auto-corrected to: ${bestMatch.name} (${bestMatch.year})`;
+                        hintText.style.color = '#28a745';
                     }
                 }
             });
         }
     });
+
+    // ---- Fuzzy matching functions (client-side Levenshtein) ----
+    function levenshteinDistance(s1, s2) {
+        if (s1.length < s2.length) return levenshteinDistance(s2, s1);
+        if (s2.length === 0) return s1.length;
+
+        let previousRow = Array.from({length: s2.length + 1}, (_, i) => i);
+        for (let i = 0; i < s1.length; i++) {
+            let currentRow = [i + 1];
+            for (let j = 0; j < s2.length; j++) {
+                const insertions = previousRow[j + 1] + 1;
+                const deletions = currentRow[j] + 1;
+                const substitutions = previousRow[j] + (s1[i] !== s2[j] ? 1 : 0);
+                currentRow.push(Math.min(insertions, deletions, substitutions));
+            }
+            previousRow = currentRow;
+        }
+        return previousRow[previousRow.length - 1];
+    }
+
+    function fuzzyMatchScore(text1, text2) {
+        if (!text1 || !text2) return 0;
+        const t1 = text1.toUpperCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
+        const t2 = text2.toUpperCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
+        if (!t1 || !t2) return 0;
+        if (t1 === t2) return 1.0;
+
+        const t1NoSpace = t1.replace(/\s/g, '');
+        const t2NoSpace = t2.replace(/\s/g, '');
+        if (t1NoSpace === t2NoSpace) return 0.98;
+
+        const longer = t1NoSpace.length >= t2NoSpace.length ? t1NoSpace : t2NoSpace;
+        const shorter = t1NoSpace.length >= t2NoSpace.length ? t2NoSpace : t1NoSpace;
+        if (longer.length === 0) return 0;
+
+        const distance = levenshteinDistance(shorter, longer);
+        return Math.max(0, 1.0 - (distance / longer.length));
+    }
 
     function selectJob(jobName) {
         const searchInput = document.getElementById('job_search');
@@ -3768,6 +3989,30 @@ searchInput.addEventListener('input', function(e) {
                 );
 
                 if (!exactMatch) {
+                    // Try fuzzy auto-correction before rejecting
+                    const fuzzyMatches = allJobs.map(job => ({
+                        ...job,
+                        score: fuzzyMatchScore(jobName, job.name)
+                    })).filter(job => job.score >= 0.70)
+                      .sort((a, b) => b.score - a.score);
+
+                    if (fuzzyMatches.length > 0) {
+                        // Auto-correct to the best fuzzy match
+                        const bestMatch = fuzzyMatches[0];
+                        console.log('🔧 Form submit: auto-correcting to', bestMatch.name, '(score:', bestMatch.score, ')');
+                        jobInput.value = bestMatch.name;
+                        jobInput.style.borderColor = '#28a745';
+                        validJobSelected = true;
+
+                        const hintText = document.getElementById('job_hint');
+                        if (hintText) {
+                            hintText.innerHTML = `🔧 Auto-corrected to: ${bestMatch.name} (${bestMatch.year})`;
+                            hintText.style.color = '#28a745';
+                        }
+                        // Allow the form to submit with the corrected name
+                        return true;
+                    }
+
                     e.preventDefault();
 
                     // Find similar jobs to suggest
