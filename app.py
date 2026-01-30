@@ -3756,57 +3756,7 @@ searchInput.addEventListener('input', function(e) {
         hintText.innerHTML = `💡 ${matches.length} job${matches.length > 1 ? 's' : ''} match - type full name or click to select`;
         hintText.style.color = '#667eea';
     }
-});    
-
-                // Multiple matches or exact match handling
-                if (matches.length === 1) {
-                    const match = matches[0];
-                    const queryLower = query.toLowerCase();
-                    const matchLower = match.name.toLowerCase();
-                    
-                    // Only auto-fill if it's an EXACT match (not just a partial match)
-                    if (matchLower === queryLower) {
-                        console.log('🎯 Auto-filling exact match:', match.name);
-                        this.value = match.name;
-                        this.style.borderColor = '#28a745'; // Green border
-                        validJobSelected = true;
-                        suggestionsDiv.style.display = 'none';
-                        if (hintText) {
-                            hintText.innerHTML = `✓ Selected: ${match.name} (${match.year})`;
-                            hintText.style.color = '#28a745';
-                        }
-                        return;
-                    }
-                    
-                    // If not exact match, show it in dropdown instead of auto-filling
-                    console.log('Showing single match in dropdown (not exact)');
-                }
-                
-                // Show dropdown for all non-exact matches
-                if (matches.length > 0) {
-                        const before = job.name.substring(0, matchIndex);
-                        const matchText = job.name.substring(matchIndex, matchIndex + query.length);
-                        const after = job.name.substring(matchIndex + query.length);
-                        displayName = before + '<span style="background: #ffeb3b; font-weight: bold;">' + matchText + '</span>' + after;
-                    }
-
-                    html += `<div class="job-suggestion-item" onclick="selectJob('${job.name.replace(/'/g, "\\'")}')">`;
-                    html += `${displayName} <span style="color: #999; font-size: 13px;">(${job.year})</span>`;
-                    html += '</div>';
-                });
-
-                if (matches.length > 10) {
-                    html += '<div style="padding: 8px; text-align: center; color: #999; font-size: 12px;">...and ' + (matches.length - 10) + ' more. Keep typing to narrow down.</div>';
-                }
-
-                suggestionsDiv.innerHTML = html;
-                suggestionsDiv.style.display = 'block';
-
-                if (hintText) {
-                    hintText.innerHTML = `💡 ${matches.length} job${matches.length > 1 ? 's' : ''} match "${query}" - keep typing or click to select`;
-                    hintText.style.color = '#667eea';
-                }
-            });
+});
 
             // Close suggestions when clicking outside
             document.addEventListener('click', function(e) {
