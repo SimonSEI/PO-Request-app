@@ -3834,7 +3834,6 @@ searchInput.addEventListener('input', function(e) {
                     }
                 }
             });
-        }
     });
 
     // ---- Fuzzy matching functions (client-side Levenshtein) ----
