@@ -3489,29 +3489,52 @@ TECH_DASHBOARD_TEMPLATE = '''
             margin-top: 15px; border-left: 4px solid #0066cc;
         }
         .invoice-data h4 { color: #0066cc; margin-bottom: 10px; }
-        #job_suggestions {
+        .job-search-wrapper {
             position: relative;
+        }
+        #job_suggestions {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
             background: white;
             border: 2px solid #667eea;
-            border-radius: 5px;
-            max-height: 300px;
+            border-radius: 0 0 8px 8px;
+            max-height: 250px;
             overflow-y: auto;
-            margin-top: 5px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-top: 2px;
+            box-shadow: 0 6px 12px rgba(0,0,0,0.15);
             z-index: 1000;
         }
         .job-suggestion-item {
-            padding: 15px;
+            padding: 12px 15px;
             border-bottom: 1px solid #eee;
             font-size: 16px;
             cursor: pointer;
-            transition: background 0.2s;
+            transition: background 0.15s;
         }
-        .job-suggestion-item:hover {
-            background: #f0f4ff;
+        .job-suggestion-item:hover,
+        .job-suggestion-item.highlighted {
+            background: #e8edff;
         }
         .job-suggestion-item:last-child {
             border-bottom: none;
+        }
+        .dropdown-toggle-btn {
+            position: absolute;
+            right: 45px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            font-size: 18px;
+            cursor: pointer;
+            color: #667eea;
+            padding: 5px 8px;
+            line-height: 1;
+        }
+        .dropdown-toggle-btn:hover {
+            color: #4a5ed0;
         }
         .error-message {
             background: #f8d7da;
@@ -3566,12 +3589,13 @@ TECH_DASHBOARD_TEMPLATE = '''
             
             <div class="form-group">
                 <label>Job/Project Name <span style="color: red;">*</span></label>
-                <div style="position: relative;">
-                    <input type="text" id="job_search" name="job_name" placeholder="Start typing job name..." autocomplete="off" required style="padding-right: 40px;">
+                <div class="job-search-wrapper">
+                    <input type="text" id="job_search" name="job_name" placeholder="Type or click arrow to browse jobs..." autocomplete="off" required style="padding-right: 80px;">
+                    <button type="button" id="dropdown-toggle" class="dropdown-toggle-btn" title="Show all jobs">&#9660;</button>
                     <button type="button" id="clear-job" onclick="clearJobName()" style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: #dc3545; color: white; border: none; border-radius: 3px; padding: 5px 10px; cursor: pointer; display: none; font-size: 14px; font-weight: bold;">✕</button>
+                    <div id="job_suggestions" style="display: none;"></div>
                 </div>
-                <div id="job_suggestions" style="display: none;"></div>
-                <small id="job_hint" style="color: #666; display: block; margin-top: 5px;">💡 Type to search active jobs - auto-corrects misspellings</small>
+                <small id="job_hint" style="color: #666; display: block; margin-top: 5px;">Type to search or click the arrow to browse all jobs</small>
             </div>
 
             <div class="form-group">
@@ -3597,250 +3621,12 @@ TECH_DASHBOARD_TEMPLATE = '''
     // Global variables
     let allJobs = [];
     let validJobSelected = false;
-
-    window.addEventListener('DOMContentLoaded', function() {
-        console.log('Page loaded, initializing...');
-
-        const searchInput = document.getElementById('job_search');
-        const suggestionsDiv = document.getElementById('job_suggestions');
-        const clearBtn = document.getElementById('clear-job');
-        const hintText = document.getElementById('job_hint');
-
-        // Fetch jobs from server
-        fetch('/get_jobs')
-            .then(response => response.json())
-            .then(data => {
-                console.log('Jobs loaded:', data);
-                if (data.success && data.jobs) {
-                    allJobs = data.jobs;
-                    console.log('✓ Available jobs:', allJobs.length);
-                    if (hintText && allJobs.length > 0) {
-                        hintText.innerHTML = `💡 ${allJobs.length} active jobs available - start typing to search`;
-                    }
-                } else {
-                    console.error('Failed to load jobs:', data);
-                    if (hintText) {
-                        hintText.innerHTML = '⚠️ Could not load jobs - please refresh the page';
-                        hintText.style.color = '#dc3545';
-                    }
-                }
-            })
-            .catch(error => {
-                console.error('Error loading jobs:', error);
-                if (hintText) {
-                    hintText.innerHTML = '⚠️ Error loading jobs - please refresh the page';
-                    hintText.style.color = '#dc3545';
-                }
-            });
-
-        // Show suggestions as user types
-searchInput.addEventListener('input', function(e) {
-    const query = this.value.trim();
-    console.log('→ User typed:', query);
-
-    // Show/hide clear button
-    if (clearBtn) {
-        clearBtn.style.display = query.length > 0 ? 'block' : 'none';
-    }
-
-    // Hide suggestions if empty
-    if (query.length < 1) {
-        suggestionsDiv.style.display = 'none';
-        this.style.borderColor = '#ddd';
-        return;
-    }
-
-    // Find matching jobs
-    const queryLower = query.toLowerCase();
-    const matches = allJobs.filter(job =>
-        job.name.toLowerCase().includes(queryLower)
-    );
-
-    console.log('→ Found matches:', matches.length);
-
-    // No substring matches - try fuzzy matching for auto-correction
-    if (matches.length === 0) {
-        // Client-side fuzzy matching using Levenshtein distance
-        const fuzzyMatches = allJobs.map(job => {
-            const score = fuzzyMatchScore(query, job.name);
-            return { ...job, score: score };
-        }).filter(job => job.score >= 0.55)
-          .sort((a, b) => b.score - a.score)
-          .slice(0, 5);
-
-        if (fuzzyMatches.length > 0) {
-            const bestMatch = fuzzyMatches[0];
-
-            // If very high confidence (>= 0.80), auto-correct immediately
-            if (bestMatch.score >= 0.80) {
-                console.log('🔧 Auto-correcting to:', bestMatch.name, '(score:', bestMatch.score, ')');
-                this.value = bestMatch.name;
-                this.style.borderColor = '#28a745';
-                suggestionsDiv.style.display = 'none';
-                validJobSelected = true;
-                if (hintText) {
-                    hintText.innerHTML = `🔧 Auto-corrected to: ${bestMatch.name} (${bestMatch.year})`;
-                    hintText.style.color = '#28a745';
-                }
-                return;
-            }
-
-            // Otherwise show fuzzy suggestions with "Did you mean?" prompt
-            let html = '<div style="padding: 8px 15px; color: #856404; background: #fff3cd; border-bottom: 1px solid #ffc107; font-size: 13px;">🔧 Did you mean one of these?</div>';
-            fuzzyMatches.forEach(job => {
-                const confidence = Math.round(job.score * 100);
-                html += `<div class="job-suggestion-item" onclick="selectJob('${job.name.replace(/'/g, "\\'")}')">`;
-                html += `${job.name} <span style="color: #999;">(${job.year})</span>`;
-                html += `<span style="float: right; color: #28a745; font-size: 12px;">${confidence}% match</span>`;
-                html += '</div>';
-            });
-            suggestionsDiv.innerHTML = html;
-            suggestionsDiv.style.display = 'block';
-            this.style.borderColor = '#ffc107'; // Yellow for "close match"
-            if (hintText) {
-                hintText.innerHTML = '🔧 No exact match - showing closest matches. Click to select.';
-                hintText.style.color = '#856404';
-            }
-            return;
-        }
-
-        // Truly no matches at all
-        suggestionsDiv.innerHTML = '<div class="job-suggestion-item" style="color: #dc3545;">❌ No jobs match "' + query + '"</div>';
-        suggestionsDiv.style.display = 'block';
-        this.style.borderColor = '#dc3545';
-        return;
-    }
-
-    // AUTO-FILL: If exact match found, fill it automatically
-    const exactMatch = matches.find(job => 
-        job.name.toLowerCase() === queryLower
-    );
-
-    if (exactMatch) {
-        console.log('✓ Exact match found - auto-filling:', exactMatch.name);
-        this.value = exactMatch.name;
-        this.style.borderColor = '#28a745'; // Green
-        suggestionsDiv.style.display = 'none';
-        if (hintText) {
-            hintText.innerHTML = `✓ Selected: ${exactMatch.name} (${exactMatch.year})`;
-            hintText.style.color = '#28a745';
-        }
-        return;
-    }
-
-    // Show matches in dropdown
-    let html = '';
-    matches.forEach(job => {
-        // Highlight the matching part
-        const jobNameLower = job.name.toLowerCase();
-        const matchIndex = jobNameLower.indexOf(queryLower);
-        let displayName = job.name;
-
-        if (matchIndex >= 0) {
-            const before = job.name.substring(0, matchIndex);
-            const matchText = job.name.substring(matchIndex, matchIndex + query.length);
-            const after = job.name.substring(matchIndex + query.length);
-            displayName = before + '<span style="background: #ffeb3b; font-weight: bold;">' + matchText + '</span>' + after;
-        }
-
-        html += `<div class="job-suggestion-item" onclick="selectJob('${job.name.replace(/'/g, "\\'")}')">`;
-        html += `${displayName} <span style="color: #999;">(${job.year})</span>`;
-        html += '</div>';
-    });
-
-    suggestionsDiv.innerHTML = html;
-    suggestionsDiv.style.display = 'block';
-    this.style.borderColor = '#667eea';
-
-    if (hintText) {
-        hintText.innerHTML = `💡 ${matches.length} job${matches.length > 1 ? 's' : ''} match - type full name or click to select`;
-        hintText.style.color = '#667eea';
-    }
-});
-
-            // Close suggestions when clicking outside
-            document.addEventListener('click', function(e) {
-                if (!searchInput.contains(e.target) && !suggestionsDiv.contains(e.target)) {
-                    suggestionsDiv.style.display = 'none';
-                }
-            });
-
-            // Handle keyboard navigation (Enter key) with fuzzy auto-correct
-            searchInput.addEventListener('keydown', function(e) {
-                if (e.key === 'Enter') {
-                    const currentValue = this.value.trim();
-                    if (!currentValue) return;
-
-                    const exactMatch = allJobs.find(job =>
-                        job.name.toLowerCase() === currentValue.toLowerCase()
-                    );
-
-                    if (exactMatch) {
-                        selectJob(exactMatch.name);
-                        e.preventDefault();
-                    } else {
-                        // Try fuzzy auto-correct on Enter
-                        const fuzzyMatches = allJobs.map(job => ({
-                            ...job,
-                            score: fuzzyMatchScore(currentValue, job.name)
-                        })).filter(job => job.score >= 0.70)
-                          .sort((a, b) => b.score - a.score);
-
-                        if (fuzzyMatches.length > 0) {
-                            e.preventDefault();
-                            selectJob(fuzzyMatches[0].name);
-                            if (hintText) {
-                                hintText.innerHTML = `🔧 Auto-corrected to: ${fuzzyMatches[0].name} (${fuzzyMatches[0].year})`;
-                                hintText.style.color = '#28a745';
-                            }
-                        }
-                    }
-                }
-            });
-
-            // Auto-correct on blur (when user clicks away from the field)
-            searchInput.addEventListener('blur', function() {
-                const currentValue = this.value.trim();
-                if (!currentValue) return;
-
-                // Already a valid job? No action needed
-                const exactMatch = allJobs.find(job =>
-                    job.name.toLowerCase() === currentValue.toLowerCase()
-                );
-                if (exactMatch) {
-                    this.value = exactMatch.name;
-                    this.style.borderColor = '#28a745';
-                    validJobSelected = true;
-                    return;
-                }
-
-                // Try fuzzy auto-correct
-                const fuzzyMatches = allJobs.map(job => ({
-                    ...job,
-                    score: fuzzyMatchScore(currentValue, job.name)
-                })).filter(job => job.score >= 0.70)
-                  .sort((a, b) => b.score - a.score);
-
-                if (fuzzyMatches.length > 0) {
-                    const bestMatch = fuzzyMatches[0];
-                    console.log('🔧 Blur auto-correct:', currentValue, '->', bestMatch.name, '(score:', bestMatch.score, ')');
-                    this.value = bestMatch.name;
-                    this.style.borderColor = '#28a745';
-                    validJobSelected = true;
-                    suggestionsDiv.style.display = 'none';
-                    if (hintText) {
-                        hintText.innerHTML = `🔧 Auto-corrected to: ${bestMatch.name} (${bestMatch.year})`;
-                        hintText.style.color = '#28a745';
-                    }
-                }
-            });
-    });
+    let highlightedIndex = -1;
 
     // ---- Fuzzy matching functions (client-side Levenshtein) ----
     function levenshteinDistance(s1, s2) {
         if (s1.length < s2.length) return levenshteinDistance(s2, s1);
         if (s2.length === 0) return s1.length;
-
         let previousRow = Array.from({length: s2.length + 1}, (_, i) => i);
         for (let i = 0; i < s1.length; i++) {
             let currentRow = [i + 1];
@@ -3861,28 +3647,83 @@ searchInput.addEventListener('input', function(e) {
         const t2 = text2.toUpperCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
         if (!t1 || !t2) return 0;
         if (t1 === t2) return 1.0;
-
         const t1NoSpace = t1.replace(/\s/g, '');
         const t2NoSpace = t2.replace(/\s/g, '');
         if (t1NoSpace === t2NoSpace) return 0.98;
-
         const longer = t1NoSpace.length >= t2NoSpace.length ? t1NoSpace : t2NoSpace;
         const shorter = t1NoSpace.length >= t2NoSpace.length ? t2NoSpace : t1NoSpace;
         if (longer.length === 0) return 0;
-
         const distance = levenshteinDistance(shorter, longer);
         return Math.max(0, 1.0 - (distance / longer.length));
     }
 
-    function selectJob(jobName) {
-        const searchInput = document.getElementById('job_search');
+    // ---- Render suggestion items into the dropdown ----
+    function renderSuggestions(items, query) {
         const suggestionsDiv = document.getElementById('job_suggestions');
-        const clearBtn = document.getElementById('clear-job');
-        const hintText = document.getElementById('job_hint');
+        if (!suggestionsDiv) return;
+        highlightedIndex = -1;
+        if (!items || items.length === 0) {
+            suggestionsDiv.style.display = 'none';
+            return;
+        }
+        const queryLower = (query || '').toLowerCase();
+        let html = '';
+        items.forEach(function(item, idx) {
+            let displayName = item.name;
+            // Highlight the matching substring if present
+            if (queryLower && item.name.toLowerCase().indexOf(queryLower) >= 0) {
+                const matchIndex = item.name.toLowerCase().indexOf(queryLower);
+                const before = item.name.substring(0, matchIndex);
+                const matchText = item.name.substring(matchIndex, matchIndex + queryLower.length);
+                const after = item.name.substring(matchIndex + queryLower.length);
+                displayName = before + '<span style="background: #ffeb3b; font-weight: bold;">' + matchText + '</span>' + after;
+            }
+            html += '<div class="job-suggestion-item" data-index="' + idx + '" data-job="' + item.name.replace(/"/g, '&quot;') + '">';
+            html += displayName + ' <span style="color: #999;">(' + item.year + ')</span>';
+            if (item.score !== undefined) {
+                html += '<span style="float: right; color: #28a745; font-size: 12px;">' + Math.round(item.score * 100) + '% match</span>';
+            }
+            html += '</div>';
+        });
+        suggestionsDiv.innerHTML = html;
+        suggestionsDiv.style.display = 'block';
+
+        // Attach click handlers
+        var suggestionItems = suggestionsDiv.querySelectorAll('.job-suggestion-item');
+        suggestionItems.forEach(function(el) {
+            el.addEventListener('mousedown', function(e) {
+                e.preventDefault(); // Prevent blur from firing before click
+                selectJob(el.getAttribute('data-job'));
+            });
+        });
+    }
+
+    // ---- Highlight a suggestion item by index ----
+    function updateHighlight() {
+        var suggestionsDiv = document.getElementById('job_suggestions');
+        if (!suggestionsDiv) return;
+        var items = suggestionsDiv.querySelectorAll('.job-suggestion-item');
+        items.forEach(function(el, idx) {
+            if (idx === highlightedIndex) {
+                el.classList.add('highlighted');
+                el.scrollIntoView({block: 'nearest'});
+            } else {
+                el.classList.remove('highlighted');
+            }
+        });
+    }
+
+    // ---- Select a job ----
+    function selectJob(jobName) {
+        var searchInput = document.getElementById('job_search');
+        var suggestionsDiv = document.getElementById('job_suggestions');
+        var clearBtn = document.getElementById('clear-job');
+        var hintText = document.getElementById('job_hint');
+        var toggleBtn = document.getElementById('dropdown-toggle');
 
         if (searchInput) {
             searchInput.value = jobName;
-            searchInput.style.borderColor = '#28a745'; // Green
+            searchInput.style.borderColor = '#28a745';
             validJobSelected = true;
         }
         if (suggestionsDiv) {
@@ -3891,114 +3732,418 @@ searchInput.addEventListener('input', function(e) {
         if (clearBtn) {
             clearBtn.style.display = 'block';
         }
+        if (toggleBtn) {
+            toggleBtn.innerHTML = '&#9660;';
+        }
+        highlightedIndex = -1;
 
-        const selectedJob = allJobs.find(job => job.name === jobName);
+        var selectedJob = allJobs.find(function(job) { return job.name === jobName; });
         if (hintText && selectedJob) {
-            hintText.innerHTML = `✓ Selected: ${selectedJob.name} (${selectedJob.year})`;
+            hintText.innerHTML = 'Selected: ' + selectedJob.name + ' (' + selectedJob.year + ')';
             hintText.style.color = '#28a745';
         }
-
-        console.log('✓ Selected:', jobName);
     }
 
+    // ---- Clear job selection ----
     function clearJobName() {
-        const searchInput = document.getElementById('job_search');
-        const clearBtn = document.getElementById('clear-job');
-        const hintText = document.getElementById('job_hint');
+        var searchInput = document.getElementById('job_search');
+        var clearBtn = document.getElementById('clear-job');
+        var hintText = document.getElementById('job_hint');
+        var toggleBtn = document.getElementById('dropdown-toggle');
 
-        searchInput.value = '';
-        searchInput.style.borderColor = '#ddd';
+        if (searchInput) {
+            searchInput.value = '';
+            searchInput.style.borderColor = '#ddd';
+        }
         validJobSelected = false;
+        highlightedIndex = -1;
         if (clearBtn) clearBtn.style.display = 'none';
+        if (toggleBtn) toggleBtn.innerHTML = '&#9660;';
         if (hintText) {
-            hintText.innerHTML = `💡 ${allJobs.length} active jobs available - start typing to search`;
+            hintText.innerHTML = 'Type to search or click the arrow to browse all jobs';
             hintText.style.color = '#666';
         }
-        searchInput.focus();
+        if (searchInput) searchInput.focus();
     }
 
-    // STRICT form validation - prevents submission with invalid job names
+    // ---- Show all jobs in dropdown (for the toggle button) ----
+    function showAllJobs() {
+        var suggestionsDiv = document.getElementById('job_suggestions');
+        if (!suggestionsDiv) return;
+        if (suggestionsDiv.style.display === 'block') {
+            suggestionsDiv.style.display = 'none';
+            var toggleBtn = document.getElementById('dropdown-toggle');
+            if (toggleBtn) toggleBtn.innerHTML = '&#9660;';
+            return;
+        }
+        renderSuggestions(allJobs, '');
+        var toggleBtn = document.getElementById('dropdown-toggle');
+        if (toggleBtn) toggleBtn.innerHTML = '&#9650;';
+        var searchInput = document.getElementById('job_search');
+        if (searchInput) searchInput.focus();
+    }
+
+    // ---- Main initialization ----
     document.addEventListener('DOMContentLoaded', function() {
-        const form = document.querySelector('form[action="{{ url_for(\'submit_request\') }}"]');
+        var searchInput = document.getElementById('job_search');
+        var suggestionsDiv = document.getElementById('job_suggestions');
+        var clearBtn = document.getElementById('clear-job');
+        var hintText = document.getElementById('job_hint');
+        var toggleBtn = document.getElementById('dropdown-toggle');
+
+        if (!searchInput || !suggestionsDiv) return;
+
+        // Fetch jobs from server
+        fetch('/get_jobs')
+            .then(function(response) { return response.json(); })
+            .then(function(data) {
+                if (data.success && data.jobs) {
+                    allJobs = data.jobs;
+                    if (hintText && allJobs.length > 0) {
+                        hintText.innerHTML = allJobs.length + ' active jobs available - type to search or click arrow to browse';
+                        hintText.style.color = '#666';
+                    }
+                } else {
+                    if (hintText) {
+                        hintText.innerHTML = 'Could not load jobs - please refresh the page';
+                        hintText.style.color = '#dc3545';
+                    }
+                }
+            })
+            .catch(function(error) {
+                console.error('Error loading jobs:', error);
+                if (hintText) {
+                    hintText.innerHTML = 'Error loading jobs - please refresh the page';
+                    hintText.style.color = '#dc3545';
+                }
+            });
+
+        // Dropdown toggle button
+        if (toggleBtn) {
+            toggleBtn.addEventListener('mousedown', function(e) {
+                e.preventDefault();
+                showAllJobs();
+            });
+        }
+
+        // Show suggestions as user types
+        searchInput.addEventListener('input', function() {
+            var query = this.value.trim();
+
+            // Show/hide clear button
+            if (clearBtn) {
+                clearBtn.style.display = query.length > 0 ? 'block' : 'none';
+            }
+            if (toggleBtn) {
+                toggleBtn.innerHTML = '&#9660;';
+            }
+
+            // Hide suggestions if empty
+            if (query.length < 1) {
+                suggestionsDiv.style.display = 'none';
+                this.style.borderColor = '#ddd';
+                validJobSelected = false;
+                if (hintText) {
+                    hintText.innerHTML = allJobs.length + ' active jobs available - type to search or click arrow to browse';
+                    hintText.style.color = '#666';
+                }
+                return;
+            }
+
+            // Find matching jobs (substring match)
+            var queryLower = query.toLowerCase();
+            var matches = allJobs.filter(function(job) {
+                return job.name.toLowerCase().indexOf(queryLower) >= 0;
+            }).sort(function(a, b) {
+                // Prioritize jobs that start with the query
+                var aStarts = a.name.toLowerCase().indexOf(queryLower) === 0;
+                var bStarts = b.name.toLowerCase().indexOf(queryLower) === 0;
+                if (aStarts && !bStarts) return -1;
+                if (!aStarts && bStarts) return 1;
+                return a.name.localeCompare(b.name);
+            });
+
+            if (matches.length > 0) {
+                // Check for exact match
+                var exactMatch = matches.find(function(job) {
+                    return job.name.toLowerCase() === queryLower;
+                });
+                if (exactMatch) {
+                    this.value = exactMatch.name;
+                    this.style.borderColor = '#28a745';
+                    validJobSelected = true;
+                    suggestionsDiv.style.display = 'none';
+                    if (clearBtn) clearBtn.style.display = 'block';
+                    if (hintText) {
+                        hintText.innerHTML = 'Selected: ' + exactMatch.name + ' (' + exactMatch.year + ')';
+                        hintText.style.color = '#28a745';
+                    }
+                    return;
+                }
+
+                // Show matching suggestions
+                this.style.borderColor = '#667eea';
+                validJobSelected = false;
+                renderSuggestions(matches, query);
+                if (hintText) {
+                    hintText.innerHTML = matches.length + ' job' + (matches.length > 1 ? 's' : '') + ' match - click to select or use arrow keys';
+                    hintText.style.color = '#667eea';
+                }
+                return;
+            }
+
+            // No substring matches - try fuzzy matching
+            var fuzzyMatches = allJobs.map(function(job) {
+                return Object.assign({}, job, {score: fuzzyMatchScore(query, job.name)});
+            }).filter(function(job) {
+                return job.score >= 0.55;
+            }).sort(function(a, b) {
+                return b.score - a.score;
+            }).slice(0, 5);
+
+            if (fuzzyMatches.length > 0) {
+                var bestMatch = fuzzyMatches[0];
+
+                // High confidence auto-correct
+                if (bestMatch.score >= 0.80) {
+                    this.value = bestMatch.name;
+                    this.style.borderColor = '#28a745';
+                    validJobSelected = true;
+                    suggestionsDiv.style.display = 'none';
+                    if (clearBtn) clearBtn.style.display = 'block';
+                    if (hintText) {
+                        hintText.innerHTML = 'Auto-corrected to: ' + bestMatch.name + ' (' + bestMatch.year + ')';
+                        hintText.style.color = '#28a745';
+                    }
+                    return;
+                }
+
+                // Show fuzzy suggestions with "Did you mean?" header
+                this.style.borderColor = '#ffc107';
+                validJobSelected = false;
+                var html = '<div style="padding: 8px 15px; color: #856404; background: #fff3cd; border-bottom: 1px solid #ffc107; font-size: 13px;">Did you mean one of these?</div>';
+                fuzzyMatches.forEach(function(item, idx) {
+                    html += '<div class="job-suggestion-item" data-index="' + idx + '" data-job="' + item.name.replace(/"/g, '&quot;') + '">';
+                    html += item.name + ' <span style="color: #999;">(' + item.year + ')</span>';
+                    html += '<span style="float: right; color: #28a745; font-size: 12px;">' + Math.round(item.score * 100) + '% match</span>';
+                    html += '</div>';
+                });
+                suggestionsDiv.innerHTML = html;
+                suggestionsDiv.style.display = 'block';
+                highlightedIndex = -1;
+                // Attach click handlers
+                suggestionsDiv.querySelectorAll('.job-suggestion-item').forEach(function(el) {
+                    el.addEventListener('mousedown', function(e) {
+                        e.preventDefault();
+                        selectJob(el.getAttribute('data-job'));
+                    });
+                });
+                if (hintText) {
+                    hintText.innerHTML = 'No exact match - showing closest matches. Click to select.';
+                    hintText.style.color = '#856404';
+                }
+                return;
+            }
+
+            // No matches at all
+            suggestionsDiv.innerHTML = '<div class="job-suggestion-item" style="color: #dc3545; cursor: default;">No jobs match "' + query + '"</div>';
+            suggestionsDiv.style.display = 'block';
+            this.style.borderColor = '#dc3545';
+            validJobSelected = false;
+            if (hintText) {
+                hintText.innerHTML = 'No matching jobs found - check spelling or click arrow to browse all';
+                hintText.style.color = '#dc3545';
+            }
+        });
+
+        // Keyboard navigation: Arrow keys, Enter, Escape
+        searchInput.addEventListener('keydown', function(e) {
+            var items = suggestionsDiv.querySelectorAll('.job-suggestion-item');
+            var isOpen = suggestionsDiv.style.display === 'block' && items.length > 0;
+
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (!isOpen) {
+                    // Open dropdown showing all jobs
+                    showAllJobs();
+                    return;
+                }
+                highlightedIndex = Math.min(highlightedIndex + 1, items.length - 1);
+                updateHighlight();
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (isOpen && highlightedIndex > 0) {
+                    highlightedIndex--;
+                    updateHighlight();
+                }
+            } else if (e.key === 'Enter') {
+                if (isOpen && highlightedIndex >= 0 && items[highlightedIndex]) {
+                    e.preventDefault();
+                    selectJob(items[highlightedIndex].getAttribute('data-job'));
+                    return;
+                }
+                // If nothing highlighted, try to match current text
+                var currentValue = this.value.trim();
+                if (!currentValue) return;
+
+                var exactMatch = allJobs.find(function(job) {
+                    return job.name.toLowerCase() === currentValue.toLowerCase();
+                });
+                if (exactMatch) {
+                    e.preventDefault();
+                    selectJob(exactMatch.name);
+                } else {
+                    // Try fuzzy auto-correct on Enter
+                    var fuzzyMatches = allJobs.map(function(job) {
+                        return Object.assign({}, job, {score: fuzzyMatchScore(currentValue, job.name)});
+                    }).filter(function(job) {
+                        return job.score >= 0.70;
+                    }).sort(function(a, b) {
+                        return b.score - a.score;
+                    });
+                    if (fuzzyMatches.length > 0) {
+                        e.preventDefault();
+                        selectJob(fuzzyMatches[0].name);
+                        if (hintText) {
+                            hintText.innerHTML = 'Auto-corrected to: ' + fuzzyMatches[0].name + ' (' + fuzzyMatches[0].year + ')';
+                            hintText.style.color = '#28a745';
+                        }
+                    }
+                }
+            } else if (e.key === 'Escape') {
+                suggestionsDiv.style.display = 'none';
+                highlightedIndex = -1;
+                if (toggleBtn) toggleBtn.innerHTML = '&#9660;';
+            }
+        });
+
+        // Auto-correct on blur (when user clicks away)
+        searchInput.addEventListener('blur', function() {
+            var self = this;
+            // Small delay so mousedown on suggestion items fires first
+            setTimeout(function() {
+                var currentValue = self.value.trim();
+                if (!currentValue) {
+                    suggestionsDiv.style.display = 'none';
+                    return;
+                }
+
+                // Already valid?
+                var exactMatch = allJobs.find(function(job) {
+                    return job.name.toLowerCase() === currentValue.toLowerCase();
+                });
+                if (exactMatch) {
+                    self.value = exactMatch.name;
+                    self.style.borderColor = '#28a745';
+                    validJobSelected = true;
+                    suggestionsDiv.style.display = 'none';
+                    return;
+                }
+
+                // Try fuzzy auto-correct
+                var fuzzyMatches = allJobs.map(function(job) {
+                    return Object.assign({}, job, {score: fuzzyMatchScore(currentValue, job.name)});
+                }).filter(function(job) {
+                    return job.score >= 0.70;
+                }).sort(function(a, b) {
+                    return b.score - a.score;
+                });
+
+                if (fuzzyMatches.length > 0) {
+                    var bestMatch = fuzzyMatches[0];
+                    self.value = bestMatch.name;
+                    self.style.borderColor = '#28a745';
+                    validJobSelected = true;
+                    if (hintText) {
+                        hintText.innerHTML = 'Auto-corrected to: ' + bestMatch.name + ' (' + bestMatch.year + ')';
+                        hintText.style.color = '#28a745';
+                    }
+                }
+                suggestionsDiv.style.display = 'none';
+            }, 150);
+        });
+
+        // Close suggestions when clicking outside
+        document.addEventListener('click', function(e) {
+            if (!searchInput.contains(e.target) && !suggestionsDiv.contains(e.target) &&
+                (!toggleBtn || !toggleBtn.contains(e.target))) {
+                suggestionsDiv.style.display = 'none';
+                if (toggleBtn) toggleBtn.innerHTML = '&#9660;';
+                highlightedIndex = -1;
+            }
+        });
+
+        // ---- Form validation on submit ----
+        var form = searchInput.closest('form');
         if (form) {
             form.addEventListener('submit', function(e) {
-                const jobInput = document.getElementById('job_search');
-                const jobName = jobInput.value.trim();
+                var jobInput = document.getElementById('job_search');
+                var jobName = jobInput.value.trim();
 
                 if (!jobName) {
                     e.preventDefault();
-                    alert('❌ ERROR: Please enter a job name');
+                    alert('Please enter a job name.');
                     jobInput.focus();
                     return false;
                 }
 
-                // Verify job exists EXACTLY in active jobs list
-                const exactMatch = allJobs.find(job =>
-                    job.name.toLowerCase() === jobName.toLowerCase()
-                );
+                // Check for exact match
+                var exactMatch = allJobs.find(function(job) {
+                    return job.name.toLowerCase() === jobName.toLowerCase();
+                });
 
-                if (!exactMatch) {
-                    // Try fuzzy auto-correction before rejecting
-                    const fuzzyMatches = allJobs.map(job => ({
-                        ...job,
-                        score: fuzzyMatchScore(jobName, job.name)
-                    })).filter(job => job.score >= 0.70)
-                      .sort((a, b) => b.score - a.score);
+                if (exactMatch) {
+                    jobInput.value = exactMatch.name;
+                    return true;
+                }
 
-                    if (fuzzyMatches.length > 0) {
-                        // Auto-correct to the best fuzzy match
-                        const bestMatch = fuzzyMatches[0];
-                        console.log('🔧 Form submit: auto-correcting to', bestMatch.name, '(score:', bestMatch.score, ')');
-                        jobInput.value = bestMatch.name;
-                        jobInput.style.borderColor = '#28a745';
-                        validJobSelected = true;
+                // Try fuzzy auto-correction before rejecting
+                var fuzzyMatches = allJobs.map(function(job) {
+                    return Object.assign({}, job, {score: fuzzyMatchScore(jobName, job.name)});
+                }).filter(function(job) {
+                    return job.score >= 0.70;
+                }).sort(function(a, b) {
+                    return b.score - a.score;
+                });
 
-                        const hintText = document.getElementById('job_hint');
-                        if (hintText) {
-                            hintText.innerHTML = `🔧 Auto-corrected to: ${bestMatch.name} (${bestMatch.year})`;
-                            hintText.style.color = '#28a745';
-                        }
-                        // Allow the form to submit with the corrected name
-                        return true;
-                    }
-
-                    e.preventDefault();
-
-                    // Find similar jobs to suggest
-                    const similar = allJobs.filter(job =>
-                        job.name.toLowerCase().includes(jobName.toLowerCase())
-                    ).slice(0, 3);
-
-                    let msg = '❌ INVALID JOB NAME\\n\\n';
-                    msg += 'The job "' + jobName + '" is not an active job in the system.\\n\\n';
-
-                    if (similar.length > 0) {
-                        msg += 'Did you mean one of these?\\n';
-                        similar.forEach(job => {
-                            msg += '  • ' + job.name + ' (' + job.year + ')\\n';
-                        });
-                        msg += '\\nPlease select a job from the dropdown list.';
-                    } else {
-                        msg += 'Please type a job name and select from the dropdown list.\\n';
-                        msg += 'Only active jobs can be used for PO requests.';
-                    }
-
-                    alert(msg);
-                    jobInput.focus();
-                    jobInput.select();
-                    jobInput.style.borderColor = '#dc3545';
-
-                    const hintText = document.getElementById('job_hint');
+                if (fuzzyMatches.length > 0) {
+                    var bestMatch = fuzzyMatches[0];
+                    jobInput.value = bestMatch.name;
+                    jobInput.style.borderColor = '#28a745';
+                    validJobSelected = true;
                     if (hintText) {
-                        hintText.innerHTML = '❌ Invalid job - must select from active jobs list';
-                        hintText.style.color = '#dc3545';
+                        hintText.innerHTML = 'Auto-corrected to: ' + bestMatch.name + ' (' + bestMatch.year + ')';
+                        hintText.style.color = '#28a745';
                     }
-
-                    return false;
+                    return true;
                 }
 
-                console.log('✅ Form submitted with valid job:', exactMatch.name);
-                return true;
+                // No match - reject submission
+                e.preventDefault();
+                var similar = allJobs.filter(function(job) {
+                    return job.name.toLowerCase().indexOf(jobName.toLowerCase()) >= 0;
+                }).slice(0, 3);
+
+                var msg = 'INVALID JOB NAME\\n\\n';
+                msg += 'The job "' + jobName + '" is not an active job in the system.\\n\\n';
+                if (similar.length > 0) {
+                    msg += 'Did you mean one of these?\\n';
+                    similar.forEach(function(job) {
+                        msg += '  - ' + job.name + ' (' + job.year + ')\\n';
+                    });
+                    msg += '\\nPlease select a job from the list.';
+                } else {
+                    msg += 'Please type a job name and select from the list.\\n';
+                    msg += 'Click the arrow button to browse all active jobs.';
+                }
+                alert(msg);
+                jobInput.focus();
+                jobInput.style.borderColor = '#dc3545';
+                if (hintText) {
+                    hintText.innerHTML = 'Invalid job - select from the list or click arrow to browse';
+                    hintText.style.color = '#dc3545';
+                }
+                return false;
             });
         }
     });
