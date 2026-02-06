@@ -326,6 +326,12 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # Column already exists
 
+    # Add budget (Cost of Materials) column to jobs if it doesn't exist
+    try:
+        c.execute("ALTER TABLE jobs ADD COLUMN budget REAL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     # Default settings
     default_settings = [
         ('claude_matching_enabled', 'true', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
@@ -412,6 +418,13 @@ def update_database_schema():
                       details TEXT,
                       timestamp TEXT)''')
         print("✓ Activity log table created")
+
+        # Add budget (Cost of Materials) column to jobs if it doesn't exist
+        try:
+            c.execute("ALTER TABLE jobs ADD COLUMN budget REAL DEFAULT 0")
+            print("✓ Added budget column to jobs")
+        except sqlite3.OperationalError:
+            print("Budget column already exists")
 
         conn.commit()
         conn.close()
@@ -1920,7 +1933,7 @@ def manage_jobs():
             conn.close()
             return "Error: Jobs table does not exist. Please restart the app to initialize the database."
 
-        # Get jobs with invoice totals
+        # Get jobs with invoice totals and budget
         c.execute("""
             SELECT
                 j.id,
@@ -1931,10 +1944,11 @@ def manage_jobs():
                 COALESCE(SUM(CASE WHEN p.invoice_cost IS NOT NULL THEN CAST(p.invoice_cost AS REAL) ELSE 0 END), 0) as total_invoiced,
                 COUNT(CASE WHEN p.invoice_filename IS NOT NULL THEN 1 END) as invoice_count,
                 COALESCE(SUM(p.estimated_cost), 0) as total_estimated,
-                COUNT(p.id) as po_count
+                COUNT(p.id) as po_count,
+                COALESCE(j.budget, 0) as budget
             FROM jobs j
             LEFT JOIN po_requests p ON j.job_name = p.job_name
-            GROUP BY j.id, j.job_name, j.year, j.created_date, j.active
+            GROUP BY j.id, j.job_name, j.year, j.created_date, j.active, j.budget
             ORDER BY j.active DESC, j.year DESC, j.job_name ASC
         """)
         jobs = c.fetchall()
@@ -1955,13 +1969,14 @@ def get_job_details(job_id):
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
 
-        # Get job name
-        c.execute("SELECT job_name FROM jobs WHERE id=?", (job_id,))
+        # Get job name and budget
+        c.execute("SELECT job_name, COALESCE(budget, 0) FROM jobs WHERE id=?", (job_id,))
         job = c.fetchone()
         if not job:
             return jsonify({'success': False, 'error': 'Job not found'})
 
         job_name = job[0]
+        job_budget = float(job[1])
 
         # Get all POs with invoices for this job
         c.execute("""
@@ -1987,9 +2002,15 @@ def get_job_details(job_id):
 
         conn.close()
 
+        total_invoiced = sum(inv['invoice_cost'] for inv in invoices)
+        budget_pct = round((total_invoiced / job_budget) * 100, 1) if job_budget > 0 else None
+
         return jsonify({
             'success': True,
             'job_name': job_name,
+            'budget': job_budget,
+            'total_invoiced': total_invoiced,
+            'budget_pct': budget_pct,
             'invoices': invoices
         })
 
@@ -2011,6 +2032,7 @@ def add_job():
 
     job_name = request.form.get('job_name', '').strip()
     year = request.form.get('year', '').strip()
+    budget = request.form.get('budget', '0').strip()
 
     if not job_name or not year:
         return jsonify({'success': False, 'error': 'Job name and year required'})
@@ -2020,12 +2042,17 @@ def add_job():
     except ValueError:
         return jsonify({'success': False, 'error': 'Invalid year'})
 
+    try:
+        budget = float(budget) if budget else 0
+    except ValueError:
+        budget = 0
+
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
     try:
-        c.execute("INSERT INTO jobs (job_name, year, created_date) VALUES (?, ?, ?)",
-                 (job_name, year, datetime.now().strftime('%Y-%m-%d')))
+        c.execute("INSERT INTO jobs (job_name, year, created_date, budget) VALUES (?, ?, ?, ?)",
+                 (job_name, year, datetime.now().strftime('%Y-%m-%d'), budget))
         conn.commit()
         conn.close()
         return jsonify({'success': True, 'message': f'Job "{job_name}" added successfully'})
@@ -2044,17 +2071,50 @@ def edit_job():
     job_id = data.get('job_id')
     job_name = data.get('job_name', '').strip()
     year = data.get('year')
+    budget = data.get('budget')
 
     if not job_id or not job_name or not year:
         return jsonify({'success': False, 'error': 'All fields required'})
 
+    try:
+        budget = float(budget) if budget is not None else 0
+    except (ValueError, TypeError):
+        budget = 0
+
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("UPDATE jobs SET job_name=?, year=? WHERE id=?", (job_name, year, job_id))
+    c.execute("UPDATE jobs SET job_name=?, year=?, budget=? WHERE id=?", (job_name, year, budget, job_id))
     conn.commit()
     conn.close()
 
     return jsonify({'success': True, 'message': 'Job updated successfully'})
+
+
+@app.route('/update_job_budget', methods=['POST'])
+def update_job_budget():
+    """Update budget (Cost of Materials) for a job"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    data = request.get_json()
+    job_id = data.get('job_id')
+    budget = data.get('budget')
+
+    if not job_id:
+        return jsonify({'success': False, 'error': 'Job ID required'})
+
+    try:
+        budget = float(budget) if budget is not None else 0
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'error': 'Invalid budget amount'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE jobs SET budget=? WHERE id=?", (budget, job_id))
+    conn.commit()
+    conn.close()
+
+    return jsonify({'success': True, 'message': 'Budget updated successfully'})
 
 
 @app.route('/toggle_job', methods=['POST'])
@@ -2982,6 +3042,40 @@ JOB_MANAGEMENT_TEMPLATE = '''
             color: #999;
             font-size: 16px;
         }
+        .budget-bar-container {
+            width: 100%;
+            background: #e9ecef;
+            border-radius: 10px;
+            overflow: hidden;
+            height: 22px;
+            position: relative;
+        }
+        .budget-bar {
+            height: 100%;
+            border-radius: 10px;
+            transition: width 0.3s ease;
+            min-width: 0;
+        }
+        .budget-bar-label {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 11px;
+            font-weight: bold;
+            color: #333;
+            white-space: nowrap;
+            text-shadow: 0 0 3px rgba(255,255,255,0.8);
+        }
+        .budget-green { background: #28a745; }
+        .budget-yellow { background: #ffc107; }
+        .budget-orange { background: #fd7e14; }
+        .budget-red { background: #dc3545; }
+        .budget-not-set {
+            color: #999;
+            font-style: italic;
+            font-size: 12px;
+        }
     </style>
     <script>
         let jobsData = {{ jobs|tojson }};
@@ -2991,6 +3085,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
         function addJob() {
             const jobName = document.getElementById('job_name').value.trim();
             const year = document.getElementById('year').value.trim();
+            const budget = document.getElementById('budget').value.trim();
 
             if (!jobName || !year) {
                 alert('Please enter both job name and year');
@@ -3000,6 +3095,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
             const formData = new FormData();
             formData.append('job_name', jobName);
             formData.append('year', year);
+            formData.append('budget', budget || '0');
 
             fetch('/add_job', {
                 method: 'POST',
@@ -3016,7 +3112,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
             });
         }
 
-        function editJob(id, currentName, currentYear, event) {
+        function editJob(id, currentName, currentYear, currentBudget, event) {
             event.stopPropagation();
             const newName = prompt('Edit job name:', currentName);
             if (!newName) return;
@@ -3024,13 +3120,17 @@ JOB_MANAGEMENT_TEMPLATE = '''
             const newYear = prompt('Edit year:', currentYear);
             if (!newYear) return;
 
+            const newBudget = prompt('Edit Cost of Materials Budget ($):', currentBudget || 0);
+            if (newBudget === null) return;
+
             fetch('/edit_job', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     job_id: id,
                     job_name: newName,
-                    year: parseInt(newYear)
+                    year: parseInt(newYear),
+                    budget: parseFloat(newBudget) || 0
                 })
             })
             .then(response => response.json())
@@ -3119,6 +3219,25 @@ JOB_MANAGEMENT_TEMPLATE = '''
 
                     let html = '<h3 style="color: #667eea; margin-bottom: 15px;">Invoices for ' + data.job_name + '</h3>';
 
+                    // Budget summary at the top
+                    if (data.budget && data.budget > 0) {
+                        const pct = data.budget_pct || 0;
+                        const remaining = data.budget - data.total_invoiced;
+                        const barColor = pct <= 50 ? 'budget-green' : pct <= 75 ? 'budget-yellow' : pct <= 100 ? 'budget-orange' : 'budget-red';
+                        const barWidth = Math.min(pct, 100);
+                        html += '<div style="background: #f0f4ff; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 2px solid #667eea;">';
+                        html += '<strong style="color: #667eea;">Cost of Materials Budget Summary</strong><br>';
+                        html += '<div style="display: flex; gap: 20px; margin: 10px 0; flex-wrap: wrap;">';
+                        html += '<span>Budget: <strong>$' + data.budget.toFixed(2) + '</strong></span>';
+                        html += '<span>Spent: <strong>$' + data.total_invoiced.toFixed(2) + '</strong></span>';
+                        html += '<span>Remaining: <strong class="' + (remaining >= 0 ? 'money-positive' : 'money-negative') + '">$' + remaining.toFixed(2) + '</strong></span>';
+                        html += '</div>';
+                        html += '<div class="budget-bar-container" style="height: 26px;">';
+                        html += '<div class="budget-bar ' + barColor + '" style="width: ' + barWidth + '%"></div>';
+                        html += '<span class="budget-bar-label">' + pct + '% of budget used</span>';
+                        html += '</div></div>';
+                    }
+
                     data.invoices.forEach(inv => {
                         const diff = inv.invoice_cost - inv.estimated;
                         const diffClass = diff > 0 ? 'money-negative' : 'money-positive';
@@ -3161,6 +3280,36 @@ JOB_MANAGEMENT_TEMPLATE = '''
             renderTable();
         }
 
+        function getBudgetBarColor(pct) {
+            if (pct <= 50) return 'budget-green';
+            if (pct <= 75) return 'budget-yellow';
+            if (pct <= 100) return 'budget-orange';
+            return 'budget-red';
+        }
+
+        function renderBudgetBar(budget, invoiced) {
+            if (!budget || budget <= 0) {
+                return '<span class="budget-not-set">No budget set</span>';
+            }
+            const pct = Math.min((invoiced / budget) * 100, 100);
+            const actualPct = (invoiced / budget) * 100;
+            const barColor = getBudgetBarColor(actualPct);
+            const displayPct = actualPct.toFixed(1);
+            const overBudget = invoiced > budget;
+            const overAmt = overBudget ? (invoiced - budget).toFixed(2) : '';
+
+            let label = displayPct + '% used';
+            if (overBudget) {
+                label = displayPct + '% - OVER by $' + overAmt;
+            }
+
+            return `<div class="budget-bar-container">
+                <div class="budget-bar ${barColor}" style="width: ${pct}%"></div>
+                <span class="budget-bar-label">${label}</span>
+            </div>
+            <div style="font-size: 11px; color: #666; margin-top: 3px;">$${invoiced.toFixed(2)} / $${budget.toFixed(2)}</div>`;
+        }
+
         function renderTable() {
             const tbody = document.getElementById('jobs-tbody');
             const statsDiv = document.getElementById('filter-stats');
@@ -3189,7 +3338,8 @@ JOB_MANAGEMENT_TEMPLATE = '''
             const totalJobs = filtered.length;
             const activeJobs = filtered.filter(j => j[4] === 1).length;
             const totalInvoiced = filtered.reduce((sum, j) => sum + j[5], 0);
-            const totalEstimated = filtered.reduce((sum, j) => sum + j[7], 0);
+            const totalBudget = filtered.reduce((sum, j) => sum + (j[9] || 0), 0);
+            const overallPct = totalBudget > 0 ? ((totalInvoiced / totalBudget) * 100).toFixed(1) : 'N/A';
 
             // Update stats
             statsDiv.innerHTML = `
@@ -3202,12 +3352,16 @@ JOB_MANAGEMENT_TEMPLATE = '''
                     <div class="stat-label">Active Jobs</div>
                 </div>
                 <div class="stat-item">
-                    <div class="stat-number">$${totalEstimated.toFixed(2)}</div>
-                    <div class="stat-label">Total Estimated</div>
+                    <div class="stat-number">$${totalBudget.toFixed(2)}</div>
+                    <div class="stat-label">Total Budget</div>
                 </div>
                 <div class="stat-item">
                     <div class="stat-number">$${totalInvoiced.toFixed(2)}</div>
                     <div class="stat-label">Total Invoiced</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number">${overallPct}${overallPct !== 'N/A' ? '%' : ''}</div>
+                    <div class="stat-label">Overall Budget Used</div>
                 </div>
             `;
 
@@ -3219,27 +3373,27 @@ JOB_MANAGEMENT_TEMPLATE = '''
 
             let html = '';
             filtered.forEach(job => {
-                const diff = job[5] - job[7];
-                const diffClass = diff > 0 ? 'money-negative' : 'money-positive';
-                const diffSign = diff > 0 ? '+' : '';
+                const budget = job[9] || 0;
+                const invoiced = job[5];
+                const escapedName = job[1].replace(/'/g, "\\'");
 
                 html += `<tr onclick="toggleJobDetails(${job[0]})">
                     <td><span class="expand-icon" id="icon-${job[0]}">▶</span></td>
                     <td><strong>${job[1]}</strong></td>
                     <td>${job[2]}</td>
                     <td>${job[8]} POs (${job[6]} invoiced)</td>
-                    <td>$${job[7].toFixed(2)}</td>
-                    <td>$${job[5].toFixed(2)}</td>
-                    <td><span class="${diffClass}">${diffSign}$${diff.toFixed(2)}</span></td>
+                    <td>${budget > 0 ? '$' + budget.toFixed(2) : '<span class="budget-not-set">Not set</span>'}</td>
+                    <td>$${invoiced.toFixed(2)}</td>
+                    <td style="min-width: 180px;">${renderBudgetBar(budget, invoiced)}</td>
                     <td><span class="status-badge ${job[4] === 1 ? 'status-active' : 'status-inactive'}">
                         ${job[4] === 1 ? 'Active' : 'Inactive'}
                     </span></td>
                     <td>
-                        <button onclick="editJob(${job[0]}, '${job[1]}', ${job[2]}, event)" class="btn btn-primary" style="padding: 5px 10px; margin-right: 5px;">Edit</button>
+                        <button onclick="editJob(${job[0]}, '${escapedName}', ${job[2]}, ${budget}, event)" class="btn btn-primary" style="padding: 5px 10px; margin-right: 5px;">Edit</button>
                         <button onclick="toggleJob(${job[0]}, event)" class="btn btn-secondary" style="padding: 5px 10px; margin-right: 5px;">
                             ${job[4] === 1 ? 'Deactivate' : 'Activate'}
                         </button>
-                        <button onclick="deleteJob(${job[0]}, '${job[1]}', event)" class="btn btn-danger" style="padding: 5px 10px;">Delete</button>
+                        <button onclick="deleteJob(${job[0]}, '${escapedName}', event)" class="btn btn-danger" style="padding: 5px 10px;">Delete</button>
                     </td>
                 </tr>
                 <tr class="expandable-row" id="details-${job[0]}">
@@ -3279,6 +3433,10 @@ JOB_MANAGEMENT_TEMPLATE = '''
             <label>Year</label>
             <input type="number" id="year" placeholder="e.g., 2025" value="2025">
         </div>
+        <div class="form-group">
+            <label>Cost of Materials Budget ($)</label>
+            <input type="number" id="budget" placeholder="e.g., 50000" step="0.01" min="0" value="0">
+        </div>
         <button onclick="addJob()" class="btn btn-success">Add Job</button>
     </div>
 
@@ -3315,6 +3473,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
         </div>
 
         <h3 style="color: #667eea; margin-bottom: 15px;">Jobs (Sorted A-Z) - Click to Expand</h3>
+        <div style="overflow-x: auto;">
         <table>
             <thead>
                 <tr>
@@ -3322,9 +3481,9 @@ JOB_MANAGEMENT_TEMPLATE = '''
                     <th>Job Name</th>
                     <th>Year</th>
                     <th>POs</th>
-                    <th>Total Estimated</th>
+                    <th>Cost of Materials Budget</th>
                     <th>Total Invoiced</th>
-                    <th>Difference</th>
+                    <th>Budget Used</th>
                     <th>Status</th>
                     <th>Actions</th>
                 </tr>
@@ -3333,6 +3492,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 <!-- Jobs rendered by JavaScript -->
             </tbody>
         </table>
+        </div>
     </div>
 </body>
 </html>
