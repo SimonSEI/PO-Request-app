@@ -3120,7 +3120,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
             const newYear = prompt('Edit year:', currentYear);
             if (!newYear) return;
 
-            const newBudget = prompt('Edit Cost of Materials Budget ($):', currentBudget || 0);
+            const newBudget = prompt('Edit Budget for Materials ($):', currentBudget || 0);
             if (newBudget === null) return;
 
             fetch('/edit_job', {
@@ -3226,7 +3226,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
                         const barColor = pct <= 50 ? 'budget-green' : pct <= 75 ? 'budget-yellow' : pct <= 100 ? 'budget-orange' : 'budget-red';
                         const barWidth = Math.min(pct, 100);
                         html += '<div style="background: #f0f4ff; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 2px solid #667eea;">';
-                        html += '<strong style="color: #667eea;">Cost of Materials Budget Summary</strong><br>';
+                        html += '<strong style="color: #667eea;">Budget for Materials Summary</strong><br>';
                         html += '<div style="display: flex; gap: 20px; margin: 10px 0; flex-wrap: wrap;">';
                         html += '<span>Budget: <strong>$' + data.budget.toFixed(2) + '</strong></span>';
                         html += '<span>Spent: <strong>$' + data.total_invoiced.toFixed(2) + '</strong></span>';
@@ -3353,7 +3353,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 </div>
                 <div class="stat-item">
                     <div class="stat-number">$${totalBudget.toFixed(2)}</div>
-                    <div class="stat-label">Total Budget</div>
+                    <div class="stat-label">Total Budget for Materials</div>
                 </div>
                 <div class="stat-item">
                     <div class="stat-number">$${totalInvoiced.toFixed(2)}</div>
@@ -3361,7 +3361,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 </div>
                 <div class="stat-item">
                     <div class="stat-number">${overallPct}${overallPct !== 'N/A' ? '%' : ''}</div>
-                    <div class="stat-label">Overall Budget Used</div>
+                    <div class="stat-label">% of Budget Used</div>
                 </div>
             `;
 
@@ -3434,7 +3434,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
             <input type="number" id="year" placeholder="e.g., 2025" value="2025">
         </div>
         <div class="form-group">
-            <label>Cost of Materials Budget ($)</label>
+            <label>Budget for Materials ($)</label>
             <input type="number" id="budget" placeholder="e.g., 50000" step="0.01" min="0" value="0">
         </div>
         <button onclick="addJob()" class="btn btn-success">Add Job</button>
@@ -3481,9 +3481,9 @@ JOB_MANAGEMENT_TEMPLATE = '''
                     <th>Job Name</th>
                     <th>Year</th>
                     <th>POs</th>
-                    <th>Cost of Materials Budget</th>
+                    <th>Budget for Materials</th>
                     <th>Total Invoiced</th>
-                    <th>Budget Used</th>
+                    <th>% of Budget Used</th>
                     <th>Status</th>
                     <th>Actions</th>
                 </tr>
