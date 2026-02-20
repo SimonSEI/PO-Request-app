@@ -1951,11 +1951,13 @@ def manage_jobs():
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
 
-        # Check if table exists
+        # Ensure jobs table exists
         c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'")
         if not c.fetchone():
             conn.close()
-            return "Error: Jobs table does not exist. Please restart the app to initialize the database."
+            init_db()
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
 
         # Get jobs with invoice totals and budget
         c.execute("""
@@ -1976,12 +1978,66 @@ def manage_jobs():
             ORDER BY j.active DESC, j.year DESC, j.job_name ASC
         """)
         jobs = c.fetchall()
+
+        # If no jobs found, check if there are job names in po_requests we can recover
+        orphaned_jobs = []
+        if len(jobs) == 0:
+            c.execute("""
+                SELECT DISTINCT job_name, MAX(request_date) as last_used
+                FROM po_requests
+                WHERE job_name IS NOT NULL AND job_name != ''
+                GROUP BY job_name
+                ORDER BY job_name ASC
+            """)
+            orphaned_jobs = c.fetchall()
+
         conn.close()
 
-        return render_template_string(JOB_MANAGEMENT_TEMPLATE, username=session['username'], jobs=jobs)
+        return render_template_string(JOB_MANAGEMENT_TEMPLATE,
+                                      username=session['username'],
+                                      jobs=jobs,
+                                      orphaned_jobs=orphaned_jobs)
 
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"<h2>Error loading Manage Jobs page</h2><p>{str(e)}</p><p><a href='/office_dashboard'>Back to Dashboard</a></p>"
+
+
+@app.route('/restore_jobs_from_history', methods=['POST'])
+def restore_jobs_from_history():
+    """Restore the jobs table from unique job names found in PO history"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        # Get all unique job names from po_requests
+        c.execute("""
+            SELECT DISTINCT job_name, MAX(request_date) as last_used
+            FROM po_requests
+            WHERE job_name IS NOT NULL AND job_name != ''
+            GROUP BY job_name
+        """)
+        rows = c.fetchall()
+        restored = 0
+        for row in rows:
+            job_name = row[0]
+            # Try to extract year from last_used date, default to current year
+            try:
+                year = int(row[1][:4]) if row[1] else datetime.now().year
+            except:
+                year = datetime.now().year
+            try:
+                c.execute("INSERT OR IGNORE INTO jobs (job_name, year, created_date, active) VALUES (?, ?, ?, 1)",
+                          (job_name, year, datetime.now().strftime('%Y-%m-%d')))
+                if c.rowcount > 0:
+                    restored += 1
+            except:
+                pass
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'message': f'Restored {restored} job(s) from PO history', 'count': restored})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/get_job_details/<int:job_id>')
 def get_job_details(job_id):
@@ -3749,9 +3805,20 @@ JOB_MANAGEMENT_TEMPLATE = '''
             });
         }
 
-        // Initialize on page load
+        // Initialize on page load - always start with ALL jobs visible
         window.addEventListener('DOMContentLoaded', function() {
-            renderTable();
+            // Explicitly reset filters so browser autocomplete doesn't hide jobs
+            document.getElementById('year-filter').value = '';
+            document.getElementById('status-filter').value = 'all';
+            filteredYear = '';
+            filteredStatus = 'all';
+            try {
+                renderTable();
+            } catch(e) {
+                document.getElementById('jobs-tbody').innerHTML =
+                    '<tr><td colspan="9" style="color:red;padding:20px;">Error rendering table: ' + e.message +
+                    '. Try refreshing the page.</td></tr>';
+            }
         });
     </script>
 </head>
@@ -3782,6 +3849,39 @@ JOB_MANAGEMENT_TEMPLATE = '''
         <button onclick="addJob()" class="btn btn-success">Add Job</button>
     </div>
 
+    {% if orphaned_jobs is defined and orphaned_jobs %}
+    <div class="card" style="border: 3px solid #ffc107; background: #fff8e1;">
+        <h2 style="color: #856404; margin-bottom: 10px;">⚠️ Jobs Table Empty — Job Names Found in PO History</h2>
+        <p style="color: #856404; margin-bottom: 15px;">
+            The jobs list is empty but <strong>{{ orphaned_jobs|length }} job name(s)</strong> were found in your PO records.
+            Click below to restore them so they appear in the jobs list again.
+        </p>
+        <ul style="margin-bottom: 15px; padding-left: 20px; color: #555;">
+            {% for j in orphaned_jobs %}
+                <li><strong>{{ j[0] }}</strong> (last used: {{ j[1][:10] if j[1] else 'N/A' }})</li>
+            {% endfor %}
+        </ul>
+        <button onclick="restoreJobsFromHistory()" class="btn btn-success" style="font-size: 16px; padding: 12px 30px;">
+            Restore All Jobs from PO History
+        </button>
+    </div>
+    <script>
+    function restoreJobsFromHistory() {
+        if (!confirm('Restore all job names from PO history? This will add them back to the jobs list as active jobs.')) return;
+        fetch('/restore_jobs_from_history', { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(data.message);
+                location.reload();
+            } else {
+                alert('Error: ' + data.error);
+            }
+        });
+    }
+    </script>
+    {% endif %}
+
     <div class="card">
         <h2 style="color: #667eea; margin-bottom: 20px;">Filter Jobs</h2>
 
@@ -3789,12 +3889,12 @@ JOB_MANAGEMENT_TEMPLATE = '''
         <div class="filter-controls">
             <div class="filter-group">
                 <label>Filter by Year</label>
-                <input type="number" id="year-filter" placeholder="e.g., 2025" min="2000" max="2100">
+                <input type="number" id="year-filter" placeholder="e.g., 2025" min="2000" max="2100" autocomplete="off">
             </div>
             <div class="filter-group">
                 <label>Filter by Status</label>
-                <select id="status-filter">
-                    <option value="all">All Jobs</option>
+                <select id="status-filter" autocomplete="off">
+                    <option value="all">All Jobs (Active + Inactive)</option>
                     <option value="active">Active Only</option>
                     <option value="inactive">Inactive Only</option>
                 </select>
@@ -3805,7 +3905,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
             </div>
             <div class="filter-group">
                 <label>&nbsp;</label>
-                <button onclick="clearFilters()" class="btn btn-secondary" style="width: 100%;">Clear Filters</button>
+                <button onclick="clearFilters()" class="btn btn-secondary" style="width: 100%;">Show All Jobs</button>
             </div>
         </div>
 
