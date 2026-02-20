@@ -314,6 +314,12 @@ def init_db():
                   cost_estimate REAL,
                   success INTEGER)''')
 
+    # Techs table - managed by office, used for tech name dropdown
+    c.execute('''CREATE TABLE IF NOT EXISTS techs
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  name TEXT UNIQUE,
+                  created_date TEXT)''')
+
     # Add match_method column to po_requests if it doesn't exist
     try:
         c.execute("ALTER TABLE po_requests ADD COLUMN match_method TEXT")
@@ -329,6 +335,12 @@ def init_db():
     # Add budget (Cost of Materials) column to jobs if it doesn't exist
     try:
         c.execute("ALTER TABLE jobs ADD COLUMN budget REAL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+    # Add jobber_invoice_number column to po_requests if it doesn't exist
+    try:
+        c.execute("ALTER TABLE po_requests ADD COLUMN jobber_invoice_number TEXT")
     except sqlite3.OperationalError:
         pass  # Column already exists
 
@@ -1282,12 +1294,19 @@ def tech_dashboard():
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT * FROM po_requests WHERE status='pending' ORDER BY id DESC")
+
+    # Show this tech's own POs (all statuses)
+    c.execute("SELECT * FROM po_requests WHERE tech_username=? ORDER BY id DESC", (session['username'],))
     requests = c.fetchall()
 
     # Get column indices
     c.execute("PRAGMA table_info(po_requests)")
     columns = {col[1]: col[0] for col in c.fetchall()}
+
+    # Get list of techs for dropdown
+    c.execute("SELECT name FROM techs ORDER BY name ASC")
+    techs = [row[0] for row in c.fetchall()]
+
     conn.close()
 
     inv_filename_idx = columns.get('invoice_filename', 12)
@@ -1298,6 +1317,7 @@ def tech_dashboard():
     return render_template_string(TECH_DASHBOARD_TEMPLATE,
                                 username=session['username'],
                                 requests=requests,
+                                techs=techs,
                                 inv_filename_idx=inv_filename_idx,
                                 inv_number_idx=inv_number_idx,
                                 inv_cost_idx=inv_cost_idx,
@@ -1480,13 +1500,14 @@ def submit_request():
                 suffix = chr(65 + count)  # A, B, C, etc.
                 flash(f'⚠️ PO #{po_id:04d} already exists. Creating as #{po_id:04d}-{suffix}')
             
-            # Insert with EXPLICIT ID (database still uses same number)
+            # Insert with EXPLICIT ID - auto-approved immediately
+            now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             c.execute("""INSERT INTO po_requests
                          (id, tech_username, tech_name, job_name, store_name, estimated_cost,
-                          description, status, request_date)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                          description, status, request_date, approval_date, approved_by)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?, 'auto')""",
                      (po_id, session['username'], tech_name, job_name, store_name,
-                      estimated_cost, description, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                      estimated_cost, description, now_str, now_str))
 
             conn.commit()
             conn.close()
@@ -1494,7 +1515,7 @@ def submit_request():
             # Send Telegram notification
             send_telegram_notification(po_id, tech_name, job_name, estimated_cost)
 
-            flash(f'✅ PO Request #{po_id:04d} (CUSTOM) submitted successfully!')
+            flash(f'PO#{po_id:04d}|{job_name}')
             return redirect(url_for('tech_dashboard'))
 
         except ValueError:
@@ -1518,20 +1539,23 @@ def submit_request():
         else:
             next_po_number = last_id + 1
 
+        # Auto-approve immediately
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         c.execute("""INSERT INTO po_requests
                      (tech_username, tech_name, job_name, store_name, estimated_cost,
-                      description, status, request_date)
-                     VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                      description, status, request_date, approval_date, approved_by)
+                     VALUES (?, ?, ?, ?, ?, ?, 'approved', ?, ?, 'auto')""",
                  (session['username'], tech_name, job_name, store_name,
-                  estimated_cost, description, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                  estimated_cost, description, now_str, now_str))
 
+        new_id = c.lastrowid
         conn.commit()
         conn.close()
 
         # Send Telegram notification
-        send_telegram_notification(next_po_number, tech_name, job_name, estimated_cost)
+        send_telegram_notification(new_id, tech_name, job_name, estimated_cost)
 
-        flash(f'✅ PO Request #{next_po_number:04d} submitted successfully!')
+        flash(f'PO#{new_id:04d}|{job_name}')
         return redirect(url_for('tech_dashboard'))
 
 @app.route('/process_request/<int:request_id>', methods=['POST'])
@@ -1981,7 +2005,7 @@ def get_job_details(job_id):
         # Get all POs with invoices for this job
         c.execute("""
             SELECT id, tech_name, estimated_cost, invoice_number, invoice_cost,
-                   invoice_upload_date, invoice_filename, status
+                   invoice_upload_date, invoice_filename, status, jobber_invoice_number
             FROM po_requests
             WHERE job_name = ? AND invoice_filename IS NOT NULL
             ORDER BY invoice_upload_date DESC
@@ -1997,7 +2021,8 @@ def get_job_details(job_id):
                 'invoice_cost': float(row[4]) if row[4] else 0,
                 'date': row[5],
                 'filename': row[6],
-                'status': row[7]
+                'status': row[7],
+                'jobber_invoice_number': row[8] if len(row) > 8 else None
             })
 
         conn.close()
@@ -2016,6 +2041,93 @@ def get_job_details(job_id):
 
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/update_jobber_invoice/<int:po_id>', methods=['POST'])
+def update_jobber_invoice(po_id):
+    """Update the Jobber invoice number for a PO"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+    try:
+        data = request.get_json()
+        jobber_number = data.get('jobber_invoice_number', '').strip()
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("UPDATE po_requests SET jobber_invoice_number=? WHERE id=?", (jobber_number or None, po_id))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'message': 'Jobber invoice number updated'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/manage_techs')
+def manage_techs():
+    """Manage technician names - office only"""
+    if 'username' not in session or session['role'] != 'office':
+        return redirect(url_for('login'))
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, name, created_date FROM techs ORDER BY name ASC")
+    techs = c.fetchall()
+    # For each tech, get their PO count and recent POs
+    tech_pos = {}
+    for tech in techs:
+        c.execute("""SELECT id, job_name, estimated_cost, status, request_date
+                     FROM po_requests WHERE tech_name=? ORDER BY id DESC LIMIT 50""", (tech[1],))
+        tech_pos[tech[0]] = c.fetchall()
+    conn.close()
+    return render_template_string(MANAGE_TECHS_TEMPLATE,
+                                  username=session['username'],
+                                  techs=techs,
+                                  tech_pos=tech_pos)
+
+@app.route('/add_tech', methods=['POST'])
+def add_tech():
+    """Add a technician name"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+    try:
+        data = request.get_json()
+        name = data.get('name', '').strip()
+        if not name:
+            return jsonify({'success': False, 'error': 'Name is required'})
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("INSERT INTO techs (name, created_date) VALUES (?, ?)",
+                  (name, datetime.now().strftime('%Y-%m-%d')))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'message': f'Tech "{name}" added successfully'})
+    except sqlite3.IntegrityError:
+        return jsonify({'success': False, 'error': 'A tech with that name already exists'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/delete_tech', methods=['POST'])
+def delete_tech():
+    """Delete a technician name"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+    try:
+        data = request.get_json()
+        tech_id = data.get('tech_id')
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("DELETE FROM techs WHERE id=?", (tech_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'message': 'Tech deleted successfully'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/get_techs')
+def get_techs():
+    """Get list of technician names for dropdown"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT name FROM techs ORDER BY name ASC")
+    techs = [row[0] for row in c.fetchall()]
+    conn.close()
+    return jsonify({'success': True, 'techs': techs})
 
 @app.route('/test_template')
 def test_template():
@@ -2921,6 +3033,197 @@ def extract_invoice_data(text, po_map):
     }
 
 
+MANAGE_TECHS_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Manage Technicians</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+        .header {
+            background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex;
+            justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
+        }
+        h1 { color: #333; font-size: 24px; }
+        .btn {
+            padding: 10px 20px; border-radius: 5px; text-decoration: none;
+            font-weight: bold; border: none; cursor: pointer; font-size: 14px;
+        }
+        .btn-secondary { background: #6c757d; color: white; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-success { background: #28a745; color: white; }
+        .card {
+            background: white; padding: 20px; border-radius: 10px;
+            margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .tech-card {
+            background: white; border-radius: 10px; margin-bottom: 15px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1); overflow: hidden;
+        }
+        .tech-header {
+            background: #fd7e14; color: white; padding: 15px 20px;
+            display: flex; justify-content: space-between; align-items: center;
+            cursor: pointer;
+        }
+        .tech-header h3 { margin: 0; font-size: 18px; }
+        .tech-body { padding: 20px; display: none; }
+        .tech-body.open { display: block; }
+        .po-item {
+            padding: 12px 15px; background: #f9f9f9; border-left: 4px solid #28a745;
+            margin-bottom: 8px; border-radius: 5px;
+        }
+        .po-item strong { font-size: 15px; color: #333; }
+        .po-meta { color: #666; font-size: 13px; margin-top: 4px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #fd7e14; color: white; }
+        tr:hover { background: #fff8f0; }
+        .add-form { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .add-form input {
+            flex: 1; min-width: 200px; padding: 10px; border: 2px solid #fd7e14;
+            border-radius: 5px; font-size: 16px;
+        }
+        .add-form input:focus { outline: none; border-color: #e07000; }
+        .no-pos { color: #999; font-style: italic; padding: 10px 0; }
+        .tech-stats { font-size: 13px; color: rgba(255,255,255,0.85); }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>👷 Manage Technicians</h1>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <a href="{{ url_for('office_dashboard') }}" class="btn btn-secondary">← Back to Dashboard</a>
+            <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2 style="color: #fd7e14; margin-bottom: 15px;">Add New Technician</h2>
+        <div class="add-form">
+            <input type="text" id="new-tech-name" placeholder="e.g., John Smith" onkeydown="if(event.key==='Enter') addTech()">
+            <button onclick="addTech()" class="btn btn-success">+ Add Technician</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2 style="color: #fd7e14; margin-bottom: 5px;">Technicians ({{ techs|length }})</h2>
+        <p style="color: #666; margin-bottom: 20px; font-size: 14px;">Click a technician to see their PO history.</p>
+
+        {% if techs %}
+            {% for tech in techs %}
+                <div class="tech-card" id="tech-card-{{ tech[0] }}">
+                    <div class="tech-header" onclick="toggleTech({{ tech[0] }})">
+                        <div>
+                            <h3>{{ tech[1] }}</h3>
+                            <div class="tech-stats">{{ tech_pos[tech[0]]|length }} PO(s) &nbsp;|&nbsp; Added: {{ tech[2] }}</div>
+                        </div>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <span id="icon-{{ tech[0] }}">▼</span>
+                            <button onclick="event.stopPropagation(); deleteTech({{ tech[0] }}, '{{ tech[1]|replace("'", "\\'") }}')"
+                                    class="btn btn-danger" style="padding: 6px 14px; font-size: 13px;">Delete</button>
+                        </div>
+                    </div>
+                    <div class="tech-body" id="body-{{ tech[0] }}">
+                        {% if tech_pos[tech[0]] %}
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>PO #</th>
+                                        <th>Job</th>
+                                        <th>Est. Cost</th>
+                                        <th>Status</th>
+                                        <th>Date</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for po in tech_pos[tech[0]] %}
+                                    <tr>
+                                        <td><strong>{{ "%04d"|format(po[0]) }}</strong></td>
+                                        <td>{{ po[1] }}</td>
+                                        <td>${{ "%.2f"|format(po[2]) }}</td>
+                                        <td>
+                                            {% if po[3] == 'approved' %}
+                                                <span style="color: #28a745; font-weight: bold;">Approved</span>
+                                            {% elif po[3] == 'denied' %}
+                                                <span style="color: #dc3545; font-weight: bold;">Denied</span>
+                                            {% else %}
+                                                <span style="color: #856404;">{{ po[3]|title }}</span>
+                                            {% endif %}
+                                        </td>
+                                        <td>{{ po[4][:10] if po[4] else 'N/A' }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        {% else %}
+                            <p class="no-pos">No POs submitted yet for this technician.</p>
+                        {% endif %}
+                    </div>
+                </div>
+            {% endfor %}
+        {% else %}
+            <p style="color: #999; text-align: center; padding: 40px;">No technicians added yet. Add one above!</p>
+        {% endif %}
+    </div>
+
+<script>
+    function toggleTech(id) {
+        const body = document.getElementById('body-' + id);
+        const icon = document.getElementById('icon-' + id);
+        if (body.classList.contains('open')) {
+            body.classList.remove('open');
+            icon.textContent = '▼';
+        } else {
+            body.classList.add('open');
+            icon.textContent = '▲';
+        }
+    }
+
+    function addTech() {
+        const input = document.getElementById('new-tech-name');
+        const name = input.value.trim();
+        if (!name) { alert('Please enter a technician name'); return; }
+
+        fetch('/add_tech', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(data.message);
+                location.reload();
+            } else {
+                alert('Error: ' + data.error);
+            }
+        });
+    }
+
+    function deleteTech(id, name) {
+        if (!confirm('Delete technician "' + name + '"? Their PO history will not be deleted.')) return;
+        fetch('/delete_tech', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tech_id: id })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                location.reload();
+            } else {
+                alert('Error: ' + data.error);
+            }
+        });
+    }
+</script>
+</body>
+</html>
+'''
+
 JOB_MANAGEMENT_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
@@ -3242,6 +3545,11 @@ JOB_MANAGEMENT_TEMPLATE = '''
                         const diff = inv.invoice_cost - inv.estimated;
                         const diffClass = diff > 0 ? 'money-negative' : 'money-positive';
                         const diffSign = diff > 0 ? '+' : '';
+                        const jobberNum = inv.jobber_invoice_number || '';
+                        const jobberStyle = jobberNum
+                            ? 'background: #d4edda; border: 2px solid #28a745; color: #155724;'
+                            : 'background: #f8d7da; border: 2px solid #dc3545; color: #721c24;';
+                        const jobberLabel = jobberNum ? jobberNum : 'No Jobber Invoice # entered';
 
                         html += '<div class="invoice-item">';
                         html += '<strong>PO #' + inv.po_id.toString().padStart(4, '0') + '</strong> - ' + inv.tech_name + '<br>';
@@ -3253,6 +3561,11 @@ JOB_MANAGEMENT_TEMPLATE = '''
                         if (inv.filename && inv.filename !== 'MANUAL_ENTRY') {
                             html += ' | <a href="/view_invoice/' + inv.filename + '" target="_blank" style="color: #667eea;">View Invoice</a>';
                         }
+                        html += '<div style="margin-top: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">';
+                        html += '<label style="font-weight: bold; color: #333; white-space: nowrap;">Jobber Invoice #:</label>';
+                        html += '<span id="jobber-display-' + inv.po_id + '" style="padding: 6px 12px; border-radius: 5px; font-weight: bold; ' + jobberStyle + ' cursor: pointer; min-width: 180px;" onclick="editJobberInvoice(' + inv.po_id + ', \'' + jobberNum.replace(/'/g, "\\'") + '\')">' + jobberLabel + '</span>';
+                        html += '<button onclick="editJobberInvoice(' + inv.po_id + ', \'' + jobberNum.replace(/'/g, "\\'") + '\')" style="padding: 5px 12px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 13px;">Edit</button>';
+                        html += '</div>';
                         html += '</div>';
                     });
 
@@ -3408,6 +3721,34 @@ JOB_MANAGEMENT_TEMPLATE = '''
             tbody.innerHTML = html;
         }
 
+        function editJobberInvoice(poId, currentVal) {
+            const newVal = prompt('Enter Jobber Invoice Number for PO #' + poId.toString().padStart(4, '0') + ':', currentVal || '');
+            if (newVal === null) return; // cancelled
+            fetch('/update_jobber_invoice/' + poId, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ jobber_invoice_number: newVal.trim() })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    const display = document.getElementById('jobber-display-' + poId);
+                    if (display) {
+                        const val = newVal.trim();
+                        if (val) {
+                            display.textContent = val;
+                            display.style.cssText = 'padding: 6px 12px; border-radius: 5px; font-weight: bold; background: #d4edda; border: 2px solid #28a745; color: #155724; cursor: pointer; min-width: 180px;';
+                        } else {
+                            display.textContent = 'No Jobber Invoice # entered';
+                            display.style.cssText = 'padding: 6px 12px; border-radius: 5px; font-weight: bold; background: #f8d7da; border: 2px solid #dc3545; color: #721c24; cursor: pointer; min-width: 180px;';
+                        }
+                    }
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            });
+        }
+
         // Initialize on page load
         window.addEventListener('DOMContentLoaded', function() {
             renderTable();
@@ -3417,8 +3758,9 @@ JOB_MANAGEMENT_TEMPLATE = '''
 <body>
     <div class="header">
         <h1>📋 Manage Jobs</h1>
-        <div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
             <a href="{{ url_for('office_dashboard') }}" class="btn btn-secondary">← Back to Dashboard</a>
+            <a href="{{ url_for('manage_techs') }}" style="background: #fd7e14; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 14px;">👷 Manage Techs</a>
             <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
         </div>
     </div>
@@ -3693,7 +4035,19 @@ TECH_DASHBOARD_TEMPLATE = '''
     {% with messages = get_flashed_messages() %}
         {% if messages %}
             {% for message in messages %}
-                {% if 'ERROR' in message or '❌' in message %}
+                {% if message.startswith('PO#') and '|' in message %}
+                    {% set parts = message.split('|') %}
+                    {% set po_num = parts[0] %}
+                    {% set job_nm = parts[1] %}
+                    <div style="background: #28a745; color: white; padding: 25px; border-radius: 10px; margin-bottom: 20px; text-align: center; box-shadow: 0 4px 12px rgba(40,167,69,0.4);">
+                        <div style="font-size: 28px; font-weight: bold; margin-bottom: 8px;">PO SUBMITTED!</div>
+                        <div style="font-size: 42px; font-weight: bold; letter-spacing: 2px; margin: 10px 0;">{{ po_num }}</div>
+                        <div style="font-size: 22px; margin-bottom: 12px;">Job: <strong>{{ job_nm }}</strong></div>
+                        <div style="font-size: 18px; background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px; margin-top: 10px;">
+                            Use <strong>{{ po_num }}</strong> when placing your order at the store
+                        </div>
+                    </div>
+                {% elif 'ERROR' in message or '❌' in message %}
                     <div class="error-message">{{ message }}</div>
                 {% else %}
                     <div class="success">{{ message }}</div>
@@ -3706,8 +4060,18 @@ TECH_DASHBOARD_TEMPLATE = '''
         <h2>📝 Submit New PO Request</h2>
         <form method="POST" action="{{ url_for('submit_request') }}">
             <div class="form-group">
-                <label>Your Full Name</label>
-                <input type="text" name="tech_name" required placeholder="e.g., John Smith">
+                <label>Your Name</label>
+                {% if techs %}
+                    <select name="tech_name" required>
+                        <option value="">-- Select Your Name --</option>
+                        {% for tech in techs %}
+                            <option value="{{ tech }}">{{ tech }}</option>
+                        {% endfor %}
+                    </select>
+                {% else %}
+                    <input type="text" name="tech_name" required placeholder="e.g., John Smith">
+                    <small style="color: #856404;">No technicians set up yet - contact office to add your name to the list.</small>
+                {% endif %}
             </div>
 
             <div class="form-group">
@@ -4169,23 +4533,23 @@ searchInput.addEventListener('input', function(e) {
         {% if requests %}
             {% for req in requests %}
                 <div class="request-item {{ req[7] }}">
-                    <span class="status {{ req[7] }}">{{ req[7]|upper }}</span>
-                    <h3>PO #{{ format_po_number(req[0], req[3]) }} - {{ req[4] }}</h3>
-                    <p><strong>Technician:</strong> {{ req[2] }}</p>
-                    <p><strong>Job:</strong> {{ req[3] }}</p>
+                    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-wrap: wrap;">
+                        <div style="background: #28a745; color: white; padding: 6px 16px; border-radius: 20px; font-size: 18px; font-weight: bold; letter-spacing: 1px;">
+                            PO #{{ format_po_number(req[0], req[3]) }}
+                        </div>
+                        <div style="font-size: 16px; color: #333; font-weight: bold;">{{ req[3] }}</div>
+                    </div>
+                    <p><strong>Store:</strong> {{ req[4] }}</p>
                     <p><strong>Estimated Amount:</strong> ${{ "%.2f"|format(req[5]) }}</p>
                     <p><strong>Description:</strong> {{ req[6] }}</p>
-                    <p><strong>Requested:</strong> {{ req[8] }}</p>
+                    <p><strong>Submitted:</strong> {{ req[8] }}</p>
 
-                    {% if req[7] == 'approved' or req[7] == 'denied' %}
-                        <p><strong>Decision Date:</strong> {{ req[9] }}</p>
+                    {% if req[7] == 'denied' %}
+                        <span class="status denied">DENIED</span>
                         {% if req[10] %}
-                            <p><strong>Notes:</strong> {{ req[10] }}</p>
+                            <p><strong>Reason:</strong> {{ req[10] }}</p>
                         {% endif %}
-                        <p><strong>Decided by:</strong> {{ req[11] if req|length > 11 else 'N/A' }}</p>
-                    {% endif %}
-
-                    {% if req[7] == 'approved' %}
+                    {% elif req[7] == 'approved' %}
                         {% if req|length > inv_filename_idx and req[inv_filename_idx] and req[inv_filename_idx] != '' %}
                             <div class="invoice-data">
                                 <h4>📄 Invoice Entered by Office</h4>
@@ -4194,7 +4558,7 @@ searchInput.addEventListener('input', function(e) {
                                 <p><strong>Entered:</strong> {{ req[inv_upload_idx] if req|length > inv_upload_idx else 'N/A' }}</p>
                             </div>
                         {% else %}
-                            <p style="color: orange; margin-top: 10px;">⏳ Waiting for office to enter invoice details</p>
+                            <p style="color: #666; margin-top: 10px; font-size: 14px;">⏳ Invoice not yet entered by office</p>
                         {% endif %}
                     {% endif %}
                 </div>
@@ -4869,9 +5233,10 @@ function searchInTab(tabId, searchInputId) {
 <body>
     <div class="header">
         <h1>🏢 Office Dashboard - {{ username }}</h1>
-        <div>
-            <a href="{{ url_for('manage_jobs') }}" style="background: #17a2b8; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin-right: 10px; font-size: 14px;">📋 Manage Jobs</a>
-            <a href="{{ url_for('settings_page') }}" style="background: #6c757d; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin-right: 10px; font-size: 14px;">⚙️ Settings</a>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <a href="{{ url_for('manage_jobs') }}" style="background: #17a2b8; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-size: 14px;">📋 Manage Jobs</a>
+            <a href="{{ url_for('manage_techs') }}" style="background: #fd7e14; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-size: 14px;">👷 Manage Techs</a>
+            <a href="{{ url_for('settings_page') }}" style="background: #6c757d; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-size: 14px;">⚙️ Settings</a>
             <a href="{{ url_for('logout') }}" class="logout-btn">Logout</a>
         </div>
     </div>
@@ -4939,40 +5304,16 @@ function searchInTab(tabId, searchInputId) {
     </div>
 
     {% if pending_requests %}
-        <!-- Select All Checkbox -->
-        <div class="select-all-container">
-            <input type="checkbox" id="select-all-pending" onclick="selectAllPending()" style="width: 20px; height: 20px; cursor: pointer;">
-            <label for="select-all-pending" style="cursor: pointer; font-weight: bold; margin: 0;">Select All Pending POs</label>
-        </div>
-
         {% for req in pending_requests %}
             <div class="request-item">
-                <input type="checkbox" class="po-checkbox" data-po-id="{{ req[0] }}"
-                       onchange="togglePOSelection({{ req[0] }}, this)">
                 <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
                 <h3>PO #{{ format_po_number(req[0], req[3]) }} - {{ req[3] }} - ${{ "%.2f"|format(req[5]) }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
                 <p><strong>Description:</strong> {{ req[6] }}</p>
                 <p><strong>Requested:</strong> {{ req[8] }}</p>
-                <form method="POST" action="{{ url_for('process_request', request_id=req[0]) }}" class="action-form">
-                    <textarea name="notes" placeholder="Add notes (optional)..."></textarea>
-                    <div class="action-buttons">
-                        <button type="submit" name="action" value="approve" class="approve-btn">✓ Approve</button>
-                        <button type="submit" name="action" value="deny" class="deny-btn">✗ Deny</button>
-                    </div>
-                </form>
             </div>
         {% endfor %}
-
-        <!-- Floating Bulk Actions Panel -->
-        <div id="bulk-actions">
-            <h3>📋 <span id="selected-count">0</span> PO(s) Selected</h3>
-            <button onclick="bulkApprove()" class="bulk-btn bulk-approve-btn">✓ Approve All</button>
-            <button onclick="bulkDeny()" class="bulk-btn bulk-deny-btn">✗ Deny All</button>
-            <button onclick="selectedPOs.clear(); updateBulkActionsButton(); document.querySelectorAll('.po-checkbox').forEach(cb => cb.checked = false); document.getElementById('select-all-pending').checked = false;"
-                    class="bulk-btn bulk-cancel-btn">Cancel</button>
-        </div>
     {% else %}
         <p style="color: #999; text-align: center; padding: 40px;">No pending requests</p>
     {% endif %}
@@ -4982,7 +5323,6 @@ function searchInTab(tabId, searchInputId) {
         {% if approved_requests %}
             {% for req in approved_requests %}
                 <div class="request-item" data-po-id="{{ req[0] }}">
-                    <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
                     <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
                     <button onclick="undoApproval({{ req[0] }})" class="delete-btn" style="right: 120px; background: #ffc107;">↩️ Undo</button>
                     <span class="status approved">APPROVED</span>
