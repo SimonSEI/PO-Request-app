@@ -2235,18 +2235,23 @@ def add_job():
     except ValueError:
         budget = 0
 
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
+    conn = None
     try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
         c.execute("INSERT INTO jobs (job_name, year, created_date, budget) VALUES (?, ?, ?, ?)",
                  (job_name, year, datetime.now().strftime('%Y-%m-%d'), budget))
         conn.commit()
         conn.close()
         return jsonify({'success': True, 'message': f'Job "{job_name}" added successfully'})
     except sqlite3.IntegrityError:
-        conn.close()
+        if conn:
+            conn.close()
         return jsonify({'success': False, 'error': 'Job name already exists'})
+    except Exception as e:
+        if conn:
+            conn.close()
+        return jsonify({'success': False, 'error': f'Database error: {str(e)}'})
 
 
 @app.route('/edit_job', methods=['POST'])
@@ -3480,7 +3485,12 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 method: 'POST',
                 body: formData
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Server error: ' + response.status);
+                }
+                return response.json();
+            })
             .then(data => {
                 if (data.success) {
                     alert(data.message);
@@ -3488,6 +3498,9 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 } else {
                     alert('Error: ' + data.error);
                 }
+            })
+            .catch(err => {
+                alert('Failed to add job. Please try again.\n\nDetails: ' + err.message);
             });
         }
 
@@ -3724,22 +3737,24 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 filtered = filtered.filter(job => job[2].toString() === filteredYear);
             }
 
-            // Filter by status
+            // Filter by status (use == not === to handle int/bool from SQLite)
             if (filteredStatus === 'active') {
-                filtered = filtered.filter(job => job[4] === 1);
+                filtered = filtered.filter(job => job[4] == 1);
             } else if (filteredStatus === 'inactive') {
-                filtered = filtered.filter(job => job[4] === 0);
+                filtered = filtered.filter(job => job[4] == 0);
             }
 
-            // Sort alphabetically (A-Z) by job name
+            // Sort alphabetically (A-Z) by job name (null-safe)
             filtered.sort((a, b) => {
-                return a[1].toLowerCase().localeCompare(b[1].toLowerCase());
+                const nameA = (a[1] || '').toLowerCase();
+                const nameB = (b[1] || '').toLowerCase();
+                return nameA.localeCompare(nameB);
             });
 
-            // Calculate stats
+            // Calculate stats (use == for active check)
             const totalJobs = filtered.length;
-            const activeJobs = filtered.filter(j => j[4] === 1).length;
-            const totalInvoiced = filtered.reduce((sum, j) => sum + j[5], 0);
+            const activeJobs = filtered.filter(j => j[4] == 1).length;
+            const totalInvoiced = filtered.reduce((sum, j) => sum + (parseFloat(j[5]) || 0), 0);
             const totalBudget = filtered.reduce((sum, j) => sum + (j[9] || 0), 0);
             const overallPct = totalBudget > 0 ? ((totalInvoiced / totalBudget) * 100).toFixed(1) : 'N/A';
 
@@ -3780,36 +3795,31 @@ JOB_MANAGEMENT_TEMPLATE = '''
 
             let html = '';
             filtered.forEach(job => {
-                const budget = job[9] || 0;
-                const invoiced = job[5];
-                const escapedName = job[1].replace(/'/g, "\\'");
+                const budget = parseFloat(job[9]) || 0;
+                const invoiced = parseFloat(job[5]) || 0;
+                const jobName = job[1] || '';
+                const isActive = job[4] == 1;
+                const escapedName = jobName.replace(/'/g, "\\'").replace(/`/g, '\\`');
 
-                html += `<tr onclick="toggleJobDetails(${job[0]})">
-                    <td><span class="expand-icon" id="icon-${job[0]}">▶</span></td>
-                    <td><strong>${job[1]}</strong></td>
-                    <td>${job[2]}</td>
-                    <td>${job[8]} POs (${job[6]} invoiced)</td>
-                    <td>${budget > 0 ? '$' + budget.toFixed(2) : '<span class="budget-not-set">Not set</span>'}</td>
-                    <td>$${invoiced.toFixed(2)}</td>
-                    <td style="min-width: 180px;">${renderBudgetBar(budget, invoiced)}</td>
-                    <td><span class="status-badge ${job[4] === 1 ? 'status-active' : 'status-inactive'}">
-                        ${job[4] === 1 ? 'Active' : 'Inactive'}
-                    </span></td>
-                    <td>
-                        <button onclick="editJob(${job[0]}, '${escapedName}', ${job[2]}, ${budget}, event)" class="btn btn-primary" style="padding: 5px 10px; margin-right: 5px;">Edit</button>
-                        <button onclick="toggleJob(${job[0]}, event)" class="btn btn-secondary" style="padding: 5px 10px; margin-right: 5px;">
-                            ${job[4] === 1 ? 'Deactivate' : 'Activate'}
-                        </button>
-                        <button onclick="deleteJob(${job[0]}, '${escapedName}', event)" class="btn btn-danger" style="padding: 5px 10px;">Delete</button>
-                    </td>
-                </tr>
-                <tr class="expandable-row" id="details-${job[0]}">
-                    <td colspan="9">
-                        <div class="invoice-details" id="invoice-container-${job[0]}">
-                            <!-- Invoice details loaded here -->
-                        </div>
-                    </td>
-                </tr>`;
+                html += '<tr onclick="toggleJobDetails(' + job[0] + ')">';
+                html += '<td><span class="expand-icon" id="icon-' + job[0] + '">&#9658;</span></td>';
+                html += '<td><strong>' + jobName + '</strong></td>';
+                html += '<td>' + job[2] + '</td>';
+                html += '<td>' + job[8] + ' POs (' + job[6] + ' invoiced)</td>';
+                html += '<td>' + (budget > 0 ? '$' + budget.toFixed(2) : '<span class="budget-not-set">Not set</span>') + '</td>';
+                html += '<td>$' + invoiced.toFixed(2) + '</td>';
+                html += '<td style="min-width: 180px;">' + renderBudgetBar(budget, invoiced) + '</td>';
+                html += '<td><span class="status-badge ' + (isActive ? 'status-active' : 'status-inactive') + '">';
+                html += isActive ? 'Active' : 'Inactive';
+                html += '</span></td>';
+                html += '<td>';
+                html += '<button onclick="editJob(' + job[0] + ', \'' + escapedName + '\', ' + job[2] + ', ' + budget + ', event)" class="btn btn-primary" style="padding: 5px 10px; margin-right: 5px;">Edit</button>';
+                html += '<button onclick="toggleJob(' + job[0] + ', event)" class="btn btn-secondary" style="padding: 5px 10px; margin-right: 5px;">' + (isActive ? 'Deactivate' : 'Activate') + '</button>';
+                html += '<button onclick="deleteJob(' + job[0] + ', \'' + escapedName + '\', event)" class="btn btn-danger" style="padding: 5px 10px;">Delete</button>';
+                html += '</td></tr>';
+                html += '<tr class="expandable-row" id="details-' + job[0] + '">';
+                html += '<td colspan="9"><div class="invoice-details" id="invoice-container-' + job[0] + '"></div></td>';
+                html += '</tr>';
             });
 
             tbody.innerHTML = html;
@@ -3891,7 +3901,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
             <label>Budget for Materials ($)</label>
             <input type="number" id="budget" placeholder="e.g., 50000" step="0.01" min="0" value="0">
         </div>
-        <button onclick="addJob()" class="btn btn-success">Add Job</button>
+        <button type="button" onclick="addJob()" class="btn btn-success">Add Job</button>
     </div>
 
     {% if orphaned_jobs is defined and orphaned_jobs %}
