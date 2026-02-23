@@ -2239,14 +2239,22 @@ def add_job():
     c = conn.cursor()
 
     try:
-        c.execute("INSERT INTO jobs (job_name, year, created_date, budget) VALUES (?, ?, ?, ?)",
-                 (job_name, year, datetime.now().strftime('%Y-%m-%d'), budget))
+        c.execute(
+            "INSERT INTO jobs (job_name, year, created_date, budget, active) VALUES (?, ?, ?, ?, 1)",
+            (job_name, year, datetime.now().strftime('%Y-%m-%d'), budget)
+        )
         conn.commit()
         conn.close()
         return jsonify({'success': True, 'message': f'Job "{job_name}" added successfully'})
     except sqlite3.IntegrityError:
         conn.close()
         return jsonify({'success': False, 'error': 'Job name already exists'})
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return jsonify({'success': False, 'error': f'Database error: {str(e)}'})
 
 
 @app.route('/edit_job', methods=['POST'])
@@ -3480,7 +3488,12 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 method: 'POST',
                 body: formData
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Server error ' + response.status + '. You may need to log in again.');
+                }
+                return response.json();
+            })
             .then(data => {
                 if (data.success) {
                     alert(data.message);
@@ -3488,6 +3501,9 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 } else {
                     alert('Error: ' + data.error);
                 }
+            })
+            .catch(err => {
+                alert('Failed to add job: ' + err.message);
             });
         }
 
