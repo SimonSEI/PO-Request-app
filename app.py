@@ -1916,7 +1916,9 @@ def get_jobs():
         c.execute("SELECT job_name, year FROM jobs WHERE active=1 ORDER BY year DESC, job_name ASC")
         jobs = [{'name': row[0], 'year': row[1], 'display': f"{row[0]} ({row[1]})"} for row in c.fetchall()]
         conn.close()
-        return jsonify({'success': True, 'jobs': jobs})
+        response = jsonify({'success': True, 'jobs': jobs})
+        response.headers['Cache-Control'] = 'no-store'
+        return response
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
@@ -1999,17 +2001,20 @@ def manage_jobs():
         """)
         jobs = c.fetchall()
 
-        # If no jobs found, check if there are job names in po_requests we can recover
+        # Always check for job names in po_requests that don't exist in the jobs table.
+        # This catches jobs that were deleted/never created but are still referenced by POs.
         orphaned_jobs = []
-        if len(jobs) == 0:
-            c.execute("""
-                SELECT DISTINCT job_name, MAX(request_date) as last_used
-                FROM po_requests
-                WHERE job_name IS NOT NULL AND job_name != ''
-                GROUP BY job_name
-                ORDER BY job_name ASC
-            """)
-            orphaned_jobs = c.fetchall()
+        c.execute("""
+            SELECT DISTINCT p.job_name, MAX(p.request_date) as last_used
+            FROM po_requests p
+            WHERE p.job_name IS NOT NULL AND p.job_name != ''
+              AND NOT EXISTS (
+                  SELECT 1 FROM jobs j WHERE LOWER(j.job_name) = LOWER(p.job_name)
+              )
+            GROUP BY p.job_name
+            ORDER BY p.job_name ASC
+        """)
+        orphaned_jobs = c.fetchall()
 
         conn.close()
 
@@ -2239,7 +2244,7 @@ def add_job():
     c = conn.cursor()
 
     try:
-        c.execute("INSERT INTO jobs (job_name, year, created_date, budget) VALUES (?, ?, ?, ?)",
+        c.execute("INSERT INTO jobs (job_name, year, created_date, active, budget) VALUES (?, ?, ?, 1, ?)",
                  (job_name, year, datetime.now().strftime('%Y-%m-%d'), budget))
         conn.commit()
         conn.close()
@@ -2247,6 +2252,9 @@ def add_job():
     except sqlite3.IntegrityError:
         conn.close()
         return jsonify({'success': False, 'error': 'Job name already exists'})
+    except Exception as e:
+        conn.close()
+        return jsonify({'success': False, 'error': f'Database error: {str(e)}'})
 
 
 @app.route('/edit_job', methods=['POST'])
@@ -3488,6 +3496,9 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 } else {
                     alert('Error: ' + data.error);
                 }
+            })
+            .catch(error => {
+                alert('Error adding job: ' + error + '\nPlease refresh the page and try again.');
             });
         }
 
@@ -3896,10 +3907,11 @@ JOB_MANAGEMENT_TEMPLATE = '''
 
     {% if orphaned_jobs is defined and orphaned_jobs %}
     <div class="card" style="border: 3px solid #ffc107; background: #fff8e1;">
-        <h2 style="color: #856404; margin-bottom: 10px;">⚠️ Jobs Table Empty — Job Names Found in PO History</h2>
+        <h2 style="color: #856404; margin-bottom: 10px;">⚠️ Missing Jobs — Found in PO History But Not in Jobs List</h2>
         <p style="color: #856404; margin-bottom: 15px;">
-            The jobs list is empty but <strong>{{ orphaned_jobs|length }} job name(s)</strong> were found in your PO records.
-            Click below to restore them so they appear in the jobs list again.
+            <strong>{{ orphaned_jobs|length }} job name(s)</strong> were found in your PO records but are missing from the jobs list.
+            These jobs are available for techs to select but will not appear here until restored.
+            Click below to add them back to the jobs list as active jobs.
         </p>
         <ul style="margin-bottom: 15px; padding-left: 20px; color: #555;">
             {% for j in orphaned_jobs %}
