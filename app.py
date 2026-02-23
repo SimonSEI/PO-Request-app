@@ -1958,6 +1958,26 @@ def manage_jobs():
             init_db()
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
+        else:
+            # Table exists but could be empty — re-seed placeholder jobs so the
+            # page never shows a completely blank list with no guidance
+            c.execute("SELECT COUNT(*) FROM jobs")
+            if c.fetchone()[0] == 0:
+                # Only re-seed if there is also no PO history to recover from
+                c.execute("SELECT COUNT(*) FROM po_requests")
+                if c.fetchone()[0] == 0:
+                    seed_jobs = [
+                        ('Chase Bank', 2024),
+                        ('Seven Lakes', 2025),
+                        ('Downtown Plaza', 2025),
+                        ('Herons Glen', 2025),
+                    ]
+                    for jn, yr in seed_jobs:
+                        c.execute(
+                            "INSERT OR IGNORE INTO jobs (job_name, year, created_date, active) VALUES (?, ?, ?, 1)",
+                            (jn, yr, datetime.now().strftime('%Y-%m-%d'))
+                        )
+                    conn.commit()
 
         # Get jobs with invoice totals and budget
         c.execute("""
@@ -3635,8 +3655,21 @@ JOB_MANAGEMENT_TEMPLATE = '''
             });
         }
 
+        function populateYearFilter() {
+            // Build the year dropdown from the actual years present in jobsData
+            const years = [...new Set(jobsData.map(j => j[2]))].sort((a, b) => b - a);
+            const sel = document.getElementById('year-filter');
+            sel.innerHTML = '<option value="">All Years</option>';
+            years.forEach(yr => {
+                const opt = document.createElement('option');
+                opt.value = yr;
+                opt.textContent = yr;
+                sel.appendChild(opt);
+            });
+        }
+
         function applyFilters() {
-            filteredYear = document.getElementById('year-filter').value.trim();
+            filteredYear = document.getElementById('year-filter').value;
             filteredStatus = document.getElementById('status-filter').value;
             renderTable();
         }
@@ -3736,7 +3769,12 @@ JOB_MANAGEMENT_TEMPLATE = '''
 
             // Build table HTML
             if (filtered.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="9" class="no-results">No jobs found matching filters. Try adjusting your search.</td></tr>';
+                const hasFilter = filteredYear !== '' || filteredStatus !== 'all';
+                tbody.innerHTML = '<tr><td colspan="9" class="no-results" style="padding:30px;">' +
+                    (hasFilter
+                        ? 'No jobs match the current filters. <button onclick="clearFilters()" class="btn btn-primary" style="margin-left:10px;padding:6px 16px;">Show All Jobs</button>'
+                        : 'No jobs have been added yet. Use the "Add New Job" form above.') +
+                    '</td></tr>';
                 return;
             }
 
@@ -3805,9 +3843,10 @@ JOB_MANAGEMENT_TEMPLATE = '''
             });
         }
 
-        // Initialize on page load - always start with ALL jobs visible
-        window.addEventListener('DOMContentLoaded', function() {
-            // Explicitly reset filters so browser autocomplete doesn't hide jobs
+        function initPage() {
+            // Build the year dropdown from actual job years
+            populateYearFilter();
+            // Reset filters so stale browser-autofill values don't hide jobs
             document.getElementById('year-filter').value = '';
             document.getElementById('status-filter').value = 'all';
             filteredYear = '';
@@ -3819,7 +3858,13 @@ JOB_MANAGEMENT_TEMPLATE = '''
                     '<tr><td colspan="9" style="color:red;padding:20px;">Error rendering table: ' + e.message +
                     '. Try refreshing the page.</td></tr>';
             }
-        });
+        }
+
+        // DOMContentLoaded covers normal page loads
+        window.addEventListener('DOMContentLoaded', initPage);
+        // pageshow also fires when the page is restored from the browser back/forward cache,
+        // ensuring filters are always reset even on back-navigation
+        window.addEventListener('pageshow', initPage);
     </script>
 </head>
 <body>
@@ -3889,7 +3934,9 @@ JOB_MANAGEMENT_TEMPLATE = '''
         <div class="filter-controls">
             <div class="filter-group">
                 <label>Filter by Year</label>
-                <input type="number" id="year-filter" placeholder="e.g., 2025" min="2000" max="2100" autocomplete="off">
+                <select id="year-filter" autocomplete="off">
+                    <option value="">All Years</option>
+                </select>
             </div>
             <div class="filter-group">
                 <label>Filter by Status</label>
