@@ -3576,6 +3576,10 @@ JOB_MANAGEMENT_TEMPLATE = '''
     {% autoescape false %}
     <script>
         let jobsData = {{ jobs_json }};
+        console.log('[JOBS TABLE DEBUG] jobsData assigned:', jobsData);
+        console.log('[JOBS TABLE DEBUG] jobsData type:', typeof jobsData);
+        console.log('[JOBS TABLE DEBUG] jobsData is array:', Array.isArray(jobsData));
+        console.log('[JOBS TABLE DEBUG] jobsData length:', jobsData ? jobsData.length : 'null/undefined');
         let filteredYear = '';
         let filteredStatus = 'all';
 
@@ -3852,8 +3856,11 @@ JOB_MANAGEMENT_TEMPLATE = '''
             const tbody = document.getElementById('jobs-tbody');
             const statsDiv = document.getElementById('filter-stats');
 
-            console.log('renderTable called. jobsData:', jobsData);
-            console.log('Total jobs in data:', jobsData.length);
+            console.log('[JOBS TABLE DEBUG] renderTable called');
+            console.log('[JOBS TABLE DEBUG] tbody element found:', tbody ? 'YES' : 'NO');
+            console.log('[JOBS TABLE DEBUG] statsDiv element found:', statsDiv ? 'YES' : 'NO');
+            console.log('[JOBS TABLE DEBUG] jobsData:', jobsData);
+            console.log('[JOBS TABLE DEBUG] Total jobs in data:', jobsData ? jobsData.length : 'N/A');
 
             // Filter data
             let filtered = jobsData;
@@ -3948,7 +3955,11 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 html += '</tr>';
             });
 
+            console.log('[JOBS TABLE DEBUG] Built HTML length:', html.length);
+            console.log('[JOBS TABLE DEBUG] HTML preview (first 500 chars):', html.substring(0, 500));
+            console.log('[JOBS TABLE DEBUG] About to assign to tbody...');
             tbody.innerHTML = html;
+            console.log('[JOBS TABLE DEBUG] HTML assigned to tbody');
         }
 
         function editJobberInvoice(poId, currentVal) {
