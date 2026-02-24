@@ -2050,6 +2050,46 @@ def manage_jobs():
         return f"<h2>Error loading Manage Jobs page</h2><p>{str(e)}</p><p><a href='/office_dashboard'>Back to Dashboard</a></p>"
 
 
+@app.route('/api/get_jobs', methods=['GET'])
+def api_get_jobs():
+    """API endpoint to get jobs data as JSON"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Get jobs with invoice totals and budget
+        c.execute("""
+            SELECT
+                j.id,
+                j.job_name,
+                j.year,
+                j.created_date,
+                j.active,
+                COALESCE(SUM(CASE WHEN p.invoice_cost IS NOT NULL THEN CAST(p.invoice_cost AS REAL) ELSE 0 END), 0) as total_invoiced,
+                COUNT(CASE WHEN p.invoice_filename IS NOT NULL THEN 1 END) as invoice_count,
+                COALESCE(SUM(p.estimated_cost), 0) as total_estimated,
+                COUNT(p.id) as po_count,
+                COALESCE(j.budget, 0) as budget
+            FROM jobs j
+            LEFT JOIN po_requests p ON j.job_name = p.job_name
+            GROUP BY j.id, j.job_name, j.year, j.created_date, j.active, j.budget
+            ORDER BY j.active DESC, j.year DESC, j.job_name ASC
+        """)
+        jobs = c.fetchall()
+        conn.close()
+
+        # Convert to list of lists for JSON serialization
+        jobs_list = [list(job) for job in jobs]
+        return jsonify(jobs_list)
+
+    except Exception as e:
+        print(f"[api_get_jobs] Error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/debug_jobs')
 def debug_jobs():
     """Debug endpoint to check jobs data being passed to template"""
@@ -3532,11 +3572,24 @@ JOB_MANAGEMENT_TEMPLATE = '''
     </style>
     {% autoescape false %}
     <script>
-        let jobsData = JSON.parse({{ jobs_json | tojson }}) || [];
-        console.log('[JOBS TABLE DEBUG] jobsData assigned:', jobsData);
-        console.log('[JOBS TABLE DEBUG] jobsData type:', typeof jobsData);
-        console.log('[JOBS TABLE DEBUG] jobsData is array:', Array.isArray(jobsData));
-        console.log('[JOBS TABLE DEBUG] jobsData length:', jobsData ? jobsData.length : 'null/undefined');
+        let jobsData = [];
+
+        // Fetch jobs data via API instead of inline rendering to avoid HTML escaping issues
+        async function loadJobsData() {
+            try {
+                const response = await fetch('/api/get_jobs');
+                if (response.ok) {
+                    jobsData = await response.json();
+                    console.log('[JOBS TABLE DEBUG] jobsData loaded from API:', jobsData);
+                } else {
+                    console.error('[JOBS TABLE DEBUG] Failed to load jobs:', response.status);
+                    jobsData = [];
+                }
+            } catch (error) {
+                console.error('[JOBS TABLE DEBUG] Error loading jobs:', error);
+                jobsData = [];
+            }
+        }
 
         // Helper function to escape HTML special characters
         function escapeHtml(text) {
@@ -3961,14 +4014,18 @@ JOB_MANAGEMENT_TEMPLATE = '''
             });
         }
 
-        function initPage() {
+        async function initPage() {
             console.log('Page initialization started');
+
+            // Load jobs data from API
+            await loadJobsData();
+
             console.log('jobsData available:', typeof jobsData !== 'undefined' && jobsData !== null);
             console.log('jobsData content:', jobsData);
 
             // Debug: check if jobsData is empty
             if (!jobsData || jobsData.length === 0) {
-                console.warn('WARNING: jobsData is empty or not initialized. This means no jobs were passed from the server.');
+                console.warn('WARNING: jobsData is empty. No jobs have been created yet.');
             }
 
             // Build the year dropdown from actual job years
