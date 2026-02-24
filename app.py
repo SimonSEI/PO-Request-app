@@ -3534,7 +3534,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
     </style>
     {% autoescape false %}
     <script>
-        let jobsData = {{ jobs|tojson }};
+        let jobsData = {{ jobs|tojson|safe }};
         let filteredYear = '';
         let filteredStatus = 'all';
 
