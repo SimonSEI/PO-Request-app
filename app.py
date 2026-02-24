@@ -3552,6 +3552,18 @@ JOB_MANAGEMENT_TEMPLATE = '''
         console.log('[JOBS TABLE DEBUG] jobsData type:', typeof jobsData);
         console.log('[JOBS TABLE DEBUG] jobsData is array:', Array.isArray(jobsData));
         console.log('[JOBS TABLE DEBUG] jobsData length:', jobsData ? jobsData.length : 'null/undefined');
+
+        // Helper function to escape HTML special characters
+        function escapeHtml(text) {
+            const map = {
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;'
+            };
+            return text.replace(/[&<>"']/g, m => map[m]);
+        }
         let filteredYear = '';
         let filteredStatus = 'all';
 
@@ -3708,7 +3720,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
                         return;
                     }
 
-                    let html = '<h3 style="color: #667eea; margin-bottom: 15px;">Invoices for ' + data.job_name + '</h3>';
+                    let html = '<h3 style="color: #667eea; margin-bottom: 15px;">Invoices for ' + escapeHtml(data.job_name) + '</h3>';
 
                     // Budget summary at the top
                     if (data.budget && data.budget > 0) {
@@ -3740,8 +3752,8 @@ JOB_MANAGEMENT_TEMPLATE = '''
                         const jobberLabel = jobberNum ? jobberNum : 'No Jobber Invoice # entered';
 
                         html += '<div class="invoice-item">';
-                        html += '<strong>PO #' + inv.po_id.toString().padStart(4, '0') + '</strong> - ' + inv.tech_name + '<br>';
-                        html += 'Invoice: ' + inv.invoice_number + '<br>';
+                        html += '<strong>PO #' + inv.po_id.toString().padStart(4, '0') + '</strong> - ' + escapeHtml(inv.tech_name) + '<br>';
+                        html += 'Invoice: ' + escapeHtml(inv.invoice_number) + '<br>';
                         html += 'Estimated: $' + inv.estimated.toFixed(2) + ' | ';
                         html += 'Actual: $' + inv.invoice_cost.toFixed(2) + ' | ';
                         html += 'Difference: <span class="' + diffClass + '">' + diffSign + '$' + diff.toFixed(2) + '</span><br>';
@@ -3751,7 +3763,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
                         }
                         html += '<div style="margin-top: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">';
                         html += '<label style="font-weight: bold; color: #333; white-space: nowrap;">Jobber Invoice #:</label>';
-                        html += '<span id="jobber-display-' + inv.po_id + '" style="padding: 6px 12px; border-radius: 5px; font-weight: bold; ' + jobberStyle + ' cursor: pointer; min-width: 180px;" onclick="editJobberInvoice(' + inv.po_id + ', \'' + jobberNum.replace(/'/g, "\\'") + '\')">' + jobberLabel + '</span>';
+                        html += '<span id="jobber-display-' + inv.po_id + '" style="padding: 6px 12px; border-radius: 5px; font-weight: bold; ' + jobberStyle + ' cursor: pointer; min-width: 180px;" onclick="editJobberInvoice(' + inv.po_id + ', \'' + jobberNum.replace(/'/g, "\\'") + '\')">' + escapeHtml(jobberLabel) + '</span>';
                         html += '<button onclick="editJobberInvoice(' + inv.po_id + ', \'' + jobberNum.replace(/'/g, "\\'") + '\')" style="padding: 5px 12px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 13px;">Edit</button>';
                         html += '</div>';
                         html += '</div>';
@@ -3904,10 +3916,11 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 const jobName = job[1] || '';
                 const isActive = job[4] == 1;
                 const escapedName = jobName.replace(/'/g, "\\'").replace(/`/g, '\\`');
+                const htmlEscapedName = jobName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
                 html += '<tr onclick="toggleJobDetails(' + job[0] + ')">';
-                html += '<td><span class="expand-icon" id="icon-' + job[0] + '">&#9658;</span></td>';
-                html += '<td><strong>' + jobName + '</strong></td>';
+                html += '<td><span class="expand-icon" id="icon-' + job[0] + '">▶</span></td>';
+                html += '<td><strong>' + htmlEscapedName + '</strong></td>';
                 html += '<td>' + job[2] + '</td>';
                 html += '<td>' + job[8] + ' POs (' + job[6] + ' invoiced)</td>';
                 html += '<td>' + (budget > 0 ? '$' + budget.toFixed(2) : '<span class="budget-not-set">Not set</span>') + '</td>';
