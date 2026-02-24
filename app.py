@@ -380,7 +380,7 @@ def init_db():
             ('Herons Glen', 2025),
         ]
         for job_name, year in default_jobs:
-            c.execute("INSERT INTO jobs (job_name, year, created_date) VALUES (?, ?, ?)",
+            c.execute("INSERT INTO jobs (job_name, year, created_date, active) VALUES (?, ?, ?, 1)",
                      (job_name, year, datetime.now().strftime('%Y-%m-%d')))
 
     conn.commit()
@@ -1974,7 +1974,7 @@ def manage_jobs():
                     ]
                     for jn, yr in seed_jobs:
                         c.execute(
-                            "INSERT OR IGNORE INTO jobs (job_name, year, created_date, active) VALUES (?, ?, ?, 1)",
+                            "INSERT OR IGNORE INTO jobs (job_name, year, created_date, active, budget) VALUES (?, ?, ?, 1, 0)",
                             (jn, yr, datetime.now().strftime('%Y-%m-%d'))
                         )
                     conn.commit()
@@ -2239,7 +2239,7 @@ def add_job():
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("INSERT INTO jobs (job_name, year, created_date, budget) VALUES (?, ?, ?, ?)",
+        c.execute("INSERT INTO jobs (job_name, year, created_date, budget, active) VALUES (?, ?, ?, ?, 1)",
                  (job_name, year, datetime.now().strftime('%Y-%m-%d'), budget))
         conn.commit()
         conn.close()
