@@ -3566,17 +3566,16 @@ JOB_MANAGEMENT_TEMPLATE = '''
             font-size: 12px;
         }
     </style>
-    {% autoescape false %}
     <script>
         let jobsData = [];
 
-        // Fetch jobs data via API instead of inline rendering to avoid HTML escaping issues
+        // Fetch jobs data via API to avoid HTML escaping issues
         async function loadJobsData() {
             try {
                 const response = await fetch('/api/get_jobs');
                 if (response.ok) {
                     jobsData = await response.json();
-                    console.log('[JOBS TABLE DEBUG] jobsData loaded from API:', jobsData);
+                    console.log('[JOBS TABLE DEBUG] jobsData loaded from API:', jobsData.length, 'jobs');
                 } else {
                     console.error('[JOBS TABLE DEBUG] Failed to load jobs:', response.status);
                     jobsData = [];
@@ -4048,7 +4047,6 @@ JOB_MANAGEMENT_TEMPLATE = '''
         // ensuring filters are always reset even on back-navigation
         window.addEventListener('pageshow', initPage);
     </script>
-    {% endautoescape %}
 </head>
 <body>
     <div class="header">
