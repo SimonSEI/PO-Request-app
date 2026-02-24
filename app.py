@@ -120,9 +120,9 @@ def extract_text_with_ocr(pdf_path, page_num):
     return ''
 
 # Telegram Configuration
-TELEGRAM_ENABLED = True
-TELEGRAM_BOT_TOKEN = '8311194615:AAFoTZmMtjZMIeIWoY8JPUs6ofC9PCbAzQM'
-TELEGRAM_CHAT_ID = '8085851472'
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
+TELEGRAM_ENABLED = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 
 # Email Configuration for Password Reset
 EMAIL_ENABLED = False
