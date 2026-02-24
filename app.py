@@ -1995,25 +1995,11 @@ def manage_jobs():
             except sqlite3.OperationalError:
                 pass  # Column might not exist yet
 
-            # Table exists but could be empty — re-seed placeholder jobs so the
-            # page never shows a completely blank list with no guidance
+            # Table exists but could be empty
             c.execute("SELECT COUNT(*) FROM jobs")
             if c.fetchone()[0] == 0:
-                # Only re-seed if there is also no PO history to recover from
-                c.execute("SELECT COUNT(*) FROM po_requests")
-                if c.fetchone()[0] == 0:
-                    seed_jobs = [
-                        ('Chase Bank', 2024),
-                        ('Seven Lakes', 2025),
-                        ('Downtown Plaza', 2025),
-                        ('Herons Glen', 2025),
-                    ]
-                    for jn, yr in seed_jobs:
-                        c.execute(
-                            "INSERT OR IGNORE INTO jobs (job_name, year, created_date, active, budget) VALUES (?, ?, ?, 1, 0)",
-                            (jn, yr, datetime.now().strftime('%Y-%m-%d'))
-                        )
-                    conn.commit()
+                # Don't auto-seed jobs - let the user add them manually
+                pass
 
         # Get jobs with invoice totals and budget
         c.execute("""
