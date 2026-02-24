@@ -3553,6 +3553,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
         let filteredStatus = 'all';
 
         function addJob() {
+            console.log('===== addJob() function called =====');
             const jobName = document.getElementById('job_name').value.trim();
             const year = document.getElementById('year').value.trim();
             const budget = document.getElementById('budget').value.trim();
@@ -3561,6 +3562,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
 
             if (!jobName || !year) {
                 alert('Please enter both job name and year');
+                console.log('Validation failed - missing job name or year');
                 return;
             }
 
