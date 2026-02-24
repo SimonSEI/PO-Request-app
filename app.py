@@ -3575,7 +3575,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
     </style>
     {% autoescape false %}
     <script>
-        let jobsData = {{ jobs_json }};
+        let jobsData = ({{ jobs_json }}) || [];
         console.log('[JOBS TABLE DEBUG] jobsData assigned:', jobsData);
         console.log('[JOBS TABLE DEBUG] jobsData type:', typeof jobsData);
         console.log('[JOBS TABLE DEBUG] jobsData is array:', Array.isArray(jobsData));
@@ -3845,11 +3845,11 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 label = displayPct + '% - OVER by $' + overAmt;
             }
 
-            return `<div class="budget-bar-container">
-                <div class="budget-bar ${barColor}" style="width: ${pct}%"></div>
-                <span class="budget-bar-label">${label}</span>
-            </div>
-            <div style="font-size: 11px; color: #666; margin-top: 3px;">$${invoiced.toFixed(2)} / $${budget.toFixed(2)}</div>`;
+            return '<div class="budget-bar-container">' +
+                '<div class="budget-bar ' + barColor + '" style="width: ' + pct + '%"></div>' +
+                '<span class="budget-bar-label">' + label + '</span>' +
+                '</div>' +
+                '<div style="font-size: 11px; color: #666; margin-top: 3px;">$' + invoiced.toFixed(2) + ' / $' + budget.toFixed(2) + '</div>';
         }
 
         function renderTable() {
