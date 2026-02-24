@@ -3532,8 +3532,9 @@ JOB_MANAGEMENT_TEMPLATE = '''
             font-size: 12px;
         }
     </style>
+    {% autoescape false %}
     <script>
-        let jobsData = {{ jobs|tojson|safe }};
+        let jobsData = {{ jobs|tojson }};
         let filteredYear = '';
         let filteredStatus = 'all';
 
@@ -3971,6 +3972,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
         // ensuring filters are always reset even on back-navigation
         window.addEventListener('pageshow', initPage);
     </script>
+    {% endautoescape %}
 </head>
 <body>
     <div class="header">
