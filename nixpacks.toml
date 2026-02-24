@@ -1,9 +1,0 @@
-# Nixpacks configuration for Railway
-[phases.setup]
-nixPkgs = ["python311", "tesseract", "poppler_utils"]
-
-[phases.install]
-cmds = ["pip install -r requirements.txt"]
-
-[start]
-cmd = "gunicorn app:app"
