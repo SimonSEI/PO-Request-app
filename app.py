@@ -2038,12 +2038,8 @@ def manage_jobs():
 
         conn.close()
 
-        # Convert jobs to JSON string for JavaScript
-        jobs_json = json.dumps(jobs)
-
         return render_template_string(JOB_MANAGEMENT_TEMPLATE,
                                       username=session['username'],
-                                      jobs_json=jobs_json,
                                       orphaned_jobs=orphaned_jobs)
 
     except Exception as e:
