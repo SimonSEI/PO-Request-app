@@ -5,6 +5,7 @@ import sqlite3
 import os
 import re
 import secrets
+import json
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -2051,9 +2052,12 @@ def manage_jobs():
 
         conn.close()
 
+        # Convert jobs to JSON string for JavaScript
+        jobs_json = json.dumps(jobs)
+
         return render_template_string(JOB_MANAGEMENT_TEMPLATE,
                                       username=session['username'],
-                                      jobs=jobs,
+                                      jobs_json=jobs_json,
                                       orphaned_jobs=orphaned_jobs)
 
     except Exception as e:
@@ -3534,7 +3538,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
     </style>
     {% autoescape false %}
     <script>
-        let jobsData = {{ jobs|tojson|safe }};
+        let jobsData = {{ jobs_json }};
         let filteredYear = '';
         let filteredStatus = 'all';
 
