@@ -2066,6 +2066,43 @@ def manage_jobs():
         return f"<h2>Error loading Manage Jobs page</h2><p>{str(e)}</p><p><a href='/office_dashboard'>Back to Dashboard</a></p>"
 
 
+@app.route('/debug_jobs')
+def debug_jobs():
+    """Debug endpoint to check jobs data being passed to template"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'error': 'Unauthorized'})
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        c.execute("""
+            SELECT
+                j.id, j.job_name, j.year, j.created_date, j.active,
+                COALESCE(SUM(CASE WHEN p.invoice_cost IS NOT NULL THEN CAST(p.invoice_cost AS REAL) ELSE 0 END), 0) as total_invoiced,
+                COUNT(CASE WHEN p.invoice_filename IS NOT NULL THEN 1 END) as invoice_count,
+                COALESCE(SUM(p.estimated_cost), 0) as total_estimated,
+                COUNT(p.id) as po_count,
+                COALESCE(j.budget, 0) as budget
+            FROM jobs j
+            LEFT JOIN po_requests p ON j.job_name = p.job_name
+            GROUP BY j.id, j.job_name, j.year, j.created_date, j.active, j.budget
+            ORDER BY j.active DESC, j.year DESC, j.job_name ASC
+        """)
+        jobs = c.fetchall()
+        conn.close()
+
+        jobs_json = json.dumps(jobs)
+
+        return jsonify({
+            'raw_jobs': jobs,
+            'json_jobs': jobs_json,
+            'job_count': len(jobs),
+            'is_valid_json': True
+        })
+    except Exception as e:
+        return jsonify({'error': str(e), 'is_valid_json': False})
+
+
 @app.route('/restore_jobs_from_history', methods=['POST'])
 def restore_jobs_from_history():
     """Restore the jobs table from unique job names found in PO history"""
@@ -3539,7 +3576,11 @@ JOB_MANAGEMENT_TEMPLATE = '''
         }
     </style>
     <script>
-        let jobsData = {{ jobs_json }};
+        let jobsData = ({{ jobs_json }}) || [];
+        console.log('[JOBS TABLE DEBUG] jobsData assigned:', jobsData);
+        console.log('[JOBS TABLE DEBUG] jobsData type:', typeof jobsData);
+        console.log('[JOBS TABLE DEBUG] jobsData is array:', Array.isArray(jobsData));
+        console.log('[JOBS TABLE DEBUG] jobsData length:', jobsData ? jobsData.length : 'null/undefined');
         let filteredYear = '';
         let filteredStatus = 'all';
 
@@ -3805,19 +3846,22 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 label = displayPct + '% - OVER by $' + overAmt;
             }
 
-            return `<div class="budget-bar-container">
-                <div class="budget-bar ${barColor}" style="width: ${pct}%"></div>
-                <span class="budget-bar-label">${label}</span>
-            </div>
-            <div style="font-size: 11px; color: #666; margin-top: 3px;">$${invoiced.toFixed(2)} / $${budget.toFixed(2)}</div>`;
+            return '<div class="budget-bar-container">' +
+                '<div class="budget-bar ' + barColor + '" style="width: ' + pct + '%"></div>' +
+                '<span class="budget-bar-label">' + label + '</span>' +
+                '</div>' +
+                '<div style="font-size: 11px; color: #666; margin-top: 3px;">$' + invoiced.toFixed(2) + ' / $' + budget.toFixed(2) + '</div>';
         }
 
         function renderTable() {
             const tbody = document.getElementById('jobs-tbody');
             const statsDiv = document.getElementById('filter-stats');
 
-            console.log('renderTable called. jobsData:', jobsData);
-            console.log('Total jobs in data:', jobsData.length);
+            console.log('[JOBS TABLE DEBUG] renderTable called');
+            console.log('[JOBS TABLE DEBUG] tbody element found:', tbody ? 'YES' : 'NO');
+            console.log('[JOBS TABLE DEBUG] statsDiv element found:', statsDiv ? 'YES' : 'NO');
+            console.log('[JOBS TABLE DEBUG] jobsData:', jobsData);
+            console.log('[JOBS TABLE DEBUG] Total jobs in data:', jobsData ? jobsData.length : 'N/A');
 
             // Filter data
             let filtered = jobsData;
@@ -3912,7 +3956,11 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 html += '</tr>';
             });
 
+            console.log('[JOBS TABLE DEBUG] Built HTML length:', html.length);
+            console.log('[JOBS TABLE DEBUG] HTML preview (first 500 chars):', html.substring(0, 500));
+            console.log('[JOBS TABLE DEBUG] About to assign to tbody...');
             tbody.innerHTML = html;
+            console.log('[JOBS TABLE DEBUG] HTML assigned to tbody');
         }
 
         function editJobberInvoice(poId, currentVal) {
