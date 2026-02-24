@@ -6,8 +6,10 @@ import os
 import re
 import secrets
 import smtplib
+import json
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from markupsafe import Markup
 
 # Claude API for intelligent invoice matching
 try:
@@ -2051,9 +2053,28 @@ def manage_jobs():
 
         conn.close()
 
+        # Convert jobs to JSON-serializable format
+        jobs_list = []
+        for job in jobs:
+            jobs_list.append({
+                'id': job[0],
+                'job_name': job[1],
+                'year': job[2],
+                'created_date': job[3],
+                'active': job[4],
+                'total_invoiced': float(job[5]),
+                'invoice_count': job[6],
+                'total_estimated': float(job[7]),
+                'po_count': job[8],
+                'budget': float(job[9])
+            })
+
+        # Convert to JSON and mark as safe
+        jobs_json = Markup(json.dumps(jobs_list))
+
         return render_template_string(JOB_MANAGEMENT_TEMPLATE,
                                       username=session['username'],
-                                      jobs=jobs,
+                                      jobs_json=jobs_json,
                                       orphaned_jobs=orphaned_jobs)
 
     except Exception as e:
@@ -3532,9 +3553,8 @@ JOB_MANAGEMENT_TEMPLATE = '''
             font-size: 12px;
         }
     </style>
-    {% autoescape false %}
     <script>
-        let jobsData = {{ jobs|tojson }};
+        let jobsData = {{ jobs_json }};
         let filteredYear = '';
         let filteredStatus = 'all';
 
@@ -3972,7 +3992,6 @@ JOB_MANAGEMENT_TEMPLATE = '''
         // ensuring filters are always reset even on back-navigation
         window.addEventListener('pageshow', initPage);
     </script>
-    {% endautoescape %}
 </head>
 <body>
     <div class="header">
