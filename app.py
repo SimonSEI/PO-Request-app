@@ -3863,28 +3863,27 @@ JOB_MANAGEMENT_TEMPLATE = '''
             const overallPct = totalBudget > 0 ? ((totalInvoiced / totalBudget) * 100).toFixed(1) : 'N/A';
 
             // Update stats
-            statsDiv.innerHTML = `
-                <div class="stat-item">
-                    <div class="stat-number">${totalJobs}</div>
-                    <div class="stat-label">Total Jobs</div>
-                </div>
-                <div class="stat-item">
-                    <div class="stat-number">${activeJobs}</div>
-                    <div class="stat-label">Active Jobs</div>
-                </div>
-                <div class="stat-item">
-                    <div class="stat-number">$${totalBudget.toFixed(2)}</div>
-                    <div class="stat-label">Total Budget for Materials</div>
-                </div>
-                <div class="stat-item">
-                    <div class="stat-number">$${totalInvoiced.toFixed(2)}</div>
-                    <div class="stat-label">Total Invoiced</div>
-                </div>
-                <div class="stat-item">
-                    <div class="stat-number">${overallPct}${overallPct !== 'N/A' ? '%' : ''}</div>
-                    <div class="stat-label">% of Budget Used</div>
-                </div>
-            `;
+            statsDiv.innerHTML =
+                '<div class="stat-item">' +
+                '<div class="stat-number">' + totalJobs + '</div>' +
+                '<div class="stat-label">Total Jobs</div>' +
+                '</div>' +
+                '<div class="stat-item">' +
+                '<div class="stat-number">' + activeJobs + '</div>' +
+                '<div class="stat-label">Active Jobs</div>' +
+                '</div>' +
+                '<div class="stat-item">' +
+                '<div class="stat-number">$' + totalBudget.toFixed(2) + '</div>' +
+                '<div class="stat-label">Total Budget for Materials</div>' +
+                '</div>' +
+                '<div class="stat-item">' +
+                '<div class="stat-number">$' + totalInvoiced.toFixed(2) + '</div>' +
+                '<div class="stat-label">Total Invoiced</div>' +
+                '</div>' +
+                '<div class="stat-item">' +
+                '<div class="stat-number">' + overallPct + (overallPct !== 'N/A' ? '%' : '') + '</div>' +
+                '<div class="stat-label">% of Budget Used</div>' +
+                '</div>';
 
             // Build table HTML
             if (filtered.length === 0) {
