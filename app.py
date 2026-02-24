@@ -5,6 +5,7 @@ import sqlite3
 import os
 import re
 import secrets
+import json
 import smtplib
 import json
 from email.mime.text import MIMEText
@@ -2053,24 +2054,8 @@ def manage_jobs():
 
         conn.close()
 
-        # Convert jobs to JSON-serializable format
-        jobs_list = []
-        for job in jobs:
-            jobs_list.append({
-                'id': job[0],
-                'job_name': job[1],
-                'year': job[2],
-                'created_date': job[3],
-                'active': job[4],
-                'total_invoiced': float(job[5]),
-                'invoice_count': job[6],
-                'total_estimated': float(job[7]),
-                'po_count': job[8],
-                'budget': float(job[9])
-            })
-
-        # Convert to JSON and mark as safe
-        jobs_json = Markup(json.dumps(jobs_list))
+        # Convert jobs to JSON string for JavaScript
+        jobs_json = json.dumps(jobs)
 
         return render_template_string(JOB_MANAGEMENT_TEMPLATE,
                                       username=session['username'],
