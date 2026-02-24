@@ -3493,6 +3493,8 @@ JOB_MANAGEMENT_TEMPLATE = '''
             const year = document.getElementById('year').value.trim();
             const budget = document.getElementById('budget').value.trim();
 
+            console.log('Adding job:', { jobName, year, budget });
+
             if (!jobName || !year) {
                 alert('Please enter both job name and year');
                 return;
@@ -3503,25 +3505,33 @@ JOB_MANAGEMENT_TEMPLATE = '''
             formData.append('year', year);
             formData.append('budget', budget || '0');
 
+            console.log('FormData prepared, sending to /add_job');
+
             fetch('/add_job', {
                 method: 'POST',
                 body: formData
             })
             .then(response => {
+                console.log('Response status:', response.status);
                 if (!response.ok) {
                     throw new Error('Server error: ' + response.status);
                 }
                 return response.json();
             })
             .then(data => {
+                console.log('Server response:', data);
                 if (data.success) {
                     alert(data.message);
+                    document.getElementById('job_name').value = '';
+                    document.getElementById('year').value = '2025';
+                    document.getElementById('budget').value = '0';
                     location.reload();
                 } else {
                     alert('Error: ' + data.error);
                 }
             })
             .catch(err => {
+                console.error('Error adding job:', err);
                 alert('Failed to add job. Please try again.\n\nDetails: ' + err.message);
             });
         }
@@ -3751,6 +3761,9 @@ JOB_MANAGEMENT_TEMPLATE = '''
             const tbody = document.getElementById('jobs-tbody');
             const statsDiv = document.getElementById('filter-stats');
 
+            console.log('renderTable called. jobsData:', jobsData);
+            console.log('Total jobs in data:', jobsData.length);
+
             // Filter data
             let filtered = jobsData;
 
@@ -3876,6 +3889,10 @@ JOB_MANAGEMENT_TEMPLATE = '''
         }
 
         function initPage() {
+            console.log('Page initialization started');
+            console.log('jobsData available:', typeof jobsData !== 'undefined' && jobsData !== null);
+            console.log('jobsData content:', jobsData);
+
             // Build the year dropdown from actual job years
             populateYearFilter();
             // Reset filters so stale browser-autofill values don't hide jobs
@@ -3885,7 +3902,9 @@ JOB_MANAGEMENT_TEMPLATE = '''
             filteredStatus = 'all';
             try {
                 renderTable();
+                console.log('Table rendered successfully');
             } catch(e) {
+                console.error('Error rendering table:', e);
                 document.getElementById('jobs-tbody').innerHTML =
                     '<tr><td colspan="9" style="color:red;padding:20px;">Error rendering table: ' + e.message +
                     '. Try refreshing the page.</td></tr>';
@@ -3913,15 +3932,15 @@ JOB_MANAGEMENT_TEMPLATE = '''
         <h2 style="color: #667eea; margin-bottom: 20px;">Add New Job</h2>
         <div class="form-group">
             <label>Job Name</label>
-            <input type="text" id="job_name" placeholder="e.g., Chase Bank, Seven Lakes">
+            <input type="text" id="job_name" name="job_name" placeholder="e.g., Chase Bank, Seven Lakes" required>
         </div>
         <div class="form-group">
             <label>Year</label>
-            <input type="number" id="year" placeholder="e.g., 2025" value="2025">
+            <input type="number" id="year" name="year" placeholder="e.g., 2025" value="2025" required>
         </div>
         <div class="form-group">
             <label>Budget for Materials ($)</label>
-            <input type="number" id="budget" placeholder="e.g., 50000" step="0.01" min="0" value="0">
+            <input type="number" id="budget" name="budget" placeholder="e.g., 50000" step="0.01" min="0" value="0">
         </div>
         <button type="button" onclick="addJob()" class="btn btn-success">Add Job</button>
     </div>
