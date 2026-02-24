@@ -2034,6 +2034,8 @@ def manage_jobs():
         """)
         jobs = c.fetchall()
         print(f"[manage_jobs] Found {len(jobs)} jobs in database")
+        if len(jobs) > 0:
+            print(f"[manage_jobs] Sample job: {jobs[0]}")
 
         # If no jobs found, check if there are job names in po_requests we can recover
         orphaned_jobs = []
@@ -3939,6 +3941,11 @@ JOB_MANAGEMENT_TEMPLATE = '''
             console.log('Page initialization started');
             console.log('jobsData available:', typeof jobsData !== 'undefined' && jobsData !== null);
             console.log('jobsData content:', jobsData);
+
+            // Debug: check if jobsData is empty
+            if (!jobsData || jobsData.length === 0) {
+                console.warn('WARNING: jobsData is empty or not initialized. This means no jobs were passed from the server.');
+            }
 
             // Build the year dropdown from actual job years
             populateYearFilter();
