@@ -7,8 +7,10 @@ import re
 import secrets
 import json
 import smtplib
+import json
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from markupsafe import Markup
 
 # Claude API for intelligent invoice matching
 try:
@@ -3536,7 +3538,6 @@ JOB_MANAGEMENT_TEMPLATE = '''
             font-size: 12px;
         }
     </style>
-    {% autoescape false %}
     <script>
         let jobsData = {{ jobs_json }};
         let filteredYear = '';
@@ -3976,7 +3977,6 @@ JOB_MANAGEMENT_TEMPLATE = '''
         // ensuring filters are always reset even on back-navigation
         window.addEventListener('pageshow', initPage);
     </script>
-    {% endautoescape %}
 </head>
 <body>
     <div class="header">
