@@ -344,6 +344,18 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # Column already exists
 
+    # Migration: Fix any existing jobs with NULL active field to active=1
+    try:
+        c.execute("UPDATE jobs SET active=1 WHERE active IS NULL")
+    except sqlite3.OperationalError:
+        pass  # Column might not exist yet
+
+    # Migration: Ensure budget column has proper values
+    try:
+        c.execute("UPDATE jobs SET budget=0 WHERE budget IS NULL")
+    except sqlite3.OperationalError:
+        pass  # Column might not exist yet
+
     # Default settings
     default_settings = [
         ('claude_matching_enabled', 'true', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
@@ -1959,6 +1971,16 @@ def manage_jobs():
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
         else:
+            # Migration: Fix any existing jobs with NULL active field to active=1
+            c.execute("UPDATE jobs SET active=1 WHERE active IS NULL")
+            if c.rowcount > 0:
+                conn.commit()
+
+            # Migration: Ensure budget column has proper values
+            c.execute("UPDATE jobs SET budget=0 WHERE budget IS NULL")
+            if c.rowcount > 0:
+                conn.commit()
+
             # Table exists but could be empty — re-seed placeholder jobs so the
             # page never shows a completely blank list with no guidance
             c.execute("SELECT COUNT(*) FROM jobs")
