@@ -3903,10 +3903,11 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 const jobName = job[1] || '';
                 const isActive = job[4] == 1;
                 const escapedName = jobName.replace(/'/g, "\\'").replace(/`/g, '\\`');
+                const htmlEscapedName = jobName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
                 html += '<tr onclick="toggleJobDetails(' + job[0] + ')">';
                 html += '<td><span class="expand-icon" id="icon-' + job[0] + '">▶</span></td>';
-                html += '<td><strong>' + jobName + '</strong></td>';
+                html += '<td><strong>' + htmlEscapedName + '</strong></td>';
                 html += '<td>' + job[2] + '</td>';
                 html += '<td>' + job[8] + ' POs (' + job[6] + ' invoiced)</td>';
                 html += '<td>' + (budget > 0 ? '$' + budget.toFixed(2) : '<span class="budget-not-set">Not set</span>') + '</td>';
