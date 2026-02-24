@@ -1971,15 +1971,28 @@ def manage_jobs():
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
         else:
-            # Migration: Fix any existing jobs with NULL active field to active=1
-            c.execute("UPDATE jobs SET active=1 WHERE active IS NULL")
-            if c.rowcount > 0:
+            # Ensure budget column exists (migration for older databases)
+            try:
+                c.execute("ALTER TABLE jobs ADD COLUMN budget REAL DEFAULT 0")
                 conn.commit()
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+            # Migration: Fix any existing jobs with NULL active field to active=1
+            try:
+                c.execute("UPDATE jobs SET active=1 WHERE active IS NULL")
+                if c.rowcount > 0:
+                    conn.commit()
+            except sqlite3.OperationalError:
+                pass  # Column might not exist
 
             # Migration: Ensure budget column has proper values
-            c.execute("UPDATE jobs SET budget=0 WHERE budget IS NULL")
-            if c.rowcount > 0:
-                conn.commit()
+            try:
+                c.execute("UPDATE jobs SET budget=0 WHERE budget IS NULL")
+                if c.rowcount > 0:
+                    conn.commit()
+            except sqlite3.OperationalError:
+                pass  # Column might not exist yet
 
             # Table exists but could be empty — re-seed placeholder jobs so the
             # page never shows a completely blank list with no guidance
@@ -2020,6 +2033,7 @@ def manage_jobs():
             ORDER BY j.active DESC, j.year DESC, j.job_name ASC
         """)
         jobs = c.fetchall()
+        print(f"[manage_jobs] Found {len(jobs)} jobs in database")
 
         # If no jobs found, check if there are job names in po_requests we can recover
         orphaned_jobs = []
@@ -2234,6 +2248,36 @@ def test_template():
     except NameError:
         return "ERROR: JOB_MANAGEMENT_TEMPLATE is not defined!"
 
+@app.route('/debug_jobs')
+def debug_jobs():
+    """Diagnostic endpoint to check jobs database state"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        # Check table existence
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'")
+        table_exists = bool(c.fetchone())
+        # Check columns
+        c.execute("PRAGMA table_info(jobs)")
+        columns = [row[1] for row in c.fetchall()]
+        # Count jobs
+        c.execute("SELECT COUNT(*) FROM jobs")
+        job_count = c.fetchone()[0]
+        # Get sample jobs
+        c.execute("SELECT id, job_name, year, active, budget FROM jobs LIMIT 5")
+        sample = c.fetchall()
+        conn.close()
+        return jsonify({
+            'success': True,
+            'table_exists': table_exists,
+            'columns': columns,
+            'job_count': job_count,
+            'sample_jobs': sample,
+            'db_path': DB_PATH
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e), 'db_path': DB_PATH})
+
 @app.route('/add_job', methods=['POST'])
 def add_job():
     """Add a new job"""
@@ -2243,6 +2287,8 @@ def add_job():
     job_name = request.form.get('job_name', '').strip()
     year = request.form.get('year', '').strip()
     budget = request.form.get('budget', '0').strip()
+
+    print(f"[add_job] Adding job: name='{job_name}', year={year}, budget={budget}")
 
     if not job_name or not year:
         return jsonify({'success': False, 'error': 'Job name and year required'})
@@ -2265,6 +2311,7 @@ def add_job():
                  (job_name, year, datetime.now().strftime('%Y-%m-%d'), budget))
         conn.commit()
         conn.close()
+        print(f"[add_job] Successfully added job: '{job_name}'")
         return jsonify({'success': True, 'message': f'Job "{job_name}" added successfully'})
     except sqlite3.IntegrityError:
         if conn:
