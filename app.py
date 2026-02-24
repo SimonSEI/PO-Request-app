@@ -3532,7 +3532,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
     </style>
     {% autoescape false %}
     <script>
-        let jobsData = ({{ jobs_json }}) || [];
+        let jobsData = JSON.parse({{ jobs_json | tojson }}) || [];
         console.log('[JOBS TABLE DEBUG] jobsData assigned:', jobsData);
         console.log('[JOBS TABLE DEBUG] jobsData type:', typeof jobsData);
         console.log('[JOBS TABLE DEBUG] jobsData is array:', Array.isArray(jobsData));
