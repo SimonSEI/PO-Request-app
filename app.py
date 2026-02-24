@@ -2293,35 +2293,6 @@ def test_template():
     except NameError:
         return "ERROR: JOB_MANAGEMENT_TEMPLATE is not defined!"
 
-@app.route('/debug_jobs')
-def debug_jobs():
-    """Diagnostic endpoint to check jobs database state"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        # Check table existence
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'")
-        table_exists = bool(c.fetchone())
-        # Check columns
-        c.execute("PRAGMA table_info(jobs)")
-        columns = [row[1] for row in c.fetchall()]
-        # Count jobs
-        c.execute("SELECT COUNT(*) FROM jobs")
-        job_count = c.fetchone()[0]
-        # Get sample jobs
-        c.execute("SELECT id, job_name, year, active, budget FROM jobs LIMIT 5")
-        sample = c.fetchall()
-        conn.close()
-        return jsonify({
-            'success': True,
-            'table_exists': table_exists,
-            'columns': columns,
-            'job_count': job_count,
-            'sample_jobs': sample,
-            'db_path': DB_PATH
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e), 'db_path': DB_PATH})
 
 @app.route('/add_job', methods=['POST'])
 def add_job():
