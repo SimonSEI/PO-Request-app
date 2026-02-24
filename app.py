@@ -3905,7 +3905,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 const escapedName = jobName.replace(/'/g, "\\'").replace(/`/g, '\\`');
 
                 html += '<tr onclick="toggleJobDetails(' + job[0] + ')">';
-                html += '<td><span class="expand-icon" id="icon-' + job[0] + '">&#9658;</span></td>';
+                html += '<td><span class="expand-icon" id="icon-' + job[0] + '">▶</span></td>';
                 html += '<td><strong>' + jobName + '</strong></td>';
                 html += '<td>' + job[2] + '</td>';
                 html += '<td>' + job[8] + ' POs (' + job[6] + ' invoiced)</td>';
