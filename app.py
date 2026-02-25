@@ -2243,21 +2243,34 @@ def manage_techs():
     """Manage technician names - office only"""
     if 'username' not in session or session['role'] != 'office':
         return redirect(url_for('login'))
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT id, name, created_date FROM techs ORDER BY name ASC")
-    techs = c.fetchall()
-    # For each tech, get their PO count and recent POs
-    tech_pos = {}
-    for tech in techs:
-        c.execute("""SELECT id, job_name, estimated_cost, status, request_date
-                     FROM po_requests WHERE tech_name=? ORDER BY id DESC LIMIT 50""", (tech[1],))
-        tech_pos[tech[0]] = c.fetchall()
-    conn.close()
-    return render_template_string(MANAGE_TECHS_TEMPLATE,
-                                  username=session['username'],
-                                  techs=techs,
-                                  tech_pos=tech_pos)
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Ensure techs table exists
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='techs'")
+        if not c.fetchone():
+            conn.close()
+            init_db()
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+
+        c.execute("SELECT id, name, created_date FROM techs ORDER BY name ASC")
+        techs = c.fetchall()
+        # For each tech, get their PO count and recent POs
+        tech_pos = {}
+        for tech in techs:
+            c.execute("""SELECT id, job_name, estimated_cost, status, request_date
+                         FROM po_requests WHERE tech_name=? ORDER BY id DESC LIMIT 50""", (tech[1],))
+            tech_pos[tech[0]] = c.fetchall()
+        conn.close()
+        return render_template_string(MANAGE_TECHS_TEMPLATE,
+                                      username=session['username'],
+                                      techs=techs,
+                                      tech_pos=tech_pos)
+    except Exception as e:
+        return f"<h2>Error loading Manage Techs page</h2><p>{str(e)}</p><p><a href='/office_dashboard'>Back to Dashboard</a></p>"
 
 @app.route('/add_tech', methods=['POST'])
 def add_tech():
