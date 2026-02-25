@@ -3506,6 +3506,8 @@ JOB_MANAGEMENT_TEMPLATE = '''
     <script>
         // Jobs data embedded directly from server - no API call needed
         let jobsData = {{ jobs_json }};
+        console.log('[DEBUG] jobsData loaded:', jobsData);
+        console.log('[DEBUG] jobsData length:', jobsData ? jobsData.length : 'undefined');
         let filteredYear = '';
         let filteredStatus = 'all';
 
@@ -3639,6 +3641,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
         }
 
         function renderTable() {
+            console.log('[DEBUG] renderTable called with jobsData:', jobsData);
             const tbody = document.getElementById('jobs-tbody');
             const statsDiv = document.getElementById('filter-stats');
 
@@ -3711,12 +3714,18 @@ JOB_MANAGEMENT_TEMPLATE = '''
         }
 
         function initPage() {
-            populateYearFilter();
-            document.getElementById('year-filter').value = '';
-            document.getElementById('status-filter').value = 'all';
-            filteredYear = '';
-            filteredStatus = 'all';
-            renderTable();
+            console.log('[DEBUG] initPage called');
+            try {
+                populateYearFilter();
+                document.getElementById('year-filter').value = '';
+                document.getElementById('status-filter').value = 'all';
+                filteredYear = '';
+                filteredStatus = 'all';
+                renderTable();
+                console.log('[DEBUG] initPage completed successfully');
+            } catch (error) {
+                console.error('[DEBUG] Error in initPage:', error);
+            }
         }
 
         window.addEventListener('DOMContentLoaded', initPage);
