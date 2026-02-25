@@ -3508,9 +3508,19 @@ JOB_MANAGEMENT_TEMPLATE = '''
     </script>
     <script>
         // Jobs data embedded directly from server - no API call needed
-        let jobsData = JSON.parse(document.getElementById('jobs-data-script').textContent);
-        console.log('[DEBUG] jobsData loaded:', jobsData);
-        console.log('[DEBUG] jobsData length:', jobsData ? jobsData.length : 'undefined');
+        let jobsData = [];
+        try {
+            const jsonText = document.getElementById('jobs-data-script').textContent.trim();
+            console.log('[DEBUG] Raw JSON length:', jsonText.length);
+            console.log('[DEBUG] First 100 chars:', jsonText.substring(0, 100));
+            jobsData = JSON.parse(jsonText);
+            console.log('[DEBUG] jobsData loaded:', jobsData);
+            console.log('[DEBUG] jobsData length:', jobsData ? jobsData.length : 'undefined');
+        } catch (e) {
+            console.error('[DEBUG] JSON Parse Error:', e.message);
+            console.error('[DEBUG] Error details:', e);
+            jobsData = [];
+        }
         let filteredYear = '';
         let filteredStatus = 'all';
 
