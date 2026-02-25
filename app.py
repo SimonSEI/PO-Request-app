@@ -3503,7 +3503,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
         .budget-not-set { color: #999; font-style: italic; font-size: 12px; }
         .no-results { text-align: center; padding: 40px; color: #999; font-size: 16px; }
     </style>
-    <div id="jobs-data" data-jobs="{{ jobs_json }}"></div>
+    <div id="jobs-data" data-jobs='{{ jobs_json }}'></div>
     <script>
         // Jobs data embedded directly from server - no API call needed
         let jobsData = JSON.parse(document.getElementById('jobs-data').dataset.jobs);
@@ -3625,6 +3625,15 @@ JOB_MANAGEMENT_TEMPLATE = '''
         }
 
         function clearFilters() {
+            document.getElementById('year-filter').value = '';
+            document.getElementById('status-filter').value = 'all';
+            filteredYear = '';
+            filteredStatus = 'all';
+            renderTable();
+        }
+
+        function showAllJobsAZ() {
+            // Show all jobs (active and inactive) sorted alphabetically
             document.getElementById('year-filter').value = '';
             document.getElementById('status-filter').value = 'all';
             filteredYear = '';
@@ -3789,6 +3798,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 </select>
             </div>
             <div class="filter-group"><label>&nbsp;</label><button onclick="clearFilters()" class="btn btn-secondary" style="width: 100%;">Show All</button></div>
+            <div class="filter-group"><label>&nbsp;</label><button onclick="showAllJobsAZ()" class="btn btn-primary" style="width: 100%; background: #28a745;">📋 Show all jobs A-Z</button></div>
         </div>
         <div class="filter-stats" id="filter-stats"></div>
         <div style="overflow-x: auto;">
