@@ -3632,6 +3632,15 @@ JOB_MANAGEMENT_TEMPLATE = '''
             renderTable();
         }
 
+        function showAllJobsAZ() {
+            // Show all jobs (active and inactive) sorted alphabetically
+            document.getElementById('year-filter').value = '';
+            document.getElementById('status-filter').value = 'all';
+            filteredYear = '';
+            filteredStatus = 'all';
+            renderTable();
+        }
+
         function renderBudgetBar(budget, invoiced) {
             if (!budget || budget <= 0) return '<span class="budget-not-set">No budget set</span>';
             const pct = Math.min((invoiced / budget) * 100, 100);
@@ -3789,6 +3798,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 </select>
             </div>
             <div class="filter-group"><label>&nbsp;</label><button onclick="clearFilters()" class="btn btn-secondary" style="width: 100%;">Show All</button></div>
+            <div class="filter-group"><label>&nbsp;</label><button onclick="showAllJobsAZ()" class="btn btn-primary" style="width: 100%; background: #28a745;">📋 Show all jobs A-Z</button></div>
         </div>
         <div class="filter-stats" id="filter-stats"></div>
         <div style="overflow-x: auto;">
