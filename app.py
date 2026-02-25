@@ -2040,9 +2040,15 @@ def manage_jobs():
 
         conn.close()
 
+        # Convert jobs to JSON-safe list for embedding in template
+        jobs_list = [list(job) for job in jobs]
+        import json as json_mod
+        jobs_json = json_mod.dumps(jobs_list)
+
         return render_template_string(JOB_MANAGEMENT_TEMPLATE,
                                       username=session['username'],
-                                      orphaned_jobs=orphaned_jobs)
+                                      orphaned_jobs=orphaned_jobs,
+                                      jobs_json=Markup(jobs_json))
 
     except Exception as e:
         return f"<h2>Error loading Manage Jobs page</h2><p>{str(e)}</p><p><a href='/office_dashboard'>Back to Dashboard</a></p>"
@@ -3498,23 +3504,10 @@ JOB_MANAGEMENT_TEMPLATE = '''
         .no-results { text-align: center; padding: 40px; color: #999; font-size: 16px; }
     </style>
     <script>
-        let jobsData = [];
+        // Jobs data embedded directly from server - no API call needed
+        let jobsData = {{ jobs_json }};
         let filteredYear = '';
         let filteredStatus = 'all';
-
-        async function loadJobsData() {
-            try {
-                const response = await fetch('/api/get_jobs');
-                if (response.ok) {
-                    jobsData = await response.json();
-                } else {
-                    jobsData = [];
-                }
-            } catch (error) {
-                console.error('Error loading jobs:', error);
-                jobsData = [];
-            }
-        }
 
         function escapeHtml(text) {
             const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -3717,8 +3710,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
             });
         }
 
-        async function initPage() {
-            await loadJobsData();
+        function initPage() {
             populateYearFilter();
             document.getElementById('year-filter').value = '';
             document.getElementById('status-filter').value = 'all';
