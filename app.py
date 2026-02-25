@@ -3741,8 +3741,19 @@ JOB_MANAGEMENT_TEMPLATE = '''
         </div>
     </div>
 
+    {% with messages = get_flashed_messages() %}
+    {% if messages %}
+        {% for message in messages %}
+        <div style="padding: 15px 20px; border-radius: 8px; margin-bottom: 15px; font-weight: bold; font-size: 15px; {% if 'Error' in message or 'error' in message %}background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb;{% else %}background: #d4edda; color: #155724; border: 1px solid #c3e6cb;{% endif %}">
+            {{ message }}
+        </div>
+        {% endfor %}
+    {% endif %}
+    {% endwith %}
+
     <div class="card">
         <h2 style="color: #667eea; margin-bottom: 20px;">Add New Job</h2>
+        <p style="color: #888; font-size: 13px; margin-bottom: 15px;">Note: each job name must be unique.</p>
         <form method="POST" action="/add_job">
             <div class="form-group">
                 <label>Job Name</label>
