@@ -3504,7 +3504,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
         .no-results { text-align: center; padding: 40px; color: #999; font-size: 16px; }
     </style>
     <script id="jobs-data-script" type="application/json">
-{{ jobs_json }}
+{{ jobs_json|safe }}
     </script>
     <script>
         // Jobs data embedded directly from server - no API call needed
