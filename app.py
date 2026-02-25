@@ -2048,7 +2048,7 @@ def manage_jobs():
         return render_template_string(JOB_MANAGEMENT_TEMPLATE,
                                       username=session['username'],
                                       orphaned_jobs=orphaned_jobs,
-                                      jobs_json=jobs_json)
+                                      jobs_json=Markup(jobs_json))
 
     except Exception as e:
         return f"<h2>Error loading Manage Jobs page</h2><p>{str(e)}</p><p><a href='/office_dashboard'>Back to Dashboard</a></p>"
@@ -3503,9 +3503,10 @@ JOB_MANAGEMENT_TEMPLATE = '''
         .budget-not-set { color: #999; font-style: italic; font-size: 12px; }
         .no-results { text-align: center; padding: 40px; color: #999; font-size: 16px; }
     </style>
+    <div id="jobs-data" data-jobs="{{ jobs_json }}"></div>
     <script>
         // Jobs data embedded directly from server - no API call needed
-        let jobsData = {{ jobs_json | safe }};
+        let jobsData = JSON.parse(document.getElementById('jobs-data').dataset.jobs);
         console.log('[DEBUG] jobsData loaded:', jobsData);
         console.log('[DEBUG] jobsData length:', jobsData ? jobsData.length : 'undefined');
         let filteredYear = '';
