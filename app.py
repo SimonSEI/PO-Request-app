@@ -2048,7 +2048,7 @@ def manage_jobs():
         return render_template_string(JOB_MANAGEMENT_TEMPLATE,
                                       username=session['username'],
                                       orphaned_jobs=orphaned_jobs,
-                                      jobs_json=Markup(jobs_json))
+                                      jobs_json=jobs_json)
 
     except Exception as e:
         return f"<h2>Error loading Manage Jobs page</h2><p>{str(e)}</p><p><a href='/office_dashboard'>Back to Dashboard</a></p>"
