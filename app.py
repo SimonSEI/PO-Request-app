@@ -2331,23 +2331,33 @@ def test_template():
 
 @app.route('/add_job', methods=['POST'])
 def add_job():
-    """Add a new job"""
+    """Add a new job - supports both AJAX (JSON response) and regular form submission (redirect)"""
     if 'username' not in session or session['role'] != 'office':
-        return jsonify({'success': False, 'error': 'Unauthorized'})
+        if request.headers.get('X-Requested-With') == 'XMLHttpRequest' or request.accept_mimetypes.best == 'application/json':
+            return jsonify({'success': False, 'error': 'Unauthorized'})
+        return redirect(url_for('login'))
+
+    is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest' or request.accept_mimetypes.best == 'application/json'
 
     job_name = request.form.get('job_name', '').strip()
     year = request.form.get('year', '').strip()
     budget = request.form.get('budget', '0').strip()
 
-    print(f"[add_job] Adding job: name='{job_name}', year={year}, budget={budget}")
+    print(f"[add_job] Adding job: name='{job_name}', year={year}, budget={budget}, ajax={is_ajax}")
 
     if not job_name or not year:
-        return jsonify({'success': False, 'error': 'Job name and year required'})
+        if is_ajax:
+            return jsonify({'success': False, 'error': 'Job name and year required'})
+        flash('Error: Job name and year are required')
+        return redirect(url_for('manage_jobs'))
 
     try:
         year = int(year)
     except ValueError:
-        return jsonify({'success': False, 'error': 'Invalid year'})
+        if is_ajax:
+            return jsonify({'success': False, 'error': 'Invalid year'})
+        flash('Error: Invalid year')
+        return redirect(url_for('manage_jobs'))
 
     try:
         budget = float(budget) if budget else 0
@@ -2363,15 +2373,24 @@ def add_job():
         conn.commit()
         conn.close()
         print(f"[add_job] Successfully added job: '{job_name}'")
-        return jsonify({'success': True, 'message': f'Job "{job_name}" added successfully'})
+        if is_ajax:
+            return jsonify({'success': True, 'message': f'Job "{job_name}" added successfully'})
+        flash(f'Job "{job_name}" added successfully!')
+        return redirect(url_for('manage_jobs'))
     except sqlite3.IntegrityError:
         if conn:
             conn.close()
-        return jsonify({'success': False, 'error': 'Job name already exists'})
+        if is_ajax:
+            return jsonify({'success': False, 'error': 'Job name already exists'})
+        flash('Error: Job name already exists')
+        return redirect(url_for('manage_jobs'))
     except Exception as e:
         if conn:
             conn.close()
-        return jsonify({'success': False, 'error': f'Database error: {str(e)}'})
+        if is_ajax:
+            return jsonify({'success': False, 'error': f'Database error: {str(e)}'})
+        flash(f'Error: {str(e)}')
+        return redirect(url_for('manage_jobs'))
 
 
 @app.route('/edit_job', methods=['POST'])
@@ -3434,262 +3453,91 @@ JOB_MANAGEMENT_TEMPLATE = '''
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
-        .header {
-            background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex;
-            justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
-        }
+        .header { background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
         h1 { color: #333; font-size: 24px; }
-        .btn {
-            padding: 10px 20px; border-radius: 5px; text-decoration: none;
-            font-weight: bold; border: none; cursor: pointer; font-size: 14px;
-        }
+        .btn { padding: 10px 20px; border-radius: 5px; text-decoration: none; font-weight: bold; border: none; cursor: pointer; font-size: 14px; }
         .btn-primary { background: #667eea; color: white; }
         .btn-secondary { background: #6c757d; color: white; }
         .btn-success { background: #28a745; color: white; }
         .btn-danger { background: #dc3545; color: white; }
-        .card {
-            background: white; padding: 20px; border-radius: 10px;
-            margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-        }
-        .filter-controls {
-            background: #f0f4ff; padding: 20px; border-radius: 5px;
-            margin-bottom: 20px; display: flex; gap: 15px; align-items: flex-end;
-            flex-wrap: wrap;
-        }
-        .filter-group {
-            flex: 1;
-            min-width: 200px;
-        }
-        .filter-group label {
-            display: block;
-            font-weight: bold;
-            color: #667eea;
-            margin-bottom: 5px;
-        }
-        .filter-group input, .filter-group select {
-            width: 100%;
-            padding: 10px;
-            border: 2px solid #667eea;
-            border-radius: 5px;
-            font-size: 16px;
-        }
-        .filter-stats {
-            background: #e7f3ff;
-            padding: 15px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-            display: flex;
-            gap: 20px;
-            flex-wrap: wrap;
-        }
-        .stat-item {
-            flex: 1;
-            min-width: 150px;
-        }
-        .stat-number {
-            font-size: 24px;
-            font-weight: bold;
-            color: #667eea;
-        }
-        .stat-label {
-            color: #666;
-            font-size: 14px;
-        }
+        .card { background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; color: #555; }
+        input, select { width: 100%; padding: 10px; border: 2px solid #ddd; border-radius: 5px; font-size: 16px; }
+        .filter-controls { background: #f0f4ff; padding: 20px; border-radius: 5px; margin-bottom: 20px; display: flex; gap: 15px; align-items: flex-end; flex-wrap: wrap; }
+        .filter-group { flex: 1; min-width: 200px; }
+        .filter-group label { color: #667eea; margin-bottom: 5px; }
+        .filter-group input, .filter-group select { border: 2px solid #667eea; }
+        .filter-stats { background: #e7f3ff; padding: 15px; border-radius: 5px; margin-bottom: 20px; display: flex; gap: 20px; flex-wrap: wrap; }
+        .stat-item { flex: 1; min-width: 150px; }
+        .stat-number { font-size: 24px; font-weight: bold; color: #667eea; }
+        .stat-label { color: #666; font-size: 14px; }
         table { width: 100%; border-collapse: collapse; }
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
         th { background: #667eea; color: white; font-weight: bold; }
-        tr:hover { background: #f5f5f5; cursor: pointer; }
-        .form-group { margin-bottom: 15px; }
-        label { display: block; margin-bottom: 5px; font-weight: bold; color: #555; }
-        input {
-            width: 100%; padding: 10px; border: 2px solid #ddd;
-            border-radius: 5px; font-size: 16px;
-        }
-        .status-badge {
-            padding: 5px 10px; border-radius: 20px; font-size: 12px;
-            font-weight: bold; display: inline-block;
-        }
+        tr:hover { background: #f5f5f5; }
+        .status-badge { padding: 5px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; display: inline-block; }
         .status-active { background: #28a745; color: white; }
         .status-inactive { background: #dc3545; color: white; }
-        .expandable-row {
-            display: none;
-            background: #f9f9f9;
-        }
-        .expandable-row.show {
-            display: table-row;
-        }
-        .invoice-details {
-            padding: 20px;
-            background: white;
-            border-radius: 5px;
-        }
-        .invoice-item {
-            padding: 15px;
-            background: #e7f3ff;
-            margin: 10px 0;
-            border-radius: 5px;
-            border-left: 4px solid #667eea;
-        }
-        .expand-icon {
-            transition: transform 0.3s;
-            display: inline-block;
-        }
-        .expand-icon.rotated {
-            transform: rotate(90deg);
-        }
+        .expandable-row { display: none; background: #f9f9f9; }
+        .expandable-row.show { display: table-row; }
+        .invoice-details { padding: 20px; background: white; border-radius: 5px; }
+        .invoice-item { padding: 15px; background: #e7f3ff; margin: 10px 0; border-radius: 5px; border-left: 4px solid #667eea; }
+        .expand-icon { transition: transform 0.3s; display: inline-block; }
+        .expand-icon.rotated { transform: rotate(90deg); }
         .money-positive { color: #28a745; font-weight: bold; }
         .money-negative { color: #dc3545; font-weight: bold; }
-        .no-results {
-            text-align: center;
-            padding: 40px;
-            color: #999;
-            font-size: 16px;
-        }
-        .budget-bar-container {
-            width: 100%;
-            background: #e9ecef;
-            border-radius: 10px;
-            overflow: hidden;
-            height: 22px;
-            position: relative;
-        }
-        .budget-bar {
-            height: 100%;
-            border-radius: 10px;
-            transition: width 0.3s ease;
-            min-width: 0;
-        }
-        .budget-bar-label {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            font-size: 11px;
-            font-weight: bold;
-            color: #333;
-            white-space: nowrap;
-            text-shadow: 0 0 3px rgba(255,255,255,0.8);
-        }
+        .budget-bar-container { width: 100%; background: #e9ecef; border-radius: 10px; overflow: hidden; height: 22px; position: relative; }
+        .budget-bar { height: 100%; border-radius: 10px; transition: width 0.3s ease; }
+        .budget-bar-label { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 11px; font-weight: bold; color: #333; white-space: nowrap; text-shadow: 0 0 3px rgba(255,255,255,0.8); }
         .budget-green { background: #28a745; }
         .budget-yellow { background: #ffc107; }
         .budget-orange { background: #fd7e14; }
         .budget-red { background: #dc3545; }
-        .budget-not-set {
-            color: #999;
-            font-style: italic;
-            font-size: 12px;
-        }
+        .budget-not-set { color: #999; font-style: italic; font-size: 12px; }
+        .no-results { text-align: center; padding: 40px; color: #999; font-size: 16px; }
     </style>
     <script>
         let jobsData = [];
+        let filteredYear = '';
+        let filteredStatus = 'all';
 
-        // Fetch jobs data via API instead of inline rendering to avoid HTML escaping issues
         async function loadJobsData() {
             try {
                 const response = await fetch('/api/get_jobs');
                 if (response.ok) {
                     jobsData = await response.json();
-                    console.log('[JOBS TABLE DEBUG] jobsData loaded from API:', jobsData);
                 } else {
-                    console.error('[JOBS TABLE DEBUG] Failed to load jobs:', response.status);
                     jobsData = [];
                 }
             } catch (error) {
-                console.error('[JOBS TABLE DEBUG] Error loading jobs:', error);
+                console.error('Error loading jobs:', error);
                 jobsData = [];
             }
         }
 
-        // Helper function to escape HTML special characters
         function escapeHtml(text) {
-            const map = {
-                '&': '&amp;',
-                '<': '&lt;',
-                '>': '&gt;',
-                '"': '&quot;',
-                "'": '&#39;'
-            };
+            const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
             return text.replace(/[&<>"']/g, m => map[m]);
-        }
-        let filteredYear = '';
-        let filteredStatus = 'all';
-
-        function addJob() {
-            console.log('===== addJob() function called =====');
-            const jobName = document.getElementById('job_name').value.trim();
-            const year = document.getElementById('year').value.trim();
-            const budget = document.getElementById('budget').value.trim();
-
-            console.log('Adding job:', { jobName, year, budget });
-
-            if (!jobName || !year) {
-                alert('Please enter both job name and year');
-                console.log('Validation failed - missing job name or year');
-                return;
-            }
-
-            const formData = new FormData();
-            formData.append('job_name', jobName);
-            formData.append('year', year);
-            formData.append('budget', budget || '0');
-
-            console.log('FormData prepared, sending to /add_job');
-
-            fetch('/add_job', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => {
-                console.log('Response status:', response.status);
-                if (!response.ok) {
-                    throw new Error('Server error: ' + response.status);
-                }
-                return response.json();
-            })
-            .then(data => {
-                console.log('Server response:', data);
-                if (data.success) {
-                    alert(data.message);
-                    document.getElementById('job_name').value = '';
-                    document.getElementById('year').value = '2025';
-                    document.getElementById('budget').value = '0';
-                    location.reload();
-                } else {
-                    alert('Error: ' + data.error);
-                }
-            })
-            .catch(err => {
-                console.error('Error adding job:', err);
-                alert('Failed to add job. Please try again.\n\nDetails: ' + err.message);
-            });
         }
 
         function editJob(id, currentName, currentYear, currentBudget, event) {
             event.stopPropagation();
             const newName = prompt('Edit job name:', currentName);
             if (!newName) return;
-
             const newYear = prompt('Edit year:', currentYear);
             if (!newYear) return;
-
             const newBudget = prompt('Edit Budget for Materials ($):', currentBudget || 0);
             if (newBudget === null) return;
 
             fetch('/edit_job', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    job_id: id,
-                    job_name: newName,
-                    year: parseInt(newYear),
-                    budget: parseFloat(newBudget) || 0
-                })
+                body: JSON.stringify({ job_id: id, job_name: newName, year: parseInt(newYear), budget: parseFloat(newBudget) || 0 })
             })
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    alert(data.message);
                     location.reload();
                 } else {
                     alert('Error: ' + data.error);
@@ -3700,59 +3548,38 @@ JOB_MANAGEMENT_TEMPLATE = '''
         function toggleJob(id, event) {
             event.stopPropagation();
             if (!confirm('Toggle active status for this job?')) return;
-
             fetch('/toggle_job', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ job_id: id })
             })
             .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    location.reload();
-                } else {
-                    alert('Error: ' + data.error);
-                }
-            });
+            .then(data => { if (data.success) location.reload(); else alert('Error: ' + data.error); });
         }
 
         function deleteJob(id, jobName, event) {
             event.stopPropagation();
             if (!confirm('Are you sure you want to DELETE "' + jobName + '"? This cannot be undone!')) return;
-
             fetch('/delete_job', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ job_id: id })
             })
             .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    alert(data.message);
-                    location.reload();
-                } else {
-                    alert('Error: ' + data.error);
-                }
-            });
+            .then(data => { if (data.success) location.reload(); else alert('Error: ' + data.error); });
         }
 
         function toggleJobDetails(jobId) {
             const detailsRow = document.getElementById('details-' + jobId);
             const icon = document.getElementById('icon-' + jobId);
-
             if (detailsRow.classList.contains('show')) {
                 detailsRow.classList.remove('show');
                 icon.classList.remove('rotated');
             } else {
-                // Hide all other expanded rows
                 document.querySelectorAll('.expandable-row').forEach(row => row.classList.remove('show'));
                 document.querySelectorAll('.expand-icon').forEach(ic => ic.classList.remove('rotated'));
-
-                // Show this row
                 detailsRow.classList.add('show');
                 icon.classList.add('rotated');
-
-                // Load invoice details
                 loadJobInvoices(jobId);
             }
         }
@@ -3760,7 +3587,6 @@ JOB_MANAGEMENT_TEMPLATE = '''
         function loadJobInvoices(jobId) {
             const container = document.getElementById('invoice-container-' + jobId);
             container.innerHTML = '<p style="text-align: center; color: #666;">Loading invoices...</p>';
-
             fetch('/get_job_details/' + jobId)
             .then(response => response.json())
             .then(data => {
@@ -3769,76 +3595,30 @@ JOB_MANAGEMENT_TEMPLATE = '''
                         container.innerHTML = '<p style="text-align: center; color: #999;">No invoices for this job yet.</p>';
                         return;
                     }
-
                     let html = '<h3 style="color: #667eea; margin-bottom: 15px;">Invoices for ' + escapeHtml(data.job_name) + '</h3>';
-
-                    // Budget summary at the top
                     if (data.budget && data.budget > 0) {
                         const pct = data.budget_pct || 0;
                         const remaining = data.budget - data.total_invoiced;
                         const barColor = pct <= 50 ? 'budget-green' : pct <= 75 ? 'budget-yellow' : pct <= 100 ? 'budget-orange' : 'budget-red';
-                        const barWidth = Math.min(pct, 100);
                         html += '<div style="background: #f0f4ff; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 2px solid #667eea;">';
-                        html += '<strong style="color: #667eea;">Budget for Materials Summary</strong><br>';
-                        html += '<div style="display: flex; gap: 20px; margin: 10px 0; flex-wrap: wrap;">';
-                        html += '<span>Budget: <strong>$' + data.budget.toFixed(2) + '</strong></span>';
-                        html += '<span>Spent: <strong>$' + data.total_invoiced.toFixed(2) + '</strong></span>';
-                        html += '<span>Remaining: <strong class="' + (remaining >= 0 ? 'money-positive' : 'money-negative') + '">$' + remaining.toFixed(2) + '</strong></span>';
+                        html += '<strong style="color: #667eea;">Budget Summary</strong><br>';
+                        html += '<span>Budget: $' + data.budget.toFixed(2) + ' | Spent: $' + data.total_invoiced.toFixed(2) + ' | Remaining: <strong class="' + (remaining >= 0 ? 'money-positive' : 'money-negative') + '">$' + remaining.toFixed(2) + '</strong></span><br>';
+                        html += '<div class="budget-bar-container" style="height: 26px; margin-top: 10px;"><div class="budget-bar ' + barColor + '" style="width: ' + Math.min(pct, 100) + '%"></div><span class="budget-bar-label">' + pct + '% used</span></div>';
                         html += '</div>';
-                        html += '<div class="budget-bar-container" style="height: 26px;">';
-                        html += '<div class="budget-bar ' + barColor + '" style="width: ' + barWidth + '%"></div>';
-                        html += '<span class="budget-bar-label">' + pct + '% of budget used</span>';
-                        html += '</div></div>';
                     }
-
                     data.invoices.forEach(inv => {
                         const diff = inv.invoice_cost - inv.estimated;
-                        const diffClass = diff > 0 ? 'money-negative' : 'money-positive';
-                        const diffSign = diff > 0 ? '+' : '';
                         const jobberNum = inv.jobber_invoice_number || '';
-                        const jobberStyle = jobberNum
-                            ? 'background: #d4edda; border: 2px solid #28a745; color: #155724;'
-                            : 'background: #f8d7da; border: 2px solid #dc3545; color: #721c24;';
-                        const jobberLabel = jobberNum ? jobberNum : 'No Jobber Invoice # entered';
-
-                        html += '<div class="invoice-item">';
-                        html += '<strong>PO #' + inv.po_id.toString().padStart(4, '0') + '</strong> - ' + escapeHtml(inv.tech_name) + '<br>';
-                        html += 'Invoice: ' + escapeHtml(inv.invoice_number) + '<br>';
-                        html += 'Estimated: $' + inv.estimated.toFixed(2) + ' | ';
-                        html += 'Actual: $' + inv.invoice_cost.toFixed(2) + ' | ';
-                        html += 'Difference: <span class="' + diffClass + '">' + diffSign + '$' + diff.toFixed(2) + '</span><br>';
-                        html += 'Date: ' + inv.date;
-                        if (inv.filename && inv.filename !== 'MANUAL_ENTRY') {
-                            html += ' | <a href="/view_invoice/' + inv.filename + '" target="_blank" style="color: #667eea;">View Invoice</a>';
-                        }
-                        html += '<div style="margin-top: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">';
-                        html += '<label style="font-weight: bold; color: #333; white-space: nowrap;">Jobber Invoice #:</label>';
-                        html += '<span id="jobber-display-' + inv.po_id + '" style="padding: 6px 12px; border-radius: 5px; font-weight: bold; ' + jobberStyle + ' cursor: pointer; min-width: 180px;" onclick="editJobberInvoice(' + inv.po_id + ', \'' + jobberNum.replace(/'/g, "\\'") + '\')">' + escapeHtml(jobberLabel) + '</span>';
-                        html += '<button onclick="editJobberInvoice(' + inv.po_id + ', \'' + jobberNum.replace(/'/g, "\\'") + '\')" style="padding: 5px 12px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 13px;">Edit</button>';
-                        html += '</div>';
+                        html += '<div class="invoice-item"><strong>PO #' + inv.po_id.toString().padStart(4, '0') + '</strong> - ' + escapeHtml(inv.tech_name) + '<br>';
+                        html += 'Invoice: ' + escapeHtml(inv.invoice_number) + ' | Estimated: $' + inv.estimated.toFixed(2) + ' | Actual: $' + inv.invoice_cost.toFixed(2);
+                        html += ' | Diff: <span class="' + (diff > 0 ? 'money-negative' : 'money-positive') + '">$' + diff.toFixed(2) + '</span><br>';
+                        if (inv.filename && inv.filename !== 'MANUAL_ENTRY') html += '<a href="/view_invoice/' + inv.filename + '" target="_blank" style="color: #667eea;">View Invoice</a>';
                         html += '</div>';
                     });
-
                     container.innerHTML = html;
                 } else {
-                    container.innerHTML = '<p style="color: #dc3545;">Error loading invoices: ' + data.error + '</p>';
+                    container.innerHTML = '<p style="color: #dc3545;">Error: ' + data.error + '</p>';
                 }
-            })
-            .catch(error => {
-                container.innerHTML = '<p style="color: #dc3545;">Error: ' + error + '</p>';
-            });
-        }
-
-        function populateYearFilter() {
-            // Build the year dropdown from the actual years present in jobsData
-            const years = [...new Set(jobsData.map(j => j[2]))].sort((a, b) => b - a);
-            const sel = document.getElementById('year-filter');
-            sel.innerHTML = '<option value="">All Years</option>';
-            years.forEach(yr => {
-                const opt = document.createElement('option');
-                opt.value = yr;
-                opt.textContent = yr;
-                sel.appendChild(opt);
             });
         }
 
@@ -3856,106 +3636,45 @@ JOB_MANAGEMENT_TEMPLATE = '''
             renderTable();
         }
 
-        function getBudgetBarColor(pct) {
-            if (pct <= 50) return 'budget-green';
-            if (pct <= 75) return 'budget-yellow';
-            if (pct <= 100) return 'budget-orange';
-            return 'budget-red';
-        }
-
         function renderBudgetBar(budget, invoiced) {
-            if (!budget || budget <= 0) {
-                return '<span class="budget-not-set">No budget set</span>';
-            }
+            if (!budget || budget <= 0) return '<span class="budget-not-set">No budget set</span>';
             const pct = Math.min((invoiced / budget) * 100, 100);
-            const actualPct = (invoiced / budget) * 100;
-            const barColor = getBudgetBarColor(actualPct);
-            const displayPct = actualPct.toFixed(1);
-            const overBudget = invoiced > budget;
-            const overAmt = overBudget ? (invoiced - budget).toFixed(2) : '';
-
-            let label = displayPct + '% used';
-            if (overBudget) {
-                label = displayPct + '% - OVER by $' + overAmt;
-            }
-
-            return '<div class="budget-bar-container">' +
-                '<div class="budget-bar ' + barColor + '" style="width: ' + pct + '%"></div>' +
-                '<span class="budget-bar-label">' + label + '</span>' +
-                '</div>' +
-                '<div style="font-size: 11px; color: #666; margin-top: 3px;">$' + invoiced.toFixed(2) + ' / $' + budget.toFixed(2) + '</div>';
+            const displayPct = (invoiced / budget * 100).toFixed(1);
+            const barColor = displayPct <= 50 ? 'budget-green' : displayPct <= 75 ? 'budget-yellow' : displayPct <= 100 ? 'budget-orange' : 'budget-red';
+            const label = invoiced > budget ? displayPct + '% - OVER by $' + (invoiced - budget).toFixed(2) : displayPct + '% used';
+            return '<div class="budget-bar-container"><div class="budget-bar ' + barColor + '" style="width: ' + pct + '%"></div><span class="budget-bar-label">' + label + '</span></div><div style="font-size: 11px; color: #666; margin-top: 3px;">$' + invoiced.toFixed(2) + ' / $' + budget.toFixed(2) + '</div>';
         }
 
         function renderTable() {
             const tbody = document.getElementById('jobs-tbody');
             const statsDiv = document.getElementById('filter-stats');
 
-            console.log('[JOBS TABLE DEBUG] renderTable called');
-            console.log('[JOBS TABLE DEBUG] tbody element found:', tbody ? 'YES' : 'NO');
-            console.log('[JOBS TABLE DEBUG] statsDiv element found:', statsDiv ? 'YES' : 'NO');
-            console.log('[JOBS TABLE DEBUG] jobsData:', jobsData);
-            console.log('[JOBS TABLE DEBUG] Total jobs in data:', jobsData ? jobsData.length : 'N/A');
-
-            // Filter data
             let filtered = jobsData;
+            if (filteredYear) filtered = filtered.filter(job => job[2].toString() === filteredYear);
+            if (filteredStatus === 'active') filtered = filtered.filter(job => job[4] == 1);
+            else if (filteredStatus === 'inactive') filtered = filtered.filter(job => job[4] == 0);
 
-            // Filter by year
-            if (filteredYear) {
-                filtered = filtered.filter(job => job[2].toString() === filteredYear);
-            }
-
-            // Filter by status (use == not === to handle int/bool from SQLite)
-            if (filteredStatus === 'active') {
-                filtered = filtered.filter(job => job[4] == 1);
-            } else if (filteredStatus === 'inactive') {
-                filtered = filtered.filter(job => job[4] == 0);
-            }
-
-            // Sort alphabetically (A-Z) by job name (null-safe)
             filtered.sort((a, b) => {
                 const nameA = (a[1] || '').toLowerCase();
                 const nameB = (b[1] || '').toLowerCase();
                 return nameA.localeCompare(nameB);
             });
 
-            // Calculate stats (use == for active check)
             const totalJobs = filtered.length;
             const activeJobs = filtered.filter(j => j[4] == 1).length;
             const totalInvoiced = filtered.reduce((sum, j) => sum + (parseFloat(j[5]) || 0), 0);
             const totalBudget = filtered.reduce((sum, j) => sum + (j[9] || 0), 0);
             const overallPct = totalBudget > 0 ? ((totalInvoiced / totalBudget) * 100).toFixed(1) : 'N/A';
 
-            // Update stats
-            statsDiv.innerHTML =
-                '<div class="stat-item">' +
-                '<div class="stat-number">' + totalJobs + '</div>' +
-                '<div class="stat-label">Total Jobs</div>' +
-                '</div>' +
-                '<div class="stat-item">' +
-                '<div class="stat-number">' + activeJobs + '</div>' +
-                '<div class="stat-label">Active Jobs</div>' +
-                '</div>' +
-                '<div class="stat-item">' +
-                '<div class="stat-number">$' + totalBudget.toFixed(2) + '</div>' +
-                '<div class="stat-label">Total Budget for Materials</div>' +
-                '</div>' +
-                '<div class="stat-item">' +
-                '<div class="stat-number">$' + totalInvoiced.toFixed(2) + '</div>' +
-                '<div class="stat-label">Total Invoiced</div>' +
-                '</div>' +
-                '<div class="stat-item">' +
-                '<div class="stat-number">' + overallPct + (overallPct !== 'N/A' ? '%' : '') + '</div>' +
-                '<div class="stat-label">% of Budget Used</div>' +
-                '</div>';
+            statsDiv.innerHTML = '<div class="stat-item"><div class="stat-number">' + totalJobs + '</div><div class="stat-label">Total Jobs</div></div>' +
+                '<div class="stat-item"><div class="stat-number">' + activeJobs + '</div><div class="stat-label">Active Jobs</div></div>' +
+                '<div class="stat-item"><div class="stat-number">$' + totalBudget.toFixed(2) + '</div><div class="stat-label">Total Budget</div></div>' +
+                '<div class="stat-item"><div class="stat-number">$' + totalInvoiced.toFixed(2) + '</div><div class="stat-label">Total Invoiced</div></div>' +
+                '<div class="stat-item"><div class="stat-number">' + overallPct + (overallPct !== 'N/A' ? '%' : '') + '</div><div class="stat-label">% Budget Used</div></div>';
 
-            // Build table HTML
             if (filtered.length === 0) {
                 const hasFilter = filteredYear !== '' || filteredStatus !== 'all';
-                tbody.innerHTML = '<tr><td colspan="9" class="no-results" style="padding:30px;">' +
-                    (hasFilter
-                        ? 'No jobs match the current filters. <button onclick="clearFilters()" class="btn btn-primary" style="margin-left:10px;padding:6px 16px;">Show All Jobs</button>'
-                        : 'No jobs have been added yet. Use the "Add New Job" form above.') +
-                    '</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="9" class="no-results">' + (hasFilter ? 'No jobs match filters. <button onclick="clearFilters()" class="btn btn-primary" style="margin-left:10px;">Show All</button>' : 'No jobs yet. Use the form above.') + '</td></tr>';
                 return;
             }
 
@@ -3965,8 +3684,8 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 const invoiced = parseFloat(job[5]) || 0;
                 const jobName = job[1] || '';
                 const isActive = job[4] == 1;
-                const escapedName = jobName.replace(/'/g, "\\'").replace(/`/g, '\\`');
-                const htmlEscapedName = jobName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+                const escapedName = jobName.replace(/'/g, "\\'");
+                const htmlEscapedName = escapeHtml(jobName);
 
                 html += '<tr onclick="toggleJobDetails(' + job[0] + ')">';
                 html += '<td><span class="expand-icon" id="icon-' + job[0] + '">▶</span></td>';
@@ -3976,90 +3695,39 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 html += '<td>' + (budget > 0 ? '$' + budget.toFixed(2) : '<span class="budget-not-set">Not set</span>') + '</td>';
                 html += '<td>$' + invoiced.toFixed(2) + '</td>';
                 html += '<td style="min-width: 180px;">' + renderBudgetBar(budget, invoiced) + '</td>';
-                html += '<td><span class="status-badge ' + (isActive ? 'status-active' : 'status-inactive') + '">';
-                html += isActive ? 'Active' : 'Inactive';
-                html += '</span></td>';
-                html += '<td>';
-                html += '<button onclick="editJob(' + job[0] + ', \'' + escapedName + '\', ' + job[2] + ', ' + budget + ', event)" class="btn btn-primary" style="padding: 5px 10px; margin-right: 5px;">Edit</button>';
-                html += '<button onclick="toggleJob(' + job[0] + ', event)" class="btn btn-secondary" style="padding: 5px 10px; margin-right: 5px;">' + (isActive ? 'Deactivate' : 'Activate') + '</button>';
-                html += '<button onclick="deleteJob(' + job[0] + ', \'' + escapedName + '\', event)" class="btn btn-danger" style="padding: 5px 10px;">Delete</button>';
-                html += '</td></tr>';
-                html += '<tr class="expandable-row" id="details-' + job[0] + '">';
-                html += '<td colspan="9"><div class="invoice-details" id="invoice-container-' + job[0] + '"></div></td>';
-                html += '</tr>';
+                html += '<td><span class="status-badge ' + (isActive ? 'status-active' : 'status-inactive') + '">' + (isActive ? 'Active' : 'Inactive') + '</span></td>';
+                html += '<td><button onclick="editJob(' + job[0] + ', \'' + escapedName + '\', ' + job[2] + ', ' + budget + ', event)" class="btn btn-primary" style="padding: 5px 10px; margin-right: 5px; font-size: 12px;">Edit</button>';
+                html += '<button onclick="toggleJob(' + job[0] + ', event)" class="btn btn-secondary" style="padding: 5px 10px; margin-right: 5px; font-size: 12px;">' + (isActive ? 'Deactivate' : 'Activate') + '</button>';
+                html += '<button onclick="deleteJob(' + job[0] + ', \'' + escapedName + '\', event)" class="btn btn-danger" style="padding: 5px 10px; font-size: 12px;">Delete</button></td></tr>';
+                html += '<tr class="expandable-row" id="details-' + job[0] + '"><td colspan="9"><div class="invoice-details" id="invoice-container-' + job[0] + '"></div></td></tr>';
             });
 
-            console.log('[JOBS TABLE DEBUG] Built HTML length:', html.length);
-            console.log('[JOBS TABLE DEBUG] HTML preview (first 500 chars):', html.substring(0, 500));
-            console.log('[JOBS TABLE DEBUG] About to assign to tbody...');
             tbody.innerHTML = html;
-            console.log('[JOBS TABLE DEBUG] HTML assigned to tbody');
         }
 
-        function editJobberInvoice(poId, currentVal) {
-            const newVal = prompt('Enter Jobber Invoice Number for PO #' + poId.toString().padStart(4, '0') + ':', currentVal || '');
-            if (newVal === null) return; // cancelled
-            fetch('/update_jobber_invoice/' + poId, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ jobber_invoice_number: newVal.trim() })
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (data.success) {
-                    const display = document.getElementById('jobber-display-' + poId);
-                    if (display) {
-                        const val = newVal.trim();
-                        if (val) {
-                            display.textContent = val;
-                            display.style.cssText = 'padding: 6px 12px; border-radius: 5px; font-weight: bold; background: #d4edda; border: 2px solid #28a745; color: #155724; cursor: pointer; min-width: 180px;';
-                        } else {
-                            display.textContent = 'No Jobber Invoice # entered';
-                            display.style.cssText = 'padding: 6px 12px; border-radius: 5px; font-weight: bold; background: #f8d7da; border: 2px solid #dc3545; color: #721c24; cursor: pointer; min-width: 180px;';
-                        }
-                    }
-                } else {
-                    alert('Error: ' + data.error);
-                }
+        function populateYearFilter() {
+            const years = [...new Set(jobsData.map(j => j[2]))].sort((a, b) => b - a);
+            const sel = document.getElementById('year-filter');
+            sel.innerHTML = '<option value="">All Years</option>';
+            years.forEach(yr => {
+                const opt = document.createElement('option');
+                opt.value = yr;
+                opt.textContent = yr;
+                sel.appendChild(opt);
             });
         }
 
         async function initPage() {
-            console.log('Page initialization started');
-
-            // Load jobs data from API
             await loadJobsData();
-
-            console.log('jobsData available:', typeof jobsData !== 'undefined' && jobsData !== null);
-            console.log('jobsData content:', jobsData);
-
-            // Debug: check if jobsData is empty
-            if (!jobsData || jobsData.length === 0) {
-                console.warn('WARNING: jobsData is empty. No jobs have been created yet.');
-            }
-
-            // Build the year dropdown from actual job years
             populateYearFilter();
-            // Reset filters so stale browser-autofill values don't hide jobs
             document.getElementById('year-filter').value = '';
             document.getElementById('status-filter').value = 'all';
             filteredYear = '';
             filteredStatus = 'all';
-            try {
-                renderTable();
-                console.log('Table rendered successfully');
-            } catch(e) {
-                console.error('Error rendering table:', e);
-                document.getElementById('jobs-tbody').innerHTML =
-                    '<tr><td colspan="9" style="color:red;padding:20px;">Error rendering table: ' + e.message +
-                    '. Try refreshing the page.</td></tr>';
-            }
+            renderTable();
         }
 
-        // DOMContentLoaded covers normal page loads
         window.addEventListener('DOMContentLoaded', initPage);
-        // pageshow also fires when the page is restored from the browser back/forward cache,
-        // ensuring filters are always reset even on back-navigation
         window.addEventListener('pageshow', initPage);
     </script>
 </head>
@@ -4067,116 +3735,56 @@ JOB_MANAGEMENT_TEMPLATE = '''
     <div class="header">
         <h1>📋 Manage Jobs</h1>
         <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-            <a href="{{ url_for('office_dashboard') }}" class="btn btn-secondary">← Back to Dashboard</a>
-            <a href="{{ url_for('manage_techs') }}" style="background: #fd7e14; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 14px;">👷 Manage Techs</a>
+            <a href="{{ url_for('office_dashboard') }}" class="btn btn-secondary">← Dashboard</a>
+            <a href="{{ url_for('manage_techs') }}" style="background: #fd7e14; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">👷 Manage Techs</a>
             <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
         </div>
     </div>
 
     <div class="card">
         <h2 style="color: #667eea; margin-bottom: 20px;">Add New Job</h2>
-        <div class="form-group">
-            <label>Job Name</label>
-            <input type="text" id="job_name" name="job_name" placeholder="e.g., Chase Bank, Seven Lakes" required>
-        </div>
-        <div class="form-group">
-            <label>Year</label>
-            <input type="number" id="year" name="year" placeholder="e.g., 2025" value="2025" required>
-        </div>
-        <div class="form-group">
-            <label>Budget for Materials ($)</label>
-            <input type="number" id="budget" name="budget" placeholder="e.g., 50000" step="0.01" min="0" value="0">
-        </div>
-        <button type="button" onclick="addJob()" class="btn btn-success">Add Job</button>
+        <form method="POST" action="/add_job">
+            <div class="form-group">
+                <label>Job Name</label>
+                <input type="text" name="job_name" placeholder="e.g., Chase Bank" required>
+            </div>
+            <div class="form-group">
+                <label>Year</label>
+                <input type="number" name="year" value="2026" required>
+            </div>
+            <div class="form-group">
+                <label>Budget for Materials ($)</label>
+                <input type="number" name="budget" placeholder="0" step="0.01" min="0" value="0">
+            </div>
+            <button type="submit" class="btn btn-success" style="font-size: 16px; padding: 12px 24px;">+ Add Job</button>
+        </form>
     </div>
-
-    {% if orphaned_jobs is defined and orphaned_jobs %}
-    <div class="card" style="border: 3px solid #ffc107; background: #fff8e1;">
-        <h2 style="color: #856404; margin-bottom: 10px;">⚠️ Jobs Table Empty — Job Names Found in PO History</h2>
-        <p style="color: #856404; margin-bottom: 15px;">
-            The jobs list is empty but <strong>{{ orphaned_jobs|length }} job name(s)</strong> were found in your PO records.
-            Click below to restore them so they appear in the jobs list again.
-        </p>
-        <ul style="margin-bottom: 15px; padding-left: 20px; color: #555;">
-            {% for j in orphaned_jobs %}
-                <li><strong>{{ j[0] }}</strong> (last used: {{ j[1][:10] if j[1] else 'N/A' }})</li>
-            {% endfor %}
-        </ul>
-        <button onclick="restoreJobsFromHistory()" class="btn btn-success" style="font-size: 16px; padding: 12px 30px;">
-            Restore All Jobs from PO History
-        </button>
-    </div>
-    <script>
-    function restoreJobsFromHistory() {
-        if (!confirm('Restore all job names from PO history? This will add them back to the jobs list as active jobs.')) return;
-        fetch('/restore_jobs_from_history', { method: 'POST' })
-        .then(r => r.json())
-        .then(data => {
-            if (data.success) {
-                alert(data.message);
-                location.reload();
-            } else {
-                alert('Error: ' + data.error);
-            }
-        });
-    }
-    </script>
-    {% endif %}
 
     <div class="card">
-        <h2 style="color: #667eea; margin-bottom: 20px;">Filter Jobs</h2>
-
-        <!-- Filter Controls -->
+        <h2 style="color: #667eea; margin-bottom: 20px;">Jobs</h2>
         <div class="filter-controls">
             <div class="filter-group">
                 <label>Filter by Year</label>
-                <select id="year-filter" autocomplete="off">
-                    <option value="">All Years</option>
-                </select>
+                <select id="year-filter" onchange="applyFilters()"><option value="">All Years</option></select>
             </div>
             <div class="filter-group">
                 <label>Filter by Status</label>
-                <select id="status-filter" autocomplete="off">
-                    <option value="all">All Jobs (Active + Inactive)</option>
+                <select id="status-filter" onchange="applyFilters()">
+                    <option value="all">All Jobs</option>
                     <option value="active">Active Only</option>
                     <option value="inactive">Inactive Only</option>
                 </select>
             </div>
-            <div class="filter-group">
-                <label>&nbsp;</label>
-                <button onclick="applyFilters()" class="btn btn-primary" style="width: 100%;">Apply Filters</button>
-            </div>
-            <div class="filter-group">
-                <label>&nbsp;</label>
-                <button onclick="clearFilters()" class="btn btn-secondary" style="width: 100%;">Show All Jobs</button>
-            </div>
+            <div class="filter-group"><label>&nbsp;</label><button onclick="clearFilters()" class="btn btn-secondary" style="width: 100%;">Show All</button></div>
         </div>
-
-        <!-- Stats -->
-        <div class="filter-stats" id="filter-stats">
-            <!-- Stats populated by JavaScript -->
-        </div>
-
-        <h3 style="color: #667eea; margin-bottom: 15px;">Jobs (Sorted A-Z) - Click to Expand</h3>
+        <div class="filter-stats" id="filter-stats"></div>
         <div style="overflow-x: auto;">
-        <table>
-            <thead>
-                <tr>
-                    <th width="30"></th>
-                    <th>Job Name</th>
-                    <th>Year</th>
-                    <th>POs</th>
-                    <th>Budget for Materials</th>
-                    <th>Total Invoiced</th>
-                    <th>% of Budget Used</th>
-                    <th>Status</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody id="jobs-tbody">
-                <!-- Jobs rendered by JavaScript -->
-            </tbody>
-        </table>
+            <table>
+                <thead>
+                    <tr><th width="30"></th><th>Job Name</th><th>Year</th><th>POs</th><th>Budget</th><th>Invoiced</th><th>% Used</th><th>Status</th><th>Actions</th></tr>
+                </thead>
+                <tbody id="jobs-tbody"></tbody>
+            </table>
         </div>
     </div>
 </body>
