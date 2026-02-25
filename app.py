@@ -3503,10 +3503,12 @@ JOB_MANAGEMENT_TEMPLATE = '''
         .budget-not-set { color: #999; font-style: italic; font-size: 12px; }
         .no-results { text-align: center; padding: 40px; color: #999; font-size: 16px; }
     </style>
-    <div id="jobs-data" data-jobs='{{ jobs_json }}'></div>
+    <script id="jobs-data-script" type="application/json">
+{{ jobs_json }}
+    </script>
     <script>
         // Jobs data embedded directly from server - no API call needed
-        let jobsData = JSON.parse(document.getElementById('jobs-data').dataset.jobs);
+        let jobsData = JSON.parse(document.getElementById('jobs-data-script').textContent);
         console.log('[DEBUG] jobsData loaded:', jobsData);
         console.log('[DEBUG] jobsData length:', jobsData ? jobsData.length : 'undefined');
         let filteredYear = '';
