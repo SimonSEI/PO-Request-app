@@ -2043,7 +2043,7 @@ def manage_jobs():
         # Convert jobs to JSON-safe list for embedding in template
         jobs_list = [list(job) for job in jobs]
         import json as json_mod
-        jobs_json = json_mod.dumps(jobs_list)
+        jobs_json = json_mod.dumps(jobs_list, ensure_ascii=True)
 
         return render_template_string(JOB_MANAGEMENT_TEMPLATE,
                                       username=session['username'],
