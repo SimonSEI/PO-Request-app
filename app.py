@@ -2331,23 +2331,33 @@ def test_template():
 
 @app.route('/add_job', methods=['POST'])
 def add_job():
-    """Add a new job"""
+    """Add a new job - supports both AJAX (JSON response) and regular form submission (redirect)"""
     if 'username' not in session or session['role'] != 'office':
-        return jsonify({'success': False, 'error': 'Unauthorized'})
+        if request.headers.get('X-Requested-With') == 'XMLHttpRequest' or request.accept_mimetypes.best == 'application/json':
+            return jsonify({'success': False, 'error': 'Unauthorized'})
+        return redirect(url_for('login'))
+
+    is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest' or request.accept_mimetypes.best == 'application/json'
 
     job_name = request.form.get('job_name', '').strip()
     year = request.form.get('year', '').strip()
     budget = request.form.get('budget', '0').strip()
 
-    print(f"[add_job] Adding job: name='{job_name}', year={year}, budget={budget}")
+    print(f"[add_job] Adding job: name='{job_name}', year={year}, budget={budget}, ajax={is_ajax}")
 
     if not job_name or not year:
-        return jsonify({'success': False, 'error': 'Job name and year required'})
+        if is_ajax:
+            return jsonify({'success': False, 'error': 'Job name and year required'})
+        flash('Error: Job name and year are required')
+        return redirect(url_for('manage_jobs'))
 
     try:
         year = int(year)
     except ValueError:
-        return jsonify({'success': False, 'error': 'Invalid year'})
+        if is_ajax:
+            return jsonify({'success': False, 'error': 'Invalid year'})
+        flash('Error: Invalid year')
+        return redirect(url_for('manage_jobs'))
 
     try:
         budget = float(budget) if budget else 0
@@ -2363,15 +2373,24 @@ def add_job():
         conn.commit()
         conn.close()
         print(f"[add_job] Successfully added job: '{job_name}'")
-        return jsonify({'success': True, 'message': f'Job "{job_name}" added successfully'})
+        if is_ajax:
+            return jsonify({'success': True, 'message': f'Job "{job_name}" added successfully'})
+        flash(f'Job "{job_name}" added successfully!')
+        return redirect(url_for('manage_jobs'))
     except sqlite3.IntegrityError:
         if conn:
             conn.close()
-        return jsonify({'success': False, 'error': 'Job name already exists'})
+        if is_ajax:
+            return jsonify({'success': False, 'error': 'Job name already exists'})
+        flash('Error: Job name already exists')
+        return redirect(url_for('manage_jobs'))
     except Exception as e:
         if conn:
             conn.close()
-        return jsonify({'success': False, 'error': f'Database error: {str(e)}'})
+        if is_ajax:
+            return jsonify({'success': False, 'error': f'Database error: {str(e)}'})
+        flash(f'Error: {str(e)}')
+        return redirect(url_for('manage_jobs'))
 
 
 @app.route('/edit_job', methods=['POST'])
@@ -3615,55 +3634,67 @@ JOB_MANAGEMENT_TEMPLATE = '''
         let filteredYear = '';
         let filteredStatus = 'all';
 
-        function addJob() {
-            console.log('===== addJob() function called =====');
-            const jobName = document.getElementById('job_name').value.trim();
-            const year = document.getElementById('year').value.trim();
-            const budget = document.getElementById('budget').value.trim();
+        function handleAddJob(event) {
+            // Try to submit via AJAX; if JS fails, the form will submit normally as fallback
+            try {
+                event.preventDefault();
+                console.log('===== handleAddJob() called =====');
+                var jobName = document.getElementById('job_name').value.trim();
+                var year = document.getElementById('year').value.trim();
+                var budget = document.getElementById('budget').value.trim();
 
-            console.log('Adding job:', { jobName, year, budget });
+                console.log('Adding job:', jobName, year, budget);
 
-            if (!jobName || !year) {
-                alert('Please enter both job name and year');
-                console.log('Validation failed - missing job name or year');
-                return;
+                if (!jobName || !year) {
+                    alert('Please enter both job name and year');
+                    return false;
+                }
+
+                var formData = new FormData();
+                formData.append('job_name', jobName);
+                formData.append('year', year);
+                formData.append('budget', budget || '0');
+
+                fetch('/add_job', {
+                    method: 'POST',
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                    body: formData
+                })
+                .then(function(response) {
+                    console.log('Response status:', response.status);
+                    if (!response.ok) {
+                        throw new Error('Server error: ' + response.status);
+                    }
+                    return response.json();
+                })
+                .then(function(data) {
+                    console.log('Server response:', data);
+                    if (data.success) {
+                        alert(data.message);
+                        document.getElementById('job_name').value = '';
+                        document.getElementById('year').value = '2025';
+                        document.getElementById('budget').value = '0';
+                        location.reload();
+                    } else {
+                        alert('Error: ' + data.error);
+                    }
+                })
+                .catch(function(err) {
+                    console.error('AJAX failed, submitting form normally:', err);
+                    // If AJAX fails, submit the form normally
+                    document.getElementById('add-job-form').submit();
+                });
+
+                return false;
+            } catch(e) {
+                // If anything goes wrong with JS, let the form submit normally
+                console.error('JS error, falling back to form submit:', e);
+                return true;
             }
-
-            const formData = new FormData();
-            formData.append('job_name', jobName);
-            formData.append('year', year);
-            formData.append('budget', budget || '0');
-
-            console.log('FormData prepared, sending to /add_job');
-
-            fetch('/add_job', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => {
-                console.log('Response status:', response.status);
-                if (!response.ok) {
-                    throw new Error('Server error: ' + response.status);
-                }
-                return response.json();
-            })
-            .then(data => {
-                console.log('Server response:', data);
-                if (data.success) {
-                    alert(data.message);
-                    document.getElementById('job_name').value = '';
-                    document.getElementById('year').value = '2025';
-                    document.getElementById('budget').value = '0';
-                    location.reload();
-                } else {
-                    alert('Error: ' + data.error);
-                }
-            })
-            .catch(err => {
-                console.error('Error adding job:', err);
-                alert('Failed to add job. Please try again.\n\nDetails: ' + err.message);
-            });
         }
+
+        // Keep old function name as alias for backwards compatibility
+        function addJob() { handleAddJob(new Event('submit')); }
 
         function editJob(id, currentName, currentYear, currentBudget, event) {
             event.stopPropagation();
@@ -4075,19 +4106,21 @@ JOB_MANAGEMENT_TEMPLATE = '''
 
     <div class="card">
         <h2 style="color: #667eea; margin-bottom: 20px;">Add New Job</h2>
-        <div class="form-group">
-            <label>Job Name</label>
-            <input type="text" id="job_name" name="job_name" placeholder="e.g., Chase Bank, Seven Lakes" required>
-        </div>
-        <div class="form-group">
-            <label>Year</label>
-            <input type="number" id="year" name="year" placeholder="e.g., 2025" value="2025" required>
-        </div>
-        <div class="form-group">
-            <label>Budget for Materials ($)</label>
-            <input type="number" id="budget" name="budget" placeholder="e.g., 50000" step="0.01" min="0" value="0">
-        </div>
-        <button type="button" onclick="addJob()" class="btn btn-success">Add Job</button>
+        <form method="POST" action="/add_job" id="add-job-form" onsubmit="return handleAddJob(event);">
+            <div class="form-group">
+                <label>Job Name</label>
+                <input type="text" id="job_name" name="job_name" placeholder="e.g., Chase Bank, Seven Lakes" required>
+            </div>
+            <div class="form-group">
+                <label>Year</label>
+                <input type="number" id="year" name="year" placeholder="e.g., 2025" value="2025" required>
+            </div>
+            <div class="form-group">
+                <label>Budget for Materials ($)</label>
+                <input type="number" id="budget" name="budget" placeholder="e.g., 50000" step="0.01" min="0" value="0">
+            </div>
+            <button type="submit" class="btn btn-success" style="font-size: 16px; padding: 12px 24px;">+ Add Job</button>
+        </form>
     </div>
 
     {% if orphaned_jobs is defined and orphaned_jobs %}
