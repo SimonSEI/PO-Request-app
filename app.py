@@ -2044,11 +2044,13 @@ def manage_jobs():
         jobs_list = [list(job) for job in jobs]
         import json as json_mod
         jobs_json = json_mod.dumps(jobs_list)
+        # Double-escape for safe embedding in JavaScript
+        jobs_json_escaped = json_mod.dumps(jobs_json)
 
         return render_template_string(JOB_MANAGEMENT_TEMPLATE,
                                       username=session['username'],
                                       orphaned_jobs=orphaned_jobs,
-                                      jobs_json=Markup(jobs_json))
+                                      jobs_json=Markup('JSON.parse(' + jobs_json_escaped + ')'))
 
     except Exception as e:
         return f"<h2>Error loading Manage Jobs page</h2><p>{str(e)}</p><p><a href='/office_dashboard'>Back to Dashboard</a></p>"
@@ -3506,6 +3508,8 @@ JOB_MANAGEMENT_TEMPLATE = '''
     <script>
         // Jobs data embedded directly from server - no API call needed
         let jobsData = {{ jobs_json }};
+        console.log('[DEBUG] jobsData loaded:', jobsData);
+        console.log('[DEBUG] jobsData length:', jobsData ? jobsData.length : 'undefined');
         let filteredYear = '';
         let filteredStatus = 'all';
 
@@ -3639,6 +3643,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
         }
 
         function renderTable() {
+            console.log('[DEBUG] renderTable called with jobsData:', jobsData);
             const tbody = document.getElementById('jobs-tbody');
             const statsDiv = document.getElementById('filter-stats');
 
@@ -3711,12 +3716,18 @@ JOB_MANAGEMENT_TEMPLATE = '''
         }
 
         function initPage() {
-            populateYearFilter();
-            document.getElementById('year-filter').value = '';
-            document.getElementById('status-filter').value = 'all';
-            filteredYear = '';
-            filteredStatus = 'all';
-            renderTable();
+            console.log('[DEBUG] initPage called');
+            try {
+                populateYearFilter();
+                document.getElementById('year-filter').value = '';
+                document.getElementById('status-filter').value = 'all';
+                filteredYear = '';
+                filteredStatus = 'all';
+                renderTable();
+                console.log('[DEBUG] initPage completed successfully');
+            } catch (error) {
+                console.error('[DEBUG] Error in initPage:', error);
+            }
         }
 
         window.addEventListener('DOMContentLoaded', initPage);
