@@ -3504,10 +3504,8 @@ JOB_MANAGEMENT_TEMPLATE = '''
         .no-results { text-align: center; padding: 40px; color: #999; font-size: 16px; }
     </style>
     <script>
-        // Jobs data embedded directly from server as JavaScript variable
-        const jobsData = {{ jobs_json|safe }};
-        console.log('[DEBUG] jobsData loaded:', jobsData);
-        console.log('[DEBUG] jobsData length:', jobsData ? jobsData.length : 'undefined');
+        // Jobs data will be loaded via API
+        let jobsData = [];
         let filteredYear = '';
         let filteredStatus = 'all';
 
@@ -3723,18 +3721,33 @@ JOB_MANAGEMENT_TEMPLATE = '''
         }
 
         function initPage() {
-            console.log('[DEBUG] initPage called');
-            try {
-                populateYearFilter();
-                document.getElementById('year-filter').value = '';
-                document.getElementById('status-filter').value = 'all';
-                filteredYear = '';
-                filteredStatus = 'all';
-                renderTable();
-                console.log('[DEBUG] initPage completed successfully');
-            } catch (error) {
-                console.error('[DEBUG] Error in initPage:', error);
-            }
+            console.log('[DEBUG] initPage called - fetching jobs data from API');
+            // Fetch jobs data from the API
+            fetch('/api/get_jobs')
+                .then(response => {
+                    if (!response.ok) throw new Error('Failed to fetch jobs');
+                    return response.json();
+                })
+                .then(data => {
+                    jobsData = data;
+                    console.log('[DEBUG] Jobs data loaded:', jobsData);
+                    console.log('[DEBUG] jobsData length:', jobsData ? jobsData.length : 'undefined');
+                    try {
+                        populateYearFilter();
+                        document.getElementById('year-filter').value = '';
+                        document.getElementById('status-filter').value = 'all';
+                        filteredYear = '';
+                        filteredStatus = 'all';
+                        renderTable();
+                        console.log('[DEBUG] initPage completed successfully');
+                    } catch (error) {
+                        console.error('[DEBUG] Error initializing page:', error);
+                    }
+                })
+                .catch(error => {
+                    console.error('[DEBUG] Error fetching jobs:', error);
+                    document.getElementById('jobs-tbody').innerHTML = '<tr><td colspan="9" style="text-align: center; color: #dc3545; padding: 40px;">Error loading jobs. Please refresh the page.</td></tr>';
+                });
         }
 
         window.addEventListener('DOMContentLoaded', initPage);
