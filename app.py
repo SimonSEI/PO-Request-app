@@ -2947,78 +2947,78 @@ def extract_invoice_data(text, po_map):
     if not po_number:
         print("\n  Method 1: Table column approach")
 
-    # Try multiple header patterns
-    header_patterns = [
-        (r'(ORDER\s*#\s*)(PO\s*#)', 'ORDER # / PO #'),
-        (r'(Purchase\s+Order[/\s]*Job\s+Name)', 'Purchase Order/Job Name'),
-        (r'(PO\s*Number)', 'PO Number'),
-        (r'(PO\s*#)', 'PO #'),
-        (r'(Customer\s*PO)', 'Customer PO'),
-        (r'(Job\s*#)', 'Job #'),
-        (r'(Job\s*Name)', 'Job Name'),
-        (r'(Job\s*Number)', 'Job Number'),
-        (r'(Work\s*Order)', 'Work Order'),
-        (r'(Project\s*#)', 'Project #'),
-        (r'(Reference)', 'Reference'),
-    ]
+        # Try multiple header patterns
+        header_patterns = [
+            (r'(ORDER\s*#\s*)(PO\s*#)', 'ORDER # / PO #'),
+            (r'(Purchase\s+Order[/\s]*Job\s+Name)', 'Purchase Order/Job Name'),
+            (r'(PO\s*Number)', 'PO Number'),
+            (r'(PO\s*#)', 'PO #'),
+            (r'(Customer\s*PO)', 'Customer PO'),
+            (r'(Job\s*#)', 'Job #'),
+            (r'(Job\s*Name)', 'Job Name'),
+            (r'(Job\s*Number)', 'Job Number'),
+            (r'(Work\s*Order)', 'Work Order'),
+            (r'(Project\s*#)', 'Project #'),
+            (r'(Reference)', 'Reference'),
+        ]
 
-    for header_pattern, header_desc in header_patterns:
-        if po_number:
-            break
+        for header_pattern, header_desc in header_patterns:
+            if po_number:
+                break
 
-        po_header_match = re.search(header_pattern, text, re.IGNORECASE)
+            po_header_match = re.search(header_pattern, text, re.IGNORECASE)
 
-        if po_header_match:
-            print(f"    ✓ Found '{header_desc}' header at position {po_header_match.start()}")
-            po_column_start = po_header_match.start()
-            text_after = text[po_column_start:]
-            lines = text_after.split('\n')
+            if po_header_match:
+                print(f"    ✓ Found '{header_desc}' header at position {po_header_match.start()}")
+                po_column_start = po_header_match.start()
+                text_after = text[po_column_start:]
+                lines = text_after.split('\n')
 
-            print(f"    Lines after header:")
-            for i, line in enumerate(lines[:3]):
-                print(f"      Line {i}: {line[:80]}")
+                print(f"    Lines after header:")
+                for i, line in enumerate(lines[:3]):
+                    print(f"      Line {i}: {line[:80]}")
 
-            # Check line 0 (same line) and line 1 (next line) for values
-            lines_to_check = [lines[0]] if lines else []
-            if len(lines) > 1:
-                lines_to_check.append(lines[1])
+                # Check line 0 (same line) and line 1 (next line) for values
+                lines_to_check = [lines[0]] if lines else []
+                if len(lines) > 1:
+                    lines_to_check.append(lines[1])
 
-            # Also check up to 5 lines to handle multi-row tables
-            for i in range(2, min(5, len(lines))):
-                lines_to_check.append(lines[i])
+                # Also check up to 5 lines to handle multi-row tables
+                for i in range(2, min(5, len(lines))):
+                    lines_to_check.append(lines[i])
 
-            for line_idx, values_line in enumerate(lines_to_check):
-                if po_number:
-                    break
-                print(f"    → Checking line {line_idx}: {values_line[:80]}")
-
-                # Extract ALL sequences that could be PO numbers
-                number_patterns = [
-                    r'S\s*-?\s*(\d{4,})',    # S 6133, S-6133, S - 6133, or S6133 format (handle flexible spacing/dashes)
-                    r'\b(\d{4,})[A-Za-z]+',  # 9860HERONSGLEN format (case insensitive)
-                    r':\s*(\d{4,})\s+[A-Za-z]', # PO Number: 1012 SOMERVILLE format
-                    r'\b(\d{4,})\s+[A-Za-z]{3,}', # 1012 SOMERVILLE format (space between)
-                    r'\b(\d{4,})\b'          # Plain 4016 format
-                ]
-
-                for pattern in number_patterns:
+                for line_idx, values_line in enumerate(lines_to_check):
                     if po_number:
                         break
-                    matches = re.finditer(pattern, values_line, re.IGNORECASE)
-                    for match in matches:
-                        num_str = match.group(1)
-                        try:
-                            candidate = int(num_str)
-                            print(f"      Testing: {candidate}")
-                            if candidate in po_map:
-                                po_number = candidate
-                                match_method = "Table Column"
-                                print(f"      ✅ MATCHED! PO {po_number}")
-                                break
-                            else:
-                                print(f"      ⚠ {candidate} not in approved list (may already have invoice)")
-                        except ValueError:
-                            continue
+                    print(f"    → Checking line {line_idx}: {values_line[:80]}")
+
+                    # Extract ALL sequences that could be PO numbers
+                    number_patterns = [
+                        r'S\s*-?\s*(\d{4,})',    # S 6133, S-6133, S - 6133, or S6133 format (handle flexible spacing/dashes)
+                        r'\b(\d{4,})[A-Za-z]+',  # 9860HERONSGLEN format (case insensitive)
+                        r':\s*(\d{4,})\s+[A-Za-z]', # PO Number: 1012 SOMERVILLE format
+                        r'\b(\d{4,})\s+[A-Za-z]{3,}', # 1012 SOMERVILLE format (space between)
+                        r'\b(\d{4,})\b'          # Plain 4016 format
+                    ]
+
+                    for pattern in number_patterns:
+                        if po_number:
+                            break
+                        matches = re.finditer(pattern, values_line, re.IGNORECASE)
+                        for match in matches:
+                            num_str = match.group(1)
+                            try:
+                                candidate = int(num_str)
+                                print(f"      Testing: {candidate}")
+                                if candidate in po_map:
+                                    po_number = candidate
+                                    match_method = "Table Column"
+                                    print(f"      ✅ MATCHED! PO {po_number}")
+                                    break
+                                else:
+                                    print(f"      ⚠ {candidate} not in approved list (may already have invoice)")
+                            except ValueError:
+                                continue
 
     # METHOD 2: Pattern matching (fallback)
     if not po_number:
