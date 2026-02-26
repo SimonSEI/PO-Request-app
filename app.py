@@ -315,6 +315,12 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # Column already exists
 
+    # Add job_code column to jobs if it doesn't exist
+    try:
+        c.execute("ALTER TABLE jobs ADD COLUMN job_code TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     # Migration: Fix any existing jobs with NULL active field to active=1
     try:
         c.execute("UPDATE jobs SET active=1 WHERE active IS NULL")
@@ -428,8 +434,10 @@ def update_database_schema():
     except Exception as e:
         return f"Error: {str(e)}"
 
-def format_po_number(po_id, job_name):
-    """Format PO number with S prefix for Service jobs"""
+def format_po_number(po_id, job_name, job_code=None):
+    """Format PO number with job code if available, otherwise use S prefix for Service jobs"""
+    if job_code:
+        return f"{job_code}-{po_id:04d}"
     if job_name and job_name.lower() == 'service':
         return f"S{po_id:04d}"
     return f"{po_id:04d}"
@@ -1421,13 +1429,13 @@ def submit_request():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
-    # VALIDATE JOB NAME EXISTS AND IS ACTIVE
-    c.execute("SELECT job_name FROM jobs WHERE LOWER(job_name) = LOWER(?) AND active=1", (job_name,))
+    # VALIDATE JOB NAME EXISTS AND IS ACTIVE (also get job_code)
+    c.execute("SELECT job_name, job_code FROM jobs WHERE LOWER(job_name) = LOWER(?) AND active=1", (job_name,))
     valid_job = c.fetchone()
 
     if not valid_job:
         # Try fuzzy matching to auto-correct misspelled job names
-        c.execute("SELECT job_name FROM jobs WHERE active=1")
+        c.execute("SELECT job_name, job_code FROM jobs WHERE active=1")
         all_active_jobs = [row[0] for row in c.fetchall()]
         best_match = None
         best_score = 0.0
@@ -1439,7 +1447,8 @@ def submit_request():
 
         if best_match and best_score >= 0.70:
             # Auto-correct to the closest matching job
-            valid_job = (best_match,)
+            c.execute("SELECT job_name, job_code FROM jobs WHERE job_name=? AND active=1", (best_match,))
+            valid_job = c.fetchone()
             flash(f'Auto-corrected job name from "{job_name}" to "{best_match}"')
         else:
             conn.close()
@@ -1448,6 +1457,7 @@ def submit_request():
 
     # Use the correct spelling from database
     job_name = valid_job[0]
+    job_code = valid_job[1] if len(valid_job) > 1 else None
 
     # HANDLE CUSTOM PO NUMBER
     if custom_po_number:
@@ -1475,7 +1485,8 @@ def submit_request():
             conn.commit()
             conn.close()
 
-            flash(f'PO#{po_id:04d}|{job_name}')
+            po_display = format_po_number(po_id, job_name, job_code)
+            flash(f'PO#{po_display}|{job_name}')
             return redirect(url_for('tech_dashboard'))
 
         except ValueError:
@@ -1512,7 +1523,8 @@ def submit_request():
         conn.commit()
         conn.close()
 
-        flash(f'PO#{new_id:04d}|{job_name}')
+        po_display = format_po_number(new_id, job_name, job_code)
+        flash(f'PO#{po_display}|{job_name}')
         return redirect(url_for('tech_dashboard'))
 
 @app.route('/upload_invoice/<int:po_id>', methods=['POST'])
@@ -1868,7 +1880,7 @@ def api_get_jobs():
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
 
-        # Get jobs with invoice totals and budget
+        # Get jobs with invoice totals, budget, and job_code
         c.execute("""
             SELECT
                 j.id,
@@ -1880,10 +1892,11 @@ def api_get_jobs():
                 COUNT(CASE WHEN p.invoice_filename IS NOT NULL THEN 1 END) as invoice_count,
                 COALESCE(SUM(p.estimated_cost), 0) as total_estimated,
                 COUNT(p.id) as po_count,
-                COALESCE(j.budget, 0) as budget
+                COALESCE(j.budget, 0) as budget,
+                j.job_code
             FROM jobs j
             LEFT JOIN po_requests p ON j.job_name = p.job_name
-            GROUP BY j.id, j.job_name, j.year, j.created_date, j.active, j.budget
+            GROUP BY j.id, j.job_name, j.year, j.created_date, j.active, j.budget, j.job_code
             ORDER BY j.active DESC, j.year DESC, j.job_name ASC
         """)
         jobs = c.fetchall()
@@ -1914,10 +1927,11 @@ def debug_jobs():
                 COUNT(CASE WHEN p.invoice_filename IS NOT NULL THEN 1 END) as invoice_count,
                 COALESCE(SUM(p.estimated_cost), 0) as total_estimated,
                 COUNT(p.id) as po_count,
-                COALESCE(j.budget, 0) as budget
+                COALESCE(j.budget, 0) as budget,
+                j.job_code
             FROM jobs j
             LEFT JOIN po_requests p ON j.job_name = p.job_name
-            GROUP BY j.id, j.job_name, j.year, j.created_date, j.active, j.budget
+            GROUP BY j.id, j.job_name, j.year, j.created_date, j.active, j.budget, j.job_code
             ORDER BY j.active DESC, j.year DESC, j.job_name ASC
         """)
         jobs = c.fetchall()
@@ -1982,14 +1996,15 @@ def get_job_details(job_id):
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
 
-        # Get job name and budget
-        c.execute("SELECT job_name, COALESCE(budget, 0) FROM jobs WHERE id=?", (job_id,))
+        # Get job name, budget, and job_code
+        c.execute("SELECT job_name, COALESCE(budget, 0), job_code FROM jobs WHERE id=?", (job_id,))
         job = c.fetchone()
         if not job:
             return jsonify({'success': False, 'error': 'Job not found'})
 
         job_name = job[0]
         job_budget = float(job[1])
+        job_code = job[2] if len(job) > 2 else None
 
         # Get all POs with invoices for this job
         c.execute("""
@@ -2214,6 +2229,7 @@ def edit_job():
     job_name = data.get('job_name', '').strip()
     year = data.get('year')
     budget = data.get('budget')
+    job_code = data.get('job_code', '').strip()
 
     if not job_id or not job_name or not year:
         return jsonify({'success': False, 'error': 'All fields required'})
@@ -2225,7 +2241,7 @@ def edit_job():
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("UPDATE jobs SET job_name=?, year=?, budget=? WHERE id=?", (job_name, year, budget, job_id))
+    c.execute("UPDATE jobs SET job_name=?, year=?, budget=?, job_code=? WHERE id=?", (job_name, year, budget, job_code or None, job_id))
     conn.commit()
     conn.close()
 
@@ -3319,7 +3335,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
             return text.replace(/[&<>"']/g, m => map[m]);
         }
 
-        function editJob(id, currentName, currentYear, currentBudget, event) {
+        function editJob(id, currentName, currentYear, currentBudget, currentJobCode, event) {
             if (event) event.stopPropagation();
             const newName = prompt('Edit job name:', currentName);
             if (!newName) return;
@@ -3327,11 +3343,12 @@ JOB_MANAGEMENT_TEMPLATE = '''
             if (!newYear) return;
             const newBudget = prompt('Edit Budget for Materials ($):', currentBudget || 0);
             if (newBudget === null) return;
+            const newJobCode = prompt('Edit Job Code (e.g., CHASE, SVC):', currentJobCode || '');
 
             fetch('/edit_job', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ job_id: id, job_name: newName, year: parseInt(newYear), budget: parseFloat(newBudget) || 0 })
+                body: JSON.stringify({ job_id: id, job_name: newName, year: parseInt(newYear), budget: parseFloat(newBudget) || 0, job_code: newJobCode })
             })
             .then(response => response.json())
             .then(data => {
@@ -3550,7 +3567,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
                     e.stopPropagation();
                     const id = parseInt(this.dataset.id);
                     const job = jobsMap[id];
-                    if (job) editJob(id, job[1], job[2], job[9], e);
+                    if (job) editJob(id, job[1], job[2], job[9], job[10], e);
                 });
             });
 
