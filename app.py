@@ -137,38 +137,6 @@ WEBSITE_URL = os.environ.get('WEBSITE_URL', 'http://localhost:5000')
 
 # ... rest of your code continues ...
 
-def send_telegram_notification(po_id, tech_name, job_name, cost):
-    """Send Telegram message when new PO is submitted"""
-    if not TELEGRAM_ENABLED:
-        return
-
-    try:
-        import requests
-
-        message = f"""🔔 NEW PO REQUEST
-
-PO #{po_id:04d}
-Tech: {tech_name}
-Job: {job_name}
-Est Cost: ${cost:.2f}
-
-View at: simonweardon3.pythonanywhere.com"""
-
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        data = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message
-        }
-
-        response = requests.post(url, data=data)
-        if response.status_code == 200:
-            print(f"✓ Telegram notification sent for PO #{po_id}")
-        else:
-            print(f"✗ Telegram notification failed: {response.text}")
-
-    except Exception as e:
-        print(f"✗ Telegram error: {e}")
-
 def send_reset_email(email, reset_token):
     """Send password reset email"""
     if not EMAIL_ENABLED:
@@ -1358,56 +1326,36 @@ def office_dashboard():
     approved_by_idx = columns.get('approved_by', 11)
     delivery_notes_idx = columns.get('delivery_notes', -1)
 
-    c.execute("SELECT * FROM po_requests WHERE status='pending' ORDER BY id DESC")
-    pending = c.fetchall()
+    c.execute("SELECT * FROM po_requests WHERE status='awaiting_invoice' ORDER BY id DESC")
+    awaiting_invoice = c.fetchall()
 
-    c.execute("SELECT * FROM po_requests WHERE status='approved' ORDER BY id DESC")
-    all_approved = c.fetchall()
+    c.execute("SELECT * FROM po_requests WHERE invoice_filename IS NOT NULL ORDER BY id DESC")
+    invoiced = c.fetchall()
 
-    # Split approved requests into those with and without invoices
-    approved = []
-    invoiced = []
-    for req in all_approved:
-        if len(req) > inv_filename_idx and req[inv_filename_idx]:
-            invoiced.append(req)
-        else:
-            approved.append(req)
+    c.execute("SELECT COUNT(*), SUM(estimated_cost) FROM po_requests WHERE status='awaiting_invoice'")
+    awaiting_stats = c.fetchone()
 
-    c.execute("SELECT * FROM po_requests WHERE status='denied' ORDER BY id DESC")
-    denied = c.fetchall()
-
-    c.execute("SELECT COUNT(*), SUM(estimated_cost) FROM po_requests WHERE status='pending'")
-    pending_stats = c.fetchone()
-
-    c.execute("SELECT COUNT(*) FROM po_requests WHERE status='approved'")
-    approved_count = c.fetchone()[0]
-
-    c.execute("SELECT COUNT(*) FROM po_requests WHERE status='denied'")
-    denied_count = c.fetchone()[0]
-
-    c.execute("SELECT COUNT(*) FROM po_requests WHERE invoice_filename IS NOT NULL")
-    invoice_count = c.fetchone()[0]
+    c.execute("SELECT COUNT(*), SUM(invoice_cost) FROM po_requests WHERE invoice_filename IS NOT NULL")
+    invoiced_stats = c.fetchone()
 
     conn.close()
 
     stats = {
-        'pending': pending_stats[0], 'approved': approved_count,
-        'denied': denied_count, 'with_invoice': invoice_count,
-        'total_value': pending_stats[1] if pending_stats[1] else 0
+        'awaiting_invoice': awaiting_stats[0],
+        'invoiced': invoiced_stats[0] if invoiced_stats[0] else 0,
+        'awaiting_value': awaiting_stats[1] if awaiting_stats[1] else 0,
+        'invoiced_value': invoiced_stats[1] if invoiced_stats[1] else 0
     }
 
     return render_template_string(OFFICE_DASHBOARD_TEMPLATE,
                                 username=session['username'],
-                                pending_requests=pending,
-                                approved_requests=approved,
+                                awaiting_requests=awaiting_invoice,
                                 invoiced_requests=invoiced,
-                                denied_requests=denied,
                                 stats=stats,
                                 inv_filename_idx=inv_filename_idx,
                                 inv_number_idx=inv_number_idx,
                                 inv_cost_idx=inv_cost_idx,
                                 inv_upload_idx=inv_upload_idx,
-                                approved_by_idx=approved_by_idx,
                                 delivery_notes_idx=delivery_notes_idx)
 
 @app.route('/activity_log')
@@ -1515,20 +1463,17 @@ def submit_request():
                 suffix = chr(65 + count)  # A, B, C, etc.
                 flash(f'⚠️ PO #{po_id:04d} already exists. Creating as #{po_id:04d}-{suffix}')
             
-            # Insert with EXPLICIT ID - auto-approved immediately
+            # Insert with EXPLICIT ID - set to awaiting_invoice
             now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             c.execute("""INSERT INTO po_requests
                          (id, tech_username, tech_name, job_name, store_name, estimated_cost,
-                          description, status, request_date, approval_date, approved_by)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?, 'auto')""",
+                          description, status, request_date)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, 'awaiting_invoice', ?)""",
                      (po_id, session['username'], tech_name, job_name, store_name,
-                      estimated_cost, description, now_str, now_str))
+                      estimated_cost, description, now_str))
 
             conn.commit()
             conn.close()
-
-            # Send Telegram notification
-            send_telegram_notification(po_id, tech_name, job_name, estimated_cost)
 
             flash(f'PO#{po_id:04d}|{job_name}')
             return redirect(url_for('tech_dashboard'))
@@ -1554,113 +1499,21 @@ def submit_request():
         else:
             next_po_number = last_id + 1
 
-        # Auto-approve immediately
+        # Create PO with awaiting_invoice status
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         c.execute("""INSERT INTO po_requests
                      (tech_username, tech_name, job_name, store_name, estimated_cost,
-                      description, status, request_date, approval_date, approved_by)
-                     VALUES (?, ?, ?, ?, ?, ?, 'approved', ?, ?, 'auto')""",
+                      description, status, request_date)
+                     VALUES (?, ?, ?, ?, ?, ?, 'awaiting_invoice', ?)""",
                  (session['username'], tech_name, job_name, store_name,
-                  estimated_cost, description, now_str, now_str))
+                  estimated_cost, description, now_str))
 
         new_id = c.lastrowid
         conn.commit()
         conn.close()
 
-        # Send Telegram notification
-        send_telegram_notification(new_id, tech_name, job_name, estimated_cost)
-
         flash(f'PO#{new_id:04d}|{job_name}')
         return redirect(url_for('tech_dashboard'))
-
-@app.route('/process_request/<int:request_id>', methods=['POST'])
-def process_request(request_id):
-    if 'username' not in session or session['role'] != 'office':
-        return redirect(url_for('login'))
-
-    action = request.form['action']
-    notes = request.form.get('notes', '')
-
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
-    # Get PO details for logging
-    c.execute("SELECT tech_name, job_name, estimated_cost FROM po_requests WHERE id=?", (request_id,))
-    po_data = c.fetchone()
-
-    # FIX: Set the correct status - 'approved' or 'denied'
-    if action == 'approve':
-        status = 'approved'
-    elif action == 'deny':
-        status = 'denied'
-    else:
-        status = action + 'd'  # fallback
-
-    c.execute("""UPDATE po_requests
-                 SET status=?, approval_date=?, approval_notes=?, approved_by=?
-                 WHERE id=?""",
-             (status, datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-              notes, session['username'], request_id))
-    conn.commit()
-    conn.close()
-
-    # Log the approval/denial
-    if po_data:
-        details = f"PO #{request_id:04d} - {po_data[1]} - ${po_data[2]:.2f} - Tech: {po_data[0]}"
-        if notes:
-            details += f" - Notes: {notes}"
-        log_activity(session['username'], status.upper(), 'po_request', request_id, details)
-
-    flash(f'Request {status} successfully!')
-    return redirect(url_for('office_dashboard'))
-
-@app.route('/bulk_process_pos', methods=['POST'])
-def bulk_process_pos():
-    """Process multiple PO requests at once"""
-    if 'username' not in session or session['role'] != 'office':
-        return jsonify({'success': False, 'error': 'Unauthorized'})
-
-    try:
-        data = request.get_json()
-        po_ids = data.get('po_ids', [])
-        action = data.get('action')  # 'approve' or 'deny'
-        notes = data.get('notes', '')
-
-        if not po_ids:
-            return jsonify({'success': False, 'error': 'No POs selected'})
-
-        if action not in ['approve', 'deny']:
-            return jsonify({'success': False, 'error': 'Invalid action'})
-
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-
-        processed = 0
-        for po_id in po_ids:
-            c.execute("""UPDATE po_requests
-                         SET status=?, approval_date=?, approval_notes=?, approved_by=?
-                         WHERE id=? AND status='pending'""",
-                     (action + 'd', datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                      notes, session['username'], po_id))
-            if c.rowcount > 0:
-                processed += 1
-
-        conn.commit()
-        conn.close()
-
-        # Log bulk action
-        details = f"Bulk {action}d {processed} PO(s): {po_ids}"
-        if notes:
-            details += f" - Notes: {notes}"
-        log_activity(session['username'], f'BULK_{action.upper()}D', 'po_request', None, details)
-
-        return jsonify({
-            'success': True,
-            'processed': processed,
-            'message': f'{processed} PO(s) {action}d successfully'
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/upload_invoice/<int:po_id>', methods=['POST'])
 def upload_invoice(po_id):
@@ -1835,55 +1688,6 @@ def delete_invoice():
 
     except Exception as e:
         print(f"ERROR in delete_invoice: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': f'Server error: {str(e)}'})
-
-@app.route('/undo_approval', methods=['POST'])
-def undo_approval():
-    """Undo approval and move PO back to pending"""
-    if 'username' not in session or session['role'] != 'office':
-        return jsonify({'success': False, 'error': 'Unauthorized'})
-
-    try:
-        data = request.get_json()
-        request_id = data.get('request_id')
-
-        if not request_id:
-            return jsonify({'success': False, 'error': 'No request ID provided'})
-
-        print(f"DEBUG: Attempting to undo approval for PO ID: {request_id}")
-
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-
-        # Check if PO exists
-        c.execute("SELECT id, status, invoice_filename FROM po_requests WHERE id=?", (request_id,))
-        result = c.fetchone()
-
-        if not result:
-            conn.close()
-            return jsonify({'success': False, 'error': 'PO request not found'})
-
-        print(f"DEBUG: PO found - Status: {result[1]}, Invoice: {result[2]}")
-
-        if result[2]:
-            conn.close()
-            return jsonify({'success': False, 'error': 'Cannot undo approval - PO has invoice attached. Delete invoice first.'})
-
-        # Move back to pending
-        c.execute("""UPDATE po_requests
-                     SET status='pending', approval_date=NULL,
-                         approval_notes=NULL, approved_by=NULL
-                     WHERE id=?""", (request_id,))
-        conn.commit()
-        conn.close()
-
-        print(f"DEBUG: Successfully moved PO {request_id} back to pending")
-        return jsonify({'success': True, 'message': 'PO moved back to Pending'})
-
-    except Exception as e:
-        print(f"ERROR in undo_approval: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': f'Server error: {str(e)}'})
@@ -2574,10 +2378,10 @@ def process_bulk_pdf(pdf_path, timestamp):
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
 
-        # ✅ FIXED: Only get approved POs WITHOUT invoices
+        # ✅ FIXED: Only get POs awaiting invoices (without invoices)
         c.execute("""SELECT id, tech_name, job_name, estimated_cost
                      FROM po_requests
-                     WHERE status='approved'
+                     WHERE status='awaiting_invoice'
                      AND (invoice_filename IS NULL OR invoice_filename = '')""")
         po_map = {}
         for row in c.fetchall():
@@ -5028,29 +4832,6 @@ OFFICE_DASHBOARD_TEMPLATE = '''
     }
 }
 
-function undoApproval(requestId) {
-    if (confirm('Move this PO back to Pending? This will undo the approval.')) {
-        fetch('/undo_approval', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({request_id: requestId})
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                alert('✓ ' + data.message);
-                location.reload();
-            } else {
-                alert('Error: ' + data.error);
-            }
-        })
-        .catch(error => {
-            console.error('Full error:', error);
-            alert('Error undoing approval: ' + error);
-        });
-    }
-}
-
         function uploadBulkPDF() {
             const fileInput = document.getElementById('bulk-pdf-input');
             const statusDiv = document.getElementById('bulk-upload-status');
@@ -5162,99 +4943,6 @@ function undoApproval(requestId) {
             });
         });
         // Bulk selection functionality
-let selectedPOs = new Set();
-
-function togglePOSelection(poId, checkbox) {
-    if (checkbox.checked) {
-        selectedPOs.add(poId);
-    } else {
-        selectedPOs.delete(poId);
-    }
-    updateBulkActionsButton();
-}
-
-function selectAllPending() {
-    const checkboxes = document.querySelectorAll('.po-checkbox');
-    const selectAllCheckbox = document.getElementById('select-all-pending');
-
-    checkboxes.forEach(checkbox => {
-        checkbox.checked = selectAllCheckbox.checked;
-        const poId = parseInt(checkbox.dataset.poId);
-        if (selectAllCheckbox.checked) {
-            selectedPOs.add(poId);
-        } else {
-            selectedPOs.delete(poId);
-        }
-    });
-    updateBulkActionsButton();
-}
-
-function updateBulkActionsButton() {
-    const bulkActions = document.getElementById('bulk-actions');
-    const countSpan = document.getElementById('selected-count');
-
-    if (selectedPOs.size > 0) {
-        bulkActions.style.display = 'block';
-        countSpan.textContent = selectedPOs.size;
-    } else {
-        bulkActions.style.display = 'none';
-    }
-}
-
-function bulkApprove() {
-    if (selectedPOs.size === 0) {
-        alert('Please select at least one PO');
-        return;
-    }
-
-    const notes = prompt(`Add notes for ${selectedPOs.size} PO(s) (optional):`);
-
-    if (notes === null) return; // User cancelled
-
-    bulkProcessPOs('approve', notes);
-}
-
-function bulkDeny() {
-    if (selectedPOs.size === 0) {
-        alert('Please select at least one PO');
-        return;
-    }
-
-    const notes = prompt(`Reason for denying ${selectedPOs.size} PO(s):`);
-
-    if (!notes) {
-        alert('Please provide a reason for denial');
-        return;
-    }
-
-    bulkProcessPOs('deny', notes);
-}
-
-function bulkProcessPOs(action, notes) {
-    const poIds = Array.from(selectedPOs);
-
-    fetch('/bulk_process_pos', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            po_ids: poIds,
-            action: action,
-            notes: notes || ''
-        })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            alert(`✓ Successfully ${action}d ${data.processed} PO(s)`);
-            location.reload();
-        } else {
-            alert('Error: ' + data.error);
-        }
-    })
-    .catch(error => {
-        alert('Error processing POs: ' + error);
-    });
-}
 function searchInTab(tabId, searchInputId) {
     const searchQuery = document.getElementById(searchInputId).value.toLowerCase().trim();
     const tabContent = document.getElementById(tabId);
@@ -5320,119 +5008,80 @@ function searchInTab(tabId, searchInputId) {
 
     <div class="stats">
         <div class="stat-card">
-            <div class="stat-number">{{ stats.pending }}</div>
-            <div class="stat-label">Pending Requests</div>
+            <div class="stat-number">{{ stats.awaiting_invoice }}</div>
+            <div class="stat-label">Awaiting Invoice</div>
         </div>
         <div class="stat-card">
-            <div class="stat-number">{{ stats.approved }}</div>
-            <div class="stat-label">Approved</div>
+            <div class="stat-number">${{ "%.2f"|format(stats.awaiting_value) }}</div>
+            <div class="stat-label">Awaiting Value</div>
         </div>
         <div class="stat-card">
-            <div class="stat-number">{{ stats.denied }}</div>
-            <div class="stat-label">Denied</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-number">{{ stats.with_invoice }}</div>
+            <div class="stat-number">{{ stats.invoiced }}</div>
             <div class="stat-label">With Invoices</div>
         </div>
         <div class="stat-card">
-            <div class="stat-number">${{ "%.2f"|format(stats.total_value) }}</div>
-            <div class="stat-label">Total Pending Value</div>
+            <div class="stat-number">${{ "%.2f"|format(stats.invoiced_value) }}</div>
+            <div class="stat-label">Invoiced Value</div>
         </div>
     </div>
 
     <div class="tabs">
-        <button class="tab active" onclick="showTab('pending')">Pending ({{ stats.pending }})</button>
-        <button class="tab" onclick="showTab('approved')">Approved ({{ stats.approved - stats.with_invoice }})</button>
-        <button class="tab" onclick="showTab('with_invoice')">With Invoice ({{ stats.with_invoice }})</button>
-        <button class="tab" onclick="showTab('denied')">Denied ({{ stats.denied }})</button>
+        <button class="tab active" onclick="showTab('awaiting')">Awaiting Invoice ({{ stats.awaiting_invoice }})</button>
+        <button class="tab" onclick="showTab('invoiced')">With Invoice ({{ stats.invoiced }})</button>
     </div>
 
-    <div id="pending" class="tab-content active">
+    <div id="awaiting" class="tab-content active">
     <div style="background: #f0f4ff; padding: 15px; border-radius: 5px; margin-bottom: 15px;">
         <input type="text"
-               id="search-pending"
-               placeholder="🔍 Search pending POs (PO#, tech, job, description, store)..."
-               onkeyup="searchInTab('pending', 'search-pending')"
+               id="search-awaiting"
+               placeholder="🔍 Search POs (PO#, tech, job, description, store)..."
+               onkeyup="searchInTab('awaiting', 'search-awaiting')"
                style="width: 100%; padding: 10px; border: 2px solid #667eea; border-radius: 5px; font-size: 14px;">
         <div class="search-result-count" style="margin-top: 8px; color: #667eea; font-size: 13px; display: none;"></div>
     </div>
 
-    {% if pending_requests %}
-        {% for req in pending_requests %}
-            <div class="request-item">
+    {% if awaiting_requests %}
+        {% for req in awaiting_requests %}
+            <div class="request-item" data-po-id="{{ req[0] }}">
                 <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
                 <h3>PO #{{ format_po_number(req[0], req[3]) }} - {{ req[3] }} - ${{ "%.2f"|format(req[5]) }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
+                <p><strong>Store:</strong> {{ req[4] }}</p>
                 <p><strong>Description:</strong> {{ req[6] }}</p>
+                <p><strong>Estimated Cost:</strong> ${{ "%.2f"|format(req[5]) }}</p>
                 <p><strong>Requested:</strong> {{ req[8] }}</p>
+                <div class="invoice-upload-section">
+                    <h4>📄 Add Invoice Details</h4>
+                    <form id="invoice-form-{{ req[0] }}" class="invoice-form">
+                        <input type="text" name="invoice_number" placeholder="Invoice Number (Required)" required>
+                        <input type="number" step="0.01" name="invoice_cost" placeholder="Total Cost (Required)" required>
+                        <div id="dropzone-{{ req[0] }}" class="dropzone">
+                            <p>📎 Optional: Drag & drop invoice file or click to browse</p>
+                        </div>
+                        <input type="file" id="file-{{ req[0] }}" name="invoice" accept=".pdf,.jpg,.jpeg,.png" style="display: none;">
+                        <button type="button" onclick="uploadInvoice({{ req[0] }})" class="upload-invoice-btn">💾 Save Invoice Details</button>
+                    </form>
+                </div>
             </div>
         {% endfor %}
     {% else %}
-        <p style="color: #999; text-align: center; padding: 40px;">No pending requests</p>
+        <p style="color: #999; text-align: center; padding: 40px;">No POs awaiting invoices</p>
     {% endif %}
 </div>
 
-    <div id="approved" class="tab-content">
-        {% if approved_requests %}
-            {% for req in approved_requests %}
-                <div class="request-item" data-po-id="{{ req[0] }}">
-                    <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
-                    <button onclick="undoApproval({{ req[0] }})" class="delete-btn" style="right: 120px; background: #ffc107;">↩️ Undo</button>
-                    <span class="status approved">APPROVED</span>
-                    <h3>PO #{{ format_po_number(req[0], req[3]) }} - {{ req[3] }} - ${{ "%.2f"|format(req[5]) }}</h3>
-                    <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
-                    <p><strong>Job:</strong> {{ req[3] }}</p>
-                    <p><strong>Description:</strong> {{ req[6] }}</p>
-                    <p><strong>Requested:</strong> {{ req[8] }}</p>
-                    <p><strong>Approved:</strong> {{ req[9] }} by {{ req[approved_by_idx] if req|length > approved_by_idx else 'N/A' }}</p>
-                    {% if req[10] %}
-                        <p><strong>Notes:</strong> {{ req[10] }}</p>
-                    {% endif %}
-                    {% if delivery_notes_idx >= 0 and req|length > delivery_notes_idx and req[delivery_notes_idx] %}
-                        <div style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 10px 15px; margin: 10px 0;">
-                            <strong>📦 Delivery Status:</strong>
-                            {% for note_line in req[delivery_notes_idx].split('\n') %}
-                                <div style="margin-top: 4px;">{{ note_line }}</div>
-                            {% endfor %}
-                        </div>
-                    {% endif %}
-                    <div class="invoice-upload-section">
-                        <h4>📄 Add Invoice Details</h4>
-                        <form id="invoice-form-{{ req[0] }}" class="invoice-form">
-                            <input type="text" name="invoice_number" placeholder="Invoice Number (Required)" required>
-                            <input type="number" step="0.01" name="invoice_cost" placeholder="Total Cost (Required)" required>
-                            <div id="dropzone-{{ req[0] }}" class="dropzone">
-                                <p>📎 Optional: Drag & drop invoice file or click to browse</p>
-                            </div>
-                            <input type="file" id="file-{{ req[0] }}" name="invoice" accept=".pdf,.jpg,.jpeg,.png" style="display: none;">
-                            <button type="button" onclick="uploadInvoice({{ req[0] }})" class="upload-invoice-btn">💾 Save Invoice Details</button>
-                        </form>
-                    </div>
-                </div>
-            {% endfor %}
-        {% else %}
-            <p style="color: #999; text-align: center; padding: 40px;">No approved requests waiting for invoices</p>
-        {% endif %}
-    </div>
 
-<div id="with_invoice" class="tab-content">
+<div id="invoiced" class="tab-content">
     {% if invoiced_requests %}
         {% for req in invoiced_requests %}
             <div class="request-item" data-po-id="{{ req[0] }}">
                 <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
                 <button onclick="deleteInvoice({{ req[0] }})" class="delete-btn" style="right: 120px; background: #ff9800;">🗑️ Remove Invoice</button>
-                <span class="status approved">APPROVED WITH INVOICE</span>
                 <h3>PO #{{ format_po_number(req[0], req[3]) }} - {{ req[3] }} - ${{ "%.2f"|format(req[5]) }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
                 <p><strong>Description:</strong> {{ req[6] }}</p>
                 <p><strong>Requested:</strong> {{ req[8] }}</p>
-                <p><strong>Approved:</strong> {{ req[9] }} by {{ req[approved_by_idx] if req|length > approved_by_idx else 'N/A' }}</p>
-                {% if req[10] %}
-                    <p><strong>Notes:</strong> {{ req[10] }}</p>
-                {% endif %}
                 <div class="invoice-data">
                     <h4>📄 Invoice Details</h4>
                     <p><strong>Invoice Number:</strong> {{ req[inv_number_idx] if req|length > inv_number_idx else 'Not entered' }}</p>
@@ -5467,31 +5116,9 @@ function searchInTab(tabId, searchInputId) {
             </div>
         {% endfor %}
     {% else %}
-        <p style="color: #999; text-align: center; padding: 40px;">No approved requests with invoices</p>
+        <p style="color: #999; text-align: center; padding: 40px;">No invoiced requests</p>
     {% endif %}
 </div>
-
-    <div id="denied" class="tab-content">
-        {% if denied_requests %}
-            {% for req in denied_requests %}
-                <div class="request-item">
-                    <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
-                    <span class="status denied">DENIED</span>
-                    <h3>PO #{{ format_po_number(req[0], req[3]) }} - {{ req[3] }} - ${{ "%.2f"|format(req[5]) }}</h3>
-                    <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
-                    <p><strong>Job:</strong> {{ req[3] }}</p>
-                    <p><strong>Description:</strong> {{ req[6] }}</p>
-                    <p><strong>Requested:</strong> {{ req[8] }}</p>
-                    <p><strong>Denied:</strong> {{ req[9] }} by {{ req[approved_by_idx] if req|length > approved_by_idx else 'N/A' }}</p>
-                    {% if req[10] %}
-                        <p><strong>Reason:</strong> {{ req[10] }}</p>
-                    {% endif %}
-                </div>
-            {% endfor %}
-        {% else %}
-            <p style="color: #999; text-align: center; padding: 40px;">No denied requests</p>
-        {% endif %}
-    </div>
 </body>
 </html>
 '''
@@ -6451,11 +6078,11 @@ def admin_dashboard():
     c.execute("SELECT COUNT(*) FROM po_requests")
     total_pos = c.fetchone()[0]
 
-    c.execute("SELECT COUNT(*) FROM po_requests WHERE status='pending'")
-    pending_pos = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM po_requests WHERE status='awaiting_invoice'")
+    awaiting_pos = c.fetchone()[0]
 
-    c.execute("SELECT COUNT(*) FROM po_requests WHERE status='approved'")
-    approved_pos = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM po_requests WHERE invoice_filename IS NOT NULL")
+    invoiced_pos = c.fetchone()[0]
 
     c.execute("SELECT COUNT(*) FROM jobs WHERE active=1")
     active_jobs = c.fetchone()[0]
@@ -6477,8 +6104,8 @@ def admin_dashboard():
         'office_count': office_count,
         'admin_count': admin_count,
         'total_pos': total_pos,
-        'pending_pos': pending_pos,
-        'approved_pos': approved_pos,
+        'awaiting_pos': awaiting_pos,
+        'invoiced_pos': invoiced_pos,
         'active_jobs': active_jobs,
         'total_logs': total_logs
     }
@@ -7331,8 +6958,8 @@ def debug_check_po():
     c.execute("SELECT id, tech_name, job_name, status, estimated_cost FROM po_requests WHERE id=9864")
     po = c.fetchone()
 
-    # Get all approved POs
-    c.execute("SELECT id, job_name, status FROM po_requests WHERE status='approved' ORDER BY id")
+    # Get all awaiting_invoice POs
+    c.execute("SELECT id, job_name, status FROM po_requests WHERE status='awaiting_invoice' ORDER BY id")
     all_approved = c.fetchall()
 
     conn.close()
@@ -7796,9 +7423,9 @@ def debug_matching():
             'match_method': row[7]
         })
 
-    # Get approved POs without invoices (what bulk upload would see)
+    # Get awaiting_invoice POs without invoices (what bulk upload would see)
     c.execute("""SELECT id, job_name FROM po_requests
-                 WHERE status='approved'
+                 WHERE status='awaiting_invoice'
                  AND (invoice_filename IS NULL OR invoice_filename = '')""")
     available_for_matching = [{'id': r[0], 'job': r[1]} for r in c.fetchall()]
 
