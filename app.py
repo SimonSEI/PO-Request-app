@@ -2990,7 +2990,7 @@ def extract_invoice_data(text, po_map):
 
                 # Extract ALL sequences that could be PO numbers
                 number_patterns = [
-                    r'S-(\d{4,})',           # S-4016 format
+                    r'S-?(\d{4,})',          # S-4016 or S4016 format (handle both with and without dash)
                     r'\b(\d{4,})[A-Za-z]+',  # 9860HERONSGLEN format (case insensitive)
                     r':\s*(\d{4,})\s+[A-Za-z]', # PO Number: 1012 SOMERVILLE format
                     r'\b(\d{4,})\s+[A-Za-z]{3,}', # 1012 SOMERVILLE format (space between)
@@ -3021,7 +3021,7 @@ def extract_invoice_data(text, po_map):
         print("\n  Method 2: Pattern matching (fallback)")
         po_patterns = [
             # PO # formats
-            (r'PO\s*#?\s*[:\s]*S-(\d{4,})', 'PO: S-XXXX', 0),
+            (r'PO\s*#?\s*[:\s]*S-?(\d{4,})', 'PO: S-XXXX or SXXXX', 0),
             (r'PO\s*#?\s*[:\s]*(\d{4,})[A-Za-z]+', 'PO: XXXXABC', 0),
             (r'PO\s*#?\s*[:\s]*(\d{4,})\s+[A-Za-z]', 'PO: XXXX JOBNAME', 0),
             (r'PO\s*#?\s*[:\s]*(\d{4,})', 'PO: XXXX', 0),
