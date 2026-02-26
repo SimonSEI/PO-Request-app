@@ -1591,19 +1591,19 @@ def upload_invoice(po_id):
             # Auto-categorize as Service
             c.execute("""UPDATE po_requests
                          SET invoice_filename=?, invoice_number=?, invoice_cost=?,
-                             invoice_date=?, invoice_upload_date=?, job_name=?, estimated_cost=?
+                             invoice_date=?, invoice_upload_date=?, job_name=?, estimated_cost=?, status=?
                          WHERE id=?""",
                      (invoice_filename, invoice_number, formatted_cost, 'N/A',
-                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'Service', cost_float, po_id))
+                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'Service', cost_float, 'matched', po_id))
             auto_categorized = True
         else:
             # Normal update - replace estimated_cost with actual invoice cost
             c.execute("""UPDATE po_requests
                          SET invoice_filename=?, invoice_number=?, invoice_cost=?,
-                             invoice_date=?, invoice_upload_date=?, estimated_cost=?
+                             invoice_date=?, invoice_upload_date=?, estimated_cost=?, status=?
                          WHERE id=?""",
                      (invoice_filename, invoice_number, formatted_cost, 'N/A',
-                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'), cost_float, po_id))
+                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'), cost_float, 'matched', po_id))
 
         conn.commit()
         conn.close()
@@ -2560,12 +2560,12 @@ def process_bulk_pdf(pdf_path, timestamp):
             c.execute("""UPDATE po_requests
                          SET invoice_filename=?, invoice_number=?, invoice_cost=?,
                              invoice_date=?, invoice_upload_date=?, estimated_cost=?,
-                             match_method=?
+                             match_method=?, status=?
                          WHERE id=?""",
                      (filename, inv_num, invoice_data['cost'], 'N/A',
                       datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                       float(invoice_data['cost']),
-                      invoice_data.get('match_method', 'Unknown'), po_id))
+                      invoice_data.get('match_method', 'Unknown'), 'matched', po_id))
 
             results['matched'] += 1
 
