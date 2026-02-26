@@ -2378,10 +2378,10 @@ def process_bulk_pdf(pdf_path, timestamp):
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
 
-        # ✅ FIXED: Only get approved POs WITHOUT invoices
+        # ✅ FIXED: Only get POs awaiting invoices (without invoices)
         c.execute("""SELECT id, tech_name, job_name, estimated_cost
                      FROM po_requests
-                     WHERE status='approved'
+                     WHERE status='awaiting_invoice'
                      AND (invoice_filename IS NULL OR invoice_filename = '')""")
         po_map = {}
         for row in c.fetchall():
@@ -6078,11 +6078,11 @@ def admin_dashboard():
     c.execute("SELECT COUNT(*) FROM po_requests")
     total_pos = c.fetchone()[0]
 
-    c.execute("SELECT COUNT(*) FROM po_requests WHERE status='pending'")
-    pending_pos = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM po_requests WHERE status='awaiting_invoice'")
+    awaiting_pos = c.fetchone()[0]
 
-    c.execute("SELECT COUNT(*) FROM po_requests WHERE status='approved'")
-    approved_pos = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM po_requests WHERE invoice_filename IS NOT NULL")
+    invoiced_pos = c.fetchone()[0]
 
     c.execute("SELECT COUNT(*) FROM jobs WHERE active=1")
     active_jobs = c.fetchone()[0]
@@ -6104,8 +6104,8 @@ def admin_dashboard():
         'office_count': office_count,
         'admin_count': admin_count,
         'total_pos': total_pos,
-        'pending_pos': pending_pos,
-        'approved_pos': approved_pos,
+        'awaiting_pos': awaiting_pos,
+        'invoiced_pos': invoiced_pos,
         'active_jobs': active_jobs,
         'total_logs': total_logs
     }
@@ -6958,8 +6958,8 @@ def debug_check_po():
     c.execute("SELECT id, tech_name, job_name, status, estimated_cost FROM po_requests WHERE id=9864")
     po = c.fetchone()
 
-    # Get all approved POs
-    c.execute("SELECT id, job_name, status FROM po_requests WHERE status='approved' ORDER BY id")
+    # Get all awaiting_invoice POs
+    c.execute("SELECT id, job_name, status FROM po_requests WHERE status='awaiting_invoice' ORDER BY id")
     all_approved = c.fetchall()
 
     conn.close()
@@ -7423,9 +7423,9 @@ def debug_matching():
             'match_method': row[7]
         })
 
-    # Get approved POs without invoices (what bulk upload would see)
+    # Get awaiting_invoice POs without invoices (what bulk upload would see)
     c.execute("""SELECT id, job_name FROM po_requests
-                 WHERE status='approved'
+                 WHERE status='awaiting_invoice'
                  AND (invoice_filename IS NULL OR invoice_filename = '')""")
     available_for_matching = [{'id': r[0], 'job': r[1]} for r in c.fetchall()]
 
