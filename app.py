@@ -3506,6 +3506,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
     <script>
         // Jobs data will be loaded via API
         let jobsData = [];
+        let jobsMap = {};  // Map job ID to job data
         let filteredYear = '';
         let filteredStatus = 'all';
 
@@ -3515,7 +3516,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
         }
 
         function editJob(id, currentName, currentYear, currentBudget, event) {
-            event.stopPropagation();
+            if (event) event.stopPropagation();
             const newName = prompt('Edit job name:', currentName);
             if (!newName) return;
             const newYear = prompt('Edit year:', currentYear);
@@ -3539,7 +3540,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
         }
 
         function toggleJob(id, event) {
-            event.stopPropagation();
+            if (event) event.stopPropagation();
             if (!confirm('Toggle active status for this job?')) return;
             fetch('/toggle_job', {
                 method: 'POST',
@@ -3551,7 +3552,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
         }
 
         function deleteJob(id, jobName, event) {
-            event.stopPropagation();
+            if (event) event.stopPropagation();
             if (!confirm('Are you sure you want to DELETE "' + jobName + '"? This cannot be undone!')) return;
             fetch('/delete_job', {
                 method: 'POST',
@@ -3681,17 +3682,23 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 return;
             }
 
+            // Rebuild jobsMap
+            jobsMap = {};
+            filtered.forEach(job => {
+                jobsMap[job[0]] = job;
+            });
+
             let html = '';
             filtered.forEach(job => {
+                const id = job[0];
                 const budget = parseFloat(job[9]) || 0;
                 const invoiced = parseFloat(job[5]) || 0;
                 const jobName = job[1] || '';
                 const isActive = job[4] == 1;
-                const escapedName = jobName.replace(/'/g, "\\'");
                 const htmlEscapedName = escapeHtml(jobName);
 
-                html += '<tr onclick="toggleJobDetails(' + job[0] + ')">';
-                html += '<td><span class="expand-icon" id="icon-' + job[0] + '">▶</span></td>';
+                html += '<tr class="job-row" data-job-id="' + id + '">';
+                html += '<td><span class="expand-icon" id="icon-' + id + '">▶</span></td>';
                 html += '<td><strong>' + htmlEscapedName + '</strong></td>';
                 html += '<td>' + job[2] + '</td>';
                 html += '<td>' + job[8] + ' POs (' + job[6] + ' invoiced)</td>';
@@ -3699,13 +3706,49 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 html += '<td>$' + invoiced.toFixed(2) + '</td>';
                 html += '<td style="min-width: 180px;">' + renderBudgetBar(budget, invoiced) + '</td>';
                 html += '<td><span class="status-badge ' + (isActive ? 'status-active' : 'status-inactive') + '">' + (isActive ? 'Active' : 'Inactive') + '</span></td>';
-                html += '<td><button onclick="editJob(' + job[0] + ', \'' + escapedName + '\', ' + job[2] + ', ' + budget + ', event)" class="btn btn-primary" style="padding: 5px 10px; margin-right: 5px; font-size: 12px;">Edit</button>';
-                html += '<button onclick="toggleJob(' + job[0] + ', event)" class="btn btn-secondary" style="padding: 5px 10px; margin-right: 5px; font-size: 12px;">' + (isActive ? 'Deactivate' : 'Activate') + '</button>';
-                html += '<button onclick="deleteJob(' + job[0] + ', \'' + escapedName + '\', event)" class="btn btn-danger" style="padding: 5px 10px; font-size: 12px;">Delete</button></td></tr>';
-                html += '<tr class="expandable-row" id="details-' + job[0] + '"><td colspan="9"><div class="invoice-details" id="invoice-container-' + job[0] + '"></div></td></tr>';
+                html += '<td><button class="edit-btn btn btn-primary" data-id="' + id + '">Edit</button>';
+                html += '<button class="toggle-btn btn btn-secondary" data-id="' + id + '">' + (isActive ? 'Deactivate' : 'Activate') + '</button>';
+                html += '<button class="delete-btn btn btn-danger" data-id="' + id + '">Delete</button></td></tr>';
+                html += '<tr class="expandable-row" id="details-' + id + '"><td colspan="9"><div class="invoice-details" id="invoice-container-' + id + '"></div></td></tr>';
             });
 
             tbody.innerHTML = html;
+
+            // Add event listeners
+            document.querySelectorAll('.edit-btn').forEach(btn => {
+                btn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    const id = parseInt(this.dataset.id);
+                    const job = jobsMap[id];
+                    if (job) editJob(id, job[1], job[2], job[9], e);
+                });
+            });
+
+            document.querySelectorAll('.toggle-btn').forEach(btn => {
+                btn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    const id = parseInt(this.dataset.id);
+                    toggleJob(id, e);
+                });
+            });
+
+            document.querySelectorAll('.delete-btn').forEach(btn => {
+                btn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    const id = parseInt(this.dataset.id);
+                    const job = jobsMap[id];
+                    if (job) deleteJob(id, job[1], e);
+                });
+            });
+
+            document.querySelectorAll('.job-row').forEach(row => {
+                row.addEventListener('click', function(e) {
+                    if (!e.target.closest('button')) {
+                        const id = parseInt(this.dataset.jobId);
+                        toggleJobDetails(id);
+                    }
+                });
+            });
         }
 
         function populateYearFilter() {
