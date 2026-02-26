@@ -2870,14 +2870,14 @@ def extract_invoice_data(text, po_map):
     # This pattern handles both same-line and multiline formats
     customer_invoice_patterns = [
         r'CUSTOMER\s*#\s*INVOICE\s*#[\s\S]*?(\d{5,}[A-Z0-9\-]*)',  # SiteOne table format
-        r'INVOICE\s*#[\s:]*(\d{5,}[A-Z0-9\-]*)',  # Simple Invoice # format
+        r'INVOICE\s*#[\s:]*(\d{4,}[A-Z0-9\-]*)',  # Simple Invoice # format (allow 4+ chars)
     ]
 
     for pattern in customer_invoice_patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             candidate = match.group(1).strip()
-            if len(candidate) >= 5:
+            if len(candidate) >= 4:  # Allow 4+ character numbers
                 invoice_number = candidate
                 print(f"  ✅ Found Invoice Number (primary pattern): {invoice_number}")
                 break
@@ -2885,7 +2885,7 @@ def extract_invoice_data(text, po_map):
     if not invoice_number:
         # Fallback patterns - handle various invoice/order number formats
         order_patterns = [
-            # Invoice patterns
+            # Invoice patterns with flexible spacing
             (r'INVOICE\s*#\s*:?\s*([A-Z0-9\-]+)', 'Invoice #'),
             (r'INVOICE\s*(?:NO|NUM|NUMBER)\s*[:\s]*([A-Z0-9\-]+)', 'Invoice No/Num'),
             (r'Invoice\s+No\s*[:\s]*([A-Z0-9\-]+)', 'Invoice No'),  # Davis: "Invoice No: FM10979-3"
@@ -2909,12 +2909,35 @@ def extract_invoice_data(text, po_map):
             if match:
                 candidate = match.group(1).strip()
                 # Skip short numbers (likely customer number) and common false positives
-                if candidate.lower() not in ['date', 'time', 'page'] and len(candidate) >= 5:
+                # Allow 4+ character invoice numbers
+                if candidate.lower() not in ['date', 'time', 'page'] and len(candidate) >= 4:
                     invoice_number = candidate
                     print(f"  ✅ Found Invoice Number ({desc}): {invoice_number}")
                     break
                 else:
                     print(f"    Skipped '{candidate}' (too short or false positive)")
+
+    # Additional fallback: look for large numbers that might be invoice numbers
+    if not invoice_number:
+        print("\n  Trying additional fallback patterns...")
+        # Look for sequences of 8+ digits (like 162671136-001)
+        fallback_patterns = [
+            (r'(\d{8,}[\-\.]?\d*)', 'Large numeric sequence (8+ digits)'),
+            (r'(\d{6,}[\-/]\d{3,})', 'Numeric sequence with separator (XXXXXX-YYY)'),
+        ]
+
+        for pattern, desc in fallback_patterns:
+            print(f"  Trying: {desc}")
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for candidate in matches:
+                if candidate and len(candidate) >= 8:
+                    # Skip if it looks like a date
+                    if not re.match(r'^20\d{2}', candidate):  # Skip if starts with year
+                        invoice_number = candidate.strip()
+                        print(f"  ✅ Found Invoice Number ({desc}): {invoice_number}")
+                        break
+            if invoice_number:
+                break
 
     if not invoice_number:
         print("  ❌ No invoice number found")
