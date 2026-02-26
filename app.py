@@ -2869,15 +2869,15 @@ def extract_invoice_data(text, po_map):
     # Pattern specifically for "CUSTOMER # INVOICE #" format (SiteOne) - handles table headers
     # This pattern handles both same-line and multiline formats
     customer_invoice_patterns = [
-        r'CUSTOMER\s*#\s*INVOICE\s*#[\s\S]*?(\d{5,}[A-Z0-9\-]*)',  # SiteOne table format
-        r'INVOICE\s*#[\s:]*(\d{5,}[A-Z0-9\-]*)',  # Simple Invoice # format
+        r'CUSTOMER\s*#\s*INVOICE\s*#[\s\S]*?(\d{4,}[A-Z0-9\-]*)',  # SiteOne table format (4+ digits)
+        r'INVOICE\s*#[\s:]*(\d{4,}[A-Z0-9\-]*)',  # Simple Invoice # format (4+ digits)
     ]
 
     for pattern in customer_invoice_patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             candidate = match.group(1).strip()
-            if len(candidate) >= 5:
+            if len(candidate) >= 4:  # Allow 4+ character invoice numbers
                 invoice_number = candidate
                 print(f"  ✅ Found Invoice Number (primary pattern): {invoice_number}")
                 break
@@ -2909,7 +2909,8 @@ def extract_invoice_data(text, po_map):
             if match:
                 candidate = match.group(1).strip()
                 # Skip short numbers (likely customer number) and common false positives
-                if candidate.lower() not in ['date', 'time', 'page'] and len(candidate) >= 5:
+                # Allow 4+ character invoice numbers to catch more formats
+                if candidate.lower() not in ['date', 'time', 'page'] and len(candidate) >= 4:
                     invoice_number = candidate
                     print(f"  ✅ Found Invoice Number ({desc}): {invoice_number}")
                     break
