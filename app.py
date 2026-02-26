@@ -1577,9 +1577,9 @@ def upload_invoice(po_id):
             conn.close()
             return jsonify({'success': False, 'error': 'PO request not found'})
 
-        if po[0] != 'approved':
+        if po[0] != 'awaiting_invoice':
             conn.close()
-            return jsonify({'success': False, 'error': 'PO request must be approved first'})
+            return jsonify({'success': False, 'error': 'PO request must be awaiting an invoice'})
 
         formatted_cost = f"{cost_float:.2f}"
 
