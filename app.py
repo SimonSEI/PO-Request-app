@@ -3506,6 +3506,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
     <script>
         // Jobs data will be loaded via API
         let jobsData = [];
+        let jobsMap = {};  // Map job ID to job data
         let filteredYear = '';
         let filteredStatus = 'all';
 
@@ -3681,16 +3682,23 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 return;
             }
 
+            // Rebuild jobsMap
+            jobsMap = {};
+            filtered.forEach(job => {
+                jobsMap[job[0]] = job;
+            });
+
             let html = '';
             filtered.forEach(job => {
+                const id = job[0];
                 const budget = parseFloat(job[9]) || 0;
                 const invoiced = parseFloat(job[5]) || 0;
                 const jobName = job[1] || '';
                 const isActive = job[4] == 1;
                 const htmlEscapedName = escapeHtml(jobName);
 
-                html += '<tr data-job-id="' + job[0] + '" class="job-row">';
-                html += '<td><span class="expand-icon" id="icon-' + job[0] + '">▶</span></td>';
+                html += '<tr class="job-row" data-job-id="' + id + '">';
+                html += '<td><span class="expand-icon" id="icon-' + id + '">▶</span></td>';
                 html += '<td><strong>' + htmlEscapedName + '</strong></td>';
                 html += '<td>' + job[2] + '</td>';
                 html += '<td>' + job[8] + ' POs (' + job[6] + ' invoiced)</td>';
@@ -3698,41 +3706,48 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 html += '<td>$' + invoiced.toFixed(2) + '</td>';
                 html += '<td style="min-width: 180px;">' + renderBudgetBar(budget, invoiced) + '</td>';
                 html += '<td><span class="status-badge ' + (isActive ? 'status-active' : 'status-inactive') + '">' + (isActive ? 'Active' : 'Inactive') + '</span></td>';
-                html += '<td>';
-                html += '<button class="btn btn-primary edit-btn" data-job-id="' + job[0] + '" data-job-name="' + htmlEscapedName + '" data-job-year="' + job[2] + '" data-job-budget="' + budget + '" style="padding: 5px 10px; margin-right: 5px; font-size: 12px;">Edit</button>';
-                html += '<button class="btn btn-secondary toggle-btn" data-job-id="' + job[0] + '" style="padding: 5px 10px; margin-right: 5px; font-size: 12px;">' + (isActive ? 'Deactivate' : 'Activate') + '</button>';
-                html += '<button class="btn btn-danger delete-btn" data-job-id="' + job[0] + '" data-job-name="' + htmlEscapedName + '" style="padding: 5px 10px; font-size: 12px;">Delete</button>';
-                html += '</td></tr>';
-                html += '<tr class="expandable-row" id="details-' + job[0] + '"><td colspan="9"><div class="invoice-details" id="invoice-container-' + job[0] + '"></div></td></tr>';
+                html += '<td><button class="edit-btn btn btn-primary" data-id="' + id + '">Edit</button>';
+                html += '<button class="toggle-btn btn btn-secondary" data-id="' + id + '">' + (isActive ? 'Deactivate' : 'Activate') + '</button>';
+                html += '<button class="delete-btn btn btn-danger" data-id="' + id + '">Delete</button></td></tr>';
+                html += '<tr class="expandable-row" id="details-' + id + '"><td colspan="9"><div class="invoice-details" id="invoice-container-' + id + '"></div></td></tr>';
             });
 
             tbody.innerHTML = html;
 
-            // Add event listeners using event delegation
-            tbody.addEventListener('click', function(e) {
-                const jobId = e.target.dataset.jobId;
-                if (!jobId) return;
-
-                if (e.target.classList.contains('edit-btn')) {
-                    const jobName = e.target.dataset.jobName;
-                    const jobYear = e.target.dataset.jobYear;
-                    const jobBudget = e.target.dataset.jobBudget;
-                    editJob(parseInt(jobId), jobName, parseInt(jobYear), parseFloat(jobBudget), e);
-                } else if (e.target.classList.contains('toggle-btn')) {
-                    toggleJob(parseInt(jobId), e);
-                } else if (e.target.classList.contains('delete-btn')) {
-                    const jobName = e.target.dataset.jobName;
-                    deleteJob(parseInt(jobId), jobName, e);
-                }
+            // Add event listeners
+            document.querySelectorAll('.edit-btn').forEach(btn => {
+                btn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    const id = parseInt(this.dataset.id);
+                    const job = jobsMap[id];
+                    if (job) editJob(id, job[1], job[2], job[9], e);
+                });
             });
 
-            // Handle row expand/collapse
-            tbody.addEventListener('click', function(e) {
-                if (e.target.closest('.job-row')) {
-                    const row = e.target.closest('.job-row');
-                    const jobId = row.dataset.jobId;
-                    if (jobId) toggleJobDetails(parseInt(jobId));
-                }
+            document.querySelectorAll('.toggle-btn').forEach(btn => {
+                btn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    const id = parseInt(this.dataset.id);
+                    toggleJob(id, e);
+                });
+            });
+
+            document.querySelectorAll('.delete-btn').forEach(btn => {
+                btn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    const id = parseInt(this.dataset.id);
+                    const job = jobsMap[id];
+                    if (job) deleteJob(id, job[1], e);
+                });
+            });
+
+            document.querySelectorAll('.job-row').forEach(row => {
+                row.addEventListener('click', function(e) {
+                    if (!e.target.closest('button')) {
+                        const id = parseInt(this.dataset.jobId);
+                        toggleJobDetails(id);
+                    }
+                });
             });
         }
 
