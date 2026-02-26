@@ -3606,7 +3606,12 @@ JOB_MANAGEMENT_TEMPLATE = '''
                         html += '<div class="invoice-item"><strong>PO #' + inv.po_id.toString().padStart(4, '0') + '</strong> - ' + escapeHtml(inv.tech_name) + '<br>';
                         html += 'Invoice: ' + escapeHtml(inv.invoice_number) + ' | Estimated: $' + inv.estimated.toFixed(2) + ' | Actual: $' + inv.invoice_cost.toFixed(2);
                         html += ' | Diff: <span class="' + (diff > 0 ? 'money-negative' : 'money-positive') + '">$' + diff.toFixed(2) + '</span><br>';
-                        if (inv.filename && inv.filename !== 'MANUAL_ENTRY') html += '<a href="/view_invoice/' + inv.filename + '" target="_blank" style="color: #667eea;">View Invoice</a>';
+                        html += '<div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #ddd;">';
+                        html += '<label style="margin-bottom: 5px; font-size: 13px; font-weight: bold; color: #555;">Jobber Invoice #:</label> ';
+                        html += '<input type="text" id="jobber-inv-' + inv.po_id + '" value="' + escapeHtml(jobberNum) + '" placeholder="Enter Jobber Invoice #" style="width: 150px; padding: 5px; border: 1px solid #ddd; border-radius: 3px; font-size: 13px;">';
+                        html += ' <button class="btn btn-primary" style="padding: 5px 10px; font-size: 12px;" onclick="saveJobberInvoice(' + inv.po_id + ')">Save</button>';
+                        html += '</div>';
+                        if (inv.filename && inv.filename !== 'MANUAL_ENTRY') html += '<a href="/view_invoice/' + inv.filename + '" target="_blank" style="color: #667eea; display: inline-block; margin-top: 8px;">View Invoice</a>';
                         html += '</div>';
                     });
                     container.innerHTML = html;
@@ -3614,6 +3619,27 @@ JOB_MANAGEMENT_TEMPLATE = '''
                     container.innerHTML = '<p style="color: #dc3545;">Error: ' + data.error + '</p>';
                 }
             });
+        }
+
+        function saveJobberInvoice(poId) {
+            const input = document.getElementById('jobber-inv-' + poId);
+            const jobberNumber = input.value.trim();
+
+            fetch('/update_jobber_invoice/' + poId, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ jobber_invoice_number: jobberNumber })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    input.style.borderColor = '#28a745';
+                    setTimeout(() => { input.style.borderColor = '#ddd'; }, 2000);
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            })
+            .catch(err => alert('Error saving: ' + err));
         }
 
         function applyFilters() {
