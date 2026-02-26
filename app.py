@@ -3515,7 +3515,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
         }
 
         function editJob(id, currentName, currentYear, currentBudget, event) {
-            event.stopPropagation();
+            if (event) event.stopPropagation();
             const newName = prompt('Edit job name:', currentName);
             if (!newName) return;
             const newYear = prompt('Edit year:', currentYear);
@@ -3539,7 +3539,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
         }
 
         function toggleJob(id, event) {
-            event.stopPropagation();
+            if (event) event.stopPropagation();
             if (!confirm('Toggle active status for this job?')) return;
             fetch('/toggle_job', {
                 method: 'POST',
@@ -3551,7 +3551,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
         }
 
         function deleteJob(id, jobName, event) {
-            event.stopPropagation();
+            if (event) event.stopPropagation();
             if (!confirm('Are you sure you want to DELETE "' + jobName + '"? This cannot be undone!')) return;
             fetch('/delete_job', {
                 method: 'POST',
@@ -3687,10 +3687,9 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 const invoiced = parseFloat(job[5]) || 0;
                 const jobName = job[1] || '';
                 const isActive = job[4] == 1;
-                const escapedName = jobName.replace(/'/g, "\\'");
                 const htmlEscapedName = escapeHtml(jobName);
 
-                html += '<tr onclick="toggleJobDetails(' + job[0] + ')">';
+                html += '<tr data-job-id="' + job[0] + '" class="job-row">';
                 html += '<td><span class="expand-icon" id="icon-' + job[0] + '">▶</span></td>';
                 html += '<td><strong>' + htmlEscapedName + '</strong></td>';
                 html += '<td>' + job[2] + '</td>';
@@ -3699,13 +3698,42 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 html += '<td>$' + invoiced.toFixed(2) + '</td>';
                 html += '<td style="min-width: 180px;">' + renderBudgetBar(budget, invoiced) + '</td>';
                 html += '<td><span class="status-badge ' + (isActive ? 'status-active' : 'status-inactive') + '">' + (isActive ? 'Active' : 'Inactive') + '</span></td>';
-                html += '<td><button onclick="editJob(' + job[0] + ', \'' + escapedName + '\', ' + job[2] + ', ' + budget + ', event)" class="btn btn-primary" style="padding: 5px 10px; margin-right: 5px; font-size: 12px;">Edit</button>';
-                html += '<button onclick="toggleJob(' + job[0] + ', event)" class="btn btn-secondary" style="padding: 5px 10px; margin-right: 5px; font-size: 12px;">' + (isActive ? 'Deactivate' : 'Activate') + '</button>';
-                html += '<button onclick="deleteJob(' + job[0] + ', \'' + escapedName + '\', event)" class="btn btn-danger" style="padding: 5px 10px; font-size: 12px;">Delete</button></td></tr>';
+                html += '<td>';
+                html += '<button class="btn btn-primary edit-btn" data-job-id="' + job[0] + '" data-job-name="' + htmlEscapedName + '" data-job-year="' + job[2] + '" data-job-budget="' + budget + '" style="padding: 5px 10px; margin-right: 5px; font-size: 12px;">Edit</button>';
+                html += '<button class="btn btn-secondary toggle-btn" data-job-id="' + job[0] + '" style="padding: 5px 10px; margin-right: 5px; font-size: 12px;">' + (isActive ? 'Deactivate' : 'Activate') + '</button>';
+                html += '<button class="btn btn-danger delete-btn" data-job-id="' + job[0] + '" data-job-name="' + htmlEscapedName + '" style="padding: 5px 10px; font-size: 12px;">Delete</button>';
+                html += '</td></tr>';
                 html += '<tr class="expandable-row" id="details-' + job[0] + '"><td colspan="9"><div class="invoice-details" id="invoice-container-' + job[0] + '"></div></td></tr>';
             });
 
             tbody.innerHTML = html;
+
+            // Add event listeners using event delegation
+            tbody.addEventListener('click', function(e) {
+                const jobId = e.target.dataset.jobId;
+                if (!jobId) return;
+
+                if (e.target.classList.contains('edit-btn')) {
+                    const jobName = e.target.dataset.jobName;
+                    const jobYear = e.target.dataset.jobYear;
+                    const jobBudget = e.target.dataset.jobBudget;
+                    editJob(parseInt(jobId), jobName, parseInt(jobYear), parseFloat(jobBudget), e);
+                } else if (e.target.classList.contains('toggle-btn')) {
+                    toggleJob(parseInt(jobId), e);
+                } else if (e.target.classList.contains('delete-btn')) {
+                    const jobName = e.target.dataset.jobName;
+                    deleteJob(parseInt(jobId), jobName, e);
+                }
+            });
+
+            // Handle row expand/collapse
+            tbody.addEventListener('click', function(e) {
+                if (e.target.closest('.job-row')) {
+                    const row = e.target.closest('.job-row');
+                    const jobId = row.dataset.jobId;
+                    if (jobId) toggleJobDetails(parseInt(jobId));
+                }
+            });
         }
 
         function populateYearFilter() {
