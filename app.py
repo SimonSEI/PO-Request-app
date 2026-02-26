@@ -874,7 +874,7 @@ REASONING: [brief explanation of how you matched it]"""
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
         message = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             max_tokens=300,
             messages=[
                 {"role": "user", "content": prompt}
@@ -2457,10 +2457,11 @@ def process_bulk_pdf(pdf_path, timestamp):
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
 
-        # ✅ FIXED: Only get POs awaiting invoices (without invoices)
+        # ✅ FIXED: Get POs awaiting invoices (without invoices)
+        # Include both 'awaiting_invoice' and 'approved' statuses in case of state mismatch
         c.execute("""SELECT id, tech_name, job_name, estimated_cost, client_name
                      FROM po_requests
-                     WHERE status='awaiting_invoice'
+                     WHERE (status='awaiting_invoice' OR status='approved')
                      AND (invoice_filename IS NULL OR invoice_filename = '')""")
         po_map = {}
         for row in c.fetchall():
@@ -2473,6 +2474,16 @@ def process_bulk_pdf(pdf_path, timestamp):
             }  # ← Fixed closing brace
 
         print(f"\n📋 Found {len(po_map)} approved POs without invoices: {sorted(po_map.keys())}")
+
+        # Debug: Show all POs for troubleshooting
+        c.execute("SELECT id, status, invoice_filename FROM po_requests ORDER BY id DESC LIMIT 10")
+        all_pos = c.fetchall()
+        if all_pos:
+            print(f"   DEBUG: Recent POs in database:")
+            for po_id, status, inv_file in all_pos:
+                print(f"     PO {po_id}: status={status}, invoice_filename={'set' if inv_file else 'empty'}")
+        else:
+            print(f"   DEBUG: No POs found in database!")
 
         # Group pages by invoice number
         invoice_groups = {}
@@ -2821,10 +2832,10 @@ def extract_invoice_year(text):
 
 def get_service_job_for_year(year):
     """
-    Check if a Service job exists for the given year.
+    Check if a Service job exists for the given year. Auto-create if missing.
     Returns (job_name, error_message) tuple:
-    - If found: ("Service YYYY", None)
-    - If not found: (None, "Service YYYY job not found")
+    - If found or created: ("Service YYYY", None)
+    - If error: (None, error message)
     """
     if year is None:
         return None, "Cannot determine invoice year for Service job mapping"
@@ -2836,12 +2847,24 @@ def get_service_job_for_year(year):
         c = conn.cursor()
         c.execute("SELECT job_name FROM jobs WHERE job_name=? AND active=1", (service_job_name,))
         result = c.fetchone()
-        conn.close()
 
         if result:
+            conn.close()
             return service_job_name, None
         else:
-            return None, f"Service {year} job not found. Please create it in Manage Jobs."
+            # Auto-create the Service job if it doesn't exist
+            try:
+                c.execute("""INSERT INTO jobs (job_name, active, created_date)
+                            VALUES (?, 1, ?)""",
+                         (service_job_name, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                conn.commit()
+                print(f"   ✅ Auto-created Service job: {service_job_name}")
+                conn.close()
+                return service_job_name, None
+            except Exception as create_err:
+                conn.close()
+                print(f"   ⚠ Failed to auto-create Service job: {create_err}")
+                return None, f"Service {year} job could not be created: {str(create_err)}"
     except Exception as e:
         return None, f"Error checking for Service job: {str(e)}"
 
@@ -2918,8 +2941,21 @@ def extract_invoice_data(text, po_map):
                     print(f"    Skipped '{candidate}' (too short or false positive)")
 
     if not invoice_number:
-        print("  ❌ No invoice number found")
-        return None
+        # Last resort fallback: if page contains invoice-related keywords, try to find ANY 4-5 digit number
+        if any(keyword in text.upper() for keyword in ['INVOICE', 'BILL', 'INVOICE AMOUNT', 'TOTAL AMOUNT', 'AMOUNT DUE']):
+            print("  🔍 Invoice keywords detected but no number matched, trying fallback...")
+            # Find first 4-5 digit number after an invoice keyword
+            match = re.search(r'(?:INVOICE|BILL)[^\d]*(\d{4,5})', text, re.IGNORECASE)
+            if match:
+                candidate = match.group(1).strip()
+                invoice_number = candidate
+                print(f"  ✅ Found Invoice Number (fallback): {invoice_number}")
+            else:
+                print("  ❌ No invoice number found even with fallback")
+                return None
+        else:
+            print("  ❌ No invoice number found and no invoice keywords detected")
+            return None
 
     # === STEP 2: Find PO Number - IMPROVED VERSION ===
     print(f"\n🔍 STEP 2: Looking for PO Number...")
@@ -3271,7 +3307,10 @@ def extract_invoice_data(text, po_map):
         print(f"❌ FINAL RESULT: NO PO MATCH")
         print(f"   Invoice Number: {invoice_number}")
         print(f"   Total Cost: ${cost}")
-        print(f"   Available POs (without invoices): {sorted(po_map.keys())}")
+        if po_map:
+            print(f"   Available POs (without invoices): {sorted(po_map.keys())}")
+        else:
+            print(f"   ⚠ ERROR: No POs available! Check database for POs with status='awaiting_invoice' or 'approved'")
         print(f"{'='*60}\n")
         return {
             'error': True,
