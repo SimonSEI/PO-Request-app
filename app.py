@@ -454,8 +454,16 @@ def format_po_number(po_id, job_name, job_code=None):
         return f"S{po_id:04d}"
     return f"{po_id:04d}"
 
-# Make this available to templates
+def format_po_display(po_id, job_name, client_name=None, job_code=None):
+    """Format PO display with client name for Service jobs"""
+    po_number = format_po_number(po_id, job_name, job_code)
+    if job_name and job_name.lower() == 'service' and client_name:
+        return f"{po_number} {client_name}"
+    return po_number
+
+# Make these available to templates
 app.jinja_env.globals.update(format_po_number=format_po_number)
+app.jinja_env.globals.update(format_po_display=format_po_display)
 
 
 def normalize_text_for_matching(text):
@@ -1498,11 +1506,8 @@ def submit_request():
             conn.commit()
             conn.close()
 
-            po_display = format_po_number(po_id, job_name, job_code)
-            if job_name.lower() == 'service' and client_name:
-                flash(f'PO#{po_display}|{job_name} ({client_name})')
-            else:
-                flash(f'PO#{po_display}|{job_name}')
+            po_display = format_po_display(po_id, job_name, client_name, job_code)
+            flash(f'PO#{po_display}|{job_name}')
             return redirect(url_for('tech_dashboard'))
 
         except ValueError:
@@ -1539,11 +1544,8 @@ def submit_request():
         conn.commit()
         conn.close()
 
-        po_display = format_po_number(new_id, job_name, job_code)
-        if job_name.lower() == 'service' and client_name:
-            flash(f'PO#{po_display}|{job_name} ({client_name})')
-        else:
-            flash(f'PO#{po_display}|{job_name}')
+        po_display = format_po_display(new_id, job_name, client_name, job_code)
+        flash(f'PO#{po_display}|{job_name}')
         return redirect(url_for('tech_dashboard'))
 
 @app.route('/upload_invoice/<int:po_id>', methods=['POST'])
@@ -1661,11 +1663,11 @@ def upload_invoice(po_id):
         conn.commit()
         conn.close()
 
-        # Build message with client name if available
+        # Build message with formatted PO display
+        job_name = po[1]
         client_name_str = po[2] if po and po[2] else None
-        message = f'Invoice saved successfully for PO #{po_id:04d}'
-        if client_name_str:
-            message += f' ({client_name_str})'
+        po_display = format_po_display(po_id, job_name, client_name_str)
+        message = f'Invoice saved successfully for PO {po_display}'
         if auto_categorized:
             message += f' - Auto-matched to {new_job_name}'
         if manual_review_flag:
@@ -2530,6 +2532,7 @@ def process_bulk_pdf(pdf_path, timestamp):
                             'page': page_num,
                             'po_number': po_id,
                             'job_name': po_info.get('job_name', 'Unknown'),
+                            'client_name': po_info.get('client_name'),
                             'order_number': order_number,
                             'vendor': vendor,
                             'filename': slip_filename
@@ -2709,7 +2712,8 @@ def process_bulk_pdf(pdf_path, timestamp):
         if packing_slip_count > 0:
             slip_details = []
             for slip in results.get('packing_slips', []):
-                slip_details.append(f"PO #{slip['po_number']:04d} ({slip['job_name']})")
+                po_display = format_po_display(slip['po_number'], slip['job_name'], slip.get('client_name'))
+                slip_details.append(f"PO {po_display} ({slip['job_name']})")
             msg_parts.append(f'Detected {packing_slip_count} packing slip(s) - delivery noted on: {", ".join(slip_details)}.')
         if error_count > 0:
             msg_parts.append(f'{error_count} invoice(s) found but NO MATCHING PO!')
