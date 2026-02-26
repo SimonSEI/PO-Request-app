@@ -3070,9 +3070,30 @@ def extract_invoice_data(text, po_map):
             if po_number:
                 break
 
-    # METHOD 3: Direct search for known PO IDs from po_map
+    # METHOD 3: Direct search for S-prefixed PO numbers (Service jobs)
     if not po_number and po_map:
-        print("\n  Method 3: Direct search for known PO IDs")
+        print("\n  Method 3: Direct search for S-prefixed PO numbers")
+        # Look for S followed by 4+ digits anywhere in the text
+        s_po_matches = re.findall(r'S\s*-?\s*(\d{4,})', text, re.IGNORECASE)
+        print(f"    Found S-format numbers: {s_po_matches}")
+
+        for num_str in s_po_matches:
+            try:
+                candidate = int(num_str)
+                print(f"    Testing S-format number: {candidate}")
+                if candidate in po_map:
+                    po_number = candidate
+                    match_method = "S-format Direct Search"
+                    print(f"      ✅ MATCHED! PO {po_number}")
+                    break
+                else:
+                    print(f"      ⚠ {candidate} not in approved list")
+            except ValueError:
+                continue
+
+    # METHOD 4: Direct search for known PO IDs from po_map
+    if not po_number and po_map:
+        print("\n  Method 4: Direct search for known PO IDs")
         text_upper = text.upper()
 
         for po_id, po_info in po_map.items():
@@ -3117,9 +3138,28 @@ def extract_invoice_data(text, po_map):
                         print(f"      ✅ MATCHED! PO {po_number} (found in PO context)")
                         break
 
-    # METHOD 4: Fuzzy job name scanning - find job names in text and extract nearby PO numbers
+    # METHOD 5: Scan for any 4-digit numbers that match PO IDs in database
     if not po_number and po_map:
-        print("\n  Method 4: Fuzzy job name scanning")
+        print("\n  Method 5: Scan all 4-digit numbers for PO matches")
+        # Find all 4-digit numbers in the text
+        all_numbers = re.findall(r'\b(\d{4,5})\b', text)
+        print(f"    Found numbers: {all_numbers}")
+
+        for num_str in all_numbers:
+            try:
+                candidate = int(num_str)
+                if candidate in po_map:
+                    print(f"    ✓ Found matching PO: {candidate}")
+                    po_number = candidate
+                    match_method = "Number Scan"
+                    print(f"      ✅ MATCHED! PO {po_number}")
+                    break
+            except ValueError:
+                continue
+
+    # METHOD 6: Fuzzy job name scanning - find job names in text and extract nearby PO numbers
+    if not po_number and po_map:
+        print("\n  Method 6: Fuzzy job name scanning")
         active_jobs = get_active_job_names()
         print(f"    Active jobs to search for: {active_jobs}")
 
