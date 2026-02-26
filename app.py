@@ -2983,6 +2983,10 @@ def extract_invoice_data(text, po_map):
             if len(lines) > 1:
                 lines_to_check.append(lines[1])
 
+            # Also check up to 5 lines to handle multi-row tables
+            for i in range(2, min(5, len(lines))):
+                lines_to_check.append(lines[i])
+
             for line_idx, values_line in enumerate(lines_to_check):
                 if po_number:
                     break
@@ -2990,7 +2994,7 @@ def extract_invoice_data(text, po_map):
 
                 # Extract ALL sequences that could be PO numbers
                 number_patterns = [
-                    r'S\s?-?(\d{4,})',       # S 6133, S-6133, or S6133 format (handle spaces and dashes)
+                    r'S\s*-?\s*(\d{4,})',    # S 6133, S-6133, S - 6133, or S6133 format (handle flexible spacing/dashes)
                     r'\b(\d{4,})[A-Za-z]+',  # 9860HERONSGLEN format (case insensitive)
                     r':\s*(\d{4,})\s+[A-Za-z]', # PO Number: 1012 SOMERVILLE format
                     r'\b(\d{4,})\s+[A-Za-z]{3,}', # 1012 SOMERVILLE format (space between)
@@ -3021,7 +3025,7 @@ def extract_invoice_data(text, po_map):
         print("\n  Method 2: Pattern matching (fallback)")
         po_patterns = [
             # PO # formats
-            (r'PO\s*#?\s*[:\s]*S\s?-?(\d{4,})', 'PO: S XXXX, S-XXXX, or SXXXX', 0),
+            (r'PO\s*#?\s*[:\s]*S\s*-?\s*(\d{4,})', 'PO: S formats with flexible spacing', 0),
             (r'PO\s*#?\s*[:\s]*(\d{4,})[A-Za-z]+', 'PO: XXXXABC', 0),
             (r'PO\s*#?\s*[:\s]*(\d{4,})\s+[A-Za-z]', 'PO: XXXX JOBNAME', 0),
             (r'PO\s*#?\s*[:\s]*(\d{4,})', 'PO: XXXX', 0),
