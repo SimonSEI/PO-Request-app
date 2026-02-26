@@ -315,6 +315,12 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # Column already exists
 
+    # Add manual_review_flag column to po_requests if it doesn't exist
+    try:
+        c.execute("ALTER TABLE po_requests ADD COLUMN manual_review_flag TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     # Add job_code column to jobs if it doesn't exist
     try:
         c.execute("ALTER TABLE jobs ADD COLUMN job_code TEXT")
@@ -1586,16 +1592,50 @@ def upload_invoice(po_id):
         # ✅ NEW: Update BOTH invoice fields AND estimated_cost
         po_number_formatted = format_po_number(po_id, po[1])
         auto_categorized = False
+        manual_review_flag = None
+        new_job_name = None
 
         if po_number_formatted.upper().startswith('S'):
-            # Auto-categorize as Service
+            # Service PO - try to extract year and match to Service YYYY job
+            invoice_year = None
+
+            # Try to extract year from uploaded file if PDF
+            if invoice_filename and invoice_filename != 'MANUAL_ENTRY' and invoice_filename.lower().endswith('.pdf'):
+                try:
+                    file_path = os.path.join(app.config['UPLOAD_FOLDER'], invoice_filename)
+                    if os.path.exists(file_path):
+                        import pdfplumber
+                        with pdfplumber.open(file_path) as pdf:
+                            for page in pdf.pages[:2]:  # Check first 2 pages
+                                text = page.extract_text() or ''
+                                invoice_year = extract_invoice_year(text)
+                                if invoice_year:
+                                    break
+                except:
+                    pass  # If PDF extraction fails, continue without year
+
+            if invoice_year:
+                # Check if Service YYYY job exists
+                service_job, error = get_service_job_for_year(invoice_year)
+                if service_job:
+                    new_job_name = service_job
+                    auto_categorized = True
+                    print(f"✅ Service PO matched to {service_job} based on invoice year {invoice_year}")
+                else:
+                    conn.close()
+                    return jsonify({'success': False, 'error': error})
+            else:
+                # No year found - flag for manual review
+                new_job_name = 'Service'
+                manual_review_flag = f"Service PO (ID {po_id}) needs manual review - invoice year could not be extracted. Please assign to appropriate Service job."
+                print(f"⚠ Service PO flagged for manual review - unable to extract invoice year")
+
             c.execute("""UPDATE po_requests
                          SET invoice_filename=?, invoice_number=?, invoice_cost=?,
-                             invoice_date=?, invoice_upload_date=?, job_name=?, estimated_cost=?, status=?
+                             invoice_date=?, invoice_upload_date=?, job_name=?, estimated_cost=?, status=?, manual_review_flag=?
                          WHERE id=?""",
                      (invoice_filename, invoice_number, formatted_cost, 'N/A',
-                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'Service', cost_float, 'matched', po_id))
-            auto_categorized = True
+                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'), new_job_name, cost_float, 'matched', manual_review_flag, po_id))
         else:
             # Normal update - replace estimated_cost with actual invoice cost
             c.execute("""UPDATE po_requests
@@ -1610,7 +1650,9 @@ def upload_invoice(po_id):
 
         message = f'Invoice saved successfully for PO #{po_id:04d}'
         if auto_categorized:
-            message += ' - Auto-categorized as Service'
+            message += f' - Auto-matched to {new_job_name}'
+        if manual_review_flag:
+            message += ' ⚠️ - Flagged for manual job assignment'
 
         return jsonify({
             'success': True,
@@ -1618,7 +1660,8 @@ def upload_invoice(po_id):
             'saved_data': {
                 'invoice_number': invoice_number,
                 'invoice_cost': formatted_cost,
-                'auto_categorized': auto_categorized
+                'auto_categorized': auto_categorized,
+                'manual_review_flag': manual_review_flag
             }
         })
 
@@ -2556,22 +2599,71 @@ def process_bulk_pdf(pdf_path, timestamp):
             with open(file_path, 'wb') as output_file:
                 pdf_writer.write(output_file)
 
-            # Update database
-            c.execute("""UPDATE po_requests
-                         SET invoice_filename=?, invoice_number=?, invoice_cost=?,
-                             invoice_date=?, invoice_upload_date=?, estimated_cost=?,
-                             match_method=?, status=?
-                         WHERE id=?""",
-                     (filename, inv_num, invoice_data['cost'], 'N/A',
-                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                      float(invoice_data['cost']),
-                      invoice_data.get('match_method', 'Unknown'), 'matched', po_id))
-
-            results['matched'] += 1
-
+            # Check if this is a Service PO (S-prefix) and needs job mapping
             po_info = po_map.get(po_id, {})
             job_name = po_info.get('job_name', 'Unknown')
             estimated_cost = po_info.get('estimated_cost', 0.00)
+
+            # Format PO number to check if it starts with S
+            po_number_formatted = format_po_number(po_id, job_name)
+            new_job_name = None
+            manual_review_flag = None
+
+            if po_number_formatted.upper().startswith('S'):
+                # Service PO - try to use extracted year from invoice
+                invoice_year = invoice_data.get('invoice_year')
+
+                if invoice_year:
+                    # Check if Service YYYY job exists
+                    service_job, error = get_service_job_for_year(invoice_year)
+                    if service_job:
+                        new_job_name = service_job
+                        print(f"  ✅ Service PO {po_id} matched to {service_job} based on invoice year {invoice_year}")
+                    else:
+                        # Service job doesn't exist - return error, don't save this match
+                        print(f"  ❌ {error}")
+                        results['errors'].append({
+                            'page': f"{group['pages'][0] + 1}",
+                            'invoice_number': inv_num,
+                            'cost': invoice_data['cost'],
+                            'error': 'SERVICE JOB NOT FOUND',
+                            'message': error,
+                            'text_preview': f"Service PO {po_id} - Year {invoice_year}"
+                        })
+                        # Skip saving this match
+                        continue
+                else:
+                    # No year found - flag for manual review
+                    new_job_name = 'Service'
+                    manual_review_flag = f"Service PO (ID {po_id}) needs manual review - invoice year could not be extracted. Please assign to appropriate Service job."
+                    print(f"  ⚠ Service PO {po_id} flagged for manual review - no invoice year found")
+
+            # Update database
+            if new_job_name:
+                # Service PO with job mapping
+                c.execute("""UPDATE po_requests
+                             SET invoice_filename=?, invoice_number=?, invoice_cost=?,
+                                 invoice_date=?, invoice_upload_date=?, estimated_cost=?,
+                                 match_method=?, status=?, job_name=?, manual_review_flag=?
+                             WHERE id=?""",
+                         (filename, inv_num, invoice_data['cost'], 'N/A',
+                          datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                          float(invoice_data['cost']),
+                          invoice_data.get('match_method', 'Unknown'), 'matched', new_job_name, manual_review_flag, po_id))
+                job_name = new_job_name  # Update job_name for results
+            else:
+                # Normal PO - no job name change
+                c.execute("""UPDATE po_requests
+                             SET invoice_filename=?, invoice_number=?, invoice_cost=?,
+                                 invoice_date=?, invoice_upload_date=?, estimated_cost=?,
+                                 match_method=?, status=?
+                             WHERE id=?""",
+                         (filename, inv_num, invoice_data['cost'], 'N/A',
+                          datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                          float(invoice_data['cost']),
+                          invoice_data.get('match_method', 'Unknown'), 'matched', po_id))
+
+            results['matched'] += 1
 
             results['details'].append({
                 'page': f"{group['pages'][0] + 1}" + (f"-{group['pages'][-1] + 1}" if len(group['pages']) > 1 else ""),
@@ -2673,6 +2765,61 @@ def save_invoice_pages(pdf_reader, invoice_data, page_indices, timestamp, cursor
         'status': 'matched',
         'pages': len(page_indices)
     })
+
+
+def extract_invoice_year(text):
+    """
+    Extract year from invoice text.
+    Looks for common date patterns: "2026", "02/26/2026", "2/26/2026", etc.
+    Returns year as integer (e.g., 2026) or None if not found.
+    """
+    if not text:
+        return None
+
+    # Patterns for year extraction (prioritized)
+    year_patterns = [
+        r'\b(20\d{2})\b',  # Any 4-digit year starting with 20
+    ]
+
+    for pattern in year_patterns:
+        matches = re.findall(pattern, text)
+        # Get the most recent year (highest number)
+        if matches:
+            years = [int(y) for y in matches]
+            # Filter out unreasonable years (before 2000 or after current year + 5)
+            valid_years = [y for y in years if 2000 <= y <= 2030]
+            if valid_years:
+                return max(valid_years)  # Return the latest year found
+
+    return None
+
+
+def get_service_job_for_year(year):
+    """
+    Check if a Service job exists for the given year.
+    Returns (job_name, error_message) tuple:
+    - If found: ("Service YYYY", None)
+    - If not found: (None, "Service YYYY job not found")
+    """
+    if year is None:
+        return None, "Cannot determine invoice year for Service job mapping"
+
+    service_job_name = f"Service {year}"
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT job_name FROM jobs WHERE job_name=? AND active=1", (service_job_name,))
+        result = c.fetchone()
+        conn.close()
+
+        if result:
+            return service_job_name, None
+        else:
+            return None, f"Service {year} job not found. Please create it in Manage Jobs."
+    except Exception as e:
+        return None, f"Error checking for Service job: {str(e)}"
+
 
 def extract_invoice_data(text, po_map):
     """
@@ -3070,12 +3217,18 @@ def extract_invoice_data(text, po_map):
     print(f"   Match Method: {match_method or 'Unknown'}")
     print(f"{'='*60}\n")
 
+    # Extract invoice year for Service job mapping
+    invoice_year = extract_invoice_year(text)
+    if invoice_year:
+        print(f"   Invoice Year: {invoice_year}")
+
     return {
         'po_id': po_number,
         'po_number': po_number,
         'invoice_number': invoice_number,
         'cost': cost,
-        'match_method': match_method
+        'match_method': match_method,
+        'invoice_year': invoice_year
     }
 
 
