@@ -321,6 +321,12 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # Column already exists
 
+    # Add client_name column to po_requests if it doesn't exist (for Service PO details)
+    try:
+        c.execute("ALTER TABLE po_requests ADD COLUMN client_name TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     # Add job_code column to jobs if it doesn't exist
     try:
         c.execute("ALTER TABLE jobs ADD COLUMN job_code TEXT")
@@ -1431,6 +1437,7 @@ def submit_request():
     store_name = request.form['store_name']
     estimated_cost = float(request.form['estimated_cost'])
     description = request.form['description']
+    client_name = request.form.get('client_name', '').strip()  # Optional - for Service POs
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -1483,16 +1490,19 @@ def submit_request():
             now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             c.execute("""INSERT INTO po_requests
                          (id, tech_username, tech_name, job_name, store_name, estimated_cost,
-                          description, status, request_date)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, 'awaiting_invoice', ?)""",
+                          description, status, request_date, client_name)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, 'awaiting_invoice', ?, ?)""",
                      (po_id, session['username'], tech_name, job_name, store_name,
-                      estimated_cost, description, now_str))
+                      estimated_cost, description, now_str, client_name if client_name else None))
 
             conn.commit()
             conn.close()
 
             po_display = format_po_number(po_id, job_name, job_code)
-            flash(f'PO#{po_display}|{job_name}')
+            if job_name.lower() == 'service' and client_name:
+                flash(f'PO#{po_display}|{job_name} ({client_name})')
+            else:
+                flash(f'PO#{po_display}|{job_name}')
             return redirect(url_for('tech_dashboard'))
 
         except ValueError:
@@ -1520,17 +1530,20 @@ def submit_request():
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         c.execute("""INSERT INTO po_requests
                      (tech_username, tech_name, job_name, store_name, estimated_cost,
-                      description, status, request_date)
-                     VALUES (?, ?, ?, ?, ?, ?, 'awaiting_invoice', ?)""",
+                      description, status, request_date, client_name)
+                     VALUES (?, ?, ?, ?, ?, ?, 'awaiting_invoice', ?, ?)""",
                  (session['username'], tech_name, job_name, store_name,
-                  estimated_cost, description, now_str))
+                  estimated_cost, description, now_str, client_name if client_name else None))
 
         new_id = c.lastrowid
         conn.commit()
         conn.close()
 
         po_display = format_po_number(new_id, job_name, job_code)
-        flash(f'PO#{po_display}|{job_name}')
+        if job_name.lower() == 'service' and client_name:
+            flash(f'PO#{po_display}|{job_name} ({client_name})')
+        else:
+            flash(f'PO#{po_display}|{job_name}')
         return redirect(url_for('tech_dashboard'))
 
 @app.route('/upload_invoice/<int:po_id>', methods=['POST'])
@@ -1576,7 +1589,7 @@ def upload_invoice(po_id):
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
 
-        c.execute("SELECT status, job_name FROM po_requests WHERE id=?", (po_id,))
+        c.execute("SELECT status, job_name, client_name FROM po_requests WHERE id=?", (po_id,))
         po = c.fetchone()
 
         if not po:
@@ -1648,7 +1661,11 @@ def upload_invoice(po_id):
         conn.commit()
         conn.close()
 
+        # Build message with client name if available
+        client_name_str = po[2] if po and po[2] else None
         message = f'Invoice saved successfully for PO #{po_id:04d}'
+        if client_name_str:
+            message += f' ({client_name_str})'
         if auto_categorized:
             message += f' - Auto-matched to {new_job_name}'
         if manual_review_flag:
@@ -1661,7 +1678,8 @@ def upload_invoice(po_id):
                 'invoice_number': invoice_number,
                 'invoice_cost': formatted_cost,
                 'auto_categorized': auto_categorized,
-                'manual_review_flag': manual_review_flag
+                'manual_review_flag': manual_review_flag,
+                'client_name': client_name_str
             }
         })
 
@@ -2438,7 +2456,7 @@ def process_bulk_pdf(pdf_path, timestamp):
         c = conn.cursor()
 
         # ✅ FIXED: Only get POs awaiting invoices (without invoices)
-        c.execute("""SELECT id, tech_name, job_name, estimated_cost
+        c.execute("""SELECT id, tech_name, job_name, estimated_cost, client_name
                      FROM po_requests
                      WHERE status='awaiting_invoice'
                      AND (invoice_filename IS NULL OR invoice_filename = '')""")
@@ -2448,7 +2466,8 @@ def process_bulk_pdf(pdf_path, timestamp):
                 'id': row[0],
                 'tech_name': row[1],
                 'job_name': row[2],
-                'estimated_cost': row[3]
+                'estimated_cost': row[3],
+                'client_name': row[4]
             }  # ← Fixed closing brace
 
         print(f"\n📋 Found {len(po_map)} approved POs without invoices: {sorted(po_map.keys())}")
@@ -2665,10 +2684,12 @@ def process_bulk_pdf(pdf_path, timestamp):
 
             results['matched'] += 1
 
+            client_name = po_info.get('client_name', '')
             results['details'].append({
                 'page': f"{group['pages'][0] + 1}" + (f"-{group['pages'][-1] + 1}" if len(group['pages']) > 1 else ""),
                 'po_number': po_id,
                 'job_name': job_name,
+                'client_name': client_name,
                 'estimated_cost': estimated_cost,
                 'invoice_number': inv_num,
                 'cost': invoice_data['cost'],
@@ -4127,6 +4148,12 @@ TECH_DASHBOARD_TEMPLATE = '''
                 <small id="job_hint" style="color: #666; display: block; margin-top: 5px;">💡 Type to search active jobs - auto-corrects misspellings</small>
             </div>
 
+            <div class="form-group" id="client_name_field" style="display: none;">
+                <label>Client Name (if Service) <span style="color: red;">*</span></label>
+                <input type="text" id="client_name" name="client_name" placeholder="e.g., Somerville, Heron's Glen, Reserve" style="display: none;">
+                <small style="color: #666; display: block; margin-top: 5px;">📍 Enter the client/location name for this service (e.g., Somerville, Heron's Glen, etc.)</small>
+            </div>
+
             <div class="form-group">
                 <label>Store Name</label>
                 <input type="text" name="store_name" required placeholder="e.g., Home Depot, Lowes">
@@ -4451,6 +4478,24 @@ searchInput.addEventListener('input', function(e) {
             hintText.style.color = '#28a745';
         }
 
+        // Show/hide client name field if Service job is selected
+        const clientNameField = document.getElementById('client_name_field');
+        const clientNameInput = document.getElementById('client_name');
+        if (selectedJob && selectedJob.name.toLowerCase().includes('service')) {
+            if (clientNameField) clientNameField.style.display = 'block';
+            if (clientNameInput) {
+                clientNameInput.style.display = 'block';
+                clientNameInput.required = true;
+            }
+        } else {
+            if (clientNameField) clientNameField.style.display = 'none';
+            if (clientNameInput) {
+                clientNameInput.style.display = 'none';
+                clientNameInput.required = false;
+                clientNameInput.value = '';
+            }
+        }
+
         console.log('✓ Selected:', jobName);
     }
 
@@ -4458,6 +4503,8 @@ searchInput.addEventListener('input', function(e) {
         const searchInput = document.getElementById('job_search');
         const clearBtn = document.getElementById('clear-job');
         const hintText = document.getElementById('job_hint');
+        const clientNameField = document.getElementById('client_name_field');
+        const clientNameInput = document.getElementById('client_name');
 
         searchInput.value = '';
         searchInput.style.borderColor = '#ddd';
@@ -4466,6 +4513,11 @@ searchInput.addEventListener('input', function(e) {
         if (hintText) {
             hintText.innerHTML = `💡 ${allJobs.length} active jobs available - start typing to search`;
             hintText.style.color = '#666';
+        }
+        if (clientNameField) clientNameField.style.display = 'none';
+        if (clientNameInput) {
+            clientNameInput.value = '';
+            clientNameInput.required = false;
         }
         searchInput.focus();
     }
