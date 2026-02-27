@@ -5799,30 +5799,29 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         <div class="add-job-card">
             <h2>➕ Add New Service Job</h2>
             <p>Create a new service job. Job names must be unique.</p>
-            <form method="POST" action="/add_job" style="display: flex; flex-direction: column; gap: 15px;">
-                <input type="hidden" name="department" value="service">
+            <div style="display: flex; flex-direction: column; gap: 15px;">
                 <div class="form-row">
                     <div class="form-group">
                         <label>Job Name *</label>
-                        <input type="text" name="job_name" placeholder="e.g., Chase Bank Service" required>
+                        <input type="text" id="service-job-name" placeholder="e.g., Chase Bank Service" required>
                     </div>
                     <div class="form-group">
                         <label>Job Code</label>
-                        <input type="text" name="job_code" placeholder="e.g., CB-Service">
+                        <input type="text" id="service-job-code" placeholder="e.g., CB-Service">
                     </div>
                     <div class="form-group">
                         <label>Year *</label>
-                        <input type="number" name="year" value="2026" required>
+                        <input type="number" id="service-year" value="2026" required>
                     </div>
                     <div class="form-group">
                         <label>Budget for Materials ($)</label>
-                        <input type="number" name="budget" placeholder="0" step="0.01" min="0" value="0">
+                        <input type="number" id="service-budget" placeholder="0" step="0.01" min="0" value="0">
                     </div>
                 </div>
                 <div class="form-actions">
-                    <button type="submit" class="btn btn-success">✓ Create Job</button>
+                    <button type="button" class="btn btn-success" onclick="submitServiceJob()">✓ Create Job</button>
                 </div>
-            </form>
+            </div>
         </div>
 
         <div class="year-filter">
@@ -5843,30 +5842,29 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         <div class="add-job-card">
             <h2>➕ Add New Install Job</h2>
             <p>Create a new install job. Job names must be unique.</p>
-            <form method="POST" action="/add_job" style="display: flex; flex-direction: column; gap: 15px;">
-                <input type="hidden" name="department" value="install">
+            <div style="display: flex; flex-direction: column; gap: 15px;">
                 <div class="form-row">
                     <div class="form-group">
                         <label>Job Name *</label>
-                        <input type="text" name="job_name" placeholder="e.g., Commercial Tower Install" required>
+                        <input type="text" id="install-job-name" placeholder="e.g., Commercial Tower Install" required>
                     </div>
                     <div class="form-group">
                         <label>Job Code</label>
-                        <input type="text" name="job_code" placeholder="e.g., Herons">
+                        <input type="text" id="install-job-code" placeholder="e.g., Herons">
                     </div>
                     <div class="form-group">
                         <label>Year *</label>
-                        <input type="number" name="year" value="2026" required>
+                        <input type="number" id="install-year" value="2026" required>
                     </div>
                     <div class="form-group">
                         <label>Budget for Materials ($)</label>
-                        <input type="number" name="budget" placeholder="0" step="0.01" min="0" value="0">
+                        <input type="number" id="install-budget" placeholder="0" step="0.01" min="0" value="0">
                     </div>
                 </div>
                 <div class="form-actions">
-                    <button type="submit" class="btn btn-success">✓ Create Job</button>
+                    <button type="button" class="btn btn-success" onclick="submitInstallJob()">✓ Create Job</button>
                 </div>
-            </form>
+            </div>
         </div>
 
         <div class="year-filter">
@@ -5977,6 +5975,100 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         function clearPOSearch() {
             document.getElementById('po-search-input').value = '';
             document.getElementById('all-pos-results').innerHTML = '<p style="text-align: center; color: #999;">Enter a search term to find POs by description or tech name</p>';
+        }
+
+        function submitInstallJob() {
+            const jobName = document.getElementById('install-job-name').value.trim();
+            const jobCode = document.getElementById('install-job-code').value.trim();
+            const year = document.getElementById('install-year').value.trim();
+            const budget = document.getElementById('install-budget').value.trim();
+
+            if (!jobName || !year) {
+                alert('Please fill in Job Name and Year (required fields)');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('job_name', jobName);
+            formData.append('job_code', jobCode);
+            formData.append('year', year);
+            formData.append('budget', budget || '0');
+            formData.append('department', 'install');
+
+            fetch('/add_job', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                // Check if redirected
+                if (response.redirected) {
+                    window.location.href = response.url;
+                } else {
+                    return response.json();
+                }
+            })
+            .then(data => {
+                if (data && !data.success) {
+                    alert('Error: ' + data.error);
+                } else if (data && data.success) {
+                    alert('Job created successfully!');
+                    // Reload the page to show the new job
+                    window.location.href = '/office_dashboard?tab=install';
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error creating job: ' + error.message);
+            });
+        }
+
+        function submitServiceJob() {
+            const jobName = document.getElementById('service-job-name').value.trim();
+            const jobCode = document.getElementById('service-job-code').value.trim();
+            const year = document.getElementById('service-year').value.trim();
+            const budget = document.getElementById('service-budget').value.trim();
+
+            if (!jobName || !year) {
+                alert('Please fill in Job Name and Year (required fields)');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('job_name', jobName);
+            formData.append('job_code', jobCode);
+            formData.append('year', year);
+            formData.append('budget', budget || '0');
+            formData.append('department', 'service');
+
+            fetch('/add_job', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                if (response.redirected) {
+                    window.location.href = response.url;
+                } else {
+                    return response.json();
+                }
+            })
+            .then(data => {
+                if (data && !data.success) {
+                    alert('Error: ' + data.error);
+                } else if (data && data.success) {
+                    alert('Job created successfully!');
+                    window.location.href = '/office_dashboard?tab=service';
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error creating job: ' + error.message);
+            });
         }
 
         function renderServiceJobs() {
