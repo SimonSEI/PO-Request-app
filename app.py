@@ -468,30 +468,46 @@ def update_database_schema():
         return f"Error: {str(e)}"
 
 def format_po_number(po_id, job_name, job_code=None):
-    """Format PO number with job code if available, otherwise use S prefix for Service jobs"""
-    if job_code:
-        return f"{job_code}-{po_id}"
+    """Format PO number with department prefix (no leading zeros)
+
+    Format: PREFIX-NUMBER (PREFIX is S or I based on job_name)
+    Examples: I-1, S-2
+    Job code is appended separately in format_po_display
+    """
     if job_name and job_name.lower() == 'service':
-        return f"S{po_id}"
-    return f"{po_id}"
+        return f"S-{po_id}"
+    return f"I-{po_id}"
 
 def format_po_display(po_id, job_name, client_name=None, job_code=None):
-    """Format PO display with client name for Service jobs"""
-    po_number = format_po_number(po_id, job_name, job_code)
-    if job_name and job_name.lower() == 'service' and client_name:
-        return f"{po_number} {client_name}"
-    return po_number
+    """Format PO display with job code and client name
 
-def get_next_po_number_with_prefix(tech_type, db_path=DB_PATH):
+    Format: PREFIX-NUMBER JOB_CODE (for install jobs) or PREFIX-NUMBER CLIENT_NAME (for service jobs)
+    Examples: I-1 Herons, S-2 Johnson
+    """
+    po_number = format_po_number(po_id, job_name, job_code)
+
+    # Build the display string
+    result = po_number
+    if job_name and job_name.lower() == 'service' and client_name:
+        # Service jobs show client name
+        result = f"{result} {client_name}"
+    elif job_code and job_code not in ['S', 'I']:
+        # Install jobs show job code (unless it's just a prefix)
+        result = f"{result} {job_code}"
+
+    return result
+
+def get_next_po_number_with_prefix(tech_type, job_code=None, db_path=DB_PATH):
     """Get the next PO number for a technician type with S or I prefix
 
     Args:
         tech_type: 'service' (prefix S) or 'install' (prefix I)
+        job_code: job code from database (optional, will use prefix if not provided)
         db_path: path to database
 
     Returns:
         tuple: (next_po_id, formatted_po_string, prefix)
-        Example: (1, 'S0001', 'S') or (1, 'I0001', 'I')
+        Example: (1, 'I-1', 'I') or (1, 'S-2', 'S')
     """
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
@@ -507,9 +523,10 @@ def get_next_po_number_with_prefix(tech_type, db_path=DB_PATH):
     conn.close()
 
     next_id = max_id + 1
-    formatted_po = f"{prefix}{next_id:04d}"
+    # Always use department prefix (S or I), not job code
+    formatted_po = f"{prefix}-{next_id}"
 
-    return next_id, formatted_po, prefix
+    return next_id, formatted_po, prefix, job_code
 
 # Make these available to templates
 app.jinja_env.globals.update(format_po_number=format_po_number)
@@ -1616,8 +1633,8 @@ def submit_request():
     else:
         conn.close()  # Close existing connection
 
-        # Get next PO number with correct prefix
-        next_id, formatted_po, prefix = get_next_po_number_with_prefix(tech_type)
+        # Get next PO number with correct prefix and job code
+        next_id, formatted_po, prefix, job_code_ret = get_next_po_number_with_prefix(tech_type, job_code)
 
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -1635,7 +1652,14 @@ def submit_request():
         conn.commit()
         conn.close()
 
-        po_display = f"{formatted_po} {client_name}" if tech_type == 'service' and client_name else formatted_po
+        # Format display to include job code or client name
+        po_display = formatted_po
+        if tech_type == 'service' and client_name:
+            po_display = f"{formatted_po} {client_name}"
+        elif job_code and job_code not in ['S', 'I']:
+            # Add job code for install jobs (e.g., I-1 Herons)
+            po_display = f"{formatted_po} {job_code}"
+
         flash(f'PO#{po_display}|{job_name}')
         return redirect(url_for('tech_dashboard'))
 
