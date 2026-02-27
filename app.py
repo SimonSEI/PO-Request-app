@@ -2213,8 +2213,8 @@ def manage_service_techs():
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
 
-        # Get all service technicians (users with tech_type='service')
-        c.execute("""SELECT id, username, full_name, email, created_date, last_login
+        # Get all service technicians (users with tech_type='service') - include password
+        c.execute("""SELECT id, username, full_name, email, created_date, last_login, password
                      FROM users WHERE role='technician' AND tech_type='service'
                      ORDER BY full_name ASC""")
         service_techs = c.fetchall()
@@ -2245,8 +2245,8 @@ def manage_install_techs():
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
 
-        # Get all install technicians (users with tech_type='install')
-        c.execute("""SELECT id, username, full_name, email, created_date, last_login
+        # Get all install technicians (users with tech_type='install') - include password
+        c.execute("""SELECT id, username, full_name, email, created_date, last_login, password
                      FROM users WHERE role='technician' AND tech_type='install'
                      ORDER BY full_name ASC""")
         install_techs = c.fetchall()
@@ -3647,7 +3647,11 @@ MANAGE_SERVICE_TECHS_TEMPLATE = '''
                         </div>
                     </div>
                     <div class="tech-body" id="body-{{ tech[0] }}">
-                        <p style="color: #666; margin-bottom: 10px;"><strong>Email:</strong> {{ tech[3] if tech[3] else "N/A" }}</p>
+                        <div style="background: #f0f7ff; padding: 12px; border-radius: 5px; margin-bottom: 15px; border-left: 4px solid #007bff;">
+                            <p style="color: #666; margin-bottom: 8px;"><strong>Username:</strong> <code style="background: white; padding: 2px 6px; border-radius: 3px;">{{ tech[1] }}</code></p>
+                            <p style="color: #666; margin-bottom: 8px;"><strong>Password:</strong> <code style="background: white; padding: 2px 6px; border-radius: 3px;">{{ tech[6] }}</code></p>
+                            <p style="color: #666; margin-bottom: 0;"><strong>Email:</strong> {{ tech[3] if tech[3] else "N/A" }}</p>
+                        </div>
                         {% if tech_pos[tech[0]] %}
                             <table>
                                 <thead>
@@ -3858,7 +3862,11 @@ MANAGE_INSTALL_TECHS_TEMPLATE = '''
                         </div>
                     </div>
                     <div class="tech-body" id="body-{{ tech[0] }}">
-                        <p style="color: #666; margin-bottom: 10px;"><strong>Email:</strong> {{ tech[3] if tech[3] else "N/A" }}</p>
+                        <div style="background: #f0fff4; padding: 12px; border-radius: 5px; margin-bottom: 15px; border-left: 4px solid #28a745;">
+                            <p style="color: #666; margin-bottom: 8px;"><strong>Username:</strong> <code style="background: white; padding: 2px 6px; border-radius: 3px;">{{ tech[1] }}</code></p>
+                            <p style="color: #666; margin-bottom: 8px;"><strong>Password:</strong> <code style="background: white; padding: 2px 6px; border-radius: 3px;">{{ tech[6] }}</code></p>
+                            <p style="color: #666; margin-bottom: 0;"><strong>Email:</strong> {{ tech[3] if tech[3] else "N/A" }}</p>
+                        </div>
                         {% if tech_pos[tech[0]] %}
                             <table>
                                 <thead>
@@ -4638,21 +4646,9 @@ TECH_DASHBOARD_TEMPLATE = '''
         {% else %}
             <h2>📝 Submit New Install PO Request <span style="background: #28a745; color: white; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-left: 10px;">PO Prefix: I</span></h2>
         {% endif %}
-        <form method="POST" action="{{ url_for('submit_request') }}"
-            <div class="form-group">
-                <label>Your Name</label>
-                {% if techs %}
-                    <select name="tech_name" required>
-                        <option value="">-- Select Your Name --</option>
-                        {% for tech in techs %}
-                            <option value="{{ tech }}">{{ tech }}</option>
-                        {% endfor %}
-                    </select>
-                {% else %}
-                    <input type="text" name="tech_name" required placeholder="e.g., John Smith">
-                    <small style="color: #856404;">No technicians set up yet - contact office to add your name to the list.</small>
-                {% endif %}
-            </div>
+        <form method="POST" action="{{ url_for('submit_request') }}">
+            {# Auto-populate tech_name from the logged-in user's full_name #}
+            <input type="hidden" name="tech_name" value="{{ full_name }}">
 
             <div class="form-group">
                 <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
