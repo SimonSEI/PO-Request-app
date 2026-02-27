@@ -1,4 +1,4 @@
-from flask import Flask, render_template_string, request, redirect, url_for, session, flash, jsonify, send_from_directory
+from flask import Flask, render_template_string, request, redirect, url_for, session, flash, jsonify, send_from_directory, send_file
 from datetime import datetime, timedelta
 import uuid
 import sqlite3
@@ -2532,7 +2532,7 @@ def toggle_job():
 
 @app.route('/delete_job', methods=['POST'])
 def delete_job():
-    """Delete a job"""
+    """Delete a job - jobs can be deleted even if they have POs"""
     if 'username' not in session or session['role'] != 'office':
         return jsonify({'success': False, 'error': 'Unauthorized'})
 
@@ -2545,27 +2545,96 @@ def delete_job():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
-    # Check if any PO requests use this job
-    c.execute("SELECT job_name FROM jobs WHERE id=?", (job_id,))
-    job = c.fetchone()
-
-    if job:
-        job_name = job[0]
-        c.execute("SELECT COUNT(*) FROM po_requests WHERE job_name=?", (job_name,))
-        count = c.fetchone()[0]
-
-        if count > 0:
-            conn.close()
-            return jsonify({
-                'success': False,
-                'error': f'Cannot delete: {count} PO request(s) are using this job'
-            })
-
     c.execute("DELETE FROM jobs WHERE id=?", (job_id,))
     conn.commit()
     conn.close()
 
     return jsonify({'success': True, 'message': 'Job deleted successfully'})
+
+@app.route('/backup_database', methods=['POST'])
+def backup_database():
+    """Create a timestamped backup of the database"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    try:
+        import shutil
+        from datetime import datetime
+
+        backup_dir = os.path.join(os.path.dirname(__file__), 'backups')
+        os.makedirs(backup_dir, exist_ok=True)
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        backup_filename = f'po_app_backup_{timestamp}.db'
+        backup_path = os.path.join(backup_dir, backup_filename)
+
+        # Create backup copy
+        shutil.copy2(DB_PATH, backup_path)
+
+        # Also create a timestamped archive
+        backup_zip = os.path.join(backup_dir, f'po_app_backup_{timestamp}.zip')
+
+        import zipfile
+        with zipfile.ZipFile(backup_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.write(DB_PATH, arcname='po_app.db')
+
+        return jsonify({
+            'success': True,
+            'message': f'Backup created: {backup_filename}',
+            'backup_file': backup_filename,
+            'timestamp': timestamp
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Backup failed: {str(e)}'})
+
+@app.route('/list_backups', methods=['GET'])
+def list_backups():
+    """List all available backups"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    try:
+        backup_dir = os.path.join(os.path.dirname(__file__), 'backups')
+        backups = []
+
+        if os.path.exists(backup_dir):
+            for filename in sorted(os.listdir(backup_dir), reverse=True):
+                if filename.endswith(('.db', '.zip')) and filename.startswith('po_app_backup'):
+                    filepath = os.path.join(backup_dir, filename)
+                    size = os.path.getsize(filepath)
+                    mtime = os.path.getmtime(filepath)
+                    backups.append({
+                        'filename': filename,
+                        'size': size,
+                        'size_mb': round(size / (1024*1024), 2),
+                        'mtime': mtime,
+                        'mtime_str': datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
+                    })
+
+        return jsonify(backups)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/download_backup/<filename>', methods=['GET'])
+def download_backup(filename):
+    """Download a backup file"""
+    if 'username' not in session or session['role'] != 'office':
+        return 'Unauthorized', 401
+
+    try:
+        backup_dir = os.path.join(os.path.dirname(__file__), 'backups')
+        filepath = os.path.join(backup_dir, filename)
+
+        # Security: ensure the file is in the backups directory
+        if not os.path.abspath(filepath).startswith(os.path.abspath(backup_dir)):
+            return 'Invalid file path', 403
+
+        if not os.path.exists(filepath):
+            return 'File not found', 404
+
+        return send_file(filepath, as_attachment=True, download_name=filename)
+    except Exception as e:
+        return f'Error: {str(e)}', 500
 
 @app.route('/bulk_upload_invoices', methods=['POST'])
 def bulk_upload_invoices():
@@ -4782,6 +4851,86 @@ JOB_MANAGEMENT_TEMPLATE = '''
             </table>
         </div>
     </div>
+
+    <div class="card" style="background: #f0f8ff; border-left: 4px solid #28a745;">
+        <h2 style="color: #28a745; margin-bottom: 15px;">💾 Database Backups</h2>
+        <p style="color: #666; margin-bottom: 15px;">Create and manage backups of your database.</p>
+        <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 20px;">
+            <button onclick="createBackup()" class="btn btn-success" style="background: #28a745;">💾 Create Backup Now</button>
+            <button onclick="loadBackupsList()" class="btn btn-primary">📂 View Backups</button>
+        </div>
+        <div id="backups-container" style="display: none;">
+            <h3 style="color: #333; margin-bottom: 10px;">Available Backups</h3>
+            <div id="backups-list" style="background: white; padding: 15px; border-radius: 5px; max-height: 400px; overflow-y: auto;">
+                <p style="text-align: center; color: #999;">Loading backups...</p>
+            </div>
+        </div>
+        <div id="backup-status" style="margin-top: 15px; display: none; padding: 15px; border-radius: 5px; background: #d4edda; color: #155724; border: 1px solid #c3e6cb;"></div>
+    </div>
+
+    <script>
+        function createBackup() {
+            const statusDiv = document.getElementById('backup-status');
+            statusDiv.textContent = 'Creating backup...';
+            statusDiv.style.display = 'block';
+            statusDiv.style.background = '#e7f3ff';
+            statusDiv.style.color = '#004085';
+
+            fetch('/backup_database', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    statusDiv.textContent = '✓ ' + data.message;
+                    statusDiv.style.background = '#d4edda';
+                    statusDiv.style.color = '#155724';
+                    setTimeout(() => loadBackupsList(), 1000);
+                } else {
+                    statusDiv.textContent = '✗ Error: ' + data.error;
+                    statusDiv.style.background = '#f8d7da';
+                    statusDiv.style.color = '#721c24';
+                }
+            })
+            .catch(err => {
+                statusDiv.textContent = '✗ Error: ' + err;
+                statusDiv.style.background = '#f8d7da';
+                statusDiv.style.color = '#721c24';
+            });
+        }
+
+        function loadBackupsList() {
+            const container = document.getElementById('backups-container');
+            const list = document.getElementById('backups-list');
+            container.style.display = 'block';
+            list.innerHTML = '<p style="text-align: center; color: #999;">Loading backups...</p>';
+
+            fetch('/list_backups')
+            .then(r => r.json())
+            .then(backups => {
+                if (backups.length === 0) {
+                    list.innerHTML = '<p style="text-align: center; color: #999;">No backups yet. Create one using the button above.</p>';
+                    return;
+                }
+
+                let html = '<table style="width: 100%; border-collapse: collapse;">';
+                html += '<tr style="background: #f0f0f0; font-weight: bold;"><td style="padding: 8px; border-bottom: 1px solid #ddd;">Filename</td><td style="padding: 8px; border-bottom: 1px solid #ddd;">Size</td><td style="padding: 8px; border-bottom: 1px solid #ddd;">Created</td><td style="padding: 8px; border-bottom: 1px solid #ddd;">Action</td></tr>';
+
+                backups.forEach(backup => {
+                    html += '<tr style="border-bottom: 1px solid #ddd;"><td style="padding: 8px;"><code style="background: #f5f5f5; padding: 2px 6px; border-radius: 3px; font-size: 12px;">' + backup.filename + '</code></td>';
+                    html += '<td style="padding: 8px;">' + backup.size_mb + ' MB</td>';
+                    html += '<td style="padding: 8px; font-size: 12px;">' + backup.mtime_str + '</td>';
+                    html += '<td style="padding: 8px;"><a href="/download_backup/' + backup.filename + '" class="btn btn-primary" style="padding: 5px 10px; font-size: 12px; text-decoration: none; display: inline-block;">⬇️ Download</a></td></tr>';
+                });
+                html += '</table>';
+                list.innerHTML = html;
+            })
+            .catch(err => {
+                list.innerHTML = '<p style="color: #dc3545;">Error loading backups: ' + err + '</p>';
+            });
+        }
+    </script>
 </body>
 </html>
 '''
