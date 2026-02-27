@@ -27,15 +27,30 @@ USE_CLAUDE_MATCHING = os.environ.get('USE_CLAUDE_MATCHING', 'true').lower() == '
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'irrigation-po-system-secret-key-2024')
 APP_VERSION = "1.2.0"  # Added API verify endpoint
-# Multi-session support
+# Multi-session support - allows up to 80 concurrent users per account
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=24)
+MAX_CONCURRENT_SESSIONS_PER_USER = 80  # Support up to 80 concurrent users per account
 active_sessions = {}
 
 def create_session_id():
     return str(uuid.uuid4())
 
 def save_user_session(session_id, user_data):
+    """Save a user session, enforcing max 80 concurrent sessions per account"""
+    username = user_data['username']
+
+    # Count existing sessions for this user
+    user_sessions = [(sid, data) for sid, data in active_sessions.items()
+                     if data['username'] == username]
+
+    # If at capacity, remove oldest session
+    if len(user_sessions) >= MAX_CONCURRENT_SESSIONS_PER_USER:
+        # Sort by creation time and remove the oldest
+        oldest_session = min(user_sessions, key=lambda x: x[1]['created_at'])
+        del active_sessions[oldest_session[0]]
+
+    # Add new session
     active_sessions[session_id] = {
         'username': user_data['username'],
         'role': user_data['role'],
