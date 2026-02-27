@@ -5799,7 +5799,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         <div class="add-job-card">
             <h2>➕ Add New Service Job</h2>
             <p>Create a new service job. Job names must be unique.</p>
-            <form method="POST" action="/add_job" style="display: contents;">
+            <form method="POST" action="/add_job" style="display: flex; flex-direction: column; gap: 15px;">
                 <input type="hidden" name="department" value="service">
                 <div class="form-row">
                     <div class="form-group">
@@ -5843,7 +5843,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         <div class="add-job-card">
             <h2>➕ Add New Install Job</h2>
             <p>Create a new install job. Job names must be unique.</p>
-            <form method="POST" action="/add_job" style="display: contents;">
+            <form method="POST" action="/add_job" style="display: flex; flex-direction: column; gap: 15px;">
                 <input type="hidden" name="department" value="install">
                 <div class="form-row">
                     <div class="form-group">
