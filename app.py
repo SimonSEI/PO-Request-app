@@ -5997,27 +5997,13 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
             fetch('/add_job', {
                 method: 'POST',
-                body: formData
+                body: formData,
+                redirect: 'follow'
             })
             .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                // Check if redirected
-                if (response.redirected) {
-                    window.location.href = response.url;
-                } else {
-                    return response.json();
-                }
-            })
-            .then(data => {
-                if (data && !data.success) {
-                    alert('Error: ' + data.error);
-                } else if (data && data.success) {
-                    alert('Job created successfully!');
-                    // Reload the page to show the new job
-                    window.location.href = '/office_dashboard?tab=install';
-                }
+                console.log('Response status:', response.status);
+                // Always redirect to install tab after submission
+                window.location.href = '/office_dashboard?tab=install';
             })
             .catch(error => {
                 console.error('Error:', error);
@@ -6045,25 +6031,13 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
             fetch('/add_job', {
                 method: 'POST',
-                body: formData
+                body: formData,
+                redirect: 'follow'
             })
             .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                if (response.redirected) {
-                    window.location.href = response.url;
-                } else {
-                    return response.json();
-                }
-            })
-            .then(data => {
-                if (data && !data.success) {
-                    alert('Error: ' + data.error);
-                } else if (data && data.success) {
-                    alert('Job created successfully!');
-                    window.location.href = '/office_dashboard?tab=service';
-                }
+                console.log('Response status:', response.status);
+                // Always redirect to service tab after submission
+                window.location.href = '/office_dashboard?tab=service';
             })
             .catch(error => {
                 console.error('Error:', error);
