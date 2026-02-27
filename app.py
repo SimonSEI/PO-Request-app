@@ -5807,6 +5807,10 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                         <input type="text" name="job_name" placeholder="e.g., Chase Bank Service" required>
                     </div>
                     <div class="form-group">
+                        <label>Job Code</label>
+                        <input type="text" name="job_code" placeholder="e.g., CB-Service">
+                    </div>
+                    <div class="form-group">
                         <label>Year *</label>
                         <input type="number" name="year" value="2026" required>
                     </div>
