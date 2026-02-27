@@ -5809,6 +5809,20 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         .toggle-job-btn.active { background: #28a745; }
 
         .no-jobs { text-align: center; padding: 40px; color: #999; font-style: italic; }
+
+        .add-job-card {
+            background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1); border-left: 4px solid #667eea;
+        }
+        .add-job-card h2 { color: #667eea; margin-bottom: 15px; font-size: 18px; }
+        .add-job-card p { color: #666; font-size: 13px; margin-bottom: 15px; }
+        .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 15px; }
+        .form-group { display: flex; flex-direction: column; }
+        .form-group label { font-weight: bold; color: #555; margin-bottom: 5px; font-size: 13px; }
+        .form-group input, .form-group select { padding: 10px; border: 2px solid #ddd; border-radius: 5px; font-size: 14px; }
+        .form-group input:focus, .form-group select:focus { outline: none; border-color: #667eea; }
+        .form-actions { display: flex; gap: 10px; }
+        .form-actions button { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; font-size: 14px; }
     </style>
 </head>
 <body>
@@ -5816,7 +5830,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         <h1>🏢 Department Dashboard</h1>
         <div class="header-nav">
             <a href="{{ url_for('manage_techs') }}" style="background: #fd7e14; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">👷 Manage Techs</a>
-            <a href="{{ url_for('manage_jobs') }}" class="btn btn-primary">📋 Manage Jobs</a>
             <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
         </div>
     </div>
@@ -5828,6 +5841,30 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
     {# SERVICE DEPARTMENT TAB #}
     <div id="service-tab" class="tab-content active">
+        <div class="add-job-card">
+            <h2>➕ Add New Service Job</h2>
+            <p>Create a new service job. Job names must be unique.</p>
+            <form method="POST" action="/add_job" style="display: contents;">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Job Name *</label>
+                        <input type="text" name="job_name" placeholder="e.g., Chase Bank Service" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Year *</label>
+                        <input type="number" name="year" value="2026" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Budget for Materials ($)</label>
+                        <input type="number" name="budget" placeholder="0" step="0.01" min="0" value="0">
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-success">✓ Create Job</button>
+                </div>
+            </form>
+        </div>
+
         <div class="year-filter">
             <label>Filter by Year:</label>
             <select id="service-year-filter" onchange="filterServiceJobs()">
@@ -5843,6 +5880,30 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
     {# INSTALL DEPARTMENT TAB #}
     <div id="install-tab" class="tab-content">
+        <div class="add-job-card">
+            <h2>➕ Add New Install Job</h2>
+            <p>Create a new install job. Job names must be unique.</p>
+            <form method="POST" action="/add_job" style="display: contents;">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Job Name *</label>
+                        <input type="text" name="job_name" placeholder="e.g., Commercial Tower Install" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Year *</label>
+                        <input type="number" name="year" value="2026" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Budget for Materials ($)</label>
+                        <input type="number" name="budget" placeholder="0" step="0.01" min="0" value="0">
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-success">✓ Create Job</button>
+                </div>
+            </form>
+        </div>
+
         <div class="year-filter">
             <label>Filter by Year:</label>
             <select id="install-year-filter" onchange="filterInstallJobs()">
