@@ -1437,7 +1437,7 @@ def office_dashboard():
 
             # Get ALL POs for this job (for complete history)
             c.execute("""
-                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date
+                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date, description
                 FROM po_requests
                 WHERE job_name=?
                 ORDER BY id DESC
@@ -1897,8 +1897,17 @@ def get_jobs():
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        # ONLY return active jobs (active=1)
-        c.execute("SELECT job_name, year FROM jobs WHERE active=1 ORDER BY year DESC, job_name ASC")
+
+        # If user is a technician, only show jobs matching their department
+        if session.get('role') == 'technician':
+            tech_type = session.get('tech_type', 'install')
+            c.execute("""SELECT job_name, year FROM jobs
+                        WHERE active=1 AND (department=? OR department IS NULL OR department='')
+                        ORDER BY year DESC, job_name ASC""", (tech_type,))
+        else:
+            # Office manager sees all active jobs
+            c.execute("SELECT job_name, year FROM jobs WHERE active=1 ORDER BY year DESC, job_name ASC")
+
         jobs = [{'name': row[0], 'year': row[1], 'display': f"{row[0]} ({row[1]})"} for row in c.fetchall()]
         conn.close()
         return jsonify({'success': True, 'jobs': jobs})
@@ -2329,7 +2338,7 @@ def add_job():
     department = request.form.get('department', 'service').strip()
     job_code = request.form.get('job_code', '').strip()
 
-    print(f"[add_job] Adding job: name='{job_name}', year={year}, budget={budget}, code='{job_code}', ajax={is_ajax}")
+    print(f"[add_job] Adding job: name='{job_name}', year={year}, budget={budget}, dept='{department}', code='{job_code}', ajax={is_ajax}")
 
     if not job_name or not year:
         if is_ajax:
@@ -5766,6 +5775,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
     <div class="tabs-container">
         <button class="tab-btn service active" onclick="switchTab('service')">📱 Service Department</button>
         <button class="tab-btn install" onclick="switchTab('install')">🔧 Install Department</button>
+        <button class="tab-btn" style="color: #9b59b6;" onclick="switchTab('all-pos')">📋 View All POs</button>
     </div>
 
     <div class="search-bar">
@@ -5868,6 +5878,20 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         <div class="jobs-container" id="install-jobs-container"></div>
     </div>
 
+    <div id="all-pos-tab" class="tab-content">
+        <div style="margin-bottom: 20px;">
+            <h2>🔍 Search All POs</h2>
+            <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                <input type="text" id="po-search-input" placeholder="Search by description or tech name..." style="flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                <button onclick="searchAllPOs()" style="background: #667eea; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">🔍 Search</button>
+                <button onclick="clearPOSearch()" style="background: #999; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">Clear</button>
+            </div>
+        </div>
+        <div id="all-pos-results" style="background: white; border-radius: 8px; padding: 20px;">
+            <p style="text-align: center; color: #999;">Enter a search term to find POs by description or tech name</p>
+        </div>
+    </div>
+
     <script>
         // Data from server
         const serviceJobs = {{ service_jobs | tojson }};
@@ -5896,6 +5920,59 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         function formatCurrency(value) {
             return '$' + parseFloat(value || 0).toFixed(2);
+        }
+
+        function searchAllPOs() {
+            const searchTerm = document.getElementById('po-search-input').value.toLowerCase().trim();
+            if (!searchTerm) {
+                document.getElementById('all-pos-results').innerHTML = '<p style="text-align: center; color: #999;">Enter a search term to find POs by description or tech name</p>';
+                return;
+            }
+
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Job Name</th><th>Tech</th><th>Description</th><th>Status</th><th>Estimated</th><th>Date</th></tr></thead><tbody>';
+            let found = 0;
+
+            for (const [jobId, pos] of Object.entries(jobAllPOs)) {
+                const job = [...serviceJobs, ...installJobs].find(j => j[0] === parseInt(jobId));
+                if (!job) continue;
+
+                pos.forEach(po => {
+                    const techName = getTechName(po[2]);
+                    const description = po[7] || '';
+                    const status = po[3];
+
+                    if (description.toLowerCase().includes(searchTerm) || techName.toLowerCase().includes(searchTerm)) {
+                        const jobCode = job[11];
+                        const poDisplay = jobCode ? `${jobCode}-${po[0]}` : po[0];
+                        const estimated = po[4] || 0;
+                        const date = po[6] ? po[6].substring(0, 10) : 'N/A';
+
+                        html += `<tr>
+                            <td><strong>#${poDisplay}</strong></td>
+                            <td>${job[1]}</td>
+                            <td>${techName}</td>
+                            <td>${escapeHtml(description)}</td>
+                            <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
+                            <td>${formatCurrency(estimated)}</td>
+                            <td>${date}</td>
+                        </tr>`;
+                        found++;
+                    }
+                });
+            }
+
+            html += '</tbody></table>';
+            if (found === 0) {
+                html = '<p style="text-align: center; color: #999;">No POs found matching your search.</p>';
+            } else {
+                html = `<p style="margin-bottom: 15px;"><strong>Found ${found} PO(s)</strong></p>` + html;
+            }
+            document.getElementById('all-pos-results').innerHTML = html;
+        }
+
+        function clearPOSearch() {
+            document.getElementById('po-search-input').value = '';
+            document.getElementById('all-pos-results').innerHTML = '<p style="text-align: center; color: #999;">Enter a search term to find POs by description or tech name</p>';
         }
 
         function renderServiceJobs() {
