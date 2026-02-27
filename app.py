@@ -468,30 +468,46 @@ def update_database_schema():
         return f"Error: {str(e)}"
 
 def format_po_number(po_id, job_name, job_code=None):
-    """Format PO number with job code if available, otherwise use S prefix for Service jobs"""
-    if job_code:
-        return f"{job_code}-{po_id}"
+    """Format PO number with department prefix (no leading zeros)
+
+    Format: PREFIX-NUMBER (PREFIX is S or I based on job_name)
+    Examples: I-1, S-2
+    Job code is appended separately in format_po_display
+    """
     if job_name and job_name.lower() == 'service':
-        return f"S{po_id}"
-    return f"{po_id}"
+        return f"S-{po_id}"
+    return f"I-{po_id}"
 
 def format_po_display(po_id, job_name, client_name=None, job_code=None):
-    """Format PO display with client name for Service jobs"""
-    po_number = format_po_number(po_id, job_name, job_code)
-    if job_name and job_name.lower() == 'service' and client_name:
-        return f"{po_number} {client_name}"
-    return po_number
+    """Format PO display with job code and client name
 
-def get_next_po_number_with_prefix(tech_type, db_path=DB_PATH):
+    Format: PREFIX-NUMBER JOB_CODE (for install jobs) or PREFIX-NUMBER CLIENT_NAME (for service jobs)
+    Examples: I-1 Herons, S-2 Johnson
+    """
+    po_number = format_po_number(po_id, job_name, job_code)
+
+    # Build the display string
+    result = po_number
+    if job_name and job_name.lower() == 'service' and client_name:
+        # Service jobs show client name
+        result = f"{result} {client_name}"
+    elif job_code and job_code not in ['S', 'I']:
+        # Install jobs show job code (unless it's just a prefix)
+        result = f"{result} {job_code}"
+
+    return result
+
+def get_next_po_number_with_prefix(tech_type, job_code=None, db_path=DB_PATH):
     """Get the next PO number for a technician type with S or I prefix
 
     Args:
         tech_type: 'service' (prefix S) or 'install' (prefix I)
+        job_code: job code from database (optional, will use prefix if not provided)
         db_path: path to database
 
     Returns:
         tuple: (next_po_id, formatted_po_string, prefix)
-        Example: (1, 'S0001', 'S') or (1, 'I0001', 'I')
+        Example: (1, 'I-1', 'I') or (1, 'S-2', 'S')
     """
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
@@ -507,9 +523,10 @@ def get_next_po_number_with_prefix(tech_type, db_path=DB_PATH):
     conn.close()
 
     next_id = max_id + 1
-    formatted_po = f"{prefix}{next_id:04d}"
+    # Always use department prefix (S or I), not job code
+    formatted_po = f"{prefix}-{next_id}"
 
-    return next_id, formatted_po, prefix
+    return next_id, formatted_po, prefix, job_code
 
 # Make these available to templates
 app.jinja_env.globals.update(format_po_number=format_po_number)
@@ -1616,8 +1633,8 @@ def submit_request():
     else:
         conn.close()  # Close existing connection
 
-        # Get next PO number with correct prefix
-        next_id, formatted_po, prefix = get_next_po_number_with_prefix(tech_type)
+        # Get next PO number with correct prefix and job code
+        next_id, formatted_po, prefix, job_code_ret = get_next_po_number_with_prefix(tech_type, job_code)
 
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -1635,7 +1652,14 @@ def submit_request():
         conn.commit()
         conn.close()
 
-        po_display = f"{formatted_po} {client_name}" if tech_type == 'service' and client_name else formatted_po
+        # Format display to include job code or client name
+        po_display = formatted_po
+        if tech_type == 'service' and client_name:
+            po_display = f"{formatted_po} {client_name}"
+        elif job_code and job_code not in ['S', 'I']:
+            # Add job code for install jobs (e.g., I-1 Herons)
+            po_display = f"{formatted_po} {job_code}"
+
         flash(f'PO#{po_display}|{job_name}')
         return redirect(url_for('tech_dashboard'))
 
@@ -5773,9 +5797,9 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
     </div>
 
     <div class="tabs-container">
-        <button class="tab-btn service active" onclick="switchTab('service')">📱 Service Department</button>
-        <button class="tab-btn install" onclick="switchTab('install')">🔧 Install Department</button>
-        <button class="tab-btn" style="color: #9b59b6;" onclick="switchTab('all-pos')">📋 View All POs</button>
+        <button class="tab-btn service active" id="service-btn" onclick="switchTab('service', event)">📱 Service Department</button>
+        <button class="tab-btn install" id="install-btn" onclick="switchTab('install', event)">🔧 Install Department</button>
+        <button class="tab-btn" id="all-pos-btn" style="color: #9b59b6;" onclick="switchTab('all-pos', event)">📋 View All POs</button>
     </div>
 
     <div class="search-bar">
@@ -5906,14 +5930,28 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         let filteredInstallJobs = [...installJobs];
         let searchTerm = '';
 
-        function switchTab(dept) {
+        function switchTab(dept, evt) {
             // Hide all tabs
             document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
             document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
 
             // Show selected tab
             document.getElementById(dept + '-tab').classList.add('active');
-            event.target.classList.add('active');
+
+            // Set the button active if called from event (has evt parameter)
+            if (evt && evt.target) {
+                evt.target.classList.add('active');
+            } else {
+                // If called from initialization, find and activate the button by ID/matching criteria
+                const buttons = document.querySelectorAll('.tab-btn');
+                buttons.forEach(btn => {
+                    if ((dept === 'install' && btn.id === 'install-btn') ||
+                        (dept === 'service' && btn.id === 'service-btn') ||
+                        (dept === 'all-pos' && btn.id === 'all-pos-btn')) {
+                        btn.classList.add('active');
+                    }
+                });
+            }
         }
 
         function getTechName(username) {
@@ -5997,27 +6035,13 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
             fetch('/add_job', {
                 method: 'POST',
-                body: formData
+                body: formData,
+                redirect: 'follow'
             })
             .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                // Check if redirected
-                if (response.redirected) {
-                    window.location.href = response.url;
-                } else {
-                    return response.json();
-                }
-            })
-            .then(data => {
-                if (data && !data.success) {
-                    alert('Error: ' + data.error);
-                } else if (data && data.success) {
-                    alert('Job created successfully!');
-                    // Reload the page to show the new job
-                    window.location.href = '/office_dashboard?tab=install';
-                }
+                console.log('Response status:', response.status);
+                // Always redirect to install tab after submission
+                window.location.href = '/office_dashboard?tab=install';
             })
             .catch(error => {
                 console.error('Error:', error);
@@ -6045,25 +6069,13 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
             fetch('/add_job', {
                 method: 'POST',
-                body: formData
+                body: formData,
+                redirect: 'follow'
             })
             .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                if (response.redirected) {
-                    window.location.href = response.url;
-                } else {
-                    return response.json();
-                }
-            })
-            .then(data => {
-                if (data && !data.success) {
-                    alert('Error: ' + data.error);
-                } else if (data && data.success) {
-                    alert('Job created successfully!');
-                    window.location.href = '/office_dashboard?tab=service';
-                }
+                console.log('Response status:', response.status);
+                // Always redirect to service tab after submission
+                window.location.href = '/office_dashboard?tab=service';
             })
             .catch(error => {
                 console.error('Error:', error);
