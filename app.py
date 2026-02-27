@@ -5773,9 +5773,9 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
     </div>
 
     <div class="tabs-container">
-        <button class="tab-btn service active" onclick="switchTab('service')">📱 Service Department</button>
-        <button class="tab-btn install" onclick="switchTab('install')">🔧 Install Department</button>
-        <button class="tab-btn" style="color: #9b59b6;" onclick="switchTab('all-pos')">📋 View All POs</button>
+        <button class="tab-btn service active" id="service-btn" onclick="switchTab('service', event)">📱 Service Department</button>
+        <button class="tab-btn install" id="install-btn" onclick="switchTab('install', event)">🔧 Install Department</button>
+        <button class="tab-btn" id="all-pos-btn" style="color: #9b59b6;" onclick="switchTab('all-pos', event)">📋 View All POs</button>
     </div>
 
     <div class="search-bar">
@@ -5906,7 +5906,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         let filteredInstallJobs = [...installJobs];
         let searchTerm = '';
 
-        function switchTab(dept) {
+        function switchTab(dept, evt) {
             // Hide all tabs
             document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
             document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
@@ -5914,17 +5914,16 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             // Show selected tab
             document.getElementById(dept + '-tab').classList.add('active');
 
-            // Set the button active if called from event (has event.target)
-            if (event && event.target) {
-                event.target.classList.add('active');
+            // Set the button active if called from event (has evt parameter)
+            if (evt && evt.target) {
+                evt.target.classList.add('active');
             } else {
-                // If called from initialization, find and activate the button
+                // If called from initialization, find and activate the button by ID/matching criteria
                 const buttons = document.querySelectorAll('.tab-btn');
                 buttons.forEach(btn => {
-                    if (btn.textContent.toLowerCase().includes(dept.toLowerCase()) ||
-                        (dept === 'install' && btn.textContent.includes('Install')) ||
-                        (dept === 'service' && btn.textContent.includes('Service')) ||
-                        (dept === 'all-pos' && btn.textContent.includes('View All'))) {
+                    if ((dept === 'install' && btn.id === 'install-btn') ||
+                        (dept === 'service' && btn.id === 'service-btn') ||
+                        (dept === 'all-pos' && btn.id === 'all-pos-btn')) {
                         btn.classList.add('active');
                     }
                 });
