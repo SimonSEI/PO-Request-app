@@ -1443,7 +1443,7 @@ def submit_request():
     custom_po_number = request.form.get('custom_po_number', '').strip()
     job_name = request.form['job_name'].strip()
     store_name = request.form['store_name']
-    estimated_cost = float(request.form['estimated_cost'])
+    estimated_cost = 0  # Estimated cost removed from form
     description = request.form['description']
     client_name = request.form.get('client_name', '').strip()  # Optional - for Service POs
 
@@ -4248,11 +4248,6 @@ TECH_DASHBOARD_TEMPLATE = '''
             </div>
 
             <div class="form-group">
-                <label>Estimated Cost ($)</label>
-                <input type="number" step="0.01" name="estimated_cost" required placeholder="0.00" min="0">
-            </div>
-
-            <div class="form-group">
                 <label>Description / Items Needed</label>
                 <textarea name="description" required placeholder="List what you need to purchase..."></textarea>
             </div>
@@ -5354,12 +5349,11 @@ function searchInTab(tabId, searchInputId) {
         {% for req in awaiting_requests %}
             <div class="request-item" data-po-id="{{ req[0] }}">
                 <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
-                <h3>PO #{{ format_po_number(req[0], req[3]) }} - {{ req[3] }} - ${{ "%.2f"|format(req[5]) }}</h3>
+                <h3>PO #{{ format_po_number(req[0], req[3]) }} - {{ req[3] }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
                 <p><strong>Store:</strong> {{ req[4] }}</p>
                 <p><strong>Description:</strong> {{ req[6] }}</p>
-                <p><strong>Estimated Cost:</strong> ${{ "%.2f"|format(req[5]) }}</p>
                 <p><strong>Requested:</strong> {{ req[8] }}</p>
                 <div class="invoice-upload-section">
                     <h4>📄 Add Invoice Details</h4>
