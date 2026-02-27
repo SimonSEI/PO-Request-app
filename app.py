@@ -4803,7 +4803,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
             </div>
             <div class="form-group">
                 <label>Budget for Materials ($)</label>
-                <input type="number" name="budget" placeholder="0" step="0.01" min="0" value="0">
+                <input type="number" name="budget" placeholder="Enter amount" step="0.01" min="0">
             </div>
             <button type="submit" class="btn btn-success" style="font-size: 16px; padding: 12px 24px;">+ Add Job</button>
         </form>
