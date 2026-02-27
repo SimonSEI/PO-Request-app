@@ -6312,6 +6312,14 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         window.addEventListener('DOMContentLoaded', () => {
             populateYearFilters();
             renderServiceJobs();
+            renderInstallJobs();
+
+            // Check if we need to switch to a different tab based on URL parameter
+            const urlParams = new URLSearchParams(window.location.search);
+            const tab = urlParams.get('tab');
+            if (tab && (tab === 'install' || tab === 'all-pos')) {
+                switchTab(tab);
+            }
         });
     </script>
 </body>
