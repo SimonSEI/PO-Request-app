@@ -1405,10 +1405,11 @@ def office_dashboard():
                 COUNT(CASE WHEN p.invoice_filename IS NOT NULL THEN 1 END) as invoice_count,
                 COALESCE(SUM(p.estimated_cost), 0) as total_estimated,
                 COUNT(p.id) as po_count,
-                COALESCE(j.budget, 0) as budget
+                COALESCE(j.budget, 0) as budget,
+                COALESCE(j.department, 'service') as department
             FROM jobs j
             LEFT JOIN po_requests p ON j.job_name = p.job_name
-            GROUP BY j.id, j.job_name, j.year, j.created_date, j.active, j.budget
+            GROUP BY j.id, j.job_name, j.year, j.created_date, j.active, j.budget, j.department
             ORDER BY j.active DESC, j.year DESC, j.job_name ASC
         """)
         all_jobs = c.fetchall()
@@ -1442,37 +1443,20 @@ def office_dashboard():
 
         conn.close()
 
-        # Separate jobs by type - we'll group jobs that match service or install techs
+        # Separate jobs by stored department
         service_jobs = []
         install_jobs = []
 
         for job in all_jobs:
             job_id = job[0]
-            # Check which techs have POs for this job
-            pos = job_pos.get(job_id, [])
-            has_service = False
-            has_install = False
+            stored_department = job[11]  # Department from database
 
-            for po in pos:
-                tech_username = po[2]
-                if tech_username in techs:
-                    if techs[tech_username]['type'] == 'service':
-                        has_service = True
-                    elif techs[tech_username]['type'] == 'install':
-                        has_install = True
-
-            # If job has service POs, add to service_jobs
-            if has_service:
-                service_jobs.append(job)
-
-            # If job has install POs, add to install_jobs
-            if has_install:
+            # Add job to its assigned department
+            if stored_department == 'install':
                 install_jobs.append(job)
-
-            # If no POs at all, add to both (shows up in both departments)
-            if not has_service and not has_install:
+            else:
+                # Default to service for new jobs or jobs without a department
                 service_jobs.append(job)
-                install_jobs.append(job)
 
         return render_template_string(UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE,
                                       username=session['username'],
@@ -2334,6 +2318,7 @@ def add_job():
     job_name = request.form.get('job_name', '').strip()
     year = request.form.get('year', '').strip()
     budget = request.form.get('budget', '0').strip()
+    department = request.form.get('department', 'service').strip()
 
     print(f"[add_job] Adding job: name='{job_name}', year={year}, budget={budget}, ajax={is_ajax}")
 
@@ -2360,15 +2345,25 @@ def add_job():
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("INSERT INTO jobs (job_name, year, created_date, budget, active) VALUES (?, ?, ?, ?, 1)",
-                 (job_name, year, datetime.now().strftime('%Y-%m-%d'), budget))
+
+        # Ensure department column exists (migration)
+        try:
+            c.execute("ALTER TABLE jobs ADD COLUMN department TEXT DEFAULT 'service'")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
+        c.execute("INSERT INTO jobs (job_name, year, created_date, budget, department, active) VALUES (?, ?, ?, ?, ?, 1)",
+                 (job_name, year, datetime.now().strftime('%Y-%m-%d'), budget, department))
         conn.commit()
         conn.close()
-        print(f"[add_job] Successfully added job: '{job_name}'")
+        print(f"[add_job] Successfully added job: '{job_name}' to {department} department")
         if is_ajax:
             return jsonify({'success': True, 'message': f'Job "{job_name}" added successfully'})
         flash(f'Job "{job_name}" added successfully!')
-        return redirect(url_for('office_dashboard'))
+
+        # Redirect back to the appropriate department tab
+        return redirect(url_for('office_dashboard', tab=department))
     except sqlite3.IntegrityError:
         if conn:
             conn.close()
@@ -2383,6 +2378,43 @@ def add_job():
             return jsonify({'success': False, 'error': f'Database error: {str(e)}'})
         flash(f'Error: {str(e)}')
         return redirect(url_for('office_dashboard'))
+
+
+@app.route('/delete_job', methods=['POST'])
+def delete_job():
+    """Delete a job"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    data = request.get_json()
+    job_id = data.get('job_id')
+
+    if not job_id:
+        return jsonify({'success': False, 'error': 'Job ID required'})
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Get job info before deleting
+        c.execute("SELECT job_name FROM jobs WHERE id=?", (job_id,))
+        job_result = c.fetchone()
+        if not job_result:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Job not found'})
+
+        job_name = job_result[0]
+
+        # Delete the job
+        c.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+        conn.commit()
+        conn.close()
+
+        print(f"[delete_job] Successfully deleted job: '{job_name}' (ID: {job_id})")
+        return jsonify({'success': True, 'message': f'Job "{job_name}" deleted successfully'})
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Database error: {str(e)}'})
 
 
 @app.route('/edit_job', methods=['POST'])
@@ -5650,9 +5682,9 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         .tab-btn:hover { background: #f5f5f5; }
         .tab-btn.active { background: #667eea; color: white; border-color: #667eea; }
         .tab-btn.service { color: #007bff; }
-        .tab-btn.service.active { background: #007bff; }
+        .tab-btn.service.active { background: #007bff; color: white; }
         .tab-btn.install { color: #28a745; }
-        .tab-btn.install.active { background: #28a745; }
+        .tab-btn.install.active { background: #28a745; color: white; }
 
         .tab-content { display: none; }
         .tab-content.active { display: block; }
@@ -5793,6 +5825,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             <h2>➕ Add New Service Job</h2>
             <p>Create a new service job. Job names must be unique.</p>
             <form method="POST" action="/add_job" style="display: contents;">
+                <input type="hidden" name="department" value="service">
                 <div class="form-row">
                     <div class="form-group">
                         <label>Job Name *</label>
@@ -5832,6 +5865,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             <h2>➕ Add New Install Job</h2>
             <p>Create a new install job. Job names must be unique.</p>
             <form method="POST" action="/add_job" style="display: contents;">
+                <input type="hidden" name="department" value="install">
                 <div class="form-row">
                     <div class="form-group">
                         <label>Job Name *</label>
@@ -6049,6 +6083,9 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     <button style="background: #007bff; color: white; flex: 1;" onclick="showAllPOs(${jobId}, '${jobName.replace(/'/g, "\\'")}')">
                         📋 View All POs (${jobAllPOs[jobId] ? jobAllPOs[jobId].length : 0})
                     </button>
+                    <button class="delete-job-btn" onclick="deleteJob(${jobId}, '${jobName.replace(/'/g, "\\'")}')" style="background: #dc3545; color: white;">
+                        🗑️ Delete
+                    </button>
                 </div>
             </div>
             `;
@@ -6071,6 +6108,25 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
+                    location.reload();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            });
+        }
+
+        function deleteJob(jobId, jobName) {
+            if (!confirm(`Are you sure you want to delete the job "${jobName}"? This action cannot be undone.`)) return;
+
+            fetch('/delete_job', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ job_id: jobId })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    alert(data.message);
                     location.reload();
                 } else {
                     alert('Error: ' + data.error);
