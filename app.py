@@ -1353,6 +1353,7 @@ def tech_dashboard():
     c = conn.cursor()
 
     # Show this tech's own POs (all statuses)
+    tech_type = session.get('tech_type', 'install')
     c.execute("SELECT * FROM po_requests WHERE tech_username=? ORDER BY id DESC", (session['username'],))
     requests = c.fetchall()
 
@@ -1360,9 +1361,10 @@ def tech_dashboard():
     c.execute("PRAGMA table_info(po_requests)")
     columns = {col[1]: col[0] for col in c.fetchall()}
 
-    # Get list of techs for dropdown
-    c.execute("SELECT name FROM techs ORDER BY name ASC")
-    techs = [row[0] for row in c.fetchall()]
+    # Get full name for display
+    c.execute("SELECT full_name FROM users WHERE username=?", (session['username'],))
+    user_info = c.fetchone()
+    full_name = user_info[0] if user_info else session['username']
 
     conn.close()
 
@@ -1373,8 +1375,9 @@ def tech_dashboard():
 
     return render_template_string(TECH_DASHBOARD_TEMPLATE,
                                 username=session['username'],
+                                full_name=full_name,
+                                tech_type=tech_type,
                                 requests=requests,
-                                techs=techs,
                                 inv_filename_idx=inv_filename_idx,
                                 inv_number_idx=inv_number_idx,
                                 inv_cost_idx=inv_cost_idx,
@@ -1399,38 +1402,58 @@ def office_dashboard():
     inv_upload_idx = columns.get('invoice_upload_date', 16)
     approved_by_idx = columns.get('approved_by', 11)
     delivery_notes_idx = columns.get('delivery_notes', -1)
+    po_type_idx = columns.get('po_type', -1)
 
-    c.execute("SELECT * FROM po_requests WHERE status='awaiting_invoice' ORDER BY id DESC")
-    awaiting_invoice = c.fetchall()
+    # Get service POs
+    c.execute("SELECT * FROM po_requests WHERE po_type='service' AND status='awaiting_invoice' ORDER BY id DESC")
+    service_awaiting = c.fetchall()
 
-    c.execute("SELECT * FROM po_requests WHERE invoice_filename IS NOT NULL ORDER BY id DESC")
-    invoiced = c.fetchall()
+    c.execute("SELECT * FROM po_requests WHERE po_type='service' AND invoice_filename IS NOT NULL ORDER BY id DESC")
+    service_invoiced = c.fetchall()
 
-    c.execute("SELECT COUNT(*), SUM(estimated_cost) FROM po_requests WHERE status='awaiting_invoice'")
-    awaiting_stats = c.fetchone()
+    # Get install POs
+    c.execute("SELECT * FROM po_requests WHERE po_type='install' AND status='awaiting_invoice' ORDER BY id DESC")
+    install_awaiting = c.fetchall()
 
-    c.execute("SELECT COUNT(*), SUM(invoice_cost) FROM po_requests WHERE invoice_filename IS NOT NULL")
-    invoiced_stats = c.fetchone()
+    c.execute("SELECT * FROM po_requests WHERE po_type='install' AND invoice_filename IS NOT NULL ORDER BY id DESC")
+    install_invoiced = c.fetchall()
+
+    # Get legacy POs (po_type is NULL) - for backwards compatibility
+    c.execute("SELECT * FROM po_requests WHERE po_type IS NULL AND status='awaiting_invoice' ORDER BY id DESC")
+    legacy_awaiting = c.fetchall()
+
+    c.execute("SELECT * FROM po_requests WHERE po_type IS NULL AND invoice_filename IS NOT NULL ORDER BY id DESC")
+    legacy_invoiced = c.fetchall()
+
+    # Stats by type
+    stats = {
+        'service_awaiting': len(service_awaiting),
+        'service_invoiced': len(service_invoiced),
+        'install_awaiting': len(install_awaiting),
+        'install_invoiced': len(install_invoiced),
+        'legacy_awaiting': len(legacy_awaiting),
+        'legacy_invoiced': len(legacy_invoiced),
+        'total_awaiting': len(service_awaiting) + len(install_awaiting) + len(legacy_awaiting),
+        'total_invoiced': len(service_invoiced) + len(install_invoiced) + len(legacy_invoiced)
+    }
 
     conn.close()
 
-    stats = {
-        'awaiting_invoice': awaiting_stats[0],
-        'invoiced': invoiced_stats[0] if invoiced_stats[0] else 0,
-        'awaiting_value': awaiting_stats[1] if awaiting_stats[1] else 0,
-        'invoiced_value': invoiced_stats[1] if invoiced_stats[1] else 0
-    }
-
     return render_template_string(OFFICE_DASHBOARD_TEMPLATE,
                                 username=session['username'],
-                                awaiting_requests=awaiting_invoice,
-                                invoiced_requests=invoiced,
+                                service_awaiting_requests=service_awaiting,
+                                service_invoiced_requests=service_invoiced,
+                                install_awaiting_requests=install_awaiting,
+                                install_invoiced_requests=install_invoiced,
+                                legacy_awaiting_requests=legacy_awaiting,
+                                legacy_invoiced_requests=legacy_invoiced,
                                 stats=stats,
                                 inv_filename_idx=inv_filename_idx,
                                 inv_number_idx=inv_number_idx,
                                 inv_cost_idx=inv_cost_idx,
                                 inv_upload_idx=inv_upload_idx,
-                                delivery_notes_idx=delivery_notes_idx)
+                                delivery_notes_idx=delivery_notes_idx,
+                                po_type_idx=po_type_idx)
 
 @app.route('/activity_log')
 def activity_log():
@@ -4577,7 +4600,11 @@ TECH_DASHBOARD_TEMPLATE = '''
 </head>
 <body>
     <div class="header">
-        <h1>👷 Technician Dashboard - {{ username }}</h1>
+        {% if tech_type == 'service' %}
+            <h1>📱 Service Technician Dashboard - {{ full_name }}</h1>
+        {% else %}
+            <h1>🔧 Install Technician Dashboard - {{ full_name }}</h1>
+        {% endif %}
         <a href="{{ url_for('logout') }}" class="logout-btn">Logout</a>
     </div>
 
@@ -4606,8 +4633,12 @@ TECH_DASHBOARD_TEMPLATE = '''
     {% endwith %}
 
     <div class="card">
-        <h2>📝 Submit New PO Request</h2>
-        <form method="POST" action="{{ url_for('submit_request') }}">
+        {% if tech_type == 'service' %}
+            <h2>📝 Submit New Service PO Request <span style="background: #007bff; color: white; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-left: 10px;">PO Prefix: S</span></h2>
+        {% else %}
+            <h2>📝 Submit New Install PO Request <span style="background: #28a745; color: white; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-left: 10px;">PO Prefix: I</span></h2>
+        {% endif %}
+        <form method="POST" action="{{ url_for('submit_request') }}"
             <div class="form-group">
                 <label>Your Name</label>
                 {% if techs %}
@@ -5724,43 +5755,50 @@ function searchInTab(tabId, searchInputId) {
 
     <div class="stats">
         <div class="stat-card">
-            <div class="stat-number">{{ stats.awaiting_invoice }}</div>
-            <div class="stat-label">Awaiting Invoice</div>
+            <div class="stat-number">{{ stats.service_awaiting }}</div>
+            <div class="stat-label">Service - Awaiting Invoice</div>
         </div>
         <div class="stat-card">
-            <div class="stat-number">${{ "%.2f"|format(stats.awaiting_value) }}</div>
-            <div class="stat-label">Awaiting Value</div>
+            <div class="stat-number">{{ stats.install_awaiting }}</div>
+            <div class="stat-label">Install - Awaiting Invoice</div>
         </div>
         <div class="stat-card">
-            <div class="stat-number">{{ stats.invoiced }}</div>
-            <div class="stat-label">With Invoices</div>
+            <div class="stat-number">{{ stats.service_invoiced }}</div>
+            <div class="stat-label">Service - With Invoices</div>
         </div>
         <div class="stat-card">
-            <div class="stat-number">${{ "%.2f"|format(stats.invoiced_value) }}</div>
-            <div class="stat-label">Invoiced Value</div>
+            <div class="stat-number">{{ stats.install_invoiced }}</div>
+            <div class="stat-label">Install - With Invoices</div>
         </div>
     </div>
 
     <div class="tabs">
-        <button class="tab active" onclick="showTab('awaiting')">Awaiting Invoice ({{ stats.awaiting_invoice }})</button>
-        <button class="tab" onclick="showTab('invoiced')">With Invoice ({{ stats.invoiced }})</button>
+        <button class="tab active" onclick="showTab('service-awaiting')">📱 Service - Awaiting ({{ stats.service_awaiting }})</button>
+        <button class="tab" onclick="showTab('service-invoiced')">📱 Service - Invoiced ({{ stats.service_invoiced }})</button>
+        <button class="tab" onclick="showTab('install-awaiting')">🔧 Install - Awaiting ({{ stats.install_awaiting }})</button>
+        <button class="tab" onclick="showTab('install-invoiced')">🔧 Install - Invoiced ({{ stats.install_invoiced }})</button>
+        {% if stats.legacy_awaiting > 0 or stats.legacy_invoiced > 0 %}
+            <button class="tab" onclick="showTab('legacy-awaiting')">📦 Legacy - Awaiting ({{ stats.legacy_awaiting }})</button>
+            <button class="tab" onclick="showTab('legacy-invoiced')">📦 Legacy - Invoiced ({{ stats.legacy_invoiced }})</button>
+        {% endif %}
     </div>
 
-    <div id="awaiting" class="tab-content active">
+    {# SERVICE - AWAITING INVOICE #}
+    <div id="service-awaiting" class="tab-content active">
     <div style="background: #f0f4ff; padding: 15px; border-radius: 5px; margin-bottom: 15px;">
         <input type="text"
-               id="search-awaiting"
-               placeholder="🔍 Search POs (PO#, tech, job, description, store)..."
-               onkeyup="searchInTab('awaiting', 'search-awaiting')"
-               style="width: 100%; padding: 10px; border: 2px solid #667eea; border-radius: 5px; font-size: 14px;">
-        <div class="search-result-count" style="margin-top: 8px; color: #667eea; font-size: 13px; display: none;"></div>
+               id="search-service-awaiting"
+               placeholder="🔍 Search Service POs (PO#, tech, job, description, store)..."
+               onkeyup="searchInTab('service-awaiting', 'search-service-awaiting')"
+               style="width: 100%; padding: 10px; border: 2px solid #007bff; border-radius: 5px; font-size: 14px;">
+        <div class="search-result-count" style="margin-top: 8px; color: #007bff; font-size: 13px; display: none;"></div>
     </div>
 
-    {% if awaiting_requests %}
-        {% for req in awaiting_requests %}
+    {% if service_awaiting_requests %}
+        {% for req in service_awaiting_requests %}
             <div class="request-item" data-po-id="{{ req[0] }}">
                 <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
-                <h3>PO #{{ format_po_number(req[0], req[3]) }} - {{ req[3] }}</h3>
+                <h3>📱 PO #S{{ "%04d"|format(req[0]) }} - {{ req[3] }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
                 <p><strong>Store:</strong> {{ req[4] }}</p>
@@ -5781,18 +5819,18 @@ function searchInTab(tabId, searchInputId) {
             </div>
         {% endfor %}
     {% else %}
-        <p style="color: #999; text-align: center; padding: 40px;">No POs awaiting invoices</p>
+        <p style="color: #999; text-align: center; padding: 40px;">No Service POs awaiting invoices</p>
     {% endif %}
 </div>
 
-
-<div id="invoiced" class="tab-content">
-    {% if invoiced_requests %}
-        {% for req in invoiced_requests %}
+    {# SERVICE - WITH INVOICE #}
+    <div id="service-invoiced" class="tab-content">
+    {% if service_invoiced_requests %}
+        {% for req in service_invoiced_requests %}
             <div class="request-item" data-po-id="{{ req[0] }}">
                 <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
                 <button onclick="deleteInvoice({{ req[0] }})" class="delete-btn" style="right: 120px; background: #ff9800;">🗑️ Remove Invoice</button>
-                <h3>PO #{{ format_po_number(req[0], req[3]) }} - {{ req[3] }} - ${{ "%.2f"|format(req[5]) }}</h3>
+                <h3>📱 PO #S{{ "%04d"|format(req[0]) }} - {{ req[3] }} - ${{ "%.2f"|format(req[inv_cost_idx] if req|length > inv_cost_idx else 0) }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
                 <p><strong>Description:</strong> {{ req[6] }}</p>
@@ -5800,14 +5838,6 @@ function searchInTab(tabId, searchInputId) {
                 <div class="invoice-data">
                     <h4>📄 Invoice Details</h4>
                     <p><strong>Invoice Number:</strong> {{ req[inv_number_idx] if req|length > inv_number_idx else 'Not entered' }}</p>
-
-                    {# FIXED: Only show message if job is actually "Service" #}
-                    {% if req[3] and req[3].lower() == 'service' %}
-                        <p style="background: #fff3cd; padding: 8px; border-radius: 5px; margin: 10px 0;">
-                            <strong>🔧 Auto-categorized as Service</strong> (PO number starts with "S")
-                        </p>
-                    {% endif %}
-
                     <p><strong>Total Cost:</strong> ${{ req[inv_cost_idx] if req|length > inv_cost_idx else '0.00' }}</p>
                     <p><strong>Entered:</strong> {{ req[inv_upload_idx] if req|length > inv_upload_idx else 'N/A' }}</p>
                     {% if req[inv_filename_idx] and req[inv_filename_idx] != 'MANUAL_ENTRY' %}
@@ -5831,9 +5861,177 @@ function searchInTab(tabId, searchInputId) {
             </div>
         {% endfor %}
     {% else %}
-        <p style="color: #999; text-align: center; padding: 40px;">No invoiced requests</p>
+        <p style="color: #999; text-align: center; padding: 40px;">No Service invoiced requests</p>
     {% endif %}
 </div>
+
+    {# INSTALL - AWAITING INVOICE #}
+    <div id="install-awaiting" class="tab-content">
+    <div style="background: #f0f4ff; padding: 15px; border-radius: 5px; margin-bottom: 15px;">
+        <input type="text"
+               id="search-install-awaiting"
+               placeholder="🔍 Search Install POs (PO#, tech, job, description, store)..."
+               onkeyup="searchInTab('install-awaiting', 'search-install-awaiting')"
+               style="width: 100%; padding: 10px; border: 2px solid #28a745; border-radius: 5px; font-size: 14px;">
+        <div class="search-result-count" style="margin-top: 8px; color: #28a745; font-size: 13px; display: none;"></div>
+    </div>
+
+    {% if install_awaiting_requests %}
+        {% for req in install_awaiting_requests %}
+            <div class="request-item" data-po-id="{{ req[0] }}">
+                <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
+                <h3>🔧 PO #I{{ "%04d"|format(req[0]) }} - {{ req[3] }}</h3>
+                <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
+                <p><strong>Job:</strong> {{ req[3] }}</p>
+                <p><strong>Store:</strong> {{ req[4] }}</p>
+                <p><strong>Description:</strong> {{ req[6] }}</p>
+                <p><strong>Requested:</strong> {{ req[8] }}</p>
+                <div class="invoice-upload-section">
+                    <h4>📄 Add Invoice Details</h4>
+                    <form id="invoice-form-{{ req[0] }}" class="invoice-form">
+                        <input type="text" name="invoice_number" placeholder="Invoice Number (Required)" required>
+                        <input type="number" step="0.01" name="invoice_cost" placeholder="Total Cost (Required)" required>
+                        <div id="dropzone-{{ req[0] }}" class="dropzone">
+                            <p>📎 Optional: Drag & drop invoice file or click to browse</p>
+                        </div>
+                        <input type="file" id="file-{{ req[0] }}" name="invoice" accept=".pdf,.jpg,.jpeg,.png" style="display: none;">
+                        <button type="button" onclick="uploadInvoice({{ req[0] }})" class="upload-invoice-btn">💾 Save Invoice Details</button>
+                    </form>
+                </div>
+            </div>
+        {% endfor %}
+    {% else %}
+        <p style="color: #999; text-align: center; padding: 40px;">No Install POs awaiting invoices</p>
+    {% endif %}
+</div>
+
+    {# INSTALL - WITH INVOICE #}
+    <div id="install-invoiced" class="tab-content">
+    {% if install_invoiced_requests %}
+        {% for req in install_invoiced_requests %}
+            <div class="request-item" data-po-id="{{ req[0] }}">
+                <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
+                <button onclick="deleteInvoice({{ req[0] }})" class="delete-btn" style="right: 120px; background: #ff9800;">🗑️ Remove Invoice</button>
+                <h3>🔧 PO #I{{ "%04d"|format(req[0]) }} - {{ req[3] }} - ${{ "%.2f"|format(req[inv_cost_idx] if req|length > inv_cost_idx else 0) }}</h3>
+                <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
+                <p><strong>Job:</strong> {{ req[3] }}</p>
+                <p><strong>Description:</strong> {{ req[6] }}</p>
+                <p><strong>Requested:</strong> {{ req[8] }}</p>
+                <div class="invoice-data">
+                    <h4>📄 Invoice Details</h4>
+                    <p><strong>Invoice Number:</strong> {{ req[inv_number_idx] if req|length > inv_number_idx else 'Not entered' }}</p>
+                    <p><strong>Total Cost:</strong> ${{ req[inv_cost_idx] if req|length > inv_cost_idx else '0.00' }}</p>
+                    <p><strong>Entered:</strong> {{ req[inv_upload_idx] if req|length > inv_upload_idx else 'N/A' }}</p>
+                    {% if req[inv_filename_idx] and req[inv_filename_idx] != 'MANUAL_ENTRY' %}
+                        <p><strong>File:</strong> <a href="{{ url_for('view_invoice', filename=req[inv_filename_idx]) }}" target="_blank" style="color: #667eea; text-decoration: underline;">📄 View Invoice PDF</a></p>
+                    {% else %}
+                        <p><strong>File:</strong> <span style="color: #666;">No file attached (manual entry)</span></p>
+                    {% endif %}
+                </div>
+                <div class="invoice-upload-section" style="margin-top: 15px;">
+                    <h4>✏️ Edit Invoice Details</h4>
+                    <form id="invoice-form-{{ req[0] }}" class="invoice-form">
+                        <input type="text" name="invoice_number" placeholder="Invoice Number" value="{{ req[inv_number_idx] if req|length > inv_number_idx else '' }}" required>
+                        <input type="number" step="0.01" name="invoice_cost" placeholder="Total Cost" value="{{ req[inv_cost_idx] if req|length > inv_cost_idx else '' }}" required>
+                        <div id="dropzone-{{ req[0] }}" class="dropzone">
+                            <p>📎 Replace invoice file (optional)</p>
+                        </div>
+                        <input type="file" id="file-{{ req[0] }}" name="invoice" accept=".pdf,.jpg,.jpeg,.png" style="display: none;">
+                        <button type="button" onclick="uploadInvoice({{ req[0] }})" class="upload-invoice-btn">💾 Update Invoice Details</button>
+                    </form>
+                </div>
+            </div>
+        {% endfor %}
+    {% else %}
+        <p style="color: #999; text-align: center; padding: 40px;">No Install invoiced requests</p>
+    {% endif %}
+</div>
+
+    {# LEGACY - AWAITING INVOICE (for backwards compatibility) #}
+    {% if stats.legacy_awaiting > 0 %}
+    <div id="legacy-awaiting" class="tab-content">
+    <div style="background: #f0f4ff; padding: 15px; border-radius: 5px; margin-bottom: 15px;">
+        <input type="text"
+               id="search-legacy-awaiting"
+               placeholder="🔍 Search Legacy POs (PO#, tech, job, description, store)..."
+               onkeyup="searchInTab('legacy-awaiting', 'search-legacy-awaiting')"
+               style="width: 100%; padding: 10px; border: 2px solid #fd7e14; border-radius: 5px; font-size: 14px;">
+        <div class="search-result-count" style="margin-top: 8px; color: #fd7e14; font-size: 13px; display: none;"></div>
+    </div>
+
+    {% if legacy_awaiting_requests %}
+        {% for req in legacy_awaiting_requests %}
+            <div class="request-item" data-po-id="{{ req[0] }}">
+                <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
+                <h3>📦 PO #{{ "%04d"|format(req[0]) }} - {{ req[3] }}</h3>
+                <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
+                <p><strong>Job:</strong> {{ req[3] }}</p>
+                <p><strong>Store:</strong> {{ req[4] }}</p>
+                <p><strong>Description:</strong> {{ req[6] }}</p>
+                <p><strong>Requested:</strong> {{ req[8] }}</p>
+                <div class="invoice-upload-section">
+                    <h4>📄 Add Invoice Details</h4>
+                    <form id="invoice-form-{{ req[0] }}" class="invoice-form">
+                        <input type="text" name="invoice_number" placeholder="Invoice Number (Required)" required>
+                        <input type="number" step="0.01" name="invoice_cost" placeholder="Total Cost (Required)" required>
+                        <div id="dropzone-{{ req[0] }}" class="dropzone">
+                            <p>📎 Optional: Drag & drop invoice file or click to browse</p>
+                        </div>
+                        <input type="file" id="file-{{ req[0] }}" name="invoice" accept=".pdf,.jpg,.jpeg,.png" style="display: none;">
+                        <button type="button" onclick="uploadInvoice({{ req[0] }})" class="upload-invoice-btn">💾 Save Invoice Details</button>
+                    </form>
+                </div>
+            </div>
+        {% endfor %}
+    {% else %}
+        <p style="color: #999; text-align: center; padding: 40px;">No Legacy POs awaiting invoices</p>
+    {% endif %}
+</div>
+    {% endif %}
+
+    {# LEGACY - WITH INVOICE (for backwards compatibility) #}
+    {% if stats.legacy_invoiced > 0 %}
+    <div id="legacy-invoiced" class="tab-content">
+    {% if legacy_invoiced_requests %}
+        {% for req in legacy_invoiced_requests %}
+            <div class="request-item" data-po-id="{{ req[0] }}">
+                <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
+                <button onclick="deleteInvoice({{ req[0] }})" class="delete-btn" style="right: 120px; background: #ff9800;">🗑️ Remove Invoice</button>
+                <h3>📦 PO #{{ "%04d"|format(req[0]) }} - {{ req[3] }} - ${{ "%.2f"|format(req[inv_cost_idx] if req|length > inv_cost_idx else 0) }}</h3>
+                <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
+                <p><strong>Job:</strong> {{ req[3] }}</p>
+                <p><strong>Description:</strong> {{ req[6] }}</p>
+                <p><strong>Requested:</strong> {{ req[8] }}</p>
+                <div class="invoice-data">
+                    <h4>📄 Invoice Details</h4>
+                    <p><strong>Invoice Number:</strong> {{ req[inv_number_idx] if req|length > inv_number_idx else 'Not entered' }}</p>
+                    <p><strong>Total Cost:</strong> ${{ req[inv_cost_idx] if req|length > inv_cost_idx else '0.00' }}</p>
+                    <p><strong>Entered:</strong> {{ req[inv_upload_idx] if req|length > inv_upload_idx else 'N/A' }}</p>
+                    {% if req[inv_filename_idx] and req[inv_filename_idx] != 'MANUAL_ENTRY' %}
+                        <p><strong>File:</strong> <a href="{{ url_for('view_invoice', filename=req[inv_filename_idx]) }}" target="_blank" style="color: #667eea; text-decoration: underline;">📄 View Invoice PDF</a></p>
+                    {% else %}
+                        <p><strong>File:</strong> <span style="color: #666;">No file attached (manual entry)</span></p>
+                    {% endif %}
+                </div>
+                <div class="invoice-upload-section" style="margin-top: 15px;">
+                    <h4>✏️ Edit Invoice Details</h4>
+                    <form id="invoice-form-{{ req[0] }}" class="invoice-form">
+                        <input type="text" name="invoice_number" placeholder="Invoice Number" value="{{ req[inv_number_idx] if req|length > inv_number_idx else '' }}" required>
+                        <input type="number" step="0.01" name="invoice_cost" placeholder="Total Cost" value="{{ req[inv_cost_idx] if req|length > inv_cost_idx else '' }}" required>
+                        <div id="dropzone-{{ req[0] }}" class="dropzone">
+                            <p>📎 Replace invoice file (optional)</p>
+                        </div>
+                        <input type="file" id="file-{{ req[0] }}" name="invoice" accept=".pdf,.jpg,.jpeg,.png" style="display: none;">
+                        <button type="button" onclick="uploadInvoice({{ req[0] }})" class="upload-invoice-btn">💾 Update Invoice Details</button>
+                    </form>
+                </div>
+            </div>
+        {% endfor %}
+    {% else %}
+        <p style="color: #999; text-align: center; padding: 40px;">No Legacy invoiced requests</p>
+    {% endif %}
+</div>
+    {% endif %}
 </body>
 </html>
 '''
