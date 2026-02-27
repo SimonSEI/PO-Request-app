@@ -6041,7 +6041,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     <button class="toggle-job-btn ${isActive ? 'active' : ''}" data-id="${jobId}" onclick="toggleJobStatus(${jobId}, '${dept}')">
                         ${isActive ? '✓ Active - Click to Close' : '○ Inactive - Click to Reopen'}
                     </button>
-                    <button style="background: #007bff; color: white; flex: 1;" onclick="showAllPOs(${jobId}, '${jobName.replace(/'/g, "\\'")}')">
+                    <button style="background: #007bff; color: white;" onclick="showAllPOs(${jobId}, '${jobName.replace(/'/g, "\\'")}')">
                         📋 View All POs (${jobAllPOs[jobId] ? jobAllPOs[jobId].length : 0})
                     </button>
                     <button class="delete-job-btn" onclick="deleteJob(${jobId}, '${jobName.replace(/'/g, "\\'")}')" style="background: #dc3545; color: white;">
