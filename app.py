@@ -219,7 +219,7 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
-    # Users table with email
+    # Users table with email and tech_type
     c.execute('''CREATE TABLE IF NOT EXISTS users
                  (id INTEGER PRIMARY KEY,
                   username TEXT UNIQUE,
@@ -228,7 +228,8 @@ def init_db():
                   email TEXT,
                   full_name TEXT,
                   created_date TEXT,
-                  last_login TEXT)''')
+                  last_login TEXT,
+                  tech_type TEXT)''')
 
     c.execute('''CREATE TABLE IF NOT EXISTS po_requests
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -236,7 +237,8 @@ def init_db():
                   estimated_cost REAL, description TEXT, status TEXT DEFAULT 'pending',
                   request_date TEXT, approval_date TEXT, approval_notes TEXT,
                   approved_by TEXT, invoice_filename TEXT, invoice_number TEXT,
-                  invoice_cost TEXT, invoice_date TEXT, invoice_upload_date TEXT)''')
+                  invoice_cost TEXT, invoice_date TEXT, invoice_upload_date TEXT,
+                  po_type TEXT)''')
 
     # Jobs table
     c.execute('''CREATE TABLE IF NOT EXISTS jobs
@@ -333,6 +335,18 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # Column already exists
 
+    # Add tech_type column to users if it doesn't exist (for tech classification)
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN tech_type TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+    # Add po_type column to po_requests if it doesn't exist (install or service)
+    try:
+        c.execute("ALTER TABLE po_requests ADD COLUMN po_type TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     # Migration: Fix any existing jobs with NULL active field to active=1
     try:
         c.execute("UPDATE jobs SET active=1 WHERE active IS NULL")
@@ -356,20 +370,21 @@ def init_db():
         except:
             pass
 
-    # Default users (techs only - office users register themselves)
-    users = [
-        ('tech1', 'tech123', 'technician', None, 'Tech One', datetime.now().strftime('%Y-%m-%d'), None),
-        ('tech2', 'tech123', 'technician', None, 'Tech Two', datetime.now().strftime('%Y-%m-%d'), None),
-        ('tech3', 'tech123', 'technician', None, 'Tech Three', datetime.now().strftime('%Y-%m-%d'), None),
-        ('tech4', 'tech123', 'technician', None, 'Tech Four', datetime.now().strftime('%Y-%m-%d'), None),
-        ('tech5', 'tech123', 'technician', None, 'Tech Five', datetime.now().strftime('%Y-%m-%d'), None),
-    ]
+    # Default users - REMOVED all technician defaults, office manages them now
+    # Users will be added through manage_techs interface
+    users = []
 
     for user_data in users:
         try:
-            c.execute("INSERT INTO users VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)", user_data)
+            c.execute("INSERT INTO users VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?)", user_data)
         except sqlite3.IntegrityError:
             pass
+
+    # Clear the techs table to start fresh (as per refactoring requirement)
+    try:
+        c.execute("DELETE FROM techs")
+    except sqlite3.OperationalError:
+        pass  # techs table might not exist yet
 
     # Add default jobs if empty
     c.execute("SELECT COUNT(*) FROM jobs")
@@ -460,6 +475,35 @@ def format_po_display(po_id, job_name, client_name=None, job_code=None):
     if job_name and job_name.lower() == 'service' and client_name:
         return f"{po_number} {client_name}"
     return po_number
+
+def get_next_po_number_with_prefix(tech_type, db_path=DB_PATH):
+    """Get the next PO number for a technician type with S or I prefix
+
+    Args:
+        tech_type: 'service' (prefix S) or 'install' (prefix I)
+        db_path: path to database
+
+    Returns:
+        tuple: (next_po_id, formatted_po_string, prefix)
+        Example: (1, 'S0001', 'S') or (1, 'I0001', 'I')
+    """
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+
+    # Map tech_type to prefix
+    prefix = 'S' if tech_type == 'service' else 'I'
+
+    # Find the max ID for this tech type
+    c.execute("SELECT MAX(id) FROM po_requests WHERE po_type = ?", (tech_type,))
+    result = c.fetchone()
+    max_id = result[0] if result and result[0] else 0
+
+    conn.close()
+
+    next_id = max_id + 1
+    formatted_po = f"{prefix}{next_id:04d}"
+
+    return next_id, formatted_po, prefix
 
 # Make these available to templates
 app.jinja_env.globals.update(format_po_number=format_po_number)
@@ -1274,7 +1318,8 @@ def login():
                 'username': actual_username,
                 'role': user[3],
                 'email': user[4] if len(user) > 4 else None,
-                'full_name': user[5] if len(user) > 5 else actual_username
+                'full_name': user[5] if len(user) > 5 else actual_username,
+                'tech_type': user[8] if len(user) > 8 else None
             }
             save_user_session(session_id, user_data)
             session['session_id'] = session_id
@@ -1282,6 +1327,7 @@ def login():
             session['role'] = user[3]
             session['email'] = user[4] if len(user) > 4 else None
             session['full_name'] = user[5] if len(user) > 5 else actual_username
+            session['tech_type'] = user[8] if len(user) > 8 else None
 
             log_activity(actual_username, 'LOGIN', 'session', None, 'User logged in')
 
@@ -1439,6 +1485,9 @@ def submit_request():
     if 'username' not in session or session['role'] != 'technician':
         return redirect(url_for('login'))
 
+    # Get tech_type from session - should be 'service' or 'install'
+    tech_type = session.get('tech_type', 'install')
+
     tech_name = request.form['tech_name']
     custom_po_number = request.form.get('custom_po_number', '').strip()
     job_name = request.form['job_name'].strip()
@@ -1498,10 +1547,10 @@ def submit_request():
             now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             c.execute("""INSERT INTO po_requests
                          (id, tech_username, tech_name, job_name, store_name, estimated_cost,
-                          description, status, request_date, client_name)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, 'awaiting_invoice', ?, ?)""",
+                          description, status, request_date, client_name, po_type)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, 'awaiting_invoice', ?, ?, ?)""",
                      (po_id, session['username'], tech_name, job_name, store_name,
-                      estimated_cost, description, now_str, client_name if client_name else None))
+                      estimated_cost, description, now_str, client_name if client_name else None, tech_type))
 
             conn.commit()
             conn.close()
@@ -1519,32 +1568,30 @@ def submit_request():
             flash(f'❌ ERROR creating custom PO: {str(e)}')
             return redirect(url_for('tech_dashboard'))
 
-    # AUTO-INCREMENT PO NUMBER (normal flow)
-    # AUTO-INCREMENT PO NUMBER (normal flow)
+    # AUTO-INCREMENT PO NUMBER (normal flow) - with tech type prefix
     else:
-        c.execute("SELECT MAX(id) FROM po_requests")
-        last_id = c.fetchone()[0]
+        conn.close()  # Close existing connection
 
-        # Start counting from 1 instead of 0
-        if last_id is None or last_id < 1:
-            next_po_number = 1
-        else:
-            next_po_number = last_id + 1
+        # Get next PO number with correct prefix
+        next_id, formatted_po, prefix = get_next_po_number_with_prefix(tech_type)
 
-        # Create PO with awaiting_invoice status
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Create PO with awaiting_invoice status and po_type
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         c.execute("""INSERT INTO po_requests
                      (tech_username, tech_name, job_name, store_name, estimated_cost,
-                      description, status, request_date, client_name)
-                     VALUES (?, ?, ?, ?, ?, ?, 'awaiting_invoice', ?, ?)""",
+                      description, status, request_date, client_name, po_type)
+                     VALUES (?, ?, ?, ?, ?, ?, 'awaiting_invoice', ?, ?, ?)""",
                  (session['username'], tech_name, job_name, store_name,
-                  estimated_cost, description, now_str, client_name if client_name else None))
+                  estimated_cost, description, now_str, client_name if client_name else None, tech_type))
 
         new_id = c.lastrowid
         conn.commit()
         conn.close()
 
-        po_display = format_po_display(new_id, job_name, client_name, job_code)
+        po_display = f"{formatted_po} {client_name}" if tech_type == 'service' and client_name else formatted_po
         flash(f'PO#{po_display}|{job_name}')
         return redirect(url_for('tech_dashboard'))
 
@@ -2128,7 +2175,14 @@ def update_jobber_invoice(po_id):
 
 @app.route('/manage_techs')
 def manage_techs():
-    """Manage technician names - office only"""
+    """Redirect to manage service/install techs - office only"""
+    if 'username' not in session or session['role'] != 'office':
+        return redirect(url_for('login'))
+    return redirect(url_for('manage_service_techs'))
+
+@app.route('/manage_service_techs')
+def manage_service_techs():
+    """Manage Service technicians - office only"""
     if 'username' not in session or session['role'] != 'office':
         return redirect(url_for('login'))
 
@@ -2136,66 +2190,123 @@ def manage_techs():
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
 
-        # Ensure techs table exists
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='techs'")
-        if not c.fetchone():
-            conn.close()
-            init_db()
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
+        # Get all service technicians (users with tech_type='service')
+        c.execute("""SELECT id, username, full_name, email, created_date, last_login
+                     FROM users WHERE role='technician' AND tech_type='service'
+                     ORDER BY full_name ASC""")
+        service_techs = c.fetchall()
 
-        c.execute("SELECT id, name, created_date FROM techs ORDER BY name ASC")
-        techs = c.fetchall()
-        # For each tech, get their PO count and recent POs
+        # For each tech, get their PO count
         tech_pos = {}
-        for tech in techs:
-            c.execute("""SELECT id, job_name, estimated_cost, status, request_date
-                         FROM po_requests WHERE tech_name=? ORDER BY id DESC LIMIT 50""", (tech[1],))
+        for tech in service_techs:
+            c.execute("""SELECT id, po_type, job_name, status, request_date
+                         FROM po_requests WHERE tech_username=? AND po_type='service'
+                         ORDER BY id DESC LIMIT 50""", (tech[1],))
             tech_pos[tech[0]] = c.fetchall()
+
         conn.close()
-        return render_template_string(MANAGE_TECHS_TEMPLATE,
+        return render_template_string(MANAGE_SERVICE_TECHS_TEMPLATE,
                                       username=session['username'],
-                                      techs=techs,
+                                      techs=service_techs,
                                       tech_pos=tech_pos)
     except Exception as e:
-        return f"<h2>Error loading Manage Techs page</h2><p>{str(e)}</p><p><a href='/office_dashboard'>Back to Dashboard</a></p>"
+        return f"<h2>Error loading Service Techs page</h2><p>{str(e)}</p><p><a href='/office_dashboard'>Back to Dashboard</a></p>"
+
+@app.route('/manage_install_techs')
+def manage_install_techs():
+    """Manage Install technicians - office only"""
+    if 'username' not in session or session['role'] != 'office':
+        return redirect(url_for('login'))
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Get all install technicians (users with tech_type='install')
+        c.execute("""SELECT id, username, full_name, email, created_date, last_login
+                     FROM users WHERE role='technician' AND tech_type='install'
+                     ORDER BY full_name ASC""")
+        install_techs = c.fetchall()
+
+        # For each tech, get their PO count
+        tech_pos = {}
+        for tech in install_techs:
+            c.execute("""SELECT id, po_type, job_name, status, request_date
+                         FROM po_requests WHERE tech_username=? AND po_type='install'
+                         ORDER BY id DESC LIMIT 50""", (tech[1],))
+            tech_pos[tech[0]] = c.fetchall()
+
+        conn.close()
+        return render_template_string(MANAGE_INSTALL_TECHS_TEMPLATE,
+                                      username=session['username'],
+                                      techs=install_techs,
+                                      tech_pos=tech_pos)
+    except Exception as e:
+        return f"<h2>Error loading Install Techs page</h2><p>{str(e)}</p><p><a href='/office_dashboard'>Back to Dashboard</a></p>"
 
 @app.route('/add_tech', methods=['POST'])
 def add_tech():
-    """Add a technician name"""
+    """Add a technician user account with specified type (service or install)"""
     if 'username' not in session or session['role'] != 'office':
         return jsonify({'success': False, 'error': 'Unauthorized'})
     try:
         data = request.get_json()
-        name = data.get('name', '').strip()
-        if not name:
-            return jsonify({'success': False, 'error': 'Name is required'})
+        username = data.get('username', '').strip().lower()
+        password = data.get('password', '').strip()
+        full_name = data.get('full_name', '').strip()
+        email = data.get('email', '').strip()
+        tech_type = data.get('tech_type', 'install').strip()  # 'service' or 'install'
+
+        if not username or not password or not full_name:
+            return jsonify({'success': False, 'error': 'Username, password, and name are required'})
+
+        if tech_type not in ['service', 'install']:
+            return jsonify({'success': False, 'error': 'Tech type must be "service" or "install"'})
+
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("INSERT INTO techs (name, created_date) VALUES (?, ?)",
-                  (name, datetime.now().strftime('%Y-%m-%d')))
+
+        # Check if username already exists
+        c.execute("SELECT id FROM users WHERE LOWER(username)=?", (username,))
+        if c.fetchone():
+            return jsonify({'success': False, 'error': 'Username already exists'})
+
+        # Create user account with tech_type
+        now = datetime.now().strftime('%Y-%m-%d')
+        c.execute("""INSERT INTO users (username, password, role, email, full_name, created_date, tech_type)
+                     VALUES (?, ?, 'technician', ?, ?, ?, ?)""",
+                  (username, password, email if email else None, full_name, now, tech_type))
         conn.commit()
         conn.close()
-        return jsonify({'success': True, 'message': f'Tech "{name}" added successfully'})
-    except sqlite3.IntegrityError:
-        return jsonify({'success': False, 'error': 'A tech with that name already exists'})
+
+        return jsonify({'success': True, 'message': f'{"Service" if tech_type == "service" else "Install"} tech "{full_name}" created successfully'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/delete_tech', methods=['POST'])
 def delete_tech():
-    """Delete a technician name"""
+    """Delete a technician user account"""
     if 'username' not in session or session['role'] != 'office':
         return jsonify({'success': False, 'error': 'Unauthorized'})
     try:
         data = request.get_json()
-        tech_id = data.get('tech_id')
+        user_id = data.get('user_id')
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("DELETE FROM techs WHERE id=?", (tech_id,))
+
+        # Get user details before deleting
+        c.execute("SELECT username, full_name FROM users WHERE id=?", (user_id,))
+        user_info = c.fetchone()
+
+        if not user_info:
+            return jsonify({'success': False, 'error': 'Technician not found'})
+
+        # Delete the user account (POs will remain for historical reference)
+        c.execute("DELETE FROM users WHERE id=?", (user_id,))
         conn.commit()
         conn.close()
-        return jsonify({'success': True, 'message': 'Tech deleted successfully'})
+
+        return jsonify({'success': True, 'message': f'Technician "{user_info[1]}" deleted successfully'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
@@ -3362,41 +3473,22 @@ MANAGE_TECHS_TEMPLATE = '''
         }
         .btn-secondary { background: #6c757d; color: white; }
         .btn-danger { background: #dc3545; color: white; }
-        .btn-success { background: #28a745; color: white; }
         .card {
             background: white; padding: 20px; border-radius: 10px;
             margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
         }
-        .tech-card {
-            background: white; border-radius: 10px; margin-bottom: 15px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1); overflow: hidden;
+        .tech-type-buttons {
+            display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; margin: 30px 0;
         }
-        .tech-header {
-            background: #fd7e14; color: white; padding: 15px 20px;
-            display: flex; justify-content: space-between; align-items: center;
-            cursor: pointer;
+        .tech-btn {
+            padding: 30px 40px; border-radius: 10px; text-decoration: none;
+            font-weight: bold; border: none; cursor: pointer; font-size: 18px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.15); transition: transform 0.2s, box-shadow 0.2s;
         }
-        .tech-header h3 { margin: 0; font-size: 18px; }
-        .tech-body { padding: 20px; display: none; }
-        .tech-body.open { display: block; }
-        .po-item {
-            padding: 12px 15px; background: #f9f9f9; border-left: 4px solid #28a745;
-            margin-bottom: 8px; border-radius: 5px;
-        }
-        .po-item strong { font-size: 15px; color: #333; }
-        .po-meta { color: #666; font-size: 13px; margin-top: 4px; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #ddd; }
-        th { background: #fd7e14; color: white; }
-        tr:hover { background: #fff8f0; }
-        .add-form { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-        .add-form input {
-            flex: 1; min-width: 200px; padding: 10px; border: 2px solid #fd7e14;
-            border-radius: 5px; font-size: 16px;
-        }
-        .add-form input:focus { outline: none; border-color: #e07000; }
-        .no-pos { color: #999; font-style: italic; padding: 10px 0; }
-        .tech-stats { font-size: 13px; color: rgba(255,255,255,0.85); }
+        .tech-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 15px rgba(0,0,0,0.2); }
+        .btn-service { background: #007bff; color: white; }
+        .btn-install { background: #28a745; color: white; }
+        .icon { font-size: 36px; margin-bottom: 10px; }
     </style>
 </head>
 <body>
@@ -3409,15 +3501,112 @@ MANAGE_TECHS_TEMPLATE = '''
     </div>
 
     <div class="card">
-        <h2 style="color: #fd7e14; margin-bottom: 15px;">Add New Technician</h2>
-        <div class="add-form">
-            <input type="text" id="new-tech-name" placeholder="e.g., John Smith" onkeydown="if(event.key==='Enter') addTech()">
-            <button onclick="addTech()" class="btn btn-success">+ Add Technician</button>
+        <h2 style="color: #333; margin-bottom: 10px; text-align: center;">Manage Technician Teams</h2>
+        <p style="color: #666; text-align: center; margin-bottom: 20px; font-size: 14px;">Select a team to manage technicians and their POs</p>
+
+        <div class="tech-type-buttons">
+            <a href="{{ url_for('manage_service_techs') }}" class="tech-btn btn-service">
+                <div class="icon">📱</div>
+                <div>Service Technicians</div>
+                <div style="font-size: 12px; margin-top: 5px;">Manage service techs (S-prefix POs)</div>
+            </a>
+            <a href="{{ url_for('manage_install_techs') }}" class="tech-btn btn-install">
+                <div class="icon">🔧</div>
+                <div>Install Technicians</div>
+                <div style="font-size: 12px; margin-top: 5px;">Manage install techs (I-prefix POs)</div>
+            </a>
+        </div>
+    </div>
+</body>
+</html>
+'''
+
+MANAGE_SERVICE_TECHS_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Manage Service Technicians</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+        .header {
+            background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex;
+            justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
+        }
+        h1 { color: #007bff; font-size: 24px; }
+        .btn {
+            padding: 10px 20px; border-radius: 5px; text-decoration: none;
+            font-weight: bold; border: none; cursor: pointer; font-size: 14px;
+        }
+        .btn-secondary { background: #6c757d; color: white; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-success { background: #28a745; color: white; }
+        .card {
+            background: white; padding: 20px; border-radius: 10px;
+            margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .tech-card {
+            background: white; border-radius: 10px; margin-bottom: 15px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1); overflow: hidden;
+        }
+        .tech-header {
+            background: #007bff; color: white; padding: 15px 20px;
+            display: flex; justify-content: space-between; align-items: center;
+            cursor: pointer;
+        }
+        .tech-header h3 { margin: 0; font-size: 18px; }
+        .tech-body { padding: 20px; display: none; }
+        .tech-body.open { display: block; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #007bff; color: white; }
+        tr:hover { background: #f0f7ff; }
+        .add-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+        .form-group { display: flex; flex-direction: column; flex: 1; min-width: 200px; }
+        .form-group label { font-size: 13px; color: #666; margin-bottom: 5px; }
+        .form-group input { padding: 8px; border: 2px solid #007bff; border-radius: 5px; font-size: 14px; }
+        .form-group input:focus { outline: none; border-color: #0056b3; }
+        .no-pos { color: #999; font-style: italic; padding: 10px 0; }
+        .tech-stats { font-size: 13px; color: rgba(255,255,255,0.85); }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📱 Manage Service Technicians</h1>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <a href="{{ url_for('manage_techs') }}" class="btn btn-secondary">← Back to Tech Management</a>
+            <a href="{{ url_for('office_dashboard') }}" class="btn btn-secondary">Dashboard</a>
+            <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
         </div>
     </div>
 
     <div class="card">
-        <h2 style="color: #fd7e14; margin-bottom: 5px;">Technicians ({{ techs|length }})</h2>
+        <h2 style="color: #007bff; margin-bottom: 15px;">Add New Service Technician</h2>
+        <div class="add-form">
+            <div class="form-group" style="flex: 0 0 auto; width: auto;">
+                <label for="new-tech-name">Full Name</label>
+                <input type="text" id="new-tech-name" placeholder="e.g., John Smith" style="min-width: 150px;">
+            </div>
+            <div class="form-group" style="flex: 0 0 auto; width: auto;">
+                <label for="new-tech-username">Username</label>
+                <input type="text" id="new-tech-username" placeholder="e.g., jsmith" style="min-width: 150px;">
+            </div>
+            <div class="form-group" style="flex: 0 0 auto; width: auto;">
+                <label for="new-tech-password">Password</label>
+                <input type="password" id="new-tech-password" placeholder="Password" style="min-width: 150px;">
+            </div>
+            <div class="form-group" style="flex: 0 0 auto; width: auto;">
+                <label for="new-tech-email">Email (Optional)</label>
+                <input type="email" id="new-tech-email" placeholder="email@example.com" style="min-width: 150px;">
+            </div>
+            <button onclick="addTech('service')" class="btn btn-success">+ Add Service Tech</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2 style="color: #007bff; margin-bottom: 5px;">Service Technicians ({{ techs|length }})</h2>
         <p style="color: #666; margin-bottom: 20px; font-size: 14px;">Click a technician to see their PO history.</p>
 
         {% if techs %}
@@ -3425,23 +3614,23 @@ MANAGE_TECHS_TEMPLATE = '''
                 <div class="tech-card" id="tech-card-{{ tech[0] }}">
                     <div class="tech-header" onclick="toggleTech({{ tech[0] }})">
                         <div>
-                            <h3>{{ tech[1] }}</h3>
-                            <div class="tech-stats">{{ tech_pos[tech[0]]|length }} PO(s) &nbsp;|&nbsp; Added: {{ tech[2] }}</div>
+                            <h3>{{ tech[2] }}</h3>
+                            <div class="tech-stats">{{ tech_pos[tech[0]]|length }} PO(s) &nbsp;|&nbsp; Username: {{ tech[1] }} &nbsp;|&nbsp; Added: {{ tech[4][:10] }}</div>
                         </div>
                         <div style="display: flex; gap: 8px; align-items: center;">
                             <span id="icon-{{ tech[0] }}">▼</span>
-                            <button onclick="event.stopPropagation(); deleteTech({{ tech[0] }}, '{{ tech[1]|replace("'", "\\'") }}')"
+                            <button onclick="event.stopPropagation(); deleteTech({{ tech[0] }}, '{{ tech[2]|replace("'", "\\'") }}')"
                                     class="btn btn-danger" style="padding: 6px 14px; font-size: 13px;">Delete</button>
                         </div>
                     </div>
                     <div class="tech-body" id="body-{{ tech[0] }}">
+                        <p style="color: #666; margin-bottom: 10px;"><strong>Email:</strong> {{ tech[3] if tech[3] else "N/A" }}</p>
                         {% if tech_pos[tech[0]] %}
                             <table>
                                 <thead>
                                     <tr>
                                         <th>PO #</th>
                                         <th>Job</th>
-                                        <th>Est. Cost</th>
                                         <th>Status</th>
                                         <th>Date</th>
                                     </tr>
@@ -3449,9 +3638,8 @@ MANAGE_TECHS_TEMPLATE = '''
                                 <tbody>
                                     {% for po in tech_pos[tech[0]] %}
                                     <tr>
-                                        <td><strong>{{ "%04d"|format(po[0]) }}</strong></td>
-                                        <td>{{ po[1] }}</td>
-                                        <td>${{ "%.2f"|format(po[2]) }}</td>
+                                        <td><strong>{{ po[0] }}</strong></td>
+                                        <td>{{ po[2] }}</td>
                                         <td>
                                             {% if po[3] == 'approved' %}
                                                 <span style="color: #28a745; font-weight: bold;">Approved</span>
@@ -3473,7 +3661,7 @@ MANAGE_TECHS_TEMPLATE = '''
                 </div>
             {% endfor %}
         {% else %}
-            <p style="color: #999; text-align: center; padding: 40px;">No technicians added yet. Add one above!</p>
+            <p style="color: #999; text-align: center; padding: 40px;">No service technicians added yet. Add one above!</p>
         {% endif %}
     </div>
 
@@ -3490,15 +3678,27 @@ MANAGE_TECHS_TEMPLATE = '''
         }
     }
 
-    function addTech() {
-        const input = document.getElementById('new-tech-name');
-        const name = input.value.trim();
-        if (!name) { alert('Please enter a technician name'); return; }
+    function addTech(techType) {
+        const name = document.getElementById('new-tech-name').value.trim();
+        const username = document.getElementById('new-tech-username').value.trim();
+        const password = document.getElementById('new-tech-password').value.trim();
+        const email = document.getElementById('new-tech-email').value.trim();
+
+        if (!name || !username || !password) {
+            alert('Please enter: Full Name, Username, and Password');
+            return;
+        }
 
         fetch('/add_tech', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: name })
+            body: JSON.stringify({
+                full_name: name,
+                username: username,
+                password: password,
+                email: email,
+                tech_type: techType
+            })
         })
         .then(r => r.json())
         .then(data => {
@@ -3516,7 +3716,218 @@ MANAGE_TECHS_TEMPLATE = '''
         fetch('/delete_tech', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tech_id: id })
+            body: JSON.stringify({ user_id: id })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                location.reload();
+            } else {
+                alert('Error: ' + data.error);
+            }
+        });
+    }
+</script>
+</body>
+</html>
+'''
+
+MANAGE_INSTALL_TECHS_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Manage Install Technicians</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+        .header {
+            background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex;
+            justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
+        }
+        h1 { color: #28a745; font-size: 24px; }
+        .btn {
+            padding: 10px 20px; border-radius: 5px; text-decoration: none;
+            font-weight: bold; border: none; cursor: pointer; font-size: 14px;
+        }
+        .btn-secondary { background: #6c757d; color: white; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-success { background: #28a745; color: white; }
+        .card {
+            background: white; padding: 20px; border-radius: 10px;
+            margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .tech-card {
+            background: white; border-radius: 10px; margin-bottom: 15px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1); overflow: hidden;
+        }
+        .tech-header {
+            background: #28a745; color: white; padding: 15px 20px;
+            display: flex; justify-content: space-between; align-items: center;
+            cursor: pointer;
+        }
+        .tech-header h3 { margin: 0; font-size: 18px; }
+        .tech-body { padding: 20px; display: none; }
+        .tech-body.open { display: block; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #28a745; color: white; }
+        tr:hover { background: #f0fff4; }
+        .add-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+        .form-group { display: flex; flex-direction: column; flex: 1; min-width: 200px; }
+        .form-group label { font-size: 13px; color: #666; margin-bottom: 5px; }
+        .form-group input { padding: 8px; border: 2px solid #28a745; border-radius: 5px; font-size: 14px; }
+        .form-group input:focus { outline: none; border-color: #1e7e34; }
+        .no-pos { color: #999; font-style: italic; padding: 10px 0; }
+        .tech-stats { font-size: 13px; color: rgba(255,255,255,0.85); }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔧 Manage Install Technicians</h1>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <a href="{{ url_for('manage_techs') }}" class="btn btn-secondary">← Back to Tech Management</a>
+            <a href="{{ url_for('office_dashboard') }}" class="btn btn-secondary">Dashboard</a>
+            <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2 style="color: #28a745; margin-bottom: 15px;">Add New Install Technician</h2>
+        <div class="add-form">
+            <div class="form-group" style="flex: 0 0 auto; width: auto;">
+                <label for="new-tech-name">Full Name</label>
+                <input type="text" id="new-tech-name" placeholder="e.g., Jane Doe" style="min-width: 150px;">
+            </div>
+            <div class="form-group" style="flex: 0 0 auto; width: auto;">
+                <label for="new-tech-username">Username</label>
+                <input type="text" id="new-tech-username" placeholder="e.g., jdoe" style="min-width: 150px;">
+            </div>
+            <div class="form-group" style="flex: 0 0 auto; width: auto;">
+                <label for="new-tech-password">Password</label>
+                <input type="password" id="new-tech-password" placeholder="Password" style="min-width: 150px;">
+            </div>
+            <div class="form-group" style="flex: 0 0 auto; width: auto;">
+                <label for="new-tech-email">Email (Optional)</label>
+                <input type="email" id="new-tech-email" placeholder="email@example.com" style="min-width: 150px;">
+            </div>
+            <button onclick="addTech('install')" class="btn btn-success">+ Add Install Tech</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2 style="color: #28a745; margin-bottom: 5px;">Install Technicians ({{ techs|length }})</h2>
+        <p style="color: #666; margin-bottom: 20px; font-size: 14px;">Click a technician to see their PO history.</p>
+
+        {% if techs %}
+            {% for tech in techs %}
+                <div class="tech-card" id="tech-card-{{ tech[0] }}">
+                    <div class="tech-header" onclick="toggleTech({{ tech[0] }})">
+                        <div>
+                            <h3>{{ tech[2] }}</h3>
+                            <div class="tech-stats">{{ tech_pos[tech[0]]|length }} PO(s) &nbsp;|&nbsp; Username: {{ tech[1] }} &nbsp;|&nbsp; Added: {{ tech[4][:10] }}</div>
+                        </div>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <span id="icon-{{ tech[0] }}">▼</span>
+                            <button onclick="event.stopPropagation(); deleteTech({{ tech[0] }}, '{{ tech[2]|replace("'", "\\'") }}')"
+                                    class="btn btn-danger" style="padding: 6px 14px; font-size: 13px;">Delete</button>
+                        </div>
+                    </div>
+                    <div class="tech-body" id="body-{{ tech[0] }}">
+                        <p style="color: #666; margin-bottom: 10px;"><strong>Email:</strong> {{ tech[3] if tech[3] else "N/A" }}</p>
+                        {% if tech_pos[tech[0]] %}
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>PO #</th>
+                                        <th>Job</th>
+                                        <th>Status</th>
+                                        <th>Date</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for po in tech_pos[tech[0]] %}
+                                    <tr>
+                                        <td><strong>{{ po[0] }}</strong></td>
+                                        <td>{{ po[2] }}</td>
+                                        <td>
+                                            {% if po[3] == 'approved' %}
+                                                <span style="color: #28a745; font-weight: bold;">Approved</span>
+                                            {% elif po[3] == 'denied' %}
+                                                <span style="color: #dc3545; font-weight: bold;">Denied</span>
+                                            {% else %}
+                                                <span style="color: #856404;">{{ po[3]|title }}</span>
+                                            {% endif %}
+                                        </td>
+                                        <td>{{ po[4][:10] if po[4] else 'N/A' }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        {% else %}
+                            <p class="no-pos">No POs submitted yet for this technician.</p>
+                        {% endif %}
+                    </div>
+                </div>
+            {% endfor %}
+        {% else %}
+            <p style="color: #999; text-align: center; padding: 40px;">No install technicians added yet. Add one above!</p>
+        {% endif %}
+    </div>
+
+<script>
+    function toggleTech(id) {
+        const body = document.getElementById('body-' + id);
+        const icon = document.getElementById('icon-' + id);
+        if (body.classList.contains('open')) {
+            body.classList.remove('open');
+            icon.textContent = '▼';
+        } else {
+            body.classList.add('open');
+            icon.textContent = '▲';
+        }
+    }
+
+    function addTech(techType) {
+        const name = document.getElementById('new-tech-name').value.trim();
+        const username = document.getElementById('new-tech-username').value.trim();
+        const password = document.getElementById('new-tech-password').value.trim();
+        const email = document.getElementById('new-tech-email').value.trim();
+
+        if (!name || !username || !password) {
+            alert('Please enter: Full Name, Username, and Password');
+            return;
+        }
+
+        fetch('/add_tech', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                full_name: name,
+                username: username,
+                password: password,
+                email: email,
+                tech_type: techType
+            })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(data.message);
+                location.reload();
+            } else {
+                alert('Error: ' + data.error);
+            }
+        });
+    }
+
+    function deleteTech(id, name) {
+        if (!confirm('Delete technician "' + name + '"? Their PO history will not be deleted.')) return;
+        fetch('/delete_tech', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_id: id })
         })
         .then(r => r.json())
         .then(data => {
