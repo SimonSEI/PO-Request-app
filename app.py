@@ -470,10 +470,10 @@ def update_database_schema():
 def format_po_number(po_id, job_name, job_code=None):
     """Format PO number with job code if available, otherwise use S prefix for Service jobs"""
     if job_code:
-        return f"{job_code}-{po_id:04d}"
+        return f"{job_code}-{po_id}"
     if job_name and job_name.lower() == 'service':
-        return f"S{po_id:04d}"
-    return f"{po_id:04d}"
+        return f"S{po_id}"
+    return f"{po_id}"
 
 def format_po_display(po_id, job_name, client_name=None, job_code=None):
     """Format PO display with client name for Service jobs"""
@@ -1412,10 +1412,11 @@ def office_dashboard():
                 COALESCE(SUM(p.estimated_cost), 0) as total_estimated,
                 COUNT(p.id) as po_count,
                 COALESCE(j.budget, 0) as budget,
-                COALESCE(j.department, 'service') as department
+                COALESCE(j.department, 'service') as department,
+                j.job_code
             FROM jobs j
             LEFT JOIN po_requests p ON j.job_name = p.job_name
-            GROUP BY j.id, j.job_name, j.year, j.created_date, j.active, j.budget, j.department
+            GROUP BY j.id, j.job_name, j.year, j.created_date, j.active, j.budget, j.department, j.job_code
             ORDER BY j.active DESC, j.year DESC, j.job_name ASC
         """)
         all_jobs = c.fetchall()
@@ -2092,6 +2093,7 @@ def get_job_details(job_id):
         return jsonify({
             'success': True,
             'job_name': job_name,
+            'job_code': job_code,
             'budget': job_budget,
             'total_invoiced': total_invoiced,
             'budget_pct': budget_pct,
@@ -2325,8 +2327,9 @@ def add_job():
     year = request.form.get('year', '').strip()
     budget = request.form.get('budget', '0').strip()
     department = request.form.get('department', 'service').strip()
+    job_code = request.form.get('job_code', '').strip()
 
-    print(f"[add_job] Adding job: name='{job_name}', year={year}, budget={budget}, ajax={is_ajax}")
+    print(f"[add_job] Adding job: name='{job_name}', year={year}, budget={budget}, code='{job_code}', ajax={is_ajax}")
 
     if not job_name or not year:
         if is_ajax:
@@ -2351,8 +2354,8 @@ def add_job():
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("INSERT INTO jobs (job_name, year, created_date, budget, department, active) VALUES (?, ?, ?, ?, ?, 1)",
-                 (job_name, year, datetime.now().strftime('%Y-%m-%d'), budget, department))
+        c.execute("INSERT INTO jobs (job_name, year, created_date, budget, department, job_code, active) VALUES (?, ?, ?, ?, ?, ?, 1)",
+                 (job_name, year, datetime.now().strftime('%Y-%m-%d'), budget, department, job_code or None))
         conn.commit()
         conn.close()
         print(f"[add_job] Successfully added job: '{job_name}' to {department} department")
@@ -4488,7 +4491,8 @@ JOB_MANAGEMENT_TEMPLATE = '''
                     data.invoices.forEach(inv => {
                         const diff = inv.invoice_cost - inv.estimated;
                         const jobberNum = inv.jobber_invoice_number || '';
-                        html += '<div class="invoice-item"><strong>PO #' + inv.po_id.toString().padStart(4, '0') + '</strong> - ' + escapeHtml(inv.tech_name) + '<br>';
+                        const poDisplay = data.job_code ? data.job_code + '-' + inv.po_id : inv.po_id;
+                        html += '<div class="invoice-item"><strong>PO #' + poDisplay + '</strong> - ' + escapeHtml(inv.tech_name) + '<br>';
                         html += 'Invoice: ' + escapeHtml(inv.invoice_number) + ' | Estimated: $' + inv.estimated.toFixed(2) + ' | Actual: $' + inv.invoice_cost.toFixed(2);
                         html += ' | Diff: <span class="' + (diff > 0 ? 'money-negative' : 'money-positive') + '">$' + diff.toFixed(2) + '</span><br>';
                         html += '<div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #ddd;">';
@@ -5833,6 +5837,10 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                         <input type="text" name="job_name" placeholder="e.g., Commercial Tower Install" required>
                     </div>
                     <div class="form-group">
+                        <label>Job Code</label>
+                        <input type="text" name="job_code" placeholder="e.g., Herons">
+                    </div>
+                    <div class="form-group">
                         <label>Year *</label>
                         <input type="number" name="year" value="2026" required>
                     </div>
@@ -5970,6 +5978,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             const budget = job[9] || 0;
             const invoiced = job[5] || 0;
             const poCount = job[8] || 0;
+            const jobCode = job[11];
 
             const budgetPct = budget > 0 ? (invoiced / budget * 100) : 0;
             const budgetColor = budgetPct <= 50 ? '' : budgetPct <= 75 ? 'yellow' : 'red';
@@ -6018,6 +6027,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 html += '<div class="pos-section"><div class="pos-title">📋 Active POs:</div>';
                 servicePOs.forEach(po => {
                     const poNum = po[0];
+                    const poDisplay = jobCode ? `${jobCode}-${poNum}` : poNum;
                     const techName = getTechName(po[2]);
                     const status = po[3];
                     const estimated = po[4] || 0;
@@ -6025,7 +6035,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
                     html += `
                         <div class="po-item">
-                            <strong>PO #${poNum}</strong> - <span class="po-tech">${techName}</span>
+                            <strong>PO #${poDisplay}</strong> - <span class="po-tech">${techName}</span>
                             <span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span>
                             <br><small>Est: ${formatCurrency(estimated)} | Inv: ${formatCurrency(invoiced_po)}</small>
                         </div>
@@ -6041,7 +6051,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     <button class="toggle-job-btn ${isActive ? 'active' : ''}" data-id="${jobId}" onclick="toggleJobStatus(${jobId}, '${dept}')">
                         ${isActive ? '✓ Active - Click to Close' : '○ Inactive - Click to Reopen'}
                     </button>
-                    <button style="background: #007bff; color: white;" onclick="showAllPOs(${jobId}, '${jobName.replace(/'/g, "\\'")}')">
+                    <button style="background: #007bff; color: white;" onclick="showAllPOs(${jobId}, '${jobName.replace(/'/g, "\\'")}', '${jobCode ? jobCode.replace(/'/g, "\\'") : ''}')">
                         📋 View All POs (${jobAllPOs[jobId] ? jobAllPOs[jobId].length : 0})
                     </button>
                     <button class="delete-job-btn" onclick="deleteJob(${jobId}, '${jobName.replace(/'/g, "\\'")}')" style="background: #dc3545; color: white;">
@@ -6171,7 +6181,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         }
 
         // Modal for viewing all POs
-        function showAllPOs(jobId, jobName) {
+        function showAllPOs(jobId, jobName, jobCode) {
             const allPOs = jobAllPOs[jobId] || [];
             document.getElementById('modal-job-name').textContent = jobName;
 
@@ -6182,9 +6192,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
                 allPOs.forEach(po => {
                     const poNum = po[0];
-                    const poType = po[1] || 'legacy';
-                    const prefix = poType === 'service' ? 'S' : (poType === 'install' ? 'I' : '');
-                    const poDisplay = prefix ? prefix + String(poNum).padStart(4, '0') : poNum;
+                    const poDisplay = jobCode ? `${jobCode}-${poNum}` : poNum;
                     const techName = getTechName(po[2]);
                     const status = po[3];
                     const estimated = po[4] || 0;
