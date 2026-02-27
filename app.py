@@ -2380,43 +2380,6 @@ def add_job():
         return redirect(url_for('office_dashboard'))
 
 
-@app.route('/delete_job', methods=['POST'])
-def delete_job():
-    """Delete a job"""
-    if 'username' not in session or session['role'] != 'office':
-        return jsonify({'success': False, 'error': 'Unauthorized'})
-
-    data = request.get_json()
-    job_id = data.get('job_id')
-
-    if not job_id:
-        return jsonify({'success': False, 'error': 'Job ID required'})
-
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-
-        # Get job info before deleting
-        c.execute("SELECT job_name FROM jobs WHERE id=?", (job_id,))
-        job_result = c.fetchone()
-        if not job_result:
-            conn.close()
-            return jsonify({'success': False, 'error': 'Job not found'})
-
-        job_name = job_result[0]
-
-        # Delete the job
-        c.execute("DELETE FROM jobs WHERE id=?", (job_id,))
-        conn.commit()
-        conn.close()
-
-        print(f"[delete_job] Successfully deleted job: '{job_name}' (ID: {job_id})")
-        return jsonify({'success': True, 'message': f'Job "{job_name}" deleted successfully'})
-
-    except Exception as e:
-        return jsonify({'success': False, 'error': f'Database error: {str(e)}'})
-
-
 @app.route('/edit_job', methods=['POST'])
 def edit_job():
     """Edit existing job"""
