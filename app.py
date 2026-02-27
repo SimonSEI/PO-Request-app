@@ -1413,11 +1413,12 @@ def office_dashboard():
         """)
         all_jobs = c.fetchall()
 
-        # Get service and install POs for each job
+        # Get service and install POs for each job (ALL POs, not just active)
         job_pos = {}
+        job_all_pos = {}
         for job in all_jobs:
             job_name = job[1]
-            # Get active POs for this job
+            # Get active POs for this job (for display on card)
             c.execute("""
                 SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date
                 FROM po_requests
@@ -1425,6 +1426,15 @@ def office_dashboard():
                 ORDER BY id DESC
             """, (job_name,))
             job_pos[job[0]] = c.fetchall()
+
+            # Get ALL POs for this job (for complete history)
+            c.execute("""
+                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date
+                FROM po_requests
+                WHERE job_name=?
+                ORDER BY id DESC
+            """, (job_name,))
+            job_all_pos[job[0]] = c.fetchall()
 
         # Get tech info for POs
         c.execute("SELECT id, username, full_name, tech_type FROM users WHERE role='technician'")
@@ -1469,6 +1479,7 @@ def office_dashboard():
                                       service_jobs=service_jobs,
                                       install_jobs=install_jobs,
                                       job_pos=job_pos,
+                                      job_all_pos=job_all_pos,
                                       techs=techs)
 
     except Exception as e:
@@ -1923,104 +1934,6 @@ def login_with_token(token):
     else:
         flash('Invalid or expired session')
         return redirect(url_for('login'))
-
-@app.route('/manage_jobs')
-def manage_jobs():
-    """Job management page for office with invoice totals"""
-    if 'username' not in session or session['role'] != 'office':
-        return redirect(url_for('login'))
-
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-
-        # Ensure jobs table exists
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'")
-        if not c.fetchone():
-            conn.close()
-            init_db()
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-        else:
-            # Ensure budget column exists (migration for older databases)
-            try:
-                c.execute("ALTER TABLE jobs ADD COLUMN budget REAL DEFAULT 0")
-                conn.commit()
-            except sqlite3.OperationalError:
-                pass  # Column already exists
-
-            # Migration: Fix any existing jobs with NULL active field to active=1
-            try:
-                c.execute("UPDATE jobs SET active=1 WHERE active IS NULL")
-                if c.rowcount > 0:
-                    conn.commit()
-            except sqlite3.OperationalError:
-                pass  # Column might not exist
-
-            # Migration: Ensure budget column has proper values
-            try:
-                c.execute("UPDATE jobs SET budget=0 WHERE budget IS NULL")
-                if c.rowcount > 0:
-                    conn.commit()
-            except sqlite3.OperationalError:
-                pass  # Column might not exist yet
-
-            # Table exists but could be empty
-            c.execute("SELECT COUNT(*) FROM jobs")
-            if c.fetchone()[0] == 0:
-                # Don't auto-seed jobs - let the user add them manually
-                pass
-
-        # Get jobs with invoice totals and budget
-        c.execute("""
-            SELECT
-                j.id,
-                j.job_name,
-                j.year,
-                j.created_date,
-                j.active,
-                COALESCE(SUM(CASE WHEN p.invoice_cost IS NOT NULL THEN CAST(p.invoice_cost AS REAL) ELSE 0 END), 0) as total_invoiced,
-                COUNT(CASE WHEN p.invoice_filename IS NOT NULL THEN 1 END) as invoice_count,
-                COALESCE(SUM(p.estimated_cost), 0) as total_estimated,
-                COUNT(p.id) as po_count,
-                COALESCE(j.budget, 0) as budget
-            FROM jobs j
-            LEFT JOIN po_requests p ON j.job_name = p.job_name
-            GROUP BY j.id, j.job_name, j.year, j.created_date, j.active, j.budget
-            ORDER BY j.active DESC, j.year DESC, j.job_name ASC
-        """)
-        jobs = c.fetchall()
-        print(f"[manage_jobs] Found {len(jobs)} jobs in database")
-        if len(jobs) > 0:
-            print(f"[manage_jobs] Sample job: {jobs[0]}")
-
-        # If no jobs found, check if there are job names in po_requests we can recover
-        orphaned_jobs = []
-        if len(jobs) == 0:
-            c.execute("""
-                SELECT DISTINCT job_name, MAX(request_date) as last_used
-                FROM po_requests
-                WHERE job_name IS NOT NULL AND job_name != ''
-                GROUP BY job_name
-                ORDER BY job_name ASC
-            """)
-            orphaned_jobs = c.fetchall()
-
-        conn.close()
-
-        # Convert jobs to JSON-safe list for embedding in template
-        jobs_list = [list(job) for job in jobs]
-        import json as json_mod
-        jobs_json = json_mod.dumps(jobs_list, ensure_ascii=True)
-
-        return render_template_string(JOB_MANAGEMENT_TEMPLATE,
-                                      username=session['username'],
-                                      orphaned_jobs=orphaned_jobs,
-                                      jobs_json=jobs_json)
-
-    except Exception as e:
-        return f"<h2>Error loading Manage Jobs page</h2><p>{str(e)}</p><p><a href='/office_dashboard'>Back to Dashboard</a></p>"
-
 
 @app.route('/api/get_jobs', methods=['GET'])
 def api_get_jobs():
@@ -5809,6 +5722,39 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         .toggle-job-btn.active { background: #28a745; }
 
         .no-jobs { text-align: center; padding: 40px; color: #999; font-style: italic; }
+
+        .add-job-card {
+            background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1); border-left: 4px solid #667eea;
+        }
+        .add-job-card h2 { color: #667eea; margin-bottom: 15px; font-size: 18px; }
+        .add-job-card p { color: #666; font-size: 13px; margin-bottom: 15px; }
+        .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 15px; }
+        .form-group { display: flex; flex-direction: column; }
+        .form-group label { font-weight: bold; color: #555; margin-bottom: 5px; font-size: 13px; }
+        .form-group input, .form-group select { padding: 10px; border: 2px solid #ddd; border-radius: 5px; font-size: 14px; }
+        .form-group input:focus, .form-group select:focus { outline: none; border-color: #667eea; }
+        .form-actions { display: flex; gap: 10px; }
+        .form-actions button { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; font-size: 14px; }
+
+        .search-bar {
+            background: white; padding: 15px; border-radius: 5px; margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex; gap: 10px; align-items: center;
+        }
+        .search-bar input { flex: 1; padding: 10px 15px; border: 2px solid #ddd; border-radius: 5px; font-size: 14px; }
+        .search-bar input:focus { outline: none; border-color: #667eea; }
+        .search-bar button { padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
+
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; overflow-y: auto; }
+        .modal.open { display: block; }
+        .modal-content { background: white; margin: 30px auto; padding: 30px; border-radius: 10px; max-width: 900px; max-height: 80vh; overflow-y: auto; }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 2px solid #ddd; }
+        .modal-header h2 { color: #333; }
+        .modal-close { background: #dc3545; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        .all-pos-table { width: 100%; border-collapse: collapse; }
+        .all-pos-table th, .all-pos-table td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+        .all-pos-table th { background: #667eea; color: white; font-weight: bold; }
+        .all-pos-table tr:hover { background: #f5f5f5; }
     </style>
 </head>
 <body>
@@ -5816,7 +5762,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         <h1>🏢 Department Dashboard</h1>
         <div class="header-nav">
             <a href="{{ url_for('manage_techs') }}" style="background: #fd7e14; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">👷 Manage Techs</a>
-            <a href="{{ url_for('manage_jobs') }}" class="btn btn-primary">📋 Manage Jobs</a>
             <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
         </div>
     </div>
@@ -5826,8 +5771,48 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         <button class="tab-btn install" onclick="switchTab('install')">🔧 Install Department</button>
     </div>
 
+    <div class="search-bar">
+        <input type="text" id="search-input" placeholder="🔍 Search jobs by name..." onkeyup="performSearch()">
+        <button onclick="clearSearch()">Clear</button>
+    </div>
+
+    {# PO HISTORY MODAL #}
+    <div id="po-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>📋 All POs for <span id="modal-job-name"></span></h2>
+                <button class="modal-close" onclick="closePoModal()">✕ Close</button>
+            </div>
+            <div id="modal-po-list"></div>
+        </div>
+    </div>
+
     {# SERVICE DEPARTMENT TAB #}
     <div id="service-tab" class="tab-content active">
+        <div class="add-job-card">
+            <h2>➕ Add New Service Job</h2>
+            <p>Create a new service job. Job names must be unique.</p>
+            <form method="POST" action="/add_job" style="display: contents;">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Job Name *</label>
+                        <input type="text" name="job_name" placeholder="e.g., Chase Bank Service" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Year *</label>
+                        <input type="number" name="year" value="2026" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Budget for Materials ($)</label>
+                        <input type="number" name="budget" placeholder="0" step="0.01" min="0" value="0">
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-success">✓ Create Job</button>
+                </div>
+            </form>
+        </div>
+
         <div class="year-filter">
             <label>Filter by Year:</label>
             <select id="service-year-filter" onchange="filterServiceJobs()">
@@ -5843,6 +5828,30 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
     {# INSTALL DEPARTMENT TAB #}
     <div id="install-tab" class="tab-content">
+        <div class="add-job-card">
+            <h2>➕ Add New Install Job</h2>
+            <p>Create a new install job. Job names must be unique.</p>
+            <form method="POST" action="/add_job" style="display: contents;">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Job Name *</label>
+                        <input type="text" name="job_name" placeholder="e.g., Commercial Tower Install" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Year *</label>
+                        <input type="number" name="year" value="2026" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Budget for Materials ($)</label>
+                        <input type="number" name="budget" placeholder="0" step="0.01" min="0" value="0">
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-success">✓ Create Job</button>
+                </div>
+            </form>
+        </div>
+
         <div class="year-filter">
             <label>Filter by Year:</label>
             <select id="install-year-filter" onchange="filterInstallJobs()">
@@ -5861,10 +5870,12 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         const serviceJobs = {{ service_jobs | tojson }};
         const installJobs = {{ install_jobs | tojson }};
         const jobPOs = {{ job_pos | tojson }};
+        const jobAllPOs = {{ job_all_pos | tojson }};
         const techsMap = {{ techs | tojson }};
 
         let filteredServiceJobs = [...serviceJobs];
         let filteredInstallJobs = [...installJobs];
+        let searchTerm = '';
 
         function switchTab(dept) {
             // Hide all tabs
@@ -6035,6 +6046,9 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     <button class="toggle-job-btn ${isActive ? 'active' : ''}" data-id="${jobId}" onclick="toggleJobStatus(${jobId}, '${dept}')">
                         ${isActive ? '✓ Active - Click to Close' : '○ Inactive - Click to Reopen'}
                     </button>
+                    <button style="background: #007bff; color: white; flex: 1;" onclick="showAllPOs(${jobId}, '${jobName.replace(/'/g, "\\'")}')">
+                        📋 View All POs (${jobAllPOs[jobId] ? jobAllPOs[jobId].length : 0})
+                    </button>
                 </div>
             </div>
             `;
@@ -6116,6 +6130,77 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 installSelect.appendChild(opt);
             });
         }
+
+        // Search functionality
+        function performSearch() {
+            searchTerm = document.getElementById('search-input').value.toLowerCase();
+            filteredServiceJobs = serviceJobs.filter(job =>
+                job[1].toLowerCase().includes(searchTerm)
+            );
+            filteredInstallJobs = installJobs.filter(job =>
+                job[1].toLowerCase().includes(searchTerm)
+            );
+            renderServiceJobs();
+            renderInstallJobs();
+        }
+
+        function clearSearch() {
+            document.getElementById('search-input').value = '';
+            searchTerm = '';
+            filteredServiceJobs = [...serviceJobs];
+            filteredInstallJobs = [...installJobs];
+            renderServiceJobs();
+            renderInstallJobs();
+        }
+
+        // Modal for viewing all POs
+        function showAllPOs(jobId, jobName) {
+            const allPOs = jobAllPOs[jobId] || [];
+            document.getElementById('modal-job-name').textContent = jobName;
+
+            if (allPOs.length === 0) {
+                document.getElementById('modal-po-list').innerHTML = '<p style="text-align: center; color: #999;">No POs found for this job.</p>';
+            } else {
+                let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Tech</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Date</th></tr></thead><tbody>';
+
+                allPOs.forEach(po => {
+                    const poNum = po[0];
+                    const poType = po[1] || 'legacy';
+                    const prefix = poType === 'service' ? 'S' : (poType === 'install' ? 'I' : '');
+                    const poDisplay = prefix ? prefix + String(poNum).padStart(4, '0') : poNum;
+                    const techName = getTechName(po[2]);
+                    const status = po[3];
+                    const estimated = po[4] || 0;
+                    const invoiced = po[5] || 0;
+                    const date = po[6] ? po[6].substring(0, 10) : 'N/A';
+
+                    html += `<tr>
+                        <td><strong>#${poDisplay}</strong></td>
+                        <td>${techName}</td>
+                        <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
+                        <td>${formatCurrency(estimated)}</td>
+                        <td>${formatCurrency(invoiced)}</td>
+                        <td>${date}</td>
+                    </tr>`;
+                });
+
+                html += '</tbody></table>';
+                document.getElementById('modal-po-list').innerHTML = html;
+            }
+
+            document.getElementById('po-modal').classList.add('open');
+        }
+
+        function closePoModal() {
+            document.getElementById('po-modal').classList.remove('open');
+        }
+
+        window.onclick = function(event) {
+            const modal = document.getElementById('po-modal');
+            if (event.target === modal) {
+                modal.classList.remove('open');
+            }
+        };
 
         // Initialize
         window.addEventListener('DOMContentLoaded', () => {
