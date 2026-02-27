@@ -311,6 +311,12 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # Column already exists
 
+    # Add department column to jobs if it doesn't exist
+    try:
+        c.execute("ALTER TABLE jobs ADD COLUMN department TEXT DEFAULT 'service'")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     # Add jobber_invoice_number column to po_requests if it doesn't exist
     try:
         c.execute("ALTER TABLE po_requests ADD COLUMN jobber_invoice_number TEXT")
@@ -2345,14 +2351,6 @@ def add_job():
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-
-        # Ensure department column exists (migration)
-        try:
-            c.execute("ALTER TABLE jobs ADD COLUMN department TEXT DEFAULT 'service'")
-            conn.commit()
-        except sqlite3.OperationalError:
-            pass  # Column already exists
-
         c.execute("INSERT INTO jobs (job_name, year, created_date, budget, department, active) VALUES (?, ?, ?, ?, ?, 1)",
                  (job_name, year, datetime.now().strftime('%Y-%m-%d'), budget, department))
         conn.commit()
