@@ -1567,10 +1567,19 @@ def submit_request():
     tech_name = request.form['tech_name']
     custom_po_number = request.form.get('custom_po_number', '').strip()
     job_name = request.form['job_name'].strip()
-    store_name = request.form['store_name']
+    store_name = request.form.get('store_name', '').strip()
     estimated_cost = 0  # Estimated cost removed from form
-    description = request.form['description']
+    description = request.form.get('description', '').strip()
     client_name = request.form.get('client_name', '').strip()  # Optional - for Service POs
+
+    # VALIDATE REQUIRED FIELDS: store_name and description
+    if not store_name:
+        flash('❌ ERROR: Store name is required. Please enter a store name.')
+        return redirect(url_for('tech_dashboard'))
+
+    if not description:
+        flash('❌ ERROR: Description is required. Please enter a description for this PO.')
+        return redirect(url_for('tech_dashboard'))
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
