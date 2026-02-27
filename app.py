@@ -2198,10 +2198,48 @@ def update_jobber_invoice(po_id):
 
 @app.route('/manage_techs')
 def manage_techs():
-    """Redirect to manage service/install techs - office only"""
+    """Unified technician management - office only - shows both service and install techs in columns"""
     if 'username' not in session or session['role'] != 'office':
         return redirect(url_for('login'))
-    return redirect(url_for('manage_service_techs'))
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Get all service technicians - include password
+        c.execute("""SELECT id, username, full_name, email, created_date, last_login, password
+                     FROM users WHERE role='technician' AND tech_type='service'
+                     ORDER BY full_name ASC""")
+        service_techs = c.fetchall()
+
+        # Get all install technicians - include password
+        c.execute("""SELECT id, username, full_name, email, created_date, last_login, password
+                     FROM users WHERE role='technician' AND tech_type='install'
+                     ORDER BY full_name ASC""")
+        install_techs = c.fetchall()
+
+        # Get ALL POs for each tech (no filtering by tech type, show all their POs)
+        tech_pos = {}
+        for tech in service_techs:
+            c.execute("""SELECT id, po_type, job_name, status, request_date, invoice_cost
+                         FROM po_requests WHERE tech_username=?
+                         ORDER BY id DESC""", (tech[1],))
+            tech_pos[tech[0]] = c.fetchall()
+
+        for tech in install_techs:
+            c.execute("""SELECT id, po_type, job_name, status, request_date, invoice_cost
+                         FROM po_requests WHERE tech_username=?
+                         ORDER BY id DESC""", (tech[1],))
+            tech_pos[tech[0]] = c.fetchall()
+
+        conn.close()
+        return render_template_string(MANAGE_TECHS_UNIFIED_TEMPLATE,
+                                      username=session['username'],
+                                      service_techs=service_techs,
+                                      install_techs=install_techs,
+                                      tech_pos=tech_pos)
+    except Exception as e:
+        return f"<h2>Error loading Manage Techs page</h2><p>{str(e)}</p><p><a href='/office_dashboard'>Back to Dashboard</a></p>"
 
 @app.route('/manage_service_techs')
 def manage_service_techs():
@@ -3474,6 +3512,334 @@ def extract_invoice_data(text, po_map):
         'invoice_year': invoice_year
     }
 
+MANAGE_TECHS_UNIFIED_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Manage Technicians</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+        .header {
+            background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex;
+            justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
+        }
+        h1 { color: #333; font-size: 28px; }
+        .btn {
+            padding: 10px 20px; border-radius: 5px; text-decoration: none;
+            font-weight: bold; border: none; cursor: pointer; font-size: 14px;
+        }
+        .btn-secondary { background: #6c757d; color: white; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-success { background: #28a745; color: white; }
+        .columns-container {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-bottom: 20px;
+        }
+        .column {
+            background: white; padding: 20px; border-radius: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .column h2 {
+            padding-bottom: 15px; border-bottom: 3px solid;
+            margin-bottom: 20px; font-size: 22px;
+        }
+        .service-column h2 { color: #007bff; border-color: #007bff; }
+        .install-column h2 { color: #28a745; border-color: #28a745; }
+        .add-form { display: flex; flex-direction: column; gap: 10px; margin-bottom: 25px; padding-bottom: 25px; border-bottom: 2px solid #eee; }
+        .form-group { display: flex; flex-direction: column; gap: 5px; }
+        .form-group label { font-weight: bold; color: #555; font-size: 13px; }
+        .form-group input { padding: 10px; border: 2px solid #ddd; border-radius: 5px; font-size: 14px; }
+        .form-group input:focus { outline: none; border-color: #007bff; }
+        .add-form .btn { align-self: flex-start; }
+        .tech-account {
+            background: #f9f9f9; padding: 15px; border-radius: 8px; margin-bottom: 15px;
+            border-left: 4px solid; cursor: pointer; transition: all 0.3s;
+        }
+        .service-column .tech-account { border-left-color: #007bff; }
+        .install-column .tech-account { border-left-color: #28a745; }
+        .tech-account:hover { background: #f0f7ff; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .tech-account h4 { font-size: 16px; margin-bottom: 8px; color: #333; }
+        .tech-info {
+            font-size: 12px; color: #666; margin-bottom: 5px; display: flex;
+            justify-content: space-between; align-items: center;
+        }
+        .tech-creds {
+            background: white; padding: 10px; border-radius: 4px; margin-top: 8px;
+            font-size: 12px; font-family: monospace;
+        }
+        .tech-creds p { margin: 4px 0; }
+        .code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; }
+        .tech-buttons { display: flex; gap: 8px; margin-top: 10px; }
+        .btn-view { background: #667eea; color: white; padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; flex: 1; }
+        .btn-delete { background: #dc3545; color: white; padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; flex: 1; }
+        .modal {
+            display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5); z-index: 1000; overflow-y: auto;
+        }
+        .modal.open { display: block; }
+        .modal-content {
+            background: white; margin: 40px auto; padding: 30px; border-radius: 10px;
+            max-width: 900px; max-height: 80vh; overflow-y: auto;
+        }
+        .modal-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 20px; padding-bottom: 15px; border-bottom: 2px solid #ddd;
+        }
+        .modal-header h2 { color: #333; }
+        .close-btn { background: #dc3545; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        .po-list { display: flex; flex-direction: column; gap: 15px; }
+        .po-item {
+            background: #f9f9f9; padding: 15px; border-radius: 8px; border-left: 4px solid #667eea;
+        }
+        .po-item h4 { color: #333; margin-bottom: 8px; }
+        .po-meta { font-size: 12px; color: #666; }
+        .no-pos { text-align: center; color: #999; padding: 40px 20px; font-style: italic; }
+        @media (max-width: 1024px) {
+            .columns-container { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>👷 Manage Technicians</h1>
+        <div style="display: flex; gap: 8px;">
+            <a href="{{ url_for('office_dashboard') }}" class="btn btn-secondary">← Dashboard</a>
+            <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
+        </div>
+    </div>
+
+    <div class="columns-container">
+        {# SERVICE TECHNICIANS COLUMN #}
+        <div class="column service-column">
+            <h2>📱 Service Technicians</h2>
+
+            <div class="add-form">
+                <div class="form-group">
+                    <label>Full Name</label>
+                    <input type="text" id="service-name" placeholder="e.g., John Smith">
+                </div>
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" id="service-username" placeholder="e.g., jsmith">
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="service-password" placeholder="Password">
+                </div>
+                <div class="form-group">
+                    <label>Email (Optional)</label>
+                    <input type="email" id="service-email" placeholder="email@example.com">
+                </div>
+                <button onclick="addTech('service')" class="btn btn-success">+ Add Service Tech</button>
+            </div>
+
+            <div>
+                {% if service_techs %}
+                    {% for tech in service_techs %}
+                        <div class="tech-account" onclick="viewTechPOs({{ tech[0] }}, '{{ tech[2]|replace("'", "\\'") }}')">
+                            <h4>{{ tech[2] }}</h4>
+                            <div class="tech-info">
+                                <span>📊 {{ tech_pos[tech[0]]|length }} PO(s)</span>
+                                <span style="color: #999;">Added: {{ tech[4][:10] }}</span>
+                            </div>
+                            <div class="tech-creds">
+                                <p><strong>User:</strong> <span class="code">{{ tech[1] }}</span></p>
+                                <p><strong>Pass:</strong> <span class="code">{{ tech[6] }}</span></p>
+                                {% if tech[3] %}<p><strong>Email:</strong> {{ tech[3] }}</p>{% endif %}
+                            </div>
+                            <div class="tech-buttons">
+                                <button class="btn-view" onclick="event.stopPropagation(); viewTechPOs({{ tech[0] }}, '{{ tech[2]|replace("'", "\\'") }}')">📋 View POs</button>
+                                <button class="btn-delete" onclick="event.stopPropagation(); deleteTech({{ tech[0] }}, '{{ tech[2]|replace("'", "\\'") }}')">🗑️ Delete</button>
+                            </div>
+                        </div>
+                    {% endfor %}
+                {% else %}
+                    <p style="color: #999; text-align: center; padding: 40px;">No service technicians added yet</p>
+                {% endif %}
+            </div>
+        </div>
+
+        {# INSTALL TECHNICIANS COLUMN #}
+        <div class="column install-column">
+            <h2>🔧 Install Technicians</h2>
+
+            <div class="add-form">
+                <div class="form-group">
+                    <label>Full Name</label>
+                    <input type="text" id="install-name" placeholder="e.g., Jane Doe">
+                </div>
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" id="install-username" placeholder="e.g., jdoe">
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="install-password" placeholder="Password">
+                </div>
+                <div class="form-group">
+                    <label>Email (Optional)</label>
+                    <input type="email" id="install-email" placeholder="email@example.com">
+                </div>
+                <button onclick="addTech('install')" class="btn btn-success">+ Add Install Tech</button>
+            </div>
+
+            <div>
+                {% if install_techs %}
+                    {% for tech in install_techs %}
+                        <div class="tech-account" onclick="viewTechPOs({{ tech[0] }}, '{{ tech[2]|replace("'", "\\'") }}')">
+                            <h4>{{ tech[2] }}</h4>
+                            <div class="tech-info">
+                                <span>📊 {{ tech_pos[tech[0]]|length }} PO(s)</span>
+                                <span style="color: #999;">Added: {{ tech[4][:10] }}</span>
+                            </div>
+                            <div class="tech-creds">
+                                <p><strong>User:</strong> <span class="code">{{ tech[1] }}</span></p>
+                                <p><strong>Pass:</strong> <span class="code">{{ tech[6] }}</span></p>
+                                {% if tech[3] %}<p><strong>Email:</strong> {{ tech[3] }}</p>{% endif %}
+                            </div>
+                            <div class="tech-buttons">
+                                <button class="btn-view" onclick="event.stopPropagation(); viewTechPOs({{ tech[0] }}, '{{ tech[2]|replace("'", "\\'") }}')">📋 View POs</button>
+                                <button class="btn-delete" onclick="event.stopPropagation(); deleteTech({{ tech[0] }}, '{{ tech[2]|replace("'", "\\'") }}')">🗑️ Delete</button>
+                            </div>
+                        </div>
+                    {% endfor %}
+                {% else %}
+                    <p style="color: #999; text-align: center; padding: 40px;">No install technicians added yet</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    {# PO MODAL #}
+    <div id="po-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modal-title">PO History</h2>
+                <button class="close-btn" onclick="closeTechPOs()">✕ Close</button>
+            </div>
+            <div id="po-list" class="po-list"></div>
+        </div>
+    </div>
+
+    <script>
+        // Store all techs data for modal display
+        const allTechPos = {
+            {% for tech_id, pos in tech_pos.items() %}
+                {{ tech_id }}: {{ pos | tojson }},
+            {% endfor %}
+        };
+
+        function addTech(techType) {
+            const nameInput = document.getElementById(techType + '-name');
+            const usernameInput = document.getElementById(techType + '-username');
+            const passwordInput = document.getElementById(techType + '-password');
+            const emailInput = document.getElementById(techType + '-email');
+
+            const name = nameInput.value.trim();
+            const username = usernameInput.value.trim();
+            const password = passwordInput.value.trim();
+            const email = emailInput.value.trim();
+
+            if (!name || !username || !password) {
+                alert('Please enter: Full Name, Username, and Password');
+                return;
+            }
+
+            fetch('/add_tech', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    full_name: name,
+                    username: username,
+                    password: password,
+                    email: email,
+                    tech_type: techType
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    alert(data.message);
+                    location.reload();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            });
+        }
+
+        function deleteTech(userId, techName) {
+            if (!confirm('Delete technician "' + techName + '"? Their PO history will not be deleted.')) return;
+            fetch('/delete_tech', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: userId })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    location.reload();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            });
+        }
+
+        function viewTechPOs(techId, techName) {
+            const modal = document.getElementById('po-modal');
+            const title = document.getElementById('modal-title');
+            const listContainer = document.getElementById('po-list');
+
+            title.textContent = 'PO History: ' + techName;
+
+            const pos = allTechPos[techId] || [];
+            if (pos.length === 0) {
+                listContainer.innerHTML = '<p class="no-pos">No POs submitted yet by this technician</p>';
+            } else {
+                let html = '';
+                pos.forEach(po => {
+                    const poType = po[1] || 'legacy';
+                    const prefix = poType === 'service' ? 'S' : (poType === 'install' ? 'I' : '');
+                    const poNum = prefix ? prefix + String(po[0]).padStart(4, '0') : po[0];
+
+                    let statusColor = '#856404';
+                    if (po[3] === 'approved') statusColor = '#28a745';
+                    else if (po[3] === 'denied') statusColor = '#dc3545';
+
+                    html += `
+                        <div class="po-item">
+                            <h4>PO #${poNum} - ${po[2]}</h4>
+                            <div class="po-meta">
+                                <p><strong>Status:</strong> <span style="color: ${statusColor}; font-weight: bold;">${po[3]}</span></p>
+                                <p><strong>Date:</strong> ${po[4] ? po[4].substring(0, 10) : 'N/A'}</p>
+                                <p><strong>Type:</strong> ${poType.charAt(0).toUpperCase() + poType.slice(1)}</p>
+                                ${po[5] ? '<p><strong>Cost:</strong> $' + parseFloat(po[5]).toFixed(2) + '</p>' : ''}
+                            </div>
+                        </div>
+                    `;
+                });
+                listContainer.innerHTML = html;
+            }
+
+            modal.classList.add('open');
+        }
+
+        function closeTechPOs() {
+            document.getElementById('po-modal').classList.remove('open');
+        }
+
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            const modal = document.getElementById('po-modal');
+            if (event.target === modal) {
+                modal.classList.remove('open');
+            }
+        };
+    </script>
+</body>
+</html>
+'''
 
 MANAGE_TECHS_TEMPLATE = '''
 <!DOCTYPE html>
