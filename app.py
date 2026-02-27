@@ -2341,7 +2341,7 @@ def add_job():
         if is_ajax:
             return jsonify({'success': False, 'error': 'Job name and year required'})
         flash('Error: Job name and year are required')
-        return redirect(url_for('manage_jobs'))
+        return redirect(url_for('office_dashboard'))
 
     try:
         year = int(year)
@@ -2349,7 +2349,7 @@ def add_job():
         if is_ajax:
             return jsonify({'success': False, 'error': 'Invalid year'})
         flash('Error: Invalid year')
-        return redirect(url_for('manage_jobs'))
+        return redirect(url_for('office_dashboard'))
 
     try:
         budget = float(budget) if budget else 0
@@ -2368,21 +2368,21 @@ def add_job():
         if is_ajax:
             return jsonify({'success': True, 'message': f'Job "{job_name}" added successfully'})
         flash(f'Job "{job_name}" added successfully!')
-        return redirect(url_for('manage_jobs'))
+        return redirect(url_for('office_dashboard'))
     except sqlite3.IntegrityError:
         if conn:
             conn.close()
         if is_ajax:
             return jsonify({'success': False, 'error': 'Job name already exists'})
         flash('Error: Job name already exists')
-        return redirect(url_for('manage_jobs'))
+        return redirect(url_for('office_dashboard'))
     except Exception as e:
         if conn:
             conn.close()
         if is_ajax:
             return jsonify({'success': False, 'error': f'Database error: {str(e)}'})
         flash(f'Error: {str(e)}')
-        return redirect(url_for('manage_jobs'))
+        return redirect(url_for('office_dashboard'))
 
 
 @app.route('/edit_job', methods=['POST'])
