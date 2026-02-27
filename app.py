@@ -1455,7 +1455,7 @@ def office_dashboard():
 
         for job in all_jobs:
             job_id = job[0]
-            stored_department = job[11]  # Department from database
+            stored_department = job[10]  # Department from database (11th column, index 10)
 
             # Add job to its assigned department
             if stored_department == 'install':
