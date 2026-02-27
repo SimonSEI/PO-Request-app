@@ -5913,7 +5913,22 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
             // Show selected tab
             document.getElementById(dept + '-tab').classList.add('active');
-            event.target.classList.add('active');
+
+            // Set the button active if called from event (has event.target)
+            if (event && event.target) {
+                event.target.classList.add('active');
+            } else {
+                // If called from initialization, find and activate the button
+                const buttons = document.querySelectorAll('.tab-btn');
+                buttons.forEach(btn => {
+                    if (btn.textContent.toLowerCase().includes(dept.toLowerCase()) ||
+                        (dept === 'install' && btn.textContent.includes('Install')) ||
+                        (dept === 'service' && btn.textContent.includes('Service')) ||
+                        (dept === 'all-pos' && btn.textContent.includes('View All'))) {
+                        btn.classList.add('active');
+                    }
+                });
+            }
         }
 
         function getTechName(username) {
