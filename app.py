@@ -1385,75 +1385,94 @@ def tech_dashboard():
 
 @app.route('/office_dashboard')
 def office_dashboard():
+    """Unified department dashboard - Service & Install tabs with jobs and POs"""
     if 'username' not in session or session['role'] != 'office':
         return redirect(url_for('login'))
 
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
 
-    # Get column info to determine correct indices
-    c.execute("PRAGMA table_info(po_requests)")
-    columns = {col[1]: col[0] for col in c.fetchall()}
+        # Get all jobs with their stats
+        c.execute("""
+            SELECT
+                j.id,
+                j.job_name,
+                j.year,
+                j.created_date,
+                j.active,
+                COALESCE(SUM(CASE WHEN p.invoice_cost IS NOT NULL THEN CAST(p.invoice_cost AS REAL) ELSE 0 END), 0) as total_invoiced,
+                COUNT(CASE WHEN p.invoice_filename IS NOT NULL THEN 1 END) as invoice_count,
+                COALESCE(SUM(p.estimated_cost), 0) as total_estimated,
+                COUNT(p.id) as po_count,
+                COALESCE(j.budget, 0) as budget
+            FROM jobs j
+            LEFT JOIN po_requests p ON j.job_name = p.job_name
+            GROUP BY j.id, j.job_name, j.year, j.created_date, j.active, j.budget
+            ORDER BY j.active DESC, j.year DESC, j.job_name ASC
+        """)
+        all_jobs = c.fetchall()
 
-    # Determine column indices
-    inv_filename_idx = columns.get('invoice_filename', 12)
-    inv_number_idx = columns.get('invoice_number', 13)
-    inv_cost_idx = columns.get('invoice_cost', 14)
-    inv_upload_idx = columns.get('invoice_upload_date', 16)
-    approved_by_idx = columns.get('approved_by', 11)
-    delivery_notes_idx = columns.get('delivery_notes', -1)
-    po_type_idx = columns.get('po_type', -1)
+        # Get service and install POs for each job
+        job_pos = {}
+        for job in all_jobs:
+            job_name = job[1]
+            # Get active POs for this job
+            c.execute("""
+                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date
+                FROM po_requests
+                WHERE job_name=? AND status IN ('approved', 'awaiting_invoice')
+                ORDER BY id DESC
+            """, (job_name,))
+            job_pos[job[0]] = c.fetchall()
 
-    # Get service POs
-    c.execute("SELECT * FROM po_requests WHERE po_type='service' AND status='awaiting_invoice' ORDER BY id DESC")
-    service_awaiting = c.fetchall()
+        # Get tech info for POs
+        c.execute("SELECT id, username, full_name, tech_type FROM users WHERE role='technician'")
+        techs = {row[1]: {'id': row[0], 'name': row[2], 'type': row[3]} for row in c.fetchall()}
 
-    c.execute("SELECT * FROM po_requests WHERE po_type='service' AND invoice_filename IS NOT NULL ORDER BY id DESC")
-    service_invoiced = c.fetchall()
+        conn.close()
 
-    # Get install POs
-    c.execute("SELECT * FROM po_requests WHERE po_type='install' AND status='awaiting_invoice' ORDER BY id DESC")
-    install_awaiting = c.fetchall()
+        # Separate jobs by type - we'll group jobs that match service or install techs
+        service_jobs = []
+        install_jobs = []
 
-    c.execute("SELECT * FROM po_requests WHERE po_type='install' AND invoice_filename IS NOT NULL ORDER BY id DESC")
-    install_invoiced = c.fetchall()
+        for job in all_jobs:
+            job_id = job[0]
+            # Check which techs have POs for this job
+            pos = job_pos.get(job_id, [])
+            has_service = False
+            has_install = False
 
-    # Get legacy POs (po_type is NULL) - for backwards compatibility
-    c.execute("SELECT * FROM po_requests WHERE po_type IS NULL AND status='awaiting_invoice' ORDER BY id DESC")
-    legacy_awaiting = c.fetchall()
+            for po in pos:
+                tech_username = po[2]
+                if tech_username in techs:
+                    if techs[tech_username]['type'] == 'service':
+                        has_service = True
+                    elif techs[tech_username]['type'] == 'install':
+                        has_install = True
 
-    c.execute("SELECT * FROM po_requests WHERE po_type IS NULL AND invoice_filename IS NOT NULL ORDER BY id DESC")
-    legacy_invoiced = c.fetchall()
+            # If job has service POs, add to service_jobs
+            if has_service:
+                service_jobs.append(job)
 
-    # Stats by type
-    stats = {
-        'service_awaiting': len(service_awaiting),
-        'service_invoiced': len(service_invoiced),
-        'install_awaiting': len(install_awaiting),
-        'install_invoiced': len(install_invoiced),
-        'legacy_awaiting': len(legacy_awaiting),
-        'legacy_invoiced': len(legacy_invoiced),
-        'total_awaiting': len(service_awaiting) + len(install_awaiting) + len(legacy_awaiting),
-        'total_invoiced': len(service_invoiced) + len(install_invoiced) + len(legacy_invoiced)
-    }
+            # If job has install POs, add to install_jobs
+            if has_install:
+                install_jobs.append(job)
 
-    conn.close()
+            # If no POs at all, add to both (shows up in both departments)
+            if not has_service and not has_install:
+                service_jobs.append(job)
+                install_jobs.append(job)
 
-    return render_template_string(OFFICE_DASHBOARD_TEMPLATE,
-                                username=session['username'],
-                                service_awaiting_requests=service_awaiting,
-                                service_invoiced_requests=service_invoiced,
-                                install_awaiting_requests=install_awaiting,
-                                install_invoiced_requests=install_invoiced,
-                                legacy_awaiting_requests=legacy_awaiting,
-                                legacy_invoiced_requests=legacy_invoiced,
-                                stats=stats,
-                                inv_filename_idx=inv_filename_idx,
-                                inv_number_idx=inv_number_idx,
-                                inv_cost_idx=inv_cost_idx,
-                                inv_upload_idx=inv_upload_idx,
-                                delivery_notes_idx=delivery_notes_idx,
-                                po_type_idx=po_type_idx)
+        return render_template_string(UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE,
+                                      username=session['username'],
+                                      service_jobs=service_jobs,
+                                      install_jobs=install_jobs,
+                                      job_pos=job_pos,
+                                      techs=techs)
+
+    except Exception as e:
+        return f"<h2>Error loading dashboard</h2><p>{str(e)}</p><p><a href='/office_dashboard'>Reload</a></p>"
 
 @app.route('/activity_log')
 def activity_log():
@@ -5684,6 +5703,426 @@ searchInput.addEventListener('input', function(e) {
             <p style="color: #999;">No requests yet. Submit your first PO request above!</p>
         {% endif %}
     </div>
+</body>
+</html>
+'''
+
+UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Department Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+        .header {
+            background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex;
+            justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
+        }
+        h1 { color: #333; font-size: 28px; }
+        .header-nav { display: flex; gap: 8px; flex-wrap: wrap; }
+        .btn { padding: 10px 20px; border-radius: 5px; text-decoration: none; font-weight: bold; border: none; cursor: pointer; font-size: 14px; display: inline-block; }
+        .btn-primary { background: #667eea; color: white; }
+        .btn-secondary { background: #6c757d; color: white; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-success { background: #28a745; color: white; }
+
+        .tabs-container { display: flex; gap: 10px; margin-bottom: 20px; }
+        .tab-btn {
+            padding: 12px 24px; background: white; border: 2px solid #ddd; border-radius: 5px;
+            cursor: pointer; font-weight: bold; font-size: 16px; transition: all 0.3s;
+        }
+        .tab-btn:hover { background: #f5f5f5; }
+        .tab-btn.active { background: #667eea; color: white; border-color: #667eea; }
+        .tab-btn.service { color: #007bff; }
+        .tab-btn.service.active { background: #007bff; }
+        .tab-btn.install { color: #28a745; }
+        .tab-btn.install.active { background: #28a745; }
+
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        .year-filter {
+            background: white; padding: 15px; border-radius: 5px; margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+        }
+        .year-filter select { padding: 8px 15px; border: 2px solid #ddd; border-radius: 5px; font-size: 14px; }
+        .year-filter button { padding: 8px 15px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
+
+        .stats-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px;
+        }
+        .stat-card {
+            background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            border-left: 4px solid #667eea;
+        }
+        .stat-number { font-size: 28px; font-weight: bold; color: #667eea; }
+        .stat-label { color: #666; font-size: 13px; margin-top: 5px; }
+
+        .jobs-container { display: flex; flex-direction: column; gap: 15px; }
+        .job-card {
+            background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            border-left: 4px solid #667eea;
+        }
+        .job-card.inactive { opacity: 0.7; border-left-color: #dc3545; }
+        .job-header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 15px; flex-wrap: wrap; gap: 10px; }
+        .job-title { font-size: 18px; font-weight: bold; color: #333; }
+        .job-meta { font-size: 13px; color: #666; display: flex; gap: 15px; flex-wrap: wrap; }
+        .status-badge { padding: 5px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; }
+        .status-active { background: #28a745; color: white; }
+        .status-inactive { background: #dc3545; color: white; }
+
+        .job-stats {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 15px;
+        }
+        .job-stat-item { background: #f9f9f9; padding: 10px; border-radius: 5px; }
+        .job-stat-value { font-weight: bold; color: #667eea; }
+        .job-stat-label { font-size: 12px; color: #666; }
+
+        .budget-bar {
+            background: #e9ecef; border-radius: 10px; overflow: hidden; height: 20px; margin: 10px 0;
+        }
+        .budget-fill {
+            height: 100%; border-radius: 10px; transition: width 0.3s; background: #28a745;
+        }
+        .budget-fill.yellow { background: #ffc107; }
+        .budget-fill.red { background: #dc3545; }
+
+        .pos-section {
+            margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd;
+        }
+        .pos-title { font-weight: bold; color: #333; margin-bottom: 10px; }
+        .po-item {
+            background: #f5f7ff; padding: 12px; border-radius: 5px; margin-bottom: 8px;
+            border-left: 3px solid #667eea; font-size: 13px;
+        }
+        .po-tech { font-weight: bold; color: #007bff; }
+        .po-status { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 11px; margin-left: 8px; }
+        .po-status.approved { background: #28a745; color: white; }
+        .po-status.awaiting { background: #ffc107; color: #333; }
+
+        .job-actions { display: flex; gap: 10px; margin-top: 15px; }
+        .job-actions button { padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; font-size: 13px; }
+        .toggle-job-btn { background: #6c757d; color: white; }
+        .toggle-job-btn.active { background: #28a745; }
+
+        .no-jobs { text-align: center; padding: 40px; color: #999; font-style: italic; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🏢 Department Dashboard</h1>
+        <div class="header-nav">
+            <a href="{{ url_for('manage_techs') }}" style="background: #fd7e14; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">👷 Manage Techs</a>
+            <a href="{{ url_for('manage_jobs') }}" class="btn btn-primary">📋 Manage Jobs</a>
+            <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
+        </div>
+    </div>
+
+    <div class="tabs-container">
+        <button class="tab-btn service active" onclick="switchTab('service')">📱 Service Department</button>
+        <button class="tab-btn install" onclick="switchTab('install')">🔧 Install Department</button>
+    </div>
+
+    {# SERVICE DEPARTMENT TAB #}
+    <div id="service-tab" class="tab-content active">
+        <div class="year-filter">
+            <label>Filter by Year:</label>
+            <select id="service-year-filter" onchange="filterServiceJobs()">
+                <option value="">All Years</option>
+            </select>
+            <button onclick="filterServiceJobs()">Apply Filter</button>
+            <button onclick="showAllServiceJobs()" style="background: #28a745;">Show All</button>
+        </div>
+
+        <div class="stats-grid" id="service-stats"></div>
+        <div class="jobs-container" id="service-jobs-container"></div>
+    </div>
+
+    {# INSTALL DEPARTMENT TAB #}
+    <div id="install-tab" class="tab-content">
+        <div class="year-filter">
+            <label>Filter by Year:</label>
+            <select id="install-year-filter" onchange="filterInstallJobs()">
+                <option value="">All Years</option>
+            </select>
+            <button onclick="filterInstallJobs()">Apply Filter</button>
+            <button onclick="showAllInstallJobs()" style="background: #28a745;">Show All</button>
+        </div>
+
+        <div class="stats-grid" id="install-stats"></div>
+        <div class="jobs-container" id="install-jobs-container"></div>
+    </div>
+
+    <script>
+        // Data from server
+        const serviceJobs = {{ service_jobs | tojson }};
+        const installJobs = {{ install_jobs | tojson }};
+        const jobPOs = {{ job_pos | tojson }};
+        const techsMap = {{ techs | tojson }};
+
+        let filteredServiceJobs = [...serviceJobs];
+        let filteredInstallJobs = [...installJobs];
+
+        function switchTab(dept) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+
+            // Show selected tab
+            document.getElementById(dept + '-tab').classList.add('active');
+            event.target.classList.add('active');
+        }
+
+        function getTechName(username) {
+            return techsMap[username] ? techsMap[username].name : username;
+        }
+
+        function formatCurrency(value) {
+            return '$' + parseFloat(value || 0).toFixed(2);
+        }
+
+        function renderServiceJobs() {
+            const container = document.getElementById('service-jobs-container');
+            const statsDiv = document.getElementById('service-stats');
+
+            if (filteredServiceJobs.length === 0) {
+                container.innerHTML = '<div class="no-jobs">No service jobs to display</div>';
+                statsDiv.innerHTML = '';
+                return;
+            }
+
+            // Calculate stats
+            let activeCount = 0, totalBudget = 0, totalInvoiced = 0, totalPOs = 0;
+            filteredServiceJobs.forEach(job => {
+                if (job[4]) activeCount++;
+                totalBudget += job[9] || 0;
+                totalInvoiced += job[5] || 0;
+                totalPOs += job[8] || 0;
+            });
+
+            statsDiv.innerHTML = `
+                <div class="stat-card"><div class="stat-number">${filteredServiceJobs.length}</div><div class="stat-label">Total Jobs</div></div>
+                <div class="stat-card"><div class="stat-number">${activeCount}</div><div class="stat-label">Active Jobs</div></div>
+                <div class="stat-card"><div class="stat-number">${formatCurrency(totalBudget)}</div><div class="stat-label">Total Budget</div></div>
+                <div class="stat-card"><div class="stat-number">${formatCurrency(totalInvoiced)}</div><div class="stat-label">Total Invoiced</div></div>
+            `;
+
+            let html = '';
+            filteredServiceJobs.forEach(job => {
+                html += renderJobCard(job, 'service');
+            });
+            container.innerHTML = html;
+
+            // Add event listeners
+            addJobCardListeners();
+        }
+
+        function renderInstallJobs() {
+            const container = document.getElementById('install-jobs-container');
+            const statsDiv = document.getElementById('install-stats');
+
+            if (filteredInstallJobs.length === 0) {
+                container.innerHTML = '<div class="no-jobs">No install jobs to display</div>';
+                statsDiv.innerHTML = '';
+                return;
+            }
+
+            // Calculate stats
+            let activeCount = 0, totalBudget = 0, totalInvoiced = 0, totalPOs = 0;
+            filteredInstallJobs.forEach(job => {
+                if (job[4]) activeCount++;
+                totalBudget += job[9] || 0;
+                totalInvoiced += job[5] || 0;
+                totalPOs += job[8] || 0;
+            });
+
+            statsDiv.innerHTML = `
+                <div class="stat-card"><div class="stat-number">${filteredInstallJobs.length}</div><div class="stat-label">Total Jobs</div></div>
+                <div class="stat-card"><div class="stat-number">${activeCount}</div><div class="stat-label">Active Jobs</div></div>
+                <div class="stat-card"><div class="stat-number">${formatCurrency(totalBudget)}</div><div class="stat-label">Total Budget</div></div>
+                <div class="stat-card"><div class="stat-number">${formatCurrency(totalInvoiced)}</div><div class="stat-label">Total Invoiced</div></div>
+            `;
+
+            let html = '';
+            filteredInstallJobs.forEach(job => {
+                html += renderJobCard(job, 'install');
+            });
+            container.innerHTML = html;
+
+            // Add event listeners
+            addJobCardListeners();
+        }
+
+        function renderJobCard(job, dept) {
+            const jobId = job[0];
+            const jobName = job[1];
+            const year = job[2];
+            const isActive = job[4];
+            const budget = job[9] || 0;
+            const invoiced = job[5] || 0;
+            const poCount = job[8] || 0;
+
+            const budgetPct = budget > 0 ? (invoiced / budget * 100) : 0;
+            const budgetColor = budgetPct <= 50 ? '' : budgetPct <= 75 ? 'yellow' : 'red';
+
+            const pos = jobPOs[jobId] || [];
+            const servicePOs = pos.filter(p => techsMap[p[2]] && techsMap[p[2]].type === dept.slice(0, 7)); // 'service' or 'install'
+
+            let html = `
+                <div class="job-card ${!isActive ? 'inactive' : ''}" id="job-${jobId}">
+                    <div class="job-header">
+                        <div>
+                            <div class="job-title">${jobName}</div>
+                            <div class="job-meta">
+                                <span>Year: ${year}</span>
+                                <span class="status-badge ${isActive ? 'status-active' : 'status-inactive'}">${isActive ? 'Active' : 'Inactive'}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="job-stats">
+                        <div class="job-stat-item">
+                            <div class="job-stat-value">${poCount}</div>
+                            <div class="job-stat-label">Active POs</div>
+                        </div>
+                        <div class="job-stat-item">
+                            <div class="job-stat-value">${formatCurrency(budget)}</div>
+                            <div class="job-stat-label">Budget</div>
+                        </div>
+                        <div class="job-stat-item">
+                            <div class="job-stat-value">${formatCurrency(invoiced)}</div>
+                            <div class="job-stat-label">Invoiced</div>
+                        </div>
+                    </div>
+            `;
+
+            if (budget > 0) {
+                html += `
+                    <div class="budget-bar">
+                        <div class="budget-fill ${budgetColor}" style="width: ${Math.min(budgetPct, 100)}%"></div>
+                    </div>
+                    <small style="color: #666;">${budgetPct.toFixed(1)}% of budget used</small>
+                `;
+            }
+
+            if (servicePOs.length > 0) {
+                html += '<div class="pos-section"><div class="pos-title">📋 Active POs:</div>';
+                servicePOs.forEach(po => {
+                    const poNum = po[0];
+                    const techName = getTechName(po[2]);
+                    const status = po[3];
+                    const estimated = po[4] || 0;
+                    const invoiced_po = po[5] || 0;
+
+                    html += `
+                        <div class="po-item">
+                            <strong>PO #${poNum}</strong> - <span class="po-tech">${techName}</span>
+                            <span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span>
+                            <br><small>Est: ${formatCurrency(estimated)} | Inv: ${formatCurrency(invoiced_po)}</small>
+                        </div>
+                    `;
+                });
+                html += '</div>';
+            } else {
+                html += '<div class="pos-section"><p style="color: #999; font-style: italic;">No active POs for this job</p></div>';
+            }
+
+            html += `
+                <div class="job-actions">
+                    <button class="toggle-job-btn ${isActive ? 'active' : ''}" data-id="${jobId}" onclick="toggleJobStatus(${jobId}, '${dept}')">
+                        ${isActive ? '✓ Active - Click to Close' : '○ Inactive - Click to Reopen'}
+                    </button>
+                </div>
+            </div>
+            `;
+
+            return html;
+        }
+
+        function addJobCardListeners() {
+            // Listeners are added via onclick attributes
+        }
+
+        function toggleJobStatus(jobId, dept) {
+            if (!confirm('Toggle this job status? Inactive jobs are archived.')) return;
+
+            fetch('/toggle_job', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ job_id: jobId })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    location.reload();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            });
+        }
+
+        function filterServiceJobs() {
+            const year = document.getElementById('service-year-filter').value;
+            if (year) {
+                filteredServiceJobs = serviceJobs.filter(job => job[2].toString() === year);
+            } else {
+                filteredServiceJobs = [...serviceJobs];
+            }
+            renderServiceJobs();
+        }
+
+        function filterInstallJobs() {
+            const year = document.getElementById('install-year-filter').value;
+            if (year) {
+                filteredInstallJobs = installJobs.filter(job => job[2].toString() === year);
+            } else {
+                filteredInstallJobs = [...installJobs];
+            }
+            renderInstallJobs();
+        }
+
+        function showAllServiceJobs() {
+            document.getElementById('service-year-filter').value = '';
+            filterServiceJobs();
+        }
+
+        function showAllInstallJobs() {
+            document.getElementById('install-year-filter').value = '';
+            filterInstallJobs();
+        }
+
+        // Populate year filters
+        function populateYearFilters() {
+            const serviceYears = [...new Set(serviceJobs.map(j => j[2]))].sort((a, b) => b - a);
+            const installYears = [...new Set(installJobs.map(j => j[2]))].sort((a, b) => b - a);
+
+            const serviceSelect = document.getElementById('service-year-filter');
+            const installSelect = document.getElementById('install-year-filter');
+
+            serviceYears.forEach(year => {
+                const opt = document.createElement('option');
+                opt.value = year;
+                opt.textContent = year;
+                serviceSelect.appendChild(opt);
+            });
+
+            installYears.forEach(year => {
+                const opt = document.createElement('option');
+                opt.value = year;
+                opt.textContent = year;
+                installSelect.appendChild(opt);
+            });
+        }
+
+        // Initialize
+        window.addEventListener('DOMContentLoaded', () => {
+            populateYearFilters();
+            renderServiceJobs();
+        });
+    </script>
 </body>
 </html>
 '''
