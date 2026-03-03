@@ -1649,7 +1649,9 @@ def submit_request():
             conn.close()
 
             po_display = format_po_display(po_id, job_name, client_name, job_code)
-            flash(f'PO#{po_display}|{job_name}')
+            # Display client name (first 11 letters) instead of job name
+            client_display = (client_name[:11] if client_name else job_name)
+            flash(f'PO#{po_display}|{client_display}')
             return redirect(url_for('tech_dashboard'))
 
         except ValueError:
@@ -1687,12 +1689,14 @@ def submit_request():
         # Format display to include job code or client name
         po_display = formatted_po
         if tech_type == 'service' and client_name:
-            po_display = f"{formatted_po} {client_name}"
+            po_display = f"{formatted_po} {client_name[:11]}"
         elif job_code and job_code not in ['S', 'I']:
             # Add job code for install jobs (e.g., I-1 Herons)
             po_display = f"{formatted_po} {job_code}"
 
-        flash(f'PO#{po_display}|{job_name}')
+        # Display client name (first 11 letters) instead of job name
+        client_display = (client_name[:11] if client_name else job_name)
+        flash(f'PO#{po_display}|{client_display}')
         return redirect(url_for('tech_dashboard'))
 
 @app.route('/upload_invoice/<int:po_id>', methods=['POST'])
