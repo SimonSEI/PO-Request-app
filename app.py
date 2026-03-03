@@ -5145,11 +5145,6 @@ TECH_DASHBOARD_TEMPLATE = '''
             </div>
 
             <div class="form-group">
-                <label>Active Service Job</label>
-                <div style="padding: 10px; background: #f0f4ff; border: 2px solid #667eea; border-radius: 5px; font-weight: bold; color: #333;">{{ active_job_name if active_job_name else 'No active service job available' }}</div>
-            </div>
-
-            <div class="form-group">
                 <label>Client Name <span style="color: red;">*</span></label>
                 <input type="text" id="client_name" name="client_name" placeholder="e.g., Somerville, Heron's Glen, Reserve" required>
                 <small style="color: #666; display: block; margin-top: 5px;">📍 Enter the client/location name for this service (e.g., Somerville, Heron's Glen, etc.)</small>
@@ -5878,8 +5873,8 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         function jobMatchesClient(jobId, clientSearch) {
             if (!clientSearch) return true;
-            const pos = jobPOs[jobId] || [];
-            return pos.some(p => p[7] && p[7].toLowerCase().includes(clientSearch));
+            const pos = jobAllPOs[jobId] || [];
+            return pos.some(p => p[8] && p[8].toLowerCase().includes(clientSearch)); // index 8 = client_name in jobAllPOs
         }
 
         function filterServiceJobs() {
@@ -5891,6 +5886,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 if (!jobMatchesClient(job[0], client)) return false;
                 return true;
             });
+
             renderServiceJobs();
         }
 
@@ -5938,6 +5934,33 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 opt.value = year;
                 opt.textContent = year;
                 installSelect.appendChild(opt);
+            });
+        }
+
+        // Populate client filter for service department
+        function populateClientFilters() {
+            // Extract unique client names from all service job POs
+            const serviceClients = new Set();
+
+            serviceJobs.forEach(job => {
+                const jobId = job[0];
+                const posForJob = jobAllPOs[jobId] || [];
+                posForJob.forEach(po => {
+                    const clientName = po[8]; // client_name is at index 8 in jobAllPOs query
+                    if (clientName && clientName.trim()) {
+                        serviceClients.add(clientName);
+                    }
+                });
+            });
+
+            const clientSelect = document.getElementById('service-client-filter');
+            const sortedClients = [...serviceClients].sort();
+
+            sortedClients.forEach(client => {
+                const opt = document.createElement('option');
+                opt.value = client;
+                opt.textContent = client;
+                clientSelect.appendChild(opt);
             });
         }
 
@@ -6013,6 +6036,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         // Initialize
         window.addEventListener('DOMContentLoaded', () => {
             populateYearFilters();
+            populateClientFilters();
             renderServiceJobs();
             renderInstallJobs();
 
