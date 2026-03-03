@@ -1424,6 +1424,8 @@ def tech_dashboard():
     inv_number_idx = columns.get('invoice_number', 13)
     inv_cost_idx = columns.get('invoice_cost', 14)
     inv_upload_idx = columns.get('invoice_upload_date', 16)
+    client_name_idx = columns.get('client_name')
+    po_type_idx = columns.get('po_type', 17)
 
     return render_template_string(TECH_DASHBOARD_TEMPLATE,
                                 username=session['username'],
@@ -1435,7 +1437,9 @@ def tech_dashboard():
                                 inv_filename_idx=inv_filename_idx,
                                 inv_number_idx=inv_number_idx,
                                 inv_cost_idx=inv_cost_idx,
-                                inv_upload_idx=inv_upload_idx)
+                                inv_upload_idx=inv_upload_idx,
+                                client_name_idx=client_name_idx,
+                                po_type_idx=po_type_idx)
 
 @app.route('/office_dashboard')
 def office_dashboard():
@@ -5425,9 +5429,12 @@ TECH_DASHBOARD_TEMPLATE = '''
                         <div style="background: #28a745; color: white; padding: 6px 16px; border-radius: 20px; font-size: 18px; font-weight: bold; letter-spacing: 1px;">
                             PO #{{ format_po_number(req[0], req[3]) }}
                         </div>
-                        <div style="font-size: 16px; color: #333; font-weight: bold;">{{ req[3] }}</div>
+                        <div style="font-size: 16px; color: #333; font-weight: bold;">{% if client_name_idx is not none and req|length > client_name_idx and req[client_name_idx] %}{{ req[client_name_idx] }}{% else %}Service{% endif %}</div>
                     </div>
                     <p><strong>Store:</strong> {{ req[4] }}</p>
+                    {% if client_name_idx is not none and req|length > client_name_idx and req[client_name_idx] %}
+                        <p style="margin-left: 0; color: #666; font-size: 14px;">📍 Client: <strong>{{ req[client_name_idx] }}</strong></p>
+                    {% endif %}
                     <p><strong>Description:</strong> {{ req[6] }}</p>
                     <p><strong>Submitted:</strong> {{ req[8] }}</p>
 
