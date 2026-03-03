@@ -1710,90 +1710,7 @@ def submit_request():
         flash(f'PO#{po_display}|{client_display}')
         return redirect(url_for('tech_dashboard'))
 
-@app.route('/tech_delete_invoice/<int:po_id>', methods=['POST'])
-def tech_delete_invoice(po_id):
-    """Allow technician to delete their own invoice"""
-    if 'username' not in session or session['role'] != 'technician':
-        return jsonify({'success': False, 'error': 'Unauthorized'})
 
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-
-        # Verify this PO belongs to the current technician
-        c.execute("SELECT tech_username, invoice_filename FROM po_requests WHERE id=?", (po_id,))
-        result = c.fetchone()
-
-        if not result:
-            conn.close()
-            return jsonify({'success': False, 'error': 'PO not found'})
-
-        if result[0] != session['username']:
-            conn.close()
-            return jsonify({'success': False, 'error': 'Unauthorized - this is not your PO'})
-
-        # Delete invoice file if it exists
-        if result[1] and result[1] != 'MANUAL_ENTRY':
-            invoice_path = os.path.join(app.config['UPLOAD_FOLDER'], result[1])
-            if os.path.exists(invoice_path):
-                try:
-                    os.remove(invoice_path)
-                except:
-                    pass
-
-        # Clear invoice data
-        c.execute("""UPDATE po_requests
-                     SET invoice_filename=NULL, invoice_number=NULL,
-                         invoice_cost=NULL, invoice_date=NULL, invoice_upload_date=NULL
-                     WHERE id=?""", (po_id,))
-        conn.commit()
-        conn.close()
-
-        return jsonify({'success': True, 'message': 'Invoice deleted successfully'})
-
-    except Exception as e:
-        return jsonify({'success': False, 'error': f'Error: {str(e)}'})
-
-@app.route('/tech_delete_po/<int:po_id>', methods=['POST'])
-def tech_delete_po(po_id):
-    """Allow technician to delete their own PO"""
-    if 'username' not in session or session['role'] != 'technician':
-        return jsonify({'success': False, 'error': 'Unauthorized'})
-
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-
-        # Verify this PO belongs to the current technician
-        c.execute("SELECT tech_username, invoice_filename FROM po_requests WHERE id=?", (po_id,))
-        result = c.fetchone()
-
-        if not result:
-            conn.close()
-            return jsonify({'success': False, 'error': 'PO not found'})
-
-        if result[0] != session['username']:
-            conn.close()
-            return jsonify({'success': False, 'error': 'Unauthorized - this is not your PO'})
-
-        # Delete invoice file if it exists
-        if result[1] and result[1] != 'MANUAL_ENTRY':
-            invoice_path = os.path.join(app.config['UPLOAD_FOLDER'], result[1])
-            if os.path.exists(invoice_path):
-                try:
-                    os.remove(invoice_path)
-                except:
-                    pass
-
-        # Delete the PO
-        c.execute("DELETE FROM po_requests WHERE id=?", (po_id,))
-        conn.commit()
-        conn.close()
-
-        return jsonify({'success': True, 'message': 'PO deleted successfully'})
-
-    except Exception as e:
-        return jsonify({'success': False, 'error': f'Error: {str(e)}'})
 
 @app.route('/upload_invoice/<int:po_id>', methods=['POST'])
 def upload_invoice(po_id):
@@ -5409,57 +5326,6 @@ TECH_DASHBOARD_TEMPLATE = '''
         filterPOs();
     }
 
-    function deleteInvoice(poId, poNumber) {
-        if (!confirm(`Are you sure you want to delete the invoice for PO #${poNumber}? This will move the PO back to "Approved" status without an invoice.`)) {
-            return;
-        }
-
-        fetch(`/tech_delete_invoice/${poId}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            }
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                alert('✓ Invoice deleted successfully. The PO is now back to "Approved" status.');
-                location.reload();
-            } else {
-                alert('❌ Error: ' + (data.error || 'Failed to delete invoice'));
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            alert('❌ An error occurred while deleting the invoice.');
-        });
-    }
-
-    function deletePO(poId, poNumber) {
-        if (!confirm(`Are you sure you want to delete PO #${poNumber}? This action cannot be undone. The PO and any associated invoice will be permanently deleted.`)) {
-            return;
-        }
-
-        fetch(`/tech_delete_po/${poId}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            }
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                alert('✓ PO #' + poNumber + ' deleted successfully.');
-                location.reload();
-            } else {
-                alert('❌ Error: ' + (data.error || 'Failed to delete PO'));
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            alert('❌ An error occurred while deleting the PO.');
-        });
-    }
 </script>
 
     <div class="card">
@@ -5500,24 +5366,15 @@ TECH_DASHBOARD_TEMPLATE = '''
                     {% elif req[7] == 'approved' %}
                         {% if req|length > inv_filename_idx and req[inv_filename_idx] and req[inv_filename_idx] != '' %}
                             <div class="invoice-data">
-                                <div style="display: flex; justify-content: space-between; align-items: start; gap: 15px;">
-                                    <div>
-                                        <h4>📄 Invoice Entered by Office</h4>
-                                        <p><strong>Invoice Number:</strong> {{ req[inv_number_idx] if req|length > inv_number_idx else 'N/A' }}</p>
-                                        <p><strong>Total Cost:</strong> ${{ req[inv_cost_idx] if req|length > inv_cost_idx else '0.00' }}</p>
-                                        <p><strong>Entered:</strong> {{ req[inv_upload_idx] if req|length > inv_upload_idx else 'N/A' }}</p>
-                                    </div>
-                                    <button onclick="deleteInvoice({{ req[0] }}, '{{ format_po_number(req[0], req[3]) }}')" style="background: #dc3545; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 12px; white-space: nowrap;">🗑️ Delete Invoice</button>
-                                </div>
+                                <h4>📄 Invoice Entered by Office</h4>
+                                <p><strong>Invoice Number:</strong> {{ req[inv_number_idx] if req|length > inv_number_idx else 'N/A' }}</p>
+                                <p><strong>Total Cost:</strong> ${{ req[inv_cost_idx] if req|length > inv_cost_idx else '0.00' }}</p>
+                                <p><strong>Entered:</strong> {{ req[inv_upload_idx] if req|length > inv_upload_idx else 'N/A' }}</p>
                             </div>
                         {% else %}
                             <p style="color: #666; margin-top: 10px; font-size: 14px;">⏳ Invoice not yet entered by office</p>
                         {% endif %}
                     {% endif %}
-
-                    <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd; display: flex; gap: 10px; flex-wrap: wrap;">
-                        <button onclick="deletePO({{ req[0] }}, '{{ format_po_number(req[0], req[3]) }}')" style="background: #dc3545; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 13px;">🗑️ Delete PO</button>
-                    </div>
                 </div>
             {% endfor %}
             </div>
