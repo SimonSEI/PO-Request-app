@@ -5491,7 +5491,7 @@ TECH_DASHBOARD_TEMPLATE = '''
         {% if requests %}
             <div id="posContainer">
             {% for req in requests %}
-                <div class="request-item {{ req[7] }}" data-client="{{ req[4]|lower }}" data-description="{{ req[6]|lower }}">
+                <div class="request-item {{ req[7] }}" data-client="{% if client_name_idx is not none and req|length > client_name_idx and req[client_name_idx] %}{{ req[client_name_idx]|lower }}{% else %}{{ req[4]|lower }}{% endif %}" data-description="{{ req[6]|lower }}">
                     <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-wrap: wrap;">
                         <div style="background: #28a745; color: white; padding: 6px 16px; border-radius: 20px; font-size: 18px; font-weight: bold; letter-spacing: 1px;">
                             PO #{{ format_po_number(req[0], req[3]) }}
