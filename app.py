@@ -5479,46 +5479,18 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
     {# SERVICE DEPARTMENT TAB #}
     <div id="service-tab" class="tab-content active">
-        <div class="add-job-card">
-            <h2>➕ Add New Service Job</h2>
-            <p>Create a new service job. Job names must be unique.</p>
-            <div style="display: flex; flex-direction: column; gap: 15px;">
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>Job Name *</label>
-                        <input type="text" id="service-job-name" placeholder="e.g., Chase Bank Service" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Job Code</label>
-                        <input type="text" id="service-job-code" placeholder="e.g., CB-Service">
-                    </div>
-                    <div class="form-group">
-                        <label>Year *</label>
-                        <input type="number" id="service-year" value="2026" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Budget for Materials ($)</label>
-                        <input type="number" id="service-budget" placeholder="0" step="0.01" min="0" value="0">
-                    </div>
-                </div>
-                <div class="form-actions">
-                    <button type="button" class="btn btn-success" onclick="submitServiceJob()">✓ Create Job</button>
-                </div>
+        <div style="margin-bottom: 20px;">
+            <h2>📋 Service POs</h2>
+            <div style="display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; align-items: center;">
+                <input type="text" id="service-po-client-search" placeholder="Search by client..." style="flex: 1; min-width: 200px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                <input type="text" id="service-po-keyword-search" placeholder="Search by keyword..." style="flex: 1; min-width: 200px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                <button onclick="filterServicePOs()" style="background: #667eea; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">🔍 Search</button>
+                <button onclick="clearServicePOSearch()" style="background: #999; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">Clear</button>
             </div>
         </div>
-
-        <div class="year-filter">
-            <label>Filter by Year:</label>
-            <select id="service-year-filter" onchange="filterServiceJobs()">
-                <option value="">All Years</option>
-            </select>
-            <label style="margin-left: 20px;">Search by Client:</label>
-            <input type="text" id="service-client-filter" placeholder="Type client name..." oninput="filterServiceJobs()" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
-            <button onclick="showAllServiceJobs()" style="background: #28a745;">Show All</button>
+        <div id="service-po-results" style="background: white; border-radius: 8px; padding: 20px;">
+            <p style="text-align: center; color: #999;">Loading service POs...</p>
         </div>
-
-        <div class="stats-grid" id="service-stats"></div>
-        <div class="jobs-container" id="service-jobs-container"></div>
     </div>
 
     {# INSTALL DEPARTMENT TAB #}
@@ -5619,6 +5591,12 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         function formatCurrency(value) {
             return '$' + parseFloat(value || 0).toFixed(2);
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+            return String(text).replace(/[&<>"']/g, m => map[m]);
         }
 
         function searchAllPOs() {
@@ -5744,40 +5722,61 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             });
         }
 
-        function renderServiceJobs() {
-            const container = document.getElementById('service-jobs-container');
-            const statsDiv = document.getElementById('service-stats');
+        function renderServicePOs() {
+            const resultsDiv = document.getElementById('service-po-results');
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Job Name</th><th>Tech</th><th>Client</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Date</th></tr></thead><tbody>';
+            let totalPOs = 0;
+            let approvedCount = 0;
+            let totalEstimated = 0;
+            let totalInvoiced = 0;
 
-            if (filteredServiceJobs.length === 0) {
-                container.innerHTML = '<div class="no-jobs">No service jobs to display</div>';
-                statsDiv.innerHTML = '';
-                return;
+            // Get all service POs from jobAllPOs
+            for (const [jobId, pos] of Object.entries(jobAllPOs)) {
+                const job = [...serviceJobs, ...installJobs].find(j => j[0] === parseInt(jobId));
+                if (!job) continue;
+
+                // Only show service department POs
+                if (job[10] !== 'service') continue;
+
+                const jobCode = job[11];
+
+                pos.forEach(po => {
+                    const poId = po[0];
+                    const poDisplay = jobCode ? `${jobCode}-${poId}` : poId;
+                    const techName = getTechName(po[2]);
+                    const clientName = po[8] || 'N/A';
+                    const status = po[3];
+                    const estimated = po[4] || 0;
+                    const invoiced = po[5] || 0;
+                    const date = po[6] || '';
+
+                    html += `
+                        <tr>
+                            <td><strong>${escapeHtml(poDisplay)}</strong></td>
+                            <td>${escapeHtml(job[1])}</td>
+                            <td>${escapeHtml(techName)}</td>
+                            <td>${escapeHtml(clientName)}</td>
+                            <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
+                            <td>${formatCurrency(estimated)}</td>
+                            <td>${formatCurrency(invoiced)}</td>
+                            <td>${date}</td>
+                        </tr>
+                    `;
+
+                    totalPOs++;
+                    if (status === 'approved') approvedCount++;
+                    totalEstimated += estimated;
+                    totalInvoiced += invoiced;
+                });
             }
 
-            // Calculate stats
-            let activeCount = 0, totalBudget = 0, totalInvoiced = 0, totalPOs = 0;
-            filteredServiceJobs.forEach(job => {
-                if (job[4]) activeCount++;
-                totalBudget += job[9] || 0;
-                totalInvoiced += job[5] || 0;
-                totalPOs += job[8] || 0;
-            });
+            html += '</tbody></table>';
 
-            statsDiv.innerHTML = `
-                <div class="stat-card"><div class="stat-number">${filteredServiceJobs.length}</div><div class="stat-label">Total Jobs</div></div>
-                <div class="stat-card"><div class="stat-number">${activeCount}</div><div class="stat-label">Active Jobs</div></div>
-                <div class="stat-card"><div class="stat-number">${formatCurrency(totalBudget)}</div><div class="stat-label">Total Budget</div></div>
-                <div class="stat-card"><div class="stat-number">${formatCurrency(totalInvoiced)}</div><div class="stat-label">Total Invoiced</div></div>
-            `;
-
-            let html = '';
-            filteredServiceJobs.forEach(job => {
-                html += renderJobCard(job, 'service');
-            });
-            container.innerHTML = html;
-
-            // Add event listeners
-            addJobCardListeners();
+            if (totalPOs === 0) {
+                resultsDiv.innerHTML = '<p style="text-align: center; color: #999;">No service POs to display.</p>';
+            } else {
+                resultsDiv.innerHTML = html;
+            }
         }
 
         function renderInstallJobs() {
@@ -5968,17 +5967,70 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             return pos.some(p => p[8] && p[8].toLowerCase().includes(clientSearch)); // index 8 = client_name in jobAllPOs
         }
 
-        function filterServiceJobs() {
-            const year = document.getElementById('service-year-filter').value;
-            const client = document.getElementById('service-client-filter').value.toLowerCase().trim();
+        function filterServicePOs() {
+            const clientSearch = document.getElementById('service-po-client-search').value.toLowerCase().trim();
+            const keywordSearch = document.getElementById('service-po-keyword-search').value.toLowerCase().trim();
 
-            filteredServiceJobs = serviceJobs.filter(job => {
-                if (year && job[2].toString() !== year) return false;
-                if (!jobMatchesClient(job[0], client)) return false;
-                return true;
-            });
+            const resultsDiv = document.getElementById('service-po-results');
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Job Name</th><th>Tech</th><th>Client</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Date</th></tr></thead><tbody>';
+            let found = 0;
 
-            renderServiceJobs();
+            // Get all service POs from jobAllPOs
+            for (const [jobId, pos] of Object.entries(jobAllPOs)) {
+                const job = [...serviceJobs, ...installJobs].find(j => j[0] === parseInt(jobId));
+                if (!job) continue;
+
+                // Only show service department POs
+                if (job[10] !== 'service') continue;
+
+                const jobCode = job[11];
+
+                pos.forEach(po => {
+                    const poId = po[0];
+                    const poDisplay = jobCode ? `${jobCode}-${poId}` : poId;
+                    const techName = getTechName(po[2]);
+                    const clientName = po[8] || 'N/A';
+                    const status = po[3];
+                    const estimated = po[4] || 0;
+                    const invoiced = po[5] || 0;
+                    const date = po[6] || '';
+                    const description = po[7] || '';
+
+                    // Filter by client and keyword
+                    const matchesClient = !clientSearch || clientName.toLowerCase().includes(clientSearch);
+                    const matchesKeyword = !keywordSearch || description.toLowerCase().includes(keywordSearch) || job[1].toLowerCase().includes(keywordSearch) || techName.toLowerCase().includes(keywordSearch);
+
+                    if (matchesClient && matchesKeyword) {
+                        html += `
+                            <tr>
+                                <td><strong>${escapeHtml(poDisplay)}</strong></td>
+                                <td>${escapeHtml(job[1])}</td>
+                                <td>${escapeHtml(techName)}</td>
+                                <td>${escapeHtml(clientName)}</td>
+                                <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
+                                <td>${formatCurrency(estimated)}</td>
+                                <td>${formatCurrency(invoiced)}</td>
+                                <td>${date}</td>
+                            </tr>
+                        `;
+                        found++;
+                    }
+                });
+            }
+
+            html += '</tbody></table>';
+
+            if (found === 0) {
+                resultsDiv.innerHTML = '<p style="text-align: center; color: #999;">No POs found matching your search.</p>';
+            } else {
+                resultsDiv.innerHTML = html;
+            }
+        }
+
+        function clearServicePOSearch() {
+            document.getElementById('service-po-client-search').value = '';
+            document.getElementById('service-po-keyword-search').value = '';
+            renderServicePOs();
         }
 
         function filterInstallJobs() {
@@ -5992,9 +6044,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         }
 
         function showAllServiceJobs() {
-            document.getElementById('service-year-filter').value = '';
-            document.getElementById('service-client-filter').value = '';
-            filterServiceJobs();
+            clearServicePOSearch();
         }
 
         function showAllInstallJobs() {
@@ -6061,7 +6111,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             filteredInstallJobs = installJobs.filter(job =>
                 job[1].toLowerCase().includes(searchTerm)
             );
-            renderServiceJobs();
+            renderServicePOs();
             renderInstallJobs();
         }
 
@@ -6070,7 +6120,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             searchTerm = '';
             filteredServiceJobs = [...serviceJobs];
             filteredInstallJobs = [...installJobs];
-            renderServiceJobs();
+            renderServicePOs();
             renderInstallJobs();
         }
 
@@ -6214,8 +6264,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         // Initialize
         window.addEventListener('DOMContentLoaded', () => {
             populateYearFilters();
-            populateClientFilters();
-            renderServiceJobs();
+            renderServicePOs();
             renderInstallJobs();
 
             // Check if we need to switch to a different tab based on URL parameter
