@@ -5353,20 +5353,15 @@ TECH_DASHBOARD_TEMPLATE = '''
             });
         }
 
-        // Add event listeners for search filters
-        const clientFilter = document.getElementById('clientFilter');
-        const descriptionFilter = document.getElementById('descriptionFilter');
-        if (clientFilter) {
-            clientFilter.addEventListener('keyup', filterPOs);
-        }
-        if (descriptionFilter) {
-            descriptionFilter.addEventListener('keyup', filterPOs);
+        // Add event listener for combined search filter
+        const searchFilter = document.getElementById('poSearchFilter');
+        if (searchFilter) {
+            searchFilter.addEventListener('keyup', filterPOs);
         }
     });
 
     function filterPOs() {
-        const clientFilter = (document.getElementById('clientFilter') || {}).value.toLowerCase();
-        const descriptionFilter = (document.getElementById('descriptionFilter') || {}).value.toLowerCase();
+        const searchTerm = (document.getElementById('poSearchFilter') || {}).value.toLowerCase();
         const posContainer = document.getElementById('posContainer');
 
         if (!posContainer) return;
@@ -5378,10 +5373,10 @@ TECH_DASHBOARD_TEMPLATE = '''
             const client = po.getAttribute('data-client') || '';
             const description = po.getAttribute('data-description') || '';
 
-            const matchesClient = !clientFilter || client.includes(clientFilter);
-            const matchesDescription = !descriptionFilter || description.includes(descriptionFilter);
+            // Match if search term is in either client or description
+            const matches = !searchTerm || client.includes(searchTerm) || description.includes(searchTerm);
 
-            if (matchesClient && matchesDescription) {
+            if (matches) {
                 po.style.display = 'block';
                 visibleCount++;
             } else {
@@ -5391,7 +5386,7 @@ TECH_DASHBOARD_TEMPLATE = '''
 
         // Show "no results" message if nothing matches
         const posContainer_id = document.getElementById('posContainer');
-        if (visibleCount === 0) {
+        if (visibleCount === 0 && searchTerm) {
             let noResults = posContainer_id.querySelector('.no-results-message');
             if (!noResults) {
                 noResults = document.createElement('div');
@@ -5410,8 +5405,7 @@ TECH_DASHBOARD_TEMPLATE = '''
     }
 
     function clearFilters() {
-        document.getElementById('clientFilter').value = '';
-        document.getElementById('descriptionFilter').value = '';
+        document.getElementById('poSearchFilter').value = '';
         filterPOs();
     }
 
@@ -5474,16 +5468,9 @@ TECH_DASHBOARD_TEMPLATE = '''
         {% if requests %}
         <div style="background: #f9f9f9; padding: 15px; border-radius: 5px; margin-bottom: 20px; border-left: 4px solid #667eea;">
             <h3 style="color: #333; margin-bottom: 15px; font-size: 16px;">🔍 Search My POs</h3>
-            <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end;">
-                <div style="flex: 1; min-width: 200px;">
-                    <label style="display: block; font-weight: bold; color: #555; margin-bottom: 5px; font-size: 14px;">Client Name</label>
-                    <input type="text" id="clientFilter" placeholder="Search by client/store..." style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
-                </div>
-                <div style="flex: 1; min-width: 200px;">
-                    <label style="display: block; font-weight: bold; color: #555; margin-bottom: 5px; font-size: 14px;">Description</label>
-                    <input type="text" id="descriptionFilter" placeholder="Search by description..." style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
-                </div>
-                <button onclick="clearFilters()" style="background: #6c757d; color: white; padding: 8px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Clear</button>
+            <div style="display: flex; gap: 10px; align-items: flex-end;">
+                <input type="text" id="poSearchFilter" placeholder="Search by client name or description..." style="flex: 1; padding: 10px; border: 2px solid #ddd; border-radius: 4px; font-size: 14px;">
+                <button onclick="clearFilters()" style="background: #6c757d; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Clear</button>
             </div>
         </div>
         {% endif %}
