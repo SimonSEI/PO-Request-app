@@ -5724,7 +5724,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         function renderServicePOs() {
             const resultsDiv = document.getElementById('service-po-results');
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Job Name</th><th>Tech</th><th>Client</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Date</th></tr></thead><tbody>';
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Job Name</th><th>Tech</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Date</th></tr></thead><tbody>';
             let totalPOs = 0;
 
             // Get all service POs from serviceJobs and jobAllPOs
@@ -5745,10 +5745,9 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
                     html += `
                         <tr>
-                            <td><strong>${escapeHtml(poDisplay)}</strong></td>
+                            <td><strong>${escapeHtml(poDisplay)}</strong><br><small style="color: #666;">Store: ${escapeHtml(clientName)}</small></td>
                             <td>${escapeHtml(job[1])}</td>
                             <td>${escapeHtml(techName)}</td>
-                            <td>${escapeHtml(clientName)}</td>
                             <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
                             <td>${formatCurrency(estimated)}</td>
                             <td>${formatCurrency(invoiced)}</td>
@@ -5962,7 +5961,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             const keywordSearch = document.getElementById('service-po-keyword-search').value.toLowerCase().trim();
 
             const resultsDiv = document.getElementById('service-po-results');
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Job Name</th><th>Tech</th><th>Client</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Date</th></tr></thead><tbody>';
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Job Name</th><th>Tech</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Date</th></tr></thead><tbody>';
             let found = 0;
 
             // Get all service POs from serviceJobs and jobAllPOs
@@ -5990,10 +5989,9 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     if (matchesClient && matchesKeyword) {
                         html += `
                             <tr>
-                                <td><strong>${escapeHtml(poDisplay)}</strong></td>
+                                <td><strong>${escapeHtml(poDisplay)}</strong><br><small style="color: #666;">Store: ${escapeHtml(clientName)}</small></td>
                                 <td>${escapeHtml(jobName)}</td>
                                 <td>${escapeHtml(techName)}</td>
-                                <td>${escapeHtml(clientName)}</td>
                                 <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
                                 <td>${formatCurrency(estimated)}</td>
                                 <td>${formatCurrency(invoiced)}</td>
