@@ -1390,11 +1390,11 @@ def tech_dashboard():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
-    # Always use service type for this dashboard
-    tech_type = 'service'
+    # Get tech type from session (service or install)
+    tech_type = session.get('tech_type', 'install')
 
-    # Get the active service job
-    c.execute("SELECT job_name, year FROM jobs WHERE active=1 AND department='service' ORDER BY year DESC LIMIT 1")
+    # Get the active job for this tech's department
+    c.execute("SELECT job_name, year FROM jobs WHERE active=1 AND department=? ORDER BY year DESC LIMIT 1", (tech_type,))
     active_job = c.fetchone()
     active_job_name = active_job[0] if active_job else None
 
@@ -5096,7 +5096,11 @@ TECH_DASHBOARD_TEMPLATE = '''
 </head>
 <body>
     <div class="header">
-        <h1>📱 Service Technician Dashboard - {{ full_name }}</h1>
+        {% if tech_type == 'service' %}
+            <h1>📱 Service Technician Dashboard - {{ full_name }}</h1>
+        {% else %}
+            <h1>🔧 Install Technician Dashboard - {{ full_name }}</h1>
+        {% endif %}
         <a href="{{ url_for('logout') }}" class="logout-btn">Logout</a>
     </div>
 
@@ -5125,12 +5129,16 @@ TECH_DASHBOARD_TEMPLATE = '''
     {% endwith %}
 
     <div class="card">
-        <h2>📝 Submit New Service PO Request <span style="background: #007bff; color: white; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-left: 10px;">PO Prefix: S</span></h2>
+        {% if tech_type == 'service' %}
+            <h2>📝 Submit New Service PO Request <span style="background: #007bff; color: white; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-left: 10px;">PO Prefix: S</span></h2>
+        {% else %}
+            <h2>📝 Submit New Install PO Request <span style="background: #28a745; color: white; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-left: 10px;">PO Prefix: I</span></h2>
+        {% endif %}
         <form method="POST" action="{{ url_for('submit_request') }}">
             {# Auto-populate tech_name from the logged-in user's full_name #}
             <input type="hidden" name="tech_name" value="{{ full_name }}">
 
-            {# Auto-populate job_name with the active service job #}
+            {# Auto-populate job_name with the active job for this tech's department #}
             <input type="hidden" name="job_name" value="{{ active_job_name }}">
 
             <div class="form-group">
@@ -5148,15 +5156,25 @@ TECH_DASHBOARD_TEMPLATE = '''
             </div>
 
             <div class="form-group">
-                <label>Active Service Job</label>
-                <div style="padding: 10px; background: #f0f4ff; border: 2px solid #667eea; border-radius: 5px; font-weight: bold; color: #333;">{{ active_job_name if active_job_name else 'No active service job available' }}</div>
+                {% if tech_type == 'service' %}
+                    <label>Active Service Job</label>
+                    <div style="padding: 10px; background: #f0f4ff; border: 2px solid #667eea; border-radius: 5px; font-weight: bold; color: #333;">{{ active_job_name if active_job_name else 'No active service job available' }}</div>
+                {% else %}
+                    <label>Active Install Job</label>
+                    <div style="padding: 10px; background: #d4edda; border: 2px solid #28a745; border-radius: 5px; font-weight: bold; color: #333;">{{ active_job_name if active_job_name else 'No active install job available' }}</div>
+                {% endif %}
             </div>
 
+            {% if tech_type == 'service' %}
             <div class="form-group">
                 <label>Client Name <span style="color: red;">*</span></label>
                 <input type="text" id="client_name" name="client_name" placeholder="e.g., Somerville, Heron's Glen, Reserve" required>
                 <small style="color: #666; display: block; margin-top: 5px;">📍 Enter the client/location name for this service (e.g., Somerville, Heron's Glen, etc.)</small>
             </div>
+            {% else %}
+                {# For install techs, send empty client_name #}
+                <input type="hidden" name="client_name" value="">
+            {% endif %}
 
             <div class="form-group">
                 <label>Store Name</label>
