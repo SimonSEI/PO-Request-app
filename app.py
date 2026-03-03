@@ -5218,11 +5218,13 @@ TECH_DASHBOARD_TEMPLATE = '''
                 <small style="color: #666;">Enter specific PO number (must be 9000 or higher)</small>
             </div>
 
+            {% if tech_type != 'install' %}
             <div class="form-group">
                 <label>Client Name <span style="color: red;">*</span></label>
                 <input type="text" id="client_name" name="client_name" placeholder="e.g., Somerville, Heron's Glen, Reserve" required>
                 <small style="color: #666; display: block; margin-top: 5px;">📍 Enter the client/location name for this service (e.g., Somerville, Heron's Glen, etc.)</small>
             </div>
+            {% endif %}
 
             <div class="form-group">
                 <label>Store Name</label>
