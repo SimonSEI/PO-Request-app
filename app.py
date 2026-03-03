@@ -5221,11 +5221,15 @@ TECH_DASHBOARD_TEMPLATE = '''
                 <small style="color: #666;">Enter specific PO number (must be 9000 or higher)</small>
             </div>
 
+            {% if tech_type == 'service' %}
             <div class="form-group">
                 <label>Client Name <span style="color: red;">*</span></label>
                 <input type="text" id="client_name" name="client_name" placeholder="e.g., Somerville, Heron's Glen, Reserve" required>
                 <small style="color: #666; display: block; margin-top: 5px;">📍 Enter the client/location name for this service (e.g., Somerville, Heron's Glen, etc.)</small>
             </div>
+            {% else %}
+            <input type="hidden" name="client_name" value="">
+            {% endif %}
 
             <div class="form-group">
                 <label>Store Name</label>
@@ -5552,9 +5556,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             <select id="install-year-filter" onchange="filterInstallJobs()">
                 <option value="">All Years</option>
             </select>
-            <label style="margin-left: 20px;">Search by Client:</label>
-            <input type="text" id="install-client-filter" placeholder="Type client name..." oninput="filterInstallJobs()" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
-            <button onclick="showAllInstallJobs()" style="background: #28a745;">Show All</button>
+            <button onclick="showAllInstallJobs()" style="background: #28a745; margin-left: 20px;">Show All</button>
         </div>
 
         <div class="stats-grid" id="install-stats"></div>
@@ -5879,6 +5881,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
                     const clientName = po[7] || 'N/A';
                     const poItemId = `po-item-${jobId}-${poNum}`;
+                    const clientDisplay = dept === 'service' ? `<br><small style="color: #666; font-style: italic;">Client: ${escapeHtml(clientName)}</small>` : '';
                     html += `
                         <div class="po-item" id="${poItemId}">
                             <div style="display: flex; justify-content: space-between; align-items: start;">
@@ -5886,7 +5889,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                                     <strong>PO #${poDisplay}</strong> - <span class="po-tech">${techName}</span>
                                     <span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span>
                                     <br><small>Est: ${formatCurrency(estimated)} | Inv: ${formatCurrency(invoiced_po)}</small>
-                                    <br><small style="color: #666; font-style: italic;">Client: ${escapeHtml(clientName)}</small>
+                                    ${clientDisplay}
                                 </div>
                                 <button class="po-delete-btn" onclick="deletePO(${jobId}, ${poNum}, '${poDisplay}', event)" title="Delete this PO" style="background: #dc3545; color: white; border: none; padding: 4px 8px; border-radius: 3px; cursor: pointer; font-size: 12px;">
                                     🗑️ Delete
