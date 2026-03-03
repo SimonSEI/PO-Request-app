@@ -5145,11 +5145,6 @@ TECH_DASHBOARD_TEMPLATE = '''
             </div>
 
             <div class="form-group">
-                <label>Active Service Job</label>
-                <div style="padding: 10px; background: #f0f4ff; border: 2px solid #667eea; border-radius: 5px; font-weight: bold; color: #333;">{{ active_job_name if active_job_name else 'No active service job available' }}</div>
-            </div>
-
-            <div class="form-group">
                 <label>Client Name <span style="color: red;">*</span></label>
                 <input type="text" id="client_name" name="client_name" placeholder="e.g., Somerville, Heron's Glen, Reserve" required>
                 <small style="color: #666; display: block; margin-top: 5px;">📍 Enter the client/location name for this service (e.g., Somerville, Heron's Glen, etc.)</small>
