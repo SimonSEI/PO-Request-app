@@ -5983,11 +5983,9 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         function filterInstallJobs() {
             const year = document.getElementById('install-year-filter').value;
-            const client = document.getElementById('install-client-filter').value.toLowerCase().trim();
 
             filteredInstallJobs = installJobs.filter(job => {
                 if (year && job[2].toString() !== year) return false;
-                if (!jobMatchesClient(job[0], client)) return false;
                 return true;
             });
             renderInstallJobs();
@@ -6001,7 +5999,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         function showAllInstallJobs() {
             document.getElementById('install-year-filter').value = '';
-            document.getElementById('install-client-filter').value = '';
             filterInstallJobs();
         }
 
