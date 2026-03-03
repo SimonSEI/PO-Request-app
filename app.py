@@ -1390,11 +1390,12 @@ def tech_dashboard():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
-    # Always use service type for this dashboard
-    tech_type = 'service'
+    # Get tech_type from session (set during login)
+    tech_type = session.get('tech_type', 'service')
 
-    # Get the active service job
-    c.execute("SELECT job_name, year FROM jobs WHERE active=1 AND department='service' ORDER BY year DESC LIMIT 1")
+    # Get the active job for this tech's department
+    department = 'install' if tech_type == 'install' else 'service'
+    c.execute("SELECT job_name, year FROM jobs WHERE active=1 AND department=? ORDER BY year DESC LIMIT 1", (department,))
     active_job = c.fetchone()
     active_job_name = active_job[0] if active_job else None
 
@@ -5149,7 +5150,7 @@ TECH_DASHBOARD_TEMPLATE = '''
 </head>
 <body>
     <div class="header">
-        <h1>📱 Service Technician Dashboard - {{ full_name }}</h1>
+        <h1>{% if tech_type == 'install' %}🔧 Install Technician Dashboard - {{ full_name }}{% else %}📱 Service Technician Dashboard - {{ full_name }}{% endif %}</h1>
         <a href="{{ url_for('logout') }}" class="logout-btn">Logout</a>
     </div>
 
@@ -5178,7 +5179,7 @@ TECH_DASHBOARD_TEMPLATE = '''
     {% endwith %}
 
     <div class="card">
-        <h2>📝 Submit New Service PO Request <span style="background: #007bff; color: white; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-left: 10px;">PO Prefix: S</span></h2>
+        <h2>📝 Submit New {% if tech_type == 'install' %}Install{% else %}Service{% endif %} PO Request <span style="background: #007bff; color: white; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-left: 10px;">PO Prefix: {% if tech_type == 'install' %}I{% else %}S{% endif %}</span></h2>
         <form method="POST" action="{{ url_for('submit_request') }}">
             {# Auto-populate tech_name from the logged-in user's full_name #}
             <input type="hidden" name="tech_name" value="{{ full_name }}">
