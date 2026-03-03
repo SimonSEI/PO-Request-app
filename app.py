@@ -1914,6 +1914,59 @@ def delete_invoice():
         traceback.print_exc()
         return jsonify({'success': False, 'error': f'Server error: {str(e)}'})
 
+@app.route('/delete_po', methods=['POST'])
+def delete_po():
+    """Delete an active PO (office only)"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    try:
+        data = request.get_json()
+        po_id = data.get('po_id')
+
+        if not po_id:
+            return jsonify({'success': False, 'error': 'No PO ID provided'})
+
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Get PO details
+        c.execute("SELECT status, invoice_filename FROM po_requests WHERE id=?", (po_id,))
+        po = c.fetchone()
+
+        if not po:
+            conn.close()
+            return jsonify({'success': False, 'error': 'PO not found'})
+
+        # Only allow deletion of active POs (approved or awaiting_invoice)
+        status = po[0]
+        if status not in ('approved', 'awaiting_invoice'):
+            conn.close()
+            return jsonify({'success': False, 'error': f'Cannot delete PO with status: {status}'})
+
+        # Delete associated invoice file if exists
+        invoice_filename = po[1]
+        if invoice_filename and invoice_filename != 'MANUAL_ENTRY':
+            invoice_path = os.path.join(app.config['UPLOAD_FOLDER'], invoice_filename)
+            if os.path.exists(invoice_path):
+                try:
+                    os.remove(invoice_path)
+                except Exception as e:
+                    print(f"WARNING: Could not delete invoice file: {e}")
+
+        # Delete the PO request
+        c.execute("DELETE FROM po_requests WHERE id=?", (po_id,))
+        conn.commit()
+        conn.close()
+
+        return jsonify({'success': True, 'message': 'PO deleted successfully'})
+
+    except Exception as e:
+        print(f"ERROR in delete_po: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': f'Server error: {str(e)}'})
+
 @app.route('/view_invoice/<filename>')
 def view_invoice(filename):
     """View uploaded invoice file"""
@@ -5802,12 +5855,20 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     const invoiced_po = po[5] || 0;
 
                     const clientName = po[7] || 'N/A';
+                    const poItemId = `po-item-${jobId}-${poNum}`;
                     html += `
-                        <div class="po-item">
-                            <strong>PO #${poDisplay}</strong> - <span class="po-tech">${techName}</span>
-                            <span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span>
-                            <br><small>Est: ${formatCurrency(estimated)} | Inv: ${formatCurrency(invoiced_po)}</small>
-                            <br><small style="color: #666; font-style: italic;">Client: ${escapeHtml(clientName)}</small>
+                        <div class="po-item" id="${poItemId}">
+                            <div style="display: flex; justify-content: space-between; align-items: start;">
+                                <div>
+                                    <strong>PO #${poDisplay}</strong> - <span class="po-tech">${techName}</span>
+                                    <span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span>
+                                    <br><small>Est: ${formatCurrency(estimated)} | Inv: ${formatCurrency(invoiced_po)}</small>
+                                    <br><small style="color: #666; font-style: italic;">Client: ${escapeHtml(clientName)}</small>
+                                </div>
+                                <button class="po-delete-btn" onclick="deletePO(${jobId}, ${poNum}, '${poDisplay}', event)" title="Delete this PO" style="background: #dc3545; color: white; border: none; padding: 4px 8px; border-radius: 3px; cursor: pointer; font-size: 12px;">
+                                    🗑️ Delete
+                                </button>
+                            </div>
                         </div>
                     `;
                 });
@@ -6030,6 +6091,94 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         function closePoModal() {
             document.getElementById('po-modal').classList.remove('open');
+        }
+
+        // Track pending PO deletions for undo functionality
+        let pendingDeletions = {};
+
+        function deletePO(jobId, poNum, poDisplay, event) {
+            event.preventDefault();
+            event.stopPropagation();
+
+            const poItemId = `po-item-${jobId}-${poNum}`;
+            const poElement = document.getElementById(poItemId);
+            if (!poElement) return;
+
+            // Hide the PO visually
+            poElement.style.opacity = '0.5';
+            poElement.style.textDecoration = 'line-through';
+
+            // Replace the delete button with undo button
+            const deleteBtn = poElement.querySelector('.po-delete-btn');
+            if (deleteBtn) {
+                deleteBtn.textContent = '↩️ Undo';
+                deleteBtn.onclick = function(e) { undoPODeletion(jobId, poNum, event); };
+                deleteBtn.style.background = '#28a745';
+            }
+
+            // Set timeout to actually delete after 5 seconds if not undone
+            const timeoutId = setTimeout(() => {
+                confirmPODeletion(jobId, poNum, poDisplay);
+            }, 5000);
+
+            // Store the timeout so it can be cancelled if user clicks undo
+            pendingDeletions[poItemId] = { timeoutId, jobId, poNum, poDisplay };
+        }
+
+        function undoPODeletion(jobId, poNum, event) {
+            event.preventDefault();
+            event.stopPropagation();
+
+            const poItemId = `po-item-${jobId}-${poNum}`;
+            const poElement = document.getElementById(poItemId);
+            if (!poElement) return;
+
+            // Cancel the deletion timeout
+            if (pendingDeletions[poItemId]) {
+                clearTimeout(pendingDeletions[poItemId].timeoutId);
+                delete pendingDeletions[poItemId];
+            }
+
+            // Restore the PO visually
+            poElement.style.opacity = '1';
+            poElement.style.textDecoration = 'none';
+
+            // Restore the delete button
+            const undoBtn = poElement.querySelector('.po-delete-btn');
+            if (undoBtn) {
+                const poDisplay = `${jobCode || ''}-${poNum}`.replace(/^-/, '');
+                undoBtn.textContent = '🗑️ Delete';
+                undoBtn.onclick = function(e) { deletePO(jobId, poNum, poDisplay, e); };
+                undoBtn.style.background = '#dc3545';
+            }
+        }
+
+        function confirmPODeletion(jobId, poNum, poDisplay) {
+            fetch('/delete_po', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ po_id: poNum })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    const poItemId = `po-item-${jobId}-${poNum}`;
+                    const poElement = document.getElementById(poItemId);
+                    if (poElement) {
+                        poElement.style.display = 'none';
+                    }
+                    delete pendingDeletions[poItemId];
+                } else {
+                    alert('Error deleting PO: ' + (data.error || 'Unknown error'));
+                    // Restore the PO if deletion failed
+                    undoPODeletion(jobId, poNum, { preventDefault: () => {}, stopPropagation: () => {} });
+                }
+            })
+            .catch(err => {
+                console.error('Error:', err);
+                alert('Error deleting PO: ' + err.message);
+                undoPODeletion(jobId, poNum, { preventDefault: () => {}, stopPropagation: () => {} });
+            });
         }
 
         window.onclick = function(event) {
