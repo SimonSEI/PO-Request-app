@@ -5726,18 +5726,11 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             const resultsDiv = document.getElementById('service-po-results');
             let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Job Name</th><th>Tech</th><th>Client</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Date</th></tr></thead><tbody>';
             let totalPOs = 0;
-            let approvedCount = 0;
-            let totalEstimated = 0;
-            let totalInvoiced = 0;
 
-            // Get all service POs from jobAllPOs
-            for (const [jobId, pos] of Object.entries(jobAllPOs)) {
-                const job = [...serviceJobs, ...installJobs].find(j => j[0] === parseInt(jobId));
-                if (!job) continue;
-
-                // Only show service department POs
-                if (job[10] !== 'service') continue;
-
+            // Get all service POs from serviceJobs and jobAllPOs
+            serviceJobs.forEach(job => {
+                const jobId = job[0];
+                const pos = jobAllPOs[jobId] || [];
                 const jobCode = job[11];
 
                 pos.forEach(po => {
@@ -5764,11 +5757,8 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     `;
 
                     totalPOs++;
-                    if (status === 'approved') approvedCount++;
-                    totalEstimated += estimated;
-                    totalInvoiced += invoiced;
                 });
-            }
+            });
 
             html += '</tbody></table>';
 
@@ -5975,15 +5965,12 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Job Name</th><th>Tech</th><th>Client</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Date</th></tr></thead><tbody>';
             let found = 0;
 
-            // Get all service POs from jobAllPOs
-            for (const [jobId, pos] of Object.entries(jobAllPOs)) {
-                const job = [...serviceJobs, ...installJobs].find(j => j[0] === parseInt(jobId));
-                if (!job) continue;
-
-                // Only show service department POs
-                if (job[10] !== 'service') continue;
-
+            // Get all service POs from serviceJobs and jobAllPOs
+            serviceJobs.forEach(job => {
+                const jobId = job[0];
+                const pos = jobAllPOs[jobId] || [];
                 const jobCode = job[11];
+                const jobName = job[1];
 
                 pos.forEach(po => {
                     const poId = po[0];
@@ -5998,13 +5985,13 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
                     // Filter by client and keyword
                     const matchesClient = !clientSearch || clientName.toLowerCase().includes(clientSearch);
-                    const matchesKeyword = !keywordSearch || description.toLowerCase().includes(keywordSearch) || job[1].toLowerCase().includes(keywordSearch) || techName.toLowerCase().includes(keywordSearch);
+                    const matchesKeyword = !keywordSearch || description.toLowerCase().includes(keywordSearch) || jobName.toLowerCase().includes(keywordSearch) || techName.toLowerCase().includes(keywordSearch);
 
                     if (matchesClient && matchesKeyword) {
                         html += `
                             <tr>
                                 <td><strong>${escapeHtml(poDisplay)}</strong></td>
-                                <td>${escapeHtml(job[1])}</td>
+                                <td>${escapeHtml(jobName)}</td>
                                 <td>${escapeHtml(techName)}</td>
                                 <td>${escapeHtml(clientName)}</td>
                                 <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
@@ -6016,7 +6003,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                         found++;
                     }
                 });
-            }
+            });
 
             html += '</tbody></table>';
 
