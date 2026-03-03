@@ -1576,7 +1576,6 @@ def submit_request():
     custom_po_number = request.form.get('custom_po_number', '').strip()
     job_name = request.form['job_name'].strip()
     store_name = request.form.get('store_name', '').strip()
-    estimated_cost = 0  # Estimated cost removed from form
     description = request.form.get('description', '').strip()
     client_name = request.form.get('client_name', '').strip()  # Optional - for Service POs
 
@@ -1639,11 +1638,11 @@ def submit_request():
             # Insert with EXPLICIT ID - set to awaiting_invoice
             now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             c.execute("""INSERT INTO po_requests
-                         (id, tech_username, tech_name, job_name, store_name, estimated_cost,
+                         (id, tech_username, tech_name, job_name, store_name,
                           description, status, request_date, client_name, po_type)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, 'awaiting_invoice', ?, ?, ?)""",
+                         VALUES (?, ?, ?, ?, ?, ?, 'awaiting_invoice', ?, ?, ?)""",
                      (po_id, session['username'], tech_name, job_name, store_name,
-                      estimated_cost, description, now_str, client_name if client_name else None, tech_type))
+                      description, now_str, client_name if client_name else None, tech_type))
 
             conn.commit()
             conn.close()
@@ -1676,11 +1675,11 @@ def submit_request():
         # Create PO with awaiting_invoice status and po_type
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         c.execute("""INSERT INTO po_requests
-                     (tech_username, tech_name, job_name, store_name, estimated_cost,
+                     (tech_username, tech_name, job_name, store_name,
                       description, status, request_date, client_name, po_type)
-                     VALUES (?, ?, ?, ?, ?, ?, 'awaiting_invoice', ?, ?, ?)""",
+                     VALUES (?, ?, ?, ?, ?, 'awaiting_invoice', ?, ?, ?)""",
                  (session['username'], tech_name, job_name, store_name,
-                  estimated_cost, description, now_str, client_name if client_name else None, tech_type))
+                  description, now_str, client_name if client_name else None, tech_type))
 
         new_id = c.lastrowid
         conn.commit()
@@ -1798,18 +1797,18 @@ def upload_invoice(po_id):
 
             c.execute("""UPDATE po_requests
                          SET invoice_filename=?, invoice_number=?, invoice_cost=?,
-                             invoice_date=?, invoice_upload_date=?, job_name=?, estimated_cost=?, status=?, manual_review_flag=?
+                             invoice_date=?, invoice_upload_date=?, job_name=?, status=?, manual_review_flag=?
                          WHERE id=?""",
                      (invoice_filename, invoice_number, formatted_cost, 'N/A',
-                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'), new_job_name, cost_float, 'matched', manual_review_flag, po_id))
+                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'), new_job_name, 'matched', manual_review_flag, po_id))
         else:
-            # Normal update - replace estimated_cost with actual invoice cost
+            # Normal update - set invoice cost
             c.execute("""UPDATE po_requests
                          SET invoice_filename=?, invoice_number=?, invoice_cost=?,
-                             invoice_date=?, invoice_upload_date=?, estimated_cost=?, status=?
+                             invoice_date=?, invoice_upload_date=?, status=?
                          WHERE id=?""",
                      (invoice_filename, invoice_number, formatted_cost, 'N/A',
-                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'), cost_float, 'matched', po_id))
+                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'matched', po_id))
 
         conn.commit()
         conn.close()
@@ -5207,7 +5206,6 @@ TECH_DASHBOARD_TEMPLATE = '''
                         <div style="font-size: 16px; color: #333; font-weight: bold;">{{ req[3] }}</div>
                     </div>
                     <p><strong>Store:</strong> {{ req[4] }}</p>
-                    <p><strong>Estimated Amount:</strong> ${{ "%.2f"|format(req[5]) }}</p>
                     <p><strong>Description:</strong> {{ req[6] }}</p>
                     <p><strong>Submitted:</strong> {{ req[8] }}</p>
 
