@@ -6267,19 +6267,23 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             const serviceSelect = document.getElementById('service-year-filter');
             const installSelect = document.getElementById('install-year-filter');
 
-            serviceYears.forEach(year => {
-                const opt = document.createElement('option');
-                opt.value = year;
-                opt.textContent = year;
-                serviceSelect.appendChild(opt);
-            });
+            if (serviceSelect) {
+                serviceYears.forEach(year => {
+                    const opt = document.createElement('option');
+                    opt.value = year;
+                    opt.textContent = year;
+                    serviceSelect.appendChild(opt);
+                });
+            }
 
-            installYears.forEach(year => {
-                const opt = document.createElement('option');
-                opt.value = year;
-                opt.textContent = year;
-                installSelect.appendChild(opt);
-            });
+            if (installSelect) {
+                installYears.forEach(year => {
+                    const opt = document.createElement('option');
+                    opt.value = year;
+                    opt.textContent = year;
+                    installSelect.appendChild(opt);
+                });
+            }
         }
 
         // Populate client filter for service department
