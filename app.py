@@ -5437,11 +5437,8 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             <select id="service-year-filter" onchange="filterServiceJobs()">
                 <option value="">All Years</option>
             </select>
-            <label style="margin-left: 20px;">Filter by Client:</label>
-            <select id="service-client-filter" onchange="filterServiceJobs()">
-                <option value="">All Clients</option>
-            </select>
-            <button onclick="filterServiceJobs()">Apply Filter</button>
+            <label style="margin-left: 20px;">Search by Client:</label>
+            <input type="text" id="service-client-filter" placeholder="Type client name..." oninput="filterServiceJobs()" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
             <button onclick="showAllServiceJobs()" style="background: #28a745;">Show All</button>
         </div>
 
@@ -5484,11 +5481,8 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             <select id="install-year-filter" onchange="filterInstallJobs()">
                 <option value="">All Years</option>
             </select>
-            <label style="margin-left: 20px;">Filter by Client:</label>
-            <select id="install-client-filter" onchange="filterInstallJobs()">
-                <option value="">All Clients</option>
-            </select>
-            <button onclick="filterInstallJobs()">Apply Filter</button>
+            <label style="margin-left: 20px;">Search by Client:</label>
+            <input type="text" id="install-client-filter" placeholder="Type client name..." oninput="filterInstallJobs()" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
             <button onclick="showAllInstallJobs()" style="background: #28a745;">Show All</button>
         </div>
 
@@ -5882,26 +5876,19 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             });
         }
 
-        function getJobClients(jobId) {
+        function jobMatchesClient(jobId, clientSearch) {
+            if (!clientSearch) return true;
             const pos = jobPOs[jobId] || [];
-            const clients = [...new Set(pos.map(p => p[7]).filter(c => c))]; // Index 7 is client_name
-            return clients;
+            return pos.some(p => p[7] && p[7].toLowerCase().includes(clientSearch));
         }
 
         function filterServiceJobs() {
             const year = document.getElementById('service-year-filter').value;
-            const client = document.getElementById('service-client-filter').value;
+            const client = document.getElementById('service-client-filter').value.toLowerCase().trim();
 
             filteredServiceJobs = serviceJobs.filter(job => {
-                // Check year filter
                 if (year && job[2].toString() !== year) return false;
-
-                // Check client filter
-                if (client) {
-                    const jobClients = getJobClients(job[0]);
-                    if (!jobClients.includes(client)) return false;
-                }
-
+                if (!jobMatchesClient(job[0], client)) return false;
                 return true;
             });
             renderServiceJobs();
@@ -5909,18 +5896,11 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         function filterInstallJobs() {
             const year = document.getElementById('install-year-filter').value;
-            const client = document.getElementById('install-client-filter').value;
+            const client = document.getElementById('install-client-filter').value.toLowerCase().trim();
 
             filteredInstallJobs = installJobs.filter(job => {
-                // Check year filter
                 if (year && job[2].toString() !== year) return false;
-
-                // Check client filter
-                if (client) {
-                    const jobClients = getJobClients(job[0]);
-                    if (!jobClients.includes(client)) return false;
-                }
-
+                if (!jobMatchesClient(job[0], client)) return false;
                 return true;
             });
             renderInstallJobs();
@@ -5958,43 +5938,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 opt.value = year;
                 opt.textContent = year;
                 installSelect.appendChild(opt);
-            });
-        }
-
-        // Populate client filters
-        function populateClientFilters() {
-            // Extract unique clients from service jobs
-            const serviceClients = new Set();
-            serviceJobs.forEach(job => {
-                const clients = getJobClients(job[0]);
-                clients.forEach(client => serviceClients.add(client));
-            });
-
-            // Extract unique clients from install jobs
-            const installClients = new Set();
-            installJobs.forEach(job => {
-                const clients = getJobClients(job[0]);
-                clients.forEach(client => installClients.add(client));
-            });
-
-            // Populate service client filter
-            const serviceClientSelect = document.getElementById('service-client-filter');
-            const sortedServiceClients = Array.from(serviceClients).sort();
-            sortedServiceClients.forEach(client => {
-                const opt = document.createElement('option');
-                opt.value = client;
-                opt.textContent = client;
-                serviceClientSelect.appendChild(opt);
-            });
-
-            // Populate install client filter
-            const installClientSelect = document.getElementById('install-client-filter');
-            const sortedInstallClients = Array.from(installClients).sort();
-            sortedInstallClients.forEach(client => {
-                const opt = document.createElement('option');
-                opt.value = client;
-                opt.textContent = client;
-                installClientSelect.appendChild(opt);
             });
         }
 
@@ -6070,7 +6013,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         // Initialize
         window.addEventListener('DOMContentLoaded', () => {
             populateYearFilters();
-            populateClientFilters();
             renderServiceJobs();
             renderInstallJobs();
 
