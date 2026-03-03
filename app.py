@@ -1424,6 +1424,8 @@ def tech_dashboard():
     inv_number_idx = columns.get('invoice_number', 13)
     inv_cost_idx = columns.get('invoice_cost', 14)
     inv_upload_idx = columns.get('invoice_upload_date', 16)
+    client_name_idx = columns.get('client_name')
+    po_type_idx = columns.get('po_type', 17)
 
     return render_template_string(TECH_DASHBOARD_TEMPLATE,
                                 username=session['username'],
@@ -1435,7 +1437,9 @@ def tech_dashboard():
                                 inv_filename_idx=inv_filename_idx,
                                 inv_number_idx=inv_number_idx,
                                 inv_cost_idx=inv_cost_idx,
-                                inv_upload_idx=inv_upload_idx)
+                                inv_upload_idx=inv_upload_idx,
+                                client_name_idx=client_name_idx,
+                                po_type_idx=po_type_idx)
 
 @app.route('/office_dashboard')
 def office_dashboard():
@@ -1705,6 +1709,50 @@ def submit_request():
         client_display = (client_name[:11] if client_name else job_name)
         flash(f'PO#{po_display}|{client_display}')
         return redirect(url_for('tech_dashboard'))
+
+@app.route('/tech_delete_invoice/<int:po_id>', methods=['POST'])
+def tech_delete_invoice(po_id):
+    """Allow technician to delete their own invoice"""
+    if 'username' not in session or session['role'] != 'technician':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Verify this PO belongs to the current technician
+        c.execute("SELECT tech_username, invoice_filename FROM po_requests WHERE id=?", (po_id,))
+        result = c.fetchone()
+
+        if not result:
+            conn.close()
+            return jsonify({'success': False, 'error': 'PO not found'})
+
+        if result[0] != session['username']:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Unauthorized - this is not your PO'})
+
+        # Delete invoice file if it exists
+        if result[1] and result[1] != 'MANUAL_ENTRY':
+            invoice_path = os.path.join(app.config['UPLOAD_FOLDER'], result[1])
+            if os.path.exists(invoice_path):
+                try:
+                    os.remove(invoice_path)
+                except:
+                    pass
+
+        # Clear invoice data
+        c.execute("""UPDATE po_requests
+                     SET invoice_filename=NULL, invoice_number=NULL,
+                         invoice_cost=NULL, invoice_date=NULL, invoice_upload_date=NULL
+                     WHERE id=?""", (po_id,))
+        conn.commit()
+        conn.close()
+
+        return jsonify({'success': True, 'message': 'Invoice deleted successfully'})
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Error: {str(e)}'})
 
 @app.route('/upload_invoice/<int:po_id>', methods=['POST'])
 def upload_invoice(po_id):
@@ -5246,11 +5294,10 @@ TECH_DASHBOARD_TEMPLATE = '''
     </div>
 
 <script>
-    // Simple form setup
+    // Form setup and PO search functionality
     document.addEventListener('DOMContentLoaded', function() {
         const customPoCheckbox = document.getElementById('use-custom-po');
         if (customPoCheckbox) {
-            // Ensure custom PO field displays correctly
             const customPoField = document.getElementById('custom-po-field');
             const customPoInput = document.getElementById('custom_po_number');
             customPoCheckbox.addEventListener('change', function() {
@@ -5264,21 +5311,130 @@ TECH_DASHBOARD_TEMPLATE = '''
                 }
             });
         }
+
+        // Add event listeners for search filters
+        const clientFilter = document.getElementById('clientFilter');
+        const descriptionFilter = document.getElementById('descriptionFilter');
+        if (clientFilter) {
+            clientFilter.addEventListener('keyup', filterPOs);
+        }
+        if (descriptionFilter) {
+            descriptionFilter.addEventListener('keyup', filterPOs);
+        }
     });
+
+    function filterPOs() {
+        const clientFilter = (document.getElementById('clientFilter') || {}).value.toLowerCase();
+        const descriptionFilter = (document.getElementById('descriptionFilter') || {}).value.toLowerCase();
+        const posContainer = document.getElementById('posContainer');
+
+        if (!posContainer) return;
+
+        const pos = posContainer.querySelectorAll('.request-item');
+        let visibleCount = 0;
+
+        pos.forEach(po => {
+            const client = po.getAttribute('data-client') || '';
+            const description = po.getAttribute('data-description') || '';
+
+            const matchesClient = !clientFilter || client.includes(clientFilter);
+            const matchesDescription = !descriptionFilter || description.includes(descriptionFilter);
+
+            if (matchesClient && matchesDescription) {
+                po.style.display = 'block';
+                visibleCount++;
+            } else {
+                po.style.display = 'none';
+            }
+        });
+
+        // Show "no results" message if nothing matches
+        const posContainer_id = document.getElementById('posContainer');
+        if (visibleCount === 0) {
+            let noResults = posContainer_id.querySelector('.no-results-message');
+            if (!noResults) {
+                noResults = document.createElement('div');
+                noResults.className = 'no-results-message';
+                noResults.style.cssText = 'background: #fff3cd; color: #856404; padding: 15px; border-radius: 5px; margin-top: 15px; border-left: 4px solid #ffc107;';
+                noResults.textContent = '❌ No POs match your search criteria.';
+                posContainer_id.appendChild(noResults);
+            }
+            noResults.style.display = 'block';
+        } else {
+            const noResults = posContainer_id.querySelector('.no-results-message');
+            if (noResults) {
+                noResults.style.display = 'none';
+            }
+        }
+    }
+
+    function clearFilters() {
+        document.getElementById('clientFilter').value = '';
+        document.getElementById('descriptionFilter').value = '';
+        filterPOs();
+    }
+
+    function deleteInvoice(poId, poNumber) {
+        if (!confirm(`Are you sure you want to delete the invoice for PO #${poNumber}? This will move the PO back to "Approved" status without an invoice.`)) {
+            return;
+        }
+
+        fetch(`/tech_delete_invoice/${poId}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert('✓ Invoice deleted successfully. The PO is now back to "Approved" status.');
+                location.reload();
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to delete invoice'));
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('❌ An error occurred while deleting the invoice.');
+        });
+    }
 </script>
 
     <div class="card">
         <h2>📋 My PO Requests</h2>
+
         {% if requests %}
+        <div style="background: #f9f9f9; padding: 15px; border-radius: 5px; margin-bottom: 20px; border-left: 4px solid #667eea;">
+            <h3 style="color: #333; margin-bottom: 15px; font-size: 16px;">🔍 Search My POs</h3>
+            <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end;">
+                <div style="flex: 1; min-width: 200px;">
+                    <label style="display: block; font-weight: bold; color: #555; margin-bottom: 5px; font-size: 14px;">Client Name</label>
+                    <input type="text" id="clientFilter" placeholder="Search by client/store..." style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+                <div style="flex: 1; min-width: 200px;">
+                    <label style="display: block; font-weight: bold; color: #555; margin-bottom: 5px; font-size: 14px;">Description</label>
+                    <input type="text" id="descriptionFilter" placeholder="Search by description..." style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+                <button onclick="clearFilters()" style="background: #6c757d; color: white; padding: 8px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Clear</button>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if requests %}
+            <div id="posContainer">
             {% for req in requests %}
-                <div class="request-item {{ req[7] }}">
+                <div class="request-item {{ req[7] }}" data-client="{{ req[4]|lower }}" data-description="{{ req[6]|lower }}">
                     <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-wrap: wrap;">
                         <div style="background: #28a745; color: white; padding: 6px 16px; border-radius: 20px; font-size: 18px; font-weight: bold; letter-spacing: 1px;">
                             PO #{{ format_po_number(req[0], req[3]) }}
                         </div>
-                        <div style="font-size: 16px; color: #333; font-weight: bold;">{{ req[3] }}</div>
+                        <div style="font-size: 16px; color: #333; font-weight: bold;">{% if client_name_idx is not none and req|length > client_name_idx and req[client_name_idx] %}{{ req[client_name_idx] }}{% else %}Service{% endif %}</div>
                     </div>
                     <p><strong>Store:</strong> {{ req[4] }}</p>
+                    {% if client_name_idx is not none and req|length > client_name_idx and req[client_name_idx] %}
+                        <p style="margin-left: 0; color: #666; font-size: 14px;">📍 Client: <strong>{{ req[client_name_idx] }}</strong></p>
+                    {% endif %}
                     <p><strong>Description:</strong> {{ req[6] }}</p>
                     <p><strong>Submitted:</strong> {{ req[8] }}</p>
 
@@ -5290,10 +5446,15 @@ TECH_DASHBOARD_TEMPLATE = '''
                     {% elif req[7] == 'approved' %}
                         {% if req|length > inv_filename_idx and req[inv_filename_idx] and req[inv_filename_idx] != '' %}
                             <div class="invoice-data">
-                                <h4>📄 Invoice Entered by Office</h4>
-                                <p><strong>Invoice Number:</strong> {{ req[inv_number_idx] if req|length > inv_number_idx else 'N/A' }}</p>
-                                <p><strong>Total Cost:</strong> ${{ req[inv_cost_idx] if req|length > inv_cost_idx else '0.00' }}</p>
-                                <p><strong>Entered:</strong> {{ req[inv_upload_idx] if req|length > inv_upload_idx else 'N/A' }}</p>
+                                <div style="display: flex; justify-content: space-between; align-items: start; gap: 15px;">
+                                    <div>
+                                        <h4>📄 Invoice Entered by Office</h4>
+                                        <p><strong>Invoice Number:</strong> {{ req[inv_number_idx] if req|length > inv_number_idx else 'N/A' }}</p>
+                                        <p><strong>Total Cost:</strong> ${{ req[inv_cost_idx] if req|length > inv_cost_idx else '0.00' }}</p>
+                                        <p><strong>Entered:</strong> {{ req[inv_upload_idx] if req|length > inv_upload_idx else 'N/A' }}</p>
+                                    </div>
+                                    <button onclick="deleteInvoice({{ req[0] }}, '{{ format_po_number(req[0], req[3]) }}')" style="background: #dc3545; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 12px; white-space: nowrap;">🗑️ Delete Invoice</button>
+                                </div>
                             </div>
                         {% else %}
                             <p style="color: #666; margin-top: 10px; font-size: 14px;">⏳ Invoice not yet entered by office</p>
@@ -5301,6 +5462,7 @@ TECH_DASHBOARD_TEMPLATE = '''
                     {% endif %}
                 </div>
             {% endfor %}
+            </div>
         {% else %}
             <p style="color: #999;">No requests yet. Submit your first PO request above!</p>
         {% endif %}
