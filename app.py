@@ -5621,6 +5621,12 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             return '$' + parseFloat(value || 0).toFixed(2);
         }
 
+        function escapeHtml(text) {
+            if (!text) return '';
+            const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+            return String(text).replace(/[&<>"']/g, m => map[m]);
+        }
+
         function searchAllPOs() {
             const searchTerm = document.getElementById('po-search-input').value.toLowerCase().trim();
             if (!searchTerm) {
