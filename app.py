@@ -5730,7 +5730,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             // Get all service POs from serviceJobs and jobAllPOs
             serviceJobs.forEach(job => {
                 const jobId = job[0];
-                const pos = jobAllPOs[jobId] || [];
+                const pos = jobAllPOs[String(jobId)] || [];
                 const jobCode = job[11];
 
                 pos.forEach(po => {
@@ -5968,7 +5968,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             // Get all service POs from serviceJobs and jobAllPOs
             serviceJobs.forEach(job => {
                 const jobId = job[0];
-                const pos = jobAllPOs[jobId] || [];
+                const pos = jobAllPOs[String(jobId)] || [];
                 const jobCode = job[11];
                 const jobName = job[1];
 
