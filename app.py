@@ -1468,7 +1468,7 @@ def office_dashboard():
             job_name = job[1]
             # Get active POs for this job (for display on card)
             c.execute("""
-                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date
+                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date, client_name
                 FROM po_requests
                 WHERE job_name=? AND status IN ('approved', 'awaiting_invoice')
                 ORDER BY id DESC
@@ -1477,7 +1477,7 @@ def office_dashboard():
 
             # Get ALL POs for this job (for complete history)
             c.execute("""
-                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date, description
+                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date, description, client_name
                 FROM po_requests
                 WHERE job_name=?
                 ORDER BY id DESC
@@ -5437,6 +5437,10 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             <select id="service-year-filter" onchange="filterServiceJobs()">
                 <option value="">All Years</option>
             </select>
+            <label style="margin-left: 20px;">Filter by Client:</label>
+            <select id="service-client-filter" onchange="filterServiceJobs()">
+                <option value="">All Clients</option>
+            </select>
             <button onclick="filterServiceJobs()">Apply Filter</button>
             <button onclick="showAllServiceJobs()" style="background: #28a745;">Show All</button>
         </div>
@@ -5479,6 +5483,10 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             <label>Filter by Year:</label>
             <select id="install-year-filter" onchange="filterInstallJobs()">
                 <option value="">All Years</option>
+            </select>
+            <label style="margin-left: 20px;">Filter by Client:</label>
+            <select id="install-client-filter" onchange="filterInstallJobs()">
+                <option value="">All Clients</option>
             </select>
             <button onclick="filterInstallJobs()">Apply Filter</button>
             <button onclick="showAllInstallJobs()" style="background: #28a745;">Show All</button>
@@ -5874,33 +5882,59 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             });
         }
 
+        function getJobClients(jobId) {
+            const pos = jobPOs[jobId] || [];
+            const clients = [...new Set(pos.map(p => p[7]).filter(c => c))]; // Index 7 is client_name
+            return clients;
+        }
+
         function filterServiceJobs() {
             const year = document.getElementById('service-year-filter').value;
-            if (year) {
-                filteredServiceJobs = serviceJobs.filter(job => job[2].toString() === year);
-            } else {
-                filteredServiceJobs = [...serviceJobs];
-            }
+            const client = document.getElementById('service-client-filter').value;
+
+            filteredServiceJobs = serviceJobs.filter(job => {
+                // Check year filter
+                if (year && job[2].toString() !== year) return false;
+
+                // Check client filter
+                if (client) {
+                    const jobClients = getJobClients(job[0]);
+                    if (!jobClients.includes(client)) return false;
+                }
+
+                return true;
+            });
             renderServiceJobs();
         }
 
         function filterInstallJobs() {
             const year = document.getElementById('install-year-filter').value;
-            if (year) {
-                filteredInstallJobs = installJobs.filter(job => job[2].toString() === year);
-            } else {
-                filteredInstallJobs = [...installJobs];
-            }
+            const client = document.getElementById('install-client-filter').value;
+
+            filteredInstallJobs = installJobs.filter(job => {
+                // Check year filter
+                if (year && job[2].toString() !== year) return false;
+
+                // Check client filter
+                if (client) {
+                    const jobClients = getJobClients(job[0]);
+                    if (!jobClients.includes(client)) return false;
+                }
+
+                return true;
+            });
             renderInstallJobs();
         }
 
         function showAllServiceJobs() {
             document.getElementById('service-year-filter').value = '';
+            document.getElementById('service-client-filter').value = '';
             filterServiceJobs();
         }
 
         function showAllInstallJobs() {
             document.getElementById('install-year-filter').value = '';
+            document.getElementById('install-client-filter').value = '';
             filterInstallJobs();
         }
 
@@ -5924,6 +5958,43 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 opt.value = year;
                 opt.textContent = year;
                 installSelect.appendChild(opt);
+            });
+        }
+
+        // Populate client filters
+        function populateClientFilters() {
+            // Extract unique clients from service jobs
+            const serviceClients = new Set();
+            serviceJobs.forEach(job => {
+                const clients = getJobClients(job[0]);
+                clients.forEach(client => serviceClients.add(client));
+            });
+
+            // Extract unique clients from install jobs
+            const installClients = new Set();
+            installJobs.forEach(job => {
+                const clients = getJobClients(job[0]);
+                clients.forEach(client => installClients.add(client));
+            });
+
+            // Populate service client filter
+            const serviceClientSelect = document.getElementById('service-client-filter');
+            const sortedServiceClients = Array.from(serviceClients).sort();
+            sortedServiceClients.forEach(client => {
+                const opt = document.createElement('option');
+                opt.value = client;
+                opt.textContent = client;
+                serviceClientSelect.appendChild(opt);
+            });
+
+            // Populate install client filter
+            const installClientSelect = document.getElementById('install-client-filter');
+            const sortedInstallClients = Array.from(installClients).sort();
+            sortedInstallClients.forEach(client => {
+                const opt = document.createElement('option');
+                opt.value = client;
+                opt.textContent = client;
+                installClientSelect.appendChild(opt);
             });
         }
 
@@ -5999,6 +6070,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         // Initialize
         window.addEventListener('DOMContentLoaded', () => {
             populateYearFilters();
+            populateClientFilters();
             renderServiceJobs();
             renderInstallJobs();
 
