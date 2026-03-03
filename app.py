@@ -5432,11 +5432,8 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             <select id="service-year-filter" onchange="filterServiceJobs()">
                 <option value="">All Years</option>
             </select>
-            <label style="margin-left: 20px;">Filter by Client:</label>
-            <select id="service-client-filter" onchange="filterServiceJobs()">
-                <option value="">All Clients</option>
-            </select>
-            <button onclick="filterServiceJobs()">Apply Filter</button>
+            <label style="margin-left: 20px;">Search by Client:</label>
+            <input type="text" id="service-client-filter" placeholder="Type client name..." oninput="filterServiceJobs()" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
             <button onclick="showAllServiceJobs()" style="background: #28a745;">Show All</button>
         </div>
 
@@ -5479,7 +5476,8 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             <select id="install-year-filter" onchange="filterInstallJobs()">
                 <option value="">All Years</option>
             </select>
-            <button onclick="filterInstallJobs()">Apply Filter</button>
+            <label style="margin-left: 20px;">Search by Client:</label>
+            <input type="text" id="install-client-filter" placeholder="Type client name..." oninput="filterInstallJobs()" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
             <button onclick="showAllInstallJobs()" style="background: #28a745;">Show All</button>
         </div>
 
@@ -5873,30 +5871,20 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             });
         }
 
+        function jobMatchesClient(jobId, clientSearch) {
+            if (!clientSearch) return true;
+            const pos = jobAllPOs[jobId] || [];
+            return pos.some(p => p[8] && p[8].toLowerCase().includes(clientSearch)); // index 8 = client_name in jobAllPOs
+        }
+
         function filterServiceJobs() {
             const year = document.getElementById('service-year-filter').value;
-            const client = document.getElementById('service-client-filter').value;
+            const client = document.getElementById('service-client-filter').value.toLowerCase().trim();
 
             filteredServiceJobs = serviceJobs.filter(job => {
-                const jobId = job[0];
-                let jobMatches = true;
-
-                // Filter by year
-                if (year) {
-                    jobMatches = jobMatches && job[2].toString() === year;
-                }
-
-                // Filter by client - check if job has POs from selected client
-                if (client) {
-                    const posForJob = jobAllPOs[jobId] || [];
-                    const hasClientPO = posForJob.some(po => {
-                        const poClient = po[8] || ''; // client_name is at index 8 in jobAllPOs query
-                        return poClient.toLowerCase() === client.toLowerCase();
-                    });
-                    jobMatches = jobMatches && hasClientPO;
-                }
-
-                return jobMatches;
+                if (year && job[2].toString() !== year) return false;
+                if (!jobMatchesClient(job[0], client)) return false;
+                return true;
             });
 
             renderServiceJobs();
@@ -5904,11 +5892,13 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         function filterInstallJobs() {
             const year = document.getElementById('install-year-filter').value;
-            if (year) {
-                filteredInstallJobs = installJobs.filter(job => job[2].toString() === year);
-            } else {
-                filteredInstallJobs = [...installJobs];
-            }
+            const client = document.getElementById('install-client-filter').value.toLowerCase().trim();
+
+            filteredInstallJobs = installJobs.filter(job => {
+                if (year && job[2].toString() !== year) return false;
+                if (!jobMatchesClient(job[0], client)) return false;
+                return true;
+            });
             renderInstallJobs();
         }
 
@@ -5920,6 +5910,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         function showAllInstallJobs() {
             document.getElementById('install-year-filter').value = '';
+            document.getElementById('install-client-filter').value = '';
             filterInstallJobs();
         }
 
