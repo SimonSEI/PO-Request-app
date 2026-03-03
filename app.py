@@ -1399,6 +1399,12 @@ def tech_dashboard():
     active_job = c.fetchone()
     active_job_name = active_job[0] if active_job else None
 
+    # For install techs, get all available jobs (for job selection)
+    available_jobs = []
+    if tech_type == 'install':
+        c.execute("SELECT job_name FROM jobs WHERE department='install' ORDER BY active DESC, year DESC, job_name ASC")
+        available_jobs = [row[0] for row in c.fetchall()]
+
     # Show this tech's own POs (all statuses)
     c.execute("SELECT * FROM po_requests WHERE tech_username=? ORDER BY id DESC", (session['username'],))
     requests = c.fetchall()
@@ -1424,6 +1430,7 @@ def tech_dashboard():
                                 full_name=full_name,
                                 tech_type=tech_type,
                                 active_job_name=active_job_name,
+                                available_jobs=available_jobs,
                                 requests=requests,
                                 inv_filename_idx=inv_filename_idx,
                                 inv_number_idx=inv_number_idx,
@@ -5181,8 +5188,21 @@ TECH_DASHBOARD_TEMPLATE = '''
             {# Auto-populate tech_name from the logged-in user's full_name #}
             <input type="hidden" name="tech_name" value="{{ full_name }}">
 
-            {# Auto-populate job_name with the active service job #}
-            <input type="hidden" name="job_name" value="{{ active_job_name }}">
+            {# Job selection for install techs, auto-populated for service techs #}
+            {% if tech_type == 'install' %}
+                <div class="form-group">
+                    <label>Job/Project Name <span style="color: red;">*</span></label>
+                    <select id="job_name" name="job_name" required style="width: 100%; padding: 10px; border: 2px solid #ddd; border-radius: 5px; font-size: 16px;">
+                        <option value="">-- Select a Job --</option>
+                        {% for job in available_jobs %}
+                            <option value="{{ job }}">{{ job }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            {% else %}
+                {# Auto-populate job_name with the active service job #}
+                <input type="hidden" name="job_name" value="{{ active_job_name }}">
+            {% endif %}
 
             <div class="form-group">
                 <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
