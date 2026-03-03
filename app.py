@@ -1468,7 +1468,7 @@ def office_dashboard():
             job_name = job[1]
             # Get active POs for this job (for display on card)
             c.execute("""
-                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date
+                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date, client_name
                 FROM po_requests
                 WHERE job_name=? AND status IN ('approved', 'awaiting_invoice')
                 ORDER BY id DESC
@@ -1477,7 +1477,7 @@ def office_dashboard():
 
             # Get ALL POs for this job (for complete history)
             c.execute("""
-                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date, description
+                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date, description, client_name
                 FROM po_requests
                 WHERE job_name=?
                 ORDER BY id DESC
@@ -5437,6 +5437,10 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             <select id="service-year-filter" onchange="filterServiceJobs()">
                 <option value="">All Years</option>
             </select>
+            <label style="margin-left: 20px;">Filter by Client:</label>
+            <select id="service-client-filter" onchange="filterServiceJobs()">
+                <option value="">All Clients</option>
+            </select>
             <button onclick="filterServiceJobs()">Apply Filter</button>
             <button onclick="showAllServiceJobs()" style="background: #28a745;">Show All</button>
         </div>
@@ -5876,11 +5880,30 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         function filterServiceJobs() {
             const year = document.getElementById('service-year-filter').value;
-            if (year) {
-                filteredServiceJobs = serviceJobs.filter(job => job[2].toString() === year);
-            } else {
-                filteredServiceJobs = [...serviceJobs];
-            }
+            const client = document.getElementById('service-client-filter').value;
+
+            filteredServiceJobs = serviceJobs.filter(job => {
+                const jobId = job[0];
+                let jobMatches = true;
+
+                // Filter by year
+                if (year) {
+                    jobMatches = jobMatches && job[2].toString() === year;
+                }
+
+                // Filter by client - check if job has POs from selected client
+                if (client) {
+                    const posForJob = jobAllPOs[jobId] || [];
+                    const hasClientPO = posForJob.some(po => {
+                        const poClient = po[8] || ''; // client_name is at index 8 in jobAllPOs query
+                        return poClient.toLowerCase() === client.toLowerCase();
+                    });
+                    jobMatches = jobMatches && hasClientPO;
+                }
+
+                return jobMatches;
+            });
+
             renderServiceJobs();
         }
 
@@ -5896,6 +5919,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         function showAllServiceJobs() {
             document.getElementById('service-year-filter').value = '';
+            document.getElementById('service-client-filter').value = '';
             filterServiceJobs();
         }
 
@@ -5924,6 +5948,33 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 opt.value = year;
                 opt.textContent = year;
                 installSelect.appendChild(opt);
+            });
+        }
+
+        // Populate client filter for service department
+        function populateClientFilters() {
+            // Extract unique client names from all service job POs
+            const serviceClients = new Set();
+
+            serviceJobs.forEach(job => {
+                const jobId = job[0];
+                const posForJob = jobAllPOs[jobId] || [];
+                posForJob.forEach(po => {
+                    const clientName = po[8]; // client_name is at index 8 in jobAllPOs query
+                    if (clientName && clientName.trim()) {
+                        serviceClients.add(clientName);
+                    }
+                });
+            });
+
+            const clientSelect = document.getElementById('service-client-filter');
+            const sortedClients = [...serviceClients].sort();
+
+            sortedClients.forEach(client => {
+                const opt = document.createElement('option');
+                opt.value = client;
+                opt.textContent = client;
+                clientSelect.appendChild(opt);
             });
         }
 
@@ -5999,6 +6050,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         // Initialize
         window.addEventListener('DOMContentLoaded', () => {
             populateYearFilters();
+            populateClientFilters();
             renderServiceJobs();
             renderInstallJobs();
 
