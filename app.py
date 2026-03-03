@@ -5550,7 +5550,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 return;
             }
 
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Job Name</th><th>Tech</th><th>Description</th><th>Status</th><th>Estimated</th><th>Date</th></tr></thead><tbody>';
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Job Name</th><th>Tech</th><th>Description</th><th>Status</th><th>Estimated</th><th>Client</th><th>Date</th></tr></thead><tbody>';
             let found = 0;
 
             for (const [jobId, pos] of Object.entries(jobAllPOs)) {
@@ -5567,6 +5567,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                         const poDisplay = jobCode ? `${jobCode}-${po[0]}` : po[0];
                         const estimated = po[4] || 0;
                         const date = po[6] ? po[6].substring(0, 10) : 'N/A';
+                        const clientName = po[8] || 'N/A';
 
                         html += `<tr>
                             <td><strong>#${poDisplay}</strong></td>
@@ -5575,6 +5576,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                             <td>${escapeHtml(description)}</td>
                             <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
                             <td>${formatCurrency(estimated)}</td>
+                            <td>${escapeHtml(clientName)}</td>
                             <td>${date}</td>
                         </tr>`;
                         found++;
@@ -5799,11 +5801,13 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     const estimated = po[4] || 0;
                     const invoiced_po = po[5] || 0;
 
+                    const clientName = po[7] || 'N/A';
                     html += `
                         <div class="po-item">
                             <strong>PO #${poDisplay}</strong> - <span class="po-tech">${techName}</span>
                             <span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span>
                             <br><small>Est: ${formatCurrency(estimated)} | Inv: ${formatCurrency(invoiced_po)}</small>
+                            <br><small style="color: #666; font-style: italic;">Client: ${escapeHtml(clientName)}</small>
                         </div>
                     `;
                 });
@@ -5994,7 +5998,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             if (allPOs.length === 0) {
                 document.getElementById('modal-po-list').innerHTML = '<p style="text-align: center; color: #999;">No POs found for this job.</p>';
             } else {
-                let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Tech</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Date</th></tr></thead><tbody>';
+                let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Tech</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Client</th><th>Date</th></tr></thead><tbody>';
 
                 allPOs.forEach(po => {
                     const poNum = po[0];
@@ -6004,6 +6008,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     const estimated = po[4] || 0;
                     const invoiced = po[5] || 0;
                     const date = po[6] ? po[6].substring(0, 10) : 'N/A';
+                    const clientName = po[8] || 'N/A';
 
                     html += `<tr>
                         <td><strong>#${poDisplay}</strong></td>
@@ -6011,6 +6016,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                         <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
                         <td>${formatCurrency(estimated)}</td>
                         <td>${formatCurrency(invoiced)}</td>
+                        <td>${escapeHtml(clientName)}</td>
                         <td>${date}</td>
                     </tr>`;
                 });
