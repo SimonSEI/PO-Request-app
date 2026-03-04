@@ -308,6 +308,19 @@ def init_db():
                   name TEXT UNIQUE,
                   created_date TEXT)''')
 
+    # Invoices table - stores multiple invoices per PO
+    c.execute('''CREATE TABLE IF NOT EXISTS invoices
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  po_id INTEGER NOT NULL,
+                  invoice_number TEXT,
+                  invoice_cost REAL,
+                  invoice_filename TEXT,
+                  invoice_date TEXT,
+                  invoice_upload_date TEXT,
+                  jobber_invoice_number TEXT,
+                  created_at TEXT,
+                  FOREIGN KEY (po_id) REFERENCES po_requests(id) ON DELETE CASCADE)''')
+
     # Add match_method column to po_requests if it doesn't exist
     try:
         c.execute("ALTER TABLE po_requests ADD COLUMN match_method TEXT")
@@ -379,6 +392,24 @@ def init_db():
         c.execute("UPDATE jobs SET budget=0 WHERE budget IS NULL")
     except sqlite3.OperationalError:
         pass  # Column might not exist yet
+
+    # Migration: Move existing invoices from po_requests to invoices table
+    try:
+        c.execute("""
+            INSERT INTO invoices (po_id, invoice_number, invoice_cost, invoice_filename,
+                                 invoice_date, invoice_upload_date, jobber_invoice_number, created_at)
+            SELECT id, invoice_number, CAST(invoice_cost AS REAL), invoice_filename,
+                   invoice_date, invoice_upload_date, jobber_invoice_number, invoice_upload_date
+            FROM po_requests
+            WHERE invoice_number IS NOT NULL AND invoice_number != ''
+            AND NOT EXISTS (
+                SELECT 1 FROM invoices WHERE invoices.po_id = po_requests.id
+            )
+        """)
+        if c.rowcount > 0:
+            print(f"✓ Migrated {c.rowcount} invoices to invoices table")
+    except Exception as e:
+        print(f"✗ Invoice migration error: {e}")
 
     # Default settings
     default_settings = [
@@ -1995,20 +2026,33 @@ def upload_invoice(po_id):
                 manual_review_flag = f"Service PO (ID {po_id}) needs manual review - invoice year could not be extracted. Please assign to appropriate Service job."
                 print(f"⚠ Service PO flagged for manual review - unable to extract invoice year")
 
+            # Insert into invoices table
+            c.execute("""INSERT INTO invoices (po_id, invoice_filename, invoice_number, invoice_cost,
+                                              invoice_date, invoice_upload_date, jobber_invoice_number, created_at)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                     (po_id, invoice_filename, invoice_number, formatted_cost, 'N/A',
+                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'), jobber_invoice_number,
+                      datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+
+            # Update PO status
             c.execute("""UPDATE po_requests
-                         SET invoice_filename=?, invoice_number=?, invoice_cost=?,
-                             invoice_date=?, invoice_upload_date=?, job_name=?, status=?, manual_review_flag=?, jobber_invoice_number=?
+                         SET job_name=?, status=?, manual_review_flag=?
                          WHERE id=?""",
-                     (invoice_filename, invoice_number, formatted_cost, 'N/A',
-                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'), new_job_name, 'matched', manual_review_flag, jobber_invoice_number, po_id))
+                     (new_job_name, 'matched', manual_review_flag, po_id))
         else:
-            # Normal update - set invoice cost
+            # Normal update - insert invoice and update PO status
+            c.execute("""INSERT INTO invoices (po_id, invoice_filename, invoice_number, invoice_cost,
+                                              invoice_date, invoice_upload_date, jobber_invoice_number, created_at)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                     (po_id, invoice_filename, invoice_number, formatted_cost, 'N/A',
+                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'), jobber_invoice_number,
+                      datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+
+            # Update PO status to matched
             c.execute("""UPDATE po_requests
-                         SET invoice_filename=?, invoice_number=?, invoice_cost=?,
-                             invoice_date=?, invoice_upload_date=?, status=?, jobber_invoice_number=?
+                         SET status=?
                          WHERE id=?""",
-                     (invoice_filename, invoice_number, formatted_cost, 'N/A',
-                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'matched', jobber_invoice_number, po_id))
+                     ('matched', po_id))
 
         conn.commit()
         conn.close()
@@ -2033,6 +2077,44 @@ def upload_invoice(po_id):
                 'manual_review_flag': manual_review_flag,
                 'client_name': client_name_str
             }
+        })
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Server error: {str(e)}'})
+
+@app.route('/get_po_invoices/<int:po_id>', methods=['GET'])
+def get_po_invoices(po_id):
+    """Get all invoices associated with a PO"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        c.execute("""SELECT id, invoice_number, invoice_cost, invoice_filename,
+                            invoice_upload_date, jobber_invoice_number
+                     FROM invoices
+                     WHERE po_id=?
+                     ORDER BY created_at DESC""", (po_id,))
+        invoices = c.fetchall()
+        conn.close()
+
+        invoice_list = []
+        for inv in invoices:
+            invoice_list.append({
+                'id': inv[0],
+                'invoice_number': inv[1],
+                'invoice_cost': inv[2],
+                'invoice_filename': inv[3],
+                'invoice_upload_date': inv[4],
+                'jobber_invoice_number': inv[5]
+            })
+
+        return jsonify({
+            'success': True,
+            'invoices': invoice_list,
+            'count': len(invoice_list)
         })
 
     except Exception as e:
@@ -2071,7 +2153,7 @@ def delete_request():
 
 @app.route('/delete_invoice', methods=['POST'])
 def delete_invoice():
-    """Delete invoice and move PO back to approved (without invoice)"""
+    """Delete all invoices for a PO and move PO back to approved (without invoice)"""
     if 'username' not in session or session['role'] != 'office':
         return jsonify({'success': False, 'error': 'Unauthorized'})
 
@@ -2082,39 +2164,92 @@ def delete_invoice():
         if not request_id:
             return jsonify({'success': False, 'error': 'No request ID provided'})
 
-        print(f"DEBUG: Attempting to delete invoice for PO ID: {request_id}")
+        print(f"DEBUG: Attempting to delete all invoices for PO ID: {request_id}")
 
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
 
-        # Get the invoice filename to delete the file
-        c.execute("SELECT invoice_filename FROM po_requests WHERE id=?", (request_id,))
-        result = c.fetchone()
+        # Get all invoice filenames to delete the files
+        c.execute("SELECT invoice_filename FROM invoices WHERE po_id=?", (request_id,))
+        invoices = c.fetchall()
 
-        if result and result[0] and result[0] != 'MANUAL_ENTRY':
-            invoice_path = os.path.join(app.config['UPLOAD_FOLDER'], result[0])
-            if os.path.exists(invoice_path):
-                try:
-                    os.remove(invoice_path)
-                    print(f"DEBUG: Deleted invoice file: {result[0]}")
-                except Exception as e:
-                    print(f"WARNING: Could not delete invoice file: {e}")
+        for invoice_row in invoices:
+            if invoice_row[0] and invoice_row[0] != 'MANUAL_ENTRY':
+                invoice_path = os.path.join(app.config['UPLOAD_FOLDER'], invoice_row[0])
+                if os.path.exists(invoice_path):
+                    try:
+                        os.remove(invoice_path)
+                        print(f"DEBUG: Deleted invoice file: {invoice_row[0]}")
+                    except Exception as e:
+                        print(f"WARNING: Could not delete invoice file: {e}")
 
-        # Clear invoice data but keep PO as approved
-        c.execute("""UPDATE po_requests
-                     SET invoice_filename=NULL, invoice_number=NULL,
-                         invoice_cost=NULL, invoice_date=NULL, invoice_upload_date=NULL
-                     WHERE id=?""", (request_id,))
+        # Delete all invoices for this PO
+        c.execute("DELETE FROM invoices WHERE po_id=?", (request_id,))
+
+        # Move PO back to approved status
+        c.execute("UPDATE po_requests SET status=? WHERE id=?", ('approved', request_id))
+
         conn.commit()
         conn.close()
 
-        print(f"DEBUG: Successfully deleted invoice for PO {request_id}")
-        return jsonify({'success': True, 'message': 'Invoice deleted, PO moved back to Approved'})
+        print(f"DEBUG: Successfully deleted all invoices for PO {request_id}")
+        return jsonify({'success': True, 'message': 'All invoices deleted, PO moved back to Approved'})
 
     except Exception as e:
         print(f"ERROR in delete_invoice: {str(e)}")
         import traceback
         traceback.print_exc()
+        return jsonify({'success': False, 'error': f'Server error: {str(e)}'})
+
+@app.route('/delete_invoice_item/<int:invoice_id>', methods=['POST'])
+def delete_invoice_item(invoice_id):
+    """Delete a single invoice from the invoices table"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Get invoice details
+        c.execute("SELECT invoice_filename, po_id FROM invoices WHERE id=?", (invoice_id,))
+        invoice = c.fetchone()
+
+        if not invoice:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Invoice not found'})
+
+        # Delete file if it exists
+        if invoice[0] and invoice[0] != 'MANUAL_ENTRY':
+            invoice_path = os.path.join(app.config['UPLOAD_FOLDER'], invoice[0])
+            if os.path.exists(invoice_path):
+                try:
+                    os.remove(invoice_path)
+                except:
+                    pass
+
+        # Delete the invoice
+        c.execute("DELETE FROM invoices WHERE id=?", (invoice_id,))
+
+        # Check if there are any remaining invoices for this PO
+        po_id = invoice[1]
+        c.execute("SELECT COUNT(*) FROM invoices WHERE po_id=?", (po_id,))
+        remaining_count = c.fetchone()[0]
+
+        # If no invoices remain, move PO back to approved
+        if remaining_count == 0:
+            c.execute("UPDATE po_requests SET status=? WHERE id=?", ('approved', po_id))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'message': 'Invoice deleted successfully',
+            'remaining_invoices': remaining_count
+        })
+
+    except Exception as e:
         return jsonify({'success': False, 'error': f'Server error: {str(e)}'})
 
 @app.route('/delete_po', methods=['POST'])
@@ -7086,6 +7221,39 @@ OFFICE_DASHBOARD_TEMPLATE = '''
             margin-top: 15px; border-left: 4px solid #0066cc;
         }
         .invoice-data h4 { color: #0066cc; margin-bottom: 10px; }
+        .invoices-container {
+            background: #e7f3ff; padding: 15px; border-radius: 5px;
+            margin-top: 15px; border-left: 4px solid #0066cc;
+        }
+        .invoices-toggle {
+            background: #0066cc; color: white; border: none; padding: 10px 15px;
+            border-radius: 5px; cursor: pointer; font-weight: bold; width: 100%;
+            text-align: left; display: flex; justify-content: space-between;
+            align-items: center; font-size: 14px;
+        }
+        .invoices-toggle:hover { background: #0052a3; }
+        .invoices-list {
+            margin-top: 10px; display: none;
+        }
+        .invoices-list.expanded { display: block; }
+        .invoice-item {
+            background: white; padding: 12px; border-radius: 5px;
+            margin-bottom: 8px; border-left: 3px solid #0066cc;
+            display: flex; justify-content: space-between; align-items: flex-start;
+            gap: 10px;
+        }
+        .invoice-item-details {
+            flex: 1;
+        }
+        .invoice-item-details p {
+            margin: 4px 0; font-size: 13px;
+        }
+        .invoice-item-delete {
+            background: #ff9800; color: white; border: none; padding: 6px 10px;
+            border-radius: 3px; cursor: pointer; font-size: 12px; font-weight: bold;
+            white-space: nowrap;
+        }
+        .invoice-item-delete:hover { background: #e68900; }
         .search-results {
             background: #fff3cd; padding: 20px; border-radius: 10px;
             margin-bottom: 20px; border-left: 4px solid #ffc107;
@@ -7471,17 +7639,22 @@ OFFICE_DASHBOARD_TEMPLATE = '''
             .then(data => {
                 if (data.success) {
                     alert('✓ ' + data.message);
-                    location.reload();
+                    // Clear form and refresh invoice list
+                    form.reset();
+                    document.getElementById('file-label-' + poId).textContent = '';
+                    fetchPoInvoices(poId);
+                    btn.disabled = false;
+                    btn.textContent = '💾 Save Invoice';
                 } else {
                     alert('Error: ' + data.error);
                     btn.disabled = false;
-                    btn.textContent = '💾 Save Invoice Details';
+                    btn.textContent = '💾 Save Invoice';
                 }
             })
             .catch(error => {
                 alert('Error uploading: ' + error);
                 btn.disabled = false;
-                btn.textContent = '💾 Save Invoice Details';
+                btn.textContent = '💾 Save Invoice';
             });
         }
 
@@ -7528,6 +7701,96 @@ OFFICE_DASHBOARD_TEMPLATE = '''
         });
     }
 }
+
+        function toggleInvoicesList(poId) {
+            const list = document.getElementById('invoices-list-' + poId);
+            const icon = document.getElementById('toggle-icon-' + poId);
+
+            if (list.classList.contains('expanded')) {
+                list.classList.remove('expanded');
+                icon.textContent = '▼';
+            } else {
+                list.classList.add('expanded');
+                icon.textContent = '▲';
+                // Fetch invoices if not already loaded
+                if (list.textContent.includes('Loading')) {
+                    fetchPoInvoices(poId);
+                }
+            }
+        }
+
+        function fetchPoInvoices(poId) {
+            fetch('/get_po_invoices/' + poId)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        displayInvoices(poId, data.invoices);
+                    } else {
+                        document.getElementById('invoices-list-' + poId).innerHTML =
+                            '<div style="color: #dc3545; padding: 10px;">Error loading invoices: ' + data.error + '</div>';
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('invoices-list-' + poId).innerHTML =
+                        '<div style="color: #dc3545; padding: 10px;">Error: ' + error + '</div>';
+                });
+        }
+
+        function displayInvoices(poId, invoices) {
+            const list = document.getElementById('invoices-list-' + poId);
+            const count = document.getElementById('count-' + poId);
+
+            count.textContent = invoices.length;
+
+            if (invoices.length === 0) {
+                list.innerHTML = '<div style="padding: 10px; color: #666; text-align: center;">No invoices yet</div>';
+                return;
+            }
+
+            let html = '';
+            invoices.forEach(inv => {
+                const cost = inv.invoice_cost ? '$' + parseFloat(inv.invoice_cost).toFixed(2) : 'N/A';
+                const date = inv.invoice_upload_date ? new Date(inv.invoice_upload_date).toLocaleDateString() : 'N/A';
+                const fileLink = inv.invoice_filename && inv.invoice_filename !== 'MANUAL_ENTRY'
+                    ? '<a href="/view_invoice/' + inv.invoice_filename + '" target="_blank" style="color: #667eea; text-decoration: underline;">📄 View</a>'
+                    : '<span style="color: #999;">No file</span>';
+
+                html += `
+                    <div class="invoice-item">
+                        <div class="invoice-item-details">
+                            <p><strong>Invoice:</strong> ${inv.invoice_number || 'N/A'}</p>
+                            <p><strong>Cost:</strong> ${cost}</p>
+                            <p><strong>Date:</strong> ${date}</p>
+                            <p><strong>File:</strong> ${fileLink}</p>
+                            ${inv.jobber_invoice_number ? '<p><strong>Jobber Inv:</strong> ' + inv.jobber_invoice_number + '</p>' : ''}
+                        </div>
+                        <button class="invoice-item-delete" onclick="deleteInvoiceItem(${inv.id}, ${poId})">🗑️ Delete</button>
+                    </div>
+                `;
+            });
+
+            list.innerHTML = html;
+        }
+
+        function deleteInvoiceItem(invoiceId, poId) {
+            if (confirm('Are you sure you want to delete this invoice?')) {
+                fetch('/delete_invoice_item/' + invoiceId, {
+                    method: 'POST'
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('Invoice deleted successfully');
+                        fetchPoInvoices(poId);  // Refresh the list
+                    } else {
+                        alert('Error: ' + data.error);
+                    }
+                })
+                .catch(error => {
+                    alert('Error deleting invoice');
+                });
+            }
+        }
 
         function uploadBulkPDF() {
             const fileInput = document.getElementById('bulk-pdf-input');
@@ -7911,7 +8174,19 @@ function searchInTab(tabId, searchInputId) {
 
         window.addEventListener('load', function() {
             initInvoiceUploadDropzone();
+            initializeInvoicesForAllPOs();
         });
+
+        function initializeInvoicesForAllPOs() {
+            // Get all PO IDs from the DOM and preload their invoices
+            document.querySelectorAll('[data-po-id]').forEach(item => {
+                const poId = item.getAttribute('data-po-id');
+                const invoicesList = document.getElementById('invoices-list-' + poId);
+                if (invoicesList && invoicesList.textContent.includes('Loading')) {
+                    fetchPoInvoices(poId);
+                }
+            });
+        }
     </script>
 </head>
 <body>
@@ -8024,34 +8299,31 @@ function searchInTab(tabId, searchInputId) {
         {% for req in service_invoiced_requests %}
             <div class="request-item" data-po-id="{{ req[0] }}">
                 <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
-                <button onclick="deleteInvoice({{ req[0] }})" class="delete-btn" style="right: 120px; background: #ff9800;">🗑️ Remove Invoice</button>
-                <h3>📱 {{ format_po_number(req[0], req[3]) }} - {{ req[3] }} - ${{ "%.2f"|format((req[inv_cost_idx]|float(0) if req[inv_cost_idx] else 0) if req|length > inv_cost_idx else 0) }}</h3>
+                <button onclick="deleteInvoice({{ req[0] }})" class="delete-btn" style="right: 120px; background: #ff9800;">🗑️ Remove All Invoices</button>
+                <h3>📱 {{ format_po_number(req[0], req[3]) }} - {{ req[3] }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
                 <p><strong>Description:</strong> {{ req[6] }}</p>
                 <p><strong>Requested:</strong> {{ req[8] }}</p>
-                <div class="invoice-data">
-                    <h4>📄 Invoice Details</h4>
-                    <p><strong>Invoice Number:</strong> {{ req[inv_number_idx] if req|length > inv_number_idx else 'Not entered' }}</p>
-                    <p><strong>Total Cost:</strong> ${{ req[inv_cost_idx] if req|length > inv_cost_idx else '0.00' }}</p>
-                    <p><strong>Entered:</strong> {{ req[inv_upload_idx] if req|length > inv_upload_idx else 'N/A' }}</p>
-                    {% if req[inv_filename_idx] and req[inv_filename_idx] != 'MANUAL_ENTRY' %}
-                        <p><strong>File:</strong> <a href="{{ url_for('view_invoice', filename=req[inv_filename_idx]) }}" target="_blank" style="color: #667eea; text-decoration: underline;">📄 View Invoice PDF</a></p>
-                    {% else %}
-                        <p><strong>File:</strong> <span style="color: #666;">No file attached (manual entry)</span></p>
-                    {% endif %}
+                <div class="invoices-container">
+                    <button class="invoices-toggle" onclick="toggleInvoicesList({{ req[0] }})">
+                        <span>📄 Invoices (<span class="invoice-count" id="count-{{ req[0] }}">0</span>)</span>
+                        <span id="toggle-icon-{{ req[0] }}">▼</span>
+                    </button>
+                    <div class="invoices-list" id="invoices-list-{{ req[0] }}">
+                        <div style="text-align: center; padding: 10px; color: #666;">Loading invoices...</div>
+                    </div>
                 </div>
                 <div class="invoice-upload-section" style="margin-top: 15px;">
-                    <h4>✏️ Edit Invoice Details</h4>
+                    <h4>➕ Add Another Invoice</h4>
                     <form id="invoice-form-{{ req[0] }}" class="invoice-form">
-                        <input type="text" name="invoice_number" placeholder="Invoice Number" value="{{ req[inv_number_idx] if req|length > inv_number_idx else '' }}" required>
-                        <input type="number" step="0.01" name="invoice_cost" placeholder="Total Cost" value="{{ req[inv_cost_idx] if req|length > inv_cost_idx else '' }}" required>
-                        <input type="text" name="jobber_invoice_number" placeholder="Jobber Invoice Number (Optional)" value="{{ req[jobber_invoice_idx] if jobber_invoice_idx and req|length > jobber_invoice_idx else '' }}">
-                        <div id="dropzone-{{ req[0] }}" class="dropzone">
-                            <p>📎 Replace invoice file (optional)</p>
-                        </div>
-                        <input type="file" id="file-{{ req[0] }}" name="invoice" accept=".pdf,.jpg,.jpeg,.png" style="display: none;">
-                        <button type="button" onclick="uploadInvoice({{ req[0] }})" class="upload-invoice-btn">💾 Update Invoice Details</button>
+                        <input type="text" name="invoice_number" placeholder="Invoice Number (Required)" required>
+                        <input type="number" step="0.01" name="invoice_cost" placeholder="Total Cost (Required)" required>
+                        <input type="text" name="jobber_invoice_number" placeholder="Jobber Invoice Number (Optional)">
+                        <button type="button" onclick="document.getElementById('file-{{ req[0] }}').click()" class="file-button">📁 Choose File (Optional)</button>
+                        <input type="file" id="file-{{ req[0] }}" name="invoice" accept=".pdf,.jpg,.jpeg,.png" style="display: none;" onchange="updateFileLabel(this, {{ req[0] }})">
+                        <div id="file-label-{{ req[0] }}" style="margin-top: 8px; color: #666; font-size: 13px;"></div>
+                        <button type="button" onclick="uploadInvoice({{ req[0] }})" class="upload-invoice-btn">💾 Save Invoice</button>
                     </form>
                 </div>
             </div>
@@ -8107,34 +8379,31 @@ function searchInTab(tabId, searchInputId) {
         {% for req in install_invoiced_requests %}
             <div class="request-item" data-po-id="{{ req[0] }}">
                 <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
-                <button onclick="deleteInvoice({{ req[0] }})" class="delete-btn" style="right: 120px; background: #ff9800;">🗑️ Remove Invoice</button>
-                <h3>🔧 {{ format_po_number(req[0], req[3]) }} - {{ req[3] }} - ${{ "%.2f"|format((req[inv_cost_idx]|float(0) if req[inv_cost_idx] else 0) if req|length > inv_cost_idx else 0) }}</h3>
+                <button onclick="deleteInvoice({{ req[0] }})" class="delete-btn" style="right: 120px; background: #ff9800;">🗑️ Remove All Invoices</button>
+                <h3>🔧 {{ format_po_number(req[0], req[3]) }} - {{ req[3] }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
                 <p><strong>Description:</strong> {{ req[6] }}</p>
                 <p><strong>Requested:</strong> {{ req[8] }}</p>
-                <div class="invoice-data">
-                    <h4>📄 Invoice Details</h4>
-                    <p><strong>Invoice Number:</strong> {{ req[inv_number_idx] if req|length > inv_number_idx else 'Not entered' }}</p>
-                    <p><strong>Total Cost:</strong> ${{ req[inv_cost_idx] if req|length > inv_cost_idx else '0.00' }}</p>
-                    <p><strong>Entered:</strong> {{ req[inv_upload_idx] if req|length > inv_upload_idx else 'N/A' }}</p>
-                    {% if req[inv_filename_idx] and req[inv_filename_idx] != 'MANUAL_ENTRY' %}
-                        <p><strong>File:</strong> <a href="{{ url_for('view_invoice', filename=req[inv_filename_idx]) }}" target="_blank" style="color: #667eea; text-decoration: underline;">📄 View Invoice PDF</a></p>
-                    {% else %}
-                        <p><strong>File:</strong> <span style="color: #666;">No file attached (manual entry)</span></p>
-                    {% endif %}
+                <div class="invoices-container">
+                    <button class="invoices-toggle" onclick="toggleInvoicesList({{ req[0] }})">
+                        <span>📄 Invoices (<span class="invoice-count" id="count-{{ req[0] }}">0</span>)</span>
+                        <span id="toggle-icon-{{ req[0] }}">▼</span>
+                    </button>
+                    <div class="invoices-list" id="invoices-list-{{ req[0] }}">
+                        <div style="text-align: center; padding: 10px; color: #666;">Loading invoices...</div>
+                    </div>
                 </div>
                 <div class="invoice-upload-section" style="margin-top: 15px;">
-                    <h4>✏️ Edit Invoice Details</h4>
+                    <h4>➕ Add Another Invoice</h4>
                     <form id="invoice-form-{{ req[0] }}" class="invoice-form">
-                        <input type="text" name="invoice_number" placeholder="Invoice Number" value="{{ req[inv_number_idx] if req|length > inv_number_idx else '' }}" required>
-                        <input type="number" step="0.01" name="invoice_cost" placeholder="Total Cost" value="{{ req[inv_cost_idx] if req|length > inv_cost_idx else '' }}" required>
-                        <input type="text" name="jobber_invoice_number" placeholder="Jobber Invoice Number (Optional)" value="{{ req[jobber_invoice_idx] if jobber_invoice_idx and req|length > jobber_invoice_idx else '' }}">
-                        <div id="dropzone-{{ req[0] }}" class="dropzone">
-                            <p>📎 Replace invoice file (optional)</p>
-                        </div>
-                        <input type="file" id="file-{{ req[0] }}" name="invoice" accept=".pdf,.jpg,.jpeg,.png" style="display: none;">
-                        <button type="button" onclick="uploadInvoice({{ req[0] }})" class="upload-invoice-btn">💾 Update Invoice Details</button>
+                        <input type="text" name="invoice_number" placeholder="Invoice Number (Required)" required>
+                        <input type="number" step="0.01" name="invoice_cost" placeholder="Total Cost (Required)" required>
+                        <input type="text" name="jobber_invoice_number" placeholder="Jobber Invoice Number (Optional)">
+                        <button type="button" onclick="document.getElementById('file-{{ req[0] }}').click()" class="file-button">📁 Choose File (Optional)</button>
+                        <input type="file" id="file-{{ req[0] }}" name="invoice" accept=".pdf,.jpg,.jpeg,.png" style="display: none;" onchange="updateFileLabel(this, {{ req[0] }})">
+                        <div id="file-label-{{ req[0] }}" style="margin-top: 8px; color: #666; font-size: 13px;"></div>
+                        <button type="button" onclick="uploadInvoice({{ req[0] }})" class="upload-invoice-btn">💾 Save Invoice</button>
                     </form>
                 </div>
             </div>
