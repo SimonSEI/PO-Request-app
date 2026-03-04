@@ -7226,10 +7226,16 @@ OFFICE_DASHBOARD_TEMPLATE = '''
             margin-top: 15px; border-left: 4px solid #0066cc;
         }
         .invoices-toggle {
-            background: #0066cc; color: white; border: none; padding: 10px 15px;
+            background: #0066cc; color: white; border: none; padding: 10px 15px 10px 15px;
             border-radius: 5px; cursor: pointer; font-weight: bold; width: 100%;
-            display: flex; justify-content: space-between;
-            align-items: center; font-size: 14px; gap: 10px;
+            text-align: left; font-size: 14px; position: relative; min-height: 20px;
+        }
+        .invoices-toggle span:last-child {
+            position: absolute;
+            right: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            display: inline-block;
         }
         .invoices-toggle:hover { background: #0052a3; }
         .invoices-list {
