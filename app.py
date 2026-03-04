@@ -5281,12 +5281,6 @@ TECH_DASHBOARD_TEMPLATE = '''
         if (searchFilter) {
             searchFilter.addEventListener('keyup', filterPOs);
         }
-
-        // Initialize all dropzones for invoice upload
-        document.querySelectorAll('[id^="dropzone-"]').forEach(dropzone => {
-            const poId = dropzone.id.replace('dropzone-', '');
-            initDropzone(poId);
-        });
     });
 
     function filterPOs() {
@@ -6521,6 +6515,13 @@ OFFICE_DASHBOARD_TEMPLATE = '''
         }
         .upload-invoice-btn:hover { background: #5568d3; }
         .upload-invoice-btn:disabled { background: #ccc; cursor: not-allowed; }
+        .file-button {
+            background: #f0f0f0; color: #333; padding: 10px 15px;
+            border: 2px solid #ddd; border-radius: 5px; cursor: pointer;
+            font-size: 14px; width: 100%; text-align: center;
+            transition: all 0.3s;
+        }
+        .file-button:hover { background: #e7f0ff; border-color: #667eea; }
         .error-message {
             background: #f8d7da;
             color: #721c24;
@@ -6693,8 +6694,20 @@ OFFICE_DASHBOARD_TEMPLATE = '''
         function handleFiles(files, poId) {
             if (files.length > 0) {
                 const file = files[0];
-                const dropzone = document.getElementById('dropzone-' + poId);
-                dropzone.innerHTML = '<p style="color: #28a745; font-weight: bold;">✓ File selected: ' + file.name + '</p>';
+                const label = document.getElementById('file-label-' + poId);
+                if (label) {
+                    label.innerHTML = '<span style="color: #28a745; font-weight: bold;">✓ File: ' + file.name + '</span>';
+                }
+            }
+        }
+
+        function updateFileLabel(input, poId) {
+            if (input.files && input.files.length > 0) {
+                const file = input.files[0];
+                const label = document.getElementById('file-label-' + poId);
+                if (label) {
+                    label.innerHTML = '<span style="color: #28a745; font-weight: bold;">✓ File: ' + file.name + '</span>';
+                }
             }
         }
 
@@ -7011,10 +7024,9 @@ function searchInTab(tabId, searchInputId) {
                         <input type="text" name="invoice_number" placeholder="Invoice Number (Required)" required>
                         <input type="number" step="0.01" name="invoice_cost" placeholder="Total Cost (Required)" required>
                         <input type="text" name="jobber_invoice_number" placeholder="Jobber Invoice Number (Optional)">
-                        <div id="dropzone-{{ req[0] }}" class="dropzone">
-                            <p>📎 Optional: Drag & drop invoice file or click to browse</p>
-                        </div>
-                        <input type="file" id="file-{{ req[0] }}" name="invoice" accept=".pdf,.jpg,.jpeg,.png" style="display: none;">
+                        <button type="button" onclick="document.getElementById('file-{{ req[0] }}').click()" class="file-button">📁 Choose File (Optional)</button>
+                        <input type="file" id="file-{{ req[0] }}" name="invoice" accept=".pdf,.jpg,.jpeg,.png" style="display: none;" onchange="updateFileLabel(this, {{ req[0] }})">
+                        <div id="file-label-{{ req[0] }}" style="margin-top: 8px; color: #666; font-size: 13px;"></div>
                         <button type="button" onclick="uploadInvoice({{ req[0] }})" class="upload-invoice-btn">💾 Save Invoice Details</button>
                     </form>
                 </div>
@@ -7095,10 +7107,9 @@ function searchInTab(tabId, searchInputId) {
                         <input type="text" name="invoice_number" placeholder="Invoice Number (Required)" required>
                         <input type="number" step="0.01" name="invoice_cost" placeholder="Total Cost (Required)" required>
                         <input type="text" name="jobber_invoice_number" placeholder="Jobber Invoice Number (Optional)">
-                        <div id="dropzone-{{ req[0] }}" class="dropzone">
-                            <p>📎 Optional: Drag & drop invoice file or click to browse</p>
-                        </div>
-                        <input type="file" id="file-{{ req[0] }}" name="invoice" accept=".pdf,.jpg,.jpeg,.png" style="display: none;">
+                        <button type="button" onclick="document.getElementById('file-{{ req[0] }}').click()" class="file-button">📁 Choose File (Optional)</button>
+                        <input type="file" id="file-{{ req[0] }}" name="invoice" accept=".pdf,.jpg,.jpeg,.png" style="display: none;" onchange="updateFileLabel(this, {{ req[0] }})">
+                        <div id="file-label-{{ req[0] }}" style="margin-top: 8px; color: #666; font-size: 13px;"></div>
                         <button type="button" onclick="uploadInvoice({{ req[0] }})" class="upload-invoice-btn">💾 Save Invoice Details</button>
                     </form>
                 </div>
@@ -7180,10 +7191,9 @@ function searchInTab(tabId, searchInputId) {
                         <input type="text" name="invoice_number" placeholder="Invoice Number (Required)" required>
                         <input type="number" step="0.01" name="invoice_cost" placeholder="Total Cost (Required)" required>
                         <input type="text" name="jobber_invoice_number" placeholder="Jobber Invoice Number (Optional)">
-                        <div id="dropzone-{{ req[0] }}" class="dropzone">
-                            <p>📎 Optional: Drag & drop invoice file or click to browse</p>
-                        </div>
-                        <input type="file" id="file-{{ req[0] }}" name="invoice" accept=".pdf,.jpg,.jpeg,.png" style="display: none;">
+                        <button type="button" onclick="document.getElementById('file-{{ req[0] }}').click()" class="file-button">📁 Choose File (Optional)</button>
+                        <input type="file" id="file-{{ req[0] }}" name="invoice" accept=".pdf,.jpg,.jpeg,.png" style="display: none;" onchange="updateFileLabel(this, {{ req[0] }})">
+                        <div id="file-label-{{ req[0] }}" style="margin-top: 8px; color: #666; font-size: 13px;"></div>
                         <button type="button" onclick="uploadInvoice({{ req[0] }})" class="upload-invoice-btn">💾 Save Invoice Details</button>
                     </form>
                 </div>
