@@ -7714,10 +7714,10 @@ OFFICE_DASHBOARD_TEMPLATE = '''
 
             if (list.classList.contains('expanded')) {
                 list.classList.remove('expanded');
-                icon.textContent = '▼';
+                icon.textContent = '[▼]';
             } else {
                 list.classList.add('expanded');
-                icon.textContent = '▲';
+                icon.textContent = '[▲]';
                 // Fetch invoices if not already loaded
                 if (list.textContent.includes('Loading')) {
                     fetchPoInvoices(poId);
@@ -8193,7 +8193,7 @@ function searchInTab(tabId, searchInputId) {
                     const list = document.getElementById('invoices-list-' + poId);
                     const icon = document.getElementById('toggle-icon-' + poId);
                     list.classList.add('expanded');
-                    icon.textContent = '▲';
+                    icon.textContent = '[▲]';
                     fetchPoInvoices(poId);
                 }
             });
@@ -8319,7 +8319,7 @@ function searchInTab(tabId, searchInputId) {
                 <div class="invoices-container">
                     <button class="invoices-toggle" onclick="toggleInvoicesList({{ req[0] }})">
                         <span>📄 Invoices (<span class="invoice-count" id="count-{{ req[0] }}">0</span>)</span>
-                        <span id="toggle-icon-{{ req[0] }}">▼</span>
+                        <span id="toggle-icon-{{ req[0] }}">[▼]</span>
                     </button>
                     <div class="invoices-list" id="invoices-list-{{ req[0] }}">
                         <div style="text-align: center; padding: 10px; color: #666;">Loading invoices...</div>
@@ -8399,7 +8399,7 @@ function searchInTab(tabId, searchInputId) {
                 <div class="invoices-container">
                     <button class="invoices-toggle" onclick="toggleInvoicesList({{ req[0] }})">
                         <span>📄 Invoices (<span class="invoice-count" id="count-{{ req[0] }}">0</span>)</span>
-                        <span id="toggle-icon-{{ req[0] }}">▼</span>
+                        <span id="toggle-icon-{{ req[0] }}">[▼]</span>
                     </button>
                     <div class="invoices-list" id="invoices-list-{{ req[0] }}">
                         <div style="text-align: center; padding: 10px; color: #666;">Loading invoices...</div>
