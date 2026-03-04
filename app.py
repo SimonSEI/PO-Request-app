@@ -5720,12 +5720,58 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         .all-pos-table th, .all-pos-table td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
         .all-pos-table th { background: #667eea; color: white; font-weight: bold; }
         .all-pos-table tr:hover { background: #f5f5f5; }
+
+        /* Modal Styles */
+        .modal {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5);
+            display: none; align-items: center; justify-content: center; z-index: 1000;
+        }
+        .modal.active, .modal[style*="display: flex"] { display: flex; }
+        .modal-content {
+            background: white; padding: 30px; border-radius: 10px; max-width: 600px;
+            width: 95%; max-height: 90vh; overflow-y: auto; box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+        }
+        .modal-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 20px; padding-bottom: 15px; border-bottom: 1px solid #e0e0e0;
+        }
+        .modal-header h2 { margin: 0; font-size: 22px; color: #333; }
+        .modal-close { background: none; border: none; font-size: 24px; cursor: pointer; color: #666; padding: 0; }
+        .modal-close:hover { color: #000; }
+        .modal-actions { display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; }
+
+        /* Invoice Upload Styles */
+        .invoice-upload-dropzone {
+            border: 3px dashed #667eea; border-radius: 10px; padding: 40px 20px;
+            text-align: center; background: #f9f9f9; cursor: pointer; transition: all 0.3s;
+            margin: 15px 0;
+        }
+        .invoice-upload-dropzone:hover { background: #f0f0f0; border-color: #667eea; }
+        .invoice-upload-dropzone .big-icon { font-size: 48px; margin-bottom: 10px; }
+        .invoice-upload-dropzone p { margin: 5px 0; color: #666; }
+        .invoice-upload-dropzone p:first-of-type { font-size: 16px; font-weight: bold; }
+
+        /* Matching Results */
+        .matching-results {
+            background: #f9f9f9; border: 1px solid #e0e0e0; border-radius: 8px;
+            padding: 15px; margin: 15px 0;
+        }
+        .matching-results h3 { margin-top: 0; margin-bottom: 10px; }
+        .matching-results p { margin: 5px 0; font-size: 13px; }
+
+        .po-suggestion {
+            background: white; border: 2px solid #ddd; border-radius: 8px; padding: 12px;
+            margin: 10px 0; cursor: pointer; transition: all 0.3s;
+        }
+        .po-suggestion:hover { border-color: #667eea; background: #f9f9f9; }
+        .po-suggestion.selected { border-color: #28a745; background: #f0f8f0; box-shadow: 0 0 10px rgba(40,167,69,0.2); }
     </style>
 </head>
 <body>
     <div class="header">
         <h1>🏢 Department Dashboard</h1>
         <div class="header-nav">
+            <button onclick="openInvoiceUploadModal()" style="background: #28a745; color: white; padding: 10px 20px; border: none; text-decoration: none; border-radius: 5px; font-weight: bold; cursor: pointer;">📄 Upload Invoice</button>
             <a href="{{ url_for('manage_techs') }}" style="background: #fd7e14; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">👷 Manage Techs</a>
             <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
         </div>
@@ -5750,6 +5796,42 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 <button class="modal-close" onclick="closePoModal()">✕ Close</button>
             </div>
             <div id="modal-po-list"></div>
+        </div>
+    </div>
+
+    {# INVOICE UPLOAD & MATCH MODAL #}
+    <div id="invoice-upload-modal" class="modal" onclick="if(event.target === this) closeInvoiceUploadModal()">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>📄 Upload Invoice & Auto-Match PO</h2>
+                <button class="modal-close" onclick="closeInvoiceUploadModal()">✕</button>
+            </div>
+
+            <p style="color: #666; margin-bottom: 15px;">📌 <strong>How it works:</strong> Upload an invoice file and the system will automatically extract the PO number from it and match it to your PO database. You can also add multiple invoices to the same PO.</p>
+
+            <div id="invoice-upload-dropzone" class="invoice-upload-dropzone">
+                <div class="big-icon">📁</div>
+                <p><strong>Click to select file or drag & drop here</strong></p>
+                <p style="font-size: 12px; color: #999;">Supported formats: PDF, JPG, PNG</p>
+                <p style="font-size: 11px; color: #999; margin-top: 5px;">The system will look for PO numbers like: <code style="background: #f0f0f0; padding: 2px 4px; border-radius: 3px;">S-1</code>, <code style="background: #f0f0f0; padding: 2px 4px; border-radius: 3px;">I-123</code>, <code style="background: #f0f0f0; padding: 2px 4px; border-radius: 3px;">PO: S-5</code></p>
+            </div>
+
+            <input type="file" id="invoice-file-input" accept=".pdf,.jpg,.jpeg,.png" style="display: none;">
+
+            <div id="matching-results" class="matching-results" style="display: none;"></div>
+
+            <div id="invoice-details-section" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #e0e0e0; display: none;">
+                <h4 style="margin-bottom: 10px;">📋 Invoice Details</h4>
+                <input type="text" id="invoice-number-input" placeholder="Invoice Number (Required)" style="width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 5px;">
+                <input type="number" id="invoice-cost-input" placeholder="Invoice Cost (Required)" step="0.01" style="width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 5px;">
+                <input type="text" id="jobber-invoice-input" placeholder="Jobber Invoice Number (Optional)" style="width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 5px;">
+                <p style="font-size: 12px; color: #666; margin-top: 10px;">ℹ️ Selected PO: <strong id="selected-po-display"></strong></p>
+            </div>
+
+            <div class="modal-actions" style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+                <button class="secondary-btn" onclick="closeInvoiceUploadModal()" style="background: #6c757d; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer;">Cancel</button>
+                <button class="primary-btn" id="submit-invoice-btn" onclick="submitInvoiceUpload()" style="display: none; background: #667eea; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer;">💾 Save Invoice</button>
+            </div>
         </div>
     </div>
 
@@ -6535,6 +6617,120 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             const tab = urlParams.get('tab');
             if (tab && (tab === 'install' || tab === 'all-pos')) {
                 switchTab(tab);
+            }
+        });
+
+        // ========== INVOICE UPLOAD MODAL FUNCTIONS ==========
+        let selectedInvoiceFile = null;
+        let selectedPoId = null;
+
+        function openInvoiceUploadModal() {
+            const modal = document.getElementById('invoice-upload-modal');
+            if (modal) {
+                modal.style.display = 'flex';
+                selectedInvoiceFile = null;
+                selectedPoId = null;
+                document.getElementById('invoice-upload-dropzone').innerHTML = `<div class="big-icon">📁</div>
+                    <p><strong>Click to select file or drag & drop here</strong></p>
+                    <p style="font-size: 12px; color: #999;">Supported formats: PDF, JPG, PNG</p>
+                    <p style="font-size: 11px; color: #999; margin-top: 5px;">The system will look for PO numbers like: <code style="background: #f0f0f0; padding: 2px 4px; border-radius: 3px;">S-1</code>, <code style="background: #f0f0f0; padding: 2px 4px; border-radius: 3px;">I-123</code></p>`;
+                document.getElementById('matching-results').style.display = 'none';
+                document.getElementById('invoice-details-section').style.display = 'none';
+                document.getElementById('submit-invoice-btn').style.display = 'none';
+            }
+        }
+
+        function closeInvoiceUploadModal() {
+            const modal = document.getElementById('invoice-upload-modal');
+            if (modal) {
+                modal.style.display = 'none';
+                selectedInvoiceFile = null;
+                selectedPoId = null;
+            }
+        }
+
+        function submitInvoiceUpload() {
+            if (!selectedPoId) {
+                alert('Please select a PO first');
+                return;
+            }
+
+            const invoiceNumber = document.getElementById('invoice-number-input').value.trim();
+            const invoiceCost = document.getElementById('invoice-cost-input').value.trim();
+            const jobberInvoice = document.getElementById('jobber-invoice-input').value.trim();
+
+            if (!invoiceNumber) {
+                alert('Please enter an invoice number');
+                return;
+            }
+
+            if (!invoiceCost) {
+                alert('Please enter an invoice cost');
+                return;
+            }
+
+            if (!selectedInvoiceFile) {
+                alert('Please select a file');
+                return;
+            }
+
+            // Create form data and submit
+            const formData = new FormData();
+            formData.append('invoice_file', selectedInvoiceFile);
+            formData.append('invoice_number', invoiceNumber);
+            formData.append('invoice_cost', invoiceCost);
+            formData.append('jobber_invoice_number', jobberInvoice);
+
+            fetch(`/upload_invoice/${selectedPoId}`, {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Invoice uploaded successfully!');
+                    closeInvoiceUploadModal();
+                    // Refresh the dashboard
+                    location.reload();
+                } else {
+                    alert('Error: ' + (data.error || 'Failed to upload invoice'));
+                }
+            })
+            .catch(error => {
+                alert('Error uploading invoice: ' + error);
+            });
+        }
+
+        // Setup drag and drop
+        document.addEventListener('DOMContentLoaded', function() {
+            const dropzone = document.getElementById('invoice-upload-dropzone');
+            const fileInput = document.getElementById('invoice-file-input');
+
+            if (dropzone && fileInput) {
+                dropzone.addEventListener('click', () => fileInput.click());
+
+                dropzone.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    dropzone.style.background = '#f0f0f0';
+                });
+
+                dropzone.addEventListener('dragleave', () => {
+                    dropzone.style.background = '';
+                });
+
+                dropzone.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    dropzone.style.background = '';
+                    if (e.dataTransfer.files.length > 0) {
+                        handleInvoiceFileSelect(e.dataTransfer.files[0]);
+                    }
+                });
+
+                fileInput.addEventListener('change', (e) => {
+                    if (e.target.files.length > 0) {
+                        handleInvoiceFileSelect(e.target.files[0]);
+                    }
+                });
             }
         });
     </script>
