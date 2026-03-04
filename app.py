@@ -1714,6 +1714,134 @@ def submit_request():
 
 
 
+@app.route('/match_invoice_to_po', methods=['POST'])
+def match_invoice_to_po():
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    try:
+        if 'invoice_file' not in request.files:
+            return jsonify({'success': False, 'error': 'No file provided'})
+
+        file = request.files['invoice_file']
+        if file.filename == '':
+            return jsonify({'success': False, 'error': 'No file selected'})
+
+        # Validate file type
+        allowed_extensions = {'.pdf', '.jpg', '.jpeg', '.png'}
+        file_ext = os.path.splitext(file.filename)[1].lower()
+        if file_ext not in allowed_extensions:
+            return jsonify({'success': False, 'error': 'Invalid file type. Allowed: PDF, JPG, PNG'})
+
+        # Get all awaiting invoice POs for matching
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Get all POs that are awaiting invoices
+        c.execute("SELECT id, job_name, invoice_number, client_name, po_type FROM po_requests WHERE status='awaiting_invoice' ORDER BY id DESC")
+        awaiting_pos = c.fetchall()
+
+        # Extract text from the uploaded file
+        invoice_text = ""
+        if file_ext.lower() == '.pdf':
+            try:
+                import pdfplumber
+                with pdfplumber.open(file) as pdf:
+                    for page in pdf.pages[:3]:  # Check first 3 pages
+                        page_text = page.extract_text() or ''
+                        invoice_text += page_text + '\n'
+            except:
+                # If PDF extraction fails, try OCR
+                try:
+                    invoice_text = extract_text_with_ocr(file.stream, 0)
+                except:
+                    pass
+        else:
+            # For images, try OCR
+            try:
+                # Save temp file for OCR
+                temp_path = os.path.join(app.config['UPLOAD_FOLDER'], f"temp_{uuid.uuid4()}.png")
+                file.save(temp_path)
+                invoice_text = extract_text_with_ocr(temp_path, 0)
+                os.remove(temp_path)
+            except:
+                pass
+
+        if not invoice_text:
+            return jsonify({'success': False, 'error': 'Could not extract text from file'})
+
+        # Build PO map for matching
+        po_map = {}
+        for po in awaiting_pos:
+            po_num = format_po_number(po[0], po[1])
+            po_map[po_num] = {
+                'po_id': po[0],
+                'job_name': po[1],
+                'po_number': po_num,
+                'invoice_number': po[2],
+                'client_name': po[3] or '',
+                'po_type': po[4] or 'service'
+            }
+
+        # Try to match using Claude API if available
+        matches = []
+        if is_claude_matching_enabled() and USE_CLAUDE_MATCHING and ANTHROPIC_AVAILABLE:
+            try:
+                matched_po = match_invoice_with_claude(invoice_text, [], po_map)
+                if matched_po:
+                    po_info = po_map.get(matched_po, {})
+                    if po_info:
+                        matches.append({
+                            'po_id': po_info['po_id'],
+                            'po_number': po_info['po_number'],
+                            'job_name': po_info['job_name'],
+                            'confidence': 0.95
+                        })
+            except Exception as e:
+                print(f"Claude matching failed: {e}")
+
+        # Fallback: try fuzzy matching on invoice number
+        if not matches:
+            invoice_numbers = re.findall(r'invoice\s*#?:?\s*([a-z0-9\-]+)', invoice_text, re.IGNORECASE)
+            if invoice_numbers:
+                for inv_num in invoice_numbers[:3]:
+                    # Try to find matching PO by invoice number
+                    for po in awaiting_pos:
+                        po_num = format_po_number(po[0], po[1])
+                        if po[2] and inv_num.lower() in str(po[2]).lower():
+                            if not any(m['po_id'] == po[0] for m in matches):
+                                matches.append({
+                                    'po_id': po[0],
+                                    'po_number': po_num,
+                                    'job_name': po[1],
+                                    'confidence': 0.85
+                                })
+
+        # If still no matches, return top 5 recent POs as options
+        if not matches:
+            for po in awaiting_pos[:5]:
+                po_num = format_po_number(po[0], po[1])
+                matches.append({
+                    'po_id': po[0],
+                    'po_number': po_num,
+                    'job_name': po[1],
+                    'confidence': 0.5
+                })
+
+        conn.close()
+
+        # Sort by confidence
+        matches = sorted(matches, key=lambda x: x['confidence'], reverse=True)[:10]
+
+        return jsonify({
+            'success': True,
+            'matches': matches,
+            'extracted_text_preview': invoice_text[:200] if invoice_text else ''
+        })
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Error: {str(e)}'})
+
 @app.route('/upload_invoice/<int:po_id>', methods=['POST'])
 def upload_invoice(po_id):
     if 'username' not in session or session['role'] != 'office':
@@ -6647,6 +6775,136 @@ OFFICE_DASHBOARD_TEMPLATE = '''
             align-items: center;
             gap: 10px;
         }
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 2000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.6);
+        }
+        .modal.active {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-content {
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            max-width: 600px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #f0f0f0;
+            padding-bottom: 15px;
+        }
+        .modal-header h2 {
+            margin: 0;
+            color: #333;
+        }
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: #999;
+        }
+        .modal-close:hover {
+            color: #333;
+        }
+        .invoice-upload-dropzone {
+            border: 2px dashed #667eea;
+            border-radius: 8px;
+            padding: 30px;
+            text-align: center;
+            margin: 20px 0;
+            cursor: pointer;
+            transition: all 0.3s;
+            background: #f9faff;
+        }
+        .invoice-upload-dropzone:hover,
+        .invoice-upload-dropzone.dragover {
+            background: #e7f0ff;
+            border-color: #5568d3;
+        }
+        .invoice-upload-dropzone p {
+            margin: 5px 0;
+            color: #666;
+        }
+        .invoice-upload-dropzone .big-icon {
+            font-size: 36px;
+            margin-bottom: 10px;
+        }
+        .invoice-upload-dropzone input[type="file"] {
+            display: none;
+        }
+        .matching-results {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f0f8ff;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+        .po-suggestion {
+            background: white;
+            padding: 12px;
+            margin: 8px 0;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 2px solid #e0e0e0;
+        }
+        .po-suggestion:hover {
+            border-color: #667eea;
+            background: #f9faff;
+        }
+        .po-suggestion.selected {
+            border-color: #667eea;
+            background: #e7f0ff;
+            font-weight: bold;
+        }
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+            justify-content: flex-end;
+        }
+        .modal-actions button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        .modal-actions .primary-btn {
+            background: #667eea;
+            color: white;
+        }
+        .modal-actions .primary-btn:hover {
+            background: #5568d3;
+        }
+        .modal-actions .primary-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .modal-actions .secondary-btn {
+            background: #f0f0f0;
+            color: #333;
+        }
+        .modal-actions .secondary-btn:hover {
+            background: #e0e0e0;
+        }
     </style>
     <script>
         function showTab(tabName) {
@@ -6932,12 +7190,189 @@ function searchInTab(tabId, searchInputId) {
         }
     }
 }
+
+        // Invoice Upload Modal Functions
+        let selectedInvoiceFile = null;
+        let selectedPoId = null;
+
+        function openInvoiceUploadModal() {
+            document.getElementById('invoice-upload-modal').classList.add('active');
+            document.getElementById('invoice-file-input').value = '';
+            document.getElementById('matching-results').innerHTML = '';
+            selectedInvoiceFile = null;
+            selectedPoId = null;
+        }
+
+        function closeInvoiceUploadModal() {
+            document.getElementById('invoice-upload-modal').classList.remove('active');
+            selectedInvoiceFile = null;
+            selectedPoId = null;
+        }
+
+        function initInvoiceUploadDropzone() {
+            const dropzone = document.getElementById('invoice-upload-dropzone');
+            const fileInput = document.getElementById('invoice-file-input');
+
+            if (!dropzone || !fileInput) return;
+
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                dropzone.addEventListener(eventName, (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }, false);
+            });
+
+            ['dragenter', 'dragover'].forEach(eventName => {
+                dropzone.addEventListener(eventName, () => {
+                    dropzone.classList.add('dragover');
+                }, false);
+            });
+
+            ['dragleave', 'drop'].forEach(eventName => {
+                dropzone.addEventListener(eventName, () => {
+                    dropzone.classList.remove('dragover');
+                }, false);
+            });
+
+            dropzone.addEventListener('drop', (e) => {
+                const files = e.dataTransfer.files;
+                if (files.length > 0) {
+                    fileInput.files = files;
+                    handleInvoiceFileSelect(files[0]);
+                }
+            }, false);
+
+            dropzone.addEventListener('click', () => {
+                fileInput.click();
+            });
+
+            fileInput.addEventListener('change', (e) => {
+                if (e.target.files.length > 0) {
+                    handleInvoiceFileSelect(e.target.files[0]);
+                }
+            });
+        }
+
+        function handleInvoiceFileSelect(file) {
+            selectedInvoiceFile = file;
+            const dropzone = document.getElementById('invoice-upload-dropzone');
+            const resultsDiv = document.getElementById('matching-results');
+
+            if (!file.name.toLowerCase().match(/\.(pdf|jpg|jpeg|png)$/)) {
+                resultsDiv.innerHTML = '<p style="color: #dc3545; font-weight: bold;">❌ Invalid file type. Please select PDF, JPG, or PNG.</p>';
+                selectedInvoiceFile = null;
+                return;
+            }
+
+            dropzone.innerHTML = `<div class="big-icon">✓</div><p><strong>File selected:</strong> ${file.name}</p><p style="font-size: 12px; color: #999;">Click to change file</p>`;
+
+            // Show matching results area
+            resultsDiv.style.display = 'block';
+            resultsDiv.innerHTML = '<p style="text-align: center; color: #666;">📊 Analyzing file and matching to POs...</p>';
+
+            // Call server to get matching suggestions
+            matchInvoiceToPos(file);
+        }
+
+        function matchInvoiceToPos(file) {
+            const formData = new FormData();
+            formData.append('invoice_file', file);
+
+            fetch('/match_invoice_to_po', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                const resultsDiv = document.getElementById('matching-results');
+
+                if (data.success) {
+                    if (data.matches && data.matches.length > 0) {
+                        let html = '<h3 style="color: #667eea; margin-bottom: 10px;">🎯 Suggested POs</h3>';
+                        html += '<p style="font-size: 12px; color: #666; margin-bottom: 10px;">Click a PO to select it for this invoice:</p>';
+
+                        data.matches.forEach(match => {
+                            html += `<div class="po-suggestion" onclick="selectPoForInvoice(${match.po_id}, this)">
+                                <strong>${match.po_number}</strong> - ${match.job_name}<br>
+                                <span style="font-size: 12px; color: #666;">Confidence: ${(match.confidence * 100).toFixed(0)}%</span>
+                            </div>`;
+                        });
+
+                        resultsDiv.innerHTML = html;
+                    } else {
+                        resultsDiv.innerHTML = '<p style="color: #ff9800;">⚠️ No matching POs found. Please select a PO manually below.</p>';
+                    }
+                } else {
+                    resultsDiv.innerHTML = `<p style="color: #dc3545;">❌ Error: ${data.error || 'Failed to match invoice'}</p>`;
+                }
+            })
+            .catch(error => {
+                document.getElementById('matching-results').innerHTML = `<p style="color: #dc3545;">❌ Error: ${error}</p>`;
+            });
+        }
+
+        function selectPoForInvoice(poId, element) {
+            selectedPoId = poId;
+            document.querySelectorAll('.po-suggestion').forEach(el => {
+                el.classList.remove('selected');
+            });
+            element.classList.add('selected');
+        }
+
+        function submitInvoiceUpload() {
+            if (!selectedInvoiceFile) {
+                alert('Please select a file first');
+                return;
+            }
+
+            if (!selectedPoId) {
+                alert('Please select a PO to match this invoice to');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('invoice', selectedInvoiceFile);
+            formData.append('invoice_number', document.getElementById('invoice-number-input').value || 'AUTO_' + Date.now());
+            formData.append('invoice_cost', document.getElementById('invoice-cost-input').value || '0.00');
+            formData.append('jobber_invoice_number', document.getElementById('jobber-invoice-input').value || '');
+
+            const btn = document.getElementById('submit-invoice-btn');
+            btn.disabled = true;
+            btn.textContent = 'Processing...';
+
+            fetch('/upload_invoice/' + selectedPoId, {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('✓ ' + data.message);
+                    closeInvoiceUploadModal();
+                    location.reload();
+                } else {
+                    alert('Error: ' + data.error);
+                    btn.disabled = false;
+                    btn.textContent = '💾 Save Invoice';
+                }
+            })
+            .catch(error => {
+                alert('Error: ' + error);
+                btn.disabled = false;
+                btn.textContent = '💾 Save Invoice';
+            });
+        }
+
+        window.addEventListener('load', function() {
+            initInvoiceUploadDropzone();
+        });
     </script>
 </head>
 <body>
     <div class="header">
         <h1>🏢 Office Dashboard - {{ username }}</h1>
         <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button onclick="openInvoiceUploadModal()" style="background: #e74c3c; color: white; padding: 10px 20px; border: none; border-radius: 5px; font-size: 14px; cursor: pointer; font-weight: bold;">📄 Upload & Match Invoice</button>
             <a href="{{ url_for('manage_jobs') }}" style="background: #17a2b8; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-size: 14px;">📋 Manage Jobs</a>
             <a href="{{ url_for('manage_techs') }}" style="background: #fd7e14; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-size: 14px;">👷 Manage Techs</a>
             <a href="{{ url_for('settings_page') }}" style="background: #6c757d; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-size: 14px;">⚙️ Settings</a>
@@ -7249,6 +7684,41 @@ function searchInTab(tabId, searchInputId) {
     {% endif %}
 </div>
     {% endif %}
+
+    <!-- Invoice Upload & Match Modal -->
+    <div id="invoice-upload-modal" class="modal" onclick="if(event.target === this) closeInvoiceUploadModal()">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>📄 Upload & Match Invoice to PO</h2>
+                <button class="modal-close" onclick="closeInvoiceUploadModal()">✕</button>
+            </div>
+
+            <p style="color: #666; margin-bottom: 15px;">Click or drag and drop an invoice file to match it with a PO. The system will analyze the file and suggest matching POs.</p>
+
+            <div id="invoice-upload-dropzone" class="invoice-upload-dropzone">
+                <div class="big-icon">📁</div>
+                <p><strong>Click to select file or drag & drop here</strong></p>
+                <p style="font-size: 12px; color: #999;">Supported formats: PDF, JPG, PNG</p>
+            </div>
+
+            <input type="file" id="invoice-file-input" accept=".pdf,.jpg,.jpeg,.png">
+
+            <div id="matching-results" class="matching-results" style="display: none;"></div>
+
+            <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #e0e0e0;">
+                <h4 style="margin-bottom: 10px;">Invoice Details (Optional)</h4>
+                <input type="text" id="invoice-number-input" placeholder="Invoice Number" style="width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 5px;">
+                <input type="number" id="invoice-cost-input" placeholder="Invoice Cost" step="0.01" style="width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 5px;">
+                <input type="text" id="jobber-invoice-input" placeholder="Jobber Invoice Number (Optional)" style="width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 5px;">
+            </div>
+
+            <div class="modal-actions">
+                <button class="secondary-btn" onclick="closeInvoiceUploadModal()">Cancel</button>
+                <button class="primary-btn" id="submit-invoice-btn" onclick="submitInvoiceUpload()">💾 Save Invoice</button>
+            </div>
+        </div>
+    </div>
+
 </body>
 </html>
 '''
