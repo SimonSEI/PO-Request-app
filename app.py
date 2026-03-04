@@ -1716,7 +1716,12 @@ def submit_request():
 
 @app.route('/match_invoice_to_po', methods=['POST'])
 def match_invoice_to_po():
-    """Extract PO number from invoice file and match to database POs"""
+    """Extract PO number from invoice file and match to database POs
+
+    Uses two strategies:
+    1. Direct extraction: Look for PO numbers like S-1, I-123
+    2. Claude AI matching: Intelligently match job names when direct extraction fails
+    """
     if 'username' not in session or session['role'] != 'office':
         return jsonify({'success': False, 'error': 'Unauthorized'})
 
@@ -1761,8 +1766,14 @@ def match_invoice_to_po():
         if not invoice_text:
             return jsonify({'success': False, 'error': 'Could not extract text from file'})
 
-        # Extract PO numbers from invoice text
-        # Look for patterns like: S-1, S-123, I-1, I-456, PO: S-1, PO# I-123, etc.
+        # Get all POs from database
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT id, job_name, client_name, status FROM po_requests ORDER BY id DESC")
+        all_pos = c.fetchall()
+        conn.close()
+
+        # STRATEGY 1: Try direct PO number extraction
         po_patterns = [
             r'[PS]O[#:\s]+([SI])\s*-?\s*(\d+)',  # PO: S-1, PO# I-123
             r'(?:^|\s)([SI])\s*-\s*(\d+)',         # S-1, I-123
@@ -1777,57 +1788,96 @@ def match_invoice_to_po():
                 po_id = match.group(2)
                 extracted_po_numbers.add((dept, int(po_id)))
 
-        if not extracted_po_numbers:
-            return jsonify({
-                'success': False,
-                'error': 'Could not find any PO numbers (S-# or I-#) in the invoice',
-                'extracted_text_preview': invoice_text[:300]
-            })
-
-        # Get all POs from database
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT id, job_name, client_name, status FROM po_requests ORDER BY id DESC")
-        all_pos = c.fetchall()
-        conn.close()
-
-        # Match extracted PO numbers to database POs
         matched_pos = []
-        for dept, po_id in extracted_po_numbers:
-            # Find matching PO in database
+
+        # Try to match extracted PO numbers to database
+        if extracted_po_numbers:
+            for dept, po_id in extracted_po_numbers:
+                for po in all_pos:
+                    db_po_id = po[0]
+                    job_name = po[1]
+                    client_name = po[2]
+                    status = po[3]
+
+                    db_dept = 'S' if job_name and job_name.lower() == 'service' else 'I'
+
+                    if dept == db_dept and db_po_id == po_id:
+                        po_number = format_po_number(db_po_id, job_name)
+                        matched_pos.append({
+                            'po_id': db_po_id,
+                            'po_number': po_number,
+                            'job_name': job_name,
+                            'client_name': client_name or '',
+                            'status': status,
+                            'match_method': 'direct_extraction',
+                            'confidence': 0.99
+                        })
+                        break
+
+        # STRATEGY 2: If direct extraction failed, try Claude AI matching
+        if not matched_pos and is_claude_matching_enabled():
+            print("\n🤖 Direct extraction failed, trying Claude AI matching...")
+
+            # Build job lists for Claude
+            active_jobs = list(set(po[1] for po in all_pos if po[1]))
+
+            # Build PO map
+            po_map = {}
             for po in all_pos:
-                db_po_id = po[0]
-                job_name = po[1]
-                client_name = po[2]
-                status = po[3]
+                po_map[format_po_number(po[0], po[1])] = {
+                    'po_id': po[0],
+                    'job_name': po[1],
+                    'client_name': po[2] or '',
+                    'status': po[3]
+                }
 
-                # Determine department from job name
-                db_dept = 'S' if job_name and job_name.lower() == 'service' else 'I'
+            try:
+                matched_po_number, matched_job, confidence_level = match_invoice_with_claude(
+                    invoice_text, active_jobs, po_map
+                )
 
-                # Check if this matches
-                if dept == db_dept and db_po_id == po_id:
-                    po_number = format_po_number(db_po_id, job_name)
-                    matched_pos.append({
-                        'po_id': db_po_id,
-                        'po_number': po_number,
-                        'job_name': job_name,
-                        'client_name': client_name or '',
-                        'status': status,
-                        'found_in_invoice': True
-                    })
-                    break
+                if matched_po_number and matched_job:
+                    # Find the corresponding PO details
+                    for po in all_pos:
+                        po_num = format_po_number(po[0], po[1])
+                        if po_num == matched_po_number:
+                            confidence_score = 0.85 if confidence_level == 'high' else (0.65 if confidence_level == 'medium' else 0.35)
+                            matched_pos.append({
+                                'po_id': po[0],
+                                'po_number': po_num,
+                                'job_name': po[1],
+                                'client_name': po[2] or '',
+                                'status': po[3],
+                                'match_method': 'claude_ai',
+                                'confidence': confidence_score
+                            })
+                            break
+            except Exception as e:
+                print(f"  ❌ Claude matching error: {e}")
 
-        if not matched_pos:
+        # Return results
+        if matched_pos:
+            # Sort by confidence
+            matched_pos = sorted(matched_pos, key=lambda x: x['confidence'], reverse=True)
+
             return jsonify({
-                'success': False,
-                'error': f'Found PO numbers {list(extracted_po_numbers)} in invoice but no matching POs in database',
-                'extracted_numbers': [f"{dept}-{pid}" for dept, pid in extracted_po_numbers]
+                'success': True,
+                'matches': matched_pos,
+                'extracted_numbers': [f"{dept}-{pid}" for dept, pid in extracted_po_numbers] if extracted_po_numbers else [],
+                'message': f"Found {len(matched_pos)} matching PO(s)" + (" via direct extraction" if any(m['match_method'] == 'direct_extraction' for m in matched_pos) else " via AI analysis")
             })
+
+        # No matches found - return helpful error
+        error_msg = 'Could not find matching PO in database'
+        if extracted_po_numbers:
+            error_msg = f'Found PO numbers {list(extracted_po_numbers)} but they don\'t match any POs in database'
 
         return jsonify({
-            'success': True,
-            'matches': matched_pos,
-            'extracted_numbers': [f"{dept}-{pid}" for dept, pid in extracted_po_numbers]
+            'success': False,
+            'error': error_msg,
+            'extracted_numbers': [f"{dept}-{pid}" for dept, pid in extracted_po_numbers] if extracted_po_numbers else [],
+            'extracted_text_preview': invoice_text[:300] if invoice_text else '',
+            'tip': 'Make sure the invoice PO number matches your system (e.g., S-1, I-123)'
         })
 
     except Exception as e:
@@ -7280,15 +7330,25 @@ function searchInTab(tabId, searchInputId) {
 
                 if (data.success) {
                     if (data.matches && data.matches.length > 0) {
-                        let html = '<h3 style="color: #28a745; margin-bottom: 10px;">✅ PO Found in Invoice!</h3>';
+                        let html = '<h3 style="color: #28a745; margin-bottom: 10px;">✅ ' + (data.message || 'PO Found!') + '</h3>';
 
                         if (data.extracted_numbers && data.extracted_numbers.length > 0) {
-                            html += `<p style="font-size: 12px; color: #666; margin-bottom: 10px;">Found PO number(s): <strong>${data.extracted_numbers.join(', ')}</strong></p>`;
+                            html += `<p style="font-size: 11px; color: #666; margin-bottom: 10px;">📍 Detected: <strong>${data.extracted_numbers.join(', ')}</strong></p>`;
                         }
 
-                        html += '<p style="font-size: 12px; color: #666; margin-bottom: 10px;">Select the correct PO to attach this invoice to:</p>';
+                        html += '<p style="font-size: 12px; color: #666; margin-bottom: 10px;">Select the PO to attach this invoice to:</p>';
 
                         data.matches.forEach(match => {
+                            let methodBadge = '';
+                            let confidence = '';
+
+                            if (match.match_method === 'direct_extraction') {
+                                methodBadge = ' <span style="background: #4CAF50; color: white; padding: 2px 6px; border-radius: 3px; font-size: 9px;">🎯 Direct Match</span>';
+                            } else if (match.match_method === 'claude_ai') {
+                                const confLevel = match.confidence > 0.8 ? '🟢 High' : (match.confidence > 0.6 ? '🟡 Medium' : '🔴 Low');
+                                methodBadge = ` <span style="background: #2196F3; color: white; padding: 2px 6px; border-radius: 3px; font-size: 9px;">🤖 ${confLevel}</span>`;
+                            }
+
                             let statusBadge = '';
                             if (match.status === 'awaiting_invoice') {
                                 statusBadge = ' <span style="background: #ff9800; color: white; padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: bold;">Awaiting Invoice</span>';
@@ -7297,8 +7357,8 @@ function searchInTab(tabId, searchInputId) {
                             }
 
                             html += `<div class="po-suggestion" onclick="selectPoForInvoice(${match.po_id}, this)">
-                                <strong>${match.po_number}</strong> - ${match.job_name}${match.client_name ? ' (' + match.client_name + ')' : ''}${statusBadge}<br>
-                                <span style="font-size: 12px; color: #666;">Status: ${match.status.replace('_', ' ')}</span>
+                                <strong>${match.po_number}</strong> - ${match.job_name}${match.client_name ? ' (' + match.client_name + ')' : ''}${methodBadge}${statusBadge}<br>
+                                <span style="font-size: 11px; color: #999;">Status: ${match.status.replace('_', ' ')}</span>
                             </div>`;
                         });
 
@@ -7309,7 +7369,9 @@ function searchInTab(tabId, searchInputId) {
                 } else {
                     let errorMsg = data.error || 'Failed to extract PO from invoice';
                     if (data.extracted_numbers && data.extracted_numbers.length > 0) {
-                        errorMsg += `<br><br>Found PO numbers: <strong>${data.extracted_numbers.join(', ')}</strong><br>But no matching POs in database.`;
+                        errorMsg += `<br><strong>Found:</strong> ${data.extracted_numbers.join(', ')}<br><span style="font-size: 11px;">These don't match any POs in database</span>`;
+                    } else if (data.tip) {
+                        errorMsg += `<br><span style="font-size: 11px; color: #666;">💡 ${data.tip}</span>`;
                     }
                     resultsDiv.innerHTML = `<p style="color: #dc3545;">❌ ${errorMsg}</p>`;
                 }
