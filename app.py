@@ -5835,9 +5835,9 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
                 pos.forEach(po => {
                     const poId = po[0];
-                    const poDisplay = jobCode ? `${jobCode}-${poId}` : poId;
-                    const techName = getTechName(po[2]);
                     const clientName = po[8] || 'N/A';
+                    const poDisplay = jobCode ? `${jobCode}-${poId} ${clientName}` : poId;
+                    const techName = getTechName(po[2]);
                     const status = po[3];
                     const estimated = po[4] || 0;
                     const invoiced = po[5] || 0;
@@ -6074,9 +6074,9 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
                 pos.forEach(po => {
                     const poId = po[0];
-                    const poDisplay = jobCode ? `${jobCode}-${poId}` : poId;
-                    const techName = getTechName(po[2]);
                     const clientName = po[8] || 'N/A';
+                    const poDisplay = jobCode ? `${jobCode}-${poId} ${clientName}` : poId;
+                    const techName = getTechName(po[2]);
                     const status = po[3];
                     const estimated = po[4] || 0;
                     const invoiced = po[5] || 0;
