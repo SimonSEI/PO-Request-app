@@ -8183,6 +8183,11 @@ function searchInTab(tabId, searchInputId) {
                 const poId = item.getAttribute('data-po-id');
                 const invoicesList = document.getElementById('invoices-list-' + poId);
                 if (invoicesList && invoicesList.textContent.includes('Loading')) {
+                    // Auto-expand and fetch invoices for this PO
+                    const list = document.getElementById('invoices-list-' + poId);
+                    const icon = document.getElementById('toggle-icon-' + poId);
+                    list.classList.add('expanded');
+                    icon.textContent = '▲';
                     fetchPoInvoices(poId);
                 }
             });
