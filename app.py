@@ -6066,6 +6066,17 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         </div>
     </div>
 
+    {# INVOICES MODAL #}
+    <div id="invoices-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>📄 Invoices for <span id="modal-invoice-po-display"></span></h2>
+                <button class="modal-close" onclick="closeInvoicesModal()">✕ Close</button>
+            </div>
+            <div id="modal-invoices-list"></div>
+        </div>
+    </div>
+
     {# INVOICE UPLOAD & MATCH MODAL #}
     <div id="invoice-upload-modal" class="modal" onclick="if(event.target === this) closeInvoiceUploadModal()">
         <div class="modal-content">
@@ -6251,6 +6262,9 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                         const date = po[6] ? po[6].substring(0, 10) : 'N/A';
                         const clientName = po[8] || 'N/A';
                         const invoiceCount = (poInvoices[po[0]] || []).length;
+                        const invoiceDisplay = invoiceCount > 0
+                            ? `<button onclick="showInvoicesModal(${po[0]}, '${poDisplay.replace(/'/g, "\\'")}', event)" style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold; border: none; cursor: pointer;">${invoiceCount}</button>`
+                            : '<span style="color: #999;">-</span>';
 
                         html += `<tr>
                             <td><strong>#${poDisplay}</strong></td>
@@ -6259,7 +6273,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                             <td>${escapeHtml(description)}</td>
                             <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
                             <td>${formatCurrency(estimated)}</td>
-                            <td>${invoiceCount > 0 ? `<span style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold;">${invoiceCount}</span>` : '<span style="color: #999;">-</span>'}</td>
+                            <td>${invoiceDisplay}</td>
                             <td>${escapeHtml(clientName)}</td>
                             <td>${date}</td>
                         </tr>`;
@@ -6372,6 +6386,10 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     const date = po[6] || '';
                     const invoiceCount = (poInvoices[poId] || []).length;
 
+                    const invoiceDisplay = invoiceCount > 0
+                        ? `<button onclick="showInvoicesModal(${poId}, '${poDisplay.replace(/'/g, "\\'")}', event)" style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold; border: none; cursor: pointer;">${invoiceCount}</button>`
+                        : '<span style="color: #999;">-</span>';
+
                     html += `
                         <tr>
                             <td><strong>${escapeHtml(poDisplay)}</strong></td>
@@ -6381,7 +6399,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                             <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
                             <td>${formatCurrency(estimated)}</td>
                             <td>${formatCurrency(invoiced)}</td>
-                            <td>${invoiceCount > 0 ? `<span style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold;">${invoiceCount}</span>` : '<span style="color: #999;">-</span>'}</td>
+                            <td>${invoiceDisplay}</td>
                             <td>${date}</td>
                         </tr>
                     `;
@@ -6649,6 +6667,10 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     const matchesKeyword = !keywordSearch || description.toLowerCase().includes(keywordSearch) || jobName.toLowerCase().includes(keywordSearch) || techName.toLowerCase().includes(keywordSearch);
 
                     if (matchesClient && matchesKeyword) {
+                        const invoiceDisplay = invoiceCount > 0
+                            ? `<button onclick="showInvoicesModal(${poId}, '${poDisplay.replace(/'/g, "\\'")}', event)" style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold; border: none; cursor: pointer;">${invoiceCount}</button>`
+                            : '<span style="color: #999;">-</span>';
+
                         html += `
                             <tr>
                                 <td><strong>${escapeHtml(poDisplay)}</strong></td>
@@ -6658,7 +6680,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                                 <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
                                 <td>${formatCurrency(estimated)}</td>
                                 <td>${formatCurrency(invoiced)}</td>
-                                <td>${invoiceCount > 0 ? `<span style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold;">${invoiceCount}</span>` : '<span style="color: #999;">-</span>'}</td>
+                                <td>${invoiceDisplay}</td>
                                 <td>${date}</td>
                             </tr>
                         `;
@@ -6797,6 +6819,9 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     const date = po[6] ? po[6].substring(0, 10) : 'N/A';
                     const clientName = po[8] || 'N/A';
                     const invoiceCount = (poInvoices[poNum] || []).length;
+                    const invoiceDisplay = invoiceCount > 0
+                        ? `<button onclick="showInvoicesModal(${poNum}, '${poDisplay.replace(/'/g, "\\'")}', event)" style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold; border: none; cursor: pointer;">${invoiceCount}</button>`
+                        : '<span style="color: #999;">-</span>';
 
                     html += `<tr>
                         <td><strong>#${poDisplay}</strong></td>
@@ -6804,7 +6829,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                         <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
                         <td>${formatCurrency(estimated)}</td>
                         <td>${formatCurrency(invoiced)}</td>
-                        <td>${invoiceCount > 0 ? `<span style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold;">${invoiceCount}</span>` : '<span style="color: #999;">-</span>'}</td>
+                        <td>${invoiceDisplay}</td>
                         <td>${escapeHtml(clientName)}</td>
                         <td>${date}</td>
                     </tr>`;
@@ -6819,6 +6844,43 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         function closePoModal() {
             document.getElementById('po-modal').classList.remove('open');
+        }
+
+        function showInvoicesModal(poNum, poDisplay) {
+            const invoices = poInvoices[poNum] || [];
+            document.getElementById('modal-invoice-po-display').textContent = poDisplay;
+
+            let html = '';
+            if (invoices.length === 0) {
+                html = '<p style="text-align: center; color: #999; padding: 20px;">No invoices matched to this PO</p>';
+            } else {
+                invoices.forEach(invoice => {
+                    const invNum = invoice[2] || 'N/A';
+                    const invCost = invoice[3] || 0;
+                    const invFile = invoice[4] || 'N/A';
+                    const invDate = invoice[5] ? invoice[5].substring(0, 10) : 'N/A';
+                    const jobberInv = invoice[6] || '';
+
+                    html += `
+                        <div style="background: #f9f9f9; padding: 15px; margin-bottom: 15px; border-radius: 8px; border-left: 4px solid #28a745;">
+                            <div style="display: grid; gap: 10px;">
+                                <div><strong>📄 Invoice Number:</strong> ${escapeHtml(invNum)}</div>
+                                <div><strong>💰 Amount:</strong> <span style="color: #28a745; font-weight: bold;">${formatCurrency(invCost)}</span></div>
+                                <div><strong>📅 Date:</strong> ${invDate}</div>
+                                <div><strong>📎 File:</strong> ${escapeHtml(invFile)}</div>
+                                ${jobberInv ? `<div><strong>🔖 Jobber #:</strong> ${escapeHtml(jobberInv)}</div>` : ''}
+                            </div>
+                        </div>
+                    `;
+                });
+            }
+
+            document.getElementById('modal-invoices-list').innerHTML = html;
+            document.getElementById('invoices-modal').classList.add('open');
+        }
+
+        function closeInvoicesModal() {
+            document.getElementById('invoices-modal').classList.remove('open');
         }
 
         // Track pending PO deletions for undo functionality
@@ -6920,9 +6982,13 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         }
 
         window.onclick = function(event) {
-            const modal = document.getElementById('po-modal');
-            if (event.target === modal) {
-                modal.classList.remove('open');
+            const poModal = document.getElementById('po-modal');
+            if (event.target === poModal) {
+                poModal.classList.remove('open');
+            }
+            const invoicesModal = document.getElementById('invoices-modal');
+            if (event.target === invoicesModal) {
+                invoicesModal.classList.remove('open');
             }
         };
 
