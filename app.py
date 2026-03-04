@@ -3335,14 +3335,19 @@ def extract_invoice_number(text):
 
     # Patterns for invoice number extraction (prioritized)
     patterns = [
+        # High priority: "INVOICE #" or "INVOICE:" followed by numbers/dashes
+        r'INVOICE\s*#\s*([0-9\-]+)',
+        r'INVOICE\s*:\s*([0-9\-]+)',
+        # Medium priority: General invoice patterns with specific keywords
         r'(?:Invoice\s*#?|Inv(?:oice)?\s*#?|Invoice\s*Number)\s*[:=]?\s*([A-Z0-9\-]+)',
+        # Lower priority: Standalone patterns
         r'#\s*([A-Z0-9\-]{3,15})',
         r'(?:Invoice|Inv)\s+([0-9]{5,15})',
     ]
 
     for pattern in patterns:
         try:
-            match = re.search(pattern, text, re.IGNORECASE)
+            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
             if match:
                 inv_num = match.group(1).strip()
                 # Make sure it's not too long or obviously wrong
