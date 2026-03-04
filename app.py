@@ -6537,7 +6537,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                                     <div class="invoice-item-number">📄 Invoice #${escapeHtml(invNum)}</div>
                                     <div class="invoice-item-cost">Amount: ${formatCurrency(invCost)}</div>
                                     <div class="invoice-item-date">Date: ${invDate}</div>
-                                    <div class="invoice-item-file">File: ${escapeHtml(invFile)}</div>
                                     ${jobberInv ? `<div style="color: #666; font-size: 12px;">Jobber #: ${escapeHtml(jobberInv)}</div>` : ''}
                                 </div>
                             `;
@@ -6867,7 +6866,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                                 <div><strong>📄 Invoice Number:</strong> ${escapeHtml(invNum)}</div>
                                 <div><strong>💰 Amount:</strong> <span style="color: #28a745; font-weight: bold;">${formatCurrency(invCost)}</span></div>
                                 <div><strong>📅 Date:</strong> ${invDate}</div>
-                                <div><strong>📎 File:</strong> ${escapeHtml(invFile)}</div>
                                 ${jobberInv ? `<div><strong>🔖 Jobber #:</strong> ${escapeHtml(jobberInv)}</div>` : ''}
                             </div>
                         </div>
