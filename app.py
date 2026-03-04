@@ -2283,13 +2283,13 @@ def manage_techs():
         # Get ALL POs for each tech (no filtering by tech type, show all their POs)
         tech_pos = {}
         for tech in service_techs:
-            c.execute("""SELECT id, po_type, job_name, status, request_date, invoice_cost
+            c.execute("""SELECT id, po_type, job_name, status, request_date, invoice_cost, client_name
                          FROM po_requests WHERE tech_username=?
                          ORDER BY id DESC""", (tech[1],))
             tech_pos[tech[0]] = c.fetchall()
 
         for tech in install_techs:
-            c.execute("""SELECT id, po_type, job_name, status, request_date, invoice_cost
+            c.execute("""SELECT id, po_type, job_name, status, request_date, invoice_cost, client_name
                          FROM po_requests WHERE tech_username=?
                          ORDER BY id DESC""", (tech[1],))
             tech_pos[tech[0]] = c.fetchall()
@@ -3936,7 +3936,10 @@ MANAGE_TECHS_UNIFIED_TEMPLATE = '''
                 pos.forEach(po => {
                     const poType = po[1] || 'legacy';
                     const prefix = poType === 'service' ? 'S' : (poType === 'install' ? 'I' : '');
-                    const poNum = prefix ? prefix + String(po[0]).padStart(4, '0') : po[0];
+                    const poNum = prefix ? prefix + '-' + String(po[0]).padStart(5, '0') : po[0];
+
+                    // For Service POs, show client name; otherwise show job name
+                    const displayName = poType === 'service' && po[6] ? po[6] : po[2];
 
                     let statusColor = '#856404';
                     if (po[3] === 'approved') statusColor = '#28a745';
@@ -3944,7 +3947,7 @@ MANAGE_TECHS_UNIFIED_TEMPLATE = '''
 
                     html += `
                         <div class="po-item">
-                            <h4>PO #${poNum} - ${po[2]}</h4>
+                            <h4>${poNum} "${displayName}"</h4>
                             <div class="po-meta">
                                 <p><strong>Status:</strong> <span style="color: ${statusColor}; font-weight: bold;">${po[3]}</span></p>
                                 <p><strong>Date:</strong> ${po[4] ? po[4].substring(0, 10) : 'N/A'}</p>
