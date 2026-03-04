@@ -1426,6 +1426,7 @@ def tech_dashboard():
     inv_upload_idx = columns.get('invoice_upload_date', 16)
     client_name_idx = columns.get('client_name')
     po_type_idx = columns.get('po_type', 17)
+    jobber_invoice_idx = columns.get('jobber_invoice_number')
 
     return render_template_string(TECH_DASHBOARD_TEMPLATE,
                                 username=session['username'],
@@ -1439,7 +1440,8 @@ def tech_dashboard():
                                 inv_cost_idx=inv_cost_idx,
                                 inv_upload_idx=inv_upload_idx,
                                 client_name_idx=client_name_idx,
-                                po_type_idx=po_type_idx)
+                                po_type_idx=po_type_idx,
+                                jobber_invoice_idx=jobber_invoice_idx)
 
 @app.route('/office_dashboard')
 def office_dashboard():
@@ -1720,6 +1722,7 @@ def upload_invoice(po_id):
     try:
         invoice_number = request.form.get('invoice_number', '').strip()
         invoice_cost = request.form.get('invoice_cost', '0.00').strip()
+        jobber_invoice_number = request.form.get('jobber_invoice_number', '').strip()
 
         if not invoice_number:
             return jsonify({'success': False, 'error': 'Invoice number is required'})
@@ -1811,18 +1814,18 @@ def upload_invoice(po_id):
 
             c.execute("""UPDATE po_requests
                          SET invoice_filename=?, invoice_number=?, invoice_cost=?,
-                             invoice_date=?, invoice_upload_date=?, job_name=?, status=?, manual_review_flag=?
+                             invoice_date=?, invoice_upload_date=?, job_name=?, status=?, manual_review_flag=?, jobber_invoice_number=?
                          WHERE id=?""",
                      (invoice_filename, invoice_number, formatted_cost, 'N/A',
-                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'), new_job_name, 'matched', manual_review_flag, po_id))
+                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'), new_job_name, 'matched', manual_review_flag, jobber_invoice_number, po_id))
         else:
             # Normal update - set invoice cost
             c.execute("""UPDATE po_requests
                          SET invoice_filename=?, invoice_number=?, invoice_cost=?,
-                             invoice_date=?, invoice_upload_date=?, status=?
+                             invoice_date=?, invoice_upload_date=?, status=?, jobber_invoice_number=?
                          WHERE id=?""",
                      (invoice_filename, invoice_number, formatted_cost, 'N/A',
-                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'matched', po_id))
+                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'matched', jobber_invoice_number, po_id))
 
         conn.commit()
         conn.close()
@@ -6998,6 +7001,7 @@ function searchInTab(tabId, searchInputId) {
                     <form id="invoice-form-{{ req[0] }}" class="invoice-form">
                         <input type="text" name="invoice_number" placeholder="Invoice Number (Required)" required>
                         <input type="number" step="0.01" name="invoice_cost" placeholder="Total Cost (Required)" required>
+                        <input type="text" name="jobber_invoice_number" placeholder="Jobber Invoice Number (Optional)">
                         <div id="dropzone-{{ req[0] }}" class="dropzone">
                             <p>📎 Optional: Drag & drop invoice file or click to browse</p>
                         </div>
@@ -7040,6 +7044,7 @@ function searchInTab(tabId, searchInputId) {
                     <form id="invoice-form-{{ req[0] }}" class="invoice-form">
                         <input type="text" name="invoice_number" placeholder="Invoice Number" value="{{ req[inv_number_idx] if req|length > inv_number_idx else '' }}" required>
                         <input type="number" step="0.01" name="invoice_cost" placeholder="Total Cost" value="{{ req[inv_cost_idx] if req|length > inv_cost_idx else '' }}" required>
+                        <input type="text" name="jobber_invoice_number" placeholder="Jobber Invoice Number (Optional)" value="{{ req[jobber_invoice_idx] if jobber_invoice_idx and req|length > jobber_invoice_idx else '' }}">
                         <div id="dropzone-{{ req[0] }}" class="dropzone">
                             <p>📎 Replace invoice file (optional)</p>
                         </div>
@@ -7080,6 +7085,7 @@ function searchInTab(tabId, searchInputId) {
                     <form id="invoice-form-{{ req[0] }}" class="invoice-form">
                         <input type="text" name="invoice_number" placeholder="Invoice Number (Required)" required>
                         <input type="number" step="0.01" name="invoice_cost" placeholder="Total Cost (Required)" required>
+                        <input type="text" name="jobber_invoice_number" placeholder="Jobber Invoice Number (Optional)">
                         <div id="dropzone-{{ req[0] }}" class="dropzone">
                             <p>📎 Optional: Drag & drop invoice file or click to browse</p>
                         </div>
@@ -7122,6 +7128,7 @@ function searchInTab(tabId, searchInputId) {
                     <form id="invoice-form-{{ req[0] }}" class="invoice-form">
                         <input type="text" name="invoice_number" placeholder="Invoice Number" value="{{ req[inv_number_idx] if req|length > inv_number_idx else '' }}" required>
                         <input type="number" step="0.01" name="invoice_cost" placeholder="Total Cost" value="{{ req[inv_cost_idx] if req|length > inv_cost_idx else '' }}" required>
+                        <input type="text" name="jobber_invoice_number" placeholder="Jobber Invoice Number (Optional)" value="{{ req[jobber_invoice_idx] if jobber_invoice_idx and req|length > jobber_invoice_idx else '' }}">
                         <div id="dropzone-{{ req[0] }}" class="dropzone">
                             <p>📎 Replace invoice file (optional)</p>
                         </div>
@@ -7163,6 +7170,7 @@ function searchInTab(tabId, searchInputId) {
                     <form id="invoice-form-{{ req[0] }}" class="invoice-form">
                         <input type="text" name="invoice_number" placeholder="Invoice Number (Required)" required>
                         <input type="number" step="0.01" name="invoice_cost" placeholder="Total Cost (Required)" required>
+                        <input type="text" name="jobber_invoice_number" placeholder="Jobber Invoice Number (Optional)">
                         <div id="dropzone-{{ req[0] }}" class="dropzone">
                             <p>📎 Optional: Drag & drop invoice file or click to browse</p>
                         </div>
@@ -7207,6 +7215,7 @@ function searchInTab(tabId, searchInputId) {
                     <form id="invoice-form-{{ req[0] }}" class="invoice-form">
                         <input type="text" name="invoice_number" placeholder="Invoice Number" value="{{ req[inv_number_idx] if req|length > inv_number_idx else '' }}" required>
                         <input type="number" step="0.01" name="invoice_cost" placeholder="Total Cost" value="{{ req[inv_cost_idx] if req|length > inv_cost_idx else '' }}" required>
+                        <input type="text" name="jobber_invoice_number" placeholder="Jobber Invoice Number (Optional)" value="{{ req[jobber_invoice_idx] if jobber_invoice_idx and req|length > jobber_invoice_idx else '' }}">
                         <div id="dropzone-{{ req[0] }}" class="dropzone">
                             <p>📎 Replace invoice file (optional)</p>
                         </div>
