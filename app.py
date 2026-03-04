@@ -1726,10 +1726,14 @@ def match_invoice_to_po():
         return jsonify({'success': False, 'error': 'Unauthorized'})
 
     try:
+        print(f"[match_invoice_to_po] Received request with files: {request.files.keys()}")
+
         if 'invoice_file' not in request.files:
             return jsonify({'success': False, 'error': 'No file provided'})
 
         file = request.files['invoice_file']
+        print(f"[match_invoice_to_po] File received: {file.filename}")
+
         if file.filename == '':
             return jsonify({'success': False, 'error': 'No file selected'})
 
@@ -1858,6 +1862,7 @@ def match_invoice_to_po():
         # Extract invoice number and cost from the text
         extracted_invoice_number = extract_invoice_number(invoice_text)
         extracted_invoice_cost = extract_invoice_cost(invoice_text)
+        print(f"[match_invoice_to_po] Extracted - Invoice#: {extracted_invoice_number}, Cost: {extracted_invoice_cost}")
 
         # Return results
         if matched_pos:
@@ -1888,7 +1893,9 @@ def match_invoice_to_po():
 
     except Exception as e:
         import traceback
-        return jsonify({'success': False, 'error': f'Error: {str(e)}', 'trace': traceback.format_exc()})
+        error_trace = traceback.format_exc()
+        print(f"[match_invoice_to_po] ERROR: {str(e)}\n{error_trace}")
+        return jsonify({'success': False, 'error': f'Error: {str(e)}', 'trace': error_trace})
 
 @app.route('/upload_invoice/<int:po_id>', methods=['POST'])
 def upload_invoice(po_id):
@@ -3334,15 +3341,19 @@ def extract_invoice_number(text):
     ]
 
     for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            inv_num = match.group(1).strip()
-            # Make sure it's not too long or obviously wrong
-            if 3 <= len(inv_num) <= 20:
-                # Filter out pure alphabetic words (like "Customer", "Total", etc.)
-                # Valid invoice numbers should contain at least one digit or dash
-                if re.search(r'[0-9\-]', inv_num):
-                    return inv_num
+        try:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                inv_num = match.group(1).strip()
+                # Make sure it's not too long or obviously wrong
+                if 3 <= len(inv_num) <= 20:
+                    # Filter out pure alphabetic words (like "Customer", "Total", etc.)
+                    # Valid invoice numbers should contain at least one digit or dash
+                    if re.search(r'[0-9\-]', inv_num):
+                        return inv_num
+        except Exception as e:
+            print(f"Error processing invoice pattern: {e}")
+            continue
 
     return None
 
