@@ -3339,7 +3339,10 @@ def extract_invoice_number(text):
             inv_num = match.group(1).strip()
             # Make sure it's not too long or obviously wrong
             if 3 <= len(inv_num) <= 20:
-                return inv_num
+                # Filter out pure alphabetic words (like "Customer", "Total", etc.)
+                # Valid invoice numbers should contain at least one digit or dash
+                if re.search(r'[0-9\-]', inv_num):
+                    return inv_num
 
     return None
 
