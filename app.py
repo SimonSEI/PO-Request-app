@@ -6650,6 +6650,8 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         }
 
         function submitInvoiceUpload() {
+            console.log('submitInvoiceUpload called - selectedPoId:', selectedPoId, 'selectedFile:', selectedInvoiceFile);
+
             if (!selectedPoId) {
                 alert('Please select a PO first');
                 return;
@@ -6658,6 +6660,8 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             const invoiceNumber = document.getElementById('invoice-number-input').value.trim();
             const invoiceCost = document.getElementById('invoice-cost-input').value.trim();
             const jobberInvoice = document.getElementById('jobber-invoice-input').value.trim();
+
+            console.log('Invoice values - number:', invoiceNumber, 'cost:', invoiceCost, 'jobber:', jobberInvoice);
 
             if (!invoiceNumber) {
                 alert('Please enter an invoice number');
@@ -6681,12 +6685,18 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             formData.append('invoice_cost', invoiceCost);
             formData.append('jobber_invoice_number', jobberInvoice);
 
+            console.log('Submitting invoice upload for PO:', selectedPoId);
+
             fetch(`/upload_invoice/${selectedPoId}`, {
                 method: 'POST',
                 body: formData
             })
-            .then(response => response.json())
+            .then(response => {
+                console.log('Response status:', response.status);
+                return response.json();
+            })
             .then(data => {
+                console.log('Upload response:', data);
                 if (data.success) {
                     alert('Invoice uploaded successfully!');
                     closeInvoiceUploadModal();
@@ -6697,6 +6707,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 }
             })
             .catch(error => {
+                console.error('Upload error:', error);
                 alert('Error uploading invoice: ' + error);
             });
         }
@@ -6706,8 +6717,13 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             const dropzone = document.getElementById('invoice-upload-dropzone');
             const fileInput = document.getElementById('invoice-file-input');
 
+            console.log('Invoice upload setup - dropzone:', dropzone, 'fileInput:', fileInput);
+
             if (dropzone && fileInput) {
-                dropzone.addEventListener('click', () => fileInput.click());
+                dropzone.addEventListener('click', () => {
+                    console.log('Dropzone clicked, opening file dialog');
+                    fileInput.click();
+                });
 
                 dropzone.addEventListener('dragover', (e) => {
                     e.preventDefault();
@@ -6722,15 +6738,20 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     e.preventDefault();
                     dropzone.style.background = '';
                     if (e.dataTransfer.files.length > 0) {
+                        console.log('File dropped:', e.dataTransfer.files[0]);
                         handleInvoiceFileSelect(e.dataTransfer.files[0]);
                     }
                 });
 
                 fileInput.addEventListener('change', (e) => {
+                    console.log('File input changed:', e.target.files);
                     if (e.target.files.length > 0) {
+                        console.log('File selected:', e.target.files[0]);
                         handleInvoiceFileSelect(e.target.files[0]);
                     }
                 });
+            } else {
+                console.error('Could not find dropzone or file input elements');
             }
         });
     </script>
