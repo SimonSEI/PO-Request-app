@@ -5281,6 +5281,12 @@ TECH_DASHBOARD_TEMPLATE = '''
         if (searchFilter) {
             searchFilter.addEventListener('keyup', filterPOs);
         }
+
+        // Initialize all dropzones for invoice upload
+        document.querySelectorAll('[id^="dropzone-"]').forEach(dropzone => {
+            const poId = dropzone.id.replace('dropzone-', '');
+            initDropzone(poId);
+        });
     });
 
     function filterPOs() {
