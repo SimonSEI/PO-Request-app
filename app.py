@@ -7226,10 +7226,16 @@ OFFICE_DASHBOARD_TEMPLATE = '''
             margin-top: 15px; border-left: 4px solid #0066cc;
         }
         .invoices-toggle {
-            background: #0066cc; color: white; border: none; padding: 10px 15px;
+            background: #0066cc; color: white; border: none; padding: 10px 15px 10px 15px;
             border-radius: 5px; cursor: pointer; font-weight: bold; width: 100%;
-            display: flex; justify-content: space-between;
-            align-items: center; font-size: 14px; gap: 10px;
+            text-align: left; font-size: 14px; position: relative; min-height: 20px;
+        }
+        .invoices-toggle span:last-child {
+            position: absolute;
+            right: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            display: inline-block;
         }
         .invoices-toggle:hover { background: #0052a3; }
         .invoices-list {
@@ -7708,10 +7714,10 @@ OFFICE_DASHBOARD_TEMPLATE = '''
 
             if (list.classList.contains('expanded')) {
                 list.classList.remove('expanded');
-                icon.textContent = '▼';
+                icon.textContent = '[▼]';
             } else {
                 list.classList.add('expanded');
-                icon.textContent = '▲';
+                icon.textContent = '[▲]';
                 // Fetch invoices if not already loaded
                 if (list.textContent.includes('Loading')) {
                     fetchPoInvoices(poId);
@@ -8187,7 +8193,7 @@ function searchInTab(tabId, searchInputId) {
                     const list = document.getElementById('invoices-list-' + poId);
                     const icon = document.getElementById('toggle-icon-' + poId);
                     list.classList.add('expanded');
-                    icon.textContent = '▲';
+                    icon.textContent = '[▲]';
                     fetchPoInvoices(poId);
                 }
             });
@@ -8313,7 +8319,7 @@ function searchInTab(tabId, searchInputId) {
                 <div class="invoices-container">
                     <button class="invoices-toggle" onclick="toggleInvoicesList({{ req[0] }})">
                         <span>📄 Invoices (<span class="invoice-count" id="count-{{ req[0] }}">0</span>)</span>
-                        <span id="toggle-icon-{{ req[0] }}">▼</span>
+                        <span id="toggle-icon-{{ req[0] }}">[▼]</span>
                     </button>
                     <div class="invoices-list" id="invoices-list-{{ req[0] }}">
                         <div style="text-align: center; padding: 10px; color: #666;">Loading invoices...</div>
@@ -8393,7 +8399,7 @@ function searchInTab(tabId, searchInputId) {
                 <div class="invoices-container">
                     <button class="invoices-toggle" onclick="toggleInvoicesList({{ req[0] }})">
                         <span>📄 Invoices (<span class="invoice-count" id="count-{{ req[0] }}">0</span>)</span>
-                        <span id="toggle-icon-{{ req[0] }}">▼</span>
+                        <span id="toggle-icon-{{ req[0] }}">[▼]</span>
                     </button>
                     <div class="invoices-list" id="invoices-list-{{ req[0] }}">
                         <div style="text-align: center; padding: 10px; color: #666;">Loading invoices...</div>
