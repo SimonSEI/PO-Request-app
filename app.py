@@ -1716,6 +1716,7 @@ def submit_request():
 
 @app.route('/match_invoice_to_po', methods=['POST'])
 def match_invoice_to_po():
+    """Extract PO number from invoice file and match to database POs"""
     if 'username' not in session or session['role'] != 'office':
         return jsonify({'success': False, 'error': 'Unauthorized'})
 
@@ -1733,25 +1734,16 @@ def match_invoice_to_po():
         if file_ext not in allowed_extensions:
             return jsonify({'success': False, 'error': 'Invalid file type. Allowed: PDF, JPG, PNG'})
 
-        # Get all awaiting invoice POs for matching
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-
-        # Get all POs that are awaiting invoices
-        c.execute("SELECT id, job_name, invoice_number, client_name, po_type FROM po_requests WHERE status='awaiting_invoice' ORDER BY id DESC")
-        awaiting_pos = c.fetchall()
-
         # Extract text from the uploaded file
         invoice_text = ""
         if file_ext.lower() == '.pdf':
             try:
                 import pdfplumber
                 with pdfplumber.open(file) as pdf:
-                    for page in pdf.pages[:3]:  # Check first 3 pages
+                    for page in pdf.pages[:5]:  # Check first 5 pages
                         page_text = page.extract_text() or ''
                         invoice_text += page_text + '\n'
-            except:
-                # If PDF extraction fails, try OCR
+            except Exception as e:
                 try:
                     invoice_text = extract_text_with_ocr(file.stream, 0)
                 except:
@@ -1759,7 +1751,6 @@ def match_invoice_to_po():
         else:
             # For images, try OCR
             try:
-                # Save temp file for OCR
                 temp_path = os.path.join(app.config['UPLOAD_FOLDER'], f"temp_{uuid.uuid4()}.png")
                 file.save(temp_path)
                 invoice_text = extract_text_with_ocr(temp_path, 0)
@@ -1770,77 +1761,78 @@ def match_invoice_to_po():
         if not invoice_text:
             return jsonify({'success': False, 'error': 'Could not extract text from file'})
 
-        # Build PO map for matching
-        po_map = {}
-        for po in awaiting_pos:
-            po_num = format_po_number(po[0], po[1])
-            po_map[po_num] = {
-                'po_id': po[0],
-                'job_name': po[1],
-                'po_number': po_num,
-                'invoice_number': po[2],
-                'client_name': po[3] or '',
-                'po_type': po[4] or 'service'
-            }
+        # Extract PO numbers from invoice text
+        # Look for patterns like: S-1, S-123, I-1, I-456, PO: S-1, PO# I-123, etc.
+        po_patterns = [
+            r'[PS]O[#:\s]+([SI])\s*-?\s*(\d+)',  # PO: S-1, PO# I-123
+            r'(?:^|\s)([SI])\s*-\s*(\d+)',         # S-1, I-123
+            r'(?:^|\s)([SI])(\d+)(?:\s|$)',        # S1, I123
+        ]
 
-        # Try to match using Claude API if available
-        matches = []
-        if is_claude_matching_enabled() and USE_CLAUDE_MATCHING and ANTHROPIC_AVAILABLE:
-            try:
-                matched_po = match_invoice_with_claude(invoice_text, [], po_map)
-                if matched_po:
-                    po_info = po_map.get(matched_po, {})
-                    if po_info:
-                        matches.append({
-                            'po_id': po_info['po_id'],
-                            'po_number': po_info['po_number'],
-                            'job_name': po_info['job_name'],
-                            'confidence': 0.95
-                        })
-            except Exception as e:
-                print(f"Claude matching failed: {e}")
+        extracted_po_numbers = set()
+        for pattern in po_patterns:
+            matches = re.finditer(pattern, invoice_text, re.IGNORECASE | re.MULTILINE)
+            for match in matches:
+                dept = match.group(1).upper()
+                po_id = match.group(2)
+                extracted_po_numbers.add((dept, int(po_id)))
 
-        # Fallback: try fuzzy matching on invoice number
-        if not matches:
-            invoice_numbers = re.findall(r'invoice\s*#?:?\s*([a-z0-9\-]+)', invoice_text, re.IGNORECASE)
-            if invoice_numbers:
-                for inv_num in invoice_numbers[:3]:
-                    # Try to find matching PO by invoice number
-                    for po in awaiting_pos:
-                        po_num = format_po_number(po[0], po[1])
-                        if po[2] and inv_num.lower() in str(po[2]).lower():
-                            if not any(m['po_id'] == po[0] for m in matches):
-                                matches.append({
-                                    'po_id': po[0],
-                                    'po_number': po_num,
-                                    'job_name': po[1],
-                                    'confidence': 0.85
-                                })
+        if not extracted_po_numbers:
+            return jsonify({
+                'success': False,
+                'error': 'Could not find any PO numbers (S-# or I-#) in the invoice',
+                'extracted_text_preview': invoice_text[:300]
+            })
 
-        # If still no matches, return top 5 recent POs as options
-        if not matches:
-            for po in awaiting_pos[:5]:
-                po_num = format_po_number(po[0], po[1])
-                matches.append({
-                    'po_id': po[0],
-                    'po_number': po_num,
-                    'job_name': po[1],
-                    'confidence': 0.5
-                })
-
+        # Get all POs from database
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT id, job_name, client_name, status FROM po_requests ORDER BY id DESC")
+        all_pos = c.fetchall()
         conn.close()
 
-        # Sort by confidence
-        matches = sorted(matches, key=lambda x: x['confidence'], reverse=True)[:10]
+        # Match extracted PO numbers to database POs
+        matched_pos = []
+        for dept, po_id in extracted_po_numbers:
+            # Find matching PO in database
+            for po in all_pos:
+                db_po_id = po[0]
+                job_name = po[1]
+                client_name = po[2]
+                status = po[3]
+
+                # Determine department from job name
+                db_dept = 'S' if job_name and job_name.lower() == 'service' else 'I'
+
+                # Check if this matches
+                if dept == db_dept and db_po_id == po_id:
+                    po_number = format_po_number(db_po_id, job_name)
+                    matched_pos.append({
+                        'po_id': db_po_id,
+                        'po_number': po_number,
+                        'job_name': job_name,
+                        'client_name': client_name or '',
+                        'status': status,
+                        'found_in_invoice': True
+                    })
+                    break
+
+        if not matched_pos:
+            return jsonify({
+                'success': False,
+                'error': f'Found PO numbers {list(extracted_po_numbers)} in invoice but no matching POs in database',
+                'extracted_numbers': [f"{dept}-{pid}" for dept, pid in extracted_po_numbers]
+            })
 
         return jsonify({
             'success': True,
-            'matches': matches,
-            'extracted_text_preview': invoice_text[:200] if invoice_text else ''
+            'matches': matched_pos,
+            'extracted_numbers': [f"{dept}-{pid}" for dept, pid in extracted_po_numbers]
         })
 
     except Exception as e:
-        return jsonify({'success': False, 'error': f'Error: {str(e)}'})
+        import traceback
+        return jsonify({'success': False, 'error': f'Error: {str(e)}', 'trace': traceback.format_exc()})
 
 @app.route('/upload_invoice/<int:po_id>', methods=['POST'])
 def upload_invoice(po_id):
@@ -7268,9 +7260,9 @@ function searchInTab(tabId, searchInputId) {
 
             // Show matching results area
             resultsDiv.style.display = 'block';
-            resultsDiv.innerHTML = '<p style="text-align: center; color: #666;">📊 Analyzing file and matching to POs...</p>';
+            resultsDiv.innerHTML = '<p style="text-align: center; color: #666;">🔍 Scanning invoice for PO number...</p>';
 
-            // Call server to get matching suggestions
+            // Call server to extract and match PO
             matchInvoiceToPos(file);
         }
 
@@ -7288,22 +7280,38 @@ function searchInTab(tabId, searchInputId) {
 
                 if (data.success) {
                     if (data.matches && data.matches.length > 0) {
-                        let html = '<h3 style="color: #667eea; margin-bottom: 10px;">🎯 Suggested POs</h3>';
-                        html += '<p style="font-size: 12px; color: #666; margin-bottom: 10px;">Click a PO to select it for this invoice:</p>';
+                        let html = '<h3 style="color: #28a745; margin-bottom: 10px;">✅ PO Found in Invoice!</h3>';
+
+                        if (data.extracted_numbers && data.extracted_numbers.length > 0) {
+                            html += `<p style="font-size: 12px; color: #666; margin-bottom: 10px;">Found PO number(s): <strong>${data.extracted_numbers.join(', ')}</strong></p>`;
+                        }
+
+                        html += '<p style="font-size: 12px; color: #666; margin-bottom: 10px;">Select the correct PO to attach this invoice to:</p>';
 
                         data.matches.forEach(match => {
+                            let statusBadge = '';
+                            if (match.status === 'awaiting_invoice') {
+                                statusBadge = ' <span style="background: #ff9800; color: white; padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: bold;">Awaiting Invoice</span>';
+                            } else if (match.status === 'matched') {
+                                statusBadge = ' <span style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: bold;">Has Invoice(s)</span>';
+                            }
+
                             html += `<div class="po-suggestion" onclick="selectPoForInvoice(${match.po_id}, this)">
-                                <strong>${match.po_number}</strong> - ${match.job_name}<br>
-                                <span style="font-size: 12px; color: #666;">Confidence: ${(match.confidence * 100).toFixed(0)}%</span>
+                                <strong>${match.po_number}</strong> - ${match.job_name}${match.client_name ? ' (' + match.client_name + ')' : ''}${statusBadge}<br>
+                                <span style="font-size: 12px; color: #666;">Status: ${match.status.replace('_', ' ')}</span>
                             </div>`;
                         });
 
                         resultsDiv.innerHTML = html;
                     } else {
-                        resultsDiv.innerHTML = '<p style="color: #ff9800;">⚠️ No matching POs found. Please select a PO manually below.</p>';
+                        resultsDiv.innerHTML = '<p style="color: #ff9800;">⚠️ ' + (data.error || 'No matching POs found') + '</p>';
                     }
                 } else {
-                    resultsDiv.innerHTML = `<p style="color: #dc3545;">❌ Error: ${data.error || 'Failed to match invoice'}</p>`;
+                    let errorMsg = data.error || 'Failed to extract PO from invoice';
+                    if (data.extracted_numbers && data.extracted_numbers.length > 0) {
+                        errorMsg += `<br><br>Found PO numbers: <strong>${data.extracted_numbers.join(', ')}</strong><br>But no matching POs in database.`;
+                    }
+                    resultsDiv.innerHTML = `<p style="color: #dc3545;">❌ ${errorMsg}</p>`;
                 }
             })
             .catch(error => {
@@ -7317,6 +7325,21 @@ function searchInTab(tabId, searchInputId) {
                 el.classList.remove('selected');
             });
             element.classList.add('selected');
+
+            // Show invoice details section and submit button
+            const detailsSection = document.getElementById('invoice-details-section');
+            const submitBtn = document.getElementById('submit-invoice-btn');
+            detailsSection.style.display = 'block';
+            submitBtn.style.display = 'block';
+
+            // Update selected PO display
+            const poText = element.querySelector('strong').textContent;
+            document.getElementById('selected-po-display').textContent = poText;
+
+            // Clear previous form values
+            document.getElementById('invoice-number-input').value = '';
+            document.getElementById('invoice-cost-input').value = '';
+            document.getElementById('jobber-invoice-input').value = '';
         }
 
         function submitInvoiceUpload() {
@@ -7689,32 +7712,34 @@ function searchInTab(tabId, searchInputId) {
     <div id="invoice-upload-modal" class="modal" onclick="if(event.target === this) closeInvoiceUploadModal()">
         <div class="modal-content">
             <div class="modal-header">
-                <h2>📄 Upload & Match Invoice to PO</h2>
+                <h2>📄 Upload Invoice & Auto-Match PO</h2>
                 <button class="modal-close" onclick="closeInvoiceUploadModal()">✕</button>
             </div>
 
-            <p style="color: #666; margin-bottom: 15px;">Click or drag and drop an invoice file to match it with a PO. The system will analyze the file and suggest matching POs.</p>
+            <p style="color: #666; margin-bottom: 15px;">📌 <strong>How it works:</strong> Upload an invoice file and the system will automatically extract the PO number from it and match it to your PO database. You can also add multiple invoices to the same PO.</p>
 
             <div id="invoice-upload-dropzone" class="invoice-upload-dropzone">
                 <div class="big-icon">📁</div>
                 <p><strong>Click to select file or drag & drop here</strong></p>
                 <p style="font-size: 12px; color: #999;">Supported formats: PDF, JPG, PNG</p>
+                <p style="font-size: 11px; color: #999; margin-top: 5px;">The system will look for PO numbers like: <code style="background: #f0f0f0; padding: 2px 4px; border-radius: 3px;">S-1</code>, <code style="background: #f0f0f0; padding: 2px 4px; border-radius: 3px;">I-123</code>, <code style="background: #f0f0f0; padding: 2px 4px; border-radius: 3px;">PO: S-5</code></p>
             </div>
 
             <input type="file" id="invoice-file-input" accept=".pdf,.jpg,.jpeg,.png">
 
             <div id="matching-results" class="matching-results" style="display: none;"></div>
 
-            <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #e0e0e0;">
-                <h4 style="margin-bottom: 10px;">Invoice Details (Optional)</h4>
-                <input type="text" id="invoice-number-input" placeholder="Invoice Number" style="width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 5px;">
-                <input type="number" id="invoice-cost-input" placeholder="Invoice Cost" step="0.01" style="width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 5px;">
+            <div id="invoice-details-section" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #e0e0e0; display: none;">
+                <h4 style="margin-bottom: 10px;">📋 Invoice Details</h4>
+                <input type="text" id="invoice-number-input" placeholder="Invoice Number (Required)" style="width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 5px;">
+                <input type="number" id="invoice-cost-input" placeholder="Invoice Cost (Required)" step="0.01" style="width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 5px;">
                 <input type="text" id="jobber-invoice-input" placeholder="Jobber Invoice Number (Optional)" style="width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 5px;">
+                <p style="font-size: 12px; color: #666; margin-top: 10px;">ℹ️ Selected PO: <strong id="selected-po-display"></strong></p>
             </div>
 
             <div class="modal-actions">
                 <button class="secondary-btn" onclick="closeInvoiceUploadModal()">Cancel</button>
-                <button class="primary-btn" id="submit-invoice-btn" onclick="submitInvoiceUpload()">💾 Save Invoice</button>
+                <button class="primary-btn" id="submit-invoice-btn" onclick="submitInvoiceUpload()" style="display: none;">💾 Save Invoice</button>
             </div>
         </div>
     </div>
