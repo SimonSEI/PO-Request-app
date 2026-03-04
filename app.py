@@ -1509,6 +1509,8 @@ def office_dashboard():
         # Get service and install POs for each job (ALL POs, not just active)
         job_pos = {}
         job_all_pos = {}
+        po_invoices = {}  # Map PO ID to list of invoices
+
         for job in all_jobs:
             job_name = job[1]
             # Get active POs for this job (for display on card)
@@ -1528,6 +1530,19 @@ def office_dashboard():
                 ORDER BY id DESC
             """, (job_name,))
             job_all_pos[job[0]] = c.fetchall()
+
+        # Get invoices for all POs
+        c.execute("""
+            SELECT id, po_id, invoice_number, invoice_cost, invoice_filename, invoice_date, jobber_invoice_number, created_at
+            FROM invoices
+            ORDER BY po_id, created_at DESC
+        """)
+        all_invoices = c.fetchall()
+        for invoice in all_invoices:
+            po_id = invoice[1]
+            if po_id not in po_invoices:
+                po_invoices[po_id] = []
+            po_invoices[po_id].append(invoice)
 
         # Get tech info for POs
         c.execute("SELECT id, username, full_name, tech_type FROM users WHERE role='technician'")
@@ -1556,6 +1571,7 @@ def office_dashboard():
                                       install_jobs=install_jobs,
                                       job_pos=job_pos,
                                       job_all_pos=job_all_pos,
+                                      po_invoices=po_invoices,
                                       techs=techs)
 
     except Exception as e:
@@ -5985,6 +6001,37 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         }
         .po-suggestion:hover { border-color: #667eea; background: #f9f9f9; }
         .po-suggestion.selected { border-color: #28a745; background: #f0f8f0; box-shadow: 0 0 10px rgba(40,167,69,0.2); }
+
+        /* Invoice Dropdown Styles */
+        .po-item-header {
+            display: flex; justify-content: space-between; align-items: start;
+            padding-bottom: 10px; cursor: pointer;
+        }
+        .po-item-content { flex: 1; }
+        .invoice-dropdown-toggle {
+            background: none; border: none; padding: 4px 8px; cursor: pointer; color: #667eea;
+            font-size: 16px; font-weight: bold; display: inline-flex; align-items: center;
+            margin-left: 10px; transition: all 0.2s;
+        }
+        .invoice-dropdown-toggle:hover { color: #007bff; }
+        .invoice-dropdown-toggle.collapsed::before { content: '▶ '; }
+        .invoice-dropdown-toggle.expanded::before { content: '▼ '; }
+        .invoice-dropdown-toggle::after { content: ' Invoices'; font-size: 12px; }
+
+        .po-invoices-list {
+            display: none; margin-top: 12px; padding: 12px; background: #f9f9f9;
+            border-radius: 5px; border-left: 3px solid #28a745;
+        }
+        .po-invoices-list.open { display: block; }
+        .invoice-item {
+            background: white; padding: 10px; margin-bottom: 8px; border-radius: 4px;
+            border-left: 3px solid #28a745; font-size: 13px;
+        }
+        .invoice-item-number { font-weight: bold; color: #333; }
+        .invoice-item-cost { color: #28a745; font-weight: bold; }
+        .invoice-item-date { color: #666; font-size: 12px; }
+        .invoice-item-file { color: #667eea; font-size: 12px; word-break: break-word; }
+        .no-invoices { color: #999; font-style: italic; padding: 10px; }
     </style>
 </head>
 <body>
@@ -6133,6 +6180,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         const installJobs = {{ install_jobs | tojson }};
         const jobPOs = {{ job_pos | tojson }};
         const jobAllPOs = {{ job_all_pos | tojson }};
+        const poInvoices = {{ po_invoices | tojson }};
         const techsMap = {{ techs | tojson }};
 
         let filteredServiceJobs = [...serviceJobs];
@@ -6184,7 +6232,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 return;
             }
 
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Job Name</th><th>Tech</th><th>Description</th><th>Status</th><th>Estimated</th><th>Client</th><th>Date</th></tr></thead><tbody>';
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Job Name</th><th>Tech</th><th>Description</th><th>Status</th><th>Estimated</th><th>Invoices</th><th>Client</th><th>Date</th></tr></thead><tbody>';
             let found = 0;
 
             for (const [jobId, pos] of Object.entries(jobAllPOs)) {
@@ -6202,6 +6250,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                         const estimated = po[4] || 0;
                         const date = po[6] ? po[6].substring(0, 10) : 'N/A';
                         const clientName = po[8] || 'N/A';
+                        const invoiceCount = (poInvoices[po[0]] || []).length;
 
                         html += `<tr>
                             <td><strong>#${poDisplay}</strong></td>
@@ -6210,6 +6259,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                             <td>${escapeHtml(description)}</td>
                             <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
                             <td>${formatCurrency(estimated)}</td>
+                            <td>${invoiceCount > 0 ? `<span style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold;">${invoiceCount}</span>` : '<span style="color: #999;">-</span>'}</td>
                             <td>${escapeHtml(clientName)}</td>
                             <td>${date}</td>
                         </tr>`;
@@ -6302,7 +6352,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         function renderServicePOs() {
             const resultsDiv = document.getElementById('service-po-results');
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Job Name</th><th>Tech</th><th>Client</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Date</th></tr></thead><tbody>';
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Job Name</th><th>Tech</th><th>Client</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
             let totalPOs = 0;
 
             // Get all service POs from serviceJobs and jobAllPOs
@@ -6320,6 +6370,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     const estimated = po[4] || 0;
                     const invoiced = po[5] || 0;
                     const date = po[6] || '';
+                    const invoiceCount = (poInvoices[poId] || []).length;
 
                     html += `
                         <tr>
@@ -6330,6 +6381,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                             <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
                             <td>${formatCurrency(estimated)}</td>
                             <td>${formatCurrency(invoiced)}</td>
+                            <td>${invoiceCount > 0 ? `<span style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold;">${invoiceCount}</span>` : '<span style="color: #999;">-</span>'}</td>
                             <td>${date}</td>
                         </tr>
                     `;
@@ -6449,19 +6501,49 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     const clientName = po[7] || 'N/A';
                     const poItemId = `po-item-${jobId}-${poNum}`;
                     const clientDisplay = dept === 'service' ? `<br><small style="color: #666; font-style: italic;">Client: ${escapeHtml(clientName)}</small>` : '';
+
+                    // Get invoices for this PO
+                    const invoices = poInvoices[poNum] || [];
+                    let invoicesHtml = '<div class="po-invoices-list" id="invoices-' + poNum + '">';
+                    if (invoices.length === 0) {
+                        invoicesHtml += '<div class="no-invoices">No invoices matched to this PO</div>';
+                    } else {
+                        invoices.forEach(invoice => {
+                            const invNum = invoice[2] || 'N/A';
+                            const invCost = invoice[3] || 0;
+                            const invFile = invoice[4] || 'N/A';
+                            const invDate = invoice[5] ? invoice[5].substring(0, 10) : 'N/A';
+                            const jobberInv = invoice[6] || '';
+                            invoicesHtml += `
+                                <div class="invoice-item">
+                                    <div class="invoice-item-number">📄 Invoice #${escapeHtml(invNum)}</div>
+                                    <div class="invoice-item-cost">Amount: ${formatCurrency(invCost)}</div>
+                                    <div class="invoice-item-date">Date: ${invDate}</div>
+                                    <div class="invoice-item-file">File: ${escapeHtml(invFile)}</div>
+                                    ${jobberInv ? `<div style="color: #666; font-size: 12px;">Jobber #: ${escapeHtml(jobberInv)}</div>` : ''}
+                                </div>
+                            `;
+                        });
+                    }
+                    invoicesHtml += '</div>';
+
                     html += `
                         <div class="po-item" id="${poItemId}">
-                            <div style="display: flex; justify-content: space-between; align-items: start;">
-                                <div>
+                            <div class="po-item-header">
+                                <div class="po-item-content">
                                     <strong>PO #${poDisplay}</strong> - <span class="po-tech">${techName}</span>
                                     <span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span>
                                     <br><small>Est: ${formatCurrency(estimated)} | Inv: ${formatCurrency(invoiced_po)}</small>
                                     ${clientDisplay}
                                 </div>
-                                <button class="po-delete-btn" onclick="deletePO(${jobId}, ${poNum}, '${poDisplay}', event)" title="Delete this PO" style="background: #dc3545; color: white; border: none; padding: 4px 8px; border-radius: 3px; cursor: pointer; font-size: 12px;">
-                                    🗑️ Delete
-                                </button>
+                                <div>
+                                    <button class="invoice-dropdown-toggle collapsed" onclick="toggleInvoices(${poNum}, event)" title="Toggle invoices for this PO"></button>
+                                    <button class="po-delete-btn" onclick="deletePO(${jobId}, ${poNum}, '${poDisplay}', event)" title="Delete this PO" style="background: #dc3545; color: white; border: none; padding: 4px 8px; border-radius: 3px; cursor: pointer; font-size: 12px;">
+                                        🗑️ Delete
+                                    </button>
+                                </div>
                             </div>
+                            ${invoicesHtml}
                         </div>
                     `;
                 });
@@ -6540,7 +6622,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             const keywordSearch = document.getElementById('service-po-keyword-search').value.toLowerCase().trim();
 
             const resultsDiv = document.getElementById('service-po-results');
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Job Name</th><th>Tech</th><th>Client</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Date</th></tr></thead><tbody>';
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Job Name</th><th>Tech</th><th>Client</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
             let found = 0;
 
             // Get all service POs from serviceJobs and jobAllPOs
@@ -6560,6 +6642,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     const invoiced = po[5] || 0;
                     const date = po[6] || '';
                     const description = po[7] || '';
+                    const invoiceCount = (poInvoices[poId] || []).length;
 
                     // Filter by client and keyword
                     const matchesClient = !clientSearch || clientName.toLowerCase().includes(clientSearch);
@@ -6575,6 +6658,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                                 <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
                                 <td>${formatCurrency(estimated)}</td>
                                 <td>${formatCurrency(invoiced)}</td>
+                                <td>${invoiceCount > 0 ? `<span style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold;">${invoiceCount}</span>` : '<span style="color: #999;">-</span>'}</td>
                                 <td>${date}</td>
                             </tr>
                         `;
@@ -6701,7 +6785,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             if (allPOs.length === 0) {
                 document.getElementById('modal-po-list').innerHTML = '<p style="text-align: center; color: #999;">No POs found for this job.</p>';
             } else {
-                let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Tech</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Client</th><th>Date</th></tr></thead><tbody>';
+                let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Tech</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Invoices</th><th>Client</th><th>Date</th></tr></thead><tbody>';
 
                 allPOs.forEach(po => {
                     const poNum = po[0];
@@ -6712,6 +6796,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     const invoiced = po[5] || 0;
                     const date = po[6] ? po[6].substring(0, 10) : 'N/A';
                     const clientName = po[8] || 'N/A';
+                    const invoiceCount = (poInvoices[poNum] || []).length;
 
                     html += `<tr>
                         <td><strong>#${poDisplay}</strong></td>
@@ -6719,6 +6804,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                         <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
                         <td>${formatCurrency(estimated)}</td>
                         <td>${formatCurrency(invoiced)}</td>
+                        <td>${invoiceCount > 0 ? `<span style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold;">${invoiceCount}</span>` : '<span style="color: #999;">-</span>'}</td>
                         <td>${escapeHtml(clientName)}</td>
                         <td>${date}</td>
                     </tr>`;
@@ -6792,6 +6878,20 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 undoBtn.textContent = '🗑️ Delete';
                 undoBtn.onclick = function(e) { deletePO(jobId, poNum, poDisplay, e); };
                 undoBtn.style.background = '#dc3545';
+            }
+        }
+
+        function toggleInvoices(poNum, event) {
+            event.preventDefault();
+            event.stopPropagation();
+
+            const invoicesList = document.getElementById('invoices-' + poNum);
+            const toggleBtn = event.target;
+
+            if (invoicesList) {
+                invoicesList.classList.toggle('open');
+                toggleBtn.classList.toggle('collapsed');
+                toggleBtn.classList.toggle('expanded');
             }
         }
 
