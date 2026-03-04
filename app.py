@@ -1855,6 +1855,10 @@ def match_invoice_to_po():
             except Exception as e:
                 print(f"  ❌ Claude matching error: {e}")
 
+        # Extract invoice number and cost from the text
+        extracted_invoice_number = extract_invoice_number(invoice_text)
+        extracted_invoice_cost = extract_invoice_cost(invoice_text)
+
         # Return results
         if matched_pos:
             # Sort by confidence
@@ -1864,6 +1868,8 @@ def match_invoice_to_po():
                 'success': True,
                 'matches': matched_pos,
                 'extracted_numbers': [f"{dept}-{pid}" for dept, pid in extracted_po_numbers] if extracted_po_numbers else [],
+                'extracted_invoice_number': extracted_invoice_number,
+                'extracted_invoice_cost': extracted_invoice_cost,
                 'message': f"Found {len(matched_pos)} matching PO(s)" + (" via direct extraction" if any(m['match_method'] == 'direct_extraction' for m in matched_pos) else " via AI analysis")
             })
 
@@ -3303,6 +3309,70 @@ def extract_invoice_year(text):
             valid_years = [y for y in years if 2000 <= y <= 2030]
             if valid_years:
                 return max(valid_years)  # Return the latest year found
+
+    return None
+
+
+def extract_invoice_number(text):
+    """
+    Extract invoice number from invoice text.
+    Looks for common patterns like:
+    - Invoice #: 12345
+    - Invoice Number: INV-2026-001
+    - Inv: ABC123
+    - #12345
+    Returns the first match or None.
+    """
+    if not text:
+        return None
+
+    # Patterns for invoice number extraction (prioritized)
+    patterns = [
+        r'(?:Invoice\s*#?|Inv(?:oice)?\s*#?|Invoice\s*Number)\s*[:=]?\s*([A-Z0-9\-]+)',
+        r'#\s*([A-Z0-9\-]{3,15})',
+        r'(?:Invoice|Inv)\s+([0-9]{5,15})',
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            inv_num = match.group(1).strip()
+            # Make sure it's not too long or obviously wrong
+            if 3 <= len(inv_num) <= 20:
+                return inv_num
+
+    return None
+
+
+def extract_invoice_cost(text):
+    """
+    Extract total invoice cost from text.
+    Looks for patterns like:
+    - Total: $1,234.56
+    - Amount Due: 1234.56
+    - Total Amount: $1234.56
+    Returns float amount or None.
+    """
+    if not text:
+        return None
+
+    # Patterns for cost extraction (prioritized)
+    patterns = [
+        r'(?:Total|Amount\s*Due|Invoice\s*Total|Grand\s*Total)\s*[:=]?\s*\$?\s*([\d,]+\.?\d*)',
+        r'\$\s*([\d,]+\.?\d{2})',  # $1,234.56
+        r'(?:Total|Amount)\s+([0-9]+\.[0-9]{2})',
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            cost_str = match.group(1).replace(',', '').strip()
+            try:
+                cost = float(cost_str)
+                if 0 < cost < 1000000:  # Reasonable range
+                    return f"{cost:.2f}"
+            except ValueError:
+                continue
 
     return None
 
@@ -6733,6 +6803,9 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             matchInvoiceToPos(file);
         }
 
+        // Store extracted invoice data globally
+        let extractedInvoiceData = {};
+
         function matchInvoiceToPos(file) {
             const formData = new FormData();
             formData.append('invoice_file', file);
@@ -6745,12 +6818,24 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             .then(data => {
                 const resultsDiv = document.getElementById('matching-results');
 
+                // Store extracted data for auto-fill
+                extractedInvoiceData = {
+                    invoice_number: data.extracted_invoice_number,
+                    invoice_cost: data.extracted_invoice_cost
+                };
+                console.log('Extracted invoice data:', extractedInvoiceData);
+
                 if (data.success) {
                     if (data.matches && data.matches.length > 0) {
                         let html = '<h3 style="color: #28a745; margin-bottom: 10px;">✅ ' + (data.message || 'PO Found!') + '</h3>';
 
                         if (data.extracted_numbers && data.extracted_numbers.length > 0) {
                             html += `<p style="font-size: 11px; color: #666; margin-bottom: 10px;">📍 Detected: <strong>${data.extracted_numbers.join(', ')}</strong></p>`;
+                        }
+
+                        // Show extracted invoice details if found
+                        if (data.extracted_invoice_number || data.extracted_invoice_cost) {
+                            html += `<p style="font-size: 11px; color: #28a745; margin-bottom: 10px;">📊 Extracted Details: ${data.extracted_invoice_number ? '<strong>Invoice: ' + data.extracted_invoice_number + '</strong>' : ''} ${data.extracted_invoice_cost ? '<strong>Amount: $' + data.extracted_invoice_cost + '</strong>' : ''}</p>`;
                         }
 
                         html += '<p style="font-size: 12px; color: #666; margin-bottom: 10px;">Select the PO to attach this invoice to:</p>';
@@ -6815,9 +6900,19 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             const poText = element.querySelector('strong').textContent;
             document.getElementById('selected-po-display').textContent = poText;
 
-            // Clear previous form values
-            document.getElementById('invoice-number-input').value = '';
-            document.getElementById('invoice-cost-input').value = '';
+            // Auto-fill extracted invoice data
+            if (extractedInvoiceData.invoice_number) {
+                document.getElementById('invoice-number-input').value = extractedInvoiceData.invoice_number;
+            } else {
+                document.getElementById('invoice-number-input').value = '';
+            }
+
+            if (extractedInvoiceData.invoice_cost) {
+                document.getElementById('invoice-cost-input').value = extractedInvoiceData.invoice_cost;
+            } else {
+                document.getElementById('invoice-cost-input').value = '';
+            }
+
             document.getElementById('jobber-invoice-input').value = '';
         }
 
@@ -7642,6 +7737,9 @@ function searchInTab(tabId, searchInputId) {
             matchInvoiceToPos(file);
         }
 
+        // Store extracted invoice data globally
+        let extractedInvoiceData = {};
+
         function matchInvoiceToPos(file) {
             const formData = new FormData();
             formData.append('invoice_file', file);
@@ -7654,12 +7752,24 @@ function searchInTab(tabId, searchInputId) {
             .then(data => {
                 const resultsDiv = document.getElementById('matching-results');
 
+                // Store extracted data for auto-fill
+                extractedInvoiceData = {
+                    invoice_number: data.extracted_invoice_number,
+                    invoice_cost: data.extracted_invoice_cost
+                };
+                console.log('Extracted invoice data:', extractedInvoiceData);
+
                 if (data.success) {
                     if (data.matches && data.matches.length > 0) {
                         let html = '<h3 style="color: #28a745; margin-bottom: 10px;">✅ ' + (data.message || 'PO Found!') + '</h3>';
 
                         if (data.extracted_numbers && data.extracted_numbers.length > 0) {
                             html += `<p style="font-size: 11px; color: #666; margin-bottom: 10px;">📍 Detected: <strong>${data.extracted_numbers.join(', ')}</strong></p>`;
+                        }
+
+                        // Show extracted invoice details if found
+                        if (data.extracted_invoice_number || data.extracted_invoice_cost) {
+                            html += `<p style="font-size: 11px; color: #28a745; margin-bottom: 10px;">📊 Extracted Details: ${data.extracted_invoice_number ? '<strong>Invoice: ' + data.extracted_invoice_number + '</strong>' : ''} ${data.extracted_invoice_cost ? '<strong>Amount: $' + data.extracted_invoice_cost + '</strong>' : ''}</p>`;
                         }
 
                         html += '<p style="font-size: 12px; color: #666; margin-bottom: 10px;">Select the PO to attach this invoice to:</p>';
@@ -7724,9 +7834,19 @@ function searchInTab(tabId, searchInputId) {
             const poText = element.querySelector('strong').textContent;
             document.getElementById('selected-po-display').textContent = poText;
 
-            // Clear previous form values
-            document.getElementById('invoice-number-input').value = '';
-            document.getElementById('invoice-cost-input').value = '';
+            // Auto-fill extracted invoice data
+            if (extractedInvoiceData.invoice_number) {
+                document.getElementById('invoice-number-input').value = extractedInvoiceData.invoice_number;
+            } else {
+                document.getElementById('invoice-number-input').value = '';
+            }
+
+            if (extractedInvoiceData.invoice_cost) {
+                document.getElementById('invoice-cost-input').value = extractedInvoiceData.invoice_cost;
+            } else {
+                document.getElementById('invoice-cost-input').value = '';
+            }
+
             document.getElementById('jobber-invoice-input').value = '';
         }
 
