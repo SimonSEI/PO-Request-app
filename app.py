@@ -6712,6 +6712,115 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             });
         }
 
+        function handleInvoiceFileSelect(file) {
+            selectedInvoiceFile = file;
+            const dropzone = document.getElementById('invoice-upload-dropzone');
+            const resultsDiv = document.getElementById('matching-results');
+
+            if (!file.name.toLowerCase().match(/\.(pdf|jpg|jpeg|png)$/)) {
+                resultsDiv.innerHTML = '<p style="color: #dc3545; font-weight: bold;">❌ Invalid file type. Please select PDF, JPG, or PNG.</p>';
+                selectedInvoiceFile = null;
+                return;
+            }
+
+            dropzone.innerHTML = `<div class="big-icon">✓</div><p><strong>File selected:</strong> ${file.name}</p><p style="font-size: 12px; color: #999;">Click to change file</p>`;
+
+            // Show matching results area
+            resultsDiv.style.display = 'block';
+            resultsDiv.innerHTML = '<p style="text-align: center; color: #666;">🔍 Scanning invoice for PO number...</p>';
+
+            // Call server to extract and match PO
+            matchInvoiceToPos(file);
+        }
+
+        function matchInvoiceToPos(file) {
+            const formData = new FormData();
+            formData.append('invoice_file', file);
+
+            fetch('/match_invoice_to_po', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                const resultsDiv = document.getElementById('matching-results');
+
+                if (data.success) {
+                    if (data.matches && data.matches.length > 0) {
+                        let html = '<h3 style="color: #28a745; margin-bottom: 10px;">✅ ' + (data.message || 'PO Found!') + '</h3>';
+
+                        if (data.extracted_numbers && data.extracted_numbers.length > 0) {
+                            html += `<p style="font-size: 11px; color: #666; margin-bottom: 10px;">📍 Detected: <strong>${data.extracted_numbers.join(', ')}</strong></p>`;
+                        }
+
+                        html += '<p style="font-size: 12px; color: #666; margin-bottom: 10px;">Select the PO to attach this invoice to:</p>';
+
+                        data.matches.forEach(match => {
+                            let methodBadge = '';
+                            let confidence = '';
+
+                            if (match.match_method === 'direct_extraction') {
+                                methodBadge = ' <span style="background: #4CAF50; color: white; padding: 2px 6px; border-radius: 3px; font-size: 9px;">🎯 Direct Match</span>';
+                            } else if (match.match_method === 'claude_ai') {
+                                const confLevel = match.confidence > 0.8 ? '🟢 High' : (match.confidence > 0.6 ? '🟡 Medium' : '🔴 Low');
+                                methodBadge = ` <span style="background: #2196F3; color: white; padding: 2px 6px; border-radius: 3px; font-size: 9px;">🤖 ${confLevel}</span>`;
+                            }
+
+                            let statusBadge = '';
+                            if (match.status === 'awaiting_invoice') {
+                                statusBadge = ' <span style="background: #ff9800; color: white; padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: bold;">Awaiting Invoice</span>';
+                            } else if (match.status === 'matched') {
+                                statusBadge = ' <span style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: bold;">Has Invoice(s)</span>';
+                            }
+
+                            html += `<div class="po-suggestion" onclick="selectPoForInvoice(${match.po_id}, this)">
+                                <strong>${match.po_number}</strong> - ${match.job_name}${match.client_name ? ' (' + match.client_name + ')' : ''}${methodBadge}${statusBadge}<br>
+                                <span style="font-size: 11px; color: #999;">Status: ${match.status.replace('_', ' ')}</span>
+                            </div>`;
+                        });
+
+                        resultsDiv.innerHTML = html;
+                    } else {
+                        resultsDiv.innerHTML = '<p style="color: #ff9800;">⚠️ ' + (data.error || 'No matching POs found') + '</p>';
+                    }
+                } else {
+                    let errorMsg = data.error || 'Failed to extract PO from invoice';
+                    if (data.extracted_numbers && data.extracted_numbers.length > 0) {
+                        errorMsg += `<br><strong>Found:</strong> ${data.extracted_numbers.join(', ')}<br><span style="font-size: 11px;">These don't match any POs in database</span>`;
+                    } else if (data.tip) {
+                        errorMsg += `<br><span style="font-size: 11px; color: #666;">💡 ${data.tip}</span>`;
+                    }
+                    resultsDiv.innerHTML = `<p style="color: #dc3545;">❌ ${errorMsg}</p>`;
+                }
+            })
+            .catch(error => {
+                document.getElementById('matching-results').innerHTML = `<p style="color: #dc3545;">❌ Error: ${error}</p>`;
+            });
+        }
+
+        function selectPoForInvoice(poId, element) {
+            selectedPoId = poId;
+            document.querySelectorAll('.po-suggestion').forEach(el => {
+                el.classList.remove('selected');
+            });
+            element.classList.add('selected');
+
+            // Show invoice details section and submit button
+            const detailsSection = document.getElementById('invoice-details-section');
+            const submitBtn = document.getElementById('submit-invoice-btn');
+            detailsSection.style.display = 'block';
+            submitBtn.style.display = 'block';
+
+            // Update selected PO display
+            const poText = element.querySelector('strong').textContent;
+            document.getElementById('selected-po-display').textContent = poText;
+
+            // Clear previous form values
+            document.getElementById('invoice-number-input').value = '';
+            document.getElementById('invoice-cost-input').value = '';
+            document.getElementById('jobber-invoice-input').value = '';
+        }
+
         // Setup drag and drop
         document.addEventListener('DOMContentLoaded', function() {
             const dropzone = document.getElementById('invoice-upload-dropzone');
