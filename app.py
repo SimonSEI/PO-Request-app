@@ -5326,6 +5326,28 @@ TECH_DASHBOARD_TEMPLATE = '''
         filterPOs();
     }
 
+    function deleteRequest(requestId) {
+        if (confirm('Are you sure you want to delete this PO request? This action cannot be undone.')) {
+            fetch('/delete_request', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({request_id: requestId})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('PO request deleted successfully');
+                    location.reload();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            })
+            .catch(error => {
+                alert('Error deleting request');
+            });
+        }
+    }
+
 </script>
 
     <div class="card">
@@ -5345,6 +5367,7 @@ TECH_DASHBOARD_TEMPLATE = '''
             <div id="posContainer">
             {% for req in requests %}
                 <div class="request-item {{ req[7] }}" data-client="{% if client_name_idx is not none and req|length > client_name_idx and req[client_name_idx] %}{{ req[client_name_idx]|lower }}{% else %}{{ req[4]|lower }}{% endif %}" data-description="{{ req[6]|lower }}">
+                    <button onclick="deleteRequest({{ req[0] }})" style="position: absolute; top: 15px; right: 15px; background: #dc3545; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 12px;">🗑️ Delete</button>
                     <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-wrap: wrap;">
                         <div style="background: #28a745; color: white; padding: 6px 16px; border-radius: 20px; font-size: 18px; font-weight: bold; letter-spacing: 1px;">
                             PO #{{ format_po_number(req[0], req[3]) }}
@@ -6968,7 +6991,7 @@ function searchInTab(tabId, searchInputId) {
         {% for req in service_awaiting_requests %}
             <div class="request-item" data-po-id="{{ req[0] }}">
                 <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
-                <h3>📱 PO #S{{ "%04d"|format(req[0]) }} - {{ req[3] }}</h3>
+                <h3>📱 {{ format_po_number(req[0], req[3]) }} - {{ req[3] }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
                 <p><strong>Store:</strong> {{ req[4] }}</p>
@@ -7000,7 +7023,7 @@ function searchInTab(tabId, searchInputId) {
             <div class="request-item" data-po-id="{{ req[0] }}">
                 <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
                 <button onclick="deleteInvoice({{ req[0] }})" class="delete-btn" style="right: 120px; background: #ff9800;">🗑️ Remove Invoice</button>
-                <h3>📱 PO #S{{ "%04d"|format(req[0]) }} - {{ req[3] }} - ${{ "%.2f"|format((req[inv_cost_idx]|float(0) if req[inv_cost_idx] else 0) if req|length > inv_cost_idx else 0) }}</h3>
+                <h3>📱 {{ format_po_number(req[0], req[3]) }} - {{ req[3] }} - ${{ "%.2f"|format((req[inv_cost_idx]|float(0) if req[inv_cost_idx] else 0) if req|length > inv_cost_idx else 0) }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
                 <p><strong>Description:</strong> {{ req[6] }}</p>
@@ -7050,7 +7073,7 @@ function searchInTab(tabId, searchInputId) {
         {% for req in install_awaiting_requests %}
             <div class="request-item" data-po-id="{{ req[0] }}">
                 <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
-                <h3>🔧 PO #I{{ "%04d"|format(req[0]) }} - {{ req[3] }}</h3>
+                <h3>🔧 {{ format_po_number(req[0], req[3]) }} - {{ req[3] }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
                 <p><strong>Store:</strong> {{ req[4] }}</p>
@@ -7082,7 +7105,7 @@ function searchInTab(tabId, searchInputId) {
             <div class="request-item" data-po-id="{{ req[0] }}">
                 <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
                 <button onclick="deleteInvoice({{ req[0] }})" class="delete-btn" style="right: 120px; background: #ff9800;">🗑️ Remove Invoice</button>
-                <h3>🔧 PO #I{{ "%04d"|format(req[0]) }} - {{ req[3] }} - ${{ "%.2f"|format((req[inv_cost_idx]|float(0) if req[inv_cost_idx] else 0) if req|length > inv_cost_idx else 0) }}</h3>
+                <h3>🔧 {{ format_po_number(req[0], req[3]) }} - {{ req[3] }} - ${{ "%.2f"|format((req[inv_cost_idx]|float(0) if req[inv_cost_idx] else 0) if req|length > inv_cost_idx else 0) }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
                 <p><strong>Description:</strong> {{ req[6] }}</p>
@@ -7133,7 +7156,7 @@ function searchInTab(tabId, searchInputId) {
         {% for req in legacy_awaiting_requests %}
             <div class="request-item" data-po-id="{{ req[0] }}">
                 <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
-                <h3>📦 PO #{{ "%04d"|format(req[0]) }} - {{ req[3] }}</h3>
+                <h3>📦 {{ format_po_number(req[0], req[3]) }} - {{ req[3] }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
                 <p><strong>Store:</strong> {{ req[4] }}</p>
@@ -7167,7 +7190,7 @@ function searchInTab(tabId, searchInputId) {
             <div class="request-item" data-po-id="{{ req[0] }}">
                 <button onclick="deleteRequest({{ req[0] }})" class="delete-btn">🗑️ Delete</button>
                 <button onclick="deleteInvoice({{ req[0] }})" class="delete-btn" style="right: 120px; background: #ff9800;">🗑️ Remove Invoice</button>
-                <h3>📦 PO #{{ "%04d"|format(req[0]) }} - {{ req[3] }} - ${{ "%.2f"|format((req[inv_cost_idx]|float(0) if req[inv_cost_idx] else 0) if req|length > inv_cost_idx else 0) }}</h3>
+                <h3>📦 {{ format_po_number(req[0], req[3]) }} - {{ req[3] }} - ${{ "%.2f"|format((req[inv_cost_idx]|float(0) if req[inv_cost_idx] else 0) if req|length > inv_cost_idx else 0) }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
                 <p><strong>Description:</strong> {{ req[6] }}</p>
