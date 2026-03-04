@@ -6326,12 +6326,8 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
-                    const poItemId = `po-item-${jobId}-${poNum}`;
-                    const poElement = document.getElementById(poItemId);
-                    if (poElement) {
-                        poElement.style.display = 'none';
-                    }
-                    delete pendingDeletions[poItemId];
+                    alert('✓ PO deleted successfully');
+                    location.reload(); // Reload to sync all dashboards
                 } else {
                     alert('Error deleting PO: ' + (data.error || 'Unknown error'));
                     // Restore the PO if deletion failed
