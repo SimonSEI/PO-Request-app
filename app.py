@@ -8312,8 +8312,7 @@ function searchInTab(tabId, searchInputId) {
                 <p><strong>Requested:</strong> {{ req[8] }}</p>
                 <div class="invoices-container">
                     <button class="invoices-toggle" onclick="toggleInvoicesList({{ req[0] }})">
-                        <span>📄 Invoices (<span class="invoice-count" id="count-{{ req[0] }}">0</span>)</span>
-                        <span id="toggle-icon-{{ req[0] }}">▼</span>
+                        📄 Invoices (<span class="invoice-count" id="count-{{ req[0] }}">0</span>) <span id="toggle-icon-{{ req[0] }}" style="float: right; margin-left: 20px;">▼</span>
                     </button>
                     <div class="invoices-list" id="invoices-list-{{ req[0] }}">
                         <div style="text-align: center; padding: 10px; color: #666;">Loading invoices...</div>
@@ -8392,8 +8391,7 @@ function searchInTab(tabId, searchInputId) {
                 <p><strong>Requested:</strong> {{ req[8] }}</p>
                 <div class="invoices-container">
                     <button class="invoices-toggle" onclick="toggleInvoicesList({{ req[0] }})">
-                        <span>📄 Invoices (<span class="invoice-count" id="count-{{ req[0] }}">0</span>)</span>
-                        <span id="toggle-icon-{{ req[0] }}">▼</span>
+                        📄 Invoices (<span class="invoice-count" id="count-{{ req[0] }}">0</span>) <span id="toggle-icon-{{ req[0] }}" style="float: right; margin-left: 20px;">▼</span>
                     </button>
                     <div class="invoices-list" id="invoices-list-{{ req[0] }}">
                         <div style="text-align: center; padding: 10px; color: #666;">Loading invoices...</div>
