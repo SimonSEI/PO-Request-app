@@ -3323,48 +3323,39 @@ def extract_invoice_year(text):
 def extract_invoice_number(text):
     """
     Extract invoice number from invoice text.
-    Looks for common patterns like:
-    - Invoice #: 12345
-    - Invoice Number: INV-2026-001
-    - Inv: ABC123
-    - #12345
-    Returns the first match or None.
+    Strategy: Find "INVOICE" keyword and extract the closest number right after it.
+    This avoids matching customer numbers or other unrelated numbers.
     """
     if not text:
         return None
 
-    # Patterns for invoice number extraction (prioritized)
-    # CRITICAL: Match INVOICE # specifically, NOT CUSTOMER # or other patterns
-    patterns = [
-        # Highest priority: Explicitly match "INVOICE #" (not CUSTOMER #)
-        r'INVOICE\s*#\s*([0-9\-]+)',
-        r'INVOICE\s*:\s*([0-9\-]+)',
-        # Match word "Invoice" with optional # and capture numbers
-        r'Invoice\s*#\s*([0-9\-]+)',
-        r'Invoice\s*#\s*:?\s*([A-Z0-9\-]+)',
-        # General invoice patterns - but make sure to exclude customer numbers
-        r'(?:Invoice|Inv)\s*(?:Number|No)\s*[:=]?\s*([A-Z0-9\-]+)',
-        # Last resort: Any invoice-like pattern
-        r'(?:Invoice|Inv)\s+([0-9]{5,15})',
-    ]
+    # Find all occurrences of "INVOICE" (case insensitive)
+    invoice_matches = list(re.finditer(r'\bINVOICE\b', text, re.IGNORECASE))
 
-    for pattern in patterns:
-        try:
-            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
-            if match:
-                inv_num = match.group(1).strip()
-                # Make sure it's not too long or obviously wrong
-                if 3 <= len(inv_num) <= 20:
-                    # Filter out pure alphabetic words (like "Customer", "Total", etc.)
-                    # Valid invoice numbers should contain at least one digit or dash
-                    if re.search(r'[0-9\-]', inv_num):
-                        print(f"[extract_invoice_number] Found: {inv_num} using pattern: {pattern}")
+    if invoice_matches:
+        for invoice_match in invoice_matches:
+            # Get text after the INVOICE keyword (next 100 characters)
+            start_pos = invoice_match.end()
+            context = text[start_pos:start_pos + 100]
+
+            # Look for the first number/alphanumeric sequence after INVOICE
+            # Priority: numbers with dashes (like 162972833-001), then pure numbers
+            number_patterns = [
+                r'[#:\s]*([0-9]+[\-][0-9\-]+)',  # Numbers with dashes: 162972833-001
+                r'[#:\s]*([0-9]{4,})',             # Pure numbers (4+ digits)
+                r'[#:\s]*([A-Z0-9\-]{5,})',        # Alphanumeric with dashes
+            ]
+
+            for num_pattern in number_patterns:
+                match = re.search(num_pattern, context)
+                if match:
+                    inv_num = match.group(1).strip()
+                    if 3 <= len(inv_num) <= 20 and re.search(r'[0-9]', inv_num):
+                        print(f"[extract_invoice_number] Found: {inv_num} after INVOICE keyword")
                         return inv_num
-        except Exception as e:
-            print(f"Error processing invoice pattern '{pattern}': {e}")
-            continue
 
-    print(f"[extract_invoice_number] No invoice number found in text")
+    # Fallback: If no "INVOICE" keyword, try generic patterns
+    print(f"[extract_invoice_number] No INVOICE keyword found, trying fallback patterns")
     return None
 
 
