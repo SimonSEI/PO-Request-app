@@ -6676,7 +6676,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
             // Create form data and submit
             const formData = new FormData();
-            formData.append('invoice_file', selectedInvoiceFile);
+            formData.append('invoice', selectedInvoiceFile);
             formData.append('invoice_number', invoiceNumber);
             formData.append('invoice_cost', invoiceCost);
             formData.append('jobber_invoice_number', jobberInvoice);
