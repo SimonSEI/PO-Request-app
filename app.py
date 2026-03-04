@@ -3334,14 +3334,17 @@ def extract_invoice_number(text):
         return None
 
     # Patterns for invoice number extraction (prioritized)
+    # CRITICAL: Match INVOICE # specifically, NOT CUSTOMER # or other patterns
     patterns = [
-        # High priority: "INVOICE #" or "INVOICE:" followed by numbers/dashes
+        # Highest priority: Explicitly match "INVOICE #" (not CUSTOMER #)
         r'INVOICE\s*#\s*([0-9\-]+)',
         r'INVOICE\s*:\s*([0-9\-]+)',
-        # Medium priority: General invoice patterns with specific keywords
-        r'(?:Invoice\s*#?|Inv(?:oice)?\s*#?|Invoice\s*Number)\s*[:=]?\s*([A-Z0-9\-]+)',
-        # Lower priority: Standalone patterns
-        r'#\s*([A-Z0-9\-]{3,15})',
+        # Match word "Invoice" with optional # and capture numbers
+        r'Invoice\s*#\s*([0-9\-]+)',
+        r'Invoice\s*#\s*:?\s*([A-Z0-9\-]+)',
+        # General invoice patterns - but make sure to exclude customer numbers
+        r'(?:Invoice|Inv)\s*(?:Number|No)\s*[:=]?\s*([A-Z0-9\-]+)',
+        # Last resort: Any invoice-like pattern
         r'(?:Invoice|Inv)\s+([0-9]{5,15})',
     ]
 
@@ -3355,11 +3358,13 @@ def extract_invoice_number(text):
                     # Filter out pure alphabetic words (like "Customer", "Total", etc.)
                     # Valid invoice numbers should contain at least one digit or dash
                     if re.search(r'[0-9\-]', inv_num):
+                        print(f"[extract_invoice_number] Found: {inv_num} using pattern: {pattern}")
                         return inv_num
         except Exception as e:
-            print(f"Error processing invoice pattern: {e}")
+            print(f"Error processing invoice pattern '{pattern}': {e}")
             continue
 
+    print(f"[extract_invoice_number] No invoice number found in text")
     return None
 
 
