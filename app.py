@@ -11,6 +11,11 @@ import json
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from markupsafe import Markup
+import imaplib
+import email
+from email.parser import Parser
+from email.header import decode_header
+import base64
 
 # Claude API for intelligent invoice matching
 try:
@@ -150,6 +155,13 @@ EMAIL_ADDRESS = 'YOUR_EMAIL@gmail.com'
 EMAIL_PASSWORD = 'YOUR_APP_PASSWORD'
 WEBSITE_URL = os.environ.get('WEBSITE_URL', 'http://localhost:5000')
 
+# Email Configuration for PO Invoice Receiving (Gmail IMAP)
+PO_EMAIL_ADDRESS = os.environ.get('PO_EMAIL_ADDRESS', '')
+PO_EMAIL_PASSWORD = os.environ.get('PO_EMAIL_PASSWORD', '')
+PO_EMAIL_IMAP_SERVER = 'imap.gmail.com'
+PO_EMAIL_IMAP_PORT = 993
+PO_EMAIL_MONITORING_ENABLED = bool(PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD)
+
 # ... rest of your code continues ...
 
 def send_reset_email(email, reset_token):
@@ -228,6 +240,206 @@ def log_activity(username, action, target_type, target_id, details=''):
         print(f"✓ Logged: {username} - {action}")
     except Exception as e:
         print(f"✗ Activity log error: {e}")
+
+def fetch_emails_from_imap():
+    """
+    Connect to IMAP server and fetch unprocessed emails with attachments
+    Returns list of (email_uid, email_data) tuples
+    """
+    if not PO_EMAIL_MONITORING_ENABLED:
+        print("⚠ Email monitoring not enabled - set PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD")
+        return []
+
+    emails = []
+    try:
+        # Connect to Gmail IMAP
+        mail = imaplib.IMAP4_SSL(PO_EMAIL_IMAP_SERVER, PO_EMAIL_IMAP_PORT)
+        mail.login(PO_EMAIL_ADDRESS, PO_EMAIL_PASSWORD)
+        print(f"✓ Connected to IMAP: {PO_EMAIL_ADDRESS}")
+
+        # Select INBOX
+        mail.select('INBOX')
+
+        # Get already processed email UIDs
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT email_uid FROM email_processing_log")
+        processed_uids = {row[0] for row in c.fetchall()}
+        conn.close()
+
+        # Search for all emails
+        status, email_ids = mail.search(None, 'ALL')
+        if status == 'OK':
+            email_id_list = email_ids[0].split()
+            print(f"📧 Found {len(email_id_list)} total emails in INBOX")
+
+            for email_id in reversed(email_id_list[-50:]):  # Check last 50 emails
+                status, msg_data = mail.fetch(email_id, '(RFC822)')
+                if status == 'OK':
+                    msg = email.message_from_bytes(msg_data[0][1])
+                    msg_uid = email_id.decode()
+
+                    # Skip if already processed
+                    if msg_uid in processed_uids:
+                        continue
+
+                    # Check if email has attachments
+                    if msg.get_content_maintype() == 'multipart':
+                        has_attachments = False
+                        for part in msg.walk():
+                            if part.get_content_disposition() == 'attachment':
+                                has_attachments = True
+                                break
+
+                        if has_attachments:
+                            emails.append((msg_uid, msg))
+                            print(f"  ✓ Found new email with attachments: {msg.get('Subject', 'No Subject')}")
+
+        mail.close()
+        mail.logout()
+        print(f"✓ IMAP disconnected - {len(emails)} new emails with attachments")
+        return emails
+
+    except Exception as e:
+        print(f"✗ IMAP error: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+def extract_attachments_from_email(msg):
+    """
+    Extract attachments from an email message
+    Returns list of (filename, file_content) tuples
+    """
+    attachments = []
+    try:
+        for part in msg.walk():
+            if part.get_content_disposition() == 'attachment':
+                filename = part.get_filename()
+                if filename:
+                    # Decode filename if needed
+                    if isinstance(filename, str):
+                        # Handle encoded-word format
+                        try:
+                            decoded_parts = decode_header(filename)
+                            filename = ''.join([part.decode(enc or 'utf-8') if isinstance(part, bytes) else part
+                                               for part, enc in decoded_parts])
+                        except:
+                            pass
+
+                    file_content = part.get_payload(decode=True)
+                    attachments.append((filename, file_content))
+                    print(f"  📎 Extracted attachment: {filename}")
+
+        return attachments
+    except Exception as e:
+        print(f"✗ Error extracting attachments: {e}")
+        return []
+
+def process_email_attachments(msg_uid, msg, attachments):
+    """
+    Process email attachments and match with POs
+    Returns results dictionary
+    """
+    results = {
+        'success': True,
+        'email_uid': msg_uid,
+        'email_sender': msg.get('From', 'Unknown'),
+        'email_subject': msg.get('Subject', 'No Subject'),
+        'email_date': msg.get('Date', ''),
+        'attachments_processed': 0,
+        'matched': 0,
+        'unmatched': [],
+        'errors': [],
+        'details': []
+    }
+
+    try:
+        # Get PO map for matching
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""SELECT id, tech_name, job_name, estimated_cost, client_name
+                     FROM po_requests
+                     WHERE (status='awaiting_invoice' OR status='approved')
+                     AND (invoice_filename IS NULL OR invoice_filename = '')""")
+        po_map = {}
+        for row in c.fetchall():
+            po_map[row[0]] = {
+                'id': row[0],
+                'tech_name': row[1],
+                'job_name': row[2],
+                'estimated_cost': row[3],
+                'client_name': row[4]
+            }
+        conn.close()
+
+        print(f"  Found {len(po_map)} POs awaiting invoices")
+
+        # Process each attachment
+        for filename, file_content in attachments:
+            results['attachments_processed'] += 1
+
+            # Only process PDF files
+            if not filename.lower().endswith('.pdf'):
+                results['unmatched'].append({
+                    'filename': filename,
+                    'reason': 'Not a PDF file'
+                })
+                continue
+
+            # Save temporary file
+            temp_path = os.path.join(app.config['BULK_UPLOAD_FOLDER'], f'email_{msg_uid}_{filename}')
+            try:
+                with open(temp_path, 'wb') as f:
+                    f.write(file_content)
+
+                # Process with bulk PDF processor
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                pdf_results = process_bulk_pdf(temp_path, timestamp)
+
+                results['matched'] += pdf_results.get('matched', 0)
+                results['details'].append({
+                    'filename': filename,
+                    'results': pdf_results
+                })
+
+                # Clean up temp file
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+
+            except Exception as e:
+                results['errors'].append({
+                    'filename': filename,
+                    'error': str(e)
+                })
+                print(f"    ✗ Error processing {filename}: {e}")
+
+        return results
+
+    except Exception as e:
+        print(f"✗ Error processing email attachments: {e}")
+        results['success'] = False
+        results['errors'].append(str(e))
+        return results
+
+def log_email_processing(email_uid, email_sender, email_subject, email_date, attachments_count, results):
+    """Log email processing to database"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        c.execute("""INSERT INTO email_processing_log
+                     (email_uid, email_sender, email_subject, email_date, attachments_processed, processed_at, results)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                 (email_uid, email_sender, email_subject, email_date, attachments_count,
+                  datetime.now().strftime('%Y-%m-%d %H:%M:%S'), json.dumps(results)))
+        conn.commit()
+        conn.close()
+        print(f"✓ Logged email processing: {email_sender}")
+    except Exception as e:
+        print(f"✗ Error logging email: {e}")
 
 def init_db():
     """Initialize database with tables and default users"""
@@ -320,6 +532,17 @@ def init_db():
                   jobber_invoice_number TEXT,
                   created_at TEXT,
                   FOREIGN KEY (po_id) REFERENCES po_requests(id) ON DELETE CASCADE)''')
+
+    # Email processing tracking - tracks which emails have been processed
+    c.execute('''CREATE TABLE IF NOT EXISTS email_processing_log
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  email_uid TEXT UNIQUE,
+                  email_sender TEXT,
+                  email_subject TEXT,
+                  email_date TEXT,
+                  attachments_processed INTEGER,
+                  processed_at TEXT,
+                  results TEXT)''')
 
     # Add match_method column to po_requests if it doesn't exist
     try:
@@ -3075,6 +3298,151 @@ def bulk_upload_invoices():
     except Exception as e:
         import traceback
         return jsonify({'success': False, 'error': str(e), 'trace': traceback.format_exc()})
+
+
+@app.route('/check_po_emails', methods=['POST'])
+def check_po_emails():
+    """Check IMAP email account for new invoices and process them automatically"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    if not PO_EMAIL_MONITORING_ENABLED:
+        return jsonify({
+            'success': False,
+            'error': 'Email monitoring not configured. Set PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD environment variables.'
+        })
+
+    try:
+        print(f"\n{'='*60}")
+        print(f"📧 CHECKING PO EMAIL ACCOUNT: {PO_EMAIL_ADDRESS}")
+        print(f"{'='*60}")
+
+        # Fetch emails from IMAP
+        emails = fetch_emails_from_imap()
+
+        if not emails:
+            return jsonify({
+                'success': True,
+                'message': 'No new emails with attachments found',
+                'emails_checked': 0,
+                'emails_processed': 0
+            })
+
+        all_results = {
+            'success': True,
+            'emails_checked': len(emails),
+            'emails_processed': 0,
+            'total_attachments': 0,
+            'total_matched': 0,
+            'total_unmatched': 0,
+            'details': []
+        }
+
+        # Process each email
+        for msg_uid, msg in emails:
+            print(f"\n📧 Processing email: {msg.get('Subject', 'No Subject')}")
+
+            # Extract attachments
+            attachments = extract_attachments_from_email(msg)
+            if not attachments:
+                continue
+
+            all_results['emails_processed'] += 1
+            all_results['total_attachments'] += len(attachments)
+
+            # Process attachments
+            email_results = process_email_attachments(msg_uid, msg, attachments)
+
+            # Update totals
+            all_results['total_matched'] += email_results.get('matched', 0)
+            all_results['total_unmatched'] += len(email_results.get('unmatched', []))
+
+            # Log to database
+            log_email_processing(
+                msg_uid,
+                email_results.get('email_sender', 'Unknown'),
+                email_results.get('email_subject', 'No Subject'),
+                email_results.get('email_date', ''),
+                email_results.get('attachments_processed', 0),
+                email_results
+            )
+
+            all_results['details'].append(email_results)
+
+        print(f"\n{'='*60}")
+        print(f"✅ EMAIL CHECK COMPLETE")
+        print(f"  Emails processed: {all_results['emails_processed']}")
+        print(f"  Total attachments: {all_results['total_attachments']}")
+        print(f"  Matched invoices: {all_results['total_matched']}")
+        print(f"  Unmatched invoices: {all_results['total_unmatched']}")
+        print(f"{'='*60}")
+
+        return jsonify(all_results)
+
+    except Exception as e:
+        import traceback
+        print(f"✗ Email check error: {e}")
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'trace': traceback.format_exc()
+        })
+
+
+@app.route('/email_processing_logs', methods=['GET'])
+def email_processing_logs():
+    """View email processing logs for office users"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Get limit from query parameters
+        limit = request.args.get('limit', 50, type=int)
+        limit = min(limit, 200)  # Max 200
+
+        c.execute("""SELECT id, email_uid, email_sender, email_subject, email_date,
+                            attachments_processed, processed_at, results
+                     FROM email_processing_log
+                     ORDER BY processed_at DESC
+                     LIMIT ?""", (limit,))
+
+        logs = []
+        for row in c.fetchall():
+            try:
+                results = json.loads(row[7]) if row[7] else {}
+            except:
+                results = {}
+
+            logs.append({
+                'id': row[0],
+                'email_uid': row[1],
+                'sender': row[2],
+                'subject': row[3],
+                'email_date': row[4],
+                'attachments': row[5],
+                'processed_at': row[6],
+                'matched': results.get('matched', 0),
+                'unmatched_count': len(results.get('unmatched', [])),
+                'errors': len(results.get('errors', []))
+            })
+
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'logs': logs,
+            'total': len(logs)
+        })
+
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
 
 
 def process_bulk_pdf(pdf_path, timestamp):
