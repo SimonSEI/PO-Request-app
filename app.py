@@ -6416,6 +6416,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         <h1>🏢 Department Dashboard</h1>
         <div class="header-nav">
             <button onclick="openInvoiceUploadModal()" style="background: #28a745; color: white; padding: 10px 20px; border: none; text-decoration: none; border-radius: 5px; font-weight: bold; cursor: pointer;">📄 Upload Invoice</button>
+            <button onclick="checkPOEmails()" style="background: #0d6efd; color: white; padding: 10px 20px; border: none; text-decoration: none; border-radius: 5px; font-weight: bold; cursor: pointer;" id="check-emails-btn">📧 Check PO Emails</button>
             <a href="{{ url_for('manage_techs') }}" style="background: #fd7e14; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">👷 Manage Techs</a>
             <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
         </div>
@@ -7410,6 +7411,42 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 selectedInvoiceFile = null;
                 selectedPoId = null;
             }
+        }
+
+        function checkPOEmails() {
+            const btn = document.getElementById('check-emails-btn');
+            const originalText = btn.textContent;
+            btn.textContent = '⏳ Checking emails...';
+            btn.disabled = true;
+
+            fetch('/check_po_emails', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    let message = `✅ Email check completed!\n\n`;
+                    message += `📧 Emails processed: ${data.emails_processed}\n`;
+                    message += `📎 Total attachments: ${data.total_attachments}\n`;
+                    message += `✅ Matched invoices: ${data.total_matched}\n`;
+                    message += `⚠️  Unmatched invoices: ${data.total_unmatched}`;
+                    alert(message);
+                    // Reload page to show updated data
+                    setTimeout(() => location.reload(), 1000);
+                } else {
+                    alert(`❌ Error checking emails:\n${data.error}`);
+                }
+            })
+            .catch(error => {
+                alert(`❌ Error:\n${error.message}`);
+            })
+            .finally(() => {
+                btn.textContent = originalText;
+                btn.disabled = false;
+            });
         }
 
         function submitInvoiceUpload() {
