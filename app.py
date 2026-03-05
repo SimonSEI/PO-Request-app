@@ -17,6 +17,14 @@ from email.parser import Parser
 from email.header import decode_header
 import base64
 
+# Background task scheduler for automatic email checking
+try:
+    from apscheduler.schedulers.background import BackgroundScheduler
+    SCHEDULER_AVAILABLE = True
+except ImportError:
+    SCHEDULER_AVAILABLE = False
+    print("⚠ APScheduler not installed - Auto email checking disabled")
+
 # Claude API for intelligent invoice matching
 try:
     import anthropic
@@ -448,6 +456,62 @@ def log_email_processing(email_uid, email_sender, email_subject, email_date, att
         print(f"✓ Logged email processing: {email_sender}")
     except Exception as e:
         print(f"✗ Error logging email: {e}")
+
+def auto_check_po_emails():
+    """Background task: Automatically check PO emails every hour"""
+    if not PO_EMAIL_MONITORING_ENABLED:
+        return
+
+    try:
+        print(f"\n{'='*60}")
+        print(f"📧 AUTO EMAIL CHECK - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"   Checking: {PO_EMAIL_ADDRESS}")
+        print(f"   Provider: {PO_EMAIL_PROVIDER}")
+        print(f"{'='*60}")
+
+        # Fetch emails from IMAP
+        emails = fetch_emails_from_imap()
+
+        if not emails:
+            print(f"✓ No new emails with attachments found")
+            return
+
+        # Process each email
+        processed_count = 0
+        matched_count = 0
+
+        for msg_uid, msg in emails:
+            # Extract attachments
+            attachments = extract_attachments_from_email(msg)
+            if not attachments:
+                continue
+
+            processed_count += 1
+
+            # Process attachments
+            email_results = process_email_attachments(msg_uid, msg, attachments)
+            matched_count += email_results.get('matched', 0)
+
+            # Log to database
+            log_email_processing(
+                msg_uid,
+                email_results.get('email_sender', 'Unknown'),
+                email_results.get('email_subject', 'No Subject'),
+                email_results.get('email_date', ''),
+                email_results.get('attachments_processed', 0),
+                email_results
+            )
+
+        print(f"\n{'='*60}")
+        print(f"✅ AUTO EMAIL CHECK COMPLETE")
+        print(f"  Emails processed: {processed_count}")
+        print(f"  Matched invoices: {matched_count}")
+        print(f"{'='*60}\n")
+
+    except Exception as e:
+        print(f"✗ Auto email check error: {e}")
+        import traceback
+        traceback.print_exc()
 
 def init_db():
     """Initialize database with tables and default users"""
@@ -11481,6 +11545,23 @@ ADMIN_CREATE_USER_TEMPLATE = ADMIN_CREATE_USER_TEMPLATE if 'ADMIN_CREATE_USER_TE
 
 init_db()
 print("✓ Database initialized on startup")
+
+# Set up background scheduler for automatic email checking
+if SCHEDULER_AVAILABLE and PO_EMAIL_MONITORING_ENABLED:
+    try:
+        scheduler = BackgroundScheduler()
+        # Schedule email checking every hour
+        scheduler.add_job(auto_check_po_emails, 'interval', hours=1, id='auto_check_po_emails')
+        scheduler.start()
+        print(f"✓ Email auto-checker scheduled every 1 hour")
+        print(f"  Account: {PO_EMAIL_ADDRESS}")
+        print(f"  Provider: {PO_EMAIL_PROVIDER}")
+    except Exception as e:
+        print(f"⚠ Could not start email scheduler: {e}")
+elif not SCHEDULER_AVAILABLE:
+    print("⚠ APScheduler not installed - auto email checking disabled")
+elif not PO_EMAIL_MONITORING_ENABLED:
+    print("ℹ Email monitoring not configured - auto checking disabled")
 
 if __name__ == '__main__':
        app.run(debug=False)  # Change to False for production
