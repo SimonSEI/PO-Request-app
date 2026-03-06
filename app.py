@@ -1820,16 +1820,27 @@ def login():
 
             conn.close()
 
-            if user[3] == 'technician':
-                return redirect(url_for('tech_dashboard'))
-            elif user[3] == 'admin':
-                return redirect(url_for('admin_dashboard'))
-            else:
-                return redirect(url_for('office_dashboard'))
+            # Redirect all users to the dashboard menu
+            return redirect(url_for('dashboard'))
         else:
             conn.close()
             flash('Invalid credentials')
     return render_template_string(LOGIN_TEMPLATE)
+
+@app.route('/dashboard')
+def dashboard():
+    """Dashboard menu - Users choose between PO App and Community Billing App"""
+    if 'username' not in session:
+        return redirect(url_for('login'))
+
+    username = session.get('username')
+    role = session.get('role')
+    full_name = session.get('full_name', username)
+
+    return render_template_string(DASHBOARD_MENU_TEMPLATE,
+                                 username=username,
+                                 role=role,
+                                 full_name=full_name)
 
 @app.route('/tech_dashboard')
 def tech_dashboard():
@@ -6188,6 +6199,158 @@ LOGIN_TEMPLATE = '''
         <div style="text-align: center; margin-top: 15px;">
             <a href="{{ url_for('forgot_password') }}" style="color: #667eea; text-decoration: none; font-size: 14px;">Forgot your password?</a>
         </div>
+    </div>
+</body>
+</html>
+'''
+
+DASHBOARD_MENU_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Application Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+            padding-top: 20px;
+        }
+        .header h1 {
+            font-size: 32px;
+            margin-bottom: 10px;
+        }
+        .header p {
+            font-size: 16px;
+            opacity: 0.9;
+        }
+        .user-info {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        .container {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            flex-wrap: wrap;
+            max-width: 900px;
+            margin: 0 auto;
+            flex-grow: 1;
+            align-items: center;
+        }
+        .app-card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.2);
+            padding: 40px 30px;
+            width: 280px;
+            text-align: center;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            cursor: pointer;
+            text-decoration: none;
+            color: inherit;
+        }
+        .app-card:hover {
+            transform: translateY(-8px);
+            box-shadow: 0 20px 50px rgba(0,0,0,0.3);
+        }
+        .app-icon {
+            font-size: 60px;
+            margin-bottom: 15px;
+        }
+        .app-card h2 {
+            font-size: 24px;
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .app-card p {
+            color: #666;
+            font-size: 14px;
+            line-height: 1.6;
+            margin-bottom: 25px;
+        }
+        .app-button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 5px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            width: 100%;
+            transition: opacity 0.3s ease;
+        }
+        .app-button:hover {
+            opacity: 0.9;
+        }
+        .footer {
+            text-align: center;
+            color: white;
+            margin-top: 40px;
+            font-size: 14px;
+        }
+        .logout-btn {
+            background: rgba(255,255,255,0.2);
+            color: white;
+            padding: 8px 20px;
+            border: 2px solid white;
+            border-radius: 5px;
+            text-decoration: none;
+            font-size: 14px;
+            display: inline-block;
+            margin-top: 10px;
+            transition: background 0.3s ease;
+        }
+        .logout-btn:hover {
+            background: rgba(255,255,255,0.3);
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🌱 Welcome to Your Dashboard</h1>
+        <p>Choose an application to continue</p>
+    </div>
+
+    <div class="user-info">
+        <p>Logged in as: <strong>{{ full_name }}</strong> ({{ role }})</p>
+    </div>
+
+    <div class="container">
+        <!-- PO Request App -->
+        <a href="{% if role == 'technician' %}{{ url_for('tech_dashboard') }}{% elif role == 'admin' %}{{ url_for('admin_dashboard') }}{% else %}{{ url_for('office_dashboard') }}{% endif %}" style="text-decoration: none;">
+            <div class="app-card">
+                <div class="app-icon">📋</div>
+                <h2>PO Request App</h2>
+                <p>Manage purchase orders, track invoices, and monitor project costs</p>
+                <button class="app-button">Open PO App</button>
+            </div>
+        </a>
+
+        <!-- Community Billing App (Coming Soon) -->
+        <div class="app-card" style="opacity: 0.7; cursor: not-allowed;">
+            <div class="app-icon">💰</div>
+            <h2>Community Billing</h2>
+            <p>Track community billing and financial reports (Coming Soon)</p>
+            <button class="app-button" disabled style="background: #ccc; cursor: not-allowed;">Coming Soon</button>
+        </div>
+    </div>
+
+    <div class="footer">
+        <a href="{{ url_for('logout') }}" class="logout-btn">Logout</a>
     </div>
 </body>
 </html>
