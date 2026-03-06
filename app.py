@@ -6526,24 +6526,6 @@ OFFICE_ADMIN_TEMPLATE = '''
                 <a href="{{ url_for('manage_install_techs') }}" class="btn btn-primary">Install Techs</a>
             </div>
         </div>
-
-        <!-- Job Management -->
-        <div class="card">
-            <h2>📋 Job Management</h2>
-            <p>Create and manage projects, set budgets, mark jobs as active or inactive, and track overall project progress and spending.</p>
-            <div class="card-buttons">
-                <a href="{{ url_for('manage_jobs') }}" class="btn btn-primary">Manage Jobs</a>
-            </div>
-        </div>
-
-        <!-- System Settings -->
-        <div class="card">
-            <h2>⚙️ System Settings</h2>
-            <p>Configure system settings, manage email notifications, and adjust application preferences for your office.</p>
-            <div class="card-buttons">
-                <a href="{{ url_for('settings_page') }}" class="btn btn-primary">System Settings</a>
-            </div>
-        </div>
     </div>
 
     <div class="footer">
