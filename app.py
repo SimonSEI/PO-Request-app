@@ -856,7 +856,7 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # techs table might not exist yet
 
-    # Community Billing Submissions table - tracks tech submissions per community/date
+    # Community Maintenance Submissions table - tracks tech submissions per community/date
     c.execute('''CREATE TABLE IF NOT EXISTS community_billing_submissions
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   community_name TEXT NOT NULL,
@@ -867,7 +867,7 @@ def init_db():
                   submitted_at TEXT,
                   UNIQUE(community_name, tech_username, work_date))''')
 
-    # Community Billing Line Items table - stores equipment data
+    # Community Maintenance Line Items table - stores equipment data
     c.execute('''CREATE TABLE IF NOT EXISTS community_billing_line_items
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   submission_id INTEGER NOT NULL,
@@ -1857,7 +1857,7 @@ def login():
 
 @app.route('/dashboard')
 def dashboard():
-    """Dashboard menu - Users choose between PO App and Community Billing App"""
+    """Dashboard menu - Users choose between PO App and Community Maintenance App"""
     if 'username' not in session:
         return redirect(url_for('login'))
 
@@ -6400,11 +6400,11 @@ DASHBOARD_MENU_TEMPLATE = '''
         </a>
         {% endif %}
 
-        <!-- Community Billing App -->
+        <!-- Community Maintenance App -->
         <a href="{{ url_for('community_billing') }}" style="text-decoration: none;">
             <div class="app-card" onclick="window.location.href='{{ url_for('community_billing') }}'">
                 <div class="app-icon">💰</div>
-                <h2>Community Billing</h2>
+                <h2>Community Maintenance</h2>
                 <p>Enter and review equipment installation data by community</p>
                 <button class="app-button">Access Billing</button>
             </div>
@@ -12142,12 +12142,12 @@ SETTINGS_TEMPLATE = '''
 </html>
 '''
 
-# Community Billing Templates
+# Community Maintenance Templates
 COMMUNITY_BILLING_TECH_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Community Billing - Technician</title>
+    <title>Community Maintenance - Technician</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -12248,7 +12248,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
 </head>
 <body>
     <div class="container">
-        <h1>Community Billing Entry</h1>
+        <h1>Community Maintenance Entry</h1>
         <p class="subtitle">Welcome, <span class="username">{{ username }}</span></p>
 
         <div class="error" id="error"></div>
@@ -12321,7 +12321,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Community Billing Spreadsheet</title>
+    <title>Community Maintenance Spreadsheet</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -12502,7 +12502,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 <body>
     <div class="container">
         <div class="header">
-            <h1>Community Billing Entry
+            <h1>Community Maintenance Entry
                 <span class="status {% if status == 'submitted' %}submitted{% else %}draft{% endif %}">
                     {{ status|upper }}
                 </span>
@@ -12723,7 +12723,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Community Billing - Office View</title>
+    <title>Community Maintenance - Office View</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -12890,7 +12890,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
     <div class="container">
         <div class="header">
             <div>
-                <h1>Community Billing Review</h1>
+                <h1>Community Maintenance Review</h1>
                 <p style="color: #666; font-size: 14px;">View and export technician submissions</p>
             </div>
             <button class="btn-back" onclick="window.location.href='/dashboard'">← Back</button>
@@ -13271,10 +13271,10 @@ def debug_matching():
 @app.route('/community_billing')
 def community_billing():
     """Main community billing page - redirects based on user role"""
-    if 'user' not in session:
+    if 'username' not in session:
         return redirect(url_for('login'))
 
-    if session.get('role') == 'tech':
+    if session.get('role') == 'technician':
         return redirect(url_for('community_billing_tech'))
     elif session.get('role') == 'office':
         return redirect(url_for('community_billing_office'))
@@ -13285,7 +13285,7 @@ def community_billing():
 @app.route('/community_billing_tech')
 def community_billing_tech():
     """Tech side - select community and date"""
-    if 'user' not in session or session.get('role') != 'tech':
+    if 'username' not in session or session.get('role') != 'technician':
         return redirect(url_for('login'))
 
     # Get list of unique communities from jobs
@@ -13296,13 +13296,13 @@ def community_billing_tech():
     conn.close()
 
     return render_template_string(COMMUNITY_BILLING_TECH_TEMPLATE,
-                                 username=session.get('user'),
+                                 username=session.get('username'),
                                  communities=communities)
 
 @app.route('/community_billing_spreadsheet', methods=['POST'])
 def community_billing_spreadsheet():
     """Tech side - view and edit spreadsheet"""
-    if 'user' not in session or session.get('role') != 'tech':
+    if 'username' not in session or session.get('role') != 'technician':
         return jsonify({'success': False, 'error': 'Access denied'})
 
     data = request.get_json()
@@ -13318,7 +13318,7 @@ def community_billing_spreadsheet():
     # Get or create submission
     c.execute("""SELECT id FROM community_billing_submissions
                  WHERE community_name = ? AND tech_username = ? AND work_date = ?""",
-             (community, session.get('user'), work_date))
+             (community, session.get('username'), work_date))
 
     submission = c.fetchone()
     if submission:
@@ -13327,7 +13327,7 @@ def community_billing_spreadsheet():
         c.execute("""INSERT INTO community_billing_submissions
                      (community_name, tech_username, work_date, created_at)
                      VALUES (?, ?, ?, ?)""",
-                 (community, session.get('user'), work_date, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                 (community, session.get('username'), work_date, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
         submission_id = c.lastrowid
         conn.commit()
 
@@ -13372,7 +13372,7 @@ def community_billing_spreadsheet():
 @app.route('/community_billing_save_item', methods=['POST'])
 def community_billing_save_item():
     """Save or update a line item"""
-    if 'user' not in session or session.get('role') != 'tech':
+    if 'username' not in session or session.get('role') != 'technician':
         return jsonify({'success': False, 'error': 'Access denied'})
 
     data = request.get_json()
@@ -13433,7 +13433,7 @@ def community_billing_save_item():
 @app.route('/community_billing_delete_item', methods=['POST'])
 def community_billing_delete_item():
     """Delete a line item"""
-    if 'user' not in session or session.get('role') != 'tech':
+    if 'username' not in session or session.get('role') != 'technician':
         return jsonify({'success': False, 'error': 'Access denied'})
 
     data = request.get_json()
@@ -13456,7 +13456,7 @@ def community_billing_delete_item():
 @app.route('/community_billing_submit', methods=['POST'])
 def community_billing_submit():
     """Submit the spreadsheet for office review"""
-    if 'user' not in session or session.get('role') != 'tech':
+    if 'username' not in session or session.get('role') != 'technician':
         return jsonify({'success': False, 'error': 'Access denied'})
 
     data = request.get_json()
@@ -13480,7 +13480,7 @@ def community_billing_submit():
 @app.route('/community_billing_office')
 def community_billing_office():
     """Office user side - view all submissions"""
-    if 'user' not in session or session.get('role') != 'office':
+    if 'username' not in session or session.get('role') != 'office':
         return redirect(url_for('login'))
 
     # Get list of communities
@@ -13491,13 +13491,13 @@ def community_billing_office():
     conn.close()
 
     return render_template_string(COMMUNITY_BILLING_OFFICE_TEMPLATE,
-                                 username=session.get('user'),
+                                 username=session.get('username'),
                                  communities=communities)
 
 @app.route('/community_billing_office_data', methods=['POST'])
 def community_billing_office_data():
     """Get submissions for a specific community and date"""
-    if 'user' not in session or session.get('role') != 'office':
+    if 'username' not in session or session.get('role') != 'office':
         return jsonify({'success': False, 'error': 'Access denied'})
 
     data = request.get_json()
@@ -13564,7 +13564,7 @@ def community_billing_office_data():
 @app.route('/community_billing_export_pdf', methods=['POST'])
 def community_billing_export_pdf():
     """Export submissions to PDF"""
-    if 'user' not in session or session.get('role') != 'office':
+    if 'username' not in session or session.get('role') != 'office':
         return jsonify({'success': False, 'error': 'Access denied'})
 
     try:
@@ -13635,7 +13635,7 @@ def community_billing_export_pdf():
         # Title
         styles = getSampleStyleSheet()
         title_style = ParagraphStyle('CustomTitle', parent=styles['Heading1'], fontSize=14, spaceAfter=12)
-        story.append(Paragraph(f"Community Billing Report - {community} ({work_date})", title_style))
+        story.append(Paragraph(f"Community Maintenance Report - {community} ({work_date})", title_style))
         story.append(Spacer(1, 0.2*inch))
 
         # For each submission, create a table
