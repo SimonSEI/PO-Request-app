@@ -6740,7 +6740,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
     <div class="tabs-container">
         <button class="tab-btn service active" id="service-btn" onclick="switchTab('service', event)">📱 Service Department</button>
         <button class="tab-btn install" id="install-btn" onclick="switchTab('install', event)">🔧 Install Department</button>
-        <button class="tab-btn" id="all-pos-btn" style="color: #9b59b6;" onclick="switchTab('all-pos', event)">📋 View All POs</button>
         <button class="tab-btn" id="notifications-btn" style="color: #ff6b6b;" onclick="switchTab('notifications', event)">🔔 Notifications <span id="notification-badge" style="background: #ff6b6b; color: white; border-radius: 50%; padding: 2px 8px; margin-left: 5px; font-size: 12px; display: none;">0</span></button>
     </div>
 
@@ -6865,20 +6864,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         <div class="jobs-container" id="install-jobs-container"></div>
     </div>
 
-    <div id="all-pos-tab" class="tab-content">
-        <div style="margin-bottom: 20px;">
-            <h2>🔍 Search All POs</h2>
-            <div style="display: flex; gap: 10px; margin-bottom: 15px;">
-                <input type="text" id="po-search-input" placeholder="Search by description or tech name..." style="flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
-                <button onclick="searchAllPOs()" style="background: #667eea; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">🔍 Search</button>
-                <button onclick="clearPOSearch()" style="background: #999; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">Clear</button>
-            </div>
-        </div>
-        <div id="all-pos-results" style="background: white; border-radius: 8px; padding: 20px;">
-            <p style="text-align: center; color: #999;">Enter a search term to find POs by description or tech name</p>
-        </div>
-    </div>
-
     {# NOTIFICATIONS TAB #}
     <div id="notifications-tab" class="tab-content">
         <div style="margin-bottom: 20px;">
@@ -6933,7 +6918,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 buttons.forEach(btn => {
                     if ((dept === 'install' && btn.id === 'install-btn') ||
                         (dept === 'service' && btn.id === 'service-btn') ||
-                        (dept === 'all-pos' && btn.id === 'all-pos-btn') ||
                         (dept === 'notifications' && btn.id === 'notifications-btn')) {
                         btn.classList.add('active');
                     }
@@ -7126,67 +7110,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             if (!text) return '';
             const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
             return String(text).replace(/[&<>"']/g, m => map[m]);
-        }
-
-        function searchAllPOs() {
-            const searchTerm = document.getElementById('po-search-input').value.toLowerCase().trim();
-            if (!searchTerm) {
-                document.getElementById('all-pos-results').innerHTML = '<p style="text-align: center; color: #999;">Enter a search term to find POs by description or tech name</p>';
-                return;
-            }
-
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Store</th><th>Tech</th><th>Description</th><th>Status</th><th>Estimated</th><th>Invoices</th><th>Client</th><th>Date</th></tr></thead><tbody>';
-            let found = 0;
-
-            for (const [jobId, pos] of Object.entries(jobAllPOs)) {
-                const job = [...serviceJobs, ...installJobs].find(j => j[0] === parseInt(jobId));
-                if (!job) continue;
-
-                pos.forEach(po => {
-                    const techName = getTechName(po[2]);
-                    const description = po[7] || '';
-                    const status = po[3];
-
-                    if (description.toLowerCase().includes(searchTerm) || techName.toLowerCase().includes(searchTerm)) {
-                        const jobCode = job[11];
-                        const poDisplay = jobCode ? `${jobCode}-${po[0]}` : po[0];
-                        const estimated = po[4] || 0;
-                        const date = po[6] ? po[6].substring(0, 10) : 'N/A';
-                        const clientName = po[8] || 'N/A';
-                        const storeName = po[9] || 'N/A';
-                        const invoiceCount = (poInvoices[po[0]] || []).length;
-                        const invoiceDisplay = invoiceCount > 0
-                            ? `<button onclick="showInvoicesModal(${po[0]}, '${poDisplay.replace(/'/g, "\\'")}', event)" style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold; border: none; cursor: pointer;">${invoiceCount}</button>`
-                            : '<span style="color: #999;">-</span>';
-
-                        html += `<tr>
-                            <td><strong>#${poDisplay}</strong></td>
-                            <td>${escapeHtml(storeName)}</td>
-                            <td>${techName}</td>
-                            <td>${escapeHtml(description)}</td>
-                            <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
-                            <td>${formatCurrency(estimated)}</td>
-                            <td>${invoiceDisplay}</td>
-                            <td>${escapeHtml(clientName)}</td>
-                            <td>${date}</td>
-                        </tr>`;
-                        found++;
-                    }
-                });
-            }
-
-            html += '</tbody></table>';
-            if (found === 0) {
-                html = '<p style="text-align: center; color: #999;">No POs found matching your search.</p>';
-            } else {
-                html = `<p style="margin-bottom: 15px;"><strong>Found ${found} PO(s)</strong></p>` + html;
-            }
-            document.getElementById('all-pos-results').innerHTML = html;
-        }
-
-        function clearPOSearch() {
-            document.getElementById('po-search-input').value = '';
-            document.getElementById('all-pos-results').innerHTML = '<p style="text-align: center; color: #999;">Enter a search term to find POs by description or tech name</p>';
         }
 
         function submitInstallJob() {
@@ -7896,7 +7819,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             // Check if we need to switch to a different tab based on URL parameter
             const urlParams = new URLSearchParams(window.location.search);
             const tab = urlParams.get('tab');
-            if (tab && (tab === 'install' || tab === 'all-pos')) {
+            if (tab && tab === 'install') {
                 switchTab(tab);
             }
         });
