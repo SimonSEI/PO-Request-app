@@ -6400,13 +6400,15 @@ DASHBOARD_MENU_TEMPLATE = '''
         </a>
         {% endif %}
 
-        <!-- Community Billing App (Coming Soon) -->
-        <div class="app-card" style="opacity: 0.7; cursor: not-allowed;">
-            <div class="app-icon">💰</div>
-            <h2>Community Billing</h2>
-            <p>Track community billing and financial reports (Coming Soon)</p>
-            <button class="app-button" disabled style="background: #ccc; cursor: not-allowed;">Coming Soon</button>
-        </div>
+        <!-- Community Billing App -->
+        <a href="{{ url_for('community_billing') }}" style="text-decoration: none;">
+            <div class="app-card" onclick="window.location.href='{{ url_for('community_billing') }}'">
+                <div class="app-icon">💰</div>
+                <h2>Community Billing</h2>
+                <p>Enter and review equipment installation data by community</p>
+                <button class="app-button">Access Billing</button>
+            </div>
+        </a>
     </div>
 
     <div class="footer">
