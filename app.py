@@ -1852,6 +1852,15 @@ def office_admin():
                                  username=session['username'],
                                  full_name=session.get('full_name', session['username']))
 
+@app.route('/manage_jobs')
+def manage_jobs():
+    """Manage Jobs - Display job management interface"""
+    if 'username' not in session or session['role'] != 'office':
+        return redirect(url_for('login'))
+
+    return render_template_string(JOB_MANAGEMENT_TEMPLATE,
+                                 username=session['username'])
+
 @app.route('/tech_dashboard')
 def tech_dashboard():
     if 'username' not in session or session['role'] != 'technician':
@@ -5976,8 +5985,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
     <div class="header">
         <h1>📋 Manage Jobs</h1>
         <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-            <a href="{{ url_for('office_dashboard') }}" class="btn btn-secondary">← Dashboard</a>
-            <a href="{{ url_for('manage_techs') }}" style="background: #fd7e14; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">👷 Manage Techs</a>
+            <a href="{{ url_for('office_admin') }}" class="btn btn-secondary">← Back to Admin</a>
             <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
         </div>
     </div>
@@ -6531,7 +6539,7 @@ OFFICE_ADMIN_TEMPLATE = '''
             <h2>⚙️ System Settings</h2>
             <p>Configure system settings, manage email notifications, and adjust application preferences for your office.</p>
             <div class="card-buttons">
-                <a href="{{ url_for('settings_page') }}" class="btn btn-primary">System Settings</a>
+                <a href="{{ url_for('settings') }}" class="btn btn-primary">System Settings</a>
             </div>
         </div>
     </div>
@@ -7082,7 +7090,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         <div class="header-nav">
             <button onclick="openInvoiceUploadModal()" style="background: #28a745; color: white; padding: 10px 20px; border: none; text-decoration: none; border-radius: 5px; font-weight: bold; cursor: pointer;">📄 Upload Invoice</button>
             <button onclick="checkPOEmails()" style="background: #0d6efd; color: white; padding: 10px 20px; border: none; text-decoration: none; border-radius: 5px; font-weight: bold; cursor: pointer;" id="check-emails-btn">📧 Check PO Emails</button>
-            <a href="{{ url_for('manage_techs') }}" style="background: #fd7e14; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">👷 Manage Techs</a>
+            <a href="{{ url_for('dashboard') }}" style="background: #6c757d; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">← Dashboard</a>
             <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
         </div>
     </div>
