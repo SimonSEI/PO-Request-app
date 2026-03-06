@@ -1942,7 +1942,7 @@ def office_dashboard():
 
             # Get ALL POs for this job (for complete history)
             c.execute("""
-                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date, description, client_name
+                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date, description, client_name, store_name
                 FROM po_requests
                 WHERE job_name=?
                 ORDER BY id DESC
@@ -7135,7 +7135,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 return;
             }
 
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Job Name</th><th>Tech</th><th>Description</th><th>Status</th><th>Estimated</th><th>Invoices</th><th>Client</th><th>Date</th></tr></thead><tbody>';
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Store</th><th>Tech</th><th>Description</th><th>Status</th><th>Estimated</th><th>Invoices</th><th>Client</th><th>Date</th></tr></thead><tbody>';
             let found = 0;
 
             for (const [jobId, pos] of Object.entries(jobAllPOs)) {
@@ -7153,6 +7153,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                         const estimated = po[4] || 0;
                         const date = po[6] ? po[6].substring(0, 10) : 'N/A';
                         const clientName = po[8] || 'N/A';
+                        const storeName = po[9] || 'N/A';
                         const invoiceCount = (poInvoices[po[0]] || []).length;
                         const invoiceDisplay = invoiceCount > 0
                             ? `<button onclick="showInvoicesModal(${po[0]}, '${poDisplay.replace(/'/g, "\\'")}', event)" style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold; border: none; cursor: pointer;">${invoiceCount}</button>`
@@ -7160,7 +7161,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
                         html += `<tr>
                             <td><strong>#${poDisplay}</strong></td>
-                            <td>${job[1]}</td>
+                            <td>${escapeHtml(storeName)}</td>
                             <td>${techName}</td>
                             <td>${escapeHtml(description)}</td>
                             <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
@@ -7258,7 +7259,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         function renderServicePOs() {
             const resultsDiv = document.getElementById('service-po-results');
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Job Name</th><th>Tech</th><th>Client</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Store</th><th>Tech</th><th>Client</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
             let totalPOs = 0;
 
             // Get all service POs from serviceJobs and jobAllPOs
@@ -7270,6 +7271,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 pos.forEach(po => {
                     const poId = po[0];
                     const clientName = po[8] || 'N/A';
+                    const storeName = po[9] || 'N/A';
                     const poDisplay = `S-${poId} ${clientName}`;
                     const techName = getTechName(po[2]);
                     const status = po[3];
@@ -7285,7 +7287,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     html += `
                         <tr>
                             <td><strong>${escapeHtml(poDisplay)}</strong></td>
-                            <td>${escapeHtml(job[1])}</td>
+                            <td>${escapeHtml(storeName)}</td>
                             <td>${escapeHtml(techName)}</td>
                             <td>${escapeHtml(clientName)}</td>
                             <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
@@ -7532,7 +7534,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             const keywordSearch = document.getElementById('service-po-keyword-search').value.toLowerCase().trim();
 
             const resultsDiv = document.getElementById('service-po-results');
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Job Name</th><th>Tech</th><th>Client</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Store</th><th>Tech</th><th>Client</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
             let found = 0;
 
             // Get all service POs from serviceJobs and jobAllPOs
@@ -7545,6 +7547,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 pos.forEach(po => {
                     const poId = po[0];
                     const clientName = po[8] || 'N/A';
+                    const storeName = po[9] || 'N/A';
                     const poDisplay = `S-${poId} ${clientName}`;
                     const techName = getTechName(po[2]);
                     const status = po[3];
@@ -7556,7 +7559,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
                     // Filter by client and keyword
                     const matchesClient = !clientSearch || clientName.toLowerCase().includes(clientSearch);
-                    const matchesKeyword = !keywordSearch || description.toLowerCase().includes(keywordSearch) || jobName.toLowerCase().includes(keywordSearch) || techName.toLowerCase().includes(keywordSearch);
+                    const matchesKeyword = !keywordSearch || description.toLowerCase().includes(keywordSearch) || storeName.toLowerCase().includes(keywordSearch) || techName.toLowerCase().includes(keywordSearch);
 
                     if (matchesClient && matchesKeyword) {
                         const invoiceDisplay = invoiceCount > 0
@@ -7566,7 +7569,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                         html += `
                             <tr>
                                 <td><strong>${escapeHtml(poDisplay)}</strong></td>
-                                <td>${escapeHtml(jobName)}</td>
+                                <td>${escapeHtml(storeName)}</td>
                                 <td>${escapeHtml(techName)}</td>
                                 <td>${escapeHtml(clientName)}</td>
                                 <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
