@@ -235,6 +235,73 @@ def send_reset_email(email, reset_token):
         print(f"✗ Email error: {e}")
         return False
 
+def send_notification_email(invoice_number, invoice_cost, email_sender, email_subject, invoice_filename, text_preview):
+    """Send email notification to office manager about unmatched invoice"""
+    if not EMAIL_ENABLED:
+        return False
+
+    try:
+        recipient_email = 'simon@stahlman-england.com'
+
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = f'⚠️ Unmatched Invoice Alert - #{invoice_number}'
+        msg['From'] = EMAIL_ADDRESS
+        msg['To'] = recipient_email
+
+        html = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; padding: 20px;">
+            <div style="max-width: 600px; margin: 0 auto; background: #fff3cd; padding: 30px; border-radius: 10px; border-left: 5px solid #ff9800;">
+                <h2 style="color: #ff9800;">⚠️ Unmatched Invoice Detected</h2>
+                <p><strong>Invoice Number:</strong> {invoice_number}</p>
+                <p><strong>Invoice Cost:</strong> £{invoice_cost:.2f}</p>
+                <p><strong>Email From:</strong> {email_sender}</p>
+                <p><strong>Email Subject:</strong> {email_subject}</p>
+                <p><strong>Filename:</strong> {invoice_filename}</p>
+                <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
+                <p style="color: #666; font-size: 14px;"><strong>Document Preview:</strong></p>
+                <p style="background: #f5f5f5; padding: 15px; border-radius: 5px; color: #333; font-size: 13px; max-height: 200px; overflow: hidden;">
+                    {text_preview}
+                </p>
+                <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
+                <div style="text-align: center; margin: 20px 0;">
+                    <p style="color: #666;">This invoice has no matching PO and requires manual review.</p>
+                    <p style="color: #666;">Please log in to the system to:</p>
+                    <ul style="color: #666;">
+                        <li>Dismiss the alert, or</li>
+                        <li>Manually match it to a PO</li>
+                    </ul>
+                </div>
+                <div style="text-align: center; margin: 30px 0;">
+                    <a href="{WEBSITE_URL}/dashboard"
+                       style="background: #667eea; color: white; padding: 15px 30px;
+                              text-decoration: none; border-radius: 5px; font-weight: bold;
+                              display: inline-block;">
+                        View in System
+                    </a>
+                </div>
+                <p style="color: #999; font-size: 12px; margin-top: 30px;">
+                    This is an automated notification from the PO Request System.
+                </p>
+            </div>
+        </body>
+        </html>
+        """
+
+        part = MIMEText(html, 'html')
+        msg.attach(part)
+
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+            server.send_message(msg)
+
+        print(f"✓ Invoice notification email sent to {recipient_email} for invoice {invoice_number}")
+        return True
+    except Exception as e:
+        print(f"✗ Email notification error: {e}")
+        return False
+
 def log_activity(username, action, target_type, target_id, details=''):
     """Log user activity for audit trail"""
     try:
@@ -440,8 +507,32 @@ def process_email_attachments(msg_uid, msg, attachments):
         results['errors'].append(str(e))
         return results
 
+def create_invoice_notification(invoice_number, invoice_cost, invoice_filename, email_sender, email_subject, email_date, text_preview):
+    """Create a notification for unmatched invoice and send email alert"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        c.execute("""INSERT INTO invoice_notifications
+                     (invoice_number, invoice_cost, invoice_filename, email_sender, email_subject,
+                      email_received_date, text_preview, status, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 (invoice_number, invoice_cost, invoice_filename, email_sender, email_subject,
+                  email_date, text_preview, 'pending', created_at))
+        conn.commit()
+        conn.close()
+
+        # Send email notification
+        send_notification_email(invoice_number, invoice_cost, email_sender, email_subject, invoice_filename, text_preview)
+        print(f"✓ Created notification for unmatched invoice {invoice_number}")
+        return True
+    except Exception as e:
+        print(f"✗ Error creating invoice notification: {e}")
+        return False
+
 def log_email_processing(email_uid, email_sender, email_subject, email_date, attachments_count, results):
-    """Log email processing to database"""
+    """Log email processing to database and create notifications for unmatched invoices"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -452,6 +543,21 @@ def log_email_processing(email_uid, email_sender, email_subject, email_date, att
                  (email_uid, email_sender, email_subject, email_date, attachments_count,
                   datetime.now().strftime('%Y-%m-%d %H:%M:%S'), json.dumps(results)))
         conn.commit()
+
+        # Create notifications for unmatched invoices
+        if results.get('errors'):
+            for error in results['errors']:
+                if error.get('error') == 'NO MATCHING PO FOUND':
+                    create_invoice_notification(
+                        invoice_number=error.get('invoice_number', 'Unknown'),
+                        invoice_cost=error.get('cost', 0),
+                        invoice_filename=error.get('filename', 'Unknown'),
+                        email_sender=email_sender,
+                        email_subject=email_subject,
+                        email_date=email_date,
+                        text_preview=error.get('text_preview', '')
+                    )
+
         conn.close()
         print(f"✓ Logged email processing: {email_sender}")
     except Exception as e:
@@ -615,6 +721,23 @@ def init_db():
                   attachments_processed INTEGER,
                   processed_at TEXT,
                   results TEXT)''')
+
+    # Invoice notifications - tracks unmatched invoices needing attention
+    c.execute('''CREATE TABLE IF NOT EXISTS invoice_notifications
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  invoice_number TEXT,
+                  invoice_cost REAL,
+                  invoice_filename TEXT,
+                  email_sender TEXT,
+                  email_subject TEXT,
+                  email_received_date TEXT,
+                  text_preview TEXT,
+                  status TEXT DEFAULT 'pending',
+                  created_at TEXT,
+                  dismissed_at TEXT,
+                  matched_po_id INTEGER,
+                  matched_at TEXT,
+                  FOREIGN KEY (matched_po_id) REFERENCES po_requests(id) ON DELETE SET NULL)''')
 
     # Add match_method column to po_requests if it doesn't exist
     try:
@@ -2559,6 +2682,134 @@ def delete_invoice_item(invoice_id):
             'message': 'Invoice deleted successfully',
             'remaining_invoices': remaining_count
         })
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Server error: {str(e)}'})
+
+@app.route('/get_notifications', methods=['GET'])
+def get_notifications():
+    """Get all pending invoice notifications"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Get pending notifications
+        c.execute("""SELECT id, invoice_number, invoice_cost, invoice_filename, email_sender,
+                            email_subject, email_received_date, text_preview, created_at
+                     FROM invoice_notifications
+                     WHERE status='pending'
+                     ORDER BY created_at DESC""")
+
+        notifications = []
+        for row in c.fetchall():
+            notifications.append({
+                'id': row[0],
+                'invoice_number': row[1],
+                'invoice_cost': row[2],
+                'invoice_filename': row[3],
+                'email_sender': row[4],
+                'email_subject': row[5],
+                'email_received_date': row[6],
+                'text_preview': row[7],
+                'created_at': row[8]
+            })
+
+        conn.close()
+        return jsonify({'success': True, 'notifications': notifications, 'count': len(notifications)})
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Server error: {str(e)}'})
+
+@app.route('/dismiss_notification/<int:notification_id>', methods=['POST'])
+def dismiss_notification(notification_id):
+    """Dismiss an invoice notification"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        dismissed_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        c.execute("""UPDATE invoice_notifications
+                     SET status='dismissed', dismissed_at=?
+                     WHERE id=?""", (dismissed_at, notification_id))
+        conn.commit()
+        conn.close()
+
+        log_activity(session['username'], 'dismiss_notification', 'notification', notification_id,
+                    f"Dismissed invoice notification {notification_id}")
+
+        return jsonify({'success': True, 'message': 'Notification dismissed'})
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Server error: {str(e)}'})
+
+@app.route('/match_notification_to_po', methods=['POST'])
+def match_notification_to_po():
+    """Manually match an unmatched invoice notification to a PO"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    try:
+        data = request.get_json()
+        notification_id = data.get('notification_id')
+        po_id = data.get('po_id')
+
+        if not notification_id or not po_id:
+            return jsonify({'success': False, 'error': 'Missing notification_id or po_id'})
+
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Get notification details
+        c.execute("""SELECT invoice_number, invoice_cost, invoice_filename, text_preview
+                     FROM invoice_notifications
+                     WHERE id=?""", (notification_id,))
+        notification = c.fetchone()
+
+        if not notification:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Notification not found'})
+
+        # Get PO details
+        c.execute("SELECT id, status FROM po_requests WHERE id=?", (po_id,))
+        po = c.fetchone()
+
+        if not po:
+            conn.close()
+            return jsonify({'success': False, 'error': 'PO not found'})
+
+        invoice_number = notification[0]
+        invoice_cost = notification[1]
+        invoice_filename = notification[2]
+
+        # Create invoice record
+        c.execute("""INSERT INTO invoices (po_id, invoice_number, invoice_cost, invoice_filename, invoice_date, invoice_upload_date, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                 (po_id, invoice_number, invoice_cost, invoice_filename, 'N/A',
+                  datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                  datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+
+        # Update notification status
+        matched_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        c.execute("""UPDATE invoice_notifications
+                     SET status='matched', matched_po_id=?, matched_at=?
+                     WHERE id=?""", (po_id, matched_at, notification_id))
+
+        # Update PO status to matched
+        c.execute("UPDATE po_requests SET status=? WHERE id=?", ('matched', po_id))
+
+        conn.commit()
+        conn.close()
+
+        log_activity(session['username'], 'match_notification', 'notification', notification_id,
+                    f"Matched notification {notification_id} to PO {po_id}")
+
+        return jsonify({'success': True, 'message': f'Matched invoice {invoice_number} to PO {po_id}'})
 
     except Exception as e:
         return jsonify({'success': False, 'error': f'Server error: {str(e)}'})
@@ -6490,6 +6741,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         <button class="tab-btn service active" id="service-btn" onclick="switchTab('service', event)">📱 Service Department</button>
         <button class="tab-btn install" id="install-btn" onclick="switchTab('install', event)">🔧 Install Department</button>
         <button class="tab-btn" id="all-pos-btn" style="color: #9b59b6;" onclick="switchTab('all-pos', event)">📋 View All POs</button>
+        <button class="tab-btn" id="notifications-btn" style="color: #ff6b6b;" onclick="switchTab('notifications', event)">🔔 Notifications <span id="notification-badge" style="background: #ff6b6b; color: white; border-radius: 50%; padding: 2px 8px; margin-left: 5px; font-size: 12px; display: none;">0</span></button>
     </div>
 
     <div class="search-bar">
@@ -6627,6 +6879,30 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         </div>
     </div>
 
+    {# NOTIFICATIONS TAB #}
+    <div id="notifications-tab" class="tab-content">
+        <div style="margin-bottom: 20px;">
+            <h2>🔔 Invoice Notifications</h2>
+            <p style="color: #666; font-size: 14px;">Manage unmatched invoices that have been scanned but need to be assigned to a PO.</p>
+        </div>
+        <div id="notifications-container" style="background: white; border-radius: 8px; padding: 20px;">
+            <p style="text-align: center; color: #999;">Loading notifications...</p>
+        </div>
+    </div>
+
+    {# MATCH NOTIFICATION MODAL #}
+    <div id="match-notification-modal" class="modal" onclick="if(event.target === this) closeMatchNotificationModal()">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>🔗 Match Invoice to PO</h2>
+                <button class="modal-close" onclick="closeMatchNotificationModal()">✕</button>
+            </div>
+            <div id="match-notification-content" style="padding: 20px;">
+                <!-- Invoice details will be loaded here -->
+            </div>
+        </div>
+    </div>
+
     <script>
         // Data from server
         const serviceJobs = {{ service_jobs | tojson }};
@@ -6657,11 +6933,185 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 buttons.forEach(btn => {
                     if ((dept === 'install' && btn.id === 'install-btn') ||
                         (dept === 'service' && btn.id === 'service-btn') ||
-                        (dept === 'all-pos' && btn.id === 'all-pos-btn')) {
+                        (dept === 'all-pos' && btn.id === 'all-pos-btn') ||
+                        (dept === 'notifications' && btn.id === 'notifications-btn')) {
                         btn.classList.add('active');
                     }
                 });
             }
+
+            // Load notifications when switching to notifications tab
+            if (dept === 'notifications') {
+                loadNotifications();
+            }
+        }
+
+        function loadNotifications() {
+            fetch('/get_notifications')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        displayNotifications(data.notifications);
+                        // Update notification badge
+                        const badge = document.getElementById('notification-badge');
+                        if (data.count > 0) {
+                            badge.textContent = data.count;
+                            badge.style.display = 'inline-block';
+                        } else {
+                            badge.style.display = 'none';
+                        }
+                    } else {
+                        alert('Error loading notifications: ' + data.error);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading notifications:', error);
+                    alert('Failed to load notifications');
+                });
+        }
+
+        function displayNotifications(notifications) {
+            const container = document.getElementById('notifications-container');
+
+            if (notifications.length === 0) {
+                container.innerHTML = '<p style="text-align: center; color: #28a745; font-size: 16px;">✅ No unmatched invoices - all caught up!</p>';
+                return;
+            }
+
+            let html = '<div style="display: flex; flex-direction: column; gap: 15px;">';
+
+            notifications.forEach(notif => {
+                html += `
+                    <div style="background: #fff3cd; border: 2px solid #ff9800; border-radius: 8px; padding: 15px; position: relative;">
+                        <div style="display: flex; justify-content: space-between; align-items: start; gap: 10px; margin-bottom: 10px;">
+                            <div style="flex: 1;">
+                                <h3 style="color: #ff9800; margin-bottom: 5px;">📄 Invoice #${escapeHtml(notif.invoice_number)}</h3>
+                                <p style="color: #333; font-size: 14px; margin: 5px 0;"><strong>Cost:</strong> £${parseFloat(notif.invoice_cost).toFixed(2)}</p>
+                                <p style="color: #333; font-size: 14px; margin: 5px 0;"><strong>From:</strong> ${escapeHtml(notif.email_sender)}</p>
+                                <p style="color: #666; font-size: 12px; margin: 5px 0;"><strong>Subject:</strong> ${escapeHtml(notif.email_subject)}</p>
+                                <p style="color: #666; font-size: 12px; margin: 5px 0;"><strong>Received:</strong> ${notif.email_received_date}</p>
+                            </div>
+                            <div style="display: flex; gap: 8px; flex-direction: column;">
+                                <button onclick="showMatchNotificationModal(${notif.id}, '${notif.invoice_number}')" style="background: #667eea; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">🔗 Match to PO</button>
+                                <button onclick="dismissNotification(${notif.id})" style="background: #6c757d; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">✕ Dismiss</button>
+                            </div>
+                        </div>
+                        <div style="background: #f5f5f5; padding: 10px; border-radius: 4px; margin-top: 10px; max-height: 100px; overflow-y: auto; font-size: 12px; color: #666;">
+                            <strong>Document Preview:</strong><br>
+                            ${escapeHtml(notif.text_preview.substring(0, 300))}...
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+            container.innerHTML = html;
+        }
+
+        function showMatchNotificationModal(notificationId, invoiceNumber) {
+            const modal = document.getElementById('match-notification-modal');
+            const content = document.getElementById('match-notification-content');
+
+            // Load available POs
+            fetch('/dashboard')
+                .then(response => response.text())
+                .then(html => {
+                    // Get all POs from the page
+                    let poOptions = '<select id="match-po-select" style="width: 100%; padding: 10px; margin-bottom: 15px; border: 1px solid #ddd; border-radius: 4px;">';
+                    poOptions += '<option value="">-- Select a PO to match --</option>';
+
+                    // Collect all POs from jobAllPOs
+                    const allPos = [];
+                    for (const [jobId, pos] of Object.entries(jobAllPOs)) {
+                        const job = [...serviceJobs, ...installJobs].find(j => j[0] === parseInt(jobId));
+                        if (job) {
+                            pos.forEach(po => {
+                                const jobCode = job[11];
+                                const poDisplay = jobCode ? `${jobCode}-${po[0]}` : po[0];
+                                poOptions += `<option value="${po[0]}">${poDisplay} - ${job[1]}</option>`;
+                            });
+                        }
+                    }
+                    poOptions += '</select>';
+
+                    content.innerHTML = `
+                        <div>
+                            <h3 style="margin-bottom: 15px;">Match Invoice #${escapeHtml(invoiceNumber)}</h3>
+                            <p style="color: #666; margin-bottom: 15px;">Select the PO you want to match this invoice to:</p>
+                            ${poOptions}
+                            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+                                <button onclick="closeMatchNotificationModal()" style="background: #6c757d; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">Cancel</button>
+                                <button onclick="confirmMatchNotification(${notificationId})" style="background: #28a745; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">✓ Confirm Match</button>
+                            </div>
+                        </div>
+                    `;
+                    modal.style.display = 'flex';
+                });
+        }
+
+        function closeMatchNotificationModal() {
+            document.getElementById('match-notification-modal').style.display = 'none';
+        }
+
+        function confirmMatchNotification(notificationId) {
+            const poId = document.getElementById('match-po-select').value;
+
+            if (!poId) {
+                alert('Please select a PO to match');
+                return;
+            }
+
+            matchNotificationToPO(notificationId, parseInt(poId));
+        }
+
+        function matchNotificationToPO(notificationId, poId) {
+            fetch('/match_notification_to_po', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    notification_id: notificationId,
+                    po_id: poId
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('✓ ' + data.message);
+                    closeMatchNotificationModal();
+                    loadNotifications();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            })
+            .catch(error => {
+                console.error('Error matching notification:', error);
+                alert('Failed to match notification');
+            });
+        }
+
+        function dismissNotification(notificationId) {
+            if (!confirm('Are you sure you want to dismiss this notification?')) {
+                return;
+            }
+
+            fetch(`/dismiss_notification/${notificationId}`, {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('✓ Notification dismissed');
+                    loadNotifications();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            })
+            .catch(error => {
+                console.error('Error dismissing notification:', error);
+                alert('Failed to dismiss notification');
+            });
         }
 
         function getTechName(username) {
