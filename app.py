@@ -653,6 +653,14 @@ def init_db():
                   created_date TEXT,
                   active INTEGER DEFAULT 1)''')
 
+    # Communities table - separate from jobs, managed by office users
+    c.execute('''CREATE TABLE IF NOT EXISTS communities
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  name TEXT UNIQUE NOT NULL,
+                  created_by TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  active INTEGER DEFAULT 1)''')
+
     # Activity log table - THIS WAS MISSING!
     c.execute('''CREATE TABLE IF NOT EXISTS activity_log
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -6396,6 +6404,15 @@ DASHBOARD_MENU_TEMPLATE = '''
                 <h2>Office Administrator</h2>
                 <p>Manage technician accounts, passwords, and system settings</p>
                 <button class="app-button">Open Admin Panel</button>
+            </div>
+        </a>
+
+        <a href="{{ url_for('manage_communities') }}" style="text-decoration: none;">
+            <div class="app-card">
+                <div class="app-icon">🏘️</div>
+                <h2>Manage Communities</h2>
+                <p>Create and manage communities for Community Maintenance tracking</p>
+                <button class="app-button">Manage Communities</button>
             </div>
         </a>
         {% endif %}
@@ -13050,6 +13067,234 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 </html>
 '''
 
+MANAGE_COMMUNITIES_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Manage Communities</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 5px;
+            font-size: 28px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        .add-form {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 30px;
+            border-left: 4px solid #667eea;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #333;
+            font-weight: 500;
+            font-size: 14px;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            font-weight: 500;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        .btn-primary:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+        }
+        .btn-back {
+            background: #6c757d;
+            color: white;
+            text-decoration: none;
+            display: inline-block;
+            padding: 10px 20px;
+            margin-bottom: 20px;
+        }
+        .btn-back:hover {
+            background: #5a6268;
+        }
+        .communities-list {
+            margin-top: 30px;
+        }
+        .community-card {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .community-info {
+            flex: 1;
+        }
+        .community-name {
+            font-weight: 600;
+            color: #333;
+            font-size: 16px;
+        }
+        .community-meta {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
+            margin-left: 8px;
+        }
+        .badge-active {
+            background: #d4edda;
+            color: #155724;
+        }
+        .badge-inactive {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .btn-delete {
+            background: #dc3545;
+            color: white;
+            padding: 8px 12px;
+            font-size: 13px;
+        }
+        .btn-delete:hover {
+            background: #c82333;
+        }
+        .alert {
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .alert-error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="{{ url_for('dashboard') }}" class="btn-back">← Back to Dashboard</a>
+
+        <h1>Manage Communities</h1>
+        <p class="subtitle">Create and manage communities for Community Maintenance tracking</p>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ 'success' if category == 'success' else 'error' }}">
+                        {{ message }}
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <div class="add-form">
+            <h3 style="margin-bottom: 15px; color: #333;">Add New Community</h3>
+            <form method="POST" action="{{ url_for('manage_communities') }}">
+                <div class="form-group">
+                    <label for="community_name">Community Name</label>
+                    <input type="text" id="community_name" name="community_name" placeholder="Enter community name" required>
+                </div>
+                <input type="hidden" name="action" value="add">
+                <button type="submit" class="btn-primary">Add Community</button>
+            </form>
+        </div>
+
+        {% if communities %}
+            <div class="communities-list">
+                <h3 style="margin-bottom: 15px; color: #333;">Existing Communities ({{ communities|length }})</h3>
+                {% for community in communities %}
+                    <div class="community-card">
+                        <div class="community-info">
+                            <div class="community-name">{{ community.name }}</div>
+                            <div class="community-meta">
+                                Created by {{ community.created_by }} on {{ community.created_at|truncate(10) }}
+                                <span class="badge {% if community.active %}badge-active{% else %}badge-inactive{% endif %}">
+                                    {% if community.active %}Active{% else %}Inactive{% endif %}
+                                </span>
+                            </div>
+                        </div>
+                        {% if community.active %}
+                            <form method="POST" action="{{ url_for('manage_communities') }}" style="display: inline;"
+                                  onsubmit="return confirm('Are you sure you want to deactivate this community?');">
+                                <input type="hidden" name="action" value="delete">
+                                <input type="hidden" name="community_id" value="{{ community.id }}">
+                                <button type="submit" class="btn-delete">Deactivate</button>
+                            </form>
+                        {% endif %}
+                    </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="empty-state">
+                <p style="font-size: 16px;">No communities yet</p>
+                <p style="font-size: 13px; margin-top: 8px;">Add your first community above to get started</p>
+            </div>
+        {% endif %}
+    </div>
+</body>
+</html>
+'''
 
 @app.route('/settings')
 def settings_page():
@@ -13288,10 +13533,10 @@ def community_billing_tech():
     if 'username' not in session or session.get('role') != 'technician':
         return redirect(url_for('login'))
 
-    # Get list of unique communities from jobs
+    # Get list of communities from communities table
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT DISTINCT job_name FROM jobs WHERE active = 1 ORDER BY job_name")
+    c.execute("SELECT name FROM communities WHERE active = 1 ORDER BY name")
     communities = [row[0] for row in c.fetchall()]
     conn.close()
 
@@ -13477,17 +13722,68 @@ def community_billing_submit():
         conn.close()
         return jsonify({'success': False, 'error': str(e)})
 
+@app.route('/manage_communities', methods=['GET', 'POST'])
+def manage_communities():
+    """Office user management page for communities"""
+    if 'username' not in session or session.get('role') != 'office':
+        return redirect(url_for('login'))
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    if request.method == 'POST':
+        action = request.form.get('action')
+
+        if action == 'add':
+            community_name = request.form.get('community_name', '').strip()
+            if not community_name:
+                flash('Community name is required', 'error')
+            else:
+                try:
+                    c.execute("INSERT INTO communities (name, created_by, created_at) VALUES (?, ?, ?)",
+                             (community_name, session.get('username'), datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                    conn.commit()
+                    flash(f'Community "{community_name}" added successfully', 'success')
+                except sqlite3.IntegrityError:
+                    flash(f'Community "{community_name}" already exists', 'error')
+
+        elif action == 'delete':
+            community_id = request.form.get('community_id')
+            try:
+                c.execute("UPDATE communities SET active = 0 WHERE id = ?", (community_id,))
+                conn.commit()
+                flash('Community deactivated successfully', 'success')
+            except Exception as e:
+                flash(f'Error deleting community: {str(e)}', 'error')
+
+    # Get all communities
+    c.execute("SELECT id, name, created_by, created_at, active FROM communities ORDER BY name")
+    communities = []
+    for row in c.fetchall():
+        communities.append({
+            'id': row[0],
+            'name': row[1],
+            'created_by': row[2],
+            'created_at': row[3],
+            'active': row[4]
+        })
+    conn.close()
+
+    return render_template_string(MANAGE_COMMUNITIES_TEMPLATE,
+                                 username=session.get('username'),
+                                 communities=communities)
+
 @app.route('/community_billing_office')
 def community_billing_office():
     """Office user side - view all submissions"""
     if 'username' not in session or session.get('role') != 'office':
         return redirect(url_for('login'))
 
-    # Get list of communities
+    # Get list of communities from communities table
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT DISTINCT job_name FROM jobs WHERE active = 1 ORDER BY job_name")
-    communities = [row[0] for row in c.fetchall()]
+    c.execute("SELECT id, name FROM communities WHERE active = 1 ORDER BY name")
+    communities = [{'id': row[0], 'name': row[1]} for row in c.fetchall()]
     conn.close()
 
     return render_template_string(COMMUNITY_BILLING_OFFICE_TEMPLATE,
