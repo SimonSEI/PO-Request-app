@@ -1842,6 +1842,16 @@ def dashboard():
                                  role=role,
                                  full_name=full_name)
 
+@app.route('/office_admin')
+def office_admin():
+    """Office Administrator App - Manage accounts and passwords"""
+    if 'username' not in session or session['role'] != 'office':
+        return redirect(url_for('login'))
+
+    return render_template_string(OFFICE_ADMIN_TEMPLATE,
+                                 username=session['username'],
+                                 full_name=session.get('full_name', session['username']))
+
 @app.route('/tech_dashboard')
 def tech_dashboard():
     if 'username' not in session or session['role'] != 'technician':
@@ -6340,6 +6350,18 @@ DASHBOARD_MENU_TEMPLATE = '''
             </div>
         </a>
 
+        <!-- Office Administrator (Office only) -->
+        {% if role == 'office' %}
+        <a href="{{ url_for('office_admin') }}" style="text-decoration: none;">
+            <div class="app-card">
+                <div class="app-icon">🔐</div>
+                <h2>Office Administrator</h2>
+                <p>Manage technician accounts, passwords, and system settings</p>
+                <button class="app-button">Open Admin Panel</button>
+            </div>
+        </a>
+        {% endif %}
+
         <!-- Community Billing App (Coming Soon) -->
         <div class="app-card" style="opacity: 0.7; cursor: not-allowed;">
             <div class="app-icon">💰</div>
@@ -6351,6 +6373,171 @@ DASHBOARD_MENU_TEMPLATE = '''
 
     <div class="footer">
         <a href="{{ url_for('logout') }}" class="logout-btn">Logout</a>
+    </div>
+</body>
+</html>
+'''
+
+OFFICE_ADMIN_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Office Administrator - Account Management</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: Arial, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        .header h1 {
+            font-size: 28px;
+        }
+        .header-buttons {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            text-decoration: none;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: inline-block;
+            text-align: center;
+        }
+        .btn-primary {
+            background: #28a745;
+            color: white;
+        }
+        .btn-primary:hover {
+            background: #218838;
+        }
+        .btn-secondary {
+            background: rgba(255,255,255,0.2);
+            color: white;
+            border: 2px solid white;
+        }
+        .btn-secondary:hover {
+            background: rgba(255,255,255,0.3);
+        }
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+        .btn-danger:hover {
+            background: #c82333;
+        }
+        .container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .card {
+            background: white;
+            border-radius: 10px;
+            padding: 25px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        .card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 12px rgba(0,0,0,0.15);
+        }
+        .card h2 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .card p {
+            color: #666;
+            margin-bottom: 20px;
+            line-height: 1.6;
+            font-size: 14px;
+        }
+        .card-buttons {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .card-buttons .btn {
+            width: 100%;
+            padding: 12px;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 40px;
+            color: #666;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <h1>🔐 Office Administrator</h1>
+            <p style="opacity: 0.9; margin-top: 5px;">Logged in as: {{ full_name }}</p>
+        </div>
+        <div class="header-buttons">
+            <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">← Back to Dashboard</a>
+            <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <!-- Technician Management -->
+        <div class="card">
+            <h2>👷 Technician Accounts</h2>
+            <p>Manage all technician accounts, credentials, and assignments. Create new accounts, update passwords, and view technician information.</p>
+            <div class="card-buttons">
+                <a href="{{ url_for('manage_techs') }}" class="btn btn-primary">Manage All Techs</a>
+                <a href="{{ url_for('manage_service_techs') }}" class="btn btn-primary">Service Techs</a>
+                <a href="{{ url_for('manage_install_techs') }}" class="btn btn-primary">Install Techs</a>
+            </div>
+        </div>
+
+        <!-- Job Management -->
+        <div class="card">
+            <h2>📋 Job Management</h2>
+            <p>Create and manage projects, set budgets, mark jobs as active or inactive, and track overall project progress and spending.</p>
+            <div class="card-buttons">
+                <a href="{{ url_for('manage_jobs') }}" class="btn btn-primary">Manage Jobs</a>
+            </div>
+        </div>
+
+        <!-- System Settings -->
+        <div class="card">
+            <h2>⚙️ System Settings</h2>
+            <p>Configure system settings, manage email notifications, and adjust application preferences for your office.</p>
+            <div class="card-buttons">
+                <a href="{{ url_for('settings_page') }}" class="btn btn-primary">System Settings</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="footer">
+        <p>Office Administrator Panel • PO Request System v1.2.0</p>
     </div>
 </body>
 </html>
@@ -9465,9 +9652,7 @@ function searchInTab(tabId, searchInputId) {
         <h1>🏢 Office Dashboard - {{ username }}</h1>
         <div style="display: flex; gap: 8px; flex-wrap: wrap;">
             <button onclick="openInvoiceUploadModal()" style="background: #e74c3c; color: white; padding: 10px 20px; border: none; border-radius: 5px; font-size: 14px; cursor: pointer; font-weight: bold;">📄 Upload & Match Invoice</button>
-            <a href="{{ url_for('manage_jobs') }}" style="background: #17a2b8; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-size: 14px;">📋 Manage Jobs</a>
-            <a href="{{ url_for('manage_techs') }}" style="background: #fd7e14; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-size: 14px;">👷 Manage Techs</a>
-            <a href="{{ url_for('settings_page') }}" style="background: #6c757d; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-size: 14px;">⚙️ Settings</a>
+            <a href="{{ url_for('dashboard') }}" style="background: #6c757d; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-size: 14px;">← Back to Dashboard</a>
             <a href="{{ url_for('logout') }}" class="logout-btn">Logout</a>
         </div>
     </div>
