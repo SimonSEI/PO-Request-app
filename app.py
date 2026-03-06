@@ -1848,9 +1848,11 @@ def office_admin():
     if 'username' not in session or session['role'] != 'office':
         return redirect(url_for('login'))
 
+    full_name = session.get('full_name', session.get('username', 'User'))
+
     return render_template_string(OFFICE_ADMIN_TEMPLATE,
                                  username=session['username'],
-                                 full_name=session.get('full_name', session['username']))
+                                 full_name=full_name)
 
 @app.route('/manage_jobs')
 def manage_jobs():
