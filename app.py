@@ -6541,7 +6541,7 @@ OFFICE_ADMIN_TEMPLATE = '''
             <h2>⚙️ System Settings</h2>
             <p>Configure system settings, manage email notifications, and adjust application preferences for your office.</p>
             <div class="card-buttons">
-                <a href="{{ url_for('settings') }}" class="btn btn-primary">System Settings</a>
+                <a href="{{ url_for('settings_page') }}" class="btn btn-primary">System Settings</a>
             </div>
         </div>
     </div>
