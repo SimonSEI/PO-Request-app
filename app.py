@@ -6423,7 +6423,7 @@ DASHBOARD_MENU_TEMPLATE = '''
                 <div class="app-icon">💰</div>
                 <h2>Community Maintenance</h2>
                 <p>Enter and review equipment installation data by community</p>
-                <button class="app-button">Access Billing</button>
+                <button class="app-button">Access Community Maintenance</button>
             </div>
         </a>
     </div>
