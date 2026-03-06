@@ -856,6 +856,34 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # techs table might not exist yet
 
+    # Community Billing Submissions table - tracks tech submissions per community/date
+    c.execute('''CREATE TABLE IF NOT EXISTS community_billing_submissions
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  community_name TEXT NOT NULL,
+                  tech_username TEXT NOT NULL,
+                  work_date TEXT NOT NULL,
+                  status TEXT DEFAULT 'draft',
+                  created_at TEXT,
+                  submitted_at TEXT,
+                  UNIQUE(community_name, tech_username, work_date))''')
+
+    # Community Billing Line Items table - stores equipment data
+    c.execute('''CREATE TABLE IF NOT EXISTS community_billing_line_items
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  submission_id INTEGER NOT NULL,
+                  zone_and_address TEXT,
+                  nozzle INTEGER DEFAULT 0,
+                  pop_up_6_inch INTEGER DEFAULT 0,
+                  pop_up_12_inch INTEGER DEFAULT 0,
+                  rotor_6_inch INTEGER DEFAULT 0,
+                  new_pop_up_6_inch INTEGER DEFAULT 0,
+                  new_pop_up_12_inch INTEGER DEFAULT 0,
+                  riser INTEGER DEFAULT 0,
+                  solenoid INTEGER DEFAULT 0,
+                  stat_decoder_1 INTEGER DEFAULT 0,
+                  created_at TEXT,
+                  FOREIGN KEY (submission_id) REFERENCES community_billing_submissions(id) ON DELETE CASCADE)''')
+
     # Add default jobs if empty
     c.execute("SELECT COUNT(*) FROM jobs")
     if c.fetchone()[0] == 0:
@@ -12112,6 +12140,914 @@ SETTINGS_TEMPLATE = '''
 </html>
 '''
 
+# Community Billing Templates
+COMMUNITY_BILLING_TECH_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Community Billing - Technician</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        .form-group {
+            margin-bottom: 25px;
+        }
+        label {
+            display: block;
+            color: #333;
+            font-weight: 600;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+        select, input[type="date"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+            font-family: inherit;
+        }
+        select:focus, input[type="date"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 30px;
+        }
+        button {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .btn-next {
+            background: #667eea;
+            color: white;
+        }
+        .btn-next:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        .btn-back {
+            background: #f0f0f0;
+            color: #333;
+        }
+        .btn-back:hover {
+            background: #e0e0e0;
+        }
+        .username {
+            color: #667eea;
+            font-weight: 600;
+        }
+        .error {
+            background: #fee;
+            border: 1px solid #fcc;
+            color: #c00;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Community Billing Entry</h1>
+        <p class="subtitle">Welcome, <span class="username">{{ username }}</span></p>
+
+        <div class="error" id="error"></div>
+
+        <form id="communityForm">
+            <div class="form-group">
+                <label for="community">Select Community *</label>
+                <select id="community" name="community" required>
+                    <option value="">-- Choose a community --</option>
+                    {% for community in communities %}
+                    <option value="{{ community }}">{{ community }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="workDate">Select Date *</label>
+                <input type="date" id="workDate" name="workDate" required>
+            </div>
+
+            <div class="button-group">
+                <button type="button" class="btn-back" onclick="window.location.href='/dashboard'">Back</button>
+                <button type="button" class="btn-next" onclick="submitForm()">Next →</button>
+            </div>
+        </form>
+    </div>
+
+    <script>
+        function submitForm() {
+            const community = document.getElementById('community').value;
+            const workDate = document.getElementById('workDate').value;
+            const errorDiv = document.getElementById('error');
+
+            if (!community || !workDate) {
+                errorDiv.textContent = 'Please fill in all fields';
+                errorDiv.style.display = 'block';
+                return;
+            }
+
+            // Send to backend to create/load spreadsheet
+            fetch('/community_billing_spreadsheet', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    community: community,
+                    work_date: workDate
+                })
+            })
+            .then(response => response.text())
+            .then(html => {
+                document.body.innerHTML = html;
+            })
+            .catch(error => {
+                errorDiv.textContent = 'Error: ' + error;
+                errorDiv.style.display = 'block';
+            });
+        }
+
+        // Set today's date as default
+        const today = new Date().toISOString().split('T')[0];
+        document.getElementById('workDate').value = today;
+    </script>
+</body>
+</html>
+'''
+
+COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Community Billing Spreadsheet</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f7fa;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+        }
+        .header {
+            margin-bottom: 20px;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 5px;
+        }
+        .info {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 15px;
+        }
+        .status {
+            display: inline-block;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+        .status.draft {
+            background: #fef3cd;
+            color: #856404;
+        }
+        .status.submitted {
+            background: #d4edda;
+            color: #155724;
+        }
+        .spreadsheet {
+            overflow-x: auto;
+            margin-bottom: 20px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        thead {
+            background: #f8f9fa;
+            border-bottom: 2px solid #ddd;
+        }
+        th {
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            color: #333;
+            white-space: nowrap;
+        }
+        td {
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        tbody tr:hover {
+            background: #f9f9f9;
+        }
+        input[type="text"],
+        input[type="number"] {
+            width: 100%;
+            padding: 6px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.1);
+        }
+        .action-buttons {
+            display: flex;
+            gap: 5px;
+        }
+        .btn-save, .btn-delete {
+            padding: 4px 8px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+        }
+        .btn-save {
+            background: #28a745;
+            color: white;
+        }
+        .btn-save:hover {
+            background: #218838;
+        }
+        .btn-delete {
+            background: #dc3545;
+            color: white;
+        }
+        .btn-delete:hover {
+            background: #c82333;
+        }
+        .controls {
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .btn-primary {
+            padding: 10px 20px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+        .btn-primary:hover {
+            background: #5568d3;
+        }
+        .btn-secondary {
+            padding: 10px 20px;
+            background: #6c757d;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+        .btn-success {
+            padding: 10px 20px;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+        .btn-success:hover {
+            background: #218838;
+        }
+        .btn-success:disabled {
+            background: #aaa;
+            cursor: not-allowed;
+        }
+        .alert {
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+        }
+        .alert-info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Community Billing Entry
+                <span class="status {% if status == 'submitted' %}submitted{% else %}draft{% endif %}">
+                    {{ status|upper }}
+                </span>
+            </h1>
+            <div class="info">
+                <strong>Community:</strong> {{ community }}<br>
+                <strong>Work Date:</strong> {{ work_date }}
+            </div>
+        </div>
+
+        <div id="message"></div>
+
+        <div class="spreadsheet">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Zone & Address</th>
+                        <th>Nozzle</th>
+                        <th>6" Pop Up</th>
+                        <th>12" Pop Up</th>
+                        <th>6" Rotor</th>
+                        <th>NEW 6" Pop Up</th>
+                        <th>NEW 12" Pop Up</th>
+                        <th>Riser</th>
+                        <th>Solenoid</th>
+                        <th>1 Stat Decoder</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="tableBody">
+                    {% for item in line_items %}
+                    <tr class="item-row" data-item-id="{{ item.id }}">
+                        <td><input type="text" class="zone" value="{{ item.zone_and_address or '' }}"></td>
+                        <td><input type="number" class="nozzle" value="{{ item.nozzle or 0 }}"></td>
+                        <td><input type="number" class="pop_up_6_inch" value="{{ item.pop_up_6_inch or 0 }}"></td>
+                        <td><input type="number" class="pop_up_12_inch" value="{{ item.pop_up_12_inch or 0 }}"></td>
+                        <td><input type="number" class="rotor_6_inch" value="{{ item.rotor_6_inch or 0 }}"></td>
+                        <td><input type="number" class="new_pop_up_6_inch" value="{{ item.new_pop_up_6_inch or 0 }}"></td>
+                        <td><input type="number" class="new_pop_up_12_inch" value="{{ item.new_pop_up_12_inch or 0 }}"></td>
+                        <td><input type="number" class="riser" value="{{ item.riser or 0 }}"></td>
+                        <td><input type="number" class="solenoid" value="{{ item.solenoid or 0 }}"></td>
+                        <td><input type="number" class="stat_decoder_1" value="{{ item.stat_decoder_1 or 0 }}"></td>
+                        <td>
+                            <div class="action-buttons">
+                                <button class="btn-save" onclick="saveItem({{ item.id }})">Save</button>
+                                <button class="btn-delete" onclick="deleteItem({{ item.id }})">Delete</button>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="controls">
+            <button class="btn-secondary" onclick="addNewRow()">+ Add Row</button>
+            <button class="btn-primary" onclick="goBack()">← Back</button>
+            <button class="btn-success" id="submitBtn" onclick="submitForm()" {% if status == 'submitted' %}disabled{% endif %}>
+                {% if status == 'submitted' %}Submitted{% else %}Submit & Finalize{% endif %}
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const submissionId = {{ submission_id }};
+        const status = '{{ status }}';
+
+        function addNewRow() {
+            const tableBody = document.getElementById('tableBody');
+            const rowCount = tableBody.children.length + 1;
+
+            const newRow = document.createElement('tr');
+            newRow.className = 'item-row';
+            newRow.dataset.itemId = 'new_' + Date.now();
+
+            newRow.innerHTML = `
+                <td><input type="text" class="zone" placeholder="Enter zone & address"></td>
+                <td><input type="number" class="nozzle" value="0"></td>
+                <td><input type="number" class="pop_up_6_inch" value="0"></td>
+                <td><input type="number" class="pop_up_12_inch" value="0"></td>
+                <td><input type="number" class="rotor_6_inch" value="0"></td>
+                <td><input type="number" class="new_pop_up_6_inch" value="0"></td>
+                <td><input type="number" class="new_pop_up_12_inch" value="0"></td>
+                <td><input type="number" class="riser" value="0"></td>
+                <td><input type="number" class="solenoid" value="0"></td>
+                <td><input type="number" class="stat_decoder_1" value="0"></td>
+                <td>
+                    <div class="action-buttons">
+                        <button class="btn-save" onclick="saveItem('new_${Date.now()}')">Save</button>
+                        <button class="btn-delete" onclick="deleteItemRow('new_${Date.now()}')">Delete</button>
+                    </div>
+                </td>
+            `;
+
+            tableBody.appendChild(newRow);
+        }
+
+        function saveItem(itemId) {
+            const row = document.querySelector(`[data-item-id="${itemId}"]`);
+            if (!row) {
+                alert('Row not found');
+                return;
+            }
+
+            const data = {
+                submission_id: submissionId,
+                item_id: itemId.toString().startsWith('new_') ? null : itemId,
+                zone_and_address: row.querySelector('.zone').value,
+                nozzle: row.querySelector('.nozzle').value,
+                pop_up_6_inch: row.querySelector('.pop_up_6_inch').value,
+                pop_up_12_inch: row.querySelector('.pop_up_12_inch').value,
+                rotor_6_inch: row.querySelector('.rotor_6_inch').value,
+                new_pop_up_6_inch: row.querySelector('.new_pop_up_6_inch').value,
+                new_pop_up_12_inch: row.querySelector('.new_pop_up_12_inch').value,
+                riser: row.querySelector('.riser').value,
+                solenoid: row.querySelector('.solenoid').value,
+                stat_decoder_1: row.querySelector('.stat_decoder_1').value
+            };
+
+            fetch('/community_billing_save_item', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.success) {
+                    row.dataset.itemId = result.item_id;
+                    showMessage('Row saved successfully!', 'success');
+                } else {
+                    alert('Error saving row: ' + result.error);
+                }
+            })
+            .catch(error => {
+                alert('Error: ' + error);
+            });
+        }
+
+        function deleteItem(itemId) {
+            if (!confirm('Are you sure you want to delete this row?')) return;
+
+            fetch('/community_billing_delete_item', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    item_id: itemId,
+                    submission_id: submissionId
+                })
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.success) {
+                    const row = document.querySelector(`[data-item-id="${itemId}"]`);
+                    if (row) row.remove();
+                    showMessage('Row deleted successfully!', 'success');
+                } else {
+                    alert('Error deleting row: ' + result.error);
+                }
+            })
+            .catch(error => {
+                alert('Error: ' + error);
+            });
+        }
+
+        function deleteItemRow(itemId) {
+            const row = document.querySelector(`[data-item-id="${itemId}"]`);
+            if (row) row.remove();
+        }
+
+        function submitForm() {
+            if (!confirm('Are you sure you want to submit this form? You won\'t be able to edit it afterwards.')) {
+                return;
+            }
+
+            fetch('/community_billing_submit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    submission_id: submissionId
+                })
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.success) {
+                    showMessage('Form submitted successfully! Redirecting...', 'success');
+                    setTimeout(() => {
+                        window.location.href = '/community_billing_tech';
+                    }, 2000);
+                } else {
+                    alert('Error submitting form: ' + result.error);
+                }
+            })
+            .catch(error => {
+                alert('Error: ' + error);
+            });
+        }
+
+        function goBack() {
+            window.location.href = '/community_billing_tech';
+        }
+
+        function showMessage(message, type) {
+            const msgDiv = document.getElementById('message');
+            msgDiv.className = 'alert alert-' + type;
+            msgDiv.textContent = message;
+            msgDiv.style.display = 'block';
+
+            setTimeout(() => {
+                msgDiv.style.display = 'none';
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
+'''
+
+COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Community Billing - Office View</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f7fa;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 25px;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        .filters {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .form-group {
+            flex: 1;
+            min-width: 200px;
+        }
+        label {
+            display: block;
+            color: #333;
+            font-weight: 600;
+            margin-bottom: 6px;
+            font-size: 13px;
+        }
+        select, input[type="date"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+        select:focus, input[type="date"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .btn-search {
+            padding: 10px 20px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            margin-top: 26px;
+        }
+        .btn-search:hover {
+            background: #5568d3;
+        }
+        .btn-export {
+            padding: 10px 20px;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .btn-export:hover {
+            background: #218838;
+        }
+        .btn-back {
+            padding: 10px 20px;
+            background: #6c757d;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .btn-back:hover {
+            background: #5a6268;
+        }
+        .results {
+            margin-top: 25px;
+        }
+        .submission-card {
+            background: #f9f9f9;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        .submission-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .tech-name {
+            font-weight: 600;
+            color: #333;
+            font-size: 16px;
+        }
+        .submission-date {
+            color: #666;
+            font-size: 13px;
+        }
+        .spreadsheet-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            margin-top: 12px;
+        }
+        .spreadsheet-table thead {
+            background: #f0f0f0;
+            border-bottom: 2px solid #ddd;
+        }
+        .spreadsheet-table th {
+            padding: 8px;
+            text-align: left;
+            font-weight: 600;
+            color: #333;
+        }
+        .spreadsheet-table td {
+            padding: 8px;
+            border-bottom: 1px solid #eee;
+        }
+        .spreadsheet-table tbody tr:hover {
+            background: #f5f5f5;
+        }
+        .alert {
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+        }
+        .alert-info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        .no-results {
+            text-align: center;
+            color: #666;
+            padding: 30px;
+            background: #f9f9f9;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div>
+                <h1>Community Billing Review</h1>
+                <p style="color: #666; font-size: 14px;">View and export technician submissions</p>
+            </div>
+            <button class="btn-back" onclick="window.location.href='/dashboard'">← Back</button>
+        </div>
+
+        <div class="filters">
+            <div class="form-group">
+                <label for="community">Select Community *</label>
+                <select id="community">
+                    <option value="">-- Choose a community --</option>
+                    {% for community in communities %}
+                    <option value="{{ community }}">{{ community }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="workDate">Select Date *</label>
+                <input type="date" id="workDate">
+            </div>
+
+            <button class="btn-search" onclick="searchSubmissions()">Search</button>
+            <button class="btn-export" id="exportBtn" onclick="exportPDF()" style="display: none;">Export to PDF</button>
+        </div>
+
+        <div class="results" id="results"></div>
+    </div>
+
+    <script>
+        // Set today's date as default
+        const today = new Date().toISOString().split('T')[0];
+        document.getElementById('workDate').value = today;
+
+        function searchSubmissions() {
+            const community = document.getElementById('community').value;
+            const workDate = document.getElementById('workDate').value;
+
+            if (!community || !workDate) {
+                alert('Please select both community and date');
+                return;
+            }
+
+            fetch('/community_billing_office_data', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    community: community,
+                    work_date: workDate
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                displayResults(data);
+            })
+            .catch(error => {
+                document.getElementById('results').innerHTML = '<div class="alert alert-error">Error: ' + error + '</div>';
+            });
+        }
+
+        function displayResults(data) {
+            const resultsDiv = document.getElementById('results');
+            const exportBtn = document.getElementById('exportBtn');
+
+            if (!data.success || !data.submissions || data.submissions.length === 0) {
+                resultsDiv.innerHTML = '<div class="no-results">No submissions found for this community and date.</div>';
+                exportBtn.style.display = 'none';
+                return;
+            }
+
+            let html = '<div class="alert alert-info">' + data.submissions.length + ' submission(s) found</div>';
+
+            data.submissions.forEach(submission => {
+                html += '<div class="submission-card">';
+                html += '<div class="submission-header">';
+                html += '<div>';
+                html += '<div class="tech-name">' + submission.tech_username + '</div>';
+                html += '<div class="submission-date">Submitted: ' + submission.submitted_at + '</div>';
+                html += '</div>';
+                html += '</div>';
+
+                if (submission.line_items.length > 0) {
+                    html += '<table class="spreadsheet-table">';
+                    html += '<thead><tr>';
+                    html += '<th>Zone & Address</th>';
+                    html += '<th>Nozzle</th>';
+                    html += '<th>6" Pop Up</th>';
+                    html += '<th>12" Pop Up</th>';
+                    html += '<th>6" Rotor</th>';
+                    html += '<th>NEW 6" Pop Up</th>';
+                    html += '<th>NEW 12" Pop Up</th>';
+                    html += '<th>Riser</th>';
+                    html += '<th>Solenoid</th>';
+                    html += '<th>1 Stat Decoder</th>';
+                    html += '</tr></thead>';
+                    html += '<tbody>';
+
+                    submission.line_items.forEach(item => {
+                        html += '<tr>';
+                        html += '<td>' + (item.zone_and_address || '') + '</td>';
+                        html += '<td>' + item.nozzle + '</td>';
+                        html += '<td>' + item.pop_up_6_inch + '</td>';
+                        html += '<td>' + item.pop_up_12_inch + '</td>';
+                        html += '<td>' + item.rotor_6_inch + '</td>';
+                        html += '<td>' + item.new_pop_up_6_inch + '</td>';
+                        html += '<td>' + item.new_pop_up_12_inch + '</td>';
+                        html += '<td>' + item.riser + '</td>';
+                        html += '<td>' + item.solenoid + '</td>';
+                        html += '<td>' + item.stat_decoder_1 + '</td>';
+                        html += '</tr>';
+                    });
+
+                    html += '</tbody></table>';
+                } else {
+                    html += '<p style="color: #666; font-size: 13px; margin-top: 10px;">No items entered</p>';
+                }
+
+                html += '</div>';
+            });
+
+            resultsDiv.innerHTML = html;
+            exportBtn.style.display = 'inline-block';
+        }
+
+        function exportPDF() {
+            const community = document.getElementById('community').value;
+            const workDate = document.getElementById('workDate').value;
+
+            if (!community || !workDate) {
+                alert('Please search for submissions first');
+                return;
+            }
+
+            fetch('/community_billing_export_pdf', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    community: community,
+                    work_date: workDate
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('PDF generated successfully! Starting download...');
+                    // The download should start automatically
+                    window.location.href = data.download_url;
+                } else {
+                    alert('Error exporting PDF: ' + data.error);
+                }
+            })
+            .catch(error => {
+                alert('Error: ' + error);
+            });
+        }
+    </script>
+</body>
+</html>
+'''
+
 
 @app.route('/settings')
 def settings_page():
@@ -12325,6 +13261,429 @@ def debug_matching():
         'claude_status': claude_status,
         'recent_api_logs': api_logs
     })
+
+# ============================================================================
+# COMMUNITY BILLING ROUTES
+# ============================================================================
+
+@app.route('/community_billing')
+def community_billing():
+    """Main community billing page - redirects based on user role"""
+    if 'user' not in session:
+        return redirect(url_for('login'))
+
+    if session.get('role') == 'tech':
+        return redirect(url_for('community_billing_tech'))
+    elif session.get('role') == 'office':
+        return redirect(url_for('community_billing_office'))
+    else:
+        flash('Invalid user role', 'error')
+        return redirect(url_for('dashboard'))
+
+@app.route('/community_billing_tech')
+def community_billing_tech():
+    """Tech side - select community and date"""
+    if 'user' not in session or session.get('role') != 'tech':
+        return redirect(url_for('login'))
+
+    # Get list of unique communities from jobs
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT DISTINCT job_name FROM jobs WHERE active = 1 ORDER BY job_name")
+    communities = [row[0] for row in c.fetchall()]
+    conn.close()
+
+    return render_template_string(COMMUNITY_BILLING_TECH_TEMPLATE,
+                                 username=session.get('user'),
+                                 communities=communities)
+
+@app.route('/community_billing_spreadsheet', methods=['POST'])
+def community_billing_spreadsheet():
+    """Tech side - view and edit spreadsheet"""
+    if 'user' not in session or session.get('role') != 'tech':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    community = data.get('community')
+    work_date = data.get('work_date')
+
+    if not community or not work_date:
+        return jsonify({'success': False, 'error': 'Missing community or date'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    # Get or create submission
+    c.execute("""SELECT id FROM community_billing_submissions
+                 WHERE community_name = ? AND tech_username = ? AND work_date = ?""",
+             (community, session.get('user'), work_date))
+
+    submission = c.fetchone()
+    if submission:
+        submission_id = submission[0]
+    else:
+        c.execute("""INSERT INTO community_billing_submissions
+                     (community_name, tech_username, work_date, created_at)
+                     VALUES (?, ?, ?, ?)""",
+                 (community, session.get('user'), work_date, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        submission_id = c.lastrowid
+        conn.commit()
+
+    # Get all line items for this submission
+    c.execute("""SELECT id, zone_and_address, nozzle, pop_up_6_inch, pop_up_12_inch,
+                        rotor_6_inch, new_pop_up_6_inch, new_pop_up_12_inch,
+                        riser, solenoid, stat_decoder_1
+                 FROM community_billing_line_items
+                 WHERE submission_id = ?
+                 ORDER BY id""", (submission_id,))
+
+    line_items = []
+    for row in c.fetchall():
+        line_items.append({
+            'id': row[0],
+            'zone_and_address': row[1],
+            'nozzle': row[2],
+            'pop_up_6_inch': row[3],
+            'pop_up_12_inch': row[4],
+            'rotor_6_inch': row[5],
+            'new_pop_up_6_inch': row[6],
+            'new_pop_up_12_inch': row[7],
+            'riser': row[8],
+            'solenoid': row[9],
+            'stat_decoder_1': row[10]
+        })
+
+    # Get submission status
+    c.execute("SELECT status, submitted_at FROM community_billing_submissions WHERE id = ?", (submission_id,))
+    submission_info = c.fetchone()
+    status = submission_info[0] if submission_info else 'draft'
+
+    conn.close()
+
+    return render_template_string(COMMUNITY_BILLING_SPREADSHEET_TEMPLATE,
+                                 submission_id=submission_id,
+                                 community=community,
+                                 work_date=work_date,
+                                 line_items=line_items,
+                                 status=status)
+
+@app.route('/community_billing_save_item', methods=['POST'])
+def community_billing_save_item():
+    """Save or update a line item"""
+    if 'user' not in session or session.get('role') != 'tech':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    submission_id = data.get('submission_id')
+    item_id = data.get('item_id')
+    zone_and_address = data.get('zone_and_address')
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    try:
+        if item_id:
+            # Update existing item
+            c.execute("""UPDATE community_billing_line_items
+                         SET zone_and_address = ?, nozzle = ?, pop_up_6_inch = ?,
+                             pop_up_12_inch = ?, rotor_6_inch = ?, new_pop_up_6_inch = ?,
+                             new_pop_up_12_inch = ?, riser = ?, solenoid = ?, stat_decoder_1 = ?
+                         WHERE id = ? AND submission_id = ?""",
+                     (zone_and_address,
+                      int(data.get('nozzle', 0)),
+                      int(data.get('pop_up_6_inch', 0)),
+                      int(data.get('pop_up_12_inch', 0)),
+                      int(data.get('rotor_6_inch', 0)),
+                      int(data.get('new_pop_up_6_inch', 0)),
+                      int(data.get('new_pop_up_12_inch', 0)),
+                      int(data.get('riser', 0)),
+                      int(data.get('solenoid', 0)),
+                      int(data.get('stat_decoder_1', 0)),
+                      item_id, submission_id))
+        else:
+            # Create new item
+            c.execute("""INSERT INTO community_billing_line_items
+                         (submission_id, zone_and_address, nozzle, pop_up_6_inch,
+                          pop_up_12_inch, rotor_6_inch, new_pop_up_6_inch,
+                          new_pop_up_12_inch, riser, solenoid, stat_decoder_1, created_at)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     (submission_id, zone_and_address,
+                      int(data.get('nozzle', 0)),
+                      int(data.get('pop_up_6_inch', 0)),
+                      int(data.get('pop_up_12_inch', 0)),
+                      int(data.get('rotor_6_inch', 0)),
+                      int(data.get('new_pop_up_6_inch', 0)),
+                      int(data.get('new_pop_up_12_inch', 0)),
+                      int(data.get('riser', 0)),
+                      int(data.get('solenoid', 0)),
+                      int(data.get('stat_decoder_1', 0)),
+                      datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+
+        conn.commit()
+        new_item_id = c.lastrowid if not item_id else item_id
+        conn.close()
+
+        return jsonify({'success': True, 'item_id': new_item_id})
+    except Exception as e:
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/community_billing_delete_item', methods=['POST'])
+def community_billing_delete_item():
+    """Delete a line item"""
+    if 'user' not in session or session.get('role') != 'tech':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    item_id = data.get('item_id')
+    submission_id = data.get('submission_id')
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    try:
+        c.execute("DELETE FROM community_billing_line_items WHERE id = ? AND submission_id = ?",
+                 (item_id, submission_id))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/community_billing_submit', methods=['POST'])
+def community_billing_submit():
+    """Submit the spreadsheet for office review"""
+    if 'user' not in session or session.get('role') != 'tech':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    submission_id = data.get('submission_id')
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    try:
+        c.execute("""UPDATE community_billing_submissions
+                     SET status = 'submitted', submitted_at = ?
+                     WHERE id = ?""",
+                 (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), submission_id))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/community_billing_office')
+def community_billing_office():
+    """Office user side - view all submissions"""
+    if 'user' not in session or session.get('role') != 'office':
+        return redirect(url_for('login'))
+
+    # Get list of communities
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT DISTINCT job_name FROM jobs WHERE active = 1 ORDER BY job_name")
+    communities = [row[0] for row in c.fetchall()]
+    conn.close()
+
+    return render_template_string(COMMUNITY_BILLING_OFFICE_TEMPLATE,
+                                 username=session.get('user'),
+                                 communities=communities)
+
+@app.route('/community_billing_office_data', methods=['POST'])
+def community_billing_office_data():
+    """Get submissions for a specific community and date"""
+    if 'user' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    community = data.get('community')
+    work_date = data.get('work_date')
+
+    if not community or not work_date:
+        return jsonify({'success': False, 'error': 'Missing community or date'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    # Get all submissions for this community and date
+    c.execute("""SELECT id, tech_username, status, submitted_at
+                 FROM community_billing_submissions
+                 WHERE community_name = ? AND work_date = ? AND status = 'submitted'
+                 ORDER BY submitted_at DESC""",
+             (community, work_date))
+
+    submissions = []
+    for row in c.fetchall():
+        submission_id = row[0]
+
+        # Get line items for this submission
+        c.execute("""SELECT zone_and_address, nozzle, pop_up_6_inch, pop_up_12_inch,
+                            rotor_6_inch, new_pop_up_6_inch, new_pop_up_12_inch,
+                            riser, solenoid, stat_decoder_1
+                     FROM community_billing_line_items
+                     WHERE submission_id = ?
+                     ORDER BY id""", (submission_id,))
+
+        line_items = []
+        for item_row in c.fetchall():
+            line_items.append({
+                'zone_and_address': item_row[0],
+                'nozzle': item_row[1],
+                'pop_up_6_inch': item_row[2],
+                'pop_up_12_inch': item_row[3],
+                'rotor_6_inch': item_row[4],
+                'new_pop_up_6_inch': item_row[5],
+                'new_pop_up_12_inch': item_row[6],
+                'riser': item_row[7],
+                'solenoid': item_row[8],
+                'stat_decoder_1': item_row[9]
+            })
+
+        submissions.append({
+            'id': submission_id,
+            'tech_username': row[1],
+            'status': row[2],
+            'submitted_at': row[3],
+            'line_items': line_items
+        })
+
+    conn.close()
+
+    return jsonify({
+        'success': True,
+        'community': community,
+        'work_date': work_date,
+        'submissions': submissions
+    })
+
+@app.route('/community_billing_export_pdf', methods=['POST'])
+def community_billing_export_pdf():
+    """Export submissions to PDF"""
+    if 'user' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    try:
+        from reportlab.lib.pagesizes import letter, landscape
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib import colors
+    except ImportError:
+        return jsonify({'success': False, 'error': 'ReportLab not installed'})
+
+    data = request.get_json()
+    community = data.get('community')
+    work_date = data.get('work_date')
+
+    # Get submissions data
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    c.execute("""SELECT id, tech_username, status, submitted_at
+                 FROM community_billing_submissions
+                 WHERE community_name = ? AND work_date = ? AND status = 'submitted'
+                 ORDER BY submitted_at DESC""",
+             (community, work_date))
+
+    submissions = []
+    for row in c.fetchall():
+        submission_id = row[0]
+
+        c.execute("""SELECT zone_and_address, nozzle, pop_up_6_inch, pop_up_12_inch,
+                            rotor_6_inch, new_pop_up_6_inch, new_pop_up_12_inch,
+                            riser, solenoid, stat_decoder_1
+                     FROM community_billing_line_items
+                     WHERE submission_id = ?
+                     ORDER BY id""", (submission_id,))
+
+        line_items = []
+        for item_row in c.fetchall():
+            line_items.append({
+                'zone_and_address': item_row[0] or '',
+                'nozzle': item_row[1] or 0,
+                'pop_up_6_inch': item_row[2] or 0,
+                'pop_up_12_inch': item_row[3] or 0,
+                'rotor_6_inch': item_row[4] or 0,
+                'new_pop_up_6_inch': item_row[5] or 0,
+                'new_pop_up_12_inch': item_row[6] or 0,
+                'riser': item_row[7] or 0,
+                'solenoid': item_row[8] or 0,
+                'stat_decoder_1': item_row[9] or 0
+            })
+
+        submissions.append({
+            'tech_username': row[1],
+            'submitted_at': row[3],
+            'line_items': line_items
+        })
+
+    conn.close()
+
+    # Create PDF
+    try:
+        pdf_filename = f"community_billing_{community.replace(' ', '_')}_{work_date}.pdf"
+        pdf_path = os.path.join(app.config['UPLOAD_FOLDER'], pdf_filename)
+
+        doc = SimpleDocTemplate(pdf_path, pagesize=landscape(letter))
+        story = []
+
+        # Title
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle('CustomTitle', parent=styles['Heading1'], fontSize=14, spaceAfter=12)
+        story.append(Paragraph(f"Community Billing Report - {community} ({work_date})", title_style))
+        story.append(Spacer(1, 0.2*inch))
+
+        # For each submission, create a table
+        for submission in submissions:
+            story.append(Paragraph(f"<b>Tech: {submission['tech_username']} (Submitted: {submission['submitted_at']})</b>", styles['Normal']))
+
+            # Create table data
+            table_data = [['Zone & Address', 'Nozzle', '6" Pop Up', '12" Pop Up', '6" Rotor',
+                          'NEW 6" Pop Up', 'NEW 12" Pop Up', 'Riser', 'Solenoid', '1 Stat Decoder']]
+
+            for item in submission['line_items']:
+                table_data.append([
+                    item['zone_and_address'],
+                    str(item['nozzle']),
+                    str(item['pop_up_6_inch']),
+                    str(item['pop_up_12_inch']),
+                    str(item['rotor_6_inch']),
+                    str(item['new_pop_up_6_inch']),
+                    str(item['new_pop_up_12_inch']),
+                    str(item['riser']),
+                    str(item['solenoid']),
+                    str(item['stat_decoder_1'])
+                ])
+
+            # Create and style table
+            table = Table(table_data, colWidths=[1.2*inch, 0.6*inch, 0.6*inch, 0.6*inch, 0.6*inch,
+                                                  0.6*inch, 0.6*inch, 0.6*inch, 0.6*inch, 0.6*inch])
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('FONTSIZE', (0, 1), (-1, -1), 7)
+            ]))
+
+            story.append(table)
+            story.append(Spacer(1, 0.3*inch))
+
+        doc.build(story)
+
+        return jsonify({
+            'success': True,
+            'download_url': f'/download_file/{pdf_filename}'
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
 
 # ============================================================================
 # END DEBUG ROUTES
