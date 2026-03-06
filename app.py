@@ -6406,15 +6406,6 @@ DASHBOARD_MENU_TEMPLATE = '''
                 <button class="app-button">Open Admin Panel</button>
             </div>
         </a>
-
-        <a href="{{ url_for('manage_communities') }}" style="text-decoration: none;">
-            <div class="app-card">
-                <div class="app-icon">🏘️</div>
-                <h2>Manage Communities</h2>
-                <p>Create and manage communities for Community Maintenance tracking</p>
-                <button class="app-button">Manage Communities</button>
-            </div>
-        </a>
         {% endif %}
 
         <!-- Community Maintenance App -->
@@ -12901,19 +12892,177 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             background: #f9f9f9;
             border-radius: 8px;
         }
+        .tabs {
+            display: flex;
+            gap: 0;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #ddd;
+        }
+        .tab-button {
+            padding: 12px 20px;
+            background: none;
+            border: none;
+            border-bottom: 3px solid transparent;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            color: #666;
+            transition: all 0.3s;
+        }
+        .tab-button:hover {
+            color: #333;
+        }
+        .tab-button.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        .add-community-form {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-left: 4px solid #667eea;
+        }
+        .form-group-inline {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 15px;
+            align-items: flex-end;
+            flex-wrap: wrap;
+        }
+        .form-group-inline .form-group {
+            flex: 1;
+            min-width: 200px;
+            margin-bottom: 0;
+        }
+        .community-card {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .community-info {
+            flex: 1;
+        }
+        .community-name {
+            font-weight: 600;
+            color: #333;
+            font-size: 15px;
+        }
+        .community-meta {
+            font-size: 12px;
+            color: #666;
+            margin-top: 4px;
+        }
+        .btn-delete-community {
+            background: #dc3545;
+            color: white;
+            padding: 8px 12px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .btn-delete-community:hover {
+            background: #c82333;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
             <div>
-                <h1>Community Maintenance Review</h1>
-                <p style="color: #666; font-size: 14px;">View and export technician submissions</p>
+                <h1>Community Maintenance</h1>
+                <p style="color: #666; font-size: 14px;">Manage communities and review technician submissions</p>
             </div>
             <button class="btn-back" onclick="window.location.href='/dashboard'">← Back</button>
         </div>
 
-        <div class="filters">
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab-button active" onclick="switchTab('manage')">🏘️ Manage Communities</button>
+            <button class="tab-button" onclick="switchTab('submissions')">📋 Review Submissions</button>
+        </div>
+
+        <!-- Manage Communities Tab -->
+        <div id="manage" class="tab-content active">
+            <div class="add-community-form">
+                <h3 style="margin-bottom: 15px; color: #333;">Add New Community</h3>
+                <form method="POST" action="{{ url_for('community_billing_office') }}">
+                    <div class="form-group-inline">
+                        <div class="form-group" style="flex: 2;">
+                            <label for="community_name">Community Name</label>
+                            <input type="text" id="community_name" name="community_name" placeholder="Enter community name" required>
+                        </div>
+                        <input type="hidden" name="action" value="add">
+                        <button type="submit" class="btn-search">Add Community</button>
+                    </div>
+                </form>
+            </div>
+
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="alert alert-{{ 'success' if category == 'success' else 'error' }}">
+                            {{ message }}
+                        </div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+
+            {% if all_communities %}
+                <h3 style="margin-bottom: 15px; color: #333;">Communities ({{ all_communities|length }})</h3>
+                {% for community in all_communities %}
+                    <div class="community-card">
+                        <div class="community-info">
+                            <div class="community-name">{{ community.name }}</div>
+                            <div class="community-meta">
+                                Created: {{ community.created_at|truncate(10) }}
+                                {% if community.active %}
+                                    <span style="color: #28a745; font-weight: 600;">● Active</span>
+                                {% else %}
+                                    <span style="color: #dc3545; font-weight: 600;">● Inactive</span>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% if community.active %}
+                            <form method="POST" action="{{ url_for('community_billing_office') }}" style="display: inline;"
+                                  onsubmit="return confirm('Are you sure you want to deactivate this community?');">
+                                <input type="hidden" name="action" value="delete">
+                                <input type="hidden" name="community_id" value="{{ community.id }}">
+                                <button type="submit" class="btn-delete-community">Deactivate</button>
+                            </form>
+                        {% endif %}
+                    </div>
+                {% endfor %}
+            {% else %}
+                <div class="no-results">
+                    <p>No communities yet. Create your first one above!</p>
+                </div>
+            {% endif %}
+        </div>
+
+        <!-- Review Submissions Tab -->
+        <div id="submissions" class="tab-content">
+            <div class="filters">
             <div class="form-group">
                 <label for="community">Select Community *</label>
                 <select id="community">
@@ -12934,7 +13083,25 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         </div>
 
         <div class="results" id="results"></div>
+            </div>
+        </div>
     </div>
+
+    <script>
+        function switchTab(tabName) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.tab-button').forEach(btn => {
+                btn.classList.remove('active');
+            });
+
+            // Show selected tab
+            document.getElementById(tabName).classList.add('active');
+            event.target.classList.add('active');
+        }
+    </script>
 
     <script>
         // Set today's date as default
@@ -13775,20 +13942,53 @@ def manage_communities():
 
 @app.route('/community_billing_office')
 def community_billing_office():
-    """Office user side - view all submissions"""
+    """Office user side - view submissions and manage communities"""
     if 'username' not in session or session.get('role') != 'office':
         return redirect(url_for('login'))
 
-    # Get list of communities from communities table
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT id, name FROM communities WHERE active = 1 ORDER BY name")
-    communities = [{'id': row[0], 'name': row[1]} for row in c.fetchall()]
+
+    # Handle POST requests for adding/deleting communities
+    if request.method == 'POST':
+        action = request.form.get('action')
+
+        if action == 'add':
+            community_name = request.form.get('community_name', '').strip()
+            if not community_name:
+                flash('Community name is required', 'error')
+            else:
+                try:
+                    c.execute("INSERT INTO communities (name, created_by, created_at) VALUES (?, ?, ?)",
+                             (community_name, session.get('username'), datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                    conn.commit()
+                    flash(f'Community "{community_name}" added successfully', 'success')
+                except sqlite3.IntegrityError:
+                    flash(f'Community "{community_name}" already exists', 'error')
+
+        elif action == 'delete':
+            community_id = request.form.get('community_id')
+            try:
+                c.execute("UPDATE communities SET active = 0 WHERE id = ?", (community_id,))
+                conn.commit()
+                flash('Community deactivated successfully', 'success')
+            except Exception as e:
+                flash(f'Error deleting community: {str(e)}', 'error')
+
+    # Get list of communities from communities table
+    c.execute("SELECT id, name, created_at FROM communities ORDER BY name")
+    communities = [{'id': row[0], 'name': row[1], 'created_at': row[2], 'active': True} for row in c.fetchall()]
+
+    # Get all communities including inactive ones
+    c.execute("SELECT id, name, created_at, active FROM communities ORDER BY name")
+    all_communities = [{'id': row[0], 'name': row[1], 'created_at': row[2], 'active': row[3]} for row in c.fetchall()]
+
     conn.close()
 
     return render_template_string(COMMUNITY_BILLING_OFFICE_TEMPLATE,
                                  username=session.get('username'),
-                                 communities=communities)
+                                 communities=communities,
+                                 all_communities=all_communities)
 
 @app.route('/community_billing_office_data', methods=['POST'])
 def community_billing_office_data():
