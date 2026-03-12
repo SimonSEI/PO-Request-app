@@ -12316,12 +12316,15 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
                     work_date: workDate
                 })
             })
-            .then(response => response.text())
-            .then(html => {
-                // Use document.write to properly execute scripts in injected HTML
-                document.open();
-                document.write(html);
-                document.close();
+            .then(response => {
+                if (response.ok) {
+                    // Redirect to spreadsheet view instead of injecting HTML
+                    const encodedCommunity = encodeURIComponent(community);
+                    const encodedDate = encodeURIComponent(workDate);
+                    window.location.href = `/community_billing_spreadsheet?community=${encodedCommunity}&work_date=${encodedDate}`;
+                } else {
+                    throw new Error('Failed to load spreadsheet');
+                }
             })
             .catch(error => {
                 errorDiv.textContent = 'Error: ' + error;
@@ -14009,15 +14012,22 @@ def community_billing_tech():
                                  username=session.get('username'),
                                  communities=communities)
 
-@app.route('/community_billing_spreadsheet', methods=['POST'])
+@app.route('/community_billing_spreadsheet', methods=['POST', 'GET'])
 def community_billing_spreadsheet():
     """Tech side - view and edit spreadsheet"""
     if 'username' not in session or session.get('role') != 'technician':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        if request.method == 'POST':
+            return jsonify({'success': False, 'error': 'Access denied'})
+        return redirect(url_for('login'))
 
-    data = request.get_json()
-    community = data.get('community')
-    work_date = data.get('work_date')
+    # Handle both POST (JSON) and GET (query params)
+    if request.method == 'POST':
+        data = request.get_json()
+        community = data.get('community')
+        work_date = data.get('work_date')
+    else:
+        community = request.args.get('community')
+        work_date = request.args.get('work_date')
 
     if not community or not work_date:
         return jsonify({'success': False, 'error': 'Missing community or date'})
