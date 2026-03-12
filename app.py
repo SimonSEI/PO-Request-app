@@ -13219,22 +13219,22 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                             <!-- House Numbers Section -->
                             {% if community.active %}
                             <div class="houses-section">
-                                <div class="houses-header" onclick="toggleHousesSection(event, {{ community.id }})">
+                                <div class="houses-header" onclick="toggleHousesSection(event, {{ community.id|tojson }})">
                                     <h4>🏠 House Numbers</h4>
-                                    <span class="expand-arrow" id="arrow-{{ community.id }}">▼</span>
+                                    <span class="expand-arrow" id="arrow-{{ community.id|tojson }}">▼</span>
                                 </div>
 
-                                <div class="houses-list" id="houses-list-{{ community.id }}">
-                                    <div id="houses-{{ community.id }}" style="min-height: 30px;">
+                                <div class="houses-list" id="houses-list-{{ community.id|tojson }}">
+                                    <div id="houses-{{ community.id|tojson }}" style="min-height: 30px;">
                                         <p style="color: #666; font-size: 13px;">Loading...</p>
                                     </div>
                                 </div>
 
                                 <div class="add-house-form">
-                                    <input type="text" id="house-input-{{ community.id }}"
+                                    <input type="text" id="house-input-{{ community.id|tojson }}"
                                            placeholder="Enter house number (e.g., 123, 456A)"
-                                           onkeypress="if(event.key==='Enter') addHouseNumber({{ community.id }}, event)">
-                                    <button type="button" class="btn-add-house" onclick="addHouseNumber({{ community.id }})">Add House</button>
+                                           onkeypress="if(event.key==='Enter') addHouseNumber({{ community.id|tojson }}, event)">
+                                    <button type="button" class="btn-add-house" onclick="addHouseNumber({{ community.id|tojson }})">Add House</button>
                                 </div>
                             </div>
                             {% endif %}
