@@ -12576,8 +12576,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         <td><input type="number" class="stat_decoder_1" value="{{ item.stat_decoder_1 or 0 }}"></td>
                         <td>
                             <div class="action-buttons">
-                                <button class="btn-save" onclick="saveItem({{ item.id }})">Save</button>
-                                <button class="btn-delete" onclick="deleteItem({{ item.id }})">Delete</button>
+                                <button class="btn-save" onclick="saveItem('{{ item.id }}')">Save</button>
+                                <button class="btn-delete" onclick="deleteItem('{{ item.id }}')">Delete</button>
                             </div>
                         </td>
                     </tr>
