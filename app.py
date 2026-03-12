@@ -12597,13 +12597,14 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
     <script>
         const submissionId = {{ submission_id }};
-        const status = '{{ status }}';
+        const status = {{ status|tojson }};
+        const community = {{ community|tojson }};
         const communityId = {{ community_id if community_id else 'null' }};
 
         // Load house numbers on page load
         document.addEventListener('DOMContentLoaded', function() {
             console.log('Tech spreadsheet loaded');
-            console.log('Community:', '{{ community }}');
+            console.log('Community:', community);
             console.log('Community ID:', communityId);
             if (communityId && communityId !== null) {
                 loadHouseNumbersForTech();
