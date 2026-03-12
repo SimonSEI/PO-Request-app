@@ -12318,7 +12318,10 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             })
             .then(response => response.text())
             .then(html => {
-                document.body.innerHTML = html;
+                // Use document.write to properly execute scripts in injected HTML
+                document.open();
+                document.write(html);
+                document.close();
             })
             .catch(error => {
                 errorDiv.textContent = 'Error: ' + error;
