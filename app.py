@@ -12596,25 +12596,42 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
         // Load house numbers on page load
         document.addEventListener('DOMContentLoaded', function() {
+            console.log('Page loaded. Community ID:', communityId);
             if (communityId) {
                 loadHouseNumbersForTech();
+            } else {
+                console.warn('Community ID is null or not set');
             }
         });
 
         function loadHouseNumbersForTech() {
+            console.log('Loading house numbers for community:', communityId);
             fetch(`/community_house_numbers?community_id=${communityId}`)
-                .then(response => response.json())
+                .then(response => {
+                    console.log('API response status:', response.status);
+                    return response.json();
+                })
                 .then(data => {
-                    if (data.success && data.house_numbers.length > 0) {
+                    console.log('House numbers data:', data);
+                    if (data.success) {
                         const datalist = document.getElementById('houseNumbersList');
-                        data.house_numbers.forEach(house => {
-                            const option = document.createElement('option');
-                            option.value = house.house_number;
-                            datalist.appendChild(option);
-                        });
+                        if (data.house_numbers && data.house_numbers.length > 0) {
+                            data.house_numbers.forEach(house => {
+                                const option = document.createElement('option');
+                                option.value = house.house_number;
+                                datalist.appendChild(option);
+                            });
+                            console.log('Added ' + data.house_numbers.length + ' house numbers to autocomplete');
+                        } else {
+                            console.log('No house numbers found for this community');
+                        }
+                    } else {
+                        console.error('API error:', data.error);
                     }
                 })
-                .catch(error => console.log('Could not load house numbers:', error));
+                .catch(error => {
+                    console.error('Error loading house numbers:', error);
+                });
         }
 
         function addNewRow() {
@@ -14048,10 +14065,11 @@ def community_billing_spreadsheet():
     submission_info = c.fetchone()
     status = submission_info[0] if submission_info else 'draft'
 
-    # Get community ID for loading house numbers
-    c.execute("SELECT id FROM communities WHERE name = ?", (community,))
+    # Get community ID for loading house numbers (must be active)
+    c.execute("SELECT id FROM communities WHERE name = ? AND active = 1", (community,))
     community_row = c.fetchone()
     community_id = community_row[0] if community_row else None
+    print(f"DEBUG: Community '{community}' lookup returned id: {community_id}")
 
     conn.close()
 
