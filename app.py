@@ -12563,8 +12563,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 </thead>
                 <tbody id="tableBody">
                     {% for item in line_items %}
-                    <tr class="item-row" data-item-id="{{ item.id }}">
-                        <td><input type="text" class="zone" list="houseNumbersList" value="{{ item.zone_and_address or '' }}" placeholder="Select or enter house number"></td>
+                    <tr class="item-row" data-item-id="{{ (item.id|string)|e }}">
+                        <td><input type="text" class="zone" list="houseNumbersList" value="{{ (item.zone_and_address or '')|e }}" placeholder="Select or enter house number"></td>
                         <td><input type="number" class="nozzle" value="{{ item.nozzle or 0 }}"></td>
                         <td><input type="number" class="pop_up_6_inch" value="{{ item.pop_up_6_inch or 0 }}"></td>
                         <td><input type="number" class="pop_up_12_inch" value="{{ item.pop_up_12_inch or 0 }}"></td>
@@ -12576,8 +12576,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         <td><input type="number" class="stat_decoder_1" value="{{ item.stat_decoder_1 or 0 }}"></td>
                         <td>
                             <div class="action-buttons">
-                                <button class="btn-save" onclick="saveItem('{{ item.id }}')">Save</button>
-                                <button class="btn-delete" onclick="deleteItem('{{ item.id }}')">Delete</button>
+                                <button class="btn-save" onclick="saveItem('{{ (item.id|string)|e }}')">Save</button>
+                                <button class="btn-delete" onclick="deleteItem('{{ (item.id|string)|e }}')">Delete</button>
                             </div>
                         </td>
                     </tr>
@@ -12597,13 +12597,13 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
     <script>
         const submissionId = {{ submission_id }};
-        const status = '{{ status }}';
+        const status = {{ status|tojson }};
         const communityId = {{ community_id if community_id else 'null' }};
 
         // Load house numbers on page load
         document.addEventListener('DOMContentLoaded', function() {
             console.log('Tech spreadsheet loaded');
-            console.log('Community:', '{{ community }}');
+            console.log('Community:', {{ community|tojson }});
             console.log('Community ID:', communityId);
             if (communityId && communityId !== null) {
                 loadHouseNumbersForTech();
