@@ -661,6 +661,15 @@ def init_db():
                   created_at TEXT NOT NULL,
                   active INTEGER DEFAULT 1)''')
 
+    # House numbers table - stores house numbers for each community
+    c.execute('''CREATE TABLE IF NOT EXISTS community_house_numbers
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  community_id INTEGER NOT NULL,
+                  house_number TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  FOREIGN KEY (community_id) REFERENCES communities(id) ON DELETE CASCADE,
+                  UNIQUE(community_id, house_number))''')
+
     # Activity log table - THIS WAS MISSING!
     c.execute('''CREATE TABLE IF NOT EXISTS activity_log
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -12401,14 +12410,17 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             background: #f9f9f9;
         }
         input[type="text"],
-        input[type="number"] {
+        input[type="number"],
+        select {
             width: 100%;
             padding: 6px;
             border: 1px solid #ddd;
             border-radius: 4px;
             font-size: 13px;
+            font-family: inherit;
         }
-        input:focus {
+        input:focus,
+        select:focus {
             outline: none;
             border-color: #667eea;
             box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.1);
@@ -12523,6 +12535,9 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
         <div id="message"></div>
 
+        <!-- Datalist for house number autocomplete -->
+        <datalist id="houseNumbersList"></datalist>
+
         <div class="spreadsheet">
             <table>
                 <thead>
@@ -12543,7 +12558,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 <tbody id="tableBody">
                     {% for item in line_items %}
                     <tr class="item-row" data-item-id="{{ item.id }}">
-                        <td><input type="text" class="zone" value="{{ item.zone_and_address or '' }}"></td>
+                        <td><input type="text" class="zone" list="houseNumbersList" value="{{ item.zone_and_address or '' }}" placeholder="Select or enter house number"></td>
                         <td><input type="number" class="nozzle" value="{{ item.nozzle or 0 }}"></td>
                         <td><input type="number" class="pop_up_6_inch" value="{{ item.pop_up_6_inch or 0 }}"></td>
                         <td><input type="number" class="pop_up_12_inch" value="{{ item.pop_up_12_inch or 0 }}"></td>
@@ -12577,6 +12592,30 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
     <script>
         const submissionId = {{ submission_id }};
         const status = '{{ status }}';
+        const communityId = {{ community_id if community_id else 'null' }};
+
+        // Load house numbers on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            if (communityId) {
+                loadHouseNumbersForTech();
+            }
+        });
+
+        function loadHouseNumbersForTech() {
+            fetch(`/community_house_numbers?community_id=${communityId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.house_numbers.length > 0) {
+                        const datalist = document.getElementById('houseNumbersList');
+                        data.house_numbers.forEach(house => {
+                            const option = document.createElement('option');
+                            option.value = house.house_number;
+                            datalist.appendChild(option);
+                        });
+                    }
+                })
+                .catch(error => console.log('Could not load house numbers:', error));
+        }
 
         function addNewRow() {
             const tableBody = document.getElementById('tableBody');
@@ -12587,7 +12626,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             newRow.dataset.itemId = 'new_' + Date.now();
 
             newRow.innerHTML = `
-                <td><input type="text" class="zone" placeholder="Enter zone & address"></td>
+                <td><input type="text" class="zone" list="houseNumbersList" placeholder="Select or enter house number"></td>
                 <td><input type="number" class="nozzle" value="0"></td>
                 <td><input type="number" class="pop_up_6_inch" value="0"></td>
                 <td><input type="number" class="pop_up_12_inch" value="0"></td>
@@ -12984,6 +13023,103 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             font-size: 14px;
             font-family: inherit;
         }
+        .houses-section {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #ddd;
+        }
+        .houses-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .houses-header h4 {
+            margin: 0;
+            color: #333;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .expand-arrow {
+            font-size: 14px;
+            transition: transform 0.2s;
+        }
+        .expand-arrow.expanded {
+            transform: rotate(180deg);
+        }
+        .houses-list {
+            display: none;
+            max-height: 300px;
+            overflow-y: auto;
+            margin-bottom: 12px;
+        }
+        .houses-list.visible {
+            display: block;
+        }
+        .house-item {
+            background: white;
+            border: 1px solid #e0e0e0;
+            padding: 10px 12px;
+            margin-bottom: 8px;
+            border-radius: 6px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 14px;
+        }
+        .house-number-text {
+            font-weight: 500;
+            color: #333;
+        }
+        .btn-delete-house {
+            background: #dc3545;
+            color: white;
+            padding: 4px 8px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .btn-delete-house:hover {
+            background: #c82333;
+        }
+        .add-house-form {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+        .add-house-form input {
+            flex: 1;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        .btn-add-house {
+            padding: 8px 12px;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .btn-add-house:hover {
+            background: #218838;
+        }
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .alert-error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
     </style>
 </head>
 <body>
@@ -13032,25 +13168,52 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 <h3 style="margin-bottom: 15px; color: #333;">Communities ({{ all_communities|length }})</h3>
                 {% for community in all_communities %}
                     <div class="community-card">
-                        <div class="community-info">
-                            <div class="community-name">{{ community.name }}</div>
-                            <div class="community-meta">
-                                Created: {{ community.created_at|truncate(10) }}
+                        <div style="width: 100%;">
+                            <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                                <div class="community-info">
+                                    <div class="community-name">{{ community.name }}</div>
+                                    <div class="community-meta">
+                                        Created: {{ community.created_at|truncate(10) }}
+                                        {% if community.active %}
+                                            <span style="color: #28a745; font-weight: 600;">● Active</span>
+                                        {% else %}
+                                            <span style="color: #dc3545; font-weight: 600;">● Inactive</span>
+                                        {% endif %}
+                                    </div>
+                                </div>
                                 {% if community.active %}
-                                    <span style="color: #28a745; font-weight: 600;">● Active</span>
-                                {% else %}
-                                    <span style="color: #dc3545; font-weight: 600;">● Inactive</span>
+                                    <form method="POST" action="{{ url_for('community_billing_office') }}" style="display: inline;"
+                                          onsubmit="return confirm('Are you sure you want to deactivate this community?');">
+                                        <input type="hidden" name="action" value="delete">
+                                        <input type="hidden" name="community_id" value="{{ community.id }}">
+                                        <button type="submit" class="btn-delete-community">Deactivate</button>
+                                    </form>
                                 {% endif %}
                             </div>
+
+                            <!-- House Numbers Section -->
+                            {% if community.active %}
+                            <div class="houses-section">
+                                <div class="houses-header" onclick="toggleHousesSection(event, {{ community.id }})">
+                                    <h4>🏠 House Numbers</h4>
+                                    <span class="expand-arrow" id="arrow-{{ community.id }}">▼</span>
+                                </div>
+
+                                <div class="houses-list" id="houses-list-{{ community.id }}">
+                                    <div id="houses-{{ community.id }}" style="min-height: 30px;">
+                                        <p style="color: #666; font-size: 13px;">Loading...</p>
+                                    </div>
+                                </div>
+
+                                <div class="add-house-form">
+                                    <input type="text" id="house-input-{{ community.id }}"
+                                           placeholder="Enter house number (e.g., 123, 456A)"
+                                           onkeypress="if(event.key==='Enter') addHouseNumber({{ community.id }}, event)">
+                                    <button type="button" class="btn-add-house" onclick="addHouseNumber({{ community.id }})">Add House</button>
+                                </div>
+                            </div>
+                            {% endif %}
                         </div>
-                        {% if community.active %}
-                            <form method="POST" action="{{ url_for('community_billing_office') }}" style="display: inline;"
-                                  onsubmit="return confirm('Are you sure you want to deactivate this community?');">
-                                <input type="hidden" name="action" value="delete">
-                                <input type="hidden" name="community_id" value="{{ community.id }}">
-                                <button type="submit" class="btn-delete-community">Deactivate</button>
-                            </form>
-                        {% endif %}
                     </div>
                 {% endfor %}
             {% else %}
@@ -13100,6 +13263,119 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             // Show selected tab
             document.getElementById(tabName).classList.add('active');
             event.target.classList.add('active');
+        }
+
+        // House numbers management functions
+        function toggleHousesSection(event, communityId) {
+            event.preventDefault();
+            const list = document.getElementById(`houses-list-${communityId}`);
+            const arrow = document.getElementById(`arrow-${communityId}`);
+
+            list.classList.toggle('visible');
+            arrow.classList.toggle('expanded');
+
+            // Load houses if not already loaded
+            if (list.classList.contains('visible') && !list.dataset.loaded) {
+                loadHouseNumbers(communityId);
+                list.dataset.loaded = 'true';
+            }
+        }
+
+        function loadHouseNumbers(communityId) {
+            fetch(`/community_house_numbers?community_id=${communityId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        displayHouseNumbers(communityId, data.house_numbers);
+                    } else {
+                        document.getElementById(`houses-${communityId}`).innerHTML = '<p style="color: #dc3545;">Error loading house numbers</p>';
+                    }
+                })
+                .catch(error => {
+                    document.getElementById(`houses-${communityId}`).innerHTML = '<p style="color: #dc3545;">Error: ' + error + '</p>';
+                });
+        }
+
+        function displayHouseNumbers(communityId, houses) {
+            const container = document.getElementById(`houses-${communityId}`);
+
+            if (houses.length === 0) {
+                container.innerHTML = '<p style="color: #999; font-size: 13px;">No house numbers yet. Add one below!</p>';
+                return;
+            }
+
+            let html = '';
+            houses.forEach(house => {
+                html += `
+                    <div class="house-item">
+                        <span class="house-number-text">${house.house_number}</span>
+                        <button type="button" class="btn-delete-house" onclick="deleteHouseNumber(${house.id}, ${communityId})">
+                            Delete
+                        </button>
+                    </div>
+                `;
+            });
+
+            container.innerHTML = html;
+        }
+
+        function addHouseNumber(communityId, event) {
+            if (event && event.key && event.key !== 'Enter') return;
+            event && event.preventDefault();
+
+            const input = document.getElementById(`house-input-${communityId}`);
+            const houseNumber = input.value.trim();
+
+            if (!houseNumber) {
+                alert('Please enter a house number');
+                return;
+            }
+
+            fetch('/community_add_house_number', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    community_id: communityId,
+                    house_number: houseNumber
+                })
+            })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        input.value = '';
+                        // Reload houses
+                        const list = document.getElementById(`houses-list-${communityId}`);
+                        list.dataset.loaded = '';
+                        loadHouseNumbers(communityId);
+                    } else {
+                        alert('Error: ' + data.error);
+                    }
+                })
+                .catch(error => alert('Error: ' + error));
+        }
+
+        function deleteHouseNumber(houseId, communityId) {
+            if (!confirm('Delete this house number?')) return;
+
+            fetch('/community_delete_house_number', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    house_number_id: houseId
+                })
+            })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // Reload houses
+                        const list = document.getElementById(`houses-list-${communityId}`);
+                        list.dataset.loaded = '';
+                        loadHouseNumbers(communityId);
+                    } else {
+                        alert('Error: ' + data.error);
+                    }
+                })
+                .catch(error => alert('Error: ' + error));
         }
     </script>
 
@@ -13772,11 +14048,17 @@ def community_billing_spreadsheet():
     submission_info = c.fetchone()
     status = submission_info[0] if submission_info else 'draft'
 
+    # Get community ID for loading house numbers
+    c.execute("SELECT id FROM communities WHERE name = ?", (community,))
+    community_row = c.fetchone()
+    community_id = community_row[0] if community_row else None
+
     conn.close()
 
     return render_template_string(COMMUNITY_BILLING_SPREADSHEET_TEMPLATE,
                                  submission_id=submission_id,
                                  community=community,
+                                 community_id=community_id,
                                  work_date=work_date,
                                  line_items=line_items,
                                  status=status)
@@ -14182,6 +14464,88 @@ def community_billing_export_pdf():
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+# ============================================================================
+# HOUSE NUMBER MANAGEMENT ROUTES
+# ============================================================================
+
+@app.route('/community_house_numbers', methods=['GET'])
+def community_house_numbers():
+    """Get house numbers for a community"""
+    # Allow both office and tech users
+    if 'username' not in session or session.get('role') not in ['office', 'technician']:
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    community_id = request.args.get('community_id')
+    if not community_id:
+        return jsonify({'success': False, 'error': 'Missing community_id'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    c.execute("""SELECT id, house_number, created_at
+                 FROM community_house_numbers
+                 WHERE community_id = ?
+                 ORDER BY house_number""", (community_id,))
+
+    house_numbers = [{'id': row[0], 'house_number': row[1], 'created_at': row[2]} for row in c.fetchall()]
+    conn.close()
+
+    return jsonify({'success': True, 'house_numbers': house_numbers})
+
+@app.route('/community_add_house_number', methods=['POST'])
+def community_add_house_number():
+    """Add a new house number to a community"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    community_id = data.get('community_id')
+    house_number = data.get('house_number', '').strip()
+
+    if not community_id or not house_number:
+        return jsonify({'success': False, 'error': 'Missing required fields'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    try:
+        c.execute("""INSERT INTO community_house_numbers
+                     (community_id, house_number, created_at)
+                     VALUES (?, ?, ?)""",
+                 (community_id, house_number, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        conn.commit()
+        return jsonify({'success': True, 'message': 'House number added successfully'})
+    except sqlite3.IntegrityError:
+        return jsonify({'success': False, 'error': 'This house number already exists in this community'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+@app.route('/community_delete_house_number', methods=['POST'])
+def community_delete_house_number():
+    """Delete a house number"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    house_number_id = data.get('house_number_id')
+
+    if not house_number_id:
+        return jsonify({'success': False, 'error': 'Missing house_number_id'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    try:
+        c.execute("DELETE FROM community_house_numbers WHERE id = ?", (house_number_id,))
+        conn.commit()
+        return jsonify({'success': True, 'message': 'House number deleted successfully'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
 
 # ============================================================================
 # END DEBUG ROUTES
