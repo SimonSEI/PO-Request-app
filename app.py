@@ -12563,8 +12563,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 </thead>
                 <tbody id="tableBody">
                     {% for item in line_items %}
-                    <tr class="item-row" data-item-id="{{ (item.id|string)|e }}">
-                        <td><input type="text" class="zone" list="houseNumbersList" value="{{ (item.zone_and_address or '')|e }}" placeholder="Select or enter house number"></td>
+                    <tr class="item-row" data-item-id="{{ item.id }}">
+                        <td><input type="text" class="zone" list="houseNumbersList" value="{{ item.zone_and_address or '' }}" placeholder="Select or enter house number"></td>
                         <td><input type="number" class="nozzle" value="{{ item.nozzle or 0 }}"></td>
                         <td><input type="number" class="pop_up_6_inch" value="{{ item.pop_up_6_inch or 0 }}"></td>
                         <td><input type="number" class="pop_up_12_inch" value="{{ item.pop_up_12_inch or 0 }}"></td>
@@ -12576,8 +12576,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         <td><input type="number" class="stat_decoder_1" value="{{ item.stat_decoder_1 or 0 }}"></td>
                         <td>
                             <div class="action-buttons">
-                                <button class="btn-save" onclick="saveItem('{{ (item.id|string)|e }}')">Save</button>
-                                <button class="btn-delete" onclick="deleteItem('{{ (item.id|string)|e }}')">Delete</button>
+                                <button class="btn-save" onclick="saveItem({{ item.id }})">Save</button>
+                                <button class="btn-delete" onclick="deleteItem({{ item.id }})">Delete</button>
                             </div>
                         </td>
                     </tr>
@@ -12597,13 +12597,13 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
     <script>
         const submissionId = {{ submission_id }};
-        const status = {{ status|tojson }};
+        const status = '{{ status }}';
         const communityId = {{ community_id if community_id else 'null' }};
 
         // Load house numbers on page load
         document.addEventListener('DOMContentLoaded', function() {
             console.log('Tech spreadsheet loaded');
-            console.log('Community:', {{ community|tojson }});
+            console.log('Community:', '{{ community }}');
             console.log('Community ID:', communityId);
             if (communityId && communityId !== null) {
                 loadHouseNumbersForTech();
@@ -13219,22 +13219,22 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                             <!-- House Numbers Section -->
                             {% if community.active %}
                             <div class="houses-section">
-                                <div class="houses-header" onclick="toggleHousesSection(event, {{ community.id|tojson }})">
+                                <div class="houses-header" onclick="toggleHousesSection(event, {{ community.id }})">
                                     <h4>🏠 House Numbers</h4>
-                                    <span class="expand-arrow" id="arrow-{{ community.id|tojson }}">▼</span>
+                                    <span class="expand-arrow" id="arrow-{{ community.id }}">▼</span>
                                 </div>
 
-                                <div class="houses-list" id="houses-list-{{ community.id|tojson }}">
-                                    <div id="houses-{{ community.id|tojson }}" style="min-height: 30px;">
+                                <div class="houses-list" id="houses-list-{{ community.id }}">
+                                    <div id="houses-{{ community.id }}" style="min-height: 30px;">
                                         <p style="color: #666; font-size: 13px;">Loading...</p>
                                     </div>
                                 </div>
 
                                 <div class="add-house-form">
-                                    <input type="text" id="house-input-{{ community.id|tojson }}"
+                                    <input type="text" id="house-input-{{ community.id }}"
                                            placeholder="Enter house number (e.g., 123, 456A)"
-                                           onkeypress="if(event.key==='Enter') addHouseNumber({{ community.id|tojson }}, event)">
-                                    <button type="button" class="btn-add-house" onclick="addHouseNumber({{ community.id|tojson }})">Add House</button>
+                                           onkeypress="if(event.key==='Enter') addHouseNumber({{ community.id }}, event)">
+                                    <button type="button" class="btn-add-house" onclick="addHouseNumber({{ community.id }})">Add House</button>
                                 </div>
                             </div>
                             {% endif %}
