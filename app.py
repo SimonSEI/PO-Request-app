@@ -12596,11 +12596,13 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
         // Load house numbers on page load
         document.addEventListener('DOMContentLoaded', function() {
-            console.log('Page loaded. Community ID:', communityId);
-            if (communityId) {
+            console.log('Tech spreadsheet loaded');
+            console.log('Community:', '{{ community }}');
+            console.log('Community ID:', communityId);
+            if (communityId && communityId !== null) {
                 loadHouseNumbersForTech();
             } else {
-                console.warn('Community ID is null or not set');
+                console.warn('Community ID is null - house numbers will not load. This may happen if the community was deleted or renamed.');
             }
         });
 
@@ -14069,7 +14071,6 @@ def community_billing_spreadsheet():
     c.execute("SELECT id FROM communities WHERE name = ? AND active = 1", (community,))
     community_row = c.fetchone()
     community_id = community_row[0] if community_row else None
-    print(f"DEBUG: Community '{community}' lookup returned id: {community_id}")
 
     conn.close()
 
