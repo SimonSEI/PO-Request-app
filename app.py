@@ -12576,8 +12576,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         <td><input type="number" class="stat_decoder_1" value="{{ item.stat_decoder_1 or 0 }}"></td>
                         <td>
                             <div class="action-buttons">
-                                <button class="btn-save" onclick="saveItem({{ item.id|tojson }})">Save</button>
-                                <button class="btn-delete" onclick="deleteItem({{ item.id|tojson }})">Delete</button>
+                                <button class="btn-save save-btn">Save</button>
+                                <button class="btn-delete delete-btn">Delete</button>
                             </div>
                         </td>
                     </tr>
@@ -12595,61 +12595,76 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         </div>
     </div>
 
-    <script>
-        const submissionId = {{ submission_id|tojson }};
-        const status = {{ status|tojson }};
-        const community = {{ community|tojson }};
-        const communityId = {{ (community_id if community_id else None)|tojson }};
+    <script type="application/json" id="pageData">
+    {
+        "submissionId": {{ submission_id|tojson }},
+        "status": {{ status|tojson }},
+        "community": {{ community|tojson }},
+        "communityId": {{ (community_id if community_id else None)|tojson }}
+    }
+    </script>
 
-        // Load house numbers on page load
+    <script>
+        let submissionId, status, community, communityId;
+
+        // Parse data from JSON
+        try {
+            const dataEl = document.getElementById('pageData');
+            const data = JSON.parse(dataEl.textContent);
+            submissionId = data.submissionId;
+            status = data.status;
+            community = data.community;
+            communityId = data.communityId;
+        } catch (e) {
+            console.error('Failed to parse page data:', e);
+        }
+
+        // Load house numbers and attach event listeners
         document.addEventListener('DOMContentLoaded', function() {
-            console.log('Tech spreadsheet loaded');
-            console.log('Community:', community);
-            console.log('Community ID:', communityId);
+            console.log('Spreadsheet loaded');
             if (communityId && communityId !== null) {
-                loadHouseNumbersForTech();
-            } else {
-                console.warn('Community ID is null - house numbers will not load. This may happen if the community was deleted or renamed.');
+                loadHouseNumbers();
             }
+            attachRowEventListeners();
         });
 
-        function loadHouseNumbersForTech() {
-            console.log('Loading house numbers for community:', communityId);
-            fetch(`/community_house_numbers?community_id=${communityId}`)
-                .then(response => {
-                    console.log('API response status:', response.status);
-                    return response.json();
-                })
+        function attachRowEventListeners() {
+            document.querySelectorAll('.save-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const row = this.closest('tr');
+                    saveItem(row.dataset.itemId);
+                });
+            });
+            document.querySelectorAll('.delete-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const row = this.closest('tr');
+                    deleteItem(row.dataset.itemId);
+                });
+            });
+        }
+
+        function loadHouseNumbers() {
+            fetch('/community_house_numbers?community_id=' + communityId)
+                .then(r => r.json())
                 .then(data => {
-                    console.log('House numbers data:', data);
-                    if (data.success) {
+                    if (data.success && data.house_numbers) {
                         const datalist = document.getElementById('houseNumbersList');
-                        if (data.house_numbers && data.house_numbers.length > 0) {
-                            data.house_numbers.forEach(house => {
-                                const option = document.createElement('option');
-                                option.value = house.house_number;
-                                datalist.appendChild(option);
-                            });
-                            console.log('Added ' + data.house_numbers.length + ' house numbers to autocomplete');
-                        } else {
-                            console.log('No house numbers found for this community');
-                        }
-                    } else {
-                        console.error('API error:', data.error);
+                        data.house_numbers.forEach(house => {
+                            const option = document.createElement('option');
+                            option.value = house.house_number;
+                            datalist.appendChild(option);
+                        });
                     }
                 })
-                .catch(error => {
-                    console.error('Error loading house numbers:', error);
-                });
+                .catch(e => console.error('Error loading house numbers:', e));
         }
 
         function addNewRow() {
             const tableBody = document.getElementById('tableBody');
-            const rowCount = tableBody.children.length + 1;
-
+            const newId = 'new_' + Date.now();
             const newRow = document.createElement('tr');
             newRow.className = 'item-row';
-            newRow.dataset.itemId = 'new_' + Date.now();
+            newRow.dataset.itemId = newId;
 
             newRow.innerHTML = `
                 <td><input type="text" class="zone" list="houseNumbersList" placeholder="Select or enter house number"></td>
@@ -12664,17 +12679,17 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 <td><input type="number" class="stat_decoder_1" value="0"></td>
                 <td>
                     <div class="action-buttons">
-                        <button class="btn-save" onclick="saveItem('new_${Date.now()}')">Save</button>
-                        <button class="btn-delete" onclick="deleteItemRow('new_${Date.now()}')">Delete</button>
+                        <button class="btn-save save-btn">Save</button>
+                        <button class="btn-delete delete-btn">Delete</button>
                     </div>
                 </td>
             `;
-
             tableBody.appendChild(newRow);
+            attachRowEventListeners();
         }
 
         function saveItem(itemId) {
-            const row = document.querySelector(`[data-item-id="${itemId}"]`);
+            const row = document.querySelector('[data-item-id="' + itemId + '"]');
             if (!row) {
                 alert('Row not found');
                 return;
@@ -12682,7 +12697,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
             const data = {
                 submission_id: submissionId,
-                item_id: itemId.toString().startsWith('new_') ? null : itemId,
+                item_id: itemId.startsWith('new_') ? null : itemId,
                 zone_and_address: row.querySelector('.zone').value,
                 nozzle: row.querySelector('.nozzle').value,
                 pop_up_6_inch: row.querySelector('.pop_up_6_inch').value,
@@ -12700,77 +12715,62 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
             })
-            .then(response => response.json())
+            .then(r => r.json())
             .then(result => {
                 if (result.success) {
                     row.dataset.itemId = result.item_id;
-                    showMessage('Row saved successfully!', 'success');
+                    showMessage('Row saved!', 'success');
                 } else {
-                    alert('Error saving row: ' + result.error);
+                    alert('Error: ' + result.error);
                 }
             })
-            .catch(error => {
-                alert('Error: ' + error);
-            });
+            .catch(e => alert('Error: ' + e));
         }
 
         function deleteItem(itemId) {
-            if (!confirm('Are you sure you want to delete this row?')) return;
+            if (!confirm('Delete this row?')) return;
 
             fetch('/community_billing_delete_item', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    item_id: itemId,
-                    submission_id: submissionId
-                })
+                body: JSON.stringify({ item_id: itemId, submission_id: submissionId })
             })
-            .then(response => response.json())
+            .then(r => r.json())
             .then(result => {
                 if (result.success) {
-                    const row = document.querySelector(`[data-item-id="${itemId}"]`);
+                    const row = document.querySelector('[data-item-id="' + itemId + '"]');
                     if (row) row.remove();
-                    showMessage('Row deleted successfully!', 'success');
+                    showMessage('Row deleted!', 'success');
                 } else {
-                    alert('Error deleting row: ' + result.error);
+                    alert('Error: ' + result.error);
                 }
             })
-            .catch(error => {
-                alert('Error: ' + error);
-            });
+            .catch(e => alert('Error: ' + e));
         }
 
         function deleteItemRow(itemId) {
-            const row = document.querySelector(`[data-item-id="${itemId}"]`);
+            const row = document.querySelector('[data-item-id="' + itemId + '"]');
             if (row) row.remove();
         }
 
         function submitForm() {
-            if (!confirm('Are you sure you want to submit this form? You won\'t be able to edit it afterwards.')) {
-                return;
-            }
+            if (!confirm('Submit form? You won\'t be able to edit it afterwards.')) return;
 
             fetch('/community_billing_submit', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    submission_id: submissionId
-                })
+                body: JSON.stringify({ submission_id: submissionId })
             })
-            .then(response => response.json())
+            .then(r => r.json())
             .then(result => {
                 if (result.success) {
-                    showMessage('Form submitted successfully! Redirecting...', 'success');
-                    setTimeout(() => {
-                        window.location.href = '/community_billing_tech';
-                    }, 2000);
+                    showMessage('Submitted! Redirecting...', 'success');
+                    setTimeout(() => window.location.href = '/community_billing_tech', 2000);
                 } else {
-                    alert('Error submitting form: ' + result.error);
+                    alert('Error: ' + result.error);
                 }
             })
-            .catch(error => {
-                alert('Error: ' + error);
-            });
+            .catch(e => alert('Error: ' + e));
         }
 
         function goBack() {
@@ -12779,13 +12779,11 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
         function showMessage(message, type) {
             const msgDiv = document.getElementById('message');
+            if (!msgDiv) return;
             msgDiv.className = 'alert alert-' + type;
             msgDiv.textContent = message;
             msgDiv.style.display = 'block';
-
-            setTimeout(() => {
-                msgDiv.style.display = 'none';
-            }, 3000);
+            setTimeout(() => msgDiv.style.display = 'none', 3000);
         }
     </script>
 </body>
