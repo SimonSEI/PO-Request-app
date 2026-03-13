@@ -12596,10 +12596,10 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
     </div>
 
     <script>
-        const submissionId = {{ submission_id }};
+        const submissionId = {{ submission_id|tojson }};
         const status = {{ status|tojson }};
         const community = {{ community|tojson }};
-        const communityId = {{ community_id if community_id else 'null' }};
+        const communityId = {{ (community_id if community_id else None)|tojson }};
 
         // Load house numbers on page load
         document.addEventListener('DOMContentLoaded', function() {
