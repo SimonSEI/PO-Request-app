@@ -12564,7 +12564,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 <tbody id="tableBody">
                     {% for item in line_items %}
                     <tr class="item-row" data-item-id="{{ item.id }}">
-                        <td><input type="text" class="zone" list="houseNumbersList" value="{{ item.zone_and_address or '' }}" placeholder="Select or enter house number"></td>
+                        <td><input type="text" class="zone" list="houseNumbersList" value="{{ (item.zone_and_address or '')|e }}" placeholder="Select or enter house number"></td>
                         <td><input type="number" class="nozzle" value="{{ item.nozzle or 0 }}"></td>
                         <td><input type="number" class="pop_up_6_inch" value="{{ item.pop_up_6_inch or 0 }}"></td>
                         <td><input type="number" class="pop_up_12_inch" value="{{ item.pop_up_12_inch or 0 }}"></td>
@@ -12576,8 +12576,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         <td><input type="number" class="stat_decoder_1" value="{{ item.stat_decoder_1 or 0 }}"></td>
                         <td>
                             <div class="action-buttons">
-                                <button class="btn-save" onclick="saveItem({{ item.id }})">Save</button>
-                                <button class="btn-delete" onclick="deleteItem({{ item.id }})">Delete</button>
+                                <button class="btn-save" onclick="saveItem({{ item.id|tojson }})">Save</button>
+                                <button class="btn-delete" onclick="deleteItem({{ item.id|tojson }})">Delete</button>
                             </div>
                         </td>
                     </tr>
