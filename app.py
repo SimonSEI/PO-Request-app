@@ -12979,34 +12979,33 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             setTimeout(() => msgDiv.style.display = 'none', 3000);
         }
 
-        // Add event listeners (script is at end of page, DOM is ready)
-        console.log('Setting up event listeners...');
+    </script>
 
-        const saveBtn = document.getElementById('saveBtn');
-        console.log('Save button found:', !!saveBtn);
-        if (saveBtn) {
-            saveBtn.onclick = function(e) {
-                console.log('✓ Save clicked, calling saveAllRows()');
-                saveAllRows();
-                return false;
-            };
-            console.log('✓ Save button click handler attached');
-        } else {
-            console.error('✗ Save button NOT FOUND - cannot attach handler');
-        }
+    <script>
+        // Simple button setup - executed last to ensure DOM is ready
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('DOM loaded, setting up buttons...');
 
-        const submitBtn = document.getElementById('submitBtn');
-        console.log('Submit button found:', !!submitBtn);
-        if (submitBtn) {
-            submitBtn.onclick = function(e) {
-                console.log('✓ Submit clicked, calling submitForm()');
-                submitForm();
-                return false;
-            };
-            console.log('✓ Submit button click handler attached');
-        } else {
-            console.error('✗ Submit button NOT FOUND');
-        }
+            var saveBtn = document.getElementById('saveBtn');
+            if (saveBtn) {
+                saveBtn.onclick = function() {
+                    console.log('Save clicked');
+                    saveAllRows();
+                    return false;
+                };
+                console.log('Save button ready');
+            }
+
+            var submitBtn = document.getElementById('submitBtn');
+            if (submitBtn) {
+                submitBtn.onclick = function() {
+                    console.log('Submit clicked');
+                    submitForm();
+                    return false;
+                };
+                console.log('Submit button ready');
+            }
+        });
     </script>
 </body>
 </html>
