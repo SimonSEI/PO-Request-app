@@ -12627,8 +12627,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 </span>
             </h1>
             <div class="info">
-                <strong>Community:</strong> {{ community }}<br>
-                <strong>Work Date:</strong> {{ work_date }}
+                <strong>Community:</strong> {{ community|escape }}<br>
+                <strong>Work Date:</strong> {{ work_date|escape }}
             </div>
         </div>
 
