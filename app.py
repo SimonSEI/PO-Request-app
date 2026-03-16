@@ -12980,22 +12980,32 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         }
 
         // Add event listeners (script is at end of page, DOM is ready)
+        console.log('Setting up event listeners...');
+
         const saveBtn = document.getElementById('saveBtn');
+        console.log('Save button found:', !!saveBtn);
         if (saveBtn) {
             saveBtn.onclick = function(e) {
-                console.log('Save clicked');
+                console.log('✓ Save clicked, calling saveAllRows()');
                 saveAllRows();
                 return false;
             };
+            console.log('✓ Save button click handler attached');
+        } else {
+            console.error('✗ Save button NOT FOUND - cannot attach handler');
         }
 
         const submitBtn = document.getElementById('submitBtn');
+        console.log('Submit button found:', !!submitBtn);
         if (submitBtn) {
             submitBtn.onclick = function(e) {
-                console.log('Submit clicked');
+                console.log('✓ Submit clicked, calling submitForm()');
                 submitForm();
                 return false;
             };
+            console.log('✓ Submit button click handler attached');
+        } else {
+            console.error('✗ Submit button NOT FOUND');
         }
     </script>
 </body>
