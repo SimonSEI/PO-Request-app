@@ -12506,6 +12506,36 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         .btn-delete:hover {
             background: #c82333;
         }
+        .sticky-save-bar {
+            position: sticky;
+            top: 0;
+            background: white;
+            padding: 12px 20px;
+            border-bottom: 2px solid #667eea;
+            display: flex;
+            justify-content: flex-start;
+            gap: 10px;
+            z-index: 100;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+        }
+        .sticky-save-bar button {
+            padding: 10px 20px;
+            font-weight: 600;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .btn-sticky-save {
+            background: #28a745;
+            color: white;
+            font-size: 14px;
+        }
+        .btn-sticky-save:hover {
+            background: #218838;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        }
         .controls {
             margin-top: 20px;
             padding-top: 20px;
@@ -12590,6 +12620,11 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
         <div id="message"></div>
 
+        <!-- Sticky Save Bar -->
+        <div class="sticky-save-bar">
+            <button class="btn-sticky-save" onclick="saveAllRows()">💾 Save All</button>
+        </div>
+
         <div class="spreadsheet">
             <table>
                 <thead>
@@ -12609,7 +12644,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 <tbody id="tableBody">
                     {% for item in line_items %}
                     <tr class="item-row" data-item-id="{{ item.id }}">
-                        <td><input type="text" class="zone" value="{{ (item.zone_and_address or '')|e }}" readonly></td>
+                        <td><span class="zone" style="display: block; padding: 8px 0; border-bottom: 1px solid #ddd;">{{ item.zone_and_address or '' }}</span></td>
                         <td><input type="number" class="nozzle" value="{{ item.nozzle if item.nozzle else '' }}" min="0"></td>
                         <td><input type="number" class="pop_up_6_inch" value="{{ item.pop_up_6_inch if item.pop_up_6_inch else '' }}" min="0"></td>
                         <td><input type="number" class="pop_up_12_inch" value="{{ item.pop_up_12_inch if item.pop_up_12_inch else '' }}" min="0"></td>
@@ -12636,7 +12671,6 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
         <div class="controls">
             <button class="btn-primary" onclick="goBack()">← Back</button>
-            <button class="btn-secondary" onclick="saveAllRows()">💾 Save</button>
             <button class="btn-success" id="submitBtn" onclick="submitForm()" {% if status == 'submitted' %}disabled{% endif %}>
                 {% if status == 'submitted' %}Submitted{% else %}Submit & Finalize{% endif %}
             </button>
@@ -12703,7 +12737,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     const data = {
                         submission_id: submissionId,
                         item_id: itemId.startsWith('new_') ? null : itemId,
-                        zone_and_address: row.querySelector('.zone').value,
+                        zone_and_address: row.querySelector('.zone').textContent,
                         nozzle: row.querySelector('.nozzle').value,
                         pop_up_6_inch: row.querySelector('.pop_up_6_inch').value,
                         pop_up_12_inch: row.querySelector('.pop_up_12_inch').value,
@@ -12745,7 +12779,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 const data = {
                     submission_id: submissionId,
                     item_id: itemId.startsWith('new_') ? null : itemId,
-                    zone_and_address: row.querySelector('.zone').value,
+                    zone_and_address: row.querySelector('.zone').textContent,
                     nozzle: row.querySelector('.nozzle').value,
                     pop_up_6_inch: row.querySelector('.pop_up_6_inch').value,
                     pop_up_12_inch: row.querySelector('.pop_up_12_inch').value,
@@ -12785,7 +12819,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             const data = {
                 submission_id: submissionId,
                 item_id: itemId.startsWith('new_') ? null : itemId,
-                zone_and_address: row.querySelector('.zone').value,
+                zone_and_address: row.querySelector('.zone').textContent,
                 nozzle: row.querySelector('.nozzle').value,
                 pop_up_6_inch: row.querySelector('.pop_up_6_inch').value,
                 pop_up_12_inch: row.querySelector('.pop_up_12_inch').value,
@@ -12878,7 +12912,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                                        (stat_decoder_1 * pricing.stat_decoder_1);
 
                         if (rowCost > 0) {
-                            const zone = row.querySelector('.zone').value;
+                            const zone = row.querySelector('.zone').textContent;
                             costDetails[zone] = rowCost;
                             totalCost += rowCost;
                         }
