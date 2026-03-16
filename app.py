@@ -12604,7 +12604,6 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         <th>Riser</th>
                         <th>Solenoid</th>
                         <th>1 Stat Decoder</th>
-                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody id="tableBody">
@@ -12620,11 +12619,6 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         <td><input type="number" class="riser" value="{{ item.riser if item.riser else '' }}" min="0"></td>
                         <td><input type="number" class="solenoid" value="{{ item.solenoid if item.solenoid else '' }}" min="0"></td>
                         <td><input type="number" class="stat_decoder_1" value="{{ item.stat_decoder_1 if item.stat_decoder_1 else '' }}" min="0"></td>
-                        <td>
-                            <div class="action-buttons">
-                                <button class="btn-save save-btn">Save</button>
-                            </div>
-                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -12642,6 +12636,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
         <div class="controls">
             <button class="btn-primary" onclick="goBack()">← Back</button>
+            <button class="btn-secondary" onclick="saveAllRows()">💾 Save</button>
             <button class="btn-success" id="submitBtn" onclick="submitForm()" {% if status == 'submitted' %}disabled{% endif %}>
                 {% if status == 'submitted' %}Submitted{% else %}Submit & Finalize{% endif %}
             </button>
@@ -12672,9 +12667,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             console.error('Failed to parse page data:', e);
         }
 
-        // Attach event listeners and setup autosave on page load
+        // Setup autosave on page load
         document.addEventListener('DOMContentLoaded', function() {
-            attachRowEventListeners();
             // Setup autosave every 5 minutes
             setupAutoSave();
         });
@@ -12742,13 +12736,43 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             }
         }
 
-        function attachRowEventListeners() {
-            document.querySelectorAll('.save-btn').forEach(btn => {
-                btn.addEventListener('click', function() {
-                    const row = this.closest('tr');
-                    saveItem(row.dataset.itemId);
-                });
+        function saveAllRows() {
+            const rows = document.querySelectorAll('[data-item-id]');
+            let savedCount = 0;
+
+            rows.forEach(row => {
+                const itemId = row.dataset.itemId;
+                const data = {
+                    submission_id: submissionId,
+                    item_id: itemId.startsWith('new_') ? null : itemId,
+                    zone_and_address: row.querySelector('.zone').value,
+                    nozzle: row.querySelector('.nozzle').value,
+                    pop_up_6_inch: row.querySelector('.pop_up_6_inch').value,
+                    pop_up_12_inch: row.querySelector('.pop_up_12_inch').value,
+                    rotor_6_inch: row.querySelector('.rotor_6_inch').value,
+                    new_pop_up_6_inch: row.querySelector('.new_pop_up_6_inch').value,
+                    new_pop_up_12_inch: row.querySelector('.new_pop_up_12_inch').value,
+                    riser: row.querySelector('.riser').value,
+                    solenoid: row.querySelector('.solenoid').value,
+                    stat_decoder_1: row.querySelector('.stat_decoder_1').value
+                };
+
+                fetch('/community_billing_save_item', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                })
+                .then(r => r.json())
+                .then(result => {
+                    if (result.success) {
+                        row.dataset.itemId = result.item_id;
+                        savedCount++;
+                    }
+                })
+                .catch(e => alert('Error: ' + e));
             });
+
+            showMessage('Saved! (' + rows.length + ' rows)', 'success');
         }
 
         function saveItem(itemId) {
