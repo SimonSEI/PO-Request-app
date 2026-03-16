@@ -12945,7 +12945,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 calculateCost();
 
                 setTimeout(() => {
-                    if (!confirm('Submit form? You won\'t be able to edit it afterwards.')) return;
+                    if (!confirm("Submit form? You won't be able to edit it afterwards.")) return;
 
                     fetch('/community_billing_submit', {
                         method: 'POST',
