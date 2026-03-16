@@ -12723,36 +12723,98 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
         function autoSaveAllRows() {
             const rows = document.querySelectorAll('[data-item-id]');
+            if (rows.length === 0) return;
 
             try {
                 // Collect all line items
                 const lineItems = [];
                 rows.forEach(row => {
-                    try {
-                        const itemId = row.dataset.itemId;
-                        if (!itemId) return;
+                    const itemId = row.dataset.itemId;
+                    if (!itemId) return;
 
-                        lineItems.push({
-                            id: itemId,
-                            zone_and_address: (row.querySelector('.zone')?.textContent || '').trim(),
-                            nozzle: row.querySelector('.nozzle')?.value || '',
-                            pop_up_6_inch: row.querySelector('.pop_up_6_inch')?.value || '',
-                            pop_up_12_inch: row.querySelector('.pop_up_12_inch')?.value || '',
-                            rotor_6_inch: row.querySelector('.rotor_6_inch')?.value || '',
-                            new_pop_up_6_inch: row.querySelector('.new_pop_up_6_inch')?.value || '',
-                            new_pop_up_12_inch: row.querySelector('.new_pop_up_12_inch')?.value || '',
-                            riser: row.querySelector('.riser')?.value || '',
-                            solenoid: row.querySelector('.solenoid')?.value || '',
-                            stat_decoder_1: row.querySelector('.stat_decoder_1')?.value || ''
-                        });
-                    } catch (e) {
-                        console.error('Error collecting row data:', e);
-                    }
+                    lineItems.push({
+                        id: itemId,
+                        zone_and_address: (row.querySelector('.zone')?.textContent || '').trim(),
+                        nozzle: row.querySelector('.nozzle')?.value || '',
+                        pop_up_6_inch: row.querySelector('.pop_up_6_inch')?.value || '',
+                        pop_up_12_inch: row.querySelector('.pop_up_12_inch')?.value || '',
+                        rotor_6_inch: row.querySelector('.rotor_6_inch')?.value || '',
+                        new_pop_up_6_inch: row.querySelector('.new_pop_up_6_inch')?.value || '',
+                        new_pop_up_12_inch: row.querySelector('.new_pop_up_12_inch')?.value || '',
+                        riser: row.querySelector('.riser')?.value || '',
+                        solenoid: row.querySelector('.solenoid')?.value || '',
+                        stat_decoder_1: row.querySelector('.stat_decoder_1')?.value || ''
+                    });
                 });
 
-                if (lineItems.length === 0) {
-                    return; // Nothing to save
-                }
+                if (lineItems.length === 0) return;
+
+                // Silently save entire draft
+                fetch('/community_billing_save_draft', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        submission_id: submissionId,
+                        line_items: lineItems
+                    })
+                })
+                .then(r => r.json())
+                .then(result => {
+                    if (result.success) {
+                        console.log('✓ Autosave: ' + lineItems.length + ' rows at ' + new Date().toLocaleTimeString());
+                    } else {
+                        console.error('✗ Autosave failed:', result.error);
+                    }
+                })
+                .catch(e => console.error('Autosave error:', e));
+            } catch (e) {
+                console.error('Autosave error:', e);
+            }
+        }
+
+        function saveAllRows() {
+            const rows = document.querySelectorAll('[data-item-id]');
+            console.log('saveAllRows called, found ' + rows.length + ' rows');
+
+            if (rows.length === 0) {
+                showMessage('No rows to save', 'info');
+                return;
+            }
+
+            try {
+                // Collect all line items
+                const lineItems = [];
+                rows.forEach((row, idx) => {
+                    const itemId = row.dataset.itemId;
+                    if (!itemId) return;
+
+                    const nozzle = row.querySelector('.nozzle')?.value || '';
+                    const pop_up_6_inch = row.querySelector('.pop_up_6_inch')?.value || '';
+                    const pop_up_12_inch = row.querySelector('.pop_up_12_inch')?.value || '';
+                    const rotor_6_inch = row.querySelector('.rotor_6_inch')?.value || '';
+                    const new_pop_up_6_inch = row.querySelector('.new_pop_up_6_inch')?.value || '';
+                    const new_pop_up_12_inch = row.querySelector('.new_pop_up_12_inch')?.value || '';
+                    const riser = row.querySelector('.riser')?.value || '';
+                    const solenoid = row.querySelector('.solenoid')?.value || '';
+                    const stat_decoder_1 = row.querySelector('.stat_decoder_1')?.value || '';
+
+                    lineItems.push({
+                        id: itemId,
+                        zone_and_address: (row.querySelector('.zone')?.textContent || '').trim(),
+                        nozzle: nozzle,
+                        pop_up_6_inch: pop_up_6_inch,
+                        pop_up_12_inch: pop_up_12_inch,
+                        rotor_6_inch: rotor_6_inch,
+                        new_pop_up_6_inch: new_pop_up_6_inch,
+                        new_pop_up_12_inch: new_pop_up_12_inch,
+                        riser: riser,
+                        solenoid: solenoid,
+                        stat_decoder_1: stat_decoder_1
+                    });
+                });
+
+                console.log('Collected ' + lineItems.length + ' line items');
+                console.log('Payload:', JSON.stringify({submission_id: submissionId, line_items: lineItems}));
 
                 // Save entire draft at once
                 fetch('/community_billing_save_draft', {
@@ -12765,87 +12827,22 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 })
                 .then(r => r.json())
                 .then(result => {
+                    console.log('Server response:', result);
                     if (result.success) {
-                        console.log('Autosave completed at ' + new Date().toLocaleTimeString() + ' - ' + lineItems.length + ' rows saved');
+                        showMessage('✓ Saved ' + lineItems.length + ' rows - Reloading...', 'success');
+                        // Reload after 1 second to show saved data from database
+                        setTimeout(() => window.location.reload(), 1000);
                     } else {
-                        console.error('Autosave failed:', result.error);
-                    }
-                })
-                .catch(e => console.error('Autosave error:', e));
-            } catch (e) {
-                console.error('Error in autosave:', e);
-            }
-        }
-
-        function saveAllRows() {
-            const rows = document.querySelectorAll('[data-item-id]');
-            console.log('saveAllRows called, found ' + rows.length + ' rows');
-
-            try {
-                // Collect all line items
-                const lineItems = [];
-                rows.forEach((row, idx) => {
-                    try {
-                        const itemId = row.dataset.itemId;
-                        if (!itemId) return;
-
-                        const item = {
-                            id: itemId,
-                            zone_and_address: (row.querySelector('.zone')?.textContent || '').trim(),
-                            nozzle: row.querySelector('.nozzle')?.value || '',
-                            pop_up_6_inch: row.querySelector('.pop_up_6_inch')?.value || '',
-                            pop_up_12_inch: row.querySelector('.pop_up_12_inch')?.value || '',
-                            rotor_6_inch: row.querySelector('.rotor_6_inch')?.value || '',
-                            new_pop_up_6_inch: row.querySelector('.new_pop_up_6_inch')?.value || '',
-                            new_pop_up_12_inch: row.querySelector('.new_pop_up_12_inch')?.value || '',
-                            riser: row.querySelector('.riser')?.value || '',
-                            solenoid: row.querySelector('.solenoid')?.value || '',
-                            stat_decoder_1: row.querySelector('.stat_decoder_1')?.value || ''
-                        };
-                        lineItems.push(item);
-                        console.log('Row ' + idx + ':', item);
-                    } catch (e) {
-                        console.error('Error collecting row data for row ' + idx + ':', e);
-                    }
-                });
-
-                if (lineItems.length === 0) {
-                    showMessage('No rows to save', 'info');
-                    return;
-                }
-
-                const payload = {
-                    submission_id: submissionId,
-                    line_items: lineItems
-                };
-                console.log('Saving draft with payload:', JSON.stringify(payload));
-
-                // Save entire draft at once
-                fetch('/community_billing_save_draft', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                })
-                .then(r => {
-                    console.log('Save response status:', r.status);
-                    return r.json();
-                })
-                .then(result => {
-                    console.log('Save result:', result);
-                    if (result.success) {
-                        showMessage('✓ Saved ' + lineItems.length + ' rows', 'success');
-                    } else {
-                        console.error('Save failed:', result.error);
-                        alert('Error saving draft: ' + result.error);
+                        alert('Error: ' + result.error);
                     }
                 })
                 .catch(e => {
-                    console.error('Fetch error:', e);
-                    alert('Error saving draft: ' + e);
+                    console.error('Network error:', e);
+                    alert('Network error: ' + e.message);
                 });
             } catch (e) {
                 console.error('Error in saveAllRows:', e);
-                alert('Error saving draft: ' + e);
+                alert('Error: ' + e.message);
             }
         }
 
