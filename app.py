@@ -12705,18 +12705,15 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             console.error('Failed to parse page data:', e);
         }
 
-        // Setup autosave on page load
-        document.addEventListener('DOMContentLoaded', function() {
-            // Setup autosave every 5 minutes
-            setupAutoSave();
-        });
-
         function setupAutoSave() {
             // Autosave every 5 minutes (300000 ms)
             setInterval(function() {
                 autoSaveAllRows();
             }, 300000);
         }
+
+        // Setup autosave immediately (script is at end of page)
+        setupAutoSave();
 
         function autoSaveAllRows() {
             const rows = document.querySelectorAll('[data-item-id]');
@@ -12978,22 +12975,20 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             setTimeout(() => msgDiv.style.display = 'none', 3000);
         }
 
-        // Add event listeners
-        document.addEventListener('DOMContentLoaded', function() {
-            const saveBtn = document.getElementById('saveBtn');
-            if (saveBtn) {
-                saveBtn.addEventListener('click', function() {
-                    saveAllRows();
-                });
-            }
+        // Add event listeners (script is at end of page, DOM is ready)
+        const saveBtn = document.getElementById('saveBtn');
+        if (saveBtn) {
+            saveBtn.addEventListener('click', function() {
+                saveAllRows();
+            });
+        }
 
-            const submitBtn = document.getElementById('submitBtn');
-            if (submitBtn) {
-                submitBtn.addEventListener('click', function() {
-                    submitForm();
-                });
-            }
-        });
+        const submitBtn = document.getElementById('submitBtn');
+        if (submitBtn) {
+            submitBtn.addEventListener('click', function() {
+                submitForm();
+            });
+        }
     </script>
 </body>
 </html>
