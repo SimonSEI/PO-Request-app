@@ -12300,7 +12300,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
                             <div style="font-weight: 600; color: #333;">{{ submission.community }}</div>
                             <div style="font-size: 13px; color: #666;">Date: {{ submission.work_date }}</div>
                             {% if submission.status == 'submitted' %}
-                                <div style="font-size: 12px; color: #28a745; font-weight: 600;">✓ Submitted</div>
+                                <div style="font-size: 12px; color: #28a745; font-weight: 600;">✓ Finalized</div>
                             {% else %}
                                 <div style="font-size: 12px; color: #ff9800; font-weight: 600;">● Draft</div>
                             {% endif %}
@@ -12682,7 +12682,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             <a href="/community_billing_tech" class="btn btn-secondary" style="padding: 10px 20px; text-decoration: none; border-radius: 6px; color: white; background: #6c757d; border: none; cursor: pointer; font-weight: 600; display: inline-block;">← Back to Home</a>
             <button class="btn-secondary" id="saveBtn" type="button" style="padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">Save</button>
             <button class="btn-success" id="submitBtn" type="button" {% if status == 'submitted' %}disabled{% endif %} style="padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
-                {% if status == 'submitted' %}✓ Submitted{% else %}Submit & Finalize{% endif %}
+                {% if status == 'submitted' %}✓ Finalized{% else %}Submit & Finalize{% endif %}
             </button>
         </div>
     </div>
