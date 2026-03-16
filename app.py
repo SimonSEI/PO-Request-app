@@ -12304,16 +12304,16 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
                     </div>
                     <div style="display: flex; gap: 8px;">
                         <button type="button" class="edit-submission-btn"
-                                data-submission-id="{{ submission.id }}"
-                                data-community="{{ submission.community|e }}"
-                                data-work-date="{{ submission.work_date|e }}"
+                                data-id="{{ submission.id }}"
+                                data-community="{{ submission.community|tojson }}"
+                                data-date="{{ submission.work_date|tojson }}"
                                 style="padding: 8px 16px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
                             {% if submission.status == 'submitted' %}View{% else %}Edit Draft{% endif %}
                         </button>
                         {% if submission.status != 'submitted' %}
                         <button type="button" class="delete-draft-btn"
-                                data-submission-id="{{ submission.id }}"
-                                data-community="{{ submission.community|e }}"
+                                data-id="{{ submission.id }}"
+                                data-community="{{ submission.community|tojson }}"
                                 style="padding: 8px 16px; background: #dc3545; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
                             Delete Draft
                         </button>
@@ -12430,8 +12430,8 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             document.querySelectorAll('.edit-submission-btn').forEach(btn => {
                 btn.addEventListener('click', function(e) {
                     e.preventDefault();
-                    const community = this.getAttribute('data-community');
-                    const workDate = this.getAttribute('data-work-date');
+                    const community = JSON.parse(this.getAttribute('data-community'));
+                    const workDate = JSON.parse(this.getAttribute('data-date'));
                     openSubmission(null, community, workDate);
                 });
             });
@@ -12440,8 +12440,8 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             document.querySelectorAll('.delete-draft-btn').forEach(btn => {
                 btn.addEventListener('click', function(e) {
                     e.preventDefault();
-                    const submissionId = this.getAttribute('data-submission-id');
-                    const community = this.getAttribute('data-community');
+                    const submissionId = this.getAttribute('data-id');
+                    const community = JSON.parse(this.getAttribute('data-community'));
                     deleteDraft(submissionId, community);
                 });
             });
