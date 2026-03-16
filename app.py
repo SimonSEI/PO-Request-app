@@ -12830,12 +12830,12 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     showMessage('✓ Saved! Reloading...', 'success');
                     setTimeout(() => window.location.reload(), 1000);
                 } else {
-                    alert('Save failed:\n' + (result.error || 'Unknown error'));
+                    alert('Save failed: ' + (result.error || 'Unknown error'));
                 }
             })
             .catch(error => {
                 console.error('Error:', error);
-                alert('Save error:\n' + error.message);
+                alert('Save error: ' + error.message);
             });
         }
 
