@@ -12424,27 +12424,35 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             .catch(e => alert('Error: ' + e));
         }
 
-        // Add event listeners for edit submission buttons
-        document.querySelectorAll('.edit-submission-btn').forEach(btn => {
-            btn.addEventListener('click', function() {
-                const community = this.getAttribute('data-community');
-                const workDate = this.getAttribute('data-work-date');
-                openSubmission(null, community, workDate);
+        // Set up event listeners and defaults
+        setTimeout(function() {
+            // Add event listeners for edit submission buttons
+            document.querySelectorAll('.edit-submission-btn').forEach(btn => {
+                btn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    const community = this.getAttribute('data-community');
+                    const workDate = this.getAttribute('data-work-date');
+                    openSubmission(null, community, workDate);
+                });
             });
-        });
 
-        // Add event listeners for delete draft buttons
-        document.querySelectorAll('.delete-draft-btn').forEach(btn => {
-            btn.addEventListener('click', function() {
-                const submissionId = this.getAttribute('data-submission-id');
-                const community = this.getAttribute('data-community');
-                deleteDraft(submissionId, community);
+            // Add event listeners for delete draft buttons
+            document.querySelectorAll('.delete-draft-btn').forEach(btn => {
+                btn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    const submissionId = this.getAttribute('data-submission-id');
+                    const community = this.getAttribute('data-community');
+                    deleteDraft(submissionId, community);
+                });
             });
-        });
 
-        // Set today's date as default
-        const today = new Date().toISOString().split('T')[0];
-        document.getElementById('workDate').value = today;
+            // Set today's date as default
+            const workDateInput = document.getElementById('workDate');
+            if (workDateInput) {
+                const today = new Date().toISOString().split('T')[0];
+                workDateInput.value = today;
+            }
+        }, 100);
     </script>
 </body>
 </html>
