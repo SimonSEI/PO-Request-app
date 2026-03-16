@@ -12776,9 +12776,14 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         }
 
         function saveAllRows() {
-            console.log('=== SAVE DRAFT ===');
+            console.clear();
+            console.log('=== SAVE DRAFT START ===');
+            console.log('submissionId:', submissionId);
+            console.log('community:', community);
+            console.log('workDate:', workDate);
+
             const rows = document.querySelectorAll('[data-item-id]');
-            console.log('Found ' + rows.length + ' rows, submissionId=' + submissionId);
+            console.log('Found ' + rows.length + ' rows with [data-item-id]');
 
             if (rows.length === 0) {
                 alert('No rows to save');
