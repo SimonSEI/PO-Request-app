@@ -13255,7 +13255,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 <select id="community">
                     <option value="">-- Choose a community --</option>
                     {% for community in communities %}
-                    <option value="{{ community }}">{{ community }}</option>
+                    <option value="{{ community.name }}">{{ community.name }}</option>
                     {% endfor %}
                 </select>
             </div>
@@ -14288,8 +14288,8 @@ def community_billing_office():
             except Exception as e:
                 flash(f'Error deleting community: {str(e)}', 'error')
 
-    # Get list of communities from communities table
-    c.execute("SELECT id, name, created_at FROM communities ORDER BY name")
+    # Get list of active communities only
+    c.execute("SELECT id, name, created_at FROM communities WHERE active = 1 ORDER BY name")
     communities = [{'id': row[0], 'name': row[1], 'created_at': row[2], 'active': True} for row in c.fetchall()]
 
     # Get all communities including inactive ones
