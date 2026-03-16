@@ -12734,16 +12734,16 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
                         lineItems.push({
                             id: itemId,
-                            zone_and_address: row.querySelector('.zone')?.textContent || '',
-                            nozzle: row.querySelector('.nozzle')?.value || 0,
-                            pop_up_6_inch: row.querySelector('.pop_up_6_inch')?.value || 0,
-                            pop_up_12_inch: row.querySelector('.pop_up_12_inch')?.value || 0,
-                            rotor_6_inch: row.querySelector('.rotor_6_inch')?.value || 0,
-                            new_pop_up_6_inch: row.querySelector('.new_pop_up_6_inch')?.value || 0,
-                            new_pop_up_12_inch: row.querySelector('.new_pop_up_12_inch')?.value || 0,
-                            riser: row.querySelector('.riser')?.value || 0,
-                            solenoid: row.querySelector('.solenoid')?.value || 0,
-                            stat_decoder_1: row.querySelector('.stat_decoder_1')?.value || 0
+                            zone_and_address: (row.querySelector('.zone')?.textContent || '').trim(),
+                            nozzle: row.querySelector('.nozzle')?.value || '',
+                            pop_up_6_inch: row.querySelector('.pop_up_6_inch')?.value || '',
+                            pop_up_12_inch: row.querySelector('.pop_up_12_inch')?.value || '',
+                            rotor_6_inch: row.querySelector('.rotor_6_inch')?.value || '',
+                            new_pop_up_6_inch: row.querySelector('.new_pop_up_6_inch')?.value || '',
+                            new_pop_up_12_inch: row.querySelector('.new_pop_up_12_inch')?.value || '',
+                            riser: row.querySelector('.riser')?.value || '',
+                            solenoid: row.querySelector('.solenoid')?.value || '',
+                            stat_decoder_1: row.querySelector('.stat_decoder_1')?.value || ''
                         });
                     } catch (e) {
                         console.error('Error collecting row data:', e);
@@ -12766,7 +12766,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 .then(r => r.json())
                 .then(result => {
                     if (result.success) {
-                        console.log('Autosave completed at ' + new Date().toLocaleTimeString());
+                        console.log('Autosave completed at ' + new Date().toLocaleTimeString() + ' - ' + lineItems.length + ' rows saved');
                     } else {
                         console.error('Autosave failed:', result.error);
                     }
@@ -12779,56 +12779,70 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
         function saveAllRows() {
             const rows = document.querySelectorAll('[data-item-id]');
+            console.log('saveAllRows called, found ' + rows.length + ' rows');
 
             try {
                 // Collect all line items
                 const lineItems = [];
-                rows.forEach(row => {
+                rows.forEach((row, idx) => {
                     try {
                         const itemId = row.dataset.itemId;
                         if (!itemId) return;
 
-                        lineItems.push({
+                        const item = {
                             id: itemId,
-                            zone_and_address: row.querySelector('.zone')?.textContent || '',
-                            nozzle: row.querySelector('.nozzle')?.value || 0,
-                            pop_up_6_inch: row.querySelector('.pop_up_6_inch')?.value || 0,
-                            pop_up_12_inch: row.querySelector('.pop_up_12_inch')?.value || 0,
-                            rotor_6_inch: row.querySelector('.rotor_6_inch')?.value || 0,
-                            new_pop_up_6_inch: row.querySelector('.new_pop_up_6_inch')?.value || 0,
-                            new_pop_up_12_inch: row.querySelector('.new_pop_up_12_inch')?.value || 0,
-                            riser: row.querySelector('.riser')?.value || 0,
-                            solenoid: row.querySelector('.solenoid')?.value || 0,
-                            stat_decoder_1: row.querySelector('.stat_decoder_1')?.value || 0
-                        });
+                            zone_and_address: (row.querySelector('.zone')?.textContent || '').trim(),
+                            nozzle: row.querySelector('.nozzle')?.value || '',
+                            pop_up_6_inch: row.querySelector('.pop_up_6_inch')?.value || '',
+                            pop_up_12_inch: row.querySelector('.pop_up_12_inch')?.value || '',
+                            rotor_6_inch: row.querySelector('.rotor_6_inch')?.value || '',
+                            new_pop_up_6_inch: row.querySelector('.new_pop_up_6_inch')?.value || '',
+                            new_pop_up_12_inch: row.querySelector('.new_pop_up_12_inch')?.value || '',
+                            riser: row.querySelector('.riser')?.value || '',
+                            solenoid: row.querySelector('.solenoid')?.value || '',
+                            stat_decoder_1: row.querySelector('.stat_decoder_1')?.value || ''
+                        };
+                        lineItems.push(item);
+                        console.log('Row ' + idx + ':', item);
                     } catch (e) {
-                        console.error('Error collecting row data:', e);
+                        console.error('Error collecting row data for row ' + idx + ':', e);
                     }
                 });
 
                 if (lineItems.length === 0) {
-                    showMessage('No data to save', 'info');
+                    showMessage('No rows to save', 'info');
                     return;
                 }
+
+                const payload = {
+                    submission_id: submissionId,
+                    line_items: lineItems
+                };
+                console.log('Saving draft with payload:', JSON.stringify(payload));
 
                 // Save entire draft at once
                 fetch('/community_billing_save_draft', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        submission_id: submissionId,
-                        line_items: lineItems
-                    })
+                    body: JSON.stringify(payload)
                 })
-                .then(r => r.json())
+                .then(r => {
+                    console.log('Save response status:', r.status);
+                    return r.json();
+                })
                 .then(result => {
+                    console.log('Save result:', result);
                     if (result.success) {
-                        showMessage('Saved! (' + lineItems.length + ' rows)', 'success');
+                        showMessage('✓ Saved ' + lineItems.length + ' rows', 'success');
                     } else {
+                        console.error('Save failed:', result.error);
                         alert('Error saving draft: ' + result.error);
                     }
                 })
-                .catch(e => alert('Error saving draft: ' + e));
+                .catch(e => {
+                    console.error('Fetch error:', e);
+                    alert('Error saving draft: ' + e);
+                });
             } catch (e) {
                 console.error('Error in saveAllRows:', e);
                 alert('Error saving draft: ' + e);
@@ -14524,18 +14538,32 @@ def community_billing_save_draft():
         # Process each line item
         for item in line_items:
             item_id = item.get('id')
-            zone_and_address = item.get('zone_and_address', '')
-            nozzle = int(item.get('nozzle') or 0)
-            pop_up_6_inch = int(item.get('pop_up_6_inch') or 0)
-            pop_up_12_inch = int(item.get('pop_up_12_inch') or 0)
-            rotor_6_inch = int(item.get('rotor_6_inch') or 0)
-            new_pop_up_6_inch = int(item.get('new_pop_up_6_inch') or 0)
-            new_pop_up_12_inch = int(item.get('new_pop_up_12_inch') or 0)
-            riser = int(item.get('riser') or 0)
-            solenoid = int(item.get('solenoid') or 0)
-            stat_decoder_1 = int(item.get('stat_decoder_1') or 0)
+            zone_and_address = (item.get('zone_and_address') or '').strip()
 
-            if item_id and item_id in existing_ids:
+            # Convert values to integers, handling empty strings
+            def to_int(val):
+                try:
+                    if not val or val == '':
+                        return 0
+                    return int(val)
+                except (ValueError, TypeError):
+                    return 0
+
+            nozzle = to_int(item.get('nozzle'))
+            pop_up_6_inch = to_int(item.get('pop_up_6_inch'))
+            pop_up_12_inch = to_int(item.get('pop_up_12_inch'))
+            rotor_6_inch = to_int(item.get('rotor_6_inch'))
+            new_pop_up_6_inch = to_int(item.get('new_pop_up_6_inch'))
+            new_pop_up_12_inch = to_int(item.get('new_pop_up_12_inch'))
+            riser = to_int(item.get('riser'))
+            solenoid = to_int(item.get('solenoid'))
+            stat_decoder_1 = to_int(item.get('stat_decoder_1'))
+
+            if not item_id:
+                # Skip items without ID
+                continue
+
+            if item_id in existing_ids:
                 # Update existing item
                 c.execute("""UPDATE community_billing_line_items
                              SET zone_and_address = ?, nozzle = ?, pop_up_6_inch = ?,
@@ -14545,8 +14573,8 @@ def community_billing_save_draft():
                          (zone_and_address, nozzle, pop_up_6_inch, pop_up_12_inch,
                           rotor_6_inch, new_pop_up_6_inch, new_pop_up_12_inch,
                           riser, solenoid, stat_decoder_1, item_id, submission_id))
-            elif item_id and item_id not in existing_ids:
-                # Insert new item with specified ID (for items that were created but not yet saved)
+            else:
+                # Insert new item
                 c.execute("""INSERT INTO community_billing_line_items
                              (submission_id, zone_and_address, nozzle, pop_up_6_inch,
                               pop_up_12_inch, rotor_6_inch, new_pop_up_6_inch,
@@ -14556,9 +14584,6 @@ def community_billing_save_draft():
                           pop_up_12_inch, rotor_6_inch, new_pop_up_6_inch,
                           new_pop_up_12_inch, riser, solenoid, stat_decoder_1,
                           datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
-            else:
-                # No ID provided - this shouldn't happen in normal flow
-                pass
 
         conn.commit()
         conn.close()
