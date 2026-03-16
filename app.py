@@ -12536,6 +12536,26 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             transform: translateY(-2px);
             box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
         }
+        .btn-sticky-submit {
+            background: #667eea;
+            color: white;
+            font-size: 14px;
+        }
+        .btn-sticky-submit:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        }
+        .btn-sticky-back {
+            background: #6c757d;
+            color: white;
+            font-size: 14px;
+        }
+        .btn-sticky-back:hover {
+            background: #5a6268;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        }
         .controls {
             margin-top: 20px;
             padding-top: 20px;
@@ -12622,7 +12642,11 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
         <!-- Sticky Save Bar -->
         <div class="sticky-save-bar">
+            <button class="btn-sticky-back" onclick="goBack()">← Back to Home</button>
             <button class="btn-sticky-save" onclick="saveAllRows()">💾 Save All</button>
+            <button class="btn-sticky-submit" id="submitBtn" onclick="submitForm()" {% if status == 'submitted' %}disabled{% endif %}>
+                {% if status == 'submitted' %}✓ Submitted{% else %}Submit & Finalize{% endif %}
+            </button>
         </div>
 
         <div class="spreadsheet">
@@ -12670,10 +12694,6 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         </div>
 
         <div class="controls">
-            <button class="btn-primary" onclick="goBack()">← Back</button>
-            <button class="btn-success" id="submitBtn" onclick="submitForm()" {% if status == 'submitted' %}disabled{% endif %}>
-                {% if status == 'submitted' %}Submitted{% else %}Submit & Finalize{% endif %}
-            </button>
         </div>
     </div>
 
@@ -12932,29 +12952,33 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         }
 
         function submitForm() {
-            // First calculate and show cost breakdown
-            calculateCost();
+            // First save all rows
+            saveAllRows();
 
-            // Wait for cost display, then confirm
+            // Wait a moment, calculate cost, then confirm
             setTimeout(() => {
-                if (!confirm('Submit form? You won\'t be able to edit it afterwards.')) return;
+                calculateCost();
 
-                fetch('/community_billing_submit', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ submission_id: submissionId })
-                })
-                .then(r => r.json())
-                .then(result => {
-                    if (result.success) {
-                        showMessage('Submitted! Redirecting...', 'success');
-                        setTimeout(() => window.location.href = '/community_billing_tech', 2000);
-                    } else {
-                        alert('Error: ' + result.error);
-                    }
-                })
-                .catch(e => alert('Error: ' + e));
-            }, 100);
+                setTimeout(() => {
+                    if (!confirm('Submit form? You won\'t be able to edit it afterwards.')) return;
+
+                    fetch('/community_billing_submit', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ submission_id: submissionId })
+                    })
+                    .then(r => r.json())
+                    .then(result => {
+                        if (result.success) {
+                            showMessage('Submitted! Redirecting...', 'success');
+                            setTimeout(() => window.location.href = '/community_billing_tech', 2000);
+                        } else {
+                            alert('Error: ' + result.error);
+                        }
+                    })
+                    .catch(e => alert('Error: ' + e));
+                }, 500);
+            }, 500);
         }
 
         function goBack() {
