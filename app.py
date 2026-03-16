@@ -13743,7 +13743,18 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 return;
             }
 
-            let html = '<div class="alert alert-info">' + data.submissions.length + ' submission(s) found</div>';
+            let html = '';
+
+            // Add total cost summary at the top
+            if (data.has_pricing) {
+                html += '<div style="background: #e8f5e9; border: 2px solid #4caf50; border-radius: 6px; padding: 16px; margin-bottom: 20px;">';
+                html += '<div style="font-size: 14px; color: #666; margin-bottom: 5px;">Total Cost for All Parts</div>';
+                html += '<div style="font-size: 32px; font-weight: bold; color: #2e7d32;">$' + data.total_cost.toFixed(2) + '</div>';
+                html += '<div style="font-size: 12px; color: #666; margin-top: 5px;">' + data.submissions.length + ' submission(s) found</div>';
+                html += '</div>';
+            } else {
+                html += '<div class="alert alert-info">' + data.submissions.length + ' submission(s) found - Pricing not configured</div>';
+            }
 
             data.submissions.forEach(submission => {
                 html += '<div class="submission-card">';
@@ -14833,6 +14844,32 @@ def community_billing_office_data():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
+    # Get community ID to fetch pricing
+    c.execute("SELECT id FROM communities WHERE name = ? AND active = 1", (community,))
+    community_row = c.fetchone()
+    community_id = community_row[0] if community_row else None
+
+    # Get pricing for this community
+    pricing = None
+    if community_id:
+        c.execute("""SELECT nozzle, pop_up_6_inch, pop_up_12_inch, rotor_6_inch,
+                            new_pop_up_6_inch, new_pop_up_12_inch, riser, solenoid, stat_decoder_1
+                     FROM community_nozzle_prices
+                     WHERE community_id = ?""", (community_id,))
+        pricing_row = c.fetchone()
+        if pricing_row:
+            pricing = {
+                'nozzle': pricing_row[0],
+                'pop_up_6_inch': pricing_row[1],
+                'pop_up_12_inch': pricing_row[2],
+                'rotor_6_inch': pricing_row[3],
+                'new_pop_up_6_inch': pricing_row[4],
+                'new_pop_up_12_inch': pricing_row[5],
+                'riser': pricing_row[6],
+                'solenoid': pricing_row[7],
+                'stat_decoder_1': pricing_row[8]
+            }
+
     # Get all submissions for this community and date
     c.execute("""SELECT id, tech_username, status, submitted_at
                  FROM community_billing_submissions
@@ -14841,6 +14878,8 @@ def community_billing_office_data():
              (community, work_date))
 
     submissions = []
+    total_cost = 0.0
+
     for row in c.fetchall():
         submission_id = row[0]
 
@@ -14867,6 +14906,21 @@ def community_billing_office_data():
                 'stat_decoder_1': item_row[9]
             })
 
+            # Calculate cost for this item if pricing is available
+            if pricing:
+                item_cost = (
+                    (item_row[1] or 0) * pricing['nozzle'] +
+                    (item_row[2] or 0) * pricing['pop_up_6_inch'] +
+                    (item_row[3] or 0) * pricing['pop_up_12_inch'] +
+                    (item_row[4] or 0) * pricing['rotor_6_inch'] +
+                    (item_row[5] or 0) * pricing['new_pop_up_6_inch'] +
+                    (item_row[6] or 0) * pricing['new_pop_up_12_inch'] +
+                    (item_row[7] or 0) * pricing['riser'] +
+                    (item_row[8] or 0) * pricing['solenoid'] +
+                    (item_row[9] or 0) * pricing['stat_decoder_1']
+                )
+                total_cost += item_cost
+
         submissions.append({
             'id': submission_id,
             'tech_username': row[1],
@@ -14881,7 +14935,9 @@ def community_billing_office_data():
         'success': True,
         'community': community,
         'work_date': work_date,
-        'submissions': submissions
+        'submissions': submissions,
+        'total_cost': round(total_cost, 2),
+        'has_pricing': pricing is not None
     })
 
 @app.route('/community_billing_export_pdf', methods=['POST'])
