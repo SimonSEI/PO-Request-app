@@ -12982,27 +12982,23 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         }
 
         // Add event listeners (script is at end of page, DOM is ready)
-        setTimeout(function() {
-            const saveBtn = document.getElementById('saveBtn');
-            if (saveBtn) {
-                saveBtn.addEventListener('click', function(e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    console.log('Save button clicked');
-                    saveAllRows();
-                });
-            }
+        const saveBtn = document.getElementById('saveBtn');
+        if (saveBtn) {
+            saveBtn.onclick = function(e) {
+                console.log('Save clicked');
+                saveAllRows();
+                return false;
+            };
+        }
 
-            const submitBtn = document.getElementById('submitBtn');
-            if (submitBtn) {
-                submitBtn.addEventListener('click', function(e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    console.log('Submit button clicked');
-                    submitForm();
-                });
-            }
-        }, 0);
+        const submitBtn = document.getElementById('submitBtn');
+        if (submitBtn) {
+            submitBtn.onclick = function(e) {
+                console.log('Submit clicked');
+                submitForm();
+                return false;
+            };
+        }
     </script>
 </body>
 </html>
