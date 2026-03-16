@@ -12303,17 +12303,12 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
                         {% endif %}
                     </div>
                     <div style="display: flex; gap: 8px;">
-                        <button type="button" class="edit-submission-btn"
-                                data-id="{{ submission.id }}"
-                                data-community="{{ submission.community|tojson }}"
-                                data-date="{{ submission.work_date|tojson }}"
+                        <button type="button" class="edit-submission-btn" data-submission-id="{{ submission.id }}"
                                 style="padding: 8px 16px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
                             {% if submission.status == 'submitted' %}View{% else %}Edit Draft{% endif %}
                         </button>
                         {% if submission.status != 'submitted' %}
-                        <button type="button" class="delete-draft-btn"
-                                data-id="{{ submission.id }}"
-                                data-community="{{ submission.community|tojson }}"
+                        <button type="button" class="delete-draft-btn" data-submission-id="{{ submission.id }}"
                                 style="padding: 8px 16px; background: #dc3545; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
                             Delete Draft
                         </button>
@@ -12424,15 +12419,27 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             .catch(e => alert('Error: ' + e));
         }
 
+        // Store submission data for easy access
+        const submissionData = {
+            {% for submission in submissions %}
+            {{ submission.id }}: {
+                community: {{ submission.community|tojson }},
+                workDate: {{ submission.work_date|tojson }}
+            }{{ "," if not loop.last else "" }}
+            {% endfor %}
+        };
+
         // Set up event listeners and defaults
         setTimeout(function() {
             // Add event listeners for edit submission buttons
             document.querySelectorAll('.edit-submission-btn').forEach(btn => {
                 btn.addEventListener('click', function(e) {
                     e.preventDefault();
-                    const community = JSON.parse(this.getAttribute('data-community'));
-                    const workDate = JSON.parse(this.getAttribute('data-date'));
-                    openSubmission(null, community, workDate);
+                    const subId = this.getAttribute('data-submission-id');
+                    const sub = submissionData[subId];
+                    if (sub) {
+                        openSubmission(null, sub.community, sub.workDate);
+                    }
                 });
             });
 
@@ -12440,9 +12447,11 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             document.querySelectorAll('.delete-draft-btn').forEach(btn => {
                 btn.addEventListener('click', function(e) {
                     e.preventDefault();
-                    const submissionId = this.getAttribute('data-id');
-                    const community = JSON.parse(this.getAttribute('data-community'));
-                    deleteDraft(submissionId, community);
+                    const subId = this.getAttribute('data-submission-id');
+                    const sub = submissionData[subId];
+                    if (sub) {
+                        deleteDraft(subId, sub.community);
+                    }
                 });
             });
 
@@ -14345,7 +14354,7 @@ def community_billing_tech():
         submissions.append({
             'id': row[0],
             'community': row[1],
-            'work_date': row[2],
+            'work_date': (row[2] or '').strip(),
             'status': row[3],
             'submitted_at': row[4],
             'created_at': row[5]
