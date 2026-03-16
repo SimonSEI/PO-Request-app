@@ -12562,15 +12562,15 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     {% for item in line_items %}
                     <tr class="item-row" data-item-id="{{ item.id }}">
                         <td><input type="text" class="zone" value="{{ (item.zone_and_address or '')|e }}" readonly></td>
-                        <td><input type="number" class="nozzle" value="{{ item.nozzle or 0 }}"></td>
-                        <td><input type="number" class="pop_up_6_inch" value="{{ item.pop_up_6_inch or 0 }}"></td>
-                        <td><input type="number" class="pop_up_12_inch" value="{{ item.pop_up_12_inch or 0 }}"></td>
-                        <td><input type="number" class="rotor_6_inch" value="{{ item.rotor_6_inch or 0 }}"></td>
-                        <td><input type="number" class="new_pop_up_6_inch" value="{{ item.new_pop_up_6_inch or 0 }}"></td>
-                        <td><input type="number" class="new_pop_up_12_inch" value="{{ item.new_pop_up_12_inch or 0 }}"></td>
-                        <td><input type="number" class="riser" value="{{ item.riser or 0 }}"></td>
-                        <td><input type="number" class="solenoid" value="{{ item.solenoid or 0 }}"></td>
-                        <td><input type="number" class="stat_decoder_1" value="{{ item.stat_decoder_1 or 0 }}"></td>
+                        <td><input type="number" class="nozzle" value="{{ item.nozzle if item.nozzle else '' }}"></td>
+                        <td><input type="number" class="pop_up_6_inch" value="{{ item.pop_up_6_inch if item.pop_up_6_inch else '' }}"></td>
+                        <td><input type="number" class="pop_up_12_inch" value="{{ item.pop_up_12_inch if item.pop_up_12_inch else '' }}"></td>
+                        <td><input type="number" class="rotor_6_inch" value="{{ item.rotor_6_inch if item.rotor_6_inch else '' }}"></td>
+                        <td><input type="number" class="new_pop_up_6_inch" value="{{ item.new_pop_up_6_inch if item.new_pop_up_6_inch else '' }}"></td>
+                        <td><input type="number" class="new_pop_up_12_inch" value="{{ item.new_pop_up_12_inch if item.new_pop_up_12_inch else '' }}"></td>
+                        <td><input type="number" class="riser" value="{{ item.riser if item.riser else '' }}"></td>
+                        <td><input type="number" class="solenoid" value="{{ item.solenoid if item.solenoid else '' }}"></td>
+                        <td><input type="number" class="stat_decoder_1" value="{{ item.stat_decoder_1 if item.stat_decoder_1 else '' }}"></td>
                         <td>
                             <div class="action-buttons">
                                 <button class="btn-save save-btn">Save</button>
@@ -14106,15 +14106,15 @@ def community_billing_save_item():
                              new_pop_up_12_inch = ?, riser = ?, solenoid = ?, stat_decoder_1 = ?
                          WHERE id = ? AND submission_id = ?""",
                      (zone_and_address,
-                      int(data.get('nozzle', 0)),
-                      int(data.get('pop_up_6_inch', 0)),
-                      int(data.get('pop_up_12_inch', 0)),
-                      int(data.get('rotor_6_inch', 0)),
-                      int(data.get('new_pop_up_6_inch', 0)),
-                      int(data.get('new_pop_up_12_inch', 0)),
-                      int(data.get('riser', 0)),
-                      int(data.get('solenoid', 0)),
-                      int(data.get('stat_decoder_1', 0)),
+                      int(data.get('nozzle') or 0),
+                      int(data.get('pop_up_6_inch') or 0),
+                      int(data.get('pop_up_12_inch') or 0),
+                      int(data.get('rotor_6_inch') or 0),
+                      int(data.get('new_pop_up_6_inch') or 0),
+                      int(data.get('new_pop_up_12_inch') or 0),
+                      int(data.get('riser') or 0),
+                      int(data.get('solenoid') or 0),
+                      int(data.get('stat_decoder_1') or 0),
                       item_id, submission_id))
         else:
             # Create new item
@@ -14124,15 +14124,15 @@ def community_billing_save_item():
                           new_pop_up_12_inch, riser, solenoid, stat_decoder_1, created_at)
                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                      (submission_id, zone_and_address,
-                      int(data.get('nozzle', 0)),
-                      int(data.get('pop_up_6_inch', 0)),
-                      int(data.get('pop_up_12_inch', 0)),
-                      int(data.get('rotor_6_inch', 0)),
-                      int(data.get('new_pop_up_6_inch', 0)),
-                      int(data.get('new_pop_up_12_inch', 0)),
-                      int(data.get('riser', 0)),
-                      int(data.get('solenoid', 0)),
-                      int(data.get('stat_decoder_1', 0)),
+                      int(data.get('nozzle') or 0),
+                      int(data.get('pop_up_6_inch') or 0),
+                      int(data.get('pop_up_12_inch') or 0),
+                      int(data.get('rotor_6_inch') or 0),
+                      int(data.get('new_pop_up_6_inch') or 0),
+                      int(data.get('new_pop_up_12_inch') or 0),
+                      int(data.get('riser') or 0),
+                      int(data.get('solenoid') or 0),
+                      int(data.get('stat_decoder_1') or 0),
                       datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
 
         conn.commit()
