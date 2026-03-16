@@ -12635,9 +12635,9 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         </div>
 
         <div class="controls">
-            <button class="btn-secondary" onclick="goBack()">← Back to Home</button>
-            <button class="btn-secondary" onclick="saveAllRows()">💾 Save All</button>
-            <button class="btn-success" id="submitBtn" onclick="submitForm()" {% if status == 'submitted' %}disabled{% endif %}>
+            <a href="/community_billing_tech" class="btn btn-secondary" style="padding: 10px 20px; text-decoration: none; border-radius: 6px; color: white; background: #6c757d; border: none; cursor: pointer; font-weight: 600; display: inline-block;">← Back to Home</a>
+            <button class="btn-secondary" id="saveBtn">💾 Save All</button>
+            <button class="btn-success" id="submitBtn" {% if status == 'submitted' %}disabled{% endif %}>
                 {% if status == 'submitted' %}✓ Submitted{% else %}Submit & Finalize{% endif %}
             </button>
         </div>
@@ -12939,6 +12939,23 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             msgDiv.style.display = 'block';
             setTimeout(() => msgDiv.style.display = 'none', 3000);
         }
+
+        // Add event listeners
+        document.addEventListener('DOMContentLoaded', function() {
+            const saveBtn = document.getElementById('saveBtn');
+            if (saveBtn) {
+                saveBtn.addEventListener('click', function() {
+                    saveAllRows();
+                });
+            }
+
+            const submitBtn = document.getElementById('submitBtn');
+            if (submitBtn) {
+                submitBtn.addEventListener('click', function() {
+                    submitForm();
+                });
+            }
+        });
     </script>
 </body>
 </html>
