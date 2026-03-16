@@ -12776,7 +12776,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         }
 
         function saveAllRows() {
-            console.log('\n=== DRAFT SAVE ===');
+            console.log('\\n=== DRAFT SAVE ===');
             const rows = document.querySelectorAll('[data-item-id]');
             console.log('Found rows:', rows.length);
 
