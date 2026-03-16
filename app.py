@@ -12506,6 +12506,36 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         .btn-delete:hover {
             background: #c82333;
         }
+        .sticky-save-bar {
+            position: sticky;
+            top: 0;
+            background: white;
+            padding: 12px 20px;
+            border-bottom: 2px solid #667eea;
+            display: flex;
+            justify-content: flex-start;
+            gap: 10px;
+            z-index: 100;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+        }
+        .sticky-save-bar button {
+            padding: 10px 20px;
+            font-weight: 600;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .btn-sticky-save {
+            background: #28a745;
+            color: white;
+            font-size: 14px;
+        }
+        .btn-sticky-save:hover {
+            background: #218838;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        }
         .controls {
             margin-top: 20px;
             padding-top: 20px;
@@ -12590,6 +12620,11 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
         <div id="message"></div>
 
+        <!-- Sticky Save Bar -->
+        <div class="sticky-save-bar">
+            <button class="btn-sticky-save" onclick="saveAllRows()">💾 Save All</button>
+        </div>
+
         <div class="spreadsheet">
             <table>
                 <thead>
@@ -12604,13 +12639,12 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         <th>Riser</th>
                         <th>Solenoid</th>
                         <th>1 Stat Decoder</th>
-                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody id="tableBody">
                     {% for item in line_items %}
                     <tr class="item-row" data-item-id="{{ item.id }}">
-                        <td><input type="text" class="zone" value="{{ (item.zone_and_address or '')|e }}" readonly></td>
+                        <td><span class="zone" style="display: block; padding: 8px 0; border-bottom: 1px solid #ddd;">{{ item.zone_and_address or '' }}</span></td>
                         <td><input type="number" class="nozzle" value="{{ item.nozzle if item.nozzle else '' }}" min="0"></td>
                         <td><input type="number" class="pop_up_6_inch" value="{{ item.pop_up_6_inch if item.pop_up_6_inch else '' }}" min="0"></td>
                         <td><input type="number" class="pop_up_12_inch" value="{{ item.pop_up_12_inch if item.pop_up_12_inch else '' }}" min="0"></td>
@@ -12620,11 +12654,6 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         <td><input type="number" class="riser" value="{{ item.riser if item.riser else '' }}" min="0"></td>
                         <td><input type="number" class="solenoid" value="{{ item.solenoid if item.solenoid else '' }}" min="0"></td>
                         <td><input type="number" class="stat_decoder_1" value="{{ item.stat_decoder_1 if item.stat_decoder_1 else '' }}" min="0"></td>
-                        <td>
-                            <div class="action-buttons">
-                                <button class="btn-save save-btn">Save</button>
-                            </div>
-                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -12672,9 +12701,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             console.error('Failed to parse page data:', e);
         }
 
-        // Attach event listeners and setup autosave on page load
+        // Setup autosave on page load
         document.addEventListener('DOMContentLoaded', function() {
-            attachRowEventListeners();
             // Setup autosave every 5 minutes
             setupAutoSave();
         });
@@ -12709,7 +12737,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     const data = {
                         submission_id: submissionId,
                         item_id: itemId.startsWith('new_') ? null : itemId,
-                        zone_and_address: row.querySelector('.zone').value,
+                        zone_and_address: row.querySelector('.zone').textContent,
                         nozzle: row.querySelector('.nozzle').value,
                         pop_up_6_inch: row.querySelector('.pop_up_6_inch').value,
                         pop_up_12_inch: row.querySelector('.pop_up_12_inch').value,
@@ -12742,13 +12770,43 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             }
         }
 
-        function attachRowEventListeners() {
-            document.querySelectorAll('.save-btn').forEach(btn => {
-                btn.addEventListener('click', function() {
-                    const row = this.closest('tr');
-                    saveItem(row.dataset.itemId);
-                });
+        function saveAllRows() {
+            const rows = document.querySelectorAll('[data-item-id]');
+            let savedCount = 0;
+
+            rows.forEach(row => {
+                const itemId = row.dataset.itemId;
+                const data = {
+                    submission_id: submissionId,
+                    item_id: itemId.startsWith('new_') ? null : itemId,
+                    zone_and_address: row.querySelector('.zone').textContent,
+                    nozzle: row.querySelector('.nozzle').value,
+                    pop_up_6_inch: row.querySelector('.pop_up_6_inch').value,
+                    pop_up_12_inch: row.querySelector('.pop_up_12_inch').value,
+                    rotor_6_inch: row.querySelector('.rotor_6_inch').value,
+                    new_pop_up_6_inch: row.querySelector('.new_pop_up_6_inch').value,
+                    new_pop_up_12_inch: row.querySelector('.new_pop_up_12_inch').value,
+                    riser: row.querySelector('.riser').value,
+                    solenoid: row.querySelector('.solenoid').value,
+                    stat_decoder_1: row.querySelector('.stat_decoder_1').value
+                };
+
+                fetch('/community_billing_save_item', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                })
+                .then(r => r.json())
+                .then(result => {
+                    if (result.success) {
+                        row.dataset.itemId = result.item_id;
+                        savedCount++;
+                    }
+                })
+                .catch(e => alert('Error: ' + e));
             });
+
+            showMessage('Saved! (' + rows.length + ' rows)', 'success');
         }
 
         function saveItem(itemId) {
@@ -12761,7 +12819,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             const data = {
                 submission_id: submissionId,
                 item_id: itemId.startsWith('new_') ? null : itemId,
-                zone_and_address: row.querySelector('.zone').value,
+                zone_and_address: row.querySelector('.zone').textContent,
                 nozzle: row.querySelector('.nozzle').value,
                 pop_up_6_inch: row.querySelector('.pop_up_6_inch').value,
                 pop_up_12_inch: row.querySelector('.pop_up_12_inch').value,
@@ -12854,7 +12912,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                                        (stat_decoder_1 * pricing.stat_decoder_1);
 
                         if (rowCost > 0) {
-                            const zone = row.querySelector('.zone').value;
+                            const zone = row.querySelector('.zone').textContent;
                             costDetails[zone] = rowCost;
                             totalCost += rowCost;
                         }
