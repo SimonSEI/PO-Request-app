@@ -14517,6 +14517,10 @@ def community_billing_save_draft():
         submission_id = data.get('submission_id')
         line_items = data.get('line_items', [])
 
+        print(f"\n=== SAVE DRAFT ===")
+        print(f"Submission ID: {submission_id}")
+        print(f"Items to save: {len(line_items)}")
+
         if not submission_id:
             return jsonify({'success': False, 'error': 'Missing submission_id'})
 
@@ -14530,6 +14534,7 @@ def community_billing_save_draft():
         c.execute("SELECT id FROM community_billing_line_items WHERE submission_id = ?",
                  (submission_id,))
         existing_ids = {row[0] for row in c.fetchall()}
+        print(f"Existing item IDs in DB: {existing_ids}")
 
         # Helper function to convert to int
         def safe_int(val):
@@ -14542,15 +14547,18 @@ def community_billing_save_draft():
 
         # Process each line item
         updated_count = 0
-        for item in line_items:
+        inserted_count = 0
+        for idx, item in enumerate(line_items):
             item_id_raw = item.get('id')
             if not item_id_raw:
+                print(f"Item {idx}: No ID, skipping")
                 continue
 
             # Convert item_id to int for comparison
             try:
                 item_id = int(item_id_raw)
             except (ValueError, TypeError):
+                print(f"Item {idx}: Invalid ID {item_id_raw}, skipping")
                 continue
 
             zone_and_address = (item.get('zone_and_address') or '').strip()
@@ -14564,8 +14572,11 @@ def community_billing_save_draft():
             solenoid = safe_int(item.get('solenoid'))
             stat_decoder_1 = safe_int(item.get('stat_decoder_1'))
 
+            print(f"Item {idx} (ID={item_id}): nozzle={nozzle}, pop_up_6={pop_up_6_inch}, pop_up_12={pop_up_12_inch}")
+
             if item_id in existing_ids:
                 # Update existing item
+                print(f"  -> UPDATING item {item_id}")
                 c.execute("""UPDATE community_billing_line_items
                              SET zone_and_address = ?, nozzle = ?, pop_up_6_inch = ?,
                                  pop_up_12_inch = ?, rotor_6_inch = ?, new_pop_up_6_inch = ?,
@@ -14577,6 +14588,7 @@ def community_billing_save_draft():
                 updated_count += 1
             else:
                 # Insert new item
+                print(f"  -> INSERTING new item {item_id}")
                 c.execute("""INSERT INTO community_billing_line_items
                              (submission_id, zone_and_address, nozzle, pop_up_6_inch,
                               pop_up_12_inch, rotor_6_inch, new_pop_up_6_inch,
@@ -14586,11 +14598,21 @@ def community_billing_save_draft():
                           pop_up_12_inch, rotor_6_inch, new_pop_up_6_inch,
                           new_pop_up_12_inch, riser, solenoid, stat_decoder_1,
                           datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
-                updated_count += 1
+                inserted_count += 1
 
         conn.commit()
+
+        # Verify the save by querying back
+        c.execute("SELECT id, nozzle, pop_up_6_inch FROM community_billing_line_items WHERE submission_id = ?",
+                 (submission_id,))
+        verified = c.fetchall()
+        print(f"\nVERIFICATION: {len(verified)} items in DB after save")
+        for v in verified:
+            print(f"  ID {v[0]}: nozzle={v[1]}, pop_up_6={v[2]}")
+
         conn.close()
-        return jsonify({'success': True, 'message': f'Saved {updated_count} items'})
+        print(f"Save complete: {updated_count} updated, {inserted_count} inserted\n")
+        return jsonify({'success': True, 'message': f'Saved {updated_count + inserted_count} items'})
 
     except Exception as e:
         import traceback
