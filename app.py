@@ -12286,6 +12286,32 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
 
         <div class="error" id="error"></div>
 
+        <!-- Past Submissions and Drafts Section -->
+        {% if submissions %}
+        <div style="background: #f5f7fa; border-radius: 8px; padding: 20px; margin-bottom: 30px; border: 1px solid #ddd;">
+            <h2 style="margin-top: 0; color: #333; font-size: 18px;">📋 Your Submissions</h2>
+            <div style="display: grid; grid-template-columns: 1fr; gap: 12px;">
+                {% for submission in submissions %}
+                <div style="background: white; border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <div style="font-weight: 600; color: #333;">{{ submission.community }}</div>
+                        <div style="font-size: 13px; color: #666;">Date: {{ submission.work_date }}</div>
+                        {% if submission.status == 'submitted' %}
+                            <div style="font-size: 12px; color: #28a745; font-weight: 600;">✓ Submitted</div>
+                        {% else %}
+                            <div style="font-size: 12px; color: #ff9800; font-weight: 600;">● Draft</div>
+                        {% endif %}
+                    </div>
+                    <button type="button" onclick="openSubmission({{ submission.id }}, '{{ submission.community }}', '{{ submission.work_date }}')"
+                            style="padding: 8px 16px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
+                        {% if submission.status == 'submitted' %}View{% else %}Edit Draft{% endif %}
+                    </button>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
         <form id="communityForm">
             <div class="form-group">
                 <label for="community">Select Community *</label>
@@ -12346,6 +12372,13 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
                 errorDiv.textContent = 'Error: ' + error;
                 errorDiv.style.display = 'block';
             });
+        }
+
+        // Open an existing submission/draft
+        function openSubmission(submissionId, community, workDate) {
+            const encodedCommunity = encodeURIComponent(community);
+            const encodedDate = encodeURIComponent(workDate);
+            window.location.href = `/community_billing_spreadsheet?community=${encodedCommunity}&work_date=${encodedDate}`;
         }
 
         // Set today's date as default
@@ -12590,7 +12623,6 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         <td>
                             <div class="action-buttons">
                                 <button class="btn-save save-btn">Save</button>
-                                <button class="btn-delete delete-btn">Delete</button>
                             </div>
                         </td>
                     </tr>
@@ -12640,22 +12672,81 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             console.error('Failed to parse page data:', e);
         }
 
-        // Attach event listeners on page load
+        // Attach event listeners and setup autosave on page load
         document.addEventListener('DOMContentLoaded', function() {
             attachRowEventListeners();
+            // Setup autosave every 5 minutes
+            setupAutoSave();
         });
+
+        function setupAutoSave() {
+            // Autosave every 5 minutes (300000 ms)
+            setInterval(function() {
+                autoSaveAllRows();
+            }, 300000);
+        }
+
+        function autoSaveAllRows() {
+            const rows = document.querySelectorAll('[data-item-id]');
+            let saveCount = 0;
+
+            rows.forEach(row => {
+                const itemId = row.dataset.itemId;
+                // Only save if row has any data
+                const nozzle = row.querySelector('.nozzle').value;
+                const pop_up_6_inch = row.querySelector('.pop_up_6_inch').value;
+                const pop_up_12_inch = row.querySelector('.pop_up_12_inch').value;
+                const rotor_6_inch = row.querySelector('.rotor_6_inch').value;
+                const new_pop_up_6_inch = row.querySelector('.new_pop_up_6_inch').value;
+                const new_pop_up_12_inch = row.querySelector('.new_pop_up_12_inch').value;
+                const riser = row.querySelector('.riser').value;
+                const solenoid = row.querySelector('.solenoid').value;
+                const stat_decoder_1 = row.querySelector('.stat_decoder_1').value;
+
+                if (nozzle || pop_up_6_inch || pop_up_12_inch || rotor_6_inch ||
+                    new_pop_up_6_inch || new_pop_up_12_inch || riser || solenoid || stat_decoder_1) {
+                    // Silently save
+                    const data = {
+                        submission_id: submissionId,
+                        item_id: itemId.startsWith('new_') ? null : itemId,
+                        zone_and_address: row.querySelector('.zone').value,
+                        nozzle: row.querySelector('.nozzle').value,
+                        pop_up_6_inch: row.querySelector('.pop_up_6_inch').value,
+                        pop_up_12_inch: row.querySelector('.pop_up_12_inch').value,
+                        rotor_6_inch: row.querySelector('.rotor_6_inch').value,
+                        new_pop_up_6_inch: row.querySelector('.new_pop_up_6_inch').value,
+                        new_pop_up_12_inch: row.querySelector('.new_pop_up_12_inch').value,
+                        riser: row.querySelector('.riser').value,
+                        solenoid: row.querySelector('.solenoid').value,
+                        stat_decoder_1: row.querySelector('.stat_decoder_1').value
+                    };
+
+                    fetch('/community_billing_save_item', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(data)
+                    })
+                    .then(r => r.json())
+                    .then(result => {
+                        if (result.success && result.item_id && itemId.startsWith('new_')) {
+                            row.dataset.itemId = result.item_id;
+                            saveCount++;
+                        }
+                    })
+                    .catch(e => console.error('Autosave error:', e));
+                }
+            });
+
+            if (saveCount > 0 || rows.length > 0) {
+                console.log('Autosave completed at ' + new Date().toLocaleTimeString());
+            }
+        }
 
         function attachRowEventListeners() {
             document.querySelectorAll('.save-btn').forEach(btn => {
                 btn.addEventListener('click', function() {
                     const row = this.closest('tr');
                     saveItem(row.dataset.itemId);
-                });
-            });
-            document.querySelectorAll('.delete-btn').forEach(btn => {
-                btn.addEventListener('click', function() {
-                    const row = this.closest('tr');
-                    deleteItem(row.dataset.itemId);
                 });
             });
         }
@@ -14105,7 +14196,7 @@ def community_billing():
 
 @app.route('/community_billing_tech')
 def community_billing_tech():
-    """Tech side - select community and date"""
+    """Tech side - select community and date, show past submissions and drafts"""
     if 'username' not in session or session.get('role') != 'technician':
         return redirect(url_for('login'))
 
@@ -14114,11 +14205,31 @@ def community_billing_tech():
     c = conn.cursor()
     c.execute("SELECT name FROM communities WHERE active = 1 ORDER BY name")
     communities = [row[0] for row in c.fetchall()]
+
+    # Get tech's past submissions and drafts
+    username = session.get('username')
+    c.execute("""SELECT id, community_name, work_date, status, submitted_at, created_at
+                 FROM community_billing_submissions
+                 WHERE tech_username = ?
+                 ORDER BY COALESCE(submitted_at, created_at) DESC""", (username,))
+
+    submissions = []
+    for row in c.fetchall():
+        submissions.append({
+            'id': row[0],
+            'community': row[1],
+            'work_date': row[2],
+            'status': row[3],
+            'submitted_at': row[4],
+            'created_at': row[5]
+        })
+
     conn.close()
 
     return render_template_string(COMMUNITY_BILLING_TECH_TEMPLATE,
-                                 username=session.get('username'),
-                                 communities=communities)
+                                 username=username,
+                                 communities=communities,
+                                 submissions=submissions)
 
 @app.route('/community_billing_spreadsheet', methods=['POST', 'GET'])
 def community_billing_spreadsheet():
