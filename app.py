@@ -14543,8 +14543,14 @@ def community_billing_save_draft():
         # Process each line item
         updated_count = 0
         for item in line_items:
-            item_id = item.get('id')
-            if not item_id:
+            item_id_raw = item.get('id')
+            if not item_id_raw:
+                continue
+
+            # Convert item_id to int for comparison
+            try:
+                item_id = int(item_id_raw)
+            except (ValueError, TypeError):
                 continue
 
             zone_and_address = (item.get('zone_and_address') or '').strip()
