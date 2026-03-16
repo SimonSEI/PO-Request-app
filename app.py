@@ -13582,24 +13582,6 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                            onkeypress="if(event.key==='Enter') addHouseNumber({{ community.id }}, event)">
                                     <button type="button" class="btn-add-house" onclick="addHouseNumber({{ community.id }})">Add House</button>
                                 </div>
-                            </div>
-                            {% endif %}
-
-                            <!-- Clock Addresses Section (Verona Walk HOA Only) -->
-                            {% if community.active and community.name == 'Verona Walk HOA' %}
-                            <div class="houses-section">
-                                <div class="houses-header" onclick="toggleClockSection(event, {{ community.id }})">
-                                    <h4>🕐 Clock Addresses</h4>
-                                    <span class="expand-arrow" id="arrow-{{ community.id }}">▼</span>
-                                </div>
-
-                                <div class="houses-list" id="houses-list-{{ community.id }}">
-                                    <div id="verona-clocks-{{ community.id }}" style="min-height: 30px;">
-                                        <p style="color: #666; font-size: 13px;">Loading...</p>
-                                    </div>
-                                </div>
-                            </div>
-                            {% endif %}
 
                                 <!-- Pricing Section -->
                                 <div class="pricing-section" style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px;">
@@ -13616,6 +13598,22 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                         <div><label>1 Stat Decoder:</label> $<input type="number" id="price-stat_decoder_1-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
                                     </div>
                                     <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="margin-top: 10px; padding: 6px 12px; font-size: 12px;">Save Pricing</button>
+                                </div>
+                            </div>
+                            {% endif %}
+
+                            <!-- Clock Addresses Section (Verona Walk HOA Only) -->
+                            {% if community.active and community.name == 'Verona Walk HOA' %}
+                            <div class="houses-section">
+                                <div class="houses-header" onclick="toggleClockSection(event, {{ community.id }})">
+                                    <h4>🕐 Clock Addresses</h4>
+                                    <span class="expand-arrow" id="arrow-{{ community.id }}">▼</span>
+                                </div>
+
+                                <div class="houses-list" id="houses-list-{{ community.id }}">
+                                    <div id="verona-clocks-{{ community.id }}" style="min-height: 30px;">
+                                        <p style="color: #666; font-size: 13px;">Loading...</p>
+                                    </div>
                                 </div>
                             </div>
                             {% endif %}
