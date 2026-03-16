@@ -13508,7 +13508,10 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             </div>
 
             <button class="btn-search" onclick="searchSubmissions()">Search</button>
-            <button class="btn-export" id="exportBtn" onclick="exportPDF()" style="display: none;">Export to PDF</button>
+            <div style="display: flex; gap: 10px; margin-top: 10px;">
+                <button class="btn-export" id="exportPdfBtn" onclick="exportPDF()" style="display: none;">Export to PDF</button>
+                <button class="btn-export" id="exportExcelBtn" onclick="exportExcel()" style="display: none; background: #2e7d32;">Export to Excel</button>
+            </div>
         </div>
 
         <div class="results" id="results"></div>
@@ -13735,13 +13738,19 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
         function displayResults(data) {
             const resultsDiv = document.getElementById('results');
-            const exportBtn = document.getElementById('exportBtn');
+            const exportPdfBtn = document.getElementById('exportPdfBtn');
+            const exportExcelBtn = document.getElementById('exportExcelBtn');
 
             if (!data.success || !data.submissions || data.submissions.length === 0) {
                 resultsDiv.innerHTML = '<div class="no-results">No submissions found for this community and date.</div>';
-                exportBtn.style.display = 'none';
+                exportPdfBtn.style.display = 'none';
+                exportExcelBtn.style.display = 'none';
                 return;
             }
+
+            // Show export buttons
+            exportPdfBtn.style.display = 'inline-block';
+            exportExcelBtn.style.display = 'inline-block';
 
             let html = '';
 
@@ -13833,6 +13842,37 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     window.location.href = data.download_url;
                 } else {
                     alert('Error exporting PDF: ' + data.error);
+                }
+            })
+            .catch(error => {
+                alert('Error: ' + error);
+            });
+        }
+
+        function exportExcel() {
+            const community = document.getElementById('community').value;
+            const workDate = document.getElementById('workDate').value;
+
+            if (!community || !workDate) {
+                alert('Please search for submissions first');
+                return;
+            }
+
+            fetch('/community_billing_export_excel', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    community: community,
+                    work_date: workDate
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // The download should start automatically
+                    window.location.href = data.download_url;
+                } else {
+                    alert('Error exporting Excel: ' + data.error);
                 }
             })
             .catch(error => {
@@ -15062,6 +15102,238 @@ def community_billing_export_pdf():
         return jsonify({
             'success': True,
             'download_url': f'/download_file/{pdf_filename}'
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/community_billing_export_excel', methods=['POST'])
+def community_billing_export_excel():
+    """Export submissions to Excel"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    except ImportError:
+        return jsonify({'success': False, 'error': 'openpyxl not installed'})
+
+    data = request.get_json()
+    community = data.get('community')
+    work_date = data.get('work_date')
+
+    # Get submissions data
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    # Get community ID for pricing
+    c.execute("SELECT id FROM communities WHERE name = ? AND active = 1", (community,))
+    community_row = c.fetchone()
+    community_id = community_row[0] if community_row else None
+
+    # Get pricing for this community
+    pricing = None
+    if community_id:
+        c.execute("""SELECT nozzle, pop_up_6_inch, pop_up_12_inch, rotor_6_inch,
+                            new_pop_up_6_inch, new_pop_up_12_inch, riser, solenoid, stat_decoder_1
+                     FROM community_nozzle_prices
+                     WHERE community_id = ?""", (community_id,))
+        pricing_row = c.fetchone()
+        if pricing_row:
+            pricing = {
+                'nozzle': pricing_row[0],
+                'pop_up_6_inch': pricing_row[1],
+                'pop_up_12_inch': pricing_row[2],
+                'rotor_6_inch': pricing_row[3],
+                'new_pop_up_6_inch': pricing_row[4],
+                'new_pop_up_12_inch': pricing_row[5],
+                'riser': pricing_row[6],
+                'solenoid': pricing_row[7],
+                'stat_decoder_1': pricing_row[8]
+            }
+
+    c.execute("""SELECT id, tech_username, status, submitted_at
+                 FROM community_billing_submissions
+                 WHERE community_name = ? AND work_date = ? AND status = 'submitted'
+                 ORDER BY submitted_at DESC""",
+             (community, work_date))
+
+    submissions = []
+    total_cost = 0.0
+    for row in c.fetchall():
+        submission_id = row[0]
+
+        c.execute("""SELECT zone_and_address, nozzle, pop_up_6_inch, pop_up_12_inch,
+                            rotor_6_inch, new_pop_up_6_inch, new_pop_up_12_inch,
+                            riser, solenoid, stat_decoder_1
+                     FROM community_billing_line_items
+                     WHERE submission_id = ?
+                     ORDER BY id""", (submission_id,))
+
+        line_items = []
+        for item_row in c.fetchall():
+            item_dict = {
+                'zone_and_address': item_row[0] or '',
+                'nozzle': item_row[1] or 0,
+                'pop_up_6_inch': item_row[2] or 0,
+                'pop_up_12_inch': item_row[3] or 0,
+                'rotor_6_inch': item_row[4] or 0,
+                'new_pop_up_6_inch': item_row[5] or 0,
+                'new_pop_up_12_inch': item_row[6] or 0,
+                'riser': item_row[7] or 0,
+                'solenoid': item_row[8] or 0,
+                'stat_decoder_1': item_row[9] or 0
+            }
+
+            # Calculate cost for this item if pricing is available
+            if pricing:
+                item_cost = (
+                    (item_row[1] or 0) * pricing['nozzle'] +
+                    (item_row[2] or 0) * pricing['pop_up_6_inch'] +
+                    (item_row[3] or 0) * pricing['pop_up_12_inch'] +
+                    (item_row[4] or 0) * pricing['rotor_6_inch'] +
+                    (item_row[5] or 0) * pricing['new_pop_up_6_inch'] +
+                    (item_row[6] or 0) * pricing['new_pop_up_12_inch'] +
+                    (item_row[7] or 0) * pricing['riser'] +
+                    (item_row[8] or 0) * pricing['solenoid'] +
+                    (item_row[9] or 0) * pricing['stat_decoder_1']
+                )
+                item_dict['cost'] = item_cost
+                total_cost += item_cost
+            else:
+                item_dict['cost'] = 0
+
+            line_items.append(item_dict)
+
+        submissions.append({
+            'tech_username': row[1],
+            'submitted_at': row[3],
+            'line_items': line_items
+        })
+
+    conn.close()
+
+    # Create Excel workbook
+    try:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Submissions"
+
+        # Set up styles
+        header_font = Font(bold=True, color="FFFFFF", size=12)
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        summary_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+        summary_font = Font(bold=True, size=11)
+        border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+        center_align = Alignment(horizontal='center', vertical='center')
+        currency_format = '$#,##0.00'
+
+        # Title
+        ws.merge_cells('A1:J1')
+        title_cell = ws['A1']
+        title_cell.value = f"Community Maintenance Report - {community} ({work_date})"
+        title_cell.font = Font(bold=True, size=14)
+        title_cell.alignment = center_align
+        ws.row_dimensions[1].height = 25
+
+        current_row = 3
+
+        # Add submissions
+        for submission in submissions:
+            # Tech name header
+            ws.merge_cells(f'A{current_row}:J{current_row}')
+            tech_cell = ws[f'A{current_row}']
+            tech_cell.value = f"Tech: {submission['tech_username']} (Submitted: {submission['submitted_at']})"
+            tech_cell.font = Font(bold=True, size=11)
+            tech_cell.fill = PatternFill(start_color="D9E8F5", end_color="D9E8F5", fill_type="solid")
+            ws.row_dimensions[current_row].height = 18
+            current_row += 1
+
+            # Column headers
+            headers = ['Zone & Address', 'Nozzle', '6" Pop Up', '12" Pop Up', '6" Rotor',
+                      'NEW 6" Pop Up', 'NEW 12" Pop Up', 'Riser', 'Solenoid', '1 Stat Decoder']
+            if pricing:
+                headers.append('Item Cost')
+
+            for col_num, header in enumerate(headers, 1):
+                cell = ws.cell(row=current_row, column=col_num)
+                cell.value = header
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = center_align
+                cell.border = border
+
+            ws.row_dimensions[current_row].height = 20
+            current_row += 1
+
+            # Data rows
+            for item in submission['line_items']:
+                ws.cell(row=current_row, column=1).value = item['zone_and_address']
+                ws.cell(row=current_row, column=2).value = item['nozzle']
+                ws.cell(row=current_row, column=3).value = item['pop_up_6_inch']
+                ws.cell(row=current_row, column=4).value = item['pop_up_12_inch']
+                ws.cell(row=current_row, column=5).value = item['rotor_6_inch']
+                ws.cell(row=current_row, column=6).value = item['new_pop_up_6_inch']
+                ws.cell(row=current_row, column=7).value = item['new_pop_up_12_inch']
+                ws.cell(row=current_row, column=8).value = item['riser']
+                ws.cell(row=current_row, column=9).value = item['solenoid']
+                ws.cell(row=current_row, column=10).value = item['stat_decoder_1']
+
+                if pricing:
+                    cost_cell = ws.cell(row=current_row, column=11)
+                    cost_cell.value = item['cost']
+                    cost_cell.number_format = currency_format
+
+                # Apply borders and center alignment to numeric columns
+                for col in range(2, 11):
+                    cell = ws.cell(row=current_row, column=col)
+                    cell.alignment = center_align
+                    cell.border = border
+
+                current_row += 1
+
+            current_row += 1
+
+        # Add total cost summary at the end
+        if pricing:
+            current_row += 1
+            ws.merge_cells(f'A{current_row}:J{current_row}')
+            summary_label = ws[f'A{current_row}']
+            summary_label.value = "TOTAL COST FOR ALL PARTS"
+            summary_label.font = summary_font
+            summary_label.fill = summary_fill
+            summary_label.alignment = center_align
+            summary_label.border = border
+            current_row += 1
+
+            ws.merge_cells(f'A{current_row}:J{current_row}')
+            total_cell = ws[f'A{current_row}']
+            total_cell.value = total_cost
+            total_cell.font = Font(bold=True, size=14, color="2E7D32")
+            total_cell.number_format = currency_format
+            total_cell.fill = summary_fill
+            total_cell.alignment = center_align
+            total_cell.border = border
+            ws.row_dimensions[current_row].height = 25
+
+        # Adjust column widths
+        ws.column_dimensions['A'].width = 20
+        for col in ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K']:
+            ws.column_dimensions[col].width = 15
+
+        # Save file
+        excel_filename = f"community_billing_{community.replace(' ', '_')}_{work_date}.xlsx"
+        excel_path = os.path.join(app.config['UPLOAD_FOLDER'], excel_filename)
+        wb.save(excel_path)
+
+        return jsonify({
+            'success': True,
+            'download_url': f'/download_file/{excel_filename}'
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
