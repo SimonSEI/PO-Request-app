@@ -12303,7 +12303,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
                         {% endif %}
                     </div>
                     <div style="display: flex; gap: 8px;">
-                        <button type="button" onclick="openSubmission({{ submission.id }}, '{{ submission.community }}', '{{ submission.work_date }}')"
+                        <button type="button" onclick="openSubmission({{ submission.id|tojson }}, {{ submission.community|tojson }}, {{ submission.work_date|tojson }})"
                                 style="padding: 8px 16px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
                             {% if submission.status == 'submitted' %}View{% else %}Edit Draft{% endif %}
                         </button>
@@ -12551,6 +12551,12 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             display: flex;
             gap: 10px;
             flex-wrap: wrap;
+            z-index: 1;
+            position: relative;
+        }
+        .controls button {
+            cursor: pointer;
+            pointer-events: auto;
         }
         .btn-primary {
             padding: 10px 20px;
@@ -12574,9 +12580,13 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             cursor: pointer;
             font-weight: 600;
             transition: all 0.3s;
+            pointer-events: auto;
         }
         .btn-secondary:hover {
             background: #5a6268;
+        }
+        .btn-secondary:active {
+            transform: scale(0.98);
         }
         .btn-success {
             padding: 10px 20px;
@@ -12674,8 +12684,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
         <div class="controls">
             <a href="/community_billing_tech" class="btn btn-secondary" style="padding: 10px 20px; text-decoration: none; border-radius: 6px; color: white; background: #6c757d; border: none; cursor: pointer; font-weight: 600; display: inline-block;">← Back to Home</a>
-            <button class="btn-secondary" id="saveBtn">Save</button>
-            <button class="btn-success" id="submitBtn" {% if status == 'submitted' %}disabled{% endif %}>
+            <button class="btn-secondary" id="saveBtn" type="button" style="padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">Save</button>
+            <button class="btn-success" id="submitBtn" type="button" {% if status == 'submitted' %}disabled{% endif %} style="padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
                 {% if status == 'submitted' %}✓ Submitted{% else %}Submit & Finalize{% endif %}
             </button>
         </div>
@@ -12976,24 +12986,27 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         }
 
         // Add event listeners (script is at end of page, DOM is ready)
-        console.log('Setting up event listeners...');
-        const saveBtn = document.getElementById('saveBtn');
-        console.log('saveBtn found:', saveBtn);
-        if (saveBtn) {
-            saveBtn.addEventListener('click', function(e) {
-                console.log('Save button clicked');
-                saveAllRows();
-            });
-        }
+        setTimeout(function() {
+            const saveBtn = document.getElementById('saveBtn');
+            if (saveBtn) {
+                saveBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    console.log('Save button clicked');
+                    saveAllRows();
+                });
+            }
 
-        const submitBtn = document.getElementById('submitBtn');
-        console.log('submitBtn found:', submitBtn);
-        if (submitBtn) {
-            submitBtn.addEventListener('click', function(e) {
-                console.log('Submit button clicked');
-                submitForm();
-            });
-        }
+            const submitBtn = document.getElementById('submitBtn');
+            if (submitBtn) {
+                submitBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    console.log('Submit button clicked');
+                    submitForm();
+                });
+            }
+        }, 0);
     </script>
 </body>
 </html>
