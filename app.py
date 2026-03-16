@@ -12692,12 +12692,13 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         "submissionId": {{ submission_id|tojson }},
         "status": {{ status|tojson }},
         "community": {{ community|tojson }},
+        "workDate": {{ work_date|tojson }},
         "communityId": {{ (community_id if community_id else None)|tojson }}
     }
     </script>
 
     <script>
-        let submissionId, status, community, communityId;
+        let submissionId, status, community, workDate, communityId;
 
         // Parse data from JSON
         try {
@@ -12706,7 +12707,9 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             submissionId = data.submissionId;
             status = data.status;
             community = data.community;
+            workDate = data.workDate;
             communityId = data.communityId;
+            console.log('Page loaded:', {submissionId, status, community, workDate, communityId});
         } catch (e) {
             console.error('Failed to parse page data:', e);
         }
@@ -12773,77 +12776,65 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         }
 
         function saveAllRows() {
+            console.log('=== SAVE DRAFT ===');
             const rows = document.querySelectorAll('[data-item-id]');
-            console.log('saveAllRows called, found ' + rows.length + ' rows');
+            console.log('Found ' + rows.length + ' rows, submissionId=' + submissionId);
 
             if (rows.length === 0) {
-                showMessage('No rows to save', 'info');
+                alert('No rows to save');
                 return;
             }
 
-            try {
-                // Collect all line items
-                const lineItems = [];
-                rows.forEach((row, idx) => {
-                    const itemId = row.dataset.itemId;
-                    if (!itemId) return;
+            // Collect all line items
+            const lineItems = [];
+            rows.forEach((row) => {
+                const itemId = row.dataset.itemId;
+                if (!itemId) return;
 
-                    const nozzle = row.querySelector('.nozzle')?.value || '';
-                    const pop_up_6_inch = row.querySelector('.pop_up_6_inch')?.value || '';
-                    const pop_up_12_inch = row.querySelector('.pop_up_12_inch')?.value || '';
-                    const rotor_6_inch = row.querySelector('.rotor_6_inch')?.value || '';
-                    const new_pop_up_6_inch = row.querySelector('.new_pop_up_6_inch')?.value || '';
-                    const new_pop_up_12_inch = row.querySelector('.new_pop_up_12_inch')?.value || '';
-                    const riser = row.querySelector('.riser')?.value || '';
-                    const solenoid = row.querySelector('.solenoid')?.value || '';
-                    const stat_decoder_1 = row.querySelector('.stat_decoder_1')?.value || '';
-
-                    lineItems.push({
-                        id: itemId,
-                        zone_and_address: (row.querySelector('.zone')?.textContent || '').trim(),
-                        nozzle: nozzle,
-                        pop_up_6_inch: pop_up_6_inch,
-                        pop_up_12_inch: pop_up_12_inch,
-                        rotor_6_inch: rotor_6_inch,
-                        new_pop_up_6_inch: new_pop_up_6_inch,
-                        new_pop_up_12_inch: new_pop_up_12_inch,
-                        riser: riser,
-                        solenoid: solenoid,
-                        stat_decoder_1: stat_decoder_1
-                    });
+                lineItems.push({
+                    id: itemId,
+                    zone_and_address: (row.querySelector('.zone')?.textContent || '').trim(),
+                    nozzle: row.querySelector('.nozzle')?.value || '',
+                    pop_up_6_inch: row.querySelector('.pop_up_6_inch')?.value || '',
+                    pop_up_12_inch: row.querySelector('.pop_up_12_inch')?.value || '',
+                    rotor_6_inch: row.querySelector('.rotor_6_inch')?.value || '',
+                    new_pop_up_6_inch: row.querySelector('.new_pop_up_6_inch')?.value || '',
+                    new_pop_up_12_inch: row.querySelector('.new_pop_up_12_inch')?.value || '',
+                    riser: row.querySelector('.riser')?.value || '',
+                    solenoid: row.querySelector('.solenoid')?.value || '',
+                    stat_decoder_1: row.querySelector('.stat_decoder_1')?.value || ''
                 });
+            });
 
-                console.log('Collected ' + lineItems.length + ' line items');
-                console.log('Payload:', JSON.stringify({submission_id: submissionId, line_items: lineItems}));
+            console.log('Collected ' + lineItems.length + ' items to save');
 
-                // Save entire draft at once
-                fetch('/community_billing_save_draft', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        submission_id: submissionId,
-                        line_items: lineItems
-                    })
+            // Send to server
+            fetch('/community_billing_save_draft', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    submission_id: submissionId,
+                    line_items: lineItems
                 })
-                .then(r => r.json())
-                .then(result => {
-                    console.log('Server response:', result);
-                    if (result.success) {
-                        showMessage('✓ Saved ' + lineItems.length + ' rows - Reloading...', 'success');
-                        // Reload after 1 second to show saved data from database
-                        setTimeout(() => window.location.reload(), 1000);
-                    } else {
-                        alert('Error: ' + result.error);
-                    }
-                })
-                .catch(e => {
-                    console.error('Network error:', e);
-                    alert('Network error: ' + e.message);
-                });
-            } catch (e) {
-                console.error('Error in saveAllRows:', e);
-                alert('Error: ' + e.message);
-            }
+            })
+            .then(r => {
+                console.log('Response status: ' + r.status);
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
+            .then(result => {
+                console.log('Result:', result);
+                if (result.success) {
+                    showMessage('✓ Saved! Reloading...', 'success');
+                    setTimeout(() => window.location.reload(), 1500);
+                } else {
+                    alert('Save failed: ' + (result.error || 'Unknown error'));
+                }
+            })
+            .catch(error => {
+                console.error('Save error:', error);
+                alert('Save failed: ' + error.message);
+            });
         }
 
         function saveItem(itemId) {
