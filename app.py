@@ -670,6 +670,15 @@ def init_db():
                   FOREIGN KEY (community_id) REFERENCES communities(id) ON DELETE CASCADE,
                   UNIQUE(community_id, house_number))''')
 
+    # Verona Walk HOA clock addresses table - stores addresses for each clock
+    c.execute('''CREATE TABLE IF NOT EXISTS verona_walk_clock_addresses
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  community_id INTEGER NOT NULL,
+                  clock_number INTEGER NOT NULL,
+                  address TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  FOREIGN KEY (community_id) REFERENCES communities(id) ON DELETE CASCADE)''')
+
     # Community nozzle prices table - stores pricing for each nozzle type per community
     c.execute('''CREATE TABLE IF NOT EXISTS community_nozzle_prices
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -13379,6 +13388,99 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         .btn-add-house:hover {
             background: #218838;
         }
+        .clock-container {
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 12px;
+        }
+        .clock-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px;
+            background: #f5f5f5;
+            border-radius: 4px;
+            cursor: pointer;
+            user-select: none;
+            margin-bottom: 10px;
+        }
+        .clock-header:hover {
+            background: #efefef;
+        }
+        .clock-title {
+            font-weight: 600;
+            color: #333;
+            flex: 1;
+        }
+        .clock-toggle {
+            font-size: 12px;
+            color: #666;
+            transition: transform 0.2s;
+        }
+        .clock-toggle.expanded {
+            transform: rotate(180deg);
+        }
+        .clock-addresses {
+            display: none;
+            padding-left: 10px;
+        }
+        .clock-addresses.visible {
+            display: block;
+        }
+        .address-item {
+            background: #fafafa;
+            border: 1px solid #eee;
+            padding: 8px 10px;
+            border-radius: 4px;
+            margin-bottom: 6px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 13px;
+        }
+        .address-text {
+            color: #333;
+            flex: 1;
+        }
+        .btn-delete-address {
+            background: #dc3545;
+            color: white;
+            padding: 3px 6px;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 11px;
+        }
+        .btn-delete-address:hover {
+            background: #c82333;
+        }
+        .add-address-form {
+            display: flex;
+            gap: 6px;
+            margin-top: 8px;
+        }
+        .add-address-form input {
+            flex: 1;
+            padding: 6px 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        .btn-add-address {
+            padding: 6px 10px;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .btn-add-address:hover {
+            background: #218838;
+        }
         .alert-success {
             background: #d4edda;
             color: #155724;
@@ -13460,8 +13562,8 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 {% endif %}
                             </div>
 
-                            <!-- House Numbers Section -->
-                            {% if community.active %}
+                            <!-- House Numbers Section (Standard Communities) -->
+                            {% if community.active and community.name != 'Verona Walk HOA' %}
                             <div class="houses-section">
                                 <div class="houses-header" onclick="toggleHousesSection(event, {{ community.id }})">
                                     <h4>🏠 House Numbers</h4>
@@ -13480,6 +13582,24 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                            onkeypress="if(event.key==='Enter') addHouseNumber({{ community.id }}, event)">
                                     <button type="button" class="btn-add-house" onclick="addHouseNumber({{ community.id }})">Add House</button>
                                 </div>
+                            </div>
+                            {% endif %}
+
+                            <!-- Clock Addresses Section (Verona Walk HOA Only) -->
+                            {% if community.active and community.name == 'Verona Walk HOA' %}
+                            <div class="houses-section">
+                                <div class="houses-header" onclick="toggleClockSection(event, {{ community.id }})">
+                                    <h4>🕐 Clock Addresses</h4>
+                                    <span class="expand-arrow" id="arrow-{{ community.id }}">▼</span>
+                                </div>
+
+                                <div class="houses-list" id="houses-list-{{ community.id }}">
+                                    <div id="verona-clocks-{{ community.id }}" style="min-height: 30px;">
+                                        <p style="color: #666; font-size: 13px;">Loading...</p>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
 
                                 <!-- Pricing Section -->
                                 <div class="pricing-section" style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px;">
@@ -13552,6 +13672,134 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             // Show selected tab
             document.getElementById(tabName).classList.add('active');
             event.target.classList.add('active');
+        }
+
+        // Verona Walk HOA clock management functions
+        function toggleClockSection(event, communityId) {
+            event.preventDefault();
+            const list = document.getElementById(`houses-list-${communityId}`);
+            const arrow = document.getElementById(`arrow-${communityId}`);
+
+            list.classList.toggle('visible');
+            arrow.classList.toggle('expanded');
+
+            // Load clocks if not already loaded
+            if (list.classList.contains('visible') && !list.dataset.loaded) {
+                loadClockAddresses(communityId);
+                loadPricing(communityId);
+                list.dataset.loaded = 'true';
+            }
+        }
+
+        function loadClockAddresses(communityId) {
+            const container = document.getElementById(`verona-clocks-${communityId}`);
+
+            fetch(`/verona_walk_clocks?community_id=${communityId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        displayClocks(communityId, data.clocks);
+                    } else {
+                        container.innerHTML = '<p style="color: #dc3545;">Error loading clocks</p>';
+                    }
+                })
+                .catch(error => {
+                    container.innerHTML = '<p style="color: #dc3545;">Error loading clocks</p>';
+                });
+        }
+
+        function displayClocks(communityId, clocks) {
+            const container = document.getElementById(`verona-clocks-${communityId}`);
+
+            if (clocks.length === 0) {
+                container.innerHTML = '<p style="color: #999; font-size: 13px;">No addresses configured yet.</p>';
+            } else {
+                let html = '';
+                clocks.forEach(clock => {
+                    html += `
+                        <div class="clock-container">
+                            <div class="clock-header" onclick="toggleClockAddresses(event, ${communityId}, ${clock.clock_number})">
+                                <span class="clock-title">${clock.clock_label}</span>
+                                <span class="clock-toggle" id="toggle-${communityId}-${clock.clock_number}">▼</span>
+                            </div>
+                            <div class="clock-addresses" id="addresses-${communityId}-${clock.clock_number}">
+                                <div id="address-list-${communityId}-${clock.clock_number}">
+                                    ${clock.addresses.map(addr => `
+                                        <div class="address-item">
+                                            <span class="address-text">${addr.address}</span>
+                                            <button type="button" class="btn-delete-address" onclick="deleteClockAddress(${communityId}, ${addr.id})">Delete</button>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                                <div class="add-address-form">
+                                    <input type="text" id="addr-input-${communityId}-${clock.clock_number}" placeholder="Enter address">
+                                    <button type="button" class="btn-add-address" onclick="addClockAddress(${communityId}, ${clock.clock_number})">Add Address</button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+                container.innerHTML = html;
+            }
+        }
+
+        function toggleClockAddresses(event, communityId, clockNumber) {
+            event.preventDefault();
+            const addresses = document.getElementById(`addresses-${communityId}-${clockNumber}`);
+            const toggle = document.getElementById(`toggle-${communityId}-${clockNumber}`);
+
+            addresses.classList.toggle('visible');
+            toggle.classList.toggle('expanded');
+        }
+
+        function addClockAddress(communityId, clockNumber) {
+            const input = document.getElementById(`addr-input-${communityId}-${clockNumber}`);
+            const address = input.value.trim();
+
+            if (!address) {
+                alert('Please enter an address');
+                return;
+            }
+
+            fetch('/verona_walk_add_address', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    community_id: communityId,
+                    clock_number: clockNumber,
+                    address: address
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    input.value = '';
+                    loadClockAddresses(communityId);
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            });
+        }
+
+        function deleteClockAddress(communityId, addressId) {
+            if (!confirm('Delete this address?')) return;
+
+            fetch('/verona_walk_delete_address', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    address_id: addressId
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    // Find community_id from the deleted item and reload
+                    loadClockAddresses(communityId);
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            });
         }
 
         // House numbers management functions
@@ -14463,24 +14711,46 @@ def community_billing_spreadsheet():
             'stat_decoder_1': row[10]
         })
 
-    # If no line items yet, populate from house numbers added by office user
+    # If no line items yet, populate from house numbers or clock addresses added by office user
     if not line_items:
         # Get community ID first
         c.execute("SELECT id FROM communities WHERE name = ? AND active = 1", (community,))
         community_row = c.fetchone()
         if community_row:
             community_id = community_row[0]
-            # Get all house numbers for this community
-            c.execute("SELECT house_number FROM community_house_numbers WHERE community_id = ? ORDER BY house_number",
-                     (community_id,))
-            house_numbers = [row[0] for row in c.fetchall()]
 
-            # Create a line item for each house number
-            for house_number in house_numbers:
-                c.execute("""INSERT INTO community_billing_line_items
-                             (submission_id, zone_and_address, created_at)
-                             VALUES (?, ?, ?)""",
-                         (submission_id, house_number, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+            # Check if this is Verona Walk HOA
+            if community == 'Verona Walk HOA':
+                # Get all clock addresses for this community
+                c.execute("""SELECT clock_number, address FROM verona_walk_clock_addresses
+                             WHERE community_id = ?
+                             ORDER BY clock_number, id""", (community_id,))
+                addresses = c.fetchall()
+
+                # Create a line item for each address
+                for clock_num, address in addresses:
+                    if clock_num == 0:
+                        label = f"Common Area - {address}"
+                    else:
+                        label = f"Clock {clock_num} - {address}"
+
+                    c.execute("""INSERT INTO community_billing_line_items
+                                 (submission_id, zone_and_address, created_at)
+                                 VALUES (?, ?, ?)""",
+                             (submission_id, label, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+            else:
+                # Standard community: get all house numbers
+                c.execute("SELECT house_number FROM community_house_numbers WHERE community_id = ? ORDER BY house_number",
+                         (community_id,))
+                house_numbers = [row[0] for row in c.fetchall()]
+
+                # Create a line item for each house number
+                for house_number in house_numbers:
+                    c.execute("""INSERT INTO community_billing_line_items
+                                 (submission_id, zone_and_address, created_at)
+                                 VALUES (?, ?, ?)""",
+                             (submission_id, house_number, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+
             conn.commit()
 
             # Re-fetch the newly created line items
@@ -15434,6 +15704,115 @@ def community_delete_house_number():
         c.execute("DELETE FROM community_house_numbers WHERE id = ?", (house_number_id,))
         conn.commit()
         return jsonify({'success': True, 'message': 'House number deleted successfully'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+# ============================================================================
+# VERONA WALK HOA CLOCK ROUTES
+# ============================================================================
+
+@app.route('/verona_walk_clocks', methods=['GET'])
+def verona_walk_clocks():
+    """Get clock addresses for Verona Walk HOA"""
+    if 'username' not in session or session.get('role') not in ['office', 'technician']:
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    community_id = request.args.get('community_id')
+    if not community_id:
+        return jsonify({'success': False, 'error': 'Missing community_id'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    # Build the clock structure with addresses
+    clocks = []
+
+    # Common Area (clock 0)
+    clocks.append({
+        'clock_number': 0,
+        'clock_label': 'Common Area',
+        'addresses': []
+    })
+
+    # Clock 1-18
+    for i in range(1, 19):
+        clocks.append({
+            'clock_number': i,
+            'clock_label': f'Clock {i}',
+            'addresses': []
+        })
+
+    # Fetch all addresses for this community
+    c.execute("""SELECT id, clock_number, address
+                 FROM verona_walk_clock_addresses
+                 WHERE community_id = ?
+                 ORDER BY clock_number, id""", (community_id,))
+
+    addresses = c.fetchall()
+
+    # Organize addresses by clock
+    for addr_id, clock_num, address in addresses:
+        for clock in clocks:
+            if clock['clock_number'] == clock_num:
+                clock['addresses'].append({
+                    'id': addr_id,
+                    'address': address
+                })
+                break
+
+    conn.close()
+    return jsonify({'success': True, 'clocks': clocks})
+
+@app.route('/verona_walk_add_address', methods=['POST'])
+def verona_walk_add_address():
+    """Add an address to a clock in Verona Walk HOA"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    community_id = data.get('community_id')
+    clock_number = data.get('clock_number')
+    address = data.get('address', '').strip()
+
+    if not community_id or clock_number is None or not address:
+        return jsonify({'success': False, 'error': 'Missing required fields'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    try:
+        c.execute("""INSERT INTO verona_walk_clock_addresses
+                     (community_id, clock_number, address, created_at)
+                     VALUES (?, ?, ?, ?)""",
+                 (community_id, clock_number, address, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        conn.commit()
+        return jsonify({'success': True, 'message': 'Address added successfully'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+@app.route('/verona_walk_delete_address', methods=['POST'])
+def verona_walk_delete_address():
+    """Delete an address from a clock"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    address_id = data.get('address_id')
+
+    if not address_id:
+        return jsonify({'success': False, 'error': 'Missing address_id'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    try:
+        c.execute("DELETE FROM verona_walk_clock_addresses WHERE id = ?", (address_id,))
+        conn.commit()
+        return jsonify({'success': True, 'message': 'Address deleted successfully'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
     finally:
