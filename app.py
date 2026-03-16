@@ -13814,7 +13814,6 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             });
 
             resultsDiv.innerHTML = html;
-            exportBtn.style.display = 'inline-block';
         }
 
         function exportPDF() {
