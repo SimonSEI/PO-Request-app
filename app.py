@@ -12790,7 +12790,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             }
         }
 
-        function saveAllRows() {
+        window.saveAllRows = function() {
             const rows = document.querySelectorAll('[data-item-id]');
             let savedCount = 0;
 
@@ -12827,7 +12827,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             });
 
             showMessage('Saved! (' + rows.length + ' rows)', 'success');
-        }
+        };
 
         function saveItem(itemId) {
             const row = document.querySelector('[data-item-id="' + itemId + '"]');
@@ -12894,7 +12894,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             if (row) row.remove();
         }
 
-        function calculateCost() {
+        window.calculateCost = function() {
             // Get pricing first
             fetch(`/community_get_pricing?community_id=${communityId}`)
                 .then(r => r.json())
@@ -12949,15 +12949,15 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     document.getElementById('costBreakdown').style.display = 'block';
                 })
                 .catch(e => alert('Error calculating cost: ' + e));
-        }
+        };
 
-        function submitForm() {
+        window.submitForm = function() {
             // First save all rows
-            saveAllRows();
+            window.saveAllRows();
 
             // Wait a moment, calculate cost, then confirm
             setTimeout(() => {
-                calculateCost();
+                window.calculateCost();
 
                 setTimeout(() => {
                     if (!confirm('Submit form? You won\'t be able to edit it afterwards.')) return;
@@ -12979,11 +12979,11 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     .catch(e => alert('Error: ' + e));
                 }, 500);
             }, 500);
-        }
+        };
 
-        function goBack() {
+        window.goBack = function() {
             window.location.href = '/community_billing_tech';
-        }
+        };
 
         function showMessage(message, type) {
             const msgDiv = document.getElementById('message');
