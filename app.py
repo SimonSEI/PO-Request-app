@@ -914,15 +914,15 @@ def init_db():
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   submission_id INTEGER NOT NULL,
                   zone_and_address TEXT,
-                  nozzle INTEGER DEFAULT 0,
-                  pop_up_6_inch INTEGER DEFAULT 0,
-                  pop_up_12_inch INTEGER DEFAULT 0,
-                  rotor_6_inch INTEGER DEFAULT 0,
-                  new_pop_up_6_inch INTEGER DEFAULT 0,
-                  new_pop_up_12_inch INTEGER DEFAULT 0,
-                  riser INTEGER DEFAULT 0,
-                  solenoid INTEGER DEFAULT 0,
-                  stat_decoder_1 INTEGER DEFAULT 0,
+                  nozzle INTEGER DEFAULT NULL,
+                  pop_up_6_inch INTEGER DEFAULT NULL,
+                  pop_up_12_inch INTEGER DEFAULT NULL,
+                  rotor_6_inch INTEGER DEFAULT NULL,
+                  new_pop_up_6_inch INTEGER DEFAULT NULL,
+                  new_pop_up_12_inch INTEGER DEFAULT NULL,
+                  riser INTEGER DEFAULT NULL,
+                  solenoid INTEGER DEFAULT NULL,
+                  stat_decoder_1 INTEGER DEFAULT NULL,
                   created_at TEXT,
                   FOREIGN KEY (submission_id) REFERENCES community_billing_submissions(id) ON DELETE CASCADE)''')
 
@@ -12683,15 +12683,15 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     {% for item in line_items %}
                     <tr class="item-row" data-item-id="{{ item.id }}">
                         <td><span class="zone" style="display: block; padding: 8px 0; border-bottom: 1px solid #ddd;">{{ item.zone_and_address or '' }}</span></td>
-                        <td><input type="number" class="nozzle" value="{{ item.nozzle if item.nozzle is not none else '' }}" min="0"></td>
-                        <td><input type="number" class="pop_up_6_inch" value="{{ item.pop_up_6_inch if item.pop_up_6_inch is not none else '' }}" min="0"></td>
-                        <td><input type="number" class="pop_up_12_inch" value="{{ item.pop_up_12_inch if item.pop_up_12_inch is not none else '' }}" min="0"></td>
-                        <td><input type="number" class="rotor_6_inch" value="{{ item.rotor_6_inch if item.rotor_6_inch is not none else '' }}" min="0"></td>
-                        <td><input type="number" class="new_pop_up_6_inch" value="{{ item.new_pop_up_6_inch if item.new_pop_up_6_inch is not none else '' }}" min="0"></td>
-                        <td><input type="number" class="new_pop_up_12_inch" value="{{ item.new_pop_up_12_inch if item.new_pop_up_12_inch is not none else '' }}" min="0"></td>
-                        <td><input type="number" class="riser" value="{{ item.riser if item.riser is not none else '' }}" min="0"></td>
-                        <td><input type="number" class="solenoid" value="{{ item.solenoid if item.solenoid is not none else '' }}" min="0"></td>
-                        <td><input type="number" class="stat_decoder_1" value="{{ item.stat_decoder_1 if item.stat_decoder_1 is not none else '' }}" min="0"></td>
+                        <td><input type="number" class="nozzle" value="{{ item.nozzle if item.nozzle and item.nozzle != 0 else '' }}" min="0"></td>
+                        <td><input type="number" class="pop_up_6_inch" value="{{ item.pop_up_6_inch if item.pop_up_6_inch and item.pop_up_6_inch != 0 else '' }}" min="0"></td>
+                        <td><input type="number" class="pop_up_12_inch" value="{{ item.pop_up_12_inch if item.pop_up_12_inch and item.pop_up_12_inch != 0 else '' }}" min="0"></td>
+                        <td><input type="number" class="rotor_6_inch" value="{{ item.rotor_6_inch if item.rotor_6_inch and item.rotor_6_inch != 0 else '' }}" min="0"></td>
+                        <td><input type="number" class="new_pop_up_6_inch" value="{{ item.new_pop_up_6_inch if item.new_pop_up_6_inch and item.new_pop_up_6_inch != 0 else '' }}" min="0"></td>
+                        <td><input type="number" class="new_pop_up_12_inch" value="{{ item.new_pop_up_12_inch if item.new_pop_up_12_inch and item.new_pop_up_12_inch != 0 else '' }}" min="0"></td>
+                        <td><input type="number" class="riser" value="{{ item.riser if item.riser and item.riser != 0 else '' }}" min="0"></td>
+                        <td><input type="number" class="solenoid" value="{{ item.solenoid if item.solenoid and item.solenoid != 0 else '' }}" min="0"></td>
+                        <td><input type="number" class="stat_decoder_1" value="{{ item.stat_decoder_1 if item.stat_decoder_1 and item.stat_decoder_1 != 0 else '' }}" min="0"></td>
                     </tr>
                     {% endfor %}
                 </tbody>
