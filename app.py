@@ -14562,7 +14562,7 @@ def community_billing_delete_draft():
     try:
         # Verify the submission belongs to the current user and is a draft
         c.execute("""SELECT status FROM community_billing_submissions
-                     WHERE id = ? AND user_id = (SELECT id FROM users WHERE username = ?)""",
+                     WHERE id = ? AND tech_username = ?""",
                  (submission_id, session.get('username')))
         result = c.fetchone()
 
@@ -14574,9 +14574,8 @@ def community_billing_delete_draft():
             conn.close()
             return jsonify({'success': False, 'error': 'Cannot delete submitted submissions'})
 
-        # Delete the submission and its line items
+        # Delete the submission and its line items (CASCADE handles line items)
         c.execute("DELETE FROM community_billing_submissions WHERE id = ?", (submission_id,))
-        c.execute("DELETE FROM community_billing_line_items WHERE submission_id = ?", (submission_id,))
 
         conn.commit()
         conn.close()
