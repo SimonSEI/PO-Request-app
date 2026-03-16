@@ -12302,10 +12302,18 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
                             <div style="font-size: 12px; color: #ff9800; font-weight: 600;">● Draft</div>
                         {% endif %}
                     </div>
-                    <button type="button" onclick="openSubmission({{ submission.id }}, '{{ submission.community }}', '{{ submission.work_date }}')"
-                            style="padding: 8px 16px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
-                        {% if submission.status == 'submitted' %}View{% else %}Edit Draft{% endif %}
-                    </button>
+                    <div style="display: flex; gap: 8px;">
+                        <button type="button" onclick="openSubmission({{ submission.id }}, '{{ submission.community }}', '{{ submission.work_date }}')"
+                                style="padding: 8px 16px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
+                            {% if submission.status == 'submitted' %}View{% else %}Edit Draft{% endif %}
+                        </button>
+                        {% if submission.status != 'submitted' %}
+                        <button type="button" onclick="deleteDraft({{ submission.id }}, '{{ submission.community }}')"
+                                style="padding: 8px 16px; background: #dc3545; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
+                            Delete Draft
+                        </button>
+                        {% endif %}
+                    </div>
                 </div>
                 {% endfor %}
             </div>
@@ -12379,6 +12387,36 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             const encodedCommunity = encodeURIComponent(community);
             const encodedDate = encodeURIComponent(workDate);
             window.location.href = `/community_billing_spreadsheet?community=${encodedCommunity}&work_date=${encodedDate}`;
+        }
+
+        // Delete a draft with double confirmation
+        function deleteDraft(submissionId, community) {
+            // First confirmation
+            if (!confirm(`Delete draft for ${community}?\n\nThis action CANNOT be undone.`)) {
+                return;
+            }
+
+            // Second confirmation
+            if (!confirm('Are you absolutely sure? This will permanently delete all data for this draft.')) {
+                return;
+            }
+
+            // Delete the submission
+            fetch('/community_billing_delete_draft', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ submission_id: submissionId })
+            })
+            .then(r => r.json())
+            .then(result => {
+                if (result.success) {
+                    alert('Draft deleted successfully. Refreshing page...');
+                    window.location.reload();
+                } else {
+                    alert('Error: ' + result.error);
+                }
+            })
+            .catch(e => alert('Error: ' + e));
         }
 
         // Set today's date as default
@@ -14502,6 +14540,44 @@ def community_billing_submit():
                      SET status = 'submitted', submitted_at = ?
                      WHERE id = ?""",
                  (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), submission_id))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/community_billing_delete_draft', methods=['POST'])
+def community_billing_delete_draft():
+    """Delete a draft submission"""
+    if 'username' not in session or session.get('role') != 'technician':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    submission_id = data.get('submission_id')
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    try:
+        # Verify the submission belongs to the current user and is a draft
+        c.execute("""SELECT status FROM community_billing_submissions
+                     WHERE id = ? AND user_id = (SELECT id FROM users WHERE username = ?)""",
+                 (submission_id, session.get('username')))
+        result = c.fetchone()
+
+        if not result:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Submission not found'})
+
+        if result[0] == 'submitted':
+            conn.close()
+            return jsonify({'success': False, 'error': 'Cannot delete submitted submissions'})
+
+        # Delete the submission and its line items
+        c.execute("DELETE FROM community_billing_submissions WHERE id = ?", (submission_id,))
+        c.execute("DELETE FROM community_billing_line_items WHERE submission_id = ?", (submission_id,))
+
         conn.commit()
         conn.close()
         return jsonify({'success': True})
