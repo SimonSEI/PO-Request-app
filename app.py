@@ -12627,8 +12627,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 </span>
             </h1>
             <div class="info">
-                <strong>Community:</strong> {{ community }}<br>
-                <strong>Work Date:</strong> {{ work_date }}
+                <strong>Community:</strong> {{ community|escape }}<br>
+                <strong>Work Date:</strong> {{ work_date|escape }}
             </div>
         </div>
 
@@ -12776,30 +12776,28 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         }
 
         function saveAllRows() {
-            console.clear();
-            console.log('=== SAVE DRAFT START ===');
-            console.log('submissionId:', submissionId);
-            console.log('community:', community);
-            console.log('workDate:', workDate);
-
+            console.log('\n=== DRAFT SAVE ===');
             const rows = document.querySelectorAll('[data-item-id]');
-            console.log('Found ' + rows.length + ' rows with [data-item-id]');
+            console.log('Found rows:', rows.length);
 
             if (rows.length === 0) {
-                alert('No rows to save');
+                alert('No data to save');
                 return;
             }
 
-            // Collect all line items
             const lineItems = [];
-            rows.forEach((row) => {
+            rows.forEach((row, idx) => {
                 const itemId = row.dataset.itemId;
-                if (!itemId) return;
+                if (!itemId) {
+                    console.warn('Row ' + idx + ' has no itemId');
+                    return;
+                }
 
-                lineItems.push({
+                const nozzle = row.querySelector('.nozzle')?.value;
+                const item = {
                     id: itemId,
                     zone_and_address: (row.querySelector('.zone')?.textContent || '').trim(),
-                    nozzle: row.querySelector('.nozzle')?.value || '',
+                    nozzle: nozzle || '',
                     pop_up_6_inch: row.querySelector('.pop_up_6_inch')?.value || '',
                     pop_up_12_inch: row.querySelector('.pop_up_12_inch')?.value || '',
                     rotor_6_inch: row.querySelector('.rotor_6_inch')?.value || '',
@@ -12808,37 +12806,36 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     riser: row.querySelector('.riser')?.value || '',
                     solenoid: row.querySelector('.solenoid')?.value || '',
                     stat_decoder_1: row.querySelector('.stat_decoder_1')?.value || ''
-                });
+                };
+                lineItems.push(item);
+                console.log('Row ' + idx + ':', item);
             });
 
-            console.log('Collected ' + lineItems.length + ' items to save');
+            console.log('Sending ' + lineItems.length + ' items');
+            const payload = { submission_id: submissionId, line_items: lineItems };
+            console.log('Payload:', JSON.stringify(payload, null, 2));
 
-            // Send to server
             fetch('/community_billing_save_draft', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    submission_id: submissionId,
-                    line_items: lineItems
-                })
+                body: JSON.stringify(payload)
             })
             .then(r => {
-                console.log('Response status: ' + r.status);
-                if (!r.ok) throw new Error('HTTP ' + r.status);
+                console.log('Status:', r.status, r.statusText);
                 return r.json();
             })
             .then(result => {
-                console.log('Result:', result);
+                console.log('Response:', result);
                 if (result.success) {
                     showMessage('✓ Saved! Reloading...', 'success');
-                    setTimeout(() => window.location.reload(), 1500);
+                    setTimeout(() => window.location.reload(), 1000);
                 } else {
-                    alert('Save failed: ' + (result.error || 'Unknown error'));
+                    alert('Save failed:\n' + (result.error || 'Unknown error'));
                 }
             })
             .catch(error => {
-                console.error('Save error:', error);
-                alert('Save failed: ' + error.message);
+                console.error('Error:', error);
+                alert('Save error:\n' + error.message);
             });
         }
 
@@ -14512,49 +14509,54 @@ def community_billing_save_draft():
     if 'username' not in session or session.get('role') != 'technician':
         return jsonify({'success': False, 'error': 'Access denied'})
 
-    data = request.get_json()
-    submission_id = data.get('submission_id')
-    line_items = data.get('line_items', [])
-
-    if not submission_id:
-        return jsonify({'success': False, 'error': 'Missing submission_id'})
-
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
     try:
-        # Get existing item IDs to determine which to update vs insert
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'error': 'No data provided'})
+
+        submission_id = data.get('submission_id')
+        line_items = data.get('line_items', [])
+
+        if not submission_id:
+            return jsonify({'success': False, 'error': 'Missing submission_id'})
+
+        if not line_items:
+            return jsonify({'success': False, 'error': 'No line items provided'})
+
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Get existing item IDs
         c.execute("SELECT id FROM community_billing_line_items WHERE submission_id = ?",
                  (submission_id,))
         existing_ids = {row[0] for row in c.fetchall()}
 
+        # Helper function to convert to int
+        def safe_int(val):
+            if not val or val == '':
+                return 0
+            try:
+                return int(float(val))
+            except (ValueError, TypeError):
+                return 0
+
         # Process each line item
+        updated_count = 0
         for item in line_items:
             item_id = item.get('id')
-            zone_and_address = (item.get('zone_and_address') or '').strip()
-
-            # Convert values to integers, handling empty strings
-            def to_int(val):
-                try:
-                    if not val or val == '':
-                        return 0
-                    return int(val)
-                except (ValueError, TypeError):
-                    return 0
-
-            nozzle = to_int(item.get('nozzle'))
-            pop_up_6_inch = to_int(item.get('pop_up_6_inch'))
-            pop_up_12_inch = to_int(item.get('pop_up_12_inch'))
-            rotor_6_inch = to_int(item.get('rotor_6_inch'))
-            new_pop_up_6_inch = to_int(item.get('new_pop_up_6_inch'))
-            new_pop_up_12_inch = to_int(item.get('new_pop_up_12_inch'))
-            riser = to_int(item.get('riser'))
-            solenoid = to_int(item.get('solenoid'))
-            stat_decoder_1 = to_int(item.get('stat_decoder_1'))
-
             if not item_id:
-                # Skip items without ID
                 continue
+
+            zone_and_address = (item.get('zone_and_address') or '').strip()
+            nozzle = safe_int(item.get('nozzle'))
+            pop_up_6_inch = safe_int(item.get('pop_up_6_inch'))
+            pop_up_12_inch = safe_int(item.get('pop_up_12_inch'))
+            rotor_6_inch = safe_int(item.get('rotor_6_inch'))
+            new_pop_up_6_inch = safe_int(item.get('new_pop_up_6_inch'))
+            new_pop_up_12_inch = safe_int(item.get('new_pop_up_12_inch'))
+            riser = safe_int(item.get('riser'))
+            solenoid = safe_int(item.get('solenoid'))
+            stat_decoder_1 = safe_int(item.get('stat_decoder_1'))
 
             if item_id in existing_ids:
                 # Update existing item
@@ -14566,6 +14568,7 @@ def community_billing_save_draft():
                          (zone_and_address, nozzle, pop_up_6_inch, pop_up_12_inch,
                           rotor_6_inch, new_pop_up_6_inch, new_pop_up_12_inch,
                           riser, solenoid, stat_decoder_1, item_id, submission_id))
+                updated_count += 1
             else:
                 # Insert new item
                 c.execute("""INSERT INTO community_billing_line_items
@@ -14577,13 +14580,16 @@ def community_billing_save_draft():
                           pop_up_12_inch, rotor_6_inch, new_pop_up_6_inch,
                           new_pop_up_12_inch, riser, solenoid, stat_decoder_1,
                           datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                updated_count += 1
 
         conn.commit()
         conn.close()
-        return jsonify({'success': True, 'message': 'Draft saved successfully'})
+        return jsonify({'success': True, 'message': f'Saved {updated_count} items'})
+
     except Exception as e:
-        conn.close()
-        return jsonify({'success': False, 'error': str(e)})
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': f'Error: {str(e)}'})
 
 @app.route('/community_billing_delete_item', methods=['POST'])
 def community_billing_delete_item():
