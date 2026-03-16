@@ -12506,56 +12506,6 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         .btn-delete:hover {
             background: #c82333;
         }
-        .sticky-save-bar {
-            position: sticky;
-            top: 0;
-            background: white;
-            padding: 12px 20px;
-            border-bottom: 2px solid #667eea;
-            display: flex;
-            justify-content: flex-start;
-            gap: 10px;
-            z-index: 100;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
-        }
-        .sticky-save-bar button {
-            padding: 10px 20px;
-            font-weight: 600;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-        .btn-sticky-save {
-            background: #28a745;
-            color: white;
-            font-size: 14px;
-        }
-        .btn-sticky-save:hover {
-            background: #218838;
-            transform: translateY(-2px);
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-        }
-        .btn-sticky-submit {
-            background: #667eea;
-            color: white;
-            font-size: 14px;
-        }
-        .btn-sticky-submit:hover {
-            background: #5568d3;
-            transform: translateY(-2px);
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-        }
-        .btn-sticky-back {
-            background: #6c757d;
-            color: white;
-            font-size: 14px;
-        }
-        .btn-sticky-back:hover {
-            background: #5a6268;
-            transform: translateY(-2px);
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-        }
         .controls {
             margin-top: 20px;
             padding-top: 20px;
@@ -12640,15 +12590,6 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
         <div id="message"></div>
 
-        <!-- Sticky Save Bar -->
-        <div class="sticky-save-bar">
-            <button class="btn-sticky-back" onclick="goBack()">← Back to Home</button>
-            <button class="btn-sticky-save" onclick="saveAllRows()">💾 Save All</button>
-            <button class="btn-sticky-submit" id="submitBtn" onclick="submitForm()" {% if status == 'submitted' %}disabled{% endif %}>
-                {% if status == 'submitted' %}✓ Submitted{% else %}Submit & Finalize{% endif %}
-            </button>
-        </div>
-
         <div class="spreadsheet">
             <table>
                 <thead>
@@ -12694,6 +12635,11 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         </div>
 
         <div class="controls">
+            <button class="btn-secondary" onclick="goBack()">← Back to Home</button>
+            <button class="btn-secondary" onclick="saveAllRows()">💾 Save All</button>
+            <button class="btn-success" id="submitBtn" onclick="submitForm()" {% if status == 'submitted' %}disabled{% endif %}>
+                {% if status == 'submitted' %}✓ Submitted{% else %}Submit & Finalize{% endif %}
+            </button>
         </div>
     </div>
 
@@ -12790,7 +12736,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             }
         }
 
-        window.saveAllRows = function() {
+        function saveAllRows() {
             const rows = document.querySelectorAll('[data-item-id]');
             let savedCount = 0;
 
@@ -12827,7 +12773,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             });
 
             showMessage('Saved! (' + rows.length + ' rows)', 'success');
-        };
+        }
 
         function saveItem(itemId) {
             const row = document.querySelector('[data-item-id="' + itemId + '"]');
@@ -12894,7 +12840,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             if (row) row.remove();
         }
 
-        window.calculateCost = function() {
+        function calculateCost() {
             // Get pricing first
             fetch(`/community_get_pricing?community_id=${communityId}`)
                 .then(r => r.json())
@@ -12949,15 +12895,15 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     document.getElementById('costBreakdown').style.display = 'block';
                 })
                 .catch(e => alert('Error calculating cost: ' + e));
-        };
+        }
 
-        window.submitForm = function() {
+        function submitForm() {
             // First save all rows
-            window.saveAllRows();
+            saveAllRows();
 
             // Wait a moment, calculate cost, then confirm
             setTimeout(() => {
-                window.calculateCost();
+                calculateCost();
 
                 setTimeout(() => {
                     if (!confirm('Submit form? You won\'t be able to edit it afterwards.')) return;
@@ -12979,11 +12925,11 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     .catch(e => alert('Error: ' + e));
                 }, 500);
             }, 500);
-        };
+        }
 
-        window.goBack = function() {
+        function goBack() {
             window.location.href = '/community_billing_tech';
-        };
+        }
 
         function showMessage(message, type) {
             const msgDiv = document.getElementById('message');
