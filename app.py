@@ -12726,49 +12726,55 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             let saveCount = 0;
 
             rows.forEach(row => {
-                const itemId = row.dataset.itemId;
-                // Only save if row has any data
-                const nozzle = row.querySelector('.nozzle').value;
-                const pop_up_6_inch = row.querySelector('.pop_up_6_inch').value;
-                const pop_up_12_inch = row.querySelector('.pop_up_12_inch').value;
-                const rotor_6_inch = row.querySelector('.rotor_6_inch').value;
-                const new_pop_up_6_inch = row.querySelector('.new_pop_up_6_inch').value;
-                const new_pop_up_12_inch = row.querySelector('.new_pop_up_12_inch').value;
-                const riser = row.querySelector('.riser').value;
-                const solenoid = row.querySelector('.solenoid').value;
-                const stat_decoder_1 = row.querySelector('.stat_decoder_1').value;
+                try {
+                    const itemId = row.dataset.itemId;
+                    if (!itemId) return; // Skip rows without item ID
 
-                if (nozzle || pop_up_6_inch || pop_up_12_inch || rotor_6_inch ||
-                    new_pop_up_6_inch || new_pop_up_12_inch || riser || solenoid || stat_decoder_1) {
-                    // Silently save
-                    const data = {
-                        submission_id: submissionId,
-                        item_id: itemId.startsWith('new_') ? null : itemId,
-                        zone_and_address: row.querySelector('.zone').textContent,
-                        nozzle: row.querySelector('.nozzle').value,
-                        pop_up_6_inch: row.querySelector('.pop_up_6_inch').value,
-                        pop_up_12_inch: row.querySelector('.pop_up_12_inch').value,
-                        rotor_6_inch: row.querySelector('.rotor_6_inch').value,
-                        new_pop_up_6_inch: row.querySelector('.new_pop_up_6_inch').value,
-                        new_pop_up_12_inch: row.querySelector('.new_pop_up_12_inch').value,
-                        riser: row.querySelector('.riser').value,
-                        solenoid: row.querySelector('.solenoid').value,
-                        stat_decoder_1: row.querySelector('.stat_decoder_1').value
-                    };
+                    // Only save if row has any data
+                    const nozzle = row.querySelector('.nozzle')?.value || '';
+                    const pop_up_6_inch = row.querySelector('.pop_up_6_inch')?.value || '';
+                    const pop_up_12_inch = row.querySelector('.pop_up_12_inch')?.value || '';
+                    const rotor_6_inch = row.querySelector('.rotor_6_inch')?.value || '';
+                    const new_pop_up_6_inch = row.querySelector('.new_pop_up_6_inch')?.value || '';
+                    const new_pop_up_12_inch = row.querySelector('.new_pop_up_12_inch')?.value || '';
+                    const riser = row.querySelector('.riser')?.value || '';
+                    const solenoid = row.querySelector('.solenoid')?.value || '';
+                    const stat_decoder_1 = row.querySelector('.stat_decoder_1')?.value || '';
 
-                    fetch('/community_billing_save_item', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(data)
-                    })
-                    .then(r => r.json())
-                    .then(result => {
-                        if (result.success && result.item_id && itemId.startsWith('new_')) {
-                            row.dataset.itemId = result.item_id;
-                            saveCount++;
-                        }
-                    })
-                    .catch(e => console.error('Autosave error:', e));
+                    if (nozzle || pop_up_6_inch || pop_up_12_inch || rotor_6_inch ||
+                        new_pop_up_6_inch || new_pop_up_12_inch || riser || solenoid || stat_decoder_1) {
+                        // Silently save
+                        const data = {
+                            submission_id: submissionId,
+                            item_id: String(itemId).startsWith('new_') ? null : itemId,
+                            zone_and_address: row.querySelector('.zone')?.textContent || '',
+                            nozzle: nozzle,
+                            pop_up_6_inch: pop_up_6_inch,
+                            pop_up_12_inch: pop_up_12_inch,
+                            rotor_6_inch: rotor_6_inch,
+                            new_pop_up_6_inch: new_pop_up_6_inch,
+                            new_pop_up_12_inch: new_pop_up_12_inch,
+                            riser: riser,
+                            solenoid: solenoid,
+                            stat_decoder_1: stat_decoder_1
+                        };
+
+                        fetch('/community_billing_save_item', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(data)
+                        })
+                        .then(r => r.json())
+                        .then(result => {
+                            if (result.success && result.item_id && String(itemId).startsWith('new_')) {
+                                row.dataset.itemId = result.item_id;
+                                saveCount++;
+                            }
+                        })
+                        .catch(e => console.error('Autosave error:', e));
+                    }
+                } catch (e) {
+                    console.error('Error in autosave:', e);
                 }
             });
 
@@ -12780,22 +12786,99 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         function saveAllRows() {
             const rows = document.querySelectorAll('[data-item-id]');
             let savedCount = 0;
+            let totalRows = 0;
 
             rows.forEach(row => {
-                const itemId = row.dataset.itemId;
+                try {
+                    const itemId = row.dataset.itemId;
+                    if (!itemId) return; // Skip rows without item ID
+
+                    // Check if there's any data to save
+                    const nozzle = row.querySelector('.nozzle')?.value || '';
+                    const pop_up_6_inch = row.querySelector('.pop_up_6_inch')?.value || '';
+                    const pop_up_12_inch = row.querySelector('.pop_up_12_inch')?.value || '';
+                    const rotor_6_inch = row.querySelector('.rotor_6_inch')?.value || '';
+                    const new_pop_up_6_inch = row.querySelector('.new_pop_up_6_inch')?.value || '';
+                    const new_pop_up_12_inch = row.querySelector('.new_pop_up_12_inch')?.value || '';
+                    const riser = row.querySelector('.riser')?.value || '';
+                    const solenoid = row.querySelector('.solenoid')?.value || '';
+                    const stat_decoder_1 = row.querySelector('.stat_decoder_1')?.value || '';
+
+                    // Only save rows with data
+                    if (nozzle || pop_up_6_inch || pop_up_12_inch || rotor_6_inch ||
+                        new_pop_up_6_inch || new_pop_up_12_inch || riser || solenoid || stat_decoder_1) {
+
+                        totalRows++;
+                        const data = {
+                            submission_id: submissionId,
+                            item_id: String(itemId).startsWith('new_') ? null : itemId,
+                            zone_and_address: row.querySelector('.zone')?.textContent || '',
+                            nozzle: nozzle,
+                            pop_up_6_inch: pop_up_6_inch,
+                            pop_up_12_inch: pop_up_12_inch,
+                            rotor_6_inch: rotor_6_inch,
+                            new_pop_up_6_inch: new_pop_up_6_inch,
+                            new_pop_up_12_inch: new_pop_up_12_inch,
+                            riser: riser,
+                            solenoid: solenoid,
+                            stat_decoder_1: stat_decoder_1
+                        };
+
+                        fetch('/community_billing_save_item', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(data)
+                        })
+                        .then(r => r.json())
+                        .then(result => {
+                            if (result.success && result.item_id) {
+                                if (String(itemId).startsWith('new_')) {
+                                    row.dataset.itemId = result.item_id;
+                                }
+                                savedCount++;
+                            }
+                        })
+                        .catch(e => console.error('Save error for row:', e));
+                    }
+                } catch (e) {
+                    console.error('Error processing row:', e);
+                }
+            });
+
+            showMessage('Saved! (' + totalRows + ' rows)', 'success');
+        }
+
+        function saveItem(itemId) {
+            try {
+                const row = document.querySelector(`[data-item-id="${CSS.escape(String(itemId))}"]`);
+                if (!row) {
+                    alert('Row not found');
+                    return;
+                }
+
+                const nozzle = row.querySelector('.nozzle')?.value || '';
+                const pop_up_6_inch = row.querySelector('.pop_up_6_inch')?.value || '';
+                const pop_up_12_inch = row.querySelector('.pop_up_12_inch')?.value || '';
+                const rotor_6_inch = row.querySelector('.rotor_6_inch')?.value || '';
+                const new_pop_up_6_inch = row.querySelector('.new_pop_up_6_inch')?.value || '';
+                const new_pop_up_12_inch = row.querySelector('.new_pop_up_12_inch')?.value || '';
+                const riser = row.querySelector('.riser')?.value || '';
+                const solenoid = row.querySelector('.solenoid')?.value || '';
+                const stat_decoder_1 = row.querySelector('.stat_decoder_1')?.value || '';
+
                 const data = {
                     submission_id: submissionId,
-                    item_id: itemId.startsWith('new_') ? null : itemId,
-                    zone_and_address: row.querySelector('.zone').textContent,
-                    nozzle: row.querySelector('.nozzle').value,
-                    pop_up_6_inch: row.querySelector('.pop_up_6_inch').value,
-                    pop_up_12_inch: row.querySelector('.pop_up_12_inch').value,
-                    rotor_6_inch: row.querySelector('.rotor_6_inch').value,
-                    new_pop_up_6_inch: row.querySelector('.new_pop_up_6_inch').value,
-                    new_pop_up_12_inch: row.querySelector('.new_pop_up_12_inch').value,
-                    riser: row.querySelector('.riser').value,
-                    solenoid: row.querySelector('.solenoid').value,
-                    stat_decoder_1: row.querySelector('.stat_decoder_1').value
+                    item_id: String(itemId).startsWith('new_') ? null : itemId,
+                    zone_and_address: row.querySelector('.zone')?.textContent || '',
+                    nozzle: nozzle,
+                    pop_up_6_inch: pop_up_6_inch,
+                    pop_up_12_inch: pop_up_12_inch,
+                    rotor_6_inch: rotor_6_inch,
+                    new_pop_up_6_inch: new_pop_up_6_inch,
+                    new_pop_up_12_inch: new_pop_up_12_inch,
+                    riser: riser,
+                    solenoid: solenoid,
+                    stat_decoder_1: stat_decoder_1
                 };
 
                 fetch('/community_billing_save_item', {
@@ -12807,78 +12890,49 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 .then(result => {
                     if (result.success) {
                         row.dataset.itemId = result.item_id;
-                        savedCount++;
+                        showMessage('Row saved!', 'success');
+                    } else {
+                        alert('Error: ' + result.error);
                     }
                 })
                 .catch(e => alert('Error: ' + e));
-            });
-
-            showMessage('Saved! (' + rows.length + ' rows)', 'success');
-        }
-
-        function saveItem(itemId) {
-            const row = document.querySelector('[data-item-id="' + itemId + '"]');
-            if (!row) {
-                alert('Row not found');
-                return;
+            } catch (e) {
+                console.error('Error saving item:', e);
             }
-
-            const data = {
-                submission_id: submissionId,
-                item_id: itemId.startsWith('new_') ? null : itemId,
-                zone_and_address: row.querySelector('.zone').textContent,
-                nozzle: row.querySelector('.nozzle').value,
-                pop_up_6_inch: row.querySelector('.pop_up_6_inch').value,
-                pop_up_12_inch: row.querySelector('.pop_up_12_inch').value,
-                rotor_6_inch: row.querySelector('.rotor_6_inch').value,
-                new_pop_up_6_inch: row.querySelector('.new_pop_up_6_inch').value,
-                new_pop_up_12_inch: row.querySelector('.new_pop_up_12_inch').value,
-                riser: row.querySelector('.riser').value,
-                solenoid: row.querySelector('.solenoid').value,
-                stat_decoder_1: row.querySelector('.stat_decoder_1').value
-            };
-
-            fetch('/community_billing_save_item', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            })
-            .then(r => r.json())
-            .then(result => {
-                if (result.success) {
-                    row.dataset.itemId = result.item_id;
-                    showMessage('Row saved!', 'success');
-                } else {
-                    alert('Error: ' + result.error);
-                }
-            })
-            .catch(e => alert('Error: ' + e));
         }
 
         function deleteItem(itemId) {
             if (!confirm('Delete this row?')) return;
 
-            fetch('/community_billing_delete_item', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ item_id: itemId, submission_id: submissionId })
-            })
-            .then(r => r.json())
-            .then(result => {
-                if (result.success) {
-                    const row = document.querySelector('[data-item-id="' + itemId + '"]');
-                    if (row) row.remove();
-                    showMessage('Row deleted!', 'success');
-                } else {
-                    alert('Error: ' + result.error);
-                }
-            })
-            .catch(e => alert('Error: ' + e));
+            try {
+                fetch('/community_billing_delete_item', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ item_id: itemId, submission_id: submissionId })
+                })
+                .then(r => r.json())
+                .then(result => {
+                    if (result.success) {
+                        const row = document.querySelector(`[data-item-id="${CSS.escape(String(itemId))}"]`);
+                        if (row) row.remove();
+                        showMessage('Row deleted!', 'success');
+                    } else {
+                        alert('Error: ' + result.error);
+                    }
+                })
+                .catch(e => alert('Error: ' + e));
+            } catch (e) {
+                console.error('Error deleting item:', e);
+            }
         }
 
         function deleteItemRow(itemId) {
-            const row = document.querySelector('[data-item-id="' + itemId + '"]');
-            if (row) row.remove();
+            try {
+                const row = document.querySelector(`[data-item-id="${CSS.escape(String(itemId))}"]`);
+                if (row) row.remove();
+            } catch (e) {
+                console.error('Error deleting row:', e);
+            }
         }
 
         function calculateCost() {
