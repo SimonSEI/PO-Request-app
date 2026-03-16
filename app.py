@@ -12303,12 +12303,17 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
                         {% endif %}
                     </div>
                     <div style="display: flex; gap: 8px;">
-                        <button type="button" onclick="openSubmission({{ submission.id|tojson }}, {{ submission.community|tojson }}, {{ submission.work_date|tojson }})"
+                        <button type="button" class="edit-submission-btn"
+                                data-submission-id="{{ submission.id }}"
+                                data-community="{{ submission.community|e }}"
+                                data-work-date="{{ submission.work_date|e }}"
                                 style="padding: 8px 16px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
                             {% if submission.status == 'submitted' %}View{% else %}Edit Draft{% endif %}
                         </button>
                         {% if submission.status != 'submitted' %}
-                        <button type="button" onclick="deleteDraft({{ submission.id }}, '{{ submission.community }}')"
+                        <button type="button" class="delete-draft-btn"
+                                data-submission-id="{{ submission.id }}"
+                                data-community="{{ submission.community|e }}"
                                 style="padding: 8px 16px; background: #dc3545; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
                             Delete Draft
                         </button>
@@ -12418,6 +12423,24 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             })
             .catch(e => alert('Error: ' + e));
         }
+
+        // Add event listeners for edit submission buttons
+        document.querySelectorAll('.edit-submission-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                const community = this.getAttribute('data-community');
+                const workDate = this.getAttribute('data-work-date');
+                openSubmission(null, community, workDate);
+            });
+        });
+
+        // Add event listeners for delete draft buttons
+        document.querySelectorAll('.delete-draft-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                const submissionId = this.getAttribute('data-submission-id');
+                const community = this.getAttribute('data-community');
+                deleteDraft(submissionId, community);
+            });
+        });
 
         // Set today's date as default
         const today = new Date().toISOString().split('T')[0];
