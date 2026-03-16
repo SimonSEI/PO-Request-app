@@ -15117,7 +15117,7 @@ def manage_communities():
                                  username=session.get('username'),
                                  communities=communities)
 
-@app.route('/community_billing_office')
+@app.route('/community_billing_office', methods=['GET', 'POST'])
 def community_billing_office():
     """Office user side - view submissions and manage communities"""
     if 'username' not in session or session.get('role') != 'office':
