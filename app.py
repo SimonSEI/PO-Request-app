@@ -12982,30 +12982,34 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
     </script>
 
     <script>
-        // Simple button setup - executed last to ensure DOM is ready
-        document.addEventListener('DOMContentLoaded', function() {
-            console.log('DOM loaded, setting up buttons...');
+        // Button setup - DOM is already loaded since script is at end of page
+        console.log('Setting up button handlers...');
 
-            var saveBtn = document.getElementById('saveBtn');
-            if (saveBtn) {
-                saveBtn.onclick = function() {
-                    console.log('Save clicked');
-                    saveAllRows();
-                    return false;
-                };
-                console.log('Save button ready');
-            }
+        var saveBtn = document.getElementById('saveBtn');
+        if (saveBtn) {
+            saveBtn.onclick = function() {
+                console.log('Save clicked');
+                saveAllRows();
+                return false;
+            };
+            console.log('✓ Save button ready');
+        } else {
+            console.error('❌ Save button not found!');
+        }
 
-            var submitBtn = document.getElementById('submitBtn');
-            if (submitBtn) {
-                submitBtn.onclick = function() {
-                    console.log('Submit clicked');
-                    submitForm();
-                    return false;
-                };
-                console.log('Submit button ready');
-            }
-        });
+        var submitBtn = document.getElementById('submitBtn');
+        if (submitBtn) {
+            submitBtn.onclick = function() {
+                console.log('Submit clicked');
+                submitForm();
+                return false;
+            };
+            console.log('✓ Submit button ready');
+        } else {
+            console.error('❌ Submit button not found!');
+        }
+
+        console.log('Button setup complete');
     </script>
 </body>
 </html>
