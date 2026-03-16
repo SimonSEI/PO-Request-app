@@ -12289,32 +12289,25 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
         <!-- Past Submissions and Drafts Section -->
         {% if submissions %}
         <div style="background: #f5f7fa; border-radius: 8px; padding: 20px; margin-bottom: 30px; border: 1px solid #ddd;">
-            <h2 style="margin-top: 0; color: #333; font-size: 18px;">📋 Your Submissions</h2>
+            <h2 style="margin-top: 0; color: #333; font-size: 18px;">📋 Your Submissions & Drafts</h2>
             <div style="display: grid; grid-template-columns: 1fr; gap: 12px;">
                 {% for submission in submissions %}
-                <div style="background: white; border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; display: flex; justify-content: space-between; align-items: center;">
-                    <div>
-                        <div style="font-weight: 600; color: #333;">{{ submission.community }}</div>
-                        <div style="font-size: 13px; color: #666;">Date: {{ submission.work_date }}</div>
-                        {% if submission.status == 'submitted' %}
-                            <div style="font-size: 12px; color: #28a745; font-weight: 600;">✓ Submitted</div>
-                        {% else %}
-                            <div style="font-size: 12px; color: #ff9800; font-weight: 600;">● Draft</div>
-                        {% endif %}
-                    </div>
-                    <div style="display: flex; gap: 8px;">
-                        <button type="button" class="edit-submission-btn" data-submission-id="{{ submission.id }}"
-                                style="padding: 8px 16px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
-                            {% if submission.status == 'submitted' %}View{% else %}Edit Draft{% endif %}
-                        </button>
-                        {% if submission.status != 'submitted' %}
-                        <button type="button" class="delete-draft-btn" data-submission-id="{{ submission.id }}"
-                                style="padding: 8px 16px; background: #dc3545; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
-                            Delete Draft
-                        </button>
-                        {% endif %}
-                    </div>
-                </div>
+                <form method="get" action="/community_billing_spreadsheet" style="margin: 0;">
+                    <input type="hidden" name="community" value="{{ submission.community }}">
+                    <input type="hidden" name="work_date" value="{{ submission.work_date }}">
+                    <button type="submit" style="width: 100%; text-align: left; background: white; border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: all 0.3s;">
+                        <div>
+                            <div style="font-weight: 600; color: #333;">{{ submission.community }}</div>
+                            <div style="font-size: 13px; color: #666;">Date: {{ submission.work_date }}</div>
+                            {% if submission.status == 'submitted' %}
+                                <div style="font-size: 12px; color: #28a745; font-weight: 600;">✓ Submitted</div>
+                            {% else %}
+                                <div style="font-size: 12px; color: #ff9800; font-weight: 600;">● Draft</div>
+                            {% endif %}
+                        </div>
+                        <div style="color: #667eea; font-weight: 600;">{% if submission.status == 'submitted' %}View →{% else %}Edit →{% endif %}</div>
+                    </button>
+                </form>
                 {% endfor %}
             </div>
         </div>
@@ -12419,49 +12412,12 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             .catch(e => alert('Error: ' + e));
         }
 
-        // Store submission data for easy access
-        const submissionData = {
-            {% for submission in submissions %}
-            {{ submission.id }}: {
-                community: {{ submission.community|tojson }},
-                workDate: {{ submission.work_date|tojson }}
-            }{{ "," if not loop.last else "" }}
-            {% endfor %}
-        };
-
-        // Set up event listeners and defaults
-        setTimeout(function() {
-            // Add event listeners for edit submission buttons
-            document.querySelectorAll('.edit-submission-btn').forEach(btn => {
-                btn.addEventListener('click', function(e) {
-                    e.preventDefault();
-                    const subId = this.getAttribute('data-submission-id');
-                    const sub = submissionData[subId];
-                    if (sub) {
-                        openSubmission(null, sub.community, sub.workDate);
-                    }
-                });
-            });
-
-            // Add event listeners for delete draft buttons
-            document.querySelectorAll('.delete-draft-btn').forEach(btn => {
-                btn.addEventListener('click', function(e) {
-                    e.preventDefault();
-                    const subId = this.getAttribute('data-submission-id');
-                    const sub = submissionData[subId];
-                    if (sub) {
-                        deleteDraft(subId, sub.community);
-                    }
-                });
-            });
-
-            // Set today's date as default
-            const workDateInput = document.getElementById('workDate');
-            if (workDateInput) {
-                const today = new Date().toISOString().split('T')[0];
-                workDateInput.value = today;
-            }
-        }, 100);
+        // Set today's date as default
+        const workDateInput = document.getElementById('workDate');
+        if (workDateInput) {
+            const today = new Date().toISOString().split('T')[0];
+            workDateInput.value = today;
+        }
     </script>
 </body>
 </html>
@@ -13026,27 +12982,23 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         }
 
         // Add event listeners (script is at end of page, DOM is ready)
-        setTimeout(function() {
-            const saveBtn = document.getElementById('saveBtn');
-            if (saveBtn) {
-                saveBtn.addEventListener('click', function(e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    console.log('Save button clicked');
-                    saveAllRows();
-                });
-            }
+        const saveBtn = document.getElementById('saveBtn');
+        if (saveBtn) {
+            saveBtn.onclick = function(e) {
+                console.log('Save clicked');
+                saveAllRows();
+                return false;
+            };
+        }
 
-            const submitBtn = document.getElementById('submitBtn');
-            if (submitBtn) {
-                submitBtn.addEventListener('click', function(e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    console.log('Submit button clicked');
-                    submitForm();
-                });
-            }
-        }, 0);
+        const submitBtn = document.getElementById('submitBtn');
+        if (submitBtn) {
+            submitBtn.onclick = function(e) {
+                console.log('Submit clicked');
+                submitForm();
+                return false;
+            };
+        }
     </script>
 </body>
 </html>
