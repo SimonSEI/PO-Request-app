@@ -670,6 +670,22 @@ def init_db():
                   FOREIGN KEY (community_id) REFERENCES communities(id) ON DELETE CASCADE,
                   UNIQUE(community_id, house_number))''')
 
+    # Community nozzle prices table - stores pricing for each nozzle type per community
+    c.execute('''CREATE TABLE IF NOT EXISTS community_nozzle_prices
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  community_id INTEGER NOT NULL,
+                  nozzle REAL DEFAULT 1.0,
+                  pop_up_6_inch REAL DEFAULT 1.0,
+                  pop_up_12_inch REAL DEFAULT 1.0,
+                  rotor_6_inch REAL DEFAULT 1.0,
+                  new_pop_up_6_inch REAL DEFAULT 1.0,
+                  new_pop_up_12_inch REAL DEFAULT 1.0,
+                  riser REAL DEFAULT 1.0,
+                  solenoid REAL DEFAULT 1.0,
+                  stat_decoder_1 REAL DEFAULT 1.0,
+                  FOREIGN KEY (community_id) REFERENCES communities(id) ON DELETE CASCADE,
+                  UNIQUE(community_id))''')
+
     # Activity log table - THIS WAS MISSING!
     c.execute('''CREATE TABLE IF NOT EXISTS activity_log
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -12562,15 +12578,15 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     {% for item in line_items %}
                     <tr class="item-row" data-item-id="{{ item.id }}">
                         <td><input type="text" class="zone" value="{{ (item.zone_and_address or '')|e }}" readonly></td>
-                        <td><input type="number" class="nozzle" value="{{ item.nozzle if item.nozzle else '' }}"></td>
-                        <td><input type="number" class="pop_up_6_inch" value="{{ item.pop_up_6_inch if item.pop_up_6_inch else '' }}"></td>
-                        <td><input type="number" class="pop_up_12_inch" value="{{ item.pop_up_12_inch if item.pop_up_12_inch else '' }}"></td>
-                        <td><input type="number" class="rotor_6_inch" value="{{ item.rotor_6_inch if item.rotor_6_inch else '' }}"></td>
-                        <td><input type="number" class="new_pop_up_6_inch" value="{{ item.new_pop_up_6_inch if item.new_pop_up_6_inch else '' }}"></td>
-                        <td><input type="number" class="new_pop_up_12_inch" value="{{ item.new_pop_up_12_inch if item.new_pop_up_12_inch else '' }}"></td>
-                        <td><input type="number" class="riser" value="{{ item.riser if item.riser else '' }}"></td>
-                        <td><input type="number" class="solenoid" value="{{ item.solenoid if item.solenoid else '' }}"></td>
-                        <td><input type="number" class="stat_decoder_1" value="{{ item.stat_decoder_1 if item.stat_decoder_1 else '' }}"></td>
+                        <td><input type="number" class="nozzle" value="{{ item.nozzle if item.nozzle else '' }}" min="0"></td>
+                        <td><input type="number" class="pop_up_6_inch" value="{{ item.pop_up_6_inch if item.pop_up_6_inch else '' }}" min="0"></td>
+                        <td><input type="number" class="pop_up_12_inch" value="{{ item.pop_up_12_inch if item.pop_up_12_inch else '' }}" min="0"></td>
+                        <td><input type="number" class="rotor_6_inch" value="{{ item.rotor_6_inch if item.rotor_6_inch else '' }}" min="0"></td>
+                        <td><input type="number" class="new_pop_up_6_inch" value="{{ item.new_pop_up_6_inch if item.new_pop_up_6_inch else '' }}" min="0"></td>
+                        <td><input type="number" class="new_pop_up_12_inch" value="{{ item.new_pop_up_12_inch if item.new_pop_up_12_inch else '' }}" min="0"></td>
+                        <td><input type="number" class="riser" value="{{ item.riser if item.riser else '' }}" min="0"></td>
+                        <td><input type="number" class="solenoid" value="{{ item.solenoid if item.solenoid else '' }}" min="0"></td>
+                        <td><input type="number" class="stat_decoder_1" value="{{ item.stat_decoder_1 if item.stat_decoder_1 else '' }}" min="0"></td>
                         <td>
                             <div class="action-buttons">
                                 <button class="btn-save save-btn">Save</button>
@@ -12581,6 +12597,15 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     {% endfor %}
                 </tbody>
             </table>
+        </div>
+
+        <!-- Cost Breakdown Section -->
+        <div id="costBreakdown" style="background: #f9f9f9; border: 1px solid #ddd; border-radius: 6px; padding: 15px; margin-top: 20px; display: none;">
+            <h3 style="margin-top: 0; color: #333;">💰 Cost Breakdown</h3>
+            <div id="costDetails" style="font-size: 14px; line-height: 1.8;"></div>
+            <div style="border-top: 1px solid #ddd; margin-top: 10px; padding-top: 10px; font-weight: bold; font-size: 15px; color: #28a745;">
+                Total Cost: $<span id="totalCost">0.00</span>
+            </div>
         </div>
 
         <div class="controls">
@@ -12700,24 +12725,87 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             if (row) row.remove();
         }
 
-        function submitForm() {
-            if (!confirm('Submit form? You won\'t be able to edit it afterwards.')) return;
+        function calculateCost() {
+            // Get pricing first
+            fetch(`/community_get_pricing?community_id=${communityId}`)
+                .then(r => r.json())
+                .then(pricingData => {
+                    if (!pricingData.success) {
+                        alert('Error loading pricing');
+                        return;
+                    }
 
-            fetch('/community_billing_submit', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ submission_id: submissionId })
-            })
-            .then(r => r.json())
-            .then(result => {
-                if (result.success) {
-                    showMessage('Submitted! Redirecting...', 'success');
-                    setTimeout(() => window.location.href = '/community_billing_tech', 2000);
-                } else {
-                    alert('Error: ' + result.error);
-                }
-            })
-            .catch(e => alert('Error: ' + e));
+                    const pricing = pricingData.pricing;
+                    const rows = document.querySelectorAll('[data-item-id]');
+                    let totalCost = 0;
+                    let costDetails = {};
+
+                    rows.forEach(row => {
+                        const nozzle = parseInt(row.querySelector('.nozzle').value) || 0;
+                        const pop_up_6_inch = parseInt(row.querySelector('.pop_up_6_inch').value) || 0;
+                        const pop_up_12_inch = parseInt(row.querySelector('.pop_up_12_inch').value) || 0;
+                        const rotor_6_inch = parseInt(row.querySelector('.rotor_6_inch').value) || 0;
+                        const new_pop_up_6_inch = parseInt(row.querySelector('.new_pop_up_6_inch').value) || 0;
+                        const new_pop_up_12_inch = parseInt(row.querySelector('.new_pop_up_12_inch').value) || 0;
+                        const riser = parseInt(row.querySelector('.riser').value) || 0;
+                        const solenoid = parseInt(row.querySelector('.solenoid').value) || 0;
+                        const stat_decoder_1 = parseInt(row.querySelector('.stat_decoder_1').value) || 0;
+
+                        // Calculate cost for this row
+                        const rowCost = (nozzle * pricing.nozzle) +
+                                       (pop_up_6_inch * pricing.pop_up_6_inch) +
+                                       (pop_up_12_inch * pricing.pop_up_12_inch) +
+                                       (rotor_6_inch * pricing.rotor_6_inch) +
+                                       (new_pop_up_6_inch * pricing.new_pop_up_6_inch) +
+                                       (new_pop_up_12_inch * pricing.new_pop_up_12_inch) +
+                                       (riser * pricing.riser) +
+                                       (solenoid * pricing.solenoid) +
+                                       (stat_decoder_1 * pricing.stat_decoder_1);
+
+                        if (rowCost > 0) {
+                            const zone = row.querySelector('.zone').value;
+                            costDetails[zone] = rowCost;
+                            totalCost += rowCost;
+                        }
+                    });
+
+                    // Display cost breakdown
+                    let html = '';
+                    Object.entries(costDetails).forEach(([zone, cost]) => {
+                        html += `<div>${zone}: <strong>$${cost.toFixed(2)}</strong></div>`;
+                    });
+
+                    document.getElementById('costDetails').innerHTML = html;
+                    document.getElementById('totalCost').textContent = totalCost.toFixed(2);
+                    document.getElementById('costBreakdown').style.display = 'block';
+                })
+                .catch(e => alert('Error calculating cost: ' + e));
+        }
+
+        function submitForm() {
+            // First calculate and show cost breakdown
+            calculateCost();
+
+            // Wait for cost display, then confirm
+            setTimeout(() => {
+                if (!confirm('Submit form? You won\'t be able to edit it afterwards.')) return;
+
+                fetch('/community_billing_submit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ submission_id: submissionId })
+                })
+                .then(r => r.json())
+                .then(result => {
+                    if (result.success) {
+                        showMessage('Submitted! Redirecting...', 'success');
+                        setTimeout(() => window.location.href = '/community_billing_tech', 2000);
+                    } else {
+                        alert('Error: ' + result.error);
+                    }
+                })
+                .catch(e => alert('Error: ' + e));
+            }, 100);
         }
 
         function goBack() {
@@ -13182,6 +13270,23 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                            onkeypress="if(event.key==='Enter') addHouseNumber({{ community.id }}, event)">
                                     <button type="button" class="btn-add-house" onclick="addHouseNumber({{ community.id }})">Add House</button>
                                 </div>
+
+                                <!-- Pricing Section -->
+                                <div class="pricing-section" style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px;">
+                                    <h4>💰 Nozzle Pricing</h4>
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px;">
+                                        <div><label>Nozzle:</label> $<input type="number" id="price-nozzle-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>6" Pop Up:</label> $<input type="number" id="price-pop_up_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>12" Pop Up:</label> $<input type="number" id="price-pop_up_12_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>6" Rotor:</label> $<input type="number" id="price-rotor_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>NEW 6" Pop Up:</label> $<input type="number" id="price-new_pop_up_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>NEW 12" Pop Up:</label> $<input type="number" id="price-new_pop_up_12_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>Riser:</label> $<input type="number" id="price-riser-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>Solenoid:</label> $<input type="number" id="price-solenoid-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>1 Stat Decoder:</label> $<input type="number" id="price-stat_decoder_1-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                    </div>
+                                    <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="margin-top: 10px; padding: 6px 12px; font-size: 12px;">Save Pricing</button>
+                                </div>
                             </div>
                             {% endif %}
                         </div>
@@ -13245,9 +13350,10 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             list.classList.toggle('visible');
             arrow.classList.toggle('expanded');
 
-            // Load houses if not already loaded
+            // Load houses and pricing if not already loaded
             if (list.classList.contains('visible') && !list.dataset.loaded) {
                 loadHouseNumbers(communityId);
+                loadPricing(communityId);
                 list.dataset.loaded = 'true';
             }
         }
@@ -13348,6 +13454,62 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 })
                 .catch(error => alert('Error: ' + error));
         }
+
+        // Pricing management functions
+        function loadPricing(communityId) {
+            fetch(`/community_get_pricing?community_id=${communityId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.pricing) {
+                        const pricing = data.pricing;
+                        document.getElementById(`price-nozzle-${communityId}`).value = pricing.nozzle || 1.0;
+                        document.getElementById(`price-pop_up_6_inch-${communityId}`).value = pricing.pop_up_6_inch || 1.0;
+                        document.getElementById(`price-pop_up_12_inch-${communityId}`).value = pricing.pop_up_12_inch || 1.0;
+                        document.getElementById(`price-rotor_6_inch-${communityId}`).value = pricing.rotor_6_inch || 1.0;
+                        document.getElementById(`price-new_pop_up_6_inch-${communityId}`).value = pricing.new_pop_up_6_inch || 1.0;
+                        document.getElementById(`price-new_pop_up_12_inch-${communityId}`).value = pricing.new_pop_up_12_inch || 1.0;
+                        document.getElementById(`price-riser-${communityId}`).value = pricing.riser || 1.0;
+                        document.getElementById(`price-solenoid-${communityId}`).value = pricing.solenoid || 1.0;
+                        document.getElementById(`price-stat_decoder_1-${communityId}`).value = pricing.stat_decoder_1 || 1.0;
+                    }
+                })
+                .catch(error => console.error('Error loading pricing:', error));
+        }
+
+        function savePricing(communityId) {
+            const pricing = {
+                community_id: communityId,
+                nozzle: parseFloat(document.getElementById(`price-nozzle-${communityId}`).value) || 1.0,
+                pop_up_6_inch: parseFloat(document.getElementById(`price-pop_up_6_inch-${communityId}`).value) || 1.0,
+                pop_up_12_inch: parseFloat(document.getElementById(`price-pop_up_12_inch-${communityId}`).value) || 1.0,
+                rotor_6_inch: parseFloat(document.getElementById(`price-rotor_6_inch-${communityId}`).value) || 1.0,
+                new_pop_up_6_inch: parseFloat(document.getElementById(`price-new_pop_up_6_inch-${communityId}`).value) || 1.0,
+                new_pop_up_12_inch: parseFloat(document.getElementById(`price-new_pop_up_12_inch-${communityId}`).value) || 1.0,
+                riser: parseFloat(document.getElementById(`price-riser-${communityId}`).value) || 1.0,
+                solenoid: parseFloat(document.getElementById(`price-solenoid-${communityId}`).value) || 1.0,
+                stat_decoder_1: parseFloat(document.getElementById(`price-stat_decoder_1-${communityId}`).value) || 1.0
+            };
+
+            fetch('/community_save_pricing', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(pricing)
+            })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('Pricing saved successfully!');
+                    } else {
+                        alert('Error: ' + data.error);
+                    }
+                })
+                .catch(error => alert('Error: ' + error));
+        }
+
+        // Load pricing when community section expands
+        document.addEventListener('DOMContentLoaded', function() {
+            // Pricing will be initialized with defaults from the form
+        });
     </script>
 
     <script>
@@ -14566,6 +14728,125 @@ def community_delete_house_number():
         return jsonify({'success': False, 'error': str(e)})
     finally:
         conn.close()
+
+# ============================================================================
+# COMMUNITY PRICING ROUTES
+# ============================================================================
+
+@app.route('/community_get_pricing', methods=['GET'])
+def community_get_pricing():
+    """Get pricing for a community"""
+    if 'username' not in session or session.get('role') not in ['office', 'technician']:
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    community_id = request.args.get('community_id')
+    if not community_id:
+        return jsonify({'success': False, 'error': 'Missing community_id'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    c.execute("""SELECT nozzle, pop_up_6_inch, pop_up_12_inch, rotor_6_inch,
+                        new_pop_up_6_inch, new_pop_up_12_inch, riser, solenoid, stat_decoder_1
+                 FROM community_nozzle_prices
+                 WHERE community_id = ?""", (community_id,))
+
+    pricing = c.fetchone()
+    conn.close()
+
+    if pricing:
+        return jsonify({
+            'success': True,
+            'pricing': {
+                'nozzle': pricing[0],
+                'pop_up_6_inch': pricing[1],
+                'pop_up_12_inch': pricing[2],
+                'rotor_6_inch': pricing[3],
+                'new_pop_up_6_inch': pricing[4],
+                'new_pop_up_12_inch': pricing[5],
+                'riser': pricing[6],
+                'solenoid': pricing[7],
+                'stat_decoder_1': pricing[8]
+            }
+        })
+    else:
+        # Return default pricing if not set
+        return jsonify({
+            'success': True,
+            'pricing': {
+                'nozzle': 1.0,
+                'pop_up_6_inch': 1.0,
+                'pop_up_12_inch': 1.0,
+                'rotor_6_inch': 1.0,
+                'new_pop_up_6_inch': 1.0,
+                'new_pop_up_12_inch': 1.0,
+                'riser': 1.0,
+                'solenoid': 1.0,
+                'stat_decoder_1': 1.0
+            }
+        })
+
+@app.route('/community_save_pricing', methods=['POST'])
+def community_save_pricing():
+    """Save pricing for a community"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    community_id = data.get('community_id')
+
+    if not community_id:
+        return jsonify({'success': False, 'error': 'Missing community_id'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    try:
+        # Check if pricing exists
+        c.execute("SELECT id FROM community_nozzle_prices WHERE community_id = ?", (community_id,))
+        exists = c.fetchone()
+
+        if exists:
+            # Update existing
+            c.execute("""UPDATE community_nozzle_prices
+                         SET nozzle = ?, pop_up_6_inch = ?, pop_up_12_inch = ?,
+                             rotor_6_inch = ?, new_pop_up_6_inch = ?, new_pop_up_12_inch = ?,
+                             riser = ?, solenoid = ?, stat_decoder_1 = ?
+                         WHERE community_id = ?""",
+                     (float(data.get('nozzle', 1.0)),
+                      float(data.get('pop_up_6_inch', 1.0)),
+                      float(data.get('pop_up_12_inch', 1.0)),
+                      float(data.get('rotor_6_inch', 1.0)),
+                      float(data.get('new_pop_up_6_inch', 1.0)),
+                      float(data.get('new_pop_up_12_inch', 1.0)),
+                      float(data.get('riser', 1.0)),
+                      float(data.get('solenoid', 1.0)),
+                      float(data.get('stat_decoder_1', 1.0)),
+                      community_id))
+        else:
+            # Insert new
+            c.execute("""INSERT INTO community_nozzle_prices
+                         (community_id, nozzle, pop_up_6_inch, pop_up_12_inch,
+                          rotor_6_inch, new_pop_up_6_inch, new_pop_up_12_inch,
+                          riser, solenoid, stat_decoder_1)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     (community_id,
+                      float(data.get('nozzle', 1.0)),
+                      float(data.get('pop_up_6_inch', 1.0)),
+                      float(data.get('pop_up_12_inch', 1.0)),
+                      float(data.get('rotor_6_inch', 1.0)),
+                      float(data.get('new_pop_up_6_inch', 1.0)),
+                      float(data.get('new_pop_up_12_inch', 1.0)),
+                      float(data.get('riser', 1.0)),
+                      float(data.get('solenoid', 1.0)),
+                      float(data.get('stat_decoder_1', 1.0))))
+
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'message': 'Pricing saved successfully'})
+    except Exception as e:
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
 
 # ============================================================================
 # END DEBUG ROUTES
