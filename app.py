@@ -14356,14 +14356,12 @@ MANAGE_COMMUNITIES_TEMPLATE = '''
                                 </span>
                             </div>
                         </div>
-                        {% if community.active %}
-                            <form method="POST" action="{{ url_for('manage_communities') }}" style="display: inline;"
-                                  onsubmit="return confirm('Are you sure you want to deactivate this community?');">
-                                <input type="hidden" name="action" value="delete">
-                                <input type="hidden" name="community_id" value="{{ community.id }}">
-                                <button type="submit" class="btn-delete">Deactivate</button>
-                            </form>
-                        {% endif %}
+                        <form method="POST" action="{{ url_for('manage_communities') }}" style="display: inline;"
+                              onsubmit="return confirm('Delete this community and all its data?\n\nThis action CANNOT be undone.') && confirm('Are you absolutely sure? This will permanently delete all submissions and addresses for this community.');">
+                            <input type="hidden" name="action" value="delete">
+                            <input type="hidden" name="community_id" value="{{ community.id }}">
+                            <button type="submit" class="btn-delete">🗑️ Delete</button>
+                        </form>
                     </div>
                 {% endfor %}
             </div>
@@ -15082,9 +15080,23 @@ def manage_communities():
         elif action == 'delete':
             community_id = request.form.get('community_id')
             try:
-                c.execute("UPDATE communities SET active = 0 WHERE id = ?", (community_id,))
-                conn.commit()
-                flash('Community deactivated successfully', 'success')
+                # Get community name first
+                c.execute("SELECT name FROM communities WHERE id = ?", (community_id,))
+                community = c.fetchone()
+                if not community:
+                    flash('Community not found', 'error')
+                else:
+                    community_name = community[0]
+
+                    # Delete all related data first (cascading delete)
+                    c.execute("DELETE FROM community_billing_line_items WHERE submission_id IN (SELECT id FROM community_billing_submissions WHERE community_name = ?)", (community_name,))
+                    c.execute("DELETE FROM community_billing_submissions WHERE community_name = ?", (community_name,))
+                    c.execute("DELETE FROM verona_walk_clock_addresses WHERE community_id = ?", (community_id,))
+                    c.execute("DELETE FROM community_house_numbers WHERE community_id = ?", (community_id,))
+                    c.execute("DELETE FROM community_nozzle_prices WHERE community_id = ?", (community_id,))
+                    c.execute("DELETE FROM communities WHERE id = ?", (community_id,))
+                    conn.commit()
+                    flash(f'Community "{community_name}" deleted permanently', 'success')
             except Exception as e:
                 flash(f'Error deleting community: {str(e)}', 'error')
 
@@ -15134,9 +15146,23 @@ def community_billing_office():
         elif action == 'delete':
             community_id = request.form.get('community_id')
             try:
-                c.execute("UPDATE communities SET active = 0 WHERE id = ?", (community_id,))
-                conn.commit()
-                flash('Community deactivated successfully', 'success')
+                # Get community name first
+                c.execute("SELECT name FROM communities WHERE id = ?", (community_id,))
+                community = c.fetchone()
+                if not community:
+                    flash('Community not found', 'error')
+                else:
+                    community_name = community[0]
+
+                    # Delete all related data first (cascading delete)
+                    c.execute("DELETE FROM community_billing_line_items WHERE submission_id IN (SELECT id FROM community_billing_submissions WHERE community_name = ?)", (community_name,))
+                    c.execute("DELETE FROM community_billing_submissions WHERE community_name = ?", (community_name,))
+                    c.execute("DELETE FROM verona_walk_clock_addresses WHERE community_id = ?", (community_id,))
+                    c.execute("DELETE FROM community_house_numbers WHERE community_id = ?", (community_id,))
+                    c.execute("DELETE FROM community_nozzle_prices WHERE community_id = ?", (community_id,))
+                    c.execute("DELETE FROM communities WHERE id = ?", (community_id,))
+                    conn.commit()
+                    flash(f'Community "{community_name}" deleted permanently', 'success')
             except Exception as e:
                 flash(f'Error deleting community: {str(e)}', 'error')
 
