@@ -12541,9 +12541,6 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
         <div id="message"></div>
 
-        <!-- Datalist for house number autocomplete -->
-        <datalist id="houseNumbersList"></datalist>
-
         <div class="spreadsheet">
             <table>
                 <thead>
@@ -12564,7 +12561,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 <tbody id="tableBody">
                     {% for item in line_items %}
                     <tr class="item-row" data-item-id="{{ item.id }}">
-                        <td><input type="text" class="zone" list="houseNumbersList" value="{{ (item.zone_and_address or '')|e }}" placeholder="Select or enter house number"></td>
+                        <td><input type="text" class="zone" value="{{ (item.zone_and_address or '')|e }}" readonly></td>
                         <td><input type="number" class="nozzle" value="{{ item.nozzle or 0 }}"></td>
                         <td><input type="number" class="pop_up_6_inch" value="{{ item.pop_up_6_inch or 0 }}"></td>
                         <td><input type="number" class="pop_up_12_inch" value="{{ item.pop_up_12_inch or 0 }}"></td>
@@ -12587,7 +12584,6 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         </div>
 
         <div class="controls">
-            <button class="btn-secondary" onclick="addNewRow()">+ Add Row</button>
             <button class="btn-primary" onclick="goBack()">← Back</button>
             <button class="btn-success" id="submitBtn" onclick="submitForm()" {% if status == 'submitted' %}disabled{% endif %}>
                 {% if status == 'submitted' %}Submitted{% else %}Submit & Finalize{% endif %}
@@ -12619,12 +12615,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             console.error('Failed to parse page data:', e);
         }
 
-        // Load house numbers and attach event listeners
+        // Attach event listeners on page load
         document.addEventListener('DOMContentLoaded', function() {
-            console.log('Spreadsheet loaded');
-            if (communityId && communityId !== null) {
-                loadHouseNumbers();
-            }
             attachRowEventListeners();
         });
 
@@ -12641,51 +12633,6 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     deleteItem(row.dataset.itemId);
                 });
             });
-        }
-
-        function loadHouseNumbers() {
-            fetch('/community_house_numbers?community_id=' + communityId)
-                .then(r => r.json())
-                .then(data => {
-                    if (data.success && data.house_numbers) {
-                        const datalist = document.getElementById('houseNumbersList');
-                        data.house_numbers.forEach(house => {
-                            const option = document.createElement('option');
-                            option.value = house.house_number;
-                            datalist.appendChild(option);
-                        });
-                    }
-                })
-                .catch(e => console.error('Error loading house numbers:', e));
-        }
-
-        function addNewRow() {
-            const tableBody = document.getElementById('tableBody');
-            const newId = 'new_' + Date.now();
-            const newRow = document.createElement('tr');
-            newRow.className = 'item-row';
-            newRow.dataset.itemId = newId;
-
-            newRow.innerHTML = `
-                <td><input type="text" class="zone" list="houseNumbersList" placeholder="Select or enter house number"></td>
-                <td><input type="number" class="nozzle" value="0"></td>
-                <td><input type="number" class="pop_up_6_inch" value="0"></td>
-                <td><input type="number" class="pop_up_12_inch" value="0"></td>
-                <td><input type="number" class="rotor_6_inch" value="0"></td>
-                <td><input type="number" class="new_pop_up_6_inch" value="0"></td>
-                <td><input type="number" class="new_pop_up_12_inch" value="0"></td>
-                <td><input type="number" class="riser" value="0"></td>
-                <td><input type="number" class="solenoid" value="0"></td>
-                <td><input type="number" class="stat_decoder_1" value="0"></td>
-                <td>
-                    <div class="action-buttons">
-                        <button class="btn-save save-btn">Save</button>
-                        <button class="btn-delete delete-btn">Delete</button>
-                    </div>
-                </td>
-            `;
-            tableBody.appendChild(newRow);
-            attachRowEventListeners();
         }
 
         function saveItem(itemId) {
@@ -14073,6 +14020,48 @@ def community_billing_spreadsheet():
             'solenoid': row[9],
             'stat_decoder_1': row[10]
         })
+
+    # If no line items yet, populate from house numbers added by office user
+    if not line_items:
+        # Get community ID first
+        c.execute("SELECT id FROM communities WHERE name = ? AND active = 1", (community,))
+        community_row = c.fetchone()
+        if community_row:
+            community_id = community_row[0]
+            # Get all house numbers for this community
+            c.execute("SELECT house_number FROM community_house_numbers WHERE community_id = ? ORDER BY house_number",
+                     (community_id,))
+            house_numbers = [row[0] for row in c.fetchall()]
+
+            # Create a line item for each house number
+            for house_number in house_numbers:
+                c.execute("""INSERT INTO community_billing_line_items
+                             (submission_id, zone_and_address, created_at)
+                             VALUES (?, ?, ?)""",
+                         (submission_id, house_number, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+            conn.commit()
+
+            # Re-fetch the newly created line items
+            c.execute("""SELECT id, zone_and_address, nozzle, pop_up_6_inch, pop_up_12_inch,
+                                rotor_6_inch, new_pop_up_6_inch, new_pop_up_12_inch,
+                                riser, solenoid, stat_decoder_1
+                         FROM community_billing_line_items
+                         WHERE submission_id = ?
+                         ORDER BY id""", (submission_id,))
+            for row in c.fetchall():
+                line_items.append({
+                    'id': row[0],
+                    'zone_and_address': row[1],
+                    'nozzle': row[2],
+                    'pop_up_6_inch': row[3],
+                    'pop_up_12_inch': row[4],
+                    'rotor_6_inch': row[5],
+                    'new_pop_up_6_inch': row[6],
+                    'new_pop_up_12_inch': row[7],
+                    'riser': row[8],
+                    'solenoid': row[9],
+                    'stat_decoder_1': row[10]
+                })
 
     # Get submission status
     c.execute("SELECT status, submitted_at FROM community_billing_submissions WHERE id = ?", (submission_id,))
