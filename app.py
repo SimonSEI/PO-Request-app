@@ -3675,6 +3675,26 @@ def download_backup(filename):
     except Exception as e:
         return f'Error: {str(e)}', 500
 
+@app.route('/download_file/<filename>', methods=['GET'])
+def download_file(filename):
+    """Download a generated file (PDF/Excel exports)"""
+    if 'username' not in session or session['role'] != 'office':
+        return 'Unauthorized', 401
+
+    try:
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+
+        # Security: ensure the file is in the upload directory
+        if not os.path.abspath(filepath).startswith(os.path.abspath(app.config['UPLOAD_FOLDER'])):
+            return 'Invalid file path', 403
+
+        if not os.path.exists(filepath):
+            return 'File not found', 404
+
+        return send_file(filepath, as_attachment=True, download_name=filename)
+    except Exception as e:
+        return f'Error: {str(e)}', 500
+
 @app.route('/bulk_upload_invoices', methods=['POST'])
 def bulk_upload_invoices():
     """Process bulk PDF upload with multiple invoices"""
