@@ -1931,6 +1931,113 @@ def office_admin():
                                  username=session['username'],
                                  full_name=full_name)
 
+@app.route('/manage_office_admins')
+def manage_office_admins():
+    """Manage office administrator accounts - office admins only"""
+    if 'username' not in session or session['role'] != 'office':
+        return redirect(url_for('login'))
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Get all office administrators
+        c.execute("""SELECT id, username, full_name, email, created_date, last_login
+                     FROM users WHERE role='office'
+                     ORDER BY full_name ASC""")
+        admins = c.fetchall()
+
+        conn.close()
+        return render_template_string(MANAGE_OFFICE_ADMINS_TEMPLATE,
+                                     username=session['username'],
+                                     full_name=session.get('full_name', session.get('username', 'User')),
+                                     admins=admins)
+    except Exception as e:
+        return f"<h2>Error loading Manage Office Admins page</h2><p>{str(e)}</p><p><a href='/office_admin'>Back to Admin Panel</a></p>"
+
+@app.route('/add_office_admin', methods=['POST'])
+def add_office_admin():
+    """Add a new office administrator account"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    try:
+        data = request.get_json()
+        username = data.get('username', '').strip()
+        full_name = data.get('full_name', '').strip()
+        email = data.get('email', '').strip()
+        password = data.get('password', '').strip()
+
+        # Validate inputs
+        if not all([username, full_name, email, password]):
+            return jsonify({'success': False, 'error': 'All fields are required'})
+
+        if len(password) < 6:
+            return jsonify({'success': False, 'error': 'Password must be at least 6 characters'})
+
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Check if username already exists
+        c.execute("SELECT id FROM users WHERE username = ?", (username,))
+        if c.fetchone():
+            conn.close()
+            return jsonify({'success': False, 'error': 'Username already exists'})
+
+        # Insert new admin
+        c.execute("""INSERT INTO users (username, password, full_name, email, role, tech_type, created_date)
+                     VALUES (?, ?, ?, ?, 'office', NULL, ?)""",
+                 (username, password, full_name, email, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({'success': True, 'message': f'Office administrator {full_name} added successfully'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/delete_office_admin', methods=['POST'])
+def delete_office_admin():
+    """Delete an office administrator account"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    try:
+        data = request.get_json()
+        admin_id = data.get('admin_id')
+
+        if not admin_id:
+            return jsonify({'success': False, 'error': 'Admin ID is required'})
+
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Get admin info before deletion
+        c.execute("SELECT username, full_name FROM users WHERE id = ? AND role = 'office'", (admin_id,))
+        admin = c.fetchone()
+
+        if not admin:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Administrator not found'})
+
+        # Prevent deleting the last admin
+        c.execute("SELECT COUNT(*) FROM users WHERE role = 'office'")
+        admin_count = c.fetchone()[0]
+
+        if admin_count <= 1:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Cannot delete the last office administrator'})
+
+        # Delete the admin
+        c.execute("DELETE FROM users WHERE id = ?", (admin_id,))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({'success': True, 'message': f'Administrator {admin[1]} deleted successfully'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
 @app.route('/manage_jobs')
 def manage_jobs():
     """Manage Jobs - Display job management interface"""
@@ -6625,11 +6732,256 @@ OFFICE_ADMIN_TEMPLATE = '''
                 <a href="{{ url_for('manage_install_techs') }}" class="btn btn-primary">Install Techs</a>
             </div>
         </div>
+
+        <!-- Office Administrator Management -->
+        <div class="card">
+            <h2>🔑 Office Administrator Accounts</h2>
+            <p>Manage office administrator accounts. Add new administrators or remove existing ones. Each administrator can manage all other administrator accounts.</p>
+            <div class="card-buttons">
+                <a href="{{ url_for('manage_office_admins') }}" class="btn btn-primary">Manage Admins</a>
+            </div>
+        </div>
     </div>
 
     <div class="footer">
         <p>Office Administrator Panel • PO Request System v1.2.0</p>
     </div>
+</body>
+</html>
+'''
+
+MANAGE_OFFICE_ADMINS_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Manage Office Administrators</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: Arial, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        .header h1 { font-size: 28px; }
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            text-decoration: none;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: inline-block;
+            text-align: center;
+        }
+        .btn-primary { background: #28a745; color: white; }
+        .btn-primary:hover { background: #218838; }
+        .btn-secondary { background: rgba(255,255,255,0.2); color: white; border: 2px solid white; }
+        .btn-secondary:hover { background: rgba(255,255,255,0.3); }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-danger:hover { background: #c82333; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .card { background: white; border-radius: 10px; padding: 25px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .card h2 { color: #333; margin-bottom: 20px; font-size: 24px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; color: #555; font-weight: bold; font-size: 14px; }
+        input { width: 100%; padding: 10px; border: 2px solid #ddd; border-radius: 5px; font-size: 14px; }
+        .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; }
+        .table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        .table th {
+            background: #667eea;
+            color: white;
+            padding: 12px;
+            text-align: left;
+            font-weight: bold;
+        }
+        .table td {
+            padding: 12px;
+            border-bottom: 1px solid #ddd;
+        }
+        .table tr:hover { background: #f9f9f9; }
+        .action-btn {
+            padding: 6px 12px;
+            margin: 0 5px;
+            font-size: 12px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .success { background: #d4edda; color: #155724; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+        .error { background: #f8d7da; color: #721c24; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+        .footer { text-align: center; margin-top: 40px; color: #666; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <h1>🔑 Manage Office Administrators</h1>
+            <p style="opacity: 0.9; margin-top: 5px;">Logged in as: {{ full_name }}</p>
+        </div>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <a href="{{ url_for('office_admin') }}" class="btn btn-secondary">← Back to Admin</a>
+            <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <!-- Add New Admin -->
+        <div class="card">
+            <h2>➕ Add New Office Administrator</h2>
+            <form onsubmit="addAdmin(event)">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="username">Username *</label>
+                        <input type="text" id="username" placeholder="e.g., jsmith" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="full_name">Full Name *</label>
+                        <input type="text" id="full_name" placeholder="e.g., John Smith" required>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="email">Email *</label>
+                        <input type="email" id="email" placeholder="e.g., john@example.com" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="password">Password *</label>
+                        <input type="password" id="password" placeholder="Minimum 6 characters" required>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary">Add Administrator</button>
+            </form>
+            <div id="add-message" style="margin-top: 15px;"></div>
+        </div>
+
+        <!-- List of Admins -->
+        <div class="card">
+            <h2>📋 Current Office Administrators ({{ admins|length }})</h2>
+            {% if admins %}
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Username</th>
+                            <th>Full Name</th>
+                            <th>Email</th>
+                            <th>Created Date</th>
+                            <th>Last Login</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for admin in admins %}
+                        <tr>
+                            <td><strong>{{ admin[1] }}</strong></td>
+                            <td>{{ admin[2] }}</td>
+                            <td>{{ admin[3] }}</td>
+                            <td>{{ admin[4] or 'N/A' }}</td>
+                            <td>{{ admin[5] or 'Never' }}</td>
+                            <td>
+                                <button class="action-btn btn-danger" onclick="deleteAdmin({{ admin[0] }}, '{{ admin[2] }}')">Delete</button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <p style="color: #666; margin-top: 20px;">No office administrators found.</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="footer">
+        <p>Office Administrator Management • PO Request System v1.2.0</p>
+    </div>
+
+    <script>
+        function addAdmin(event) {
+            event.preventDefault();
+
+            const username = document.getElementById('username').value.trim();
+            const full_name = document.getElementById('full_name').value.trim();
+            const email = document.getElementById('email').value.trim();
+            const password = document.getElementById('password').value;
+
+            if (!username || !full_name || !email || !password) {
+                showMessage('add-message', 'All fields are required', 'error');
+                return;
+            }
+
+            fetch('/add_office_admin', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    username: username,
+                    full_name: full_name,
+                    email: email,
+                    password: password
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showMessage('add-message', data.message, 'success');
+                    document.querySelector('form').reset();
+                    setTimeout(() => location.reload(), 1500);
+                } else {
+                    showMessage('add-message', 'Error: ' + data.error, 'error');
+                }
+            })
+            .catch(error => {
+                showMessage('add-message', 'Error: ' + error, 'error');
+            });
+        }
+
+        function deleteAdmin(adminId, adminName) {
+            if (!confirm(`Delete administrator "${adminName}"?\\n\\nThis action cannot be undone.`)) {
+                return;
+            }
+
+            if (!confirm('Are you absolutely sure?')) {
+                return;
+            }
+
+            fetch('/delete_office_admin', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ admin_id: adminId })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert(data.message);
+                    location.reload();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            })
+            .catch(error => {
+                alert('Error: ' + error);
+            });
+        }
+
+        function showMessage(elementId, message, type) {
+            const element = document.getElementById(elementId);
+            element.className = type;
+            element.textContent = message;
+        }
+    </script>
 </body>
 </html>
 '''
