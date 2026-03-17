@@ -13698,7 +13698,6 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
             <button class="btn-search" onclick="searchSubmissions()" style="margin-top: 10px;">Search</button>
             <div style="display: flex; gap: 10px; margin-top: 10px;">
-                <button class="btn-export" id="exportPdfBtn" onclick="exportPDF()" style="display: none;">Export to PDF</button>
                 <button class="btn-export" id="exportExcelBtn" onclick="exportExcel()" style="display: none; background: #2e7d32;">Export to Excel</button>
             </div>
         </div>
@@ -14064,18 +14063,15 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
         function displayResults(data) {
             const resultsDiv = document.getElementById('results');
-            const exportPdfBtn = document.getElementById('exportPdfBtn');
             const exportExcelBtn = document.getElementById('exportExcelBtn');
 
             if (!data.success || !data.submissions || data.submissions.length === 0) {
                 resultsDiv.innerHTML = '<div class="no-results">No submissions found for this community and month.</div>';
-                exportPdfBtn.style.display = 'none';
                 exportExcelBtn.style.display = 'none';
                 return;
             }
 
             // Show export buttons
-            exportPdfBtn.style.display = 'inline-block';
             exportExcelBtn.style.display = 'inline-block';
 
             let html = '';
@@ -14163,41 +14159,6 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             });
 
             resultsDiv.innerHTML = html;
-        }
-
-        function exportPDF() {
-            const community = document.getElementById('community').value;
-            const workYear = document.getElementById('workYear').value;
-            const workMonth = document.getElementById('workMonth').value;
-
-            if (!community || !workYear || !workMonth) {
-                alert('Please search for submissions first');
-                return;
-            }
-
-            const workMonthStr = workYear + '-' + workMonth;
-
-            fetch('/community_billing_export_pdf', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    community: community,
-                    work_month: workMonthStr
-                })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    alert('PDF generated successfully! Starting download...');
-                    // The download should start automatically
-                    window.location.href = data.download_url;
-                } else {
-                    alert('Error exporting PDF: ' + data.error);
-                }
-            })
-            .catch(error => {
-                alert('Error: ' + error);
-            });
         }
 
         function exportExcel() {
@@ -15432,132 +15393,6 @@ def community_billing_office_data():
         response['clocks_cost'] = round(clocks_cost, 2)
 
     return jsonify(response)
-
-@app.route('/community_billing_export_pdf', methods=['POST'])
-def community_billing_export_pdf():
-    """Export submissions to PDF"""
-    if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
-
-    try:
-        from reportlab.lib.pagesizes import letter, landscape
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.units import inch
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-        from reportlab.lib import colors
-    except ImportError:
-        return jsonify({'success': False, 'error': 'ReportLab not installed'})
-
-    data = request.get_json()
-    community = data.get('community')
-    work_month = data.get('work_month')
-
-    # Get submissions data
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
-    c.execute("""SELECT id, tech_username, status, submitted_at
-                 FROM community_billing_submissions
-                 WHERE community_name = ? AND work_date LIKE ? AND status = 'submitted'
-                 ORDER BY work_date DESC, submitted_at DESC""",
-             (community, work_month + '%'))
-
-    submissions = []
-    for row in c.fetchall():
-        submission_id = row[0]
-
-        c.execute("""SELECT zone_and_address, nozzle, pop_up_6_inch, pop_up_12_inch,
-                            rotor_6_inch, new_pop_up_6_inch, new_pop_up_12_inch,
-                            riser, solenoid, stat_decoder_1
-                     FROM community_billing_line_items
-                     WHERE submission_id = ?
-                     ORDER BY id""", (submission_id,))
-
-        line_items = []
-        for item_row in c.fetchall():
-            line_items.append({
-                'zone_and_address': item_row[0] or '',
-                'nozzle': item_row[1] or 0,
-                'pop_up_6_inch': item_row[2] or 0,
-                'pop_up_12_inch': item_row[3] or 0,
-                'rotor_6_inch': item_row[4] or 0,
-                'new_pop_up_6_inch': item_row[5] or 0,
-                'new_pop_up_12_inch': item_row[6] or 0,
-                'riser': item_row[7] or 0,
-                'solenoid': item_row[8] or 0,
-                'stat_decoder_1': item_row[9] or 0
-            })
-
-        submissions.append({
-            'tech_username': row[1],
-            'submitted_at': row[3],
-            'line_items': line_items
-        })
-
-    conn.close()
-
-    # Create PDF
-    try:
-        pdf_filename = f"community_billing_{community.replace(' ', '_')}_{work_date}.pdf"
-        pdf_path = os.path.join(app.config['UPLOAD_FOLDER'], pdf_filename)
-
-        doc = SimpleDocTemplate(pdf_path, pagesize=landscape(letter))
-        story = []
-
-        # Title
-        styles = getSampleStyleSheet()
-        title_style = ParagraphStyle('CustomTitle', parent=styles['Heading1'], fontSize=14, spaceAfter=12)
-        story.append(Paragraph(f"Community Maintenance Report - {community} ({work_date})", title_style))
-        story.append(Spacer(1, 0.2*inch))
-
-        # For each submission, create a table
-        for submission in submissions:
-            story.append(Paragraph(f"<b>Tech: {submission['tech_username']} (Submitted: {submission['submitted_at']})</b>", styles['Normal']))
-
-            # Create table data
-            table_data = [['Zone & Address', 'Nozzle', '6" Pop Up', '12" Pop Up', '6" Rotor',
-                          'NEW 6" Pop Up', 'NEW 12" Pop Up', 'Riser', 'Solenoid', '1 Stat Decoder']]
-
-            for item in submission['line_items']:
-                table_data.append([
-                    item['zone_and_address'],
-                    str(item['nozzle']),
-                    str(item['pop_up_6_inch']),
-                    str(item['pop_up_12_inch']),
-                    str(item['rotor_6_inch']),
-                    str(item['new_pop_up_6_inch']),
-                    str(item['new_pop_up_12_inch']),
-                    str(item['riser']),
-                    str(item['solenoid']),
-                    str(item['stat_decoder_1'])
-                ])
-
-            # Create and style table
-            table = Table(table_data, colWidths=[1.2*inch, 0.6*inch, 0.6*inch, 0.6*inch, 0.6*inch,
-                                                  0.6*inch, 0.6*inch, 0.6*inch, 0.6*inch, 0.6*inch])
-            table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 8),
-                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-                ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                ('FONTSIZE', (0, 1), (-1, -1), 7)
-            ]))
-
-            story.append(table)
-            story.append(Spacer(1, 0.3*inch))
-
-        doc.build(story)
-
-        return jsonify({
-            'success': True,
-            'download_url': f'/download_file/{pdf_filename}'
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/community_billing_export_excel', methods=['POST'])
 def community_billing_export_excel():
