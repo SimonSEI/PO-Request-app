@@ -14047,8 +14047,28 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             // Add total cost summary at the top
             if (data.has_pricing) {
                 html += '<div style="background: #e8f5e9; border: 2px solid #4caf50; border-radius: 6px; padding: 16px; margin-bottom: 20px;">';
-                html += '<div style="font-size: 14px; color: #666; margin-bottom: 5px;">Total Cost for All Parts</div>';
-                html += '<div style="font-size: 32px; font-weight: bold; color: #2e7d32;">$' + data.total_cost.toFixed(2) + '</div>';
+
+                // For Verona Walk HOA, show separated costs
+                if (data.community === 'Verona Walk HOA') {
+                    html += '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 12px;">';
+                    html += '<div>';
+                    html += '<div style="font-size: 12px; color: #666; margin-bottom: 4px;">Common Area</div>';
+                    html += '<div style="font-size: 24px; font-weight: bold; color: #2e7d32;">$' + data.common_area_cost.toFixed(2) + '</div>';
+                    html += '</div>';
+                    html += '<div>';
+                    html += '<div style="font-size: 12px; color: #666; margin-bottom: 4px;">All Clocks</div>';
+                    html += '<div style="font-size: 24px; font-weight: bold; color: #2e7d32;">$' + data.clocks_cost.toFixed(2) + '</div>';
+                    html += '</div>';
+                    html += '</div>';
+                    html += '<div style="border-top: 1px solid #ccc; padding-top: 12px; margin-top: 12px;">';
+                    html += '<div style="font-size: 12px; color: #666; margin-bottom: 4px;">Total Cost</div>';
+                    html += '<div style="font-size: 28px; font-weight: bold; color: #2e7d32;">$' + data.total_cost.toFixed(2) + '</div>';
+                    html += '</div>';
+                } else {
+                    html += '<div style="font-size: 14px; color: #666; margin-bottom: 5px;">Total Cost for All Parts</div>';
+                    html += '<div style="font-size: 32px; font-weight: bold; color: #2e7d32;">$' + data.total_cost.toFixed(2) + '</div>';
+                }
+
                 html += '<div style="font-size: 12px; color: #666; margin-top: 5px;">' + data.submissions.length + ' submission(s) found</div>';
                 html += '</div>';
             } else {
@@ -15262,6 +15282,8 @@ def community_billing_office_data():
 
     submissions = []
     total_cost = 0.0
+    common_area_cost = 0.0
+    clocks_cost = 0.0
 
     for row in c.fetchall():
         submission_id = row[0]
@@ -15305,6 +15327,13 @@ def community_billing_office_data():
                 )
                 total_cost += item_cost
 
+                # For Verona Walk HOA, separate common area and clocks costs
+                if community == 'Verona Walk HOA':
+                    if item_row[0] and item_row[0].startswith('Common Area'):
+                        common_area_cost += item_cost
+                    else:
+                        clocks_cost += item_cost
+
         submissions.append({
             'id': submission_id,
             'tech_username': row[1],
@@ -15315,14 +15344,21 @@ def community_billing_office_data():
 
     conn.close()
 
-    return jsonify({
+    response = {
         'success': True,
         'community': community,
         'work_date': work_date,
         'submissions': submissions,
         'total_cost': round(total_cost, 2),
         'has_pricing': pricing is not None
-    })
+    }
+
+    # For Verona Walk HOA, include separated costs
+    if community == 'Verona Walk HOA':
+        response['common_area_cost'] = round(common_area_cost, 2)
+        response['clocks_cost'] = round(clocks_cost, 2)
+
+    return jsonify(response)
 
 @app.route('/community_billing_export_pdf', methods=['POST'])
 def community_billing_export_pdf():
