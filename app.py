@@ -13665,8 +13665,8 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             </div>
 
             <div class="form-group">
-                <label for="workDate">Select Date *</label>
-                <input type="date" id="workDate">
+                <label for="workDate">Select Month *</label>
+                <input type="month" id="workDate">
             </div>
 
             <button class="btn-search" onclick="searchSubmissions()">Search</button>
@@ -13996,16 +13996,17 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
     </script>
 
     <script>
-        // Set today's date as default
-        const today = new Date().toISOString().split('T')[0];
-        document.getElementById('workDate').value = today;
+        // Set current month as default
+        const today = new Date();
+        const currentMonth = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0');
+        document.getElementById('workDate').value = currentMonth;
 
         function searchSubmissions() {
             const community = document.getElementById('community').value;
-            const workDate = document.getElementById('workDate').value;
+            const workMonth = document.getElementById('workDate').value;
 
-            if (!community || !workDate) {
-                alert('Please select both community and date');
+            if (!community || !workMonth) {
+                alert('Please select both community and month');
                 return;
             }
 
@@ -14014,7 +14015,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     community: community,
-                    work_date: workDate
+                    work_month: workMonth
                 })
             })
             .then(response => response.json())
@@ -14032,7 +14033,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             const exportExcelBtn = document.getElementById('exportExcelBtn');
 
             if (!data.success || !data.submissions || data.submissions.length === 0) {
-                resultsDiv.innerHTML = '<div class="no-results">No submissions found for this community and date.</div>';
+                resultsDiv.innerHTML = '<div class="no-results">No submissions found for this community and month.</div>';
                 exportPdfBtn.style.display = 'none';
                 exportExcelBtn.style.display = 'none';
                 return;
@@ -14130,9 +14131,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
         function exportPDF() {
             const community = document.getElementById('community').value;
-            const workDate = document.getElementById('workDate').value;
+            const workMonth = document.getElementById('workDate').value;
 
-            if (!community || !workDate) {
+            if (!community || !workMonth) {
                 alert('Please search for submissions first');
                 return;
             }
@@ -14142,7 +14143,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     community: community,
-                    work_date: workDate
+                    work_month: workMonth
                 })
             })
             .then(response => response.json())
@@ -14162,9 +14163,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
         function exportExcel() {
             const community = document.getElementById('community').value;
-            const workDate = document.getElementById('workDate').value;
+            const workMonth = document.getElementById('workDate').value;
 
-            if (!community || !workDate) {
+            if (!community || !workMonth) {
                 alert('Please search for submissions first');
                 return;
             }
@@ -14174,7 +14175,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     community: community,
-                    work_date: workDate
+                    work_month: workMonth
                 })
             })
             .then(response => response.json())
@@ -15239,10 +15240,10 @@ def community_billing_office_data():
 
     data = request.get_json()
     community = data.get('community')
-    work_date = data.get('work_date')
+    work_month = data.get('work_month')
 
-    if not community or not work_date:
-        return jsonify({'success': False, 'error': 'Missing community or date'})
+    if not community or not work_month:
+        return jsonify({'success': False, 'error': 'Missing community or month'})
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -15273,12 +15274,12 @@ def community_billing_office_data():
                 'stat_decoder_1': pricing_row[8]
             }
 
-    # Get all submissions for this community and date
+    # Get all submissions for this community and month
     c.execute("""SELECT id, tech_username, status, submitted_at
                  FROM community_billing_submissions
-                 WHERE community_name = ? AND work_date = ? AND status = 'submitted'
-                 ORDER BY submitted_at DESC""",
-             (community, work_date))
+                 WHERE community_name = ? AND work_date LIKE ? AND status = 'submitted'
+                 ORDER BY work_date DESC, submitted_at DESC""",
+             (community, work_month + '%'))
 
     submissions = []
     total_cost = 0.0
@@ -15347,7 +15348,7 @@ def community_billing_office_data():
     response = {
         'success': True,
         'community': community,
-        'work_date': work_date,
+        'work_month': work_month,
         'submissions': submissions,
         'total_cost': round(total_cost, 2),
         'has_pricing': pricing is not None
@@ -15377,7 +15378,7 @@ def community_billing_export_pdf():
 
     data = request.get_json()
     community = data.get('community')
-    work_date = data.get('work_date')
+    work_month = data.get('work_month')
 
     # Get submissions data
     conn = sqlite3.connect(DB_PATH)
@@ -15385,9 +15386,9 @@ def community_billing_export_pdf():
 
     c.execute("""SELECT id, tech_username, status, submitted_at
                  FROM community_billing_submissions
-                 WHERE community_name = ? AND work_date = ? AND status = 'submitted'
-                 ORDER BY submitted_at DESC""",
-             (community, work_date))
+                 WHERE community_name = ? AND work_date LIKE ? AND status = 'submitted'
+                 ORDER BY work_date DESC, submitted_at DESC""",
+             (community, work_month + '%'))
 
     submissions = []
     for row in c.fetchall():
@@ -15500,7 +15501,7 @@ def community_billing_export_excel():
 
     data = request.get_json()
     community = data.get('community')
-    work_date = data.get('work_date')
+    work_month = data.get('work_month')
 
     # Get submissions data
     conn = sqlite3.connect(DB_PATH)
@@ -15534,9 +15535,9 @@ def community_billing_export_excel():
 
     c.execute("""SELECT id, tech_username, status, submitted_at
                  FROM community_billing_submissions
-                 WHERE community_name = ? AND work_date = ? AND status = 'submitted'
-                 ORDER BY submitted_at DESC""",
-             (community, work_date))
+                 WHERE community_name = ? AND work_date LIKE ? AND status = 'submitted'
+                 ORDER BY work_date DESC, submitted_at DESC""",
+             (community, work_month + '%'))
 
     submissions = []
     total_cost = 0.0
