@@ -923,8 +923,15 @@ def init_db():
                   riser INTEGER DEFAULT NULL,
                   solenoid INTEGER DEFAULT NULL,
                   stat_decoder_1 INTEGER DEFAULT NULL,
+                  notes TEXT,
                   created_at TEXT,
                   FOREIGN KEY (submission_id) REFERENCES community_billing_submissions(id) ON DELETE CASCADE)''')
+
+    # Migrate: Add notes column if it doesn't exist
+    try:
+        c.execute("SELECT notes FROM community_billing_line_items LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE community_billing_line_items ADD COLUMN notes TEXT")
 
     # Add default jobs if empty
     c.execute("SELECT COUNT(*) FROM jobs")
@@ -12673,6 +12680,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         <th>Riser</th>
                         <th>Solenoid</th>
                         <th>1 Stat Decoder</th>
+                        <th>Notes</th>
                     </tr>
                 </thead>
                 <tbody id="tableBody">
@@ -12688,6 +12696,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         <td><input type="number" class="riser" value="{{ item.riser if item.riser and item.riser != 0 else '' }}" min="0"></td>
                         <td><input type="number" class="solenoid" value="{{ item.solenoid if item.solenoid and item.solenoid != 0 else '' }}" min="0"></td>
                         <td><input type="number" class="stat_decoder_1" value="{{ item.stat_decoder_1 if item.stat_decoder_1 and item.stat_decoder_1 != 0 else '' }}" min="0"></td>
+                        <td><input type="text" class="notes" value="{{ item.notes or '' }}" placeholder="Add notes..."></td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -12771,7 +12780,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         new_pop_up_12_inch: row.querySelector('.new_pop_up_12_inch')?.value || '',
                         riser: row.querySelector('.riser')?.value || '',
                         solenoid: row.querySelector('.solenoid')?.value || '',
-                        stat_decoder_1: row.querySelector('.stat_decoder_1')?.value || ''
+                        stat_decoder_1: row.querySelector('.stat_decoder_1')?.value || '',
+                        notes: row.querySelector('.notes')?.value || ''
                     });
                 });
 
@@ -12830,7 +12840,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     new_pop_up_12_inch: row.querySelector('.new_pop_up_12_inch')?.value || '',
                     riser: row.querySelector('.riser')?.value || '',
                     solenoid: row.querySelector('.solenoid')?.value || '',
-                    stat_decoder_1: row.querySelector('.stat_decoder_1')?.value || ''
+                    stat_decoder_1: row.querySelector('.stat_decoder_1')?.value || '',
+                    notes: row.querySelector('.notes')?.value || ''
                 };
                 lineItems.push(item);
                 console.log('Row ' + idx + ':', item);
@@ -14066,6 +14077,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     html += '<th>Riser</th>';
                     html += '<th>Solenoid</th>';
                     html += '<th>1 Stat Decoder</th>';
+                    html += '<th>Notes</th>';
                     html += '</tr></thead>';
                     html += '<tbody>';
 
@@ -14081,6 +14093,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                         html += '<td>' + item.riser + '</td>';
                         html += '<td>' + item.solenoid + '</td>';
                         html += '<td>' + item.stat_decoder_1 + '</td>';
+                        html += '<td>' + (item.notes || '') + '</td>';
                         html += '</tr>';
                     });
 
@@ -14699,7 +14712,7 @@ def community_billing_spreadsheet():
     # Get all line items for this submission
     c.execute("""SELECT id, zone_and_address, nozzle, pop_up_6_inch, pop_up_12_inch,
                         rotor_6_inch, new_pop_up_6_inch, new_pop_up_12_inch,
-                        riser, solenoid, stat_decoder_1
+                        riser, solenoid, stat_decoder_1, notes
                  FROM community_billing_line_items
                  WHERE submission_id = ?
                  ORDER BY id""", (submission_id,))
@@ -14717,7 +14730,8 @@ def community_billing_spreadsheet():
             'new_pop_up_12_inch': row[7],
             'riser': row[8],
             'solenoid': row[9],
-            'stat_decoder_1': row[10]
+            'stat_decoder_1': row[10],
+            'notes': row[11]
         })
 
     # If no line items yet, populate from house numbers or clock addresses added by office user
@@ -14824,7 +14838,7 @@ def community_billing_save_item():
             c.execute("""UPDATE community_billing_line_items
                          SET zone_and_address = ?, nozzle = ?, pop_up_6_inch = ?,
                              pop_up_12_inch = ?, rotor_6_inch = ?, new_pop_up_6_inch = ?,
-                             new_pop_up_12_inch = ?, riser = ?, solenoid = ?, stat_decoder_1 = ?
+                             new_pop_up_12_inch = ?, riser = ?, solenoid = ?, stat_decoder_1 = ?, notes = ?
                          WHERE id = ? AND submission_id = ?""",
                      (zone_and_address,
                       int(data.get('nozzle') or 0),
@@ -14836,14 +14850,15 @@ def community_billing_save_item():
                       int(data.get('riser') or 0),
                       int(data.get('solenoid') or 0),
                       int(data.get('stat_decoder_1') or 0),
+                      data.get('notes') or '',
                       item_id, submission_id))
         else:
             # Create new item
             c.execute("""INSERT INTO community_billing_line_items
                          (submission_id, zone_and_address, nozzle, pop_up_6_inch,
                           pop_up_12_inch, rotor_6_inch, new_pop_up_6_inch,
-                          new_pop_up_12_inch, riser, solenoid, stat_decoder_1, created_at)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                          new_pop_up_12_inch, riser, solenoid, stat_decoder_1, notes, created_at)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                      (submission_id, zone_and_address,
                       int(data.get('nozzle') or 0),
                       int(data.get('pop_up_6_inch') or 0),
@@ -14854,6 +14869,7 @@ def community_billing_save_item():
                       int(data.get('riser') or 0),
                       int(data.get('solenoid') or 0),
                       int(data.get('stat_decoder_1') or 0),
+                      data.get('notes') or '',
                       datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
 
         conn.commit()
@@ -14933,6 +14949,7 @@ def community_billing_save_draft():
             riser = safe_int(item.get('riser'))
             solenoid = safe_int(item.get('solenoid'))
             stat_decoder_1 = safe_int(item.get('stat_decoder_1'))
+            notes = (item.get('notes') or '').strip()
 
             print(f"Item {idx} (ID={item_id}): nozzle={nozzle}, pop_up_6={pop_up_6_inch}, pop_up_12={pop_up_12_inch}")
 
@@ -14942,11 +14959,11 @@ def community_billing_save_draft():
                 c.execute("""UPDATE community_billing_line_items
                              SET zone_and_address = ?, nozzle = ?, pop_up_6_inch = ?,
                                  pop_up_12_inch = ?, rotor_6_inch = ?, new_pop_up_6_inch = ?,
-                                 new_pop_up_12_inch = ?, riser = ?, solenoid = ?, stat_decoder_1 = ?
+                                 new_pop_up_12_inch = ?, riser = ?, solenoid = ?, stat_decoder_1 = ?, notes = ?
                              WHERE id = ? AND submission_id = ?""",
                          (zone_and_address, nozzle, pop_up_6_inch, pop_up_12_inch,
                           rotor_6_inch, new_pop_up_6_inch, new_pop_up_12_inch,
-                          riser, solenoid, stat_decoder_1, item_id, submission_id))
+                          riser, solenoid, stat_decoder_1, notes, item_id, submission_id))
                 updated_count += 1
             else:
                 # Insert new item
@@ -14954,11 +14971,11 @@ def community_billing_save_draft():
                 c.execute("""INSERT INTO community_billing_line_items
                              (submission_id, zone_and_address, nozzle, pop_up_6_inch,
                               pop_up_12_inch, rotor_6_inch, new_pop_up_6_inch,
-                              new_pop_up_12_inch, riser, solenoid, stat_decoder_1, created_at)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                              new_pop_up_12_inch, riser, solenoid, stat_decoder_1, notes, created_at)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                          (submission_id, zone_and_address, nozzle, pop_up_6_inch,
                           pop_up_12_inch, rotor_6_inch, new_pop_up_6_inch,
-                          new_pop_up_12_inch, riser, solenoid, stat_decoder_1,
+                          new_pop_up_12_inch, riser, solenoid, stat_decoder_1, notes,
                           datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
                 inserted_count += 1
 
@@ -15252,7 +15269,7 @@ def community_billing_office_data():
         # Get line items for this submission
         c.execute("""SELECT zone_and_address, nozzle, pop_up_6_inch, pop_up_12_inch,
                             rotor_6_inch, new_pop_up_6_inch, new_pop_up_12_inch,
-                            riser, solenoid, stat_decoder_1
+                            riser, solenoid, stat_decoder_1, notes
                      FROM community_billing_line_items
                      WHERE submission_id = ?
                      ORDER BY id""", (submission_id,))
@@ -15269,7 +15286,8 @@ def community_billing_office_data():
                 'new_pop_up_12_inch': item_row[6],
                 'riser': item_row[7],
                 'solenoid': item_row[8],
-                'stat_decoder_1': item_row[9]
+                'stat_decoder_1': item_row[9],
+                'notes': item_row[10]
             })
 
             # Calculate cost for this item if pricing is available
