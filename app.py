@@ -14118,7 +14118,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 html += '<div class="tech-name">' + submission.tech_username + '</div>';
                 html += '<div class="submission-date">Submitted: ' + submission.submitted_at + '</div>';
                 html += '</div>';
-                html += '<button type="button" style="padding: 6px 12px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;" onclick="deleteSubmission(' + submission.id + ', \'' + submission.tech_username.replace(/'/g, "\\'") + '\')">Delete</button>';
+                html += '<button type="button" style="padding: 6px 12px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;" onclick="deleteSubmission(' + submission.id + ', ' + JSON.stringify(submission.tech_username) + ')">Delete</button>';
                 html += '</div>';
 
                 if (submission.line_items.length > 0) {
