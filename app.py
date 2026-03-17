@@ -15615,7 +15615,7 @@ def community_billing_export_excel():
             ws.column_dimensions[col].width = 15
 
         # Save file
-        excel_filename = f"community_billing_{community.replace(' ', '_')}_{work_date}.xlsx"
+        excel_filename = f"community_billing_{community.replace(' ', '_')}_{work_month}.xlsx"
         excel_path = os.path.join(app.config['UPLOAD_FOLDER'], excel_filename)
         wb.save(excel_path)
 
