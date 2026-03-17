@@ -13664,12 +13664,39 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 </select>
             </div>
 
-            <div class="form-group">
-                <label for="workDate">Select Month *</label>
-                <input type="month" id="workDate">
+            <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+                <div class="form-group">
+                    <label for="workYear">Select Year *</label>
+                    <select id="workYear">
+                        <option value="">-- Choose a year --</option>
+                        <option value="2024">2024</option>
+                        <option value="2025">2025</option>
+                        <option value="2026">2026</option>
+                        <option value="2027">2027</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="workMonth">Select Month *</label>
+                    <select id="workMonth">
+                        <option value="">-- Choose a month --</option>
+                        <option value="01">January</option>
+                        <option value="02">February</option>
+                        <option value="03">March</option>
+                        <option value="04">April</option>
+                        <option value="05">May</option>
+                        <option value="06">June</option>
+                        <option value="07">July</option>
+                        <option value="08">August</option>
+                        <option value="09">September</option>
+                        <option value="10">October</option>
+                        <option value="11">November</option>
+                        <option value="12">December</option>
+                    </select>
+                </div>
             </div>
 
-            <button class="btn-search" onclick="searchSubmissions()">Search</button>
+            <button class="btn-search" onclick="searchSubmissions()" style="margin-top: 10px;">Search</button>
             <div style="display: flex; gap: 10px; margin-top: 10px;">
                 <button class="btn-export" id="exportPdfBtn" onclick="exportPDF()" style="display: none;">Export to PDF</button>
                 <button class="btn-export" id="exportExcelBtn" onclick="exportExcel()" style="display: none; background: #2e7d32;">Export to Excel</button>
@@ -13996,26 +14023,29 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
     </script>
 
     <script>
-        // Set current month as default
+        // Set current year and month as default
         const today = new Date();
-        const currentMonth = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0');
-        document.getElementById('workDate').value = currentMonth;
+        document.getElementById('workYear').value = today.getFullYear();
+        document.getElementById('workMonth').value = String(today.getMonth() + 1).padStart(2, '0');
 
         function searchSubmissions() {
             const community = document.getElementById('community').value;
-            const workMonth = document.getElementById('workDate').value;
+            const workYear = document.getElementById('workYear').value;
+            const workMonth = document.getElementById('workMonth').value;
 
-            if (!community || !workMonth) {
-                alert('Please select both community and month');
+            if (!community || !workYear || !workMonth) {
+                alert('Please select community, year, and month');
                 return;
             }
+
+            const workMonthStr = workYear + '-' + workMonth;
 
             fetch('/community_billing_office_data', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     community: community,
-                    work_month: workMonth
+                    work_month: workMonthStr
                 })
             })
             .then(response => response.json())
@@ -14078,11 +14108,12 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
             data.submissions.forEach(submission => {
                 html += '<div class="submission-card">';
-                html += '<div class="submission-header">';
+                html += '<div class="submission-header" style="display: flex; justify-content: space-between; align-items: flex-start;">';
                 html += '<div>';
                 html += '<div class="tech-name">' + submission.tech_username + '</div>';
                 html += '<div class="submission-date">Submitted: ' + submission.submitted_at + '</div>';
                 html += '</div>';
+                html += '<button type="button" style="padding: 6px 12px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;" onclick="deleteSubmission(' + submission.id + ', \'' + submission.tech_username.replace(/'/g, "\\'") + '\')">Delete</button>';
                 html += '</div>';
 
                 if (submission.line_items.length > 0) {
@@ -14131,19 +14162,22 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
         function exportPDF() {
             const community = document.getElementById('community').value;
-            const workMonth = document.getElementById('workDate').value;
+            const workYear = document.getElementById('workYear').value;
+            const workMonth = document.getElementById('workMonth').value;
 
-            if (!community || !workMonth) {
+            if (!community || !workYear || !workMonth) {
                 alert('Please search for submissions first');
                 return;
             }
+
+            const workMonthStr = workYear + '-' + workMonth;
 
             fetch('/community_billing_export_pdf', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     community: community,
-                    work_month: workMonth
+                    work_month: workMonthStr
                 })
             })
             .then(response => response.json())
@@ -14163,19 +14197,22 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
         function exportExcel() {
             const community = document.getElementById('community').value;
-            const workMonth = document.getElementById('workDate').value;
+            const workYear = document.getElementById('workYear').value;
+            const workMonth = document.getElementById('workMonth').value;
 
-            if (!community || !workMonth) {
+            if (!community || !workYear || !workMonth) {
                 alert('Please search for submissions first');
                 return;
             }
+
+            const workMonthStr = workYear + '-' + workMonth;
 
             fetch('/community_billing_export_excel', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     community: community,
-                    work_month: workMonth
+                    work_month: workMonthStr
                 })
             })
             .then(response => response.json())
@@ -14189,6 +14226,36 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             })
             .catch(error => {
                 alert('Error: ' + error);
+            });
+        }
+
+        function deleteSubmission(submissionId, techUsername) {
+            // First confirmation
+            if (!confirm(`Delete submission by ${techUsername}?\n\nThis action CANNOT be undone and will remove all data for this submission.`)) {
+                return;
+            }
+
+            // Second confirmation
+            if (!confirm('Are you absolutely sure? This will permanently delete all data for this submission from the system.')) {
+                return;
+            }
+
+            fetch('/community_billing_delete_submission', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ submission_id: submissionId })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Submission deleted successfully. Refreshing...');
+                    searchSubmissions();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            })
+            .catch(error => {
+                alert('Error deleting submission: ' + error);
             });
         }
     </script>
@@ -15716,6 +15783,35 @@ def community_billing_export_excel():
             'success': True,
             'download_url': f'/download_file/{excel_filename}'
         })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/community_billing_delete_submission', methods=['POST'])
+def community_billing_delete_submission():
+    """Delete a submission and all its related line items"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    try:
+        data = request.get_json()
+        submission_id = data.get('submission_id')
+
+        if not submission_id:
+            return jsonify({'success': False, 'error': 'Missing submission_id'})
+
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Delete all line items for this submission
+        c.execute("DELETE FROM community_billing_line_items WHERE submission_id = ?", (submission_id,))
+
+        # Delete the submission itself
+        c.execute("DELETE FROM community_billing_submissions WHERE id = ?", (submission_id,))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({'success': True, 'message': 'Submission deleted successfully'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
