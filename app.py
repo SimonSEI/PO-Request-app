@@ -14023,10 +14023,15 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
     </script>
 
     <script>
-        // Set current year and month as default
-        const today = new Date();
-        document.getElementById('workYear').value = today.getFullYear();
-        document.getElementById('workMonth').value = String(today.getMonth() + 1).padStart(2, '0');
+        document.addEventListener('DOMContentLoaded', function() {
+            // Set current year and month as default
+            const today = new Date();
+            const yearSelect = document.getElementById('workYear');
+            const monthSelect = document.getElementById('workMonth');
+
+            if (yearSelect) yearSelect.value = today.getFullYear();
+            if (monthSelect) monthSelect.value = String(today.getMonth() + 1).padStart(2, '0');
+        });
 
         function searchSubmissions() {
             const community = document.getElementById('community').value;
@@ -14113,7 +14118,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 html += '<div class="tech-name">' + submission.tech_username + '</div>';
                 html += '<div class="submission-date">Submitted: ' + submission.submitted_at + '</div>';
                 html += '</div>';
-                html += '<button type="button" style="padding: 6px 12px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;" onclick="deleteSubmission(' + submission.id + ', \'' + submission.tech_username.replace(/'/g, "\\'") + '\')">Delete</button>';
+                html += '<button type="button" style="padding: 6px 12px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;" onclick="deleteSubmission(' + submission.id + ', ' + JSON.stringify(submission.tech_username) + ')">Delete</button>';
                 html += '</div>';
 
                 if (submission.line_items.length > 0) {
