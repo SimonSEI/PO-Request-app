@@ -7569,7 +7569,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 return;
             }
 
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Store</th><th>Tech</th><th>Description</th><th>Status</th><th>Estimated</th><th>Invoices</th><th>Client</th><th>Date</th></tr></thead><tbody>';
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Store</th><th>Tech</th><th>Description</th><th>Status</th><th>Invoices</th><th>Client</th><th>Date</th></tr></thead><tbody>';
             let found = 0;
 
             for (const [jobId, pos] of Object.entries(jobAllPOs)) {
@@ -7599,7 +7599,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                             <td>${techName}</td>
                             <td>${escapeHtml(description)}</td>
                             <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
-                            <td>${formatCurrency(estimated)}</td>
                             <td>${invoiceDisplay}</td>
                             <td>${escapeHtml(clientName)}</td>
                             <td>${date}</td>
@@ -7693,7 +7692,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         function renderServicePOs() {
             const resultsDiv = document.getElementById('service-po-results');
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Store</th><th>Tech</th><th>Client</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Store</th><th>Tech</th><th>Client</th><th>Status</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
             let totalPOs = 0;
 
             // Get all service POs from serviceJobs and jobAllPOs
@@ -7725,7 +7724,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                             <td>${escapeHtml(techName)}</td>
                             <td>${escapeHtml(clientName)}</td>
                             <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
-                            <td>${formatCurrency(estimated)}</td>
                             <td>${formatCurrency(invoiced)}</td>
                             <td>${invoiceDisplay}</td>
                             <td>${date}</td>
@@ -7968,7 +7966,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             const keywordSearch = document.getElementById('service-po-keyword-search').value.toLowerCase().trim();
 
             const resultsDiv = document.getElementById('service-po-results');
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Store</th><th>Tech</th><th>Client</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Store</th><th>Tech</th><th>Client</th><th>Status</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
             let found = 0;
 
             // Get all service POs from serviceJobs and jobAllPOs
@@ -8007,7 +8005,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                                 <td>${escapeHtml(techName)}</td>
                                 <td>${escapeHtml(clientName)}</td>
                                 <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
-                                <td>${formatCurrency(estimated)}</td>
                                 <td>${formatCurrency(invoiced)}</td>
                                 <td>${invoiceDisplay}</td>
                                 <td>${date}</td>
@@ -8136,7 +8133,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             if (allPOs.length === 0) {
                 document.getElementById('modal-po-list').innerHTML = '<p style="text-align: center; color: #999;">No POs found for this job.</p>';
             } else {
-                let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Tech</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Invoices</th><th>Client</th><th>Date</th></tr></thead><tbody>';
+                let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Tech</th><th>Status</th><th>Invoiced</th><th>Invoices</th><th>Client</th><th>Date</th></tr></thead><tbody>';
 
                 allPOs.forEach(po => {
                     const poNum = po[0];
@@ -8156,7 +8153,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                         <td><strong>#${poDisplay}</strong></td>
                         <td>${techName}</td>
                         <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
-                        <td>${formatCurrency(estimated)}</td>
                         <td>${formatCurrency(invoiced)}</td>
                         <td>${invoiceDisplay}</td>
                         <td>${escapeHtml(clientName)}</td>
