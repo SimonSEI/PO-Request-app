@@ -13615,6 +13615,23 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                         <p style="color: #666; font-size: 13px;">Loading...</p>
                                     </div>
                                 </div>
+
+                                <!-- Pricing Section for Verona Walk HOA -->
+                                <div class="pricing-section" style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px;">
+                                    <h4>💰 Nozzle Pricing</h4>
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px;">
+                                        <div><label>Nozzle:</label> $<input type="number" id="price-nozzle-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>6" Pop Up:</label> $<input type="number" id="price-pop_up_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>12" Pop Up:</label> $<input type="number" id="price-pop_up_12_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>6" Rotor:</label> $<input type="number" id="price-rotor_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>NEW 6" Pop Up:</label> $<input type="number" id="price-new_pop_up_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>NEW 12" Pop Up:</label> $<input type="number" id="price-new_pop_up_12_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>Riser:</label> $<input type="number" id="price-riser-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>Solenoid:</label> $<input type="number" id="price-solenoid-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>1 Stat Decoder:</label> $<input type="number" id="price-stat_decoder_1-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                    </div>
+                                    <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="margin-top: 10px; padding: 6px 12px; font-size: 12px;">Save Pricing</button>
+                                </div>
                             </div>
                             {% endif %}
                         </div>
