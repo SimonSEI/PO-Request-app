@@ -14053,20 +14053,20 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     html += '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 12px;">';
                     html += '<div>';
                     html += '<div style="font-size: 12px; color: #666; margin-bottom: 4px;">Common Area</div>';
-                    html += '<div style="font-size: 24px; font-weight: bold; color: #2e7d32;">$' + data.common_area_cost.toFixed(2) + '</div>';
+                    html += '<div style="font-size: 24px; font-weight: bold; color: #2e7d32;">$' + data.common_area_cost.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '</div>';
                     html += '</div>';
                     html += '<div>';
                     html += '<div style="font-size: 12px; color: #666; margin-bottom: 4px;">All Clocks</div>';
-                    html += '<div style="font-size: 24px; font-weight: bold; color: #2e7d32;">$' + data.clocks_cost.toFixed(2) + '</div>';
+                    html += '<div style="font-size: 24px; font-weight: bold; color: #2e7d32;">$' + data.clocks_cost.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '</div>';
                     html += '</div>';
                     html += '</div>';
                     html += '<div style="border-top: 1px solid #ccc; padding-top: 12px; margin-top: 12px;">';
                     html += '<div style="font-size: 12px; color: #666; margin-bottom: 4px;">Total Cost</div>';
-                    html += '<div style="font-size: 28px; font-weight: bold; color: #2e7d32;">$' + data.total_cost.toFixed(2) + '</div>';
+                    html += '<div style="font-size: 28px; font-weight: bold; color: #2e7d32;">$' + data.total_cost.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '</div>';
                     html += '</div>';
                 } else {
                     html += '<div style="font-size: 14px; color: #666; margin-bottom: 5px;">Total Cost for All Parts</div>';
-                    html += '<div style="font-size: 32px; font-weight: bold; color: #2e7d32;">$' + data.total_cost.toFixed(2) + '</div>';
+                    html += '<div style="font-size: 32px; font-weight: bold; color: #2e7d32;">$' + data.total_cost.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '</div>';
                 }
 
                 html += '<div style="font-size: 12px; color: #666; margin-top: 5px;">' + data.submissions.length + ' submission(s) found</div>';
