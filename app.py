@@ -15524,7 +15524,7 @@ def community_billing_export_excel():
         # Title
         ws.merge_cells('A1:J1')
         title_cell = ws['A1']
-        title_cell.value = f"Community Maintenance Report - {community} ({work_date})"
+        title_cell.value = f"Community Maintenance Report - {community} ({work_month})"
         title_cell.font = Font(bold=True, size=14)
         title_cell.alignment = center_align
         ws.row_dimensions[1].height = 25
