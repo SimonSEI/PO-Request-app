@@ -933,6 +933,73 @@ def init_db():
     except sqlite3.OperationalError:
         c.execute("ALTER TABLE community_billing_line_items ADD COLUMN notes TEXT")
 
+    # Sales App Tables
+    # Sales pricing table - stores parts and labor costs
+    c.execute('''CREATE TABLE IF NOT EXISTS sales_pricing
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  category TEXT NOT NULL,
+                  item_name TEXT NOT NULL,
+                  unit_cost REAL NOT NULL,
+                  description TEXT,
+                  created_at TEXT,
+                  updated_at TEXT,
+                  UNIQUE(category, item_name))''')
+
+    # Sales training data - stores uploaded proposal PDFs for training
+    c.execute('''CREATE TABLE IF NOT EXISTS sales_training_data
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  filename TEXT NOT NULL,
+                  file_path TEXT NOT NULL,
+                  job_type TEXT,
+                  client_name TEXT,
+                  uploaded_by TEXT NOT NULL,
+                  uploaded_at TEXT,
+                  file_size INTEGER,
+                  processed INTEGER DEFAULT 0)''')
+
+    # Sales proposals - generated proposals
+    c.execute('''CREATE TABLE IF NOT EXISTS sales_proposals
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  proposal_name TEXT NOT NULL,
+                  client_name TEXT NOT NULL,
+                  job_type TEXT NOT NULL,
+                  job_details TEXT,
+                  proposal_content TEXT,
+                  total_cost REAL,
+                  created_by TEXT NOT NULL,
+                  created_at TEXT,
+                  updated_at TEXT)''')
+
+    # Sales plans - generated plan annotations
+    c.execute('''CREATE TABLE IF NOT EXISTS sales_plans
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  plan_name TEXT NOT NULL,
+                  original_pdf_filename TEXT NOT NULL,
+                  original_pdf_path TEXT NOT NULL,
+                  annotated_image_path TEXT,
+                  annotations TEXT,
+                  created_by TEXT NOT NULL,
+                  created_at TEXT,
+                  updated_at TEXT)''')
+
+    # Add default sales pricing categories if empty
+    c.execute("SELECT COUNT(*) FROM sales_pricing")
+    if c.fetchone()[0] == 0:
+        default_pricing = [
+            ('Mainline Pipe', 'PVC 1-inch', 2.50, '1-inch PVC irrigation mainline'),
+            ('Mainline Pipe', 'PVC 1.5-inch', 3.75, '1.5-inch PVC irrigation mainline'),
+            ('Mainline Pipe', 'PVC 2-inch', 5.00, '2-inch PVC irrigation mainline'),
+            ('Tabs/Outlets', 'Tab Assembly', 8.00, 'Standard tab outlet assembly'),
+            ('Clocks', 'Controller/Clock', 150.00, 'Irrigation system controller/clock'),
+            ('Labor', 'Installation - Hourly', 75.00, 'Standard labor rate per hour'),
+            ('Labor', 'Design - Hourly', 85.00, 'Design work rate per hour'),
+        ]
+        for category, item_name, cost, desc in default_pricing:
+            c.execute("""INSERT INTO sales_pricing (category, item_name, unit_cost, description, created_at, updated_at)
+                         VALUES (?, ?, ?, ?, ?, ?)""",
+                     (category, item_name, cost, desc, datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                      datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+
     # Add default jobs if empty
     c.execute("SELECT COUNT(*) FROM jobs")
     if c.fetchone()[0] == 0:
@@ -15039,7 +15106,7 @@ def debug_matching():
 
 @app.route('/sales')
 def sales():
-    """Sales App - Office administrators only"""
+    """Sales App Dashboard - Office administrators only"""
     if 'username' not in session:
         return redirect(url_for('login'))
 
@@ -15051,10 +15118,122 @@ def sales():
     role = session.get('role')
     full_name = session.get('full_name', username)
 
-    return render_template_string(SALES_TEMPLATE,
+    return render_template_string(SALES_DASHBOARD_TEMPLATE,
                                  username=username,
                                  role=role,
                                  full_name=full_name)
+
+@app.route('/sales/manage_pricing')
+def sales_manage_pricing():
+    """Manage pricing for parts and labor"""
+    if 'username' not in session or session.get('role') != 'office':
+        return redirect(url_for('login'))
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Get all pricing items grouped by category
+        c.execute("""SELECT category, item_name, unit_cost, description, id
+                     FROM sales_pricing
+                     ORDER BY category, item_name""")
+        pricing_items = c.fetchall()
+
+        # Get unique categories
+        c.execute("SELECT DISTINCT category FROM sales_pricing ORDER BY category")
+        categories = [row[0] for row in c.fetchall()]
+
+        conn.close()
+
+        return render_template_string(SALES_PRICING_TEMPLATE,
+                                     username=session['username'],
+                                     full_name=session.get('full_name', session['username']),
+                                     pricing_items=pricing_items,
+                                     categories=categories)
+    except Exception as e:
+        flash(f'Error loading pricing: {str(e)}', 'error')
+        return redirect(url_for('sales'))
+
+@app.route('/sales/api/update_price', methods=['POST'])
+def sales_update_price():
+    """Update a pricing item"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    try:
+        data = request.get_json()
+        item_id = data.get('id')
+        unit_cost = float(data.get('unit_cost'))
+        description = data.get('description', '')
+
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        c.execute("""UPDATE sales_pricing
+                     SET unit_cost = ?, description = ?, updated_at = ?
+                     WHERE id = ?""",
+                 (unit_cost, description, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), item_id))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({'success': True, 'message': 'Price updated successfully'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/sales/api/add_price', methods=['POST'])
+def sales_add_price():
+    """Add a new pricing item"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    try:
+        data = request.get_json()
+        category = data.get('category', '').strip()
+        item_name = data.get('item_name', '').strip()
+        unit_cost = float(data.get('unit_cost'))
+        description = data.get('description', '')
+
+        if not category or not item_name:
+            return jsonify({'success': False, 'error': 'Category and item name are required'})
+
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        c.execute("""INSERT INTO sales_pricing (category, item_name, unit_cost, description, created_at, updated_at)
+                     VALUES (?, ?, ?, ?, ?, ?)""",
+                 (category, item_name, unit_cost, description,
+                  datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                  datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({'success': True, 'message': 'Price added successfully'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/sales/api/delete_price', methods=['POST'])
+def sales_delete_price():
+    """Delete a pricing item"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    try:
+        data = request.get_json()
+        item_id = data.get('id')
+
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        c.execute("DELETE FROM sales_pricing WHERE id = ?", (item_id,))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({'success': True, 'message': 'Price deleted successfully'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
 
 # ============================================================================
 # COMMUNITY BILLING ROUTES
@@ -16356,11 +16535,11 @@ def community_save_pricing():
 # SALES APP TEMPLATE
 # ============================================================================
 
-SALES_TEMPLATE = '''
+SALES_DASHBOARD_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Sales App</title>
+    <title>Sales App - Dashboard</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -16384,52 +16563,9 @@ SALES_TEMPLATE = '''
         .header h1 {
             font-size: 28px;
         }
-        .container {
-            max-width: 1000px;
-            margin: 0 auto;
-            background: white;
-            padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        .welcome-section {
-            text-align: center;
-            padding: 40px 20px;
-        }
-        .welcome-icon {
-            font-size: 80px;
-            margin-bottom: 20px;
-        }
-        .welcome-section h2 {
-            color: #333;
-            margin-bottom: 15px;
-            font-size: 28px;
-        }
-        .welcome-section p {
-            color: #666;
-            font-size: 16px;
-            line-height: 1.6;
-            margin-bottom: 30px;
-        }
-        .btn {
-            display: inline-block;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 12px 30px;
-            border: none;
-            border-radius: 5px;
-            text-decoration: none;
-            font-size: 16px;
-            font-weight: bold;
-            cursor: pointer;
-            transition: opacity 0.3s ease;
-        }
-        .btn:hover {
-            opacity: 0.9;
-        }
         .back-btn {
             display: inline-block;
-            background: #999;
+            background: rgba(255,255,255,0.2);
             color: white;
             padding: 8px 15px;
             border-radius: 5px;
@@ -16437,24 +16573,466 @@ SALES_TEMPLATE = '''
             font-size: 14px;
         }
         .back-btn:hover {
-            background: #777;
+            background: rgba(255,255,255,0.3);
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .cards-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 30px;
+            text-align: center;
+            cursor: pointer;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            text-decoration: none;
+            color: inherit;
+        }
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 5px 20px rgba(0,0,0,0.15);
+        }
+        .card-icon {
+            font-size: 60px;
+            margin-bottom: 15px;
+        }
+        .card h2 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 20px;
+        }
+        .card p {
+            color: #666;
+            font-size: 14px;
+            line-height: 1.6;
+            margin-bottom: 20px;
+        }
+        .card-btn {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .card-btn:hover {
+            opacity: 0.9;
         }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>📊 Sales App</h1>
+        <h1>📊 Sales App Dashboard</h1>
         <a href="{{ url_for('dashboard') }}" class="back-btn">Back to Dashboard</a>
     </div>
 
     <div class="container">
-        <div class="welcome-section">
-            <div class="welcome-icon">📊</div>
-            <h2>Welcome to Sales App</h2>
-            <p>Manage your sales orders and track sales activities. This app provides tools to help you organize and monitor your sales process.</p>
-            <p style="color: #999; font-size: 14px;">Sales features coming soon...</p>
+        <div class="cards-grid">
+            <!-- Create New Job / Proposal -->
+            <a href="javascript:void(0)" onclick="alert('Coming Soon - Create New Job feature')" style="text-decoration: none;">
+                <div class="card">
+                    <div class="card-icon">📝</div>
+                    <h2>Create New Job</h2>
+                    <p>Generate a new proposal for a client. AI will ask questions to create a customized proposal.</p>
+                    <button class="card-btn">Create Job</button>
+                </div>
+            </a>
+
+            <!-- Create New Plan -->
+            <a href="javascript:void(0)" onclick="alert('Coming Soon - Create New Plan feature')" style="text-decoration: none;">
+                <div class="card">
+                    <div class="card-icon">🗺️</div>
+                    <h2>Create New Plan</h2>
+                    <p>Upload a PDF site plan and let AI automatically annotate irrigation system placement.</p>
+                    <button class="card-btn">Create Plan</button>
+                </div>
+            </a>
+
+            <!-- Manage Pricing -->
+            <a href="{{ url_for('sales_manage_pricing') }}" style="text-decoration: none;">
+                <div class="card">
+                    <div class="card-icon">💰</div>
+                    <h2>Manage Pricing</h2>
+                    <p>Edit prices for parts, materials, and labor rates used in proposals.</p>
+                    <button class="card-btn">Edit Pricing</button>
+                </div>
+            </a>
         </div>
     </div>
+</body>
+</html>
+'''
+
+SALES_PRICING_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Manage Pricing - Sales App</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: Arial, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        .header h1 {
+            font-size: 28px;
+        }
+        .back-btn {
+            display: inline-block;
+            background: rgba(255,255,255,0.2);
+            color: white;
+            padding: 8px 15px;
+            border-radius: 5px;
+            text-decoration: none;
+            font-size: 14px;
+        }
+        .back-btn:hover {
+            background: rgba(255,255,255,0.3);
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .section {
+            margin-bottom: 40px;
+        }
+        .section-title {
+            font-size: 20px;
+            color: #333;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #667eea;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+        table thead {
+            background: #f8f9fa;
+        }
+        table th {
+            padding: 12px;
+            text-align: left;
+            font-weight: bold;
+            color: #333;
+            border-bottom: 2px solid #ddd;
+        }
+        table td {
+            padding: 12px;
+            border-bottom: 1px solid #ddd;
+        }
+        table tr:hover {
+            background: #f8f9fa;
+        }
+        .edit-input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .btn {
+            display: inline-block;
+            padding: 8px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-right: 5px;
+        }
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        .btn-primary:hover {
+            background: #5a67d8;
+        }
+        .btn-danger {
+            background: #e74c3c;
+            color: white;
+        }
+        .btn-danger:hover {
+            background: #c0392b;
+        }
+        .btn-success {
+            background: #27ae60;
+            color: white;
+        }
+        .btn-success:hover {
+            background: #229954;
+        }
+        .add-form {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #333;
+            font-weight: bold;
+        }
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 15px;
+        }
+        .message {
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+        .message.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .message.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>💰 Manage Pricing</h1>
+        <a href="{{ url_for('sales') }}" class="back-btn">Back to Sales Dashboard</a>
+    </div>
+
+    <div class="container">
+        <div id="message"></div>
+
+        <!-- Add New Pricing Item -->
+        <div class="section">
+            <h2 class="section-title">Add New Pricing Item</h2>
+            <div class="add-form">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Category</label>
+                        <select id="newCategory">
+                            <option value="">Select or type new</option>
+                            {% for category in categories %}
+                            <option value="{{ category }}">{{ category }}</option>
+                            {% endfor %}
+                            <option value="other">+ Add New Category</option>
+                        </select>
+                        <input type="text" id="newCategoryCustom" placeholder="New category name" style="display:none; margin-top: 5px;">
+                    </div>
+                    <div class="form-group">
+                        <label>Item Name</label>
+                        <input type="text" id="newItemName" placeholder="e.g. PVC 1-inch">
+                    </div>
+                    <div class="form-group">
+                        <label>Unit Cost ($)</label>
+                        <input type="number" id="newUnitCost" placeholder="0.00" step="0.01" min="0">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Description</label>
+                    <input type="text" id="newDescription" placeholder="Brief description of the item">
+                </div>
+                <button class="btn btn-success" onclick="addNewPrice()">Add Item</button>
+            </div>
+        </div>
+
+        <!-- Current Pricing Items -->
+        <div class="section">
+            <h2 class="section-title">Current Pricing</h2>
+            {% if pricing_items %}
+                {% set current_category = '' %}
+                {% for item in pricing_items %}
+                    {% if item[0] != current_category %}
+                        {% if current_category != '' %}</table>{% endif %}
+                        {% set current_category = item[0] %}
+                        <h3 style="margin-top: 20px; color: #667eea;">{{ current_category }}</h3>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Item Name</th>
+                                    <th>Unit Cost</th>
+                                    <th>Description</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                    {% endif %}
+                    <tr>
+                        <td>{{ item[1] }}</td>
+                        <td><input type="number" class="edit-input" id="cost-{{ item[4] }}" value="{{ item[2] }}" step="0.01" min="0"></td>
+                        <td><input type="text" class="edit-input" id="desc-{{ item[4] }}" value="{{ item[3] or '' }}"></td>
+                        <td>
+                            <button class="btn btn-primary" onclick="updatePrice({{ item[4] }})">Save</button>
+                            <button class="btn btn-danger" onclick="deletePrice({{ item[4] }})">Delete</button>
+                        </td>
+                    </tr>
+                {% endfor %}
+                        </tbody>
+                    </table>
+            {% else %}
+                <p style="color: #999;">No pricing items found. Add one above to get started.</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+        const categorySelect = document.getElementById('newCategory');
+        const categoryCustom = document.getElementById('newCategoryCustom');
+
+        categorySelect.addEventListener('change', function() {
+            if (this.value === 'other') {
+                categoryCustom.style.display = 'block';
+            } else {
+                categoryCustom.style.display = 'none';
+            }
+        });
+
+        function showMessage(message, type) {
+            const messageDiv = document.getElementById('message');
+            messageDiv.innerHTML = `<div class="message ${type}">${message}</div>`;
+            setTimeout(() => {
+                messageDiv.innerHTML = '';
+            }, 5000);
+        }
+
+        function updatePrice(itemId) {
+            const cost = document.getElementById(`cost-${itemId}`).value;
+            const desc = document.getElementById(`desc-${itemId}`).value;
+
+            fetch('{{ url_for("sales_update_price") }}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    id: itemId,
+                    unit_cost: cost,
+                    description: desc
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showMessage('Price updated successfully!', 'success');
+                } else {
+                    showMessage('Error: ' + data.error, 'error');
+                }
+            })
+            .catch(error => {
+                showMessage('Error: ' + error, 'error');
+            });
+        }
+
+        function deletePrice(itemId) {
+            if (confirm('Are you sure you want to delete this pricing item?')) {
+                fetch('{{ url_for("sales_delete_price") }}', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ id: itemId })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        location.reload();
+                    } else {
+                        showMessage('Error: ' + data.error, 'error');
+                    }
+                })
+                .catch(error => {
+                    showMessage('Error: ' + error, 'error');
+                });
+            }
+        }
+
+        function addNewPrice() {
+            const categorySelect = document.getElementById('newCategory');
+            let category = categorySelect.value;
+
+            if (category === 'other') {
+                category = document.getElementById('newCategoryCustom').value;
+            }
+
+            const itemName = document.getElementById('newItemName').value;
+            const unitCost = document.getElementById('newUnitCost').value;
+            const description = document.getElementById('newDescription').value;
+
+            if (!category || !itemName || !unitCost) {
+                showMessage('Please fill in all required fields', 'error');
+                return;
+            }
+
+            fetch('{{ url_for("sales_add_price") }}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    category: category,
+                    item_name: itemName,
+                    unit_cost: unitCost,
+                    description: description
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showMessage('Pricing item added successfully!', 'success');
+                    setTimeout(() => location.reload(), 1500);
+                } else {
+                    showMessage('Error: ' + data.error, 'error');
+                }
+            })
+            .catch(error => {
+                showMessage('Error: ' + error, 'error');
+            });
+        }
+    </script>
 </body>
 </html>
 '''
