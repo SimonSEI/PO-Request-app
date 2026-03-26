@@ -6576,6 +6576,18 @@ DASHBOARD_MENU_TEMPLATE = '''
         </a>
         {% endif %}
 
+        <!-- Sales App (Office only) -->
+        {% if role == 'office' %}
+        <a href="{{ url_for('sales') }}" style="text-decoration: none;">
+            <div class="app-card">
+                <div class="app-icon">📊</div>
+                <h2>Sales</h2>
+                <p>Manage sales orders and track sales activities</p>
+                <button class="app-button">Open Sales App</button>
+            </div>
+        </a>
+        {% endif %}
+
         <!-- Community Maintenance App -->
         <a href="{{ url_for('community_billing') }}" style="text-decoration: none;">
             <div class="app-card" onclick="window.location.href='{{ url_for('community_billing') }}'">
@@ -15022,6 +15034,29 @@ def debug_matching():
     })
 
 # ============================================================================
+# SALES APP ROUTES
+# ============================================================================
+
+@app.route('/sales')
+def sales():
+    """Sales App - Office administrators only"""
+    if 'username' not in session:
+        return redirect(url_for('login'))
+
+    if session.get('role') != 'office':
+        flash('Access denied. Sales app is only available for office administrators.', 'error')
+        return redirect(url_for('dashboard'))
+
+    username = session.get('username')
+    role = session.get('role')
+    full_name = session.get('full_name', username)
+
+    return render_template_string(SALES_TEMPLATE,
+                                 username=username,
+                                 role=role,
+                                 full_name=full_name)
+
+# ============================================================================
 # COMMUNITY BILLING ROUTES
 # ============================================================================
 
@@ -16316,6 +16351,113 @@ def community_save_pricing():
     except Exception as e:
         conn.close()
         return jsonify({'success': False, 'error': str(e)})
+
+# ============================================================================
+# SALES APP TEMPLATE
+# ============================================================================
+
+SALES_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Sales App</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: Arial, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        .header h1 {
+            font-size: 28px;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .welcome-section {
+            text-align: center;
+            padding: 40px 20px;
+        }
+        .welcome-icon {
+            font-size: 80px;
+            margin-bottom: 20px;
+        }
+        .welcome-section h2 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 28px;
+        }
+        .welcome-section p {
+            color: #666;
+            font-size: 16px;
+            line-height: 1.6;
+            margin-bottom: 30px;
+        }
+        .btn {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 30px;
+            border: none;
+            border-radius: 5px;
+            text-decoration: none;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: opacity 0.3s ease;
+        }
+        .btn:hover {
+            opacity: 0.9;
+        }
+        .back-btn {
+            display: inline-block;
+            background: #999;
+            color: white;
+            padding: 8px 15px;
+            border-radius: 5px;
+            text-decoration: none;
+            font-size: 14px;
+        }
+        .back-btn:hover {
+            background: #777;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📊 Sales App</h1>
+        <a href="{{ url_for('dashboard') }}" class="back-btn">Back to Dashboard</a>
+    </div>
+
+    <div class="container">
+        <div class="welcome-section">
+            <div class="welcome-icon">📊</div>
+            <h2>Welcome to Sales App</h2>
+            <p>Manage your sales orders and track sales activities. This app provides tools to help you organize and monitor your sales process.</p>
+            <p style="color: #999; font-size: 14px;">Sales features coming soon...</p>
+        </div>
+    </div>
+</body>
+</html>
+'''
 
 # ============================================================================
 # END DEBUG ROUTES
