@@ -15235,6 +15235,210 @@ def sales_delete_price():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
+@app.route('/sales/create_job')
+def sales_create_job():
+    """Create new job - questionnaire form for proposal generation"""
+    if 'username' not in session or session.get('role') != 'office':
+        return redirect(url_for('login'))
+
+    return render_template_string(SALES_CREATE_JOB_TEMPLATE,
+                                 username=session['username'],
+                                 full_name=session.get('full_name', session['username']))
+
+@app.route('/sales/api/generate_proposal', methods=['POST'])
+def sales_generate_proposal():
+    """Generate proposal using Claude API based on questionnaire answers"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    try:
+        import anthropic
+        from reportlab.lib.pagesizes import letter
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        from reportlab.lib import colors
+        import os
+
+        data = request.get_json()
+        client_name = data.get('client_name', '').strip()
+        email = data.get('email', '').strip()
+        phone = data.get('phone', '').strip()
+        job_type = data.get('job_type', '').strip()
+        property_size = data.get('property_size', '').strip()
+
+        if not all([client_name, job_type, property_size]):
+            return jsonify({'success': False, 'error': 'Please fill in all required fields'})
+
+        # Get pricing from database
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT category, item_name, unit_cost FROM sales_pricing ORDER BY category, item_name")
+        pricing_items = c.fetchall()
+        conn.close()
+
+        # Format pricing for Claude
+        pricing_text = "Available Pricing:\n"
+        for category, item_name, cost in pricing_items:
+            pricing_text += f"- {category}: {item_name} = ${cost:.2f}\n"
+
+        # Create prompt for Claude
+        prompt = f"""You are an expert irrigation system sales consultant. Generate a professional proposal for a client based on the following information:
+
+CLIENT INFORMATION:
+- Name: {client_name}
+- Email: {email}
+- Phone: {phone}
+- Job Type: {job_type}
+- Property Size: {property_size}
+
+{pricing_text}
+
+Generate a professional, detailed proposal that includes:
+1. Executive Summary
+2. Scope of Work (detailed description of the irrigation system)
+3. Materials & Equipment needed (with costs from the pricing list)
+4. Labor & Installation costs
+5. Timeline
+6. Total Project Cost
+7. Payment Terms
+8. Warranty Information
+9. Next Steps
+
+Make the proposal persuasive, professional, and specific to their project type. Use the pricing provided. Format it clearly with sections and bullet points."""
+
+        # Call Claude API
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model="claude-opus-4-6",
+            max_tokens=2000,
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
+        )
+
+        proposal_text = response.content[0].text
+
+        # Save proposal to database
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""INSERT INTO sales_proposals
+                     (proposal_name, client_name, job_type, job_details, proposal_content, created_by, created_at, updated_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                 (f"{client_name} - {job_type}",
+                  client_name,
+                  job_type,
+                  f"Property Size: {property_size}",
+                  proposal_text,
+                  session['username'],
+                  datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                  datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+
+        proposal_id = c.lastrowid
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'proposal_id': proposal_id,
+            'message': 'Proposal generated successfully',
+            'proposal_text': proposal_text
+        })
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/sales/download_proposal/<int:proposal_id>')
+def sales_download_proposal(proposal_id):
+    """Download proposal as PDF"""
+    if 'username' not in session or session.get('role') != 'office':
+        return redirect(url_for('login'))
+
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        from datetime import datetime as dt
+        import io
+
+        # Get proposal from database
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""SELECT proposal_name, client_name, job_type, proposal_content, created_at
+                     FROM sales_proposals WHERE id = ?""", (proposal_id,))
+        proposal = c.fetchone()
+        conn.close()
+
+        if not proposal:
+            return "Proposal not found", 404
+
+        proposal_name, client_name, job_type, proposal_content, created_at = proposal
+
+        # Create PDF in memory
+        pdf_buffer = io.BytesIO()
+        doc = SimpleDocTemplate(pdf_buffer, pagesize=letter,
+                               topMargin=0.5*inch, bottomMargin=0.5*inch,
+                               leftMargin=0.75*inch, rightMargin=0.75*inch)
+
+        styles = getSampleStyleSheet()
+        story = []
+
+        # Title
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=24,
+            textColor='#333333',
+            spaceAfter=12,
+            alignment=1
+        )
+        story.append(Paragraph("PROPOSAL", title_style))
+        story.append(Spacer(1, 0.3*inch))
+
+        # Header info
+        header_style = ParagraphStyle(
+            'CustomHeader',
+            parent=styles['Normal'],
+            fontSize=11,
+            spaceAfter=6
+        )
+        story.append(Paragraph(f"<b>Client:</b> {client_name}", header_style))
+        story.append(Paragraph(f"<b>Project Type:</b> {job_type}", header_style))
+        story.append(Paragraph(f"<b>Date:</b> {created_at[:10]}", header_style))
+        story.append(Spacer(1, 0.3*inch))
+
+        # Proposal content
+        content_style = ParagraphStyle(
+            'CustomContent',
+            parent=styles['Normal'],
+            fontSize=10,
+            leading=14,
+            alignment=4
+        )
+
+        # Split proposal into paragraphs for better formatting
+        for paragraph in proposal_content.split('\n'):
+            if paragraph.strip():
+                story.append(Paragraph(paragraph.replace('\n', '<br/>'), content_style))
+                story.append(Spacer(1, 0.1*inch))
+
+        # Build PDF
+        doc.build(story)
+        pdf_buffer.seek(0)
+
+        # Return PDF as download
+        return send_file(
+            pdf_buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f"{client_name}_{job_type}_Proposal.pdf"
+        )
+
+    except Exception as e:
+        flash(f'Error generating PDF: {str(e)}', 'error')
+        return redirect(url_for('sales'))
+
 # ============================================================================
 # COMMUNITY BILLING ROUTES
 # ============================================================================
@@ -16641,11 +16845,11 @@ SALES_DASHBOARD_TEMPLATE = '''
     <div class="container">
         <div class="cards-grid">
             <!-- Create New Job / Proposal -->
-            <a href="javascript:void(0)" onclick="alert('Coming Soon - Create New Job feature')" style="text-decoration: none;">
+            <a href="{{ url_for('sales_create_job') }}" style="text-decoration: none;">
                 <div class="card">
                     <div class="card-icon">📝</div>
                     <h2>Create New Job</h2>
-                    <p>Generate a new proposal for a client. AI will ask questions to create a customized proposal.</p>
+                    <p>Generate a new proposal for a client. Answer questions and Claude AI will create a customized proposal.</p>
                     <button class="card-btn">Create Job</button>
                 </div>
             </a>
@@ -16671,6 +16875,316 @@ SALES_DASHBOARD_TEMPLATE = '''
             </a>
         </div>
     </div>
+</body>
+</html>
+'''
+
+SALES_CREATE_JOB_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Create New Job - Sales App</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: Arial, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        .header h1 {
+            font-size: 28px;
+        }
+        .back-btn {
+            display: inline-block;
+            background: rgba(255,255,255,0.2);
+            color: white;
+            padding: 8px 15px;
+            border-radius: 5px;
+            text-decoration: none;
+            font-size: 14px;
+        }
+        .back-btn:hover {
+            background: rgba(255,255,255,0.3);
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: bold;
+        }
+        input, select, textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+            font-family: Arial, sans-serif;
+            box-sizing: border-box;
+        }
+        textarea {
+            resize: vertical;
+            min-height: 100px;
+        }
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 5px rgba(102, 126, 234, 0.3);
+        }
+        .required {
+            color: #e74c3c;
+        }
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 30px;
+        }
+        button {
+            padding: 12px 30px;
+            border: none;
+            border-radius: 5px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: opacity 0.3s ease;
+        }
+        .btn-submit {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            flex: 1;
+        }
+        .btn-submit:hover {
+            opacity: 0.9;
+        }
+        .btn-submit:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .btn-cancel {
+            background: #999;
+            color: white;
+        }
+        .btn-cancel:hover {
+            background: #777;
+        }
+        .message {
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        .message.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+            display: block;
+        }
+        .message.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+            display: block;
+        }
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+        .loading.show {
+            display: block;
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .proposal-result {
+            display: none;
+            margin-top: 30px;
+            padding-top: 30px;
+            border-top: 2px solid #ddd;
+        }
+        .proposal-result.show {
+            display: block;
+        }
+        .proposal-content {
+            background: #f9f9f9;
+            padding: 20px;
+            border-radius: 5px;
+            line-height: 1.8;
+            max-height: 400px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-size: 13px;
+        }
+        .download-btn {
+            background: #27ae60;
+            color: white;
+            margin-top: 15px;
+            display: inline-block;
+        }
+        .download-btn:hover {
+            background: #229954;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📝 Create New Job</h1>
+        <a href="{{ url_for('sales') }}" class="back-btn">Back to Sales</a>
+    </div>
+
+    <div class="container">
+        <div id="message" class="message"></div>
+
+        <form id="jobForm">
+            <h2 style="margin-bottom: 20px; color: #333;">Job Information</h2>
+            <p style="color: #666; margin-bottom: 20px;">Fill in the details below and Claude AI will generate a professional proposal.</p>
+
+            <div class="form-group">
+                <label>Client Name <span class="required">*</span></label>
+                <input type="text" id="clientName" name="client_name" required placeholder="e.g., John Smith">
+            </div>
+
+            <div class="form-group">
+                <label>Email <span class="required">*</span></label>
+                <input type="email" id="email" name="email" required placeholder="e.g., john@example.com">
+            </div>
+
+            <div class="form-group">
+                <label>Phone</label>
+                <input type="tel" id="phone" name="phone" placeholder="e.g., (555) 123-4567">
+            </div>
+
+            <div class="form-group">
+                <label>Job Type <span class="required">*</span></label>
+                <select id="jobType" name="job_type" required>
+                    <option value="">Select a job type</option>
+                    <option value="Residential Irrigation System - New Installation">Residential - New Installation</option>
+                    <option value="Residential Irrigation System - Upgrade">Residential - Upgrade/Retrofit</option>
+                    <option value="Residential Irrigation System - Repair">Residential - Repair/Maintenance</option>
+                    <option value="Commercial Irrigation System - New Installation">Commercial - New Installation</option>
+                    <option value="Commercial Irrigation System - Upgrade">Commercial - Upgrade/Retrofit</option>
+                    <option value="Commercial Irrigation System - Repair">Commercial - Repair/Maintenance</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label>Property Size <span class="required">*</span></label>
+                <input type="text" id="propertySize" name="property_size" required placeholder="e.g., 5,000 sq ft, 2 acres">
+            </div>
+
+            <div class="button-group">
+                <button type="submit" class="btn-submit">Generate Proposal</button>
+                <a href="{{ url_for('sales') }}" class="btn-cancel" style="text-decoration: none; display: flex; align-items: center; justify-content: center;">Cancel</a>
+            </div>
+        </form>
+
+        <div id="loading" class="loading">
+            <div class="spinner"></div>
+            <p>Generating proposal... This may take a moment.</p>
+        </div>
+
+        <div id="proposalResult" class="proposal-result">
+            <h2 style="color: #333; margin-bottom: 15px;">Generated Proposal</h2>
+            <div class="proposal-content" id="proposalContent"></div>
+            <button class="btn-submit download-btn" onclick="downloadProposal()">📥 Download as PDF</button>
+        </div>
+    </div>
+
+    <script>
+        let currentProposalId = null;
+
+        document.getElementById('jobForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const formData = {
+                client_name: document.getElementById('clientName').value,
+                email: document.getElementById('email').value,
+                phone: document.getElementById('phone').value,
+                job_type: document.getElementById('jobType').value,
+                property_size: document.getElementById('propertySize').value
+            };
+
+            document.getElementById('loading').classList.add('show');
+            document.getElementById('proposalResult').classList.remove('show');
+            document.getElementById('jobForm').style.display = 'none';
+
+            try {
+                const response = await fetch('{{ url_for("sales_generate_proposal") }}', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(formData)
+                });
+
+                const data = await response.json();
+
+                document.getElementById('loading').classList.remove('show');
+
+                if (data.success) {
+                    currentProposalId = data.proposal_id;
+                    document.getElementById('proposalContent').textContent = data.proposal_text;
+                    document.getElementById('proposalResult').classList.add('show');
+                } else {
+                    showMessage('Error: ' + data.error, 'error');
+                    document.getElementById('jobForm').style.display = 'block';
+                }
+            } catch (error) {
+                document.getElementById('loading').classList.remove('show');
+                showMessage('Error generating proposal: ' + error, 'error');
+                document.getElementById('jobForm').style.display = 'block';
+            }
+        });
+
+        function showMessage(message, type) {
+            const msgDiv = document.getElementById('message');
+            msgDiv.textContent = message;
+            msgDiv.className = 'message ' + type;
+            setTimeout(() => {
+                msgDiv.className = 'message';
+            }, 5000);
+        }
+
+        function downloadProposal() {
+            if (currentProposalId) {
+                window.location.href = '{{ url_for("sales_download_proposal", proposal_id="") }}' + currentProposalId;
+            }
+        }
+    </script>
 </body>
 </html>
 '''
