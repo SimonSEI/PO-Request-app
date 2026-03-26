@@ -6576,7 +6576,8 @@ DASHBOARD_MENU_TEMPLATE = '''
         </a>
         {% endif %}
 
-        <!-- Sales App -->
+        <!-- Sales App (Office only) -->
+        {% if role == 'office' %}
         <a href="{{ url_for('sales') }}" style="text-decoration: none;">
             <div class="app-card">
                 <div class="app-icon">📊</div>
@@ -6585,6 +6586,7 @@ DASHBOARD_MENU_TEMPLATE = '''
                 <button class="app-button">Open Sales App</button>
             </div>
         </a>
+        {% endif %}
 
         <!-- Community Maintenance App -->
         <a href="{{ url_for('community_billing') }}" style="text-decoration: none;">
@@ -15037,9 +15039,13 @@ def debug_matching():
 
 @app.route('/sales')
 def sales():
-    """Main Sales App page"""
+    """Sales App - Office administrators only"""
     if 'username' not in session:
         return redirect(url_for('login'))
+
+    if session.get('role') != 'office':
+        flash('Access denied. Sales app is only available for office administrators.', 'error')
+        return redirect(url_for('dashboard'))
 
     username = session.get('username')
     role = session.get('role')
