@@ -2169,6 +2169,47 @@ def delete_office_admin():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
+@app.route('/edit_office_admin_password', methods=['POST'])
+def edit_office_admin_password():
+    """Edit an office administrator's password"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    try:
+        data = request.get_json()
+        admin_id = data.get('admin_id')
+        new_password = data.get('password', '').strip()
+
+        if not admin_id:
+            return jsonify({'success': False, 'error': 'Admin ID is required'})
+
+        if not new_password:
+            return jsonify({'success': False, 'error': 'Password is required'})
+
+        if len(new_password) < 6:
+            return jsonify({'success': False, 'error': 'Password must be at least 6 characters'})
+
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Get admin info before updating
+        c.execute("SELECT username, full_name FROM users WHERE id = ? AND role = 'office'", (admin_id,))
+        admin = c.fetchone()
+
+        if not admin:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Administrator not found'})
+
+        # Update the password
+        c.execute("UPDATE users SET password = ? WHERE id = ?", (new_password, admin_id))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({'success': True, 'message': f'Password for {admin[1]} updated successfully'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
 @app.route('/manage_jobs')
 def manage_jobs():
     """Manage Jobs - Display job management interface"""
@@ -7256,6 +7297,7 @@ MANAGE_OFFICE_ADMINS_TEMPLATE = '''
                             <td>{{ admin[4] or 'N/A' }}</td>
                             <td>{{ admin[5] or 'Never' }}</td>
                             <td>
+                                <button class="action-btn btn-primary" onclick="showEditModal({{ admin[0] }}, '{{ admin[1] }}', '{{ admin[2] }}')">✏️ Edit</button>
                                 <button class="action-btn btn-danger" onclick="deleteAdmin({{ admin[0] }}, '{{ admin[2] }}')">Delete</button>
                             </td>
                         </tr>
@@ -7265,6 +7307,28 @@ MANAGE_OFFICE_ADMINS_TEMPLATE = '''
             {% else %}
                 <p style="color: #666; margin-top: 20px;">No office administrators found.</p>
             {% endif %}
+        </div>
+    </div>
+
+    <!-- Edit Password Modal -->
+    <div id="editModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center;">
+        <div style="background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.2); max-width: 400px; width: 90%;">
+            <h2 style="margin-bottom: 20px; color: #333;">✏️ Edit Password</h2>
+            <form onsubmit="submitEditPassword(event)">
+                <input type="hidden" id="editAdminId">
+                <div class="form-group" style="margin-bottom: 15px;">
+                    <label style="display: block; margin-bottom: 5px; color: #555; font-weight: bold;">Administrator: <span id="editAdminName" style="color: #667eea;"></span></label>
+                </div>
+                <div class="form-group">
+                    <label for="editPassword">New Password *</label>
+                    <input type="password" id="editPassword" placeholder="Minimum 6 characters" required>
+                </div>
+                <div style="display: flex; gap: 10px; margin-top: 20px;">
+                    <button type="submit" class="btn btn-primary" style="flex: 1;">Save Password</button>
+                    <button type="button" class="btn btn-secondary" style="flex: 1;" onclick="closeEditModal()">Cancel</button>
+                </div>
+                <div id="edit-message" style="margin-top: 15px;"></div>
+            </form>
         </div>
     </div>
 
@@ -7344,6 +7408,66 @@ MANAGE_OFFICE_ADMINS_TEMPLATE = '''
             element.className = type;
             element.textContent = message;
         }
+
+        function showEditModal(adminId, username, fullName) {
+            document.getElementById('editAdminId').value = adminId;
+            document.getElementById('editAdminName').textContent = fullName + ' (' + username + ')';
+            document.getElementById('editPassword').value = '';
+            document.getElementById('edit-message').innerHTML = '';
+            document.getElementById('editModal').style.display = 'flex';
+        }
+
+        function closeEditModal() {
+            document.getElementById('editModal').style.display = 'none';
+        }
+
+        function submitEditPassword(event) {
+            event.preventDefault();
+
+            const adminId = document.getElementById('editAdminId').value;
+            const newPassword = document.getElementById('editPassword').value.trim();
+
+            if (!newPassword) {
+                showMessage('edit-message', 'Password is required', 'error');
+                return;
+            }
+
+            if (newPassword.length < 6) {
+                showMessage('edit-message', 'Password must be at least 6 characters', 'error');
+                return;
+            }
+
+            fetch('/edit_office_admin_password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    admin_id: adminId,
+                    password: newPassword
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showMessage('edit-message', data.message, 'success');
+                    setTimeout(() => {
+                        closeEditModal();
+                        location.reload();
+                    }, 1500);
+                } else {
+                    showMessage('edit-message', 'Error: ' + data.error, 'error');
+                }
+            })
+            .catch(error => {
+                showMessage('edit-message', 'Error: ' + error, 'error');
+            });
+        }
+
+        // Close modal when clicking outside
+        document.getElementById('editModal').addEventListener('click', function(event) {
+            if (event.target === this) {
+                closeEditModal();
+            }
+        });
     </script>
 </body>
 </html>
