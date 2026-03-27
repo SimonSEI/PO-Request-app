@@ -370,39 +370,57 @@ def fetch_emails_from_imap():
                     if msg_uid in processed_uids:
                         continue
 
-                    # Check if email has attachments (improved detection)
+                    # Check if email has attachments (handles forwarded emails with nested attachments)
                     has_attachments = False
                     attachment_count = 0
 
-                    if msg.get_content_maintype() == 'multipart':
-                        for part in msg.walk():
-                            # Check for explicit attachments
-                            if part.get_content_disposition() == 'attachment':
-                                has_attachments = True
-                                filename = part.get_filename()
-                                if filename:
-                                    attachment_count += 1
-                                    print(f"    Found attachment: {filename}")
-                            # Also check for inline PDFs/files that might be forwarded
-                            elif part.get_content_maintype() == 'application':
-                                has_attachments = True
-                                filename = part.get_filename()
-                                if filename:
-                                    attachment_count += 1
-                                    print(f"    Found application attachment: {filename}")
+                    for part in msg.walk():
+                        # Direct attachments
+                        if part.get_content_disposition() == 'attachment':
+                            has_attachments = True
+                            filename = part.get_filename()
+                            if filename:
+                                attachment_count += 1
+                                print(f"    Found attachment: {filename}")
 
-                        if has_attachments:
-                            emails.append((msg_uid, msg))
-                            subject = msg.get('Subject', 'No Subject')
-                            print(f"  ✓ Found new email with {attachment_count} attachment(s): {subject}")
-                        else:
-                            # For debugging: show emails without attachments
-                            subject = msg.get('Subject', 'No Subject')
-                            print(f"  ⊘ Skipped (no attachments): {subject[:60]}")
-                    else:
-                        # Show non-multipart emails for debugging
+                        # Application types (PDFs, etc.)
+                        elif part.get_content_maintype() == 'application':
+                            has_attachments = True
+                            filename = part.get_filename()
+                            if filename:
+                                attachment_count += 1
+                                print(f"    Found application: {filename}")
+
+                        # Forwarded emails (message/rfc822) - check their attachments
+                        elif part.get_content_type() == 'message/rfc822':
+                            print(f"    Found forwarded message - checking nested attachments...")
+                            try:
+                                payload = part.get_payload()
+                                if isinstance(payload, list):
+                                    forwarded_msg = payload[0] if payload else None
+                                else:
+                                    forwarded_msg = payload
+
+                                if forwarded_msg:
+                                    if hasattr(forwarded_msg, 'walk'):
+                                        for fwd_part in forwarded_msg.walk():
+                                            if fwd_part.get_content_disposition() == 'attachment' or fwd_part.get_content_maintype() == 'application':
+                                                has_attachments = True
+                                                fwd_filename = fwd_part.get_filename()
+                                                if fwd_filename:
+                                                    attachment_count += 1
+                                                    print(f"    Found nested attachment: {fwd_filename}")
+                            except Exception as e:
+                                print(f"    (Could not parse nested message: {e})")
+
+                    if has_attachments:
+                        emails.append((msg_uid, msg))
                         subject = msg.get('Subject', 'No Subject')
-                        print(f"  ⊘ Skipped (not multipart): {subject[:60]}")
+                        print(f"  ✓ Found new email with {attachment_count} attachment(s): {subject}")
+                    else:
+                        # For debugging: show emails without attachments
+                        subject = msg.get('Subject', 'No Subject')
+                        print(f"  ⊘ Skipped (no attachments): {subject[:60]}")
 
         mail.close()
         mail.logout()
