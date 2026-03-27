@@ -4767,9 +4767,12 @@ def extract_multiple_invoices_from_table(text, po_map):
     header_end = header_match.end()
     table_text = text[header_end:header_end + 2000]  # Look at next 2000 chars for table rows
 
-    # Pattern to match table rows: invoice_number | po_number | amount
-    # Handles formats like: 0025807515-001 | S-10027 | $122.95
-    row_pattern = r'(\d{4,}[\-\d]+)\s+[\|\s]+([S\-\d]+|\d{4,})\s+[\|\s]+\$?([\d,\.]+)'
+    # Pattern to match table rows with flexible PO column formatting
+    # Handles formats like:
+    #   0025807515-001 | S-10027 | $122.95
+    #   0025807515-001 | S-10027 Stock Truck 53 | $122.95  (with descriptive text)
+    #   0025807515-001 | 10027 Job Name | $122.95  (just number with job name)
+    row_pattern = r'(\d{4,}[\-\d]+)\s+[\|\s]+([S]?[\-\s]?\d{4,})\s*[A-Za-z0-9\s\-]*?[\|\s]+\$?([\d,\.]+)'
 
     matches = re.finditer(row_pattern, table_text)
 
@@ -4778,10 +4781,13 @@ def extract_multiple_invoices_from_table(text, po_map):
         po_str = match.group(2).strip()
         amount_str = match.group(3).strip()
 
-        # Convert PO string to integer
+        # Convert PO string to integer (extract only numbers)
         try:
-            # Handle formats like "S-10027", "S10027", "10027", etc.
+            # Handle formats like "S-10027", "S 10027", "10027", "S10027", etc.
+            # Extract ONLY the numeric part
             po_clean = re.sub(r'[^0-9]', '', po_str)
+            if not po_clean:
+                continue
             po_id = int(po_clean)
 
             # Check if this PO exists in po_map
@@ -4807,7 +4813,8 @@ def extract_multiple_invoices_from_table(text, po_map):
             }
 
             invoices.append(invoice_dict)
-            print(f"    ✅ Invoice {inv_num} → PO {po_id} (${cost_str})")
+            po_info = po_map.get(po_id, {})
+            print(f"    ✅ Invoice {inv_num} → PO {po_id} ({po_info.get('job_name', 'Unknown')}) (${cost_str})")
 
         except (ValueError, AttributeError) as e:
             print(f"    ⚠ Failed to parse row: {inv_num} | {po_str} | {amount_str} ({e})")
