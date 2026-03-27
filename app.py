@@ -2073,7 +2073,7 @@ def manage_office_admins():
         c = conn.cursor()
 
         # Get all office administrators
-        c.execute("""SELECT id, username, full_name, email, created_date, last_login
+        c.execute("""SELECT id, username, full_name, email, created_date, last_login, password
                      FROM users WHERE role='office'
                      ORDER BY full_name ASC""")
         admins = c.fetchall()
@@ -7240,6 +7240,7 @@ MANAGE_OFFICE_ADMINS_TEMPLATE = '''
                             <th>Username</th>
                             <th>Full Name</th>
                             <th>Email</th>
+                            <th>Password</th>
                             <th>Created Date</th>
                             <th>Last Login</th>
                             <th>Action</th>
@@ -7251,6 +7252,7 @@ MANAGE_OFFICE_ADMINS_TEMPLATE = '''
                             <td><strong>{{ admin[1] }}</strong></td>
                             <td>{{ admin[2] }}</td>
                             <td>{{ admin[3] }}</td>
+                            <td><code style="background: #f0f0f0; padding: 4px 8px; border-radius: 3px; font-family: monospace;">{{ admin[6] }}</code></td>
                             <td>{{ admin[4] or 'N/A' }}</td>
                             <td>{{ admin[5] or 'Never' }}</td>
                             <td>
