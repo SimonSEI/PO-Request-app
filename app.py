@@ -4732,6 +4732,12 @@ def extract_multiple_invoices_from_table(text, po_map):
 
     print(f"  📊 TABLE FORMAT DETECTED - extracting multiple invoices...")
 
+    # Try to extract year from the document
+    invoice_year = extract_invoice_year(text)
+    if not invoice_year:
+        invoice_year = datetime.now().year  # Default to current year
+    print(f"  📅 Invoice year: {invoice_year}")
+
     # Find the header line
     header_match = re.search(header_pattern, text, re.IGNORECASE)
     if not header_match:
@@ -4776,7 +4782,7 @@ def extract_multiple_invoices_from_table(text, po_map):
                 'invoice_number': inv_num,
                 'cost': cost_str,
                 'match_method': 'Table Multi-Invoice',
-                'invoice_year': None,
+                'invoice_year': invoice_year,
                 'error': False
             }
 
