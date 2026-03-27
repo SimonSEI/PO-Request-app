@@ -4308,33 +4308,56 @@ def process_bulk_pdf(pdf_path, timestamp):
                         })
                     continue  # Skip regular invoice processing for packing slips
 
-                # Extract invoice data from this page
-                invoice_data = extract_invoice_data(text, po_map)
+                # FIRST: Try to extract multiple invoices from table format
+                multiple_invoices = extract_multiple_invoices_from_table(text, po_map)
 
-                if invoice_data and not invoice_data.get('error'):
-                    # Valid invoice with PO match
-                    inv_num = invoice_data['invoice_number']
+                if multiple_invoices:
+                    # Process each invoice from the table
+                    for invoice_data in multiple_invoices:
+                        inv_num = invoice_data['invoice_number']
+                        po_id = invoice_data['po_id']
+                        po_info = po_map.get(po_id, {})
 
-                    if inv_num not in invoice_groups:
-                        invoice_groups[inv_num] = {
-                            'pages': [],
-                            'texts': [],
-                            'data': invoice_data
-                        }
+                        if inv_num not in invoice_groups:
+                            invoice_groups[inv_num] = {
+                                'pages': [page_num - 1],
+                                'texts': [text],
+                                'data': invoice_data
+                            }
+                        else:
+                            invoice_groups[inv_num]['pages'].append(page_num - 1)
+                            invoice_groups[inv_num]['texts'].append(text)
 
-                    invoice_groups[inv_num]['pages'].append(page_num - 1)
-                    invoice_groups[inv_num]['texts'].append(text)
+                        print(f"  ✅ Added to invoice group: {inv_num} → PO {po_id} ({po_info.get('job_name', 'Unknown')})")
 
-                elif invoice_data and invoice_data.get('error'):
-                    # Invoice found but no PO match
-                    results['errors'].append({
-                        'page': page_num,
-                        'invoice_number': invoice_data['invoice_number'],
-                        'cost': invoice_data.get('cost', 'Unknown'),
-                        'error': 'NO MATCHING PO FOUND',
-                        'message': invoice_data.get('message', ''),
-                        'text_preview': text[:300]
-                    })
+                else:
+                    # FALLBACK: Try single invoice extraction
+                    invoice_data = extract_invoice_data(text, po_map)
+
+                    if invoice_data and not invoice_data.get('error'):
+                        # Valid invoice with PO match
+                        inv_num = invoice_data['invoice_number']
+
+                        if inv_num not in invoice_groups:
+                            invoice_groups[inv_num] = {
+                                'pages': [],
+                                'texts': [],
+                                'data': invoice_data
+                            }
+
+                        invoice_groups[inv_num]['pages'].append(page_num - 1)
+                        invoice_groups[inv_num]['texts'].append(text)
+
+                    elif invoice_data and invoice_data.get('error'):
+                        # Invoice found but no PO match
+                        results['errors'].append({
+                            'page': page_num,
+                            'invoice_number': invoice_data['invoice_number'],
+                            'cost': invoice_data.get('cost', 'Unknown'),
+                            'error': 'NO MATCHING PO FOUND',
+                            'message': invoice_data.get('message', ''),
+                            'text_preview': text[:300]
+                        })
 
                     # Save as unmatched page
                     unmatched_filename = f"ERROR_NO_PO_{timestamp}_page{page_num}_{invoice_data['invoice_number']}.pdf"
@@ -4684,6 +4707,87 @@ def get_service_job_for_year(year):
                 return None, f"Service {year} job could not be created: {str(create_err)}"
     except Exception as e:
         return None, f"Error checking for Service job: {str(e)}"
+
+
+def extract_multiple_invoices_from_table(text, po_map):
+    """
+    Extract multiple invoices from a table format (e.g., Heritage Landscape Supply invoice).
+    Returns a list of invoice data dicts, or empty list if no table format detected.
+
+    Table format example:
+    INVOICE NUMBER | PO NUMBER | AMOUNT
+    0025807515-001 | S-10027 | $122.95
+    0025805293-001 | S-10026 | $248.17
+    ...
+    """
+    if not text:
+        return []
+
+    invoices = []
+
+    # Look for table header with "INVOICE NUMBER" and "PO NUMBER" and "AMOUNT"
+    header_pattern = r'INVOICE\s+NUMBER[\s\S]*?PO\s+NUMBER[\s\S]*?AMOUNT'
+    if not re.search(header_pattern, text, re.IGNORECASE):
+        return []  # No table format detected
+
+    print(f"  📊 TABLE FORMAT DETECTED - extracting multiple invoices...")
+
+    # Find the header line
+    header_match = re.search(header_pattern, text, re.IGNORECASE)
+    if not header_match:
+        return []
+
+    # Get text after header
+    header_end = header_match.end()
+    table_text = text[header_end:header_end + 2000]  # Look at next 2000 chars for table rows
+
+    # Pattern to match table rows: invoice_number | po_number | amount
+    # Handles formats like: 0025807515-001 | S-10027 | $122.95
+    row_pattern = r'(\d{4,}[\-\d]+)\s+[\|\s]+([S\-\d]+|\d{4,})\s+[\|\s]+\$?([\d,\.]+)'
+
+    matches = re.finditer(row_pattern, table_text)
+
+    for match in matches:
+        inv_num = match.group(1).strip()
+        po_str = match.group(2).strip()
+        amount_str = match.group(3).strip()
+
+        # Convert PO string to integer
+        try:
+            # Handle formats like "S-10027", "S10027", "10027", etc.
+            po_clean = re.sub(r'[^0-9]', '', po_str)
+            po_id = int(po_clean)
+
+            # Check if this PO exists in po_map
+            if po_id not in po_map:
+                print(f"    ⚠ Invoice {inv_num} → PO {po_id} (not in approved list)")
+                continue
+
+            # Extract cost
+            try:
+                cost = float(amount_str.replace(',', ''))
+                cost_str = f"{cost:.2f}"
+            except:
+                cost_str = "0.00"
+
+            invoice_dict = {
+                'po_id': po_id,
+                'po_number': po_id,
+                'invoice_number': inv_num,
+                'cost': cost_str,
+                'match_method': 'Table Multi-Invoice',
+                'invoice_year': None,
+                'error': False
+            }
+
+            invoices.append(invoice_dict)
+            print(f"    ✅ Invoice {inv_num} → PO {po_id} (${cost_str})")
+
+        except (ValueError, AttributeError) as e:
+            print(f"    ⚠ Failed to parse row: {inv_num} | {po_str} | {amount_str} ({e})")
+            continue
+
+    return invoices
 
 
 def extract_invoice_data(text, po_map):
