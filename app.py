@@ -370,21 +370,39 @@ def fetch_emails_from_imap():
                     if msg_uid in processed_uids:
                         continue
 
-                    # Check if email has attachments
+                    # Check if email has attachments (improved detection)
+                    has_attachments = False
+                    attachment_count = 0
+
                     if msg.get_content_maintype() == 'multipart':
-                        has_attachments = False
                         for part in msg.walk():
+                            # Check for explicit attachments
                             if part.get_content_disposition() == 'attachment':
                                 has_attachments = True
-                                break
+                                filename = part.get_filename()
+                                if filename:
+                                    attachment_count += 1
+                                    print(f"    Found attachment: {filename}")
+                            # Also check for inline PDFs/files that might be forwarded
+                            elif part.get_content_maintype() == 'application':
+                                has_attachments = True
+                                filename = part.get_filename()
+                                if filename:
+                                    attachment_count += 1
+                                    print(f"    Found application attachment: {filename}")
 
                         if has_attachments:
                             emails.append((msg_uid, msg))
-                            print(f"  ✓ Found new email with attachments: {msg.get('Subject', 'No Subject')}")
+                            subject = msg.get('Subject', 'No Subject')
+                            print(f"  ✓ Found new email with {attachment_count} attachment(s): {subject}")
+                        else:
+                            # For debugging: show emails without attachments
+                            subject = msg.get('Subject', 'No Subject')
+                            print(f"  ⊘ Skipped (no attachments): {subject[:60]}")
                     else:
-                        # For debugging: show emails without attachments
-                        if msg_uid not in processed_uids:
-                            print(f"  ⊘ Skipped (no attachments): {msg.get('Subject', 'No Subject')[:60]}")
+                        # Show non-multipart emails for debugging
+                        subject = msg.get('Subject', 'No Subject')
+                        print(f"  ⊘ Skipped (not multipart): {subject[:60]}")
 
         mail.close()
         mail.logout()
