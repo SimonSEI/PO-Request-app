@@ -391,6 +391,26 @@ def fetch_emails_from_imap():
         print(f"✓ IMAP disconnected - {len(emails)} new emails with attachments")
         return emails
 
+    except imaplib.IMAP4.error as e:
+        error_msg = str(e)
+        print(f"✗ IMAP Authentication Error: {error_msg}")
+
+        # Check for Outlook/Microsoft basic auth blocked error
+        if "BasicAuthBlocked" in error_msg or "LogonDenied" in error_msg:
+            print(f"\n⚠️  OUTLOOK BASIC AUTH BLOCKED")
+            print(f"   Microsoft has disabled basic IMAP authentication.")
+            print(f"   FIX: Use an Outlook App Password instead:")
+            print(f"   1. Go to https://account.microsoft.com/account/manage-my-microsoft-account")
+            print(f"   2. Click 'Security' → 'Advanced security options'")
+            print(f"   3. Scroll to 'App passwords' and create a new one for Mail/IMAP")
+            print(f"   4. Update PO_EMAIL_PASSWORD environment variable with the app password")
+        elif "LOGIN failed" in error_msg:
+            print(f"   → Check that PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD are correct")
+
+        import traceback
+        traceback.print_exc()
+        return []
+
     except Exception as e:
         print(f"✗ IMAP error: {e}")
         import traceback
