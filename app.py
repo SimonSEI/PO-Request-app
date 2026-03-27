@@ -355,8 +355,12 @@ def fetch_emails_from_imap():
         if status == 'OK':
             email_id_list = email_ids[0].split()
             print(f"📧 Found {len(email_id_list)} total emails in INBOX")
+            print(f"   Already processed: {len(processed_uids)} emails")
+            print(f"   Unprocessed: {len(email_id_list) - len(processed_uids)} emails")
 
-            for email_id in reversed(email_id_list[-50:]):  # Check last 50 emails
+            # Check ALL emails (not just last 50) to find unprocessed ones with attachments
+            # Process in reverse order (newest first) for better UX
+            for email_id in reversed(email_id_list):
                 status, msg_data = mail.fetch(email_id, '(RFC822)')
                 if status == 'OK':
                     msg = email.message_from_bytes(msg_data[0][1])
@@ -377,6 +381,10 @@ def fetch_emails_from_imap():
                         if has_attachments:
                             emails.append((msg_uid, msg))
                             print(f"  ✓ Found new email with attachments: {msg.get('Subject', 'No Subject')}")
+                    else:
+                        # For debugging: show emails without attachments
+                        if msg_uid not in processed_uids:
+                            print(f"  ⊘ Skipped (no attachments): {msg.get('Subject', 'No Subject')[:60]}")
 
         mail.close()
         mail.logout()
@@ -4009,6 +4017,107 @@ def check_po_emails():
     except Exception as e:
         import traceback
         print(f"✗ Email check error: {e}")
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'trace': traceback.format_exc()
+        })
+
+
+@app.route('/rescan_all_po_emails', methods=['POST'])
+def rescan_all_po_emails():
+    """Force a full rescan of ALL emails in PO inbox (clears processed history and rescans)"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    if not PO_EMAIL_MONITORING_ENABLED:
+        return jsonify({
+            'success': False,
+            'error': 'Email monitoring not configured'
+        })
+
+    try:
+        print(f"\n{'='*60}")
+        print(f"🔄 FORCE RESCAN: Clearing processed email history")
+        print(f"{'='*60}")
+
+        # Clear the email processing log to allow re-processing all emails
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("DELETE FROM email_processing_log")
+        conn.commit()
+        conn.close()
+
+        print(f"✓ Cleared email processing history - all emails marked for reprocessing")
+
+        # Now run the standard email check
+        print(f"\n📧 Starting full email scan...")
+        emails = fetch_emails_from_imap()
+
+        if not emails:
+            return jsonify({
+                'success': True,
+                'message': 'Full rescan complete - no emails with attachments found',
+                'emails_checked': 0,
+                'emails_processed': 0
+            })
+
+        all_results = {
+            'success': True,
+            'rescan': True,
+            'emails_checked': len(emails),
+            'emails_processed': 0,
+            'total_attachments': 0,
+            'total_matched': 0,
+            'total_unmatched': 0,
+            'details': []
+        }
+
+        # Process each email
+        for msg_uid, msg in emails:
+            print(f"\n📧 Processing email: {msg.get('Subject', 'No Subject')}")
+
+            # Extract attachments
+            attachments = extract_attachments_from_email(msg)
+            if not attachments:
+                continue
+
+            all_results['emails_processed'] += 1
+            all_results['total_attachments'] += len(attachments)
+
+            # Process attachments
+            email_results = process_email_attachments(msg_uid, msg, attachments)
+
+            # Update totals
+            all_results['total_matched'] += email_results.get('matched', 0)
+            all_results['total_unmatched'] += len(email_results.get('unmatched', []))
+
+            # Log to database
+            log_email_processing(
+                msg_uid,
+                email_results.get('email_sender', 'Unknown'),
+                email_results.get('email_subject', 'No Subject'),
+                email_results.get('email_date', ''),
+                email_results.get('attachments_processed', 0),
+                email_results
+            )
+
+            all_results['details'].append(email_results)
+
+        print(f"\n{'='*60}")
+        print(f"✅ FULL RESCAN COMPLETE")
+        print(f"  Emails processed: {all_results['emails_processed']}")
+        print(f"  Total attachments: {all_results['total_attachments']}")
+        print(f"  Matched invoices: {all_results['total_matched']}")
+        print(f"  Unmatched invoices: {all_results['total_unmatched']}")
+        print(f"{'='*60}")
+
+        return jsonify(all_results)
+
+    except Exception as e:
+        import traceback
+        print(f"✗ Rescan error: {e}")
         traceback.print_exc()
         return jsonify({
             'success': False,
