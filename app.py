@@ -4359,29 +4359,29 @@ def process_bulk_pdf(pdf_path, timestamp):
                             'text_preview': text[:300]
                         })
 
-                    # Save as unmatched page
-                    unmatched_filename = f"ERROR_NO_PO_{timestamp}_page{page_num}_{invoice_data['invoice_number']}.pdf"
-                    unmatched_path = os.path.join(app.config['UPLOAD_FOLDER'], unmatched_filename)
-                    pdf_writer = PyPDF2.PdfWriter()
-                    pdf_writer.add_page(pdf_reader.pages[page_num - 1])
-                    with open(unmatched_path, 'wb') as f:
-                        pdf_writer.write(f)
+                        # Save as unmatched page
+                        unmatched_filename = f"ERROR_NO_PO_{timestamp}_page{page_num}_{invoice_data['invoice_number']}.pdf"
+                        unmatched_path = os.path.join(app.config['UPLOAD_FOLDER'], unmatched_filename)
+                        pdf_writer = PyPDF2.PdfWriter()
+                        pdf_writer.add_page(pdf_reader.pages[page_num - 1])
+                        with open(unmatched_path, 'wb') as f:
+                            pdf_writer.write(f)
 
-                else:
-                    # No invoice number found
-                    print(f"✗ No invoice number found on page {page_num}")
-                    unmatched_filename = f"UNMATCHED_{timestamp}_page{page_num}.pdf"
-                    unmatched_path = os.path.join(app.config['UPLOAD_FOLDER'], unmatched_filename)
-                    pdf_writer = PyPDF2.PdfWriter()
-                    pdf_writer.add_page(pdf_reader.pages[page_num - 1])
-                    with open(unmatched_path, 'wb') as f:
-                        pdf_writer.write(f)
+                    else:
+                        # No invoice number found
+                        print(f"✗ No invoice number found on page {page_num}")
+                        unmatched_filename = f"UNMATCHED_{timestamp}_page{page_num}.pdf"
+                        unmatched_path = os.path.join(app.config['UPLOAD_FOLDER'], unmatched_filename)
+                        pdf_writer = PyPDF2.PdfWriter()
+                        pdf_writer.add_page(pdf_reader.pages[page_num - 1])
+                        with open(unmatched_path, 'wb') as f:
+                            pdf_writer.write(f)
 
-                    results['unmatched'].append({
-                        'page': page_num,
-                        'text_preview': text[:200],
-                        'filename': unmatched_filename
-                    })
+                        results['unmatched'].append({
+                            'page': page_num,
+                            'text_preview': text[:200],
+                            'filename': unmatched_filename
+                        })
 
         # Save successfully matched invoices
         print(f"\n💾 Saving {len(invoice_groups)} invoice groups...")
