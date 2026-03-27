@@ -10,8 +10,10 @@ from email.mime.text import MIMEText
 from datetime import datetime
 
 # Email configuration
-SMTP_SERVER = 'smtp.gmail.com'
-SMTP_PORT = 587
+# For Outlook/Office365: use smtp.office365.com
+# For Gmail: use smtp.gmail.com
+SMTP_SERVER = os.environ.get('TEST_SMTP_SERVER', 'smtp.office365.com')
+SMTP_PORT = int(os.environ.get('TEST_SMTP_PORT', '587'))
 EMAIL_ADDRESS = os.environ.get('EMAIL_ADDRESS', '')
 EMAIL_PASSWORD = os.environ.get('EMAIL_PASSWORD', '')
 WEBSITE_URL = os.environ.get('WEBSITE_URL', 'http://localhost:5000')
