@@ -391,6 +391,26 @@ def fetch_emails_from_imap():
         print(f"✓ IMAP disconnected - {len(emails)} new emails with attachments")
         return emails
 
+    except imaplib.IMAP4.error as e:
+        error_msg = str(e)
+        print(f"✗ IMAP Authentication Error: {error_msg}")
+
+        # Check for Outlook/Microsoft basic auth blocked error
+        if "BasicAuthBlocked" in error_msg or "LogonDenied" in error_msg:
+            print(f"\n⚠️  OUTLOOK BASIC AUTH BLOCKED")
+            print(f"   Microsoft has disabled basic IMAP authentication.")
+            print(f"   FIX: Use an Outlook App Password instead:")
+            print(f"   1. Go to https://account.microsoft.com/account/manage-my-microsoft-account")
+            print(f"   2. Click 'Security' → 'Advanced security options'")
+            print(f"   3. Scroll to 'App passwords' and create a new one for Mail/IMAP")
+            print(f"   4. Update PO_EMAIL_PASSWORD environment variable with the app password")
+        elif "LOGIN failed" in error_msg:
+            print(f"   → Check that PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD are correct")
+
+        import traceback
+        traceback.print_exc()
+        return []
+
     except Exception as e:
         print(f"✗ IMAP error: {e}")
         import traceback
@@ -4359,29 +4379,29 @@ def process_bulk_pdf(pdf_path, timestamp):
                             'text_preview': text[:300]
                         })
 
-                    # Save as unmatched page
-                    unmatched_filename = f"ERROR_NO_PO_{timestamp}_page{page_num}_{invoice_data['invoice_number']}.pdf"
-                    unmatched_path = os.path.join(app.config['UPLOAD_FOLDER'], unmatched_filename)
-                    pdf_writer = PyPDF2.PdfWriter()
-                    pdf_writer.add_page(pdf_reader.pages[page_num - 1])
-                    with open(unmatched_path, 'wb') as f:
-                        pdf_writer.write(f)
+                        # Save as unmatched page
+                        unmatched_filename = f"ERROR_NO_PO_{timestamp}_page{page_num}_{invoice_data['invoice_number']}.pdf"
+                        unmatched_path = os.path.join(app.config['UPLOAD_FOLDER'], unmatched_filename)
+                        pdf_writer = PyPDF2.PdfWriter()
+                        pdf_writer.add_page(pdf_reader.pages[page_num - 1])
+                        with open(unmatched_path, 'wb') as f:
+                            pdf_writer.write(f)
 
-                else:
-                    # No invoice number found
-                    print(f"✗ No invoice number found on page {page_num}")
-                    unmatched_filename = f"UNMATCHED_{timestamp}_page{page_num}.pdf"
-                    unmatched_path = os.path.join(app.config['UPLOAD_FOLDER'], unmatched_filename)
-                    pdf_writer = PyPDF2.PdfWriter()
-                    pdf_writer.add_page(pdf_reader.pages[page_num - 1])
-                    with open(unmatched_path, 'wb') as f:
-                        pdf_writer.write(f)
+                    else:
+                        # No invoice number found
+                        print(f"✗ No invoice number found on page {page_num}")
+                        unmatched_filename = f"UNMATCHED_{timestamp}_page{page_num}.pdf"
+                        unmatched_path = os.path.join(app.config['UPLOAD_FOLDER'], unmatched_filename)
+                        pdf_writer = PyPDF2.PdfWriter()
+                        pdf_writer.add_page(pdf_reader.pages[page_num - 1])
+                        with open(unmatched_path, 'wb') as f:
+                            pdf_writer.write(f)
 
-                    results['unmatched'].append({
-                        'page': page_num,
-                        'text_preview': text[:200],
-                        'filename': unmatched_filename
-                    })
+                        results['unmatched'].append({
+                            'page': page_num,
+                            'text_preview': text[:200],
+                            'filename': unmatched_filename
+                        })
 
         # Save successfully matched invoices
         print(f"\n💾 Saving {len(invoice_groups)} invoice groups...")
