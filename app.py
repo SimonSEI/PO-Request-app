@@ -16,6 +16,7 @@ import email
 from email.parser import Parser
 from email.header import decode_header
 import base64
+import threading
 import requests as http_requests  # aliased to avoid conflict with flask.request
 
 # Microsoft Graph API (OAuth2)
@@ -429,12 +430,14 @@ def fetch_emails_from_graph():
         # Fetch messages with attachments
         # Note: Graph API doesn't support $filter + $orderby together on messages
         # so we fetch filtered results and sort client-side
+        # Use $expand=attachments($select=id,name,contentType) to avoid per-message API calls
         user_email = PO_EMAIL_ADDRESS
         url = f"https://graph.microsoft.com/v1.0/users/{user_email}/messages"
         params = {
             '$filter': 'hasAttachments eq true',
             '$top': 50,
-            '$select': 'id,subject,from,receivedDateTime,hasAttachments'
+            '$select': 'id,subject,from,receivedDateTime,hasAttachments',
+            '$expand': 'attachments($select=id,name,contentType,size)'
         }
 
         all_messages = []
@@ -462,13 +465,8 @@ def fetch_emails_from_graph():
 
             diagnostics['unprocessed_checked'] += 1
 
-            # Check for actual PDF attachments
-            att_url = f"https://graph.microsoft.com/v1.0/users/{user_email}/messages/{msg_id}/attachments"
-            att_params = {'$select': 'id,name,contentType,size'}
-            att_resp = http_requests.get(att_url, headers=headers, params=att_params)
-            att_resp.raise_for_status()
-            att_list = att_resp.json().get('value', [])
-
+            # Check for PDF attachments using expanded data (no extra API call needed)
+            att_list = msg_data.get('attachments', [])
             has_pdf = any(
                 a.get('name', '').lower().endswith('.pdf') or
                 a.get('contentType', '') == 'application/pdf'
@@ -2607,7 +2605,7 @@ def office_dashboard():
             c.execute("""
                 SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date, client_name
                 FROM po_requests
-                WHERE job_name=? AND status IN ('approved', 'awaiting_invoice')
+                WHERE job_name=? AND status IN ('approved', 'awaiting_invoice', 'matched')
                 ORDER BY id DESC
             """, (job_name,))
             job_pos[job[0]] = c.fetchall()
@@ -4315,50 +4313,56 @@ def bulk_upload_invoices():
         return jsonify({'success': False, 'error': str(e), 'trace': traceback.format_exc()})
 
 
-@app.route('/check_po_emails', methods=['POST'])
-def check_po_emails():
-    """Check IMAP email account for new invoices and process them automatically"""
-    if 'username' not in session or session['role'] != 'office':
-        return jsonify({'success': False, 'error': 'Unauthorized'})
+# Background email check status tracking
+_email_check_status = {
+    'running': False,
+    'started_at': None,
+    'completed_at': None,
+    'result': None
+}
+_email_check_lock = threading.Lock()
 
-    if not PO_EMAIL_MONITORING_ENABLED:
-        return jsonify({
-            'success': False,
-            'error': 'Email monitoring not configured. Set MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET for Graph API (recommended), or PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD for IMAP.'
-        })
 
+def _run_email_check_background():
+    """Background worker for email checking"""
+    global _email_check_status
     try:
         print(f"\n{'='*60}")
         print(f"📧 CHECKING PO EMAIL ACCOUNT: {PO_EMAIL_ADDRESS}")
         print(f"   Graph API: {'Enabled' if MS_GRAPH_ENABLED else 'Not configured'}")
-        print(f"   IMAP: {PO_EMAIL_IMAP_SERVER}")
         print(f"{'='*60}")
 
-        # Fetch emails (Graph API first, then IMAP fallback)
         result = fetch_emails()
         emails = result.get('emails', [])
         diagnostics = result.get('diagnostics', {})
         source = diagnostics.get('source', 'imap')
 
-        # If there was a connection/auth error, report it to the user
         if diagnostics.get('error'):
-            return jsonify({
-                'success': False,
-                'error': diagnostics['error'],
-                'diagnostics': diagnostics
-            })
+            with _email_check_lock:
+                _email_check_status['running'] = False
+                _email_check_status['completed_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                _email_check_status['result'] = {
+                    'success': False,
+                    'error': diagnostics['error'],
+                    'diagnostics': diagnostics
+                }
+            return
 
         if not emails:
-            return jsonify({
-                'success': True,
-                'message': 'No new emails with attachments found',
-                'emails_checked': 0,
-                'emails_processed': 0,
-                'total_attachments': 0,
-                'total_matched': 0,
-                'total_unmatched': 0,
-                'diagnostics': diagnostics
-            })
+            with _email_check_lock:
+                _email_check_status['running'] = False
+                _email_check_status['completed_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                _email_check_status['result'] = {
+                    'success': True,
+                    'message': 'No new emails with attachments found',
+                    'emails_checked': 0,
+                    'emails_processed': 0,
+                    'total_attachments': 0,
+                    'total_matched': 0,
+                    'total_unmatched': 0,
+                    'diagnostics': diagnostics
+                }
+            return
 
         all_results = {
             'success': True,
@@ -4371,11 +4375,9 @@ def check_po_emails():
             'diagnostics': diagnostics
         }
 
-        # Process each email
         for msg_uid, msg in emails:
             print(f"\n📧 Processing email: {msg.get('Subject', 'No Subject')}")
 
-            # Extract attachments based on source
             if source == 'graph_api':
                 attachments = extract_attachments_from_graph_message(msg_uid)
             else:
@@ -4386,14 +4388,11 @@ def check_po_emails():
             all_results['emails_processed'] += 1
             all_results['total_attachments'] += len(attachments)
 
-            # Process attachments
             email_results = process_email_attachments(msg_uid, msg, attachments)
 
-            # Update totals
             all_results['total_matched'] += email_results.get('matched', 0)
             all_results['total_unmatched'] += len(email_results.get('unmatched', []))
 
-            # Log to database
             log_email_processing(
                 msg_uid,
                 email_results.get('email_sender', 'Unknown'),
@@ -4405,6 +4404,10 @@ def check_po_emails():
 
             all_results['details'].append(email_results)
 
+            # Update status as we go so the UI can show progress
+            with _email_check_lock:
+                _email_check_status['result'] = all_results
+
         print(f"\n{'='*60}")
         print(f"✅ EMAIL CHECK COMPLETE")
         print(f"  Emails processed: {all_results['emails_processed']}")
@@ -4413,16 +4416,72 @@ def check_po_emails():
         print(f"  Unmatched invoices: {all_results['total_unmatched']}")
         print(f"{'='*60}")
 
-        return jsonify(all_results)
+        with _email_check_lock:
+            _email_check_status['running'] = False
+            _email_check_status['completed_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            _email_check_status['result'] = all_results
 
     except Exception as e:
         import traceback
         print(f"✗ Email check error: {e}")
         traceback.print_exc()
+        with _email_check_lock:
+            _email_check_status['running'] = False
+            _email_check_status['completed_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            _email_check_status['result'] = {
+                'success': False,
+                'error': str(e)
+            }
+
+
+@app.route('/check_po_emails', methods=['POST'])
+def check_po_emails():
+    """Start background email check - returns immediately"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    if not PO_EMAIL_MONITORING_ENABLED:
         return jsonify({
             'success': False,
-            'error': str(e),
-            'trace': traceback.format_exc()
+            'error': 'Email monitoring not configured. Set MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET for Graph API (recommended), or PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD for IMAP.'
+        })
+
+    with _email_check_lock:
+        if _email_check_status['running']:
+            return jsonify({
+                'success': True,
+                'status': 'already_running',
+                'started_at': _email_check_status['started_at'],
+                'message': 'Email check already in progress'
+            })
+
+        _email_check_status['running'] = True
+        _email_check_status['started_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        _email_check_status['completed_at'] = None
+        _email_check_status['result'] = None
+
+    thread = threading.Thread(target=_run_email_check_background, daemon=True)
+    thread.start()
+
+    return jsonify({
+        'success': True,
+        'status': 'started',
+        'message': 'Email check started in background'
+    })
+
+
+@app.route('/check_po_emails_status', methods=['GET'])
+def check_po_emails_status():
+    """Poll for email check status"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    with _email_check_lock:
+        return jsonify({
+            'running': _email_check_status['running'],
+            'started_at': _email_check_status['started_at'],
+            'completed_at': _email_check_status['completed_at'],
+            'result': _email_check_status['result']
         })
 
 
@@ -4871,6 +4930,17 @@ def process_bulk_pdf(pdf_path, timestamp):
                           float(invoice_data['cost']),
                           invoice_data.get('match_method', 'Unknown'), 'matched', new_job_name, manual_review_flag, po_id))
                 job_name = new_job_name  # Update job_name for results
+
+                # Also insert into invoices table
+                try:
+                    c.execute("""INSERT INTO invoices (po_id, invoice_number, invoice_cost, invoice_filename,
+                                                       invoice_date, invoice_upload_date, created_at)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                             (po_id, inv_num, float(invoice_data['cost']), filename,
+                              'N/A', datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                              datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                except Exception as inv_err:
+                    print(f"    ⚠ Could not insert into invoices table: {inv_err}")
             else:
                 # Normal PO - no job name change
                 c.execute("""UPDATE po_requests
@@ -4882,6 +4952,17 @@ def process_bulk_pdf(pdf_path, timestamp):
                           datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                           float(invoice_data['cost']),
                           invoice_data.get('match_method', 'Unknown'), 'matched', po_id))
+
+            # Also insert into invoices table so it shows in the invoices count/modal
+            try:
+                c.execute("""INSERT INTO invoices (po_id, invoice_number, invoice_cost, invoice_filename,
+                                                   invoice_date, invoice_upload_date, created_at)
+                             VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                         (po_id, inv_num, float(invoice_data['cost']), filename,
+                          'N/A', datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                          datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+            except Exception as inv_err:
+                print(f"    ⚠ Could not insert into invoices table: {inv_err}")
 
             results['matched'] += 1
 
@@ -8269,6 +8350,8 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         .po-status { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 11px; margin-left: 8px; }
         .po-status.approved { background: #28a745; color: white; }
         .po-status.awaiting { background: #ffc107; color: #333; }
+        .po-status.matched { background: #28a745; color: white; }
+        .po-status.awaiting_invoice { background: #ffc107; color: #333; }
 
         .job-actions { display: flex; gap: 10px; margin-top: 15px; }
         .job-actions button { padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; font-size: 13px; }
@@ -8825,7 +8908,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                             <td>${escapeHtml(storeName)}</td>
                             <td>${techName}</td>
                             <td>${escapeHtml(description)}</td>
-                            <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
+                            <td><span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span></td>
                             <td>${invoiceDisplay}</td>
                             <td>${escapeHtml(clientName)}</td>
                             <td>${date}</td>
@@ -8950,7 +9033,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                             <td>${escapeHtml(storeName)}</td>
                             <td>${escapeHtml(techName)}</td>
                             <td>${escapeHtml(clientName)}</td>
-                            <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
+                            <td><span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span></td>
                             <td>${formatCurrency(invoiced)}</td>
                             <td>${invoiceDisplay}</td>
                             <td>${date}</td>
@@ -9103,7 +9186,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                             <div class="po-item-header">
                                 <div class="po-item-content">
                                     <strong>PO #${poDisplay}</strong> - <span class="po-tech">${techName}</span>
-                                    <span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span>
+                                    <span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span>
                                     <br><small>Est: ${formatCurrency(estimated)} | Inv: ${formatCurrency(invoiced_po)}</small>
                                     ${clientDisplay}
                                 </div>
@@ -9231,7 +9314,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                                 <td>${escapeHtml(storeName)}</td>
                                 <td>${escapeHtml(techName)}</td>
                                 <td>${escapeHtml(clientName)}</td>
-                                <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
+                                <td><span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span></td>
                                 <td>${formatCurrency(invoiced)}</td>
                                 <td>${invoiceDisplay}</td>
                                 <td>${date}</td>
@@ -9379,7 +9462,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     html += `<tr>
                         <td><strong>#${poDisplay}</strong></td>
                         <td>${techName}</td>
-                        <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
+                        <td><span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span></td>
                         <td>${formatCurrency(invoiced)}</td>
                         <td>${invoiceDisplay}</td>
                         <td>${escapeHtml(clientName)}</td>
@@ -9590,61 +9673,89 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         function checkPOEmails() {
             const btn = document.getElementById('check-emails-btn');
             const originalText = btn.textContent;
-            btn.textContent = '⏳ Checking emails...';
+            btn.textContent = '⏳ Starting email check...';
             btn.disabled = true;
 
+            // Start background check
             fetch('/check_po_emails', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                }
+                headers: { 'Content-Type': 'application/json' }
             })
             .then(response => response.json())
             .then(data => {
-                if (data.success) {
-                    let message = `✅ Email check completed!\n\n`;
-                    message += `📧 Emails processed: ${data.emails_processed || 0}\n`;
-                    message += `📎 Total attachments: ${data.total_attachments || 0}\n`;
-                    message += `✅ Matched invoices: ${data.total_matched || 0}\n`;
-                    message += `⚠️  Unmatched invoices: ${data.total_unmatched || 0}`;
-                    if (data.message) {
-                        message += `\n\nℹ️  ${data.message}`;
-                    }
-                    if (data.diagnostics) {
-                        const d = data.diagnostics;
-                        message += `\n\n--- Diagnostics ---`;
-                        message += `\nMethod: ${d.source || d.method || 'N/A'}`;
-                        message += `\nServer: ${d.imap_server || 'N/A'}`;
-                        message += `\nAccount: ${d.email_account || 'N/A'}`;
-                        message += `\nConnected: ${d.connected ? 'Yes' : 'No'}`;
-                        message += `\nLogin OK: ${d.login_success ? 'Yes' : 'No'}`;
-                        message += `\nInbox total: ${d.total_in_inbox || 0}`;
-                        message += `\nAlready processed: ${d.already_processed || 0}`;
-                        message += `\nUnprocessed checked: ${d.unprocessed_checked || 0}`;
-                        message += `\nWith attachments: ${d.with_attachments || 0}`;
-                    }
-                    alert(message);
-                    // Reload page to show updated data
-                    setTimeout(() => location.reload(), 1000);
-                } else {
-                    let errMsg = `❌ Error checking emails:\n${data.error}`;
-                    if (data.diagnostics) {
-                        const d = data.diagnostics;
-                        errMsg += `\n\n--- Diagnostics ---`;
-                        errMsg += `\nMethod: ${d.source || d.method || 'N/A'}`;
-                        errMsg += `\nServer: ${d.imap_server || 'N/A'}`;
-                        errMsg += `\nConnected: ${d.connected ? 'Yes' : 'No'}`;
-                        errMsg += `\nLogin OK: ${d.login_success ? 'Yes' : 'No'}`;
-                    }
-                    alert(errMsg);
+                if (data.status === 'started' || data.status === 'already_running') {
+                    btn.textContent = '⏳ Processing emails...';
+                    // Poll for completion
+                    pollEmailCheckStatus(btn, originalText);
+                } else if (!data.success) {
+                    alert(`❌ Error checking emails:\n${data.error || 'Unknown error'}`);
+                    btn.textContent = originalText;
+                    btn.disabled = false;
                 }
             })
             .catch(error => {
                 alert(`❌ Error:\n${error.message}`);
-            })
-            .finally(() => {
                 btn.textContent = originalText;
                 btn.disabled = false;
+            });
+        }
+
+        function pollEmailCheckStatus(btn, originalText) {
+            fetch('/check_po_emails_status')
+            .then(response => response.json())
+            .then(status => {
+                if (status.running) {
+                    // Still running - update button with progress and poll again
+                    const r = status.result;
+                    if (r && r.emails_processed !== undefined) {
+                        btn.textContent = `⏳ Processed ${r.emails_processed}/${r.emails_checked || '?'} emails (${r.total_matched || 0} matched)...`;
+                    }
+                    setTimeout(() => pollEmailCheckStatus(btn, originalText), 2000);
+                } else {
+                    // Done - show results
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                    const data = status.result;
+                    if (!data) {
+                        alert('Email check completed but no results available.');
+                        location.reload();
+                        return;
+                    }
+                    if (data.success) {
+                        let message = `✅ Email check completed!\n\n`;
+                        message += `📧 Emails processed: ${data.emails_processed || 0}\n`;
+                        message += `📎 Total attachments: ${data.total_attachments || 0}\n`;
+                        message += `✅ Matched invoices: ${data.total_matched || 0}\n`;
+                        message += `⚠️  Unmatched invoices: ${data.total_unmatched || 0}`;
+                        if (data.message) {
+                            message += `\n\nℹ️  ${data.message}`;
+                        }
+                        if (data.diagnostics) {
+                            const d = data.diagnostics;
+                            message += `\n\n--- Diagnostics ---`;
+                            message += `\nMethod: ${d.source || d.method || 'N/A'}`;
+                            message += `\nAccount: ${d.email_account || 'N/A'}`;
+                            message += `\nLogin OK: ${d.login_success ? 'Yes' : 'No'}`;
+                            message += `\nInbox total: ${d.total_in_inbox || 0}`;
+                            message += `\nWith PDF attachments: ${d.with_attachments || 0}`;
+                        }
+                        alert(message);
+                        location.reload();
+                    } else {
+                        let errMsg = `❌ Error checking emails:\n${data.error}`;
+                        if (data.diagnostics) {
+                            const d = data.diagnostics;
+                            errMsg += `\n\n--- Diagnostics ---`;
+                            errMsg += `\nMethod: ${d.source || d.method || 'N/A'}`;
+                            errMsg += `\nLogin OK: ${d.login_success ? 'Yes' : 'No'}`;
+                        }
+                        alert(errMsg);
+                    }
+                }
+            })
+            .catch(() => {
+                // Network error polling - retry
+                setTimeout(() => pollEmailCheckStatus(btn, originalText), 3000);
             });
         }
 
