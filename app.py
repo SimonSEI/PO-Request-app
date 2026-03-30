@@ -4867,6 +4867,25 @@ def process_bulk_pdf(pdf_path, timestamp):
             invoice_data = group['data']
             po_id = invoice_data['po_id']
 
+            # If cost is 0.00, try re-extracting from ALL pages of this invoice group
+            if invoice_data.get('cost', '0.00') == '0.00' and group['texts']:
+                combined_text = '\n'.join(group['texts'])
+                print(f"  🔍 Cost is $0.00 for invoice {inv_num}, re-extracting from {len(group['texts'])} page(s)...")
+                re_extracted_cost = extract_invoice_cost(combined_text)
+                if re_extracted_cost and re_extracted_cost != '0.00':
+                    invoice_data['cost'] = re_extracted_cost
+                    print(f"  ✅ Re-extracted cost: ${re_extracted_cost}")
+                else:
+                    # Try finding largest dollar amount across all pages
+                    all_amounts = re.findall(r'\$\s*([\d,]+\.\d{2})', combined_text)
+                    if all_amounts:
+                        largest = max(float(a.replace(',', '')) for a in all_amounts)
+                        if largest > 0:
+                            invoice_data['cost'] = f"{largest:.2f}"
+                            print(f"  ✅ Using largest dollar amount: ${invoice_data['cost']}")
+                        else:
+                            print(f"  ⚠ Still could not extract cost for invoice {inv_num}")
+
             # Create multi-page PDF
             pdf_writer = PyPDF2.PdfWriter()
             for page_idx in group['pages']:
@@ -5149,11 +5168,12 @@ def extract_invoice_cost(text):
     if not text:
         return None
 
-    # Patterns for cost extraction (prioritized)
+    # Patterns for cost extraction (prioritized - most specific first)
     patterns = [
-        r'(?:Total|Amount\s*Due|Invoice\s*Total|Grand\s*Total)\s*[:=]?\s*\$?\s*([\d,]+\.?\d*)',
-        r'\$\s*([\d,]+\.?\d{2})',  # $1,234.56
-        r'(?:Total|Amount)\s+([0-9]+\.[0-9]{2})',
+        r'(?:Merchandise\s+)?(?:Invoice\s+)?(?:Sub\s*)?Total\s*[:=]?\s*\$?\s*([\d,]+\.\d{2})',
+        r'(?:Amount\s*Due|Balance\s*Due|Net\s*Amount|Total\s*Due|Please\s*Pay)\s*[:=]?\s*\$?\s*([\d,]+\.\d{2})',
+        r'(?:Grand\s*Total)\s*[:=]?\s*\$?\s*([\d,]+\.\d{2})',
+        r'TOTAL\s*[:=]?\s*\$?\s*([\d,]+\.\d{2})',
     ]
 
     for pattern in patterns:
