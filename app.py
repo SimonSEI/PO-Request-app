@@ -2605,7 +2605,7 @@ def office_dashboard():
             c.execute("""
                 SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date, client_name
                 FROM po_requests
-                WHERE job_name=? AND status IN ('approved', 'awaiting_invoice')
+                WHERE job_name=? AND status IN ('approved', 'awaiting_invoice', 'matched')
                 ORDER BY id DESC
             """, (job_name,))
             job_pos[job[0]] = c.fetchall()
@@ -4930,6 +4930,17 @@ def process_bulk_pdf(pdf_path, timestamp):
                           float(invoice_data['cost']),
                           invoice_data.get('match_method', 'Unknown'), 'matched', new_job_name, manual_review_flag, po_id))
                 job_name = new_job_name  # Update job_name for results
+
+                # Also insert into invoices table
+                try:
+                    c.execute("""INSERT INTO invoices (po_id, invoice_number, invoice_cost, invoice_filename,
+                                                       invoice_date, invoice_upload_date, created_at)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                             (po_id, inv_num, float(invoice_data['cost']), filename,
+                              'N/A', datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                              datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                except Exception as inv_err:
+                    print(f"    ⚠ Could not insert into invoices table: {inv_err}")
             else:
                 # Normal PO - no job name change
                 c.execute("""UPDATE po_requests
@@ -4941,6 +4952,17 @@ def process_bulk_pdf(pdf_path, timestamp):
                           datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                           float(invoice_data['cost']),
                           invoice_data.get('match_method', 'Unknown'), 'matched', po_id))
+
+            # Also insert into invoices table so it shows in the invoices count/modal
+            try:
+                c.execute("""INSERT INTO invoices (po_id, invoice_number, invoice_cost, invoice_filename,
+                                                   invoice_date, invoice_upload_date, created_at)
+                             VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                         (po_id, inv_num, float(invoice_data['cost']), filename,
+                          'N/A', datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                          datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+            except Exception as inv_err:
+                print(f"    ⚠ Could not insert into invoices table: {inv_err}")
 
             results['matched'] += 1
 
@@ -8328,6 +8350,8 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         .po-status { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 11px; margin-left: 8px; }
         .po-status.approved { background: #28a745; color: white; }
         .po-status.awaiting { background: #ffc107; color: #333; }
+        .po-status.matched { background: #28a745; color: white; }
+        .po-status.awaiting_invoice { background: #ffc107; color: #333; }
 
         .job-actions { display: flex; gap: 10px; margin-top: 15px; }
         .job-actions button { padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; font-size: 13px; }
@@ -8884,7 +8908,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                             <td>${escapeHtml(storeName)}</td>
                             <td>${techName}</td>
                             <td>${escapeHtml(description)}</td>
-                            <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
+                            <td><span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span></td>
                             <td>${invoiceDisplay}</td>
                             <td>${escapeHtml(clientName)}</td>
                             <td>${date}</td>
@@ -9009,7 +9033,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                             <td>${escapeHtml(storeName)}</td>
                             <td>${escapeHtml(techName)}</td>
                             <td>${escapeHtml(clientName)}</td>
-                            <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
+                            <td><span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span></td>
                             <td>${formatCurrency(invoiced)}</td>
                             <td>${invoiceDisplay}</td>
                             <td>${date}</td>
@@ -9162,7 +9186,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                             <div class="po-item-header">
                                 <div class="po-item-content">
                                     <strong>PO #${poDisplay}</strong> - <span class="po-tech">${techName}</span>
-                                    <span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span>
+                                    <span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span>
                                     <br><small>Est: ${formatCurrency(estimated)} | Inv: ${formatCurrency(invoiced_po)}</small>
                                     ${clientDisplay}
                                 </div>
@@ -9290,7 +9314,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                                 <td>${escapeHtml(storeName)}</td>
                                 <td>${escapeHtml(techName)}</td>
                                 <td>${escapeHtml(clientName)}</td>
-                                <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
+                                <td><span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span></td>
                                 <td>${formatCurrency(invoiced)}</td>
                                 <td>${invoiceDisplay}</td>
                                 <td>${date}</td>
@@ -9438,7 +9462,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     html += `<tr>
                         <td><strong>#${poDisplay}</strong></td>
                         <td>${techName}</td>
-                        <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
+                        <td><span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span></td>
                         <td>${formatCurrency(invoiced)}</td>
                         <td>${invoiceDisplay}</td>
                         <td>${escapeHtml(clientName)}</td>
