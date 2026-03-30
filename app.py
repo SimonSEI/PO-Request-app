@@ -9561,6 +9561,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     const invDate = invoice[5] ? invoice[5].substring(0, 10) : 'N/A';
                     const jobberInv = invoice[6] || '';
 
+                    const hasFile = invFile && invFile !== 'N/A' && invFile !== 'MANUAL_ENTRY';
                     html += `
                         <div style="background: #f9f9f9; padding: 15px; margin-bottom: 15px; border-radius: 8px; border-left: 4px solid #28a745;">
                             <div style="display: grid; gap: 10px;">
@@ -9569,6 +9570,12 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                                 <div><strong>📅 Date:</strong> ${invDate}</div>
                                 <div><strong>📎 File:</strong> ${escapeHtml(invFile)}</div>
                                 ${jobberInv ? `<div><strong>🔖 Jobber #:</strong> ${escapeHtml(jobberInv)}</div>` : ''}
+                                ${hasFile ? `<div style="margin-top: 5px;">
+                                    <a href="/view_invoice/${encodeURIComponent(invFile)}" target="_blank"
+                                       style="display: inline-block; background: #0d6efd; color: white; padding: 6px 16px; border-radius: 5px; text-decoration: none; font-weight: bold; font-size: 13px;">
+                                       📄 View PDF
+                                    </a>
+                                </div>` : ''}
                             </div>
                         </div>
                     `;
