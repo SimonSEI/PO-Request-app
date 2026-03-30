@@ -5776,9 +5776,14 @@ def extract_invoice_data(text, po_map):
     cost = "0.00"
 
     cost_patterns = [
-        (r'TOTAL[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Total:'),
+        (r'(?:Invoice\s+)?(?:Sub\s*)?Total[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Invoice/Sub Total:'),
         (r'Amount\s+Due[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Amount Due:'),
         (r'Grand\s+Total[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Grand Total:'),
+        (r'Balance\s+Due[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Balance Due:'),
+        (r'Net\s+Amount[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Net Amount:'),
+        (r'TOTAL\s+DUE[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Total Due:'),
+        (r'PLEASE\s+PAY[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Please Pay:'),
+        (r'TOTAL[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Total:'),
     ]
 
     for pattern, desc in cost_patterns:
@@ -5793,6 +5798,26 @@ def extract_invoice_data(text, po_map):
                 break
             except:
                 pass
+
+    # Fallback: if cost is still 0, look for the largest dollar amount on the page
+    # (likely the total, as line items are smaller)
+    if cost == "0.00":
+        print("  🔍 No total found, scanning for largest dollar amount...")
+        all_amounts = re.findall(r'\$\s*([\d,]+\.\d{2})', text)
+        if all_amounts:
+            largest = max(float(a.replace(',', '')) for a in all_amounts)
+            if largest > 0:
+                cost = f"{largest:.2f}"
+                print(f"  ✅ Using largest dollar amount as cost: ${cost}")
+
+    # Second fallback: look for amounts without $ sign at end of lines (common in tables)
+    if cost == "0.00":
+        all_amounts = re.findall(r'(?:^|[\s|])([\d,]+\.\d{2})\s*$', text, re.MULTILINE)
+        if all_amounts:
+            largest = max(float(a.replace(',', '')) for a in all_amounts)
+            if largest > 0:
+                cost = f"{largest:.2f}"
+                print(f"  ✅ Using largest line-end amount as cost: ${cost}")
 
     # === FINAL RESULT ===
     print(f"\n{'='*60}")
