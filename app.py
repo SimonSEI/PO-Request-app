@@ -3537,6 +3537,69 @@ def delete_po():
         traceback.print_exc()
         return jsonify({'success': False, 'error': f'Server error: {str(e)}'})
 
+@app.route('/undo_invoice_match', methods=['POST'])
+def undo_invoice_match():
+    """Undo an invoice match - resets PO back to awaiting_invoice for re-matching"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    data = request.get_json()
+    po_id = data.get('po_id')
+    invoice_id = data.get('invoice_id')
+
+    if not po_id:
+        return jsonify({'success': False, 'error': 'Missing po_id'})
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Delete the specific invoice record if provided
+        if invoice_id:
+            c.execute("DELETE FROM invoices WHERE id=? AND po_id=?", (invoice_id, po_id))
+            print(f"✓ Deleted invoice record {invoice_id} for PO {po_id}")
+
+        # Check if there are remaining invoices for this PO
+        c.execute("SELECT COUNT(*) FROM invoices WHERE po_id=?", (po_id,))
+        remaining = c.fetchone()[0]
+
+        if remaining == 0:
+            # No more invoices - reset PO back to awaiting_invoice
+            c.execute("""UPDATE po_requests
+                         SET status='awaiting_invoice',
+                             invoice_filename=NULL, invoice_number=NULL,
+                             invoice_cost=NULL, match_method=NULL,
+                             invoice_date=NULL, invoice_upload_date=NULL
+                         WHERE id=?""", (po_id,))
+            print(f"✓ Reset PO {po_id} back to awaiting_invoice (no remaining invoices)")
+
+            # Also clear the email processing log entries that matched this PO
+            # so the system will re-process those emails
+            c.execute("DELETE FROM email_processing_log WHERE results LIKE ?",
+                      (f'%"po_number": {po_id}%',))
+        else:
+            # Still has other invoices - update PO cost from remaining invoices
+            c.execute("SELECT SUM(CAST(invoice_cost AS REAL)) FROM invoices WHERE po_id=?", (po_id,))
+            total_cost = c.fetchone()[0] or 0
+            c.execute("UPDATE po_requests SET invoice_cost=? WHERE id=?", (total_cost, po_id))
+            print(f"✓ Removed one invoice from PO {po_id}, {remaining} remaining, updated cost to ${total_cost:.2f}")
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'message': f'Invoice match undone for PO {po_id}',
+            'remaining_invoices': remaining
+        })
+
+    except Exception as e:
+        print(f"✗ Error undoing invoice match: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)})
+
+
 @app.route('/view_invoice/<filename>')
 def view_invoice(filename):
     """View uploaded invoice file"""
@@ -9562,20 +9625,25 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     const jobberInv = invoice[6] || '';
 
                     const hasFile = invFile && invFile !== 'N/A' && invFile !== 'MANUAL_ENTRY';
+                    const invoiceId = invoice[0];
                     html += `
-                        <div style="background: #f9f9f9; padding: 15px; margin-bottom: 15px; border-radius: 8px; border-left: 4px solid #28a745;">
+                        <div id="invoice-item-${invoiceId}" style="background: #f9f9f9; padding: 15px; margin-bottom: 15px; border-radius: 8px; border-left: 4px solid #28a745;">
                             <div style="display: grid; gap: 10px;">
                                 <div><strong>📄 Invoice Number:</strong> ${escapeHtml(invNum)}</div>
                                 <div><strong>💰 Amount:</strong> <span style="color: #28a745; font-weight: bold;">${formatCurrency(invCost)}</span></div>
                                 <div><strong>📅 Date:</strong> ${invDate}</div>
                                 <div><strong>📎 File:</strong> ${escapeHtml(invFile)}</div>
                                 ${jobberInv ? `<div><strong>🔖 Jobber #:</strong> ${escapeHtml(jobberInv)}</div>` : ''}
-                                ${hasFile ? `<div style="margin-top: 5px;">
-                                    <a href="/view_invoice/${encodeURIComponent(invFile)}" target="_blank"
+                                <div style="margin-top: 8px; display: flex; gap: 8px;">
+                                    ${hasFile ? `<a href="/view_invoice/${encodeURIComponent(invFile)}" target="_blank"
                                        style="display: inline-block; background: #0d6efd; color: white; padding: 6px 16px; border-radius: 5px; text-decoration: none; font-weight: bold; font-size: 13px;">
                                        📄 View PDF
-                                    </a>
-                                </div>` : ''}
+                                    </a>` : ''}
+                                    <button onclick="undoInvoiceMatch(${poNum}, ${invoiceId}, '${escapeHtml(invNum)}')"
+                                       style="background: #dc3545; color: white; padding: 6px 16px; border-radius: 5px; border: none; font-weight: bold; font-size: 13px; cursor: pointer;">
+                                       ↩ Undo Match
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     `;
@@ -9588,6 +9656,30 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         function closeInvoicesModal() {
             document.getElementById('invoices-modal').classList.remove('open');
+        }
+
+        function undoInvoiceMatch(poId, invoiceId, invoiceNum) {
+            if (!confirm(`Undo match for invoice ${invoiceNum} on PO ${poId}?\n\nThis will reset the PO back to "awaiting_invoice" so the system can re-match it on the next email check.`)) {
+                return;
+            }
+
+            fetch('/undo_invoice_match', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ po_id: poId, invoice_id: invoiceId })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert(`Match undone for PO ${poId}. It will be re-matched on the next email check.`);
+                    location.reload();
+                } else {
+                    alert(`Error: ${data.error}`);
+                }
+            })
+            .catch(error => {
+                alert(`Error: ${error.message}`);
+            });
         }
 
         // Track pending PO deletions for undo functionality
