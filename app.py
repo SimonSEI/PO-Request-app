@@ -14748,18 +14748,28 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         function displayClocks(communityId, clocks) {
             const container = document.getElementById(`verona-clocks-${communityId}`);
 
+            // Remember which clock sections are currently expanded
+            const openClocks = [];
+            clocks.forEach(clock => {
+                const el = document.getElementById(`addresses-${communityId}-${clock.clock_number}`);
+                if (el && el.classList.contains('visible')) {
+                    openClocks.push(clock.clock_number);
+                }
+            });
+
             if (clocks.length === 0) {
                 container.innerHTML = '<p style="color: #999; font-size: 13px;">No addresses configured yet.</p>';
             } else {
                 let html = '';
                 clocks.forEach(clock => {
+                    const isOpen = openClocks.includes(clock.clock_number);
                     html += `
                         <div class="clock-container">
                             <div class="clock-header" onclick="toggleClockAddresses(event, ${communityId}, ${clock.clock_number})">
                                 <span class="clock-title">${clock.clock_label}</span>
-                                <span class="clock-toggle" id="toggle-${communityId}-${clock.clock_number}">▼</span>
+                                <span class="clock-toggle${isOpen ? ' expanded' : ''}" id="toggle-${communityId}-${clock.clock_number}">▼</span>
                             </div>
-                            <div class="clock-addresses" id="addresses-${communityId}-${clock.clock_number}">
+                            <div class="clock-addresses${isOpen ? ' visible' : ''}" id="addresses-${communityId}-${clock.clock_number}">
                                 <div id="address-list-${communityId}-${clock.clock_number}">
                                     ${clock.addresses.map(addr => `
                                         <div class="address-item" id="address-item-${addr.id}">
