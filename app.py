@@ -327,21 +327,42 @@ def log_activity(username, action, target_type, target_id, details=''):
 def fetch_emails_from_imap():
     """
     Connect to IMAP server and fetch unprocessed emails with attachments
-    Returns list of (email_uid, email_data) tuples
+    Returns dict with 'emails' list and 'diagnostics' info, or raises exception on failure
     """
     if not PO_EMAIL_MONITORING_ENABLED:
         print("⚠ Email monitoring not enabled - set PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD")
-        return []
+        return {'emails': [], 'diagnostics': {'error': 'Email monitoring not enabled - PO_EMAIL_ADDRESS or PO_EMAIL_PASSWORD not set'}}
 
     emails = []
+    diagnostics = {
+        'imap_server': PO_EMAIL_IMAP_SERVER,
+        'email_account': PO_EMAIL_ADDRESS,
+        'provider': PO_EMAIL_PROVIDER,
+        'connected': False,
+        'login_success': False,
+        'total_in_inbox': 0,
+        'already_processed': 0,
+        'unprocessed_checked': 0,
+        'with_attachments': 0,
+        'without_attachments': 0,
+        'error': None
+    }
+
     try:
-        # Connect to Gmail IMAP
         mail = imaplib.IMAP4_SSL(PO_EMAIL_IMAP_SERVER, PO_EMAIL_IMAP_PORT)
+        diagnostics['connected'] = True
+        print(f"✓ Connected to IMAP server: {PO_EMAIL_IMAP_SERVER}")
+
         mail.login(PO_EMAIL_ADDRESS, PO_EMAIL_PASSWORD)
-        print(f"✓ Connected to IMAP: {PO_EMAIL_ADDRESS}")
+        diagnostics['login_success'] = True
+        print(f"✓ Login successful: {PO_EMAIL_ADDRESS}")
 
         # Select INBOX
-        mail.select('INBOX')
+        status, mailbox_data = mail.select('INBOX')
+        if status == 'OK':
+            inbox_count = int(mailbox_data[0].decode()) if mailbox_data[0] else 0
+            diagnostics['total_in_inbox'] = inbox_count
+            print(f"📧 INBOX contains {inbox_count} messages")
 
         # Get already processed email UIDs
         conn = sqlite3.connect(DB_PATH)
@@ -349,16 +370,18 @@ def fetch_emails_from_imap():
         c.execute("SELECT email_uid FROM email_processing_log")
         processed_uids = {row[0] for row in c.fetchall()}
         conn.close()
+        diagnostics['already_processed'] = len(processed_uids)
 
         # Use IMAP UID commands for stable identifiers (sequence numbers shift when emails are deleted)
         status, uid_data = mail.uid('search', None, 'ALL')
         if status == 'OK':
-            uid_list = uid_data[0].split()
-            print(f"📧 Found {len(uid_list)} total emails in INBOX")
+            uid_list = uid_data[0].split() if uid_data[0] else []
+            print(f"   Total UIDs: {len(uid_list)}")
             print(f"   Already processed: {len(processed_uids)} emails")
 
             # Filter to only unprocessed UIDs before fetching full messages
             unprocessed_uids = [uid for uid in uid_list if uid.decode() not in processed_uids]
+            diagnostics['unprocessed_checked'] = len(unprocessed_uids)
             print(f"   Unprocessed: {len(unprocessed_uids)} emails to check")
 
             # Process in reverse order (newest first) for better UX
@@ -413,43 +436,40 @@ def fetch_emails_from_imap():
 
                     if has_attachments:
                         emails.append((msg_uid, msg))
+                        diagnostics['with_attachments'] += 1
                         subject = msg.get('Subject', 'No Subject')
                         print(f"  ✓ Found new email with {attachment_count} attachment(s): {subject}")
                     else:
-                        # For debugging: show emails without attachments
+                        diagnostics['without_attachments'] += 1
                         subject = msg.get('Subject', 'No Subject')
                         print(f"  ⊘ Skipped (no attachments): {subject[:60]}")
 
         mail.close()
         mail.logout()
         print(f"✓ IMAP disconnected - {len(emails)} new emails with attachments")
-        return emails
+        return {'emails': emails, 'diagnostics': diagnostics}
 
     except imaplib.IMAP4.error as e:
         error_msg = str(e)
-        print(f"✗ IMAP Authentication Error: {error_msg}")
+        print(f"✗ IMAP Error: {error_msg}")
 
-        # Check for Outlook/Microsoft basic auth blocked error
         if "BasicAuthBlocked" in error_msg or "LogonDenied" in error_msg:
-            print(f"\n⚠️  OUTLOOK BASIC AUTH BLOCKED")
-            print(f"   Microsoft has disabled basic IMAP authentication.")
-            print(f"   FIX: Use an Outlook App Password instead:")
-            print(f"   1. Go to https://account.microsoft.com/account/manage-my-microsoft-account")
-            print(f"   2. Click 'Security' → 'Advanced security options'")
-            print(f"   3. Scroll to 'App passwords' and create a new one for Mail/IMAP")
-            print(f"   4. Update PO_EMAIL_PASSWORD environment variable with the app password")
-        elif "LOGIN failed" in error_msg:
-            print(f"   → Check that PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD are correct")
+            diagnostics['error'] = 'Outlook blocked basic auth. Use an App Password instead of your regular password.'
+        elif "LOGIN failed" in error_msg or "AUTHENTICATIONFAILED" in error_msg:
+            diagnostics['error'] = f'Login failed for {PO_EMAIL_ADDRESS}. Check email address and app password are correct.'
+        else:
+            diagnostics['error'] = f'IMAP error: {error_msg}'
 
         import traceback
         traceback.print_exc()
-        return []
+        return {'emails': [], 'diagnostics': diagnostics}
 
     except Exception as e:
+        diagnostics['error'] = f'Connection error: {str(e)}'
         print(f"✗ IMAP error: {e}")
         import traceback
         traceback.print_exc()
-        return []
+        return {'emails': [], 'diagnostics': diagnostics}
 
 def extract_attachments_from_email(msg):
     """
@@ -638,7 +658,13 @@ def auto_check_po_emails():
         print(f"{'='*60}")
 
         # Fetch emails from IMAP
-        emails = fetch_emails_from_imap()
+        result = fetch_emails_from_imap()
+        emails = result.get('emails', [])
+        diag = result.get('diagnostics', {})
+
+        if diag.get('error'):
+            print(f"✗ Email fetch error: {diag['error']}")
+            return
 
         if not emails:
             print(f"✓ No new emails with attachments found")
@@ -4048,7 +4074,17 @@ def check_po_emails():
         print(f"{'='*60}")
 
         # Fetch emails from IMAP
-        emails = fetch_emails_from_imap()
+        result = fetch_emails_from_imap()
+        emails = result.get('emails', [])
+        diagnostics = result.get('diagnostics', {})
+
+        # If there was a connection/auth error, report it to the user
+        if diagnostics.get('error'):
+            return jsonify({
+                'success': False,
+                'error': diagnostics['error'],
+                'diagnostics': diagnostics
+            })
 
         if not emails:
             return jsonify({
@@ -4058,7 +4094,8 @@ def check_po_emails():
                 'emails_processed': 0,
                 'total_attachments': 0,
                 'total_matched': 0,
-                'total_unmatched': 0
+                'total_unmatched': 0,
+                'diagnostics': diagnostics
             })
 
         all_results = {
@@ -4068,7 +4105,8 @@ def check_po_emails():
             'total_attachments': 0,
             'total_matched': 0,
             'total_unmatched': 0,
-            'details': []
+            'details': [],
+            'diagnostics': diagnostics
         }
 
         # Process each email
@@ -4151,7 +4189,16 @@ def rescan_all_po_emails():
 
         # Now run the standard email check
         print(f"\n📧 Starting full email scan...")
-        emails = fetch_emails_from_imap()
+        result = fetch_emails_from_imap()
+        emails = result.get('emails', [])
+        diagnostics = result.get('diagnostics', {})
+
+        if diagnostics.get('error'):
+            return jsonify({
+                'success': False,
+                'error': diagnostics['error'],
+                'diagnostics': diagnostics
+            })
 
         if not emails:
             return jsonify({
@@ -4161,7 +4208,8 @@ def rescan_all_po_emails():
                 'emails_processed': 0,
                 'total_attachments': 0,
                 'total_matched': 0,
-                'total_unmatched': 0
+                'total_unmatched': 0,
+                'diagnostics': diagnostics
             })
 
         all_results = {
@@ -4172,7 +4220,8 @@ def rescan_all_po_emails():
             'total_attachments': 0,
             'total_matched': 0,
             'total_unmatched': 0,
-            'details': []
+            'details': [],
+            'diagnostics': diagnostics
         }
 
         # Process each email
@@ -9292,11 +9341,31 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     if (data.message) {
                         message += `\n\nℹ️  ${data.message}`;
                     }
+                    if (data.diagnostics) {
+                        const d = data.diagnostics;
+                        message += `\n\n--- Diagnostics ---`;
+                        message += `\nServer: ${d.imap_server || 'N/A'}`;
+                        message += `\nAccount: ${d.email_account || 'N/A'}`;
+                        message += `\nConnected: ${d.connected ? 'Yes' : 'No'}`;
+                        message += `\nLogin OK: ${d.login_success ? 'Yes' : 'No'}`;
+                        message += `\nInbox total: ${d.total_in_inbox || 0}`;
+                        message += `\nAlready processed: ${d.already_processed || 0}`;
+                        message += `\nUnprocessed checked: ${d.unprocessed_checked || 0}`;
+                        message += `\nWith attachments: ${d.with_attachments || 0}`;
+                    }
                     alert(message);
                     // Reload page to show updated data
                     setTimeout(() => location.reload(), 1000);
                 } else {
-                    alert(`❌ Error checking emails:\n${data.error}`);
+                    let errMsg = `❌ Error checking emails:\n${data.error}`;
+                    if (data.diagnostics) {
+                        const d = data.diagnostics;
+                        errMsg += `\n\n--- Diagnostics ---`;
+                        errMsg += `\nServer: ${d.imap_server || 'N/A'}`;
+                        errMsg += `\nConnected: ${d.connected ? 'Yes' : 'No'}`;
+                        errMsg += `\nLogin OK: ${d.login_success ? 'Yes' : 'No'}`;
+                    }
+                    alert(errMsg);
                 }
             })
             .catch(error => {
