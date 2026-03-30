@@ -426,13 +426,14 @@ def fetch_emails_from_graph():
         conn.close()
         diagnostics['already_processed'] = len(processed_uids)
 
-        # Fetch messages with attachments, newest first
+        # Fetch messages with attachments
+        # Note: Graph API doesn't support $filter + $orderby together on messages
+        # so we fetch filtered results and sort client-side
         user_email = PO_EMAIL_ADDRESS
         url = f"https://graph.microsoft.com/v1.0/users/{user_email}/messages"
         params = {
             '$filter': 'hasAttachments eq true',
             '$top': 50,
-            '$orderby': 'receivedDateTime desc',
             '$select': 'id,subject,from,receivedDateTime,hasAttachments'
         }
 
@@ -444,6 +445,9 @@ def fetch_emails_from_graph():
             all_messages.extend(data.get('value', []))
             url = data.get('@odata.nextLink', None)
             params = None  # nextLink includes params already
+
+        # Sort newest first
+        all_messages.sort(key=lambda m: m.get('receivedDateTime', ''), reverse=True)
 
         diagnostics['total_in_inbox'] = len(all_messages)
         print(f"  📧 Found {len(all_messages)} emails with attachments via Graph API")
