@@ -350,25 +350,23 @@ def fetch_emails_from_imap():
         processed_uids = {row[0] for row in c.fetchall()}
         conn.close()
 
-        # Search for all emails
-        status, email_ids = mail.search(None, 'ALL')
+        # Use IMAP UID commands for stable identifiers (sequence numbers shift when emails are deleted)
+        status, uid_data = mail.uid('search', None, 'ALL')
         if status == 'OK':
-            email_id_list = email_ids[0].split()
-            print(f"📧 Found {len(email_id_list)} total emails in INBOX")
+            uid_list = uid_data[0].split()
+            print(f"📧 Found {len(uid_list)} total emails in INBOX")
             print(f"   Already processed: {len(processed_uids)} emails")
-            print(f"   Unprocessed: {len(email_id_list) - len(processed_uids)} emails")
 
-            # Check ALL emails (not just last 50) to find unprocessed ones with attachments
+            # Filter to only unprocessed UIDs before fetching full messages
+            unprocessed_uids = [uid for uid in uid_list if uid.decode() not in processed_uids]
+            print(f"   Unprocessed: {len(unprocessed_uids)} emails to check")
+
             # Process in reverse order (newest first) for better UX
-            for email_id in reversed(email_id_list):
-                status, msg_data = mail.fetch(email_id, '(RFC822)')
+            for uid in reversed(unprocessed_uids):
+                status, msg_data = mail.uid('fetch', uid, '(RFC822)')
                 if status == 'OK':
                     msg = email.message_from_bytes(msg_data[0][1])
-                    msg_uid = email_id.decode()
-
-                    # Skip if already processed
-                    if msg_uid in processed_uids:
-                        continue
+                    msg_uid = uid.decode()
 
                     # Check if email has attachments (handles forwarded emails with nested attachments)
                     has_attachments = False
@@ -4057,7 +4055,10 @@ def check_po_emails():
                 'success': True,
                 'message': 'No new emails with attachments found',
                 'emails_checked': 0,
-                'emails_processed': 0
+                'emails_processed': 0,
+                'total_attachments': 0,
+                'total_matched': 0,
+                'total_unmatched': 0
             })
 
         all_results = {
@@ -4157,7 +4158,10 @@ def rescan_all_po_emails():
                 'success': True,
                 'message': 'Full rescan complete - no emails with attachments found',
                 'emails_checked': 0,
-                'emails_processed': 0
+                'emails_processed': 0,
+                'total_attachments': 0,
+                'total_matched': 0,
+                'total_unmatched': 0
             })
 
         all_results = {
@@ -9281,10 +9285,13 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             .then(data => {
                 if (data.success) {
                     let message = `✅ Email check completed!\n\n`;
-                    message += `📧 Emails processed: ${data.emails_processed}\n`;
-                    message += `📎 Total attachments: ${data.total_attachments}\n`;
-                    message += `✅ Matched invoices: ${data.total_matched}\n`;
-                    message += `⚠️  Unmatched invoices: ${data.total_unmatched}`;
+                    message += `📧 Emails processed: ${data.emails_processed || 0}\n`;
+                    message += `📎 Total attachments: ${data.total_attachments || 0}\n`;
+                    message += `✅ Matched invoices: ${data.total_matched || 0}\n`;
+                    message += `⚠️  Unmatched invoices: ${data.total_unmatched || 0}`;
+                    if (data.message) {
+                        message += `\n\nℹ️  ${data.message}`;
+                    }
                     alert(message);
                     // Reload page to show updated data
                     setTimeout(() => location.reload(), 1000);
