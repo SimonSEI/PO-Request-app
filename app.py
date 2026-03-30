@@ -192,6 +192,16 @@ MS_CLIENT_ID = os.environ.get('MS_CLIENT_ID', '')
 MS_CLIENT_SECRET = os.environ.get('MS_CLIENT_SECRET', '')
 MS_GRAPH_ENABLED = bool(MS_TENANT_ID and MS_CLIENT_ID and MS_CLIENT_SECRET and MSAL_AVAILABLE)
 
+# Log email configuration at startup
+print(f"📧 Email Config:")
+print(f"   PO_EMAIL_ADDRESS: {'set' if PO_EMAIL_ADDRESS else 'NOT SET'}")
+print(f"   PO_EMAIL_PASSWORD: {'set' if PO_EMAIL_PASSWORD else 'NOT SET'}")
+print(f"   MS_TENANT_ID: {'set' if MS_TENANT_ID else 'NOT SET'}")
+print(f"   MS_CLIENT_ID: {'set' if MS_CLIENT_ID else 'NOT SET'}")
+print(f"   MS_CLIENT_SECRET: {'set' if MS_CLIENT_SECRET else 'NOT SET'}")
+print(f"   MSAL_AVAILABLE: {MSAL_AVAILABLE}")
+print(f"   MS_GRAPH_ENABLED: {MS_GRAPH_ENABLED}")
+
 PO_EMAIL_MONITORING_ENABLED = bool(PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD) or (MS_GRAPH_ENABLED and bool(PO_EMAIL_ADDRESS))
 
 def send_reset_email(email, reset_token):
@@ -527,6 +537,8 @@ def extract_attachments_from_graph_message(msg_id, token=None):
 
 def fetch_emails():
     """Unified email fetcher - tries Graph API first, falls back to IMAP"""
+    print(f"  MS_GRAPH_ENABLED={MS_GRAPH_ENABLED} (MSAL={MSAL_AVAILABLE}, TENANT={'set' if MS_TENANT_ID else 'empty'}, CLIENT={'set' if MS_CLIENT_ID else 'empty'}, SECRET={'set' if MS_CLIENT_SECRET else 'empty'})")
+
     if MS_GRAPH_ENABLED:
         print("📧 Using Microsoft Graph API (OAuth2)...")
         result = fetch_emails_from_graph()
@@ -540,6 +552,8 @@ def fetch_emails():
             else:
                 result['diagnostics']['source'] = 'graph_api'
                 return result
+    else:
+        print("  ⚠ Graph API not enabled, using IMAP")
 
     if PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD:
         print("📧 Using IMAP...")
@@ -9589,6 +9603,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     if (data.diagnostics) {
                         const d = data.diagnostics;
                         message += `\n\n--- Diagnostics ---`;
+                        message += `\nMethod: ${d.source || d.method || 'N/A'}`;
                         message += `\nServer: ${d.imap_server || 'N/A'}`;
                         message += `\nAccount: ${d.email_account || 'N/A'}`;
                         message += `\nConnected: ${d.connected ? 'Yes' : 'No'}`;
@@ -9606,6 +9621,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     if (data.diagnostics) {
                         const d = data.diagnostics;
                         errMsg += `\n\n--- Diagnostics ---`;
+                        errMsg += `\nMethod: ${d.source || d.method || 'N/A'}`;
                         errMsg += `\nServer: ${d.imap_server || 'N/A'}`;
                         errMsg += `\nConnected: ${d.connected ? 'Yes' : 'No'}`;
                         errMsg += `\nLogin OK: ${d.login_success ? 'Yes' : 'No'}`;
