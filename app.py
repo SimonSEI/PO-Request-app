@@ -169,12 +169,14 @@ PO_EMAIL_PASSWORD = os.environ.get('PO_EMAIL_PASSWORD', '')
 PO_EMAIL_PROVIDER = os.environ.get('PO_EMAIL_PROVIDER', 'outlook')  # 'outlook' or 'gmail'
 
 # IMAP configuration based on provider
-if PO_EMAIL_PROVIDER.lower() == 'gmail':
-    PO_EMAIL_IMAP_SERVER = 'imap.gmail.com'
-    PO_EMAIL_IMAP_PORT = 993
-else:  # Default to Outlook
-    PO_EMAIL_IMAP_SERVER = 'imap-mail.outlook.com'
-    PO_EMAIL_IMAP_PORT = 993
+# Allow explicit override via env var, otherwise auto-detect
+PO_EMAIL_IMAP_SERVER = os.environ.get('PO_EMAIL_IMAP_SERVER', '')
+if not PO_EMAIL_IMAP_SERVER:
+    if PO_EMAIL_PROVIDER.lower() == 'gmail':
+        PO_EMAIL_IMAP_SERVER = 'imap.gmail.com'
+    else:  # Default to Outlook/Microsoft 365
+        PO_EMAIL_IMAP_SERVER = 'outlook.office365.com'
+PO_EMAIL_IMAP_PORT = 993
 
 PO_EMAIL_MONITORING_ENABLED = bool(PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD)
 
