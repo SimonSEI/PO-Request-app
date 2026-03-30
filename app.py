@@ -14427,6 +14427,19 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             color: #333;
             flex: 1;
         }
+        .btn-edit-address {
+            background: #007bff;
+            color: white;
+            padding: 3px 6px;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 11px;
+            margin-right: 4px;
+        }
+        .btn-edit-address:hover {
+            background: #0069d9;
+        }
         .btn-delete-address {
             background: #dc3545;
             color: white;
@@ -14749,9 +14762,12 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                             <div class="clock-addresses" id="addresses-${communityId}-${clock.clock_number}">
                                 <div id="address-list-${communityId}-${clock.clock_number}">
                                     ${clock.addresses.map(addr => `
-                                        <div class="address-item">
-                                            <span class="address-text">${addr.address}</span>
-                                            <button type="button" class="btn-delete-address" onclick="deleteClockAddress(${communityId}, ${addr.id})">Delete</button>
+                                        <div class="address-item" id="address-item-${addr.id}">
+                                            <span class="address-text" id="address-text-${addr.id}">${addr.address}</span>
+                                            <div>
+                                                <button type="button" class="btn-edit-address" onclick="editClockAddress(${communityId}, ${addr.id})">Edit</button>
+                                                <button type="button" class="btn-delete-address" onclick="deleteClockAddress(${communityId}, ${addr.id})">Delete</button>
+                                            </div>
                                         </div>
                                     `).join('')}
                                 </div>
@@ -14819,6 +14835,50 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             .then(data => {
                 if (data.success) {
                     // Find community_id from the deleted item and reload
+                    loadClockAddresses(communityId);
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            });
+        }
+
+        function editClockAddress(communityId, addressId) {
+            const textSpan = document.getElementById(`address-text-${addressId}`);
+            const currentText = textSpan.textContent;
+            const item = document.getElementById(`address-item-${addressId}`);
+
+            // Replace the address item content with an edit form
+            const originalHTML = item.innerHTML;
+            item.innerHTML = `
+                <input type="text" value="${currentText.replace(/"/g, '&quot;')}" id="edit-input-${addressId}" style="flex:1; padding:4px 8px; border:1px solid #ddd; border-radius:4px; font-size:12px; margin-right:6px;">
+                <div>
+                    <button type="button" class="btn-add-address" onclick="saveClockAddress(${communityId}, ${addressId})" style="padding:3px 8px; font-size:11px;">Save</button>
+                    <button type="button" class="btn-delete-address" onclick="loadClockAddresses(${communityId})" style="background:#6c757d;">Cancel</button>
+                </div>
+            `;
+            document.getElementById(`edit-input-${addressId}`).focus();
+        }
+
+        function saveClockAddress(communityId, addressId) {
+            const input = document.getElementById(`edit-input-${addressId}`);
+            const newAddress = input.value.trim();
+
+            if (!newAddress) {
+                alert('Please enter an address');
+                return;
+            }
+
+            fetch('/verona_walk_edit_address', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    address_id: addressId,
+                    address: newAddress
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
                     loadClockAddresses(communityId);
                 } else {
                     alert('Error: ' + data.error);
@@ -16952,6 +17012,31 @@ def verona_walk_delete_address():
         c.execute("DELETE FROM verona_walk_clock_addresses WHERE id = ?", (address_id,))
         conn.commit()
         return jsonify({'success': True, 'message': 'Address deleted successfully'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+@app.route('/verona_walk_edit_address', methods=['POST'])
+def verona_walk_edit_address():
+    """Edit an existing address"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    address_id = data.get('address_id')
+    address = data.get('address', '').strip()
+
+    if not address_id or not address:
+        return jsonify({'success': False, 'error': 'Missing address_id or address'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    try:
+        c.execute("UPDATE verona_walk_clock_addresses SET address = ? WHERE id = ?", (address, address_id))
+        conn.commit()
+        return jsonify({'success': True, 'message': 'Address updated successfully'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
     finally:
