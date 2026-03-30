@@ -5309,6 +5309,65 @@ def extract_invoice_data(text, po_map):
                             print(f"      ✅ MATCHED! PO {po_number} (found in text with matching job name)")
                             break
 
+    # METHOD 7: Fuzzy match on descriptive text after PO numbers (handles misspelled job descriptions)
+    if not po_number and po_map:
+        print("\n  Method 7: Fuzzy match on descriptive text after PO numbers")
+
+        # Find patterns like "6154 SOMERVILLE" or "S-10027 Stock Truck"
+        number_with_description_patterns = [
+            (r'S\s*-?\s*(\d{4,})\s+([A-Za-z\s]{3,}?)(?:\n|$|[^A-Za-z])', 'S-XXXX DESCRIPTION'),
+            (r'\b(\d{4,})\s+([A-Za-z\s]{3,}?)(?:\n|$|[,;:])', 'XXXX DESCRIPTION'),
+        ]
+
+        for pattern, pattern_desc in number_with_description_patterns:
+            if po_number:
+                break
+
+            matches = re.finditer(pattern, text, re.IGNORECASE)
+            for match in matches:
+                num_str = match.group(1)
+                desc_text = match.group(2).strip()
+
+                try:
+                    candidate = int(num_str)
+                    print(f"    Found potential PO: {candidate} with description: '{desc_text}'")
+
+                    # Check if exact match exists
+                    if candidate in po_map:
+                        po_number = candidate
+                        match_method = "Exact Number Match"
+                        print(f"      ✅ MATCHED! PO {po_number} (exact number)")
+                        break
+
+                    # If not exact, try fuzzy matching on the description
+                    best_score = 0
+                    best_po = None
+
+                    for po_id, po_info in po_map.items():
+                        po_job = po_info.get('job_name', '').upper()
+                        # Compare the description text with the PO's job name
+                        score = fuzzy_match_score(desc_text.upper(), po_job)
+
+                        if score > best_score:
+                            best_score = score
+                            best_po = po_id
+
+                    if best_score >= 0.70:  # 70% match threshold
+                        po_number = best_po
+                        match_method = f"Fuzzy Description Match (score: {best_score:.0%})"
+                        print(f"      ✅ MATCHED! PO {po_number} with job '{po_map[best_po].get('job_name', '')}' (confidence: {best_score:.0%})")
+                        break
+                    elif best_score >= 0.50:  # Potential match - alert user
+                        po_job_name = po_map.get(best_po, {}).get('job_name', 'Unknown')
+                        print(f"      ⚠️  POTENTIAL MATCH: PO {best_po} with job '{po_job_name}' (confidence: {best_score:.0%})")
+                        print(f"          Description in invoice: '{desc_text}'")
+                        print(f"          This may be a match with a misspelled or different job description")
+                    else:
+                        print(f"      ✗ No close match found for description '{desc_text}' (best score: {best_score:.0%})")
+
+                except ValueError:
+                    continue
+
     # === STEP 3: Find Total Cost ===
     print(f"\n🔍 STEP 3: Looking for Total Cost...")
     cost = "0.00"
