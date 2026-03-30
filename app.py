@@ -485,13 +485,26 @@ def fetch_emails_from_graph():
 
     except Exception as e:
         error_msg = str(e)
-        print(f"  ✗ Graph API error: {error_msg}")
+        # Try to get the actual error response body from Microsoft
+        detail = ''
+        if hasattr(e, 'response') and e.response is not None:
+            try:
+                err_body = e.response.json()
+                err_info = err_body.get('error', {})
+                detail = f" - {err_info.get('code', '')}: {err_info.get('message', '')}"
+            except Exception:
+                detail = f" - HTTP {e.response.status_code}: {e.response.text[:200]}"
+
+        print(f"  ✗ Graph API error: {error_msg}{detail}")
+
         if 'acquire_token' in error_msg or 'auth' in error_msg.lower():
-            diagnostics['error'] = f'Graph API authentication failed: {error_msg}'
-        elif 'MailboxNotFound' in error_msg or '404' in error_msg:
-            diagnostics['error'] = f'Mailbox not found for {PO_EMAIL_ADDRESS}. Check the email address and ensure Mail.Read permission is granted.'
+            diagnostics['error'] = f'Graph API authentication failed: {error_msg}{detail}'
+        elif 'MailboxNotFound' in error_msg or '404' in error_msg or 'MailboxNotFound' in detail:
+            diagnostics['error'] = f'Mailbox not found for {PO_EMAIL_ADDRESS}. Check the email address and ensure Mail.Read permission with admin consent is granted.{detail}'
+        elif '403' in error_msg or 'Forbidden' in error_msg or '403' in detail or 'Authorization' in detail:
+            diagnostics['error'] = f'Access denied. Make sure Mail.Read APPLICATION permission (not Delegated) is added AND admin consent is granted in Azure.{detail}'
         else:
-            diagnostics['error'] = f'Graph API error: {error_msg}'
+            diagnostics['error'] = f'Graph API error: {error_msg}{detail}'
         import traceback
         traceback.print_exc()
         return {'emails': [], 'diagnostics': diagnostics}
@@ -542,16 +555,9 @@ def fetch_emails():
     if MS_GRAPH_ENABLED:
         print("📧 Using Microsoft Graph API (OAuth2)...")
         result = fetch_emails_from_graph()
-        if not result['diagnostics'].get('error'):
-            result['diagnostics']['source'] = 'graph_api'
-            return result
-        else:
-            print(f"  ⚠ Graph API failed: {result['diagnostics']['error']}")
-            if PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD:
-                print("  Falling back to IMAP...")
-            else:
-                result['diagnostics']['source'] = 'graph_api'
-                return result
+        result['diagnostics']['source'] = 'graph_api'
+        # Always return Graph API result when it's configured - don't silently fall back to IMAP
+        return result
     else:
         print("  ⚠ Graph API not enabled, using IMAP")
 
