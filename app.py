@@ -16,6 +16,14 @@ import email
 from email.parser import Parser
 from email.header import decode_header
 import base64
+import requests as http_requests  # aliased to avoid conflict with flask.request
+
+# Microsoft Graph API (OAuth2)
+try:
+    import msal
+    MSAL_AVAILABLE = True
+except ImportError:
+    MSAL_AVAILABLE = False
 
 # Background task scheduler for automatic email checking
 try:
@@ -178,9 +186,23 @@ if not PO_EMAIL_IMAP_SERVER:
         PO_EMAIL_IMAP_SERVER = 'outlook.office365.com'
 PO_EMAIL_IMAP_PORT = 993
 
-PO_EMAIL_MONITORING_ENABLED = bool(PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD)
+# Microsoft Graph API (OAuth2) - recommended for Microsoft 365
+MS_TENANT_ID = os.environ.get('MS_TENANT_ID', '')
+MS_CLIENT_ID = os.environ.get('MS_CLIENT_ID', '')
+MS_CLIENT_SECRET = os.environ.get('MS_CLIENT_SECRET', '')
+MS_GRAPH_ENABLED = bool(MS_TENANT_ID and MS_CLIENT_ID and MS_CLIENT_SECRET and MSAL_AVAILABLE)
 
-# ... rest of your code continues ...
+# Log email configuration at startup
+print(f"📧 Email Config:")
+print(f"   PO_EMAIL_ADDRESS: {'set' if PO_EMAIL_ADDRESS else 'NOT SET'}")
+print(f"   PO_EMAIL_PASSWORD: {'set' if PO_EMAIL_PASSWORD else 'NOT SET'}")
+print(f"   MS_TENANT_ID: {'set' if MS_TENANT_ID else 'NOT SET'}")
+print(f"   MS_CLIENT_ID: {'set' if MS_CLIENT_ID else 'NOT SET'}")
+print(f"   MS_CLIENT_SECRET: {'set' if MS_CLIENT_SECRET else 'NOT SET'}")
+print(f"   MSAL_AVAILABLE: {MSAL_AVAILABLE}")
+print(f"   MS_GRAPH_ENABLED: {MS_GRAPH_ENABLED}")
+
+PO_EMAIL_MONITORING_ENABLED = bool(PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD) or (MS_GRAPH_ENABLED and bool(PO_EMAIL_ADDRESS))
 
 def send_reset_email(email, reset_token):
     """Send password reset email"""
@@ -325,6 +347,228 @@ def log_activity(username, action, target_type, target_id, details=''):
         print(f"✓ Logged: {username} - {action}")
     except Exception as e:
         print(f"✗ Activity log error: {e}")
+
+# ============================================================
+# Microsoft Graph API Email Functions (OAuth2)
+# ============================================================
+
+class GraphEmailMessage:
+    """Adapter to make a Graph API message dict behave like email.message.EmailMessage for header access"""
+    def __init__(self, graph_msg):
+        self._msg = graph_msg
+        from_info = graph_msg.get('from', {}).get('emailAddress', {})
+        from_str = from_info.get('address', 'Unknown')
+        from_name = from_info.get('name', '')
+        if from_name:
+            from_str = f"{from_name} <{from_info.get('address', '')}>"
+        self._headers = {
+            'From': from_str,
+            'Subject': graph_msg.get('subject', 'No Subject'),
+            'Date': graph_msg.get('receivedDateTime', ''),
+        }
+        self._graph_id = graph_msg.get('id', '')
+
+    def get(self, key, default=None):
+        return self._headers.get(key, default)
+
+    def walk(self):
+        return iter([])
+
+
+def _get_graph_access_token():
+    """Get OAuth2 access token using Client Credentials flow via MSAL"""
+    authority = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
+    app = msal.ConfidentialClientApplication(
+        MS_CLIENT_ID,
+        authority=authority,
+        client_credential=MS_CLIENT_SECRET,
+    )
+    result = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
+    if "access_token" in result:
+        return result["access_token"]
+    raise Exception(f"Graph auth failed: {result.get('error_description', result.get('error', 'Unknown'))}")
+
+
+def fetch_emails_from_graph():
+    """
+    Fetch emails using Microsoft Graph API (OAuth2 Client Credentials).
+    Returns dict with 'emails' list and 'diagnostics' info.
+    """
+    diagnostics = {
+        'method': 'graph_api',
+        'imap_server': 'graph.microsoft.com',
+        'email_account': PO_EMAIL_ADDRESS,
+        'provider': 'Microsoft Graph API (OAuth2)',
+        'connected': False,
+        'login_success': False,
+        'total_in_inbox': 0,
+        'already_processed': 0,
+        'unprocessed_checked': 0,
+        'with_attachments': 0,
+        'without_attachments': 0,
+        'error': None
+    }
+    emails_out = []
+
+    try:
+        print(f"  Authenticating with Microsoft Graph API...")
+        token = _get_graph_access_token()
+        diagnostics['connected'] = True
+        diagnostics['login_success'] = True
+        print(f"  ✓ Graph API authentication successful")
+        headers = {'Authorization': f'Bearer {token}'}
+
+        # Get processed UIDs from database
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT email_uid FROM email_processing_log")
+        processed_uids = {row[0] for row in c.fetchall()}
+        conn.close()
+        diagnostics['already_processed'] = len(processed_uids)
+
+        # Fetch messages with attachments, newest first
+        user_email = PO_EMAIL_ADDRESS
+        url = f"https://graph.microsoft.com/v1.0/users/{user_email}/messages"
+        params = {
+            '$filter': 'hasAttachments eq true',
+            '$top': 50,
+            '$orderby': 'receivedDateTime desc',
+            '$select': 'id,subject,from,receivedDateTime,hasAttachments'
+        }
+
+        all_messages = []
+        while url:
+            response = http_requests.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            data = response.json()
+            all_messages.extend(data.get('value', []))
+            url = data.get('@odata.nextLink', None)
+            params = None  # nextLink includes params already
+
+        diagnostics['total_in_inbox'] = len(all_messages)
+        print(f"  📧 Found {len(all_messages)} emails with attachments via Graph API")
+        print(f"     Already processed: {len(processed_uids)}")
+
+        for msg_data in all_messages:
+            msg_id = msg_data['id']
+            subject = msg_data.get('subject', 'No Subject')
+
+            if msg_id in processed_uids:
+                continue
+
+            diagnostics['unprocessed_checked'] += 1
+
+            # Check for actual PDF attachments
+            att_url = f"https://graph.microsoft.com/v1.0/users/{user_email}/messages/{msg_id}/attachments"
+            att_params = {'$select': 'id,name,contentType,size'}
+            att_resp = http_requests.get(att_url, headers=headers, params=att_params)
+            att_resp.raise_for_status()
+            att_list = att_resp.json().get('value', [])
+
+            has_pdf = any(
+                a.get('name', '').lower().endswith('.pdf') or
+                a.get('contentType', '') == 'application/pdf'
+                for a in att_list
+            )
+
+            if has_pdf:
+                wrapped_msg = GraphEmailMessage(msg_data)
+                emails_out.append((msg_id, wrapped_msg))
+                diagnostics['with_attachments'] += 1
+                print(f"  ✓ Found email with PDF attachment(s): {subject[:60]}")
+            else:
+                diagnostics['without_attachments'] += 1
+                print(f"  ⊘ Skipped (no PDF attachments): {subject[:60]}")
+
+        print(f"  ✓ Graph API complete - {len(emails_out)} new emails with PDF attachments")
+        return {'emails': emails_out, 'diagnostics': diagnostics}
+
+    except Exception as e:
+        error_msg = str(e)
+        print(f"  ✗ Graph API error: {error_msg}")
+        if 'acquire_token' in error_msg or 'auth' in error_msg.lower():
+            diagnostics['error'] = f'Graph API authentication failed: {error_msg}'
+        elif 'MailboxNotFound' in error_msg or '404' in error_msg:
+            diagnostics['error'] = f'Mailbox not found for {PO_EMAIL_ADDRESS}. Check the email address and ensure Mail.Read permission is granted.'
+        else:
+            diagnostics['error'] = f'Graph API error: {error_msg}'
+        import traceback
+        traceback.print_exc()
+        return {'emails': [], 'diagnostics': diagnostics}
+
+
+def extract_attachments_from_graph_message(msg_id, token=None):
+    """
+    Download attachments from a Graph API message.
+    Returns list of (filename, file_content_bytes) tuples - same format as extract_attachments_from_email.
+    """
+    if token is None:
+        token = _get_graph_access_token()
+
+    headers = {'Authorization': f'Bearer {token}'}
+    url = f"https://graph.microsoft.com/v1.0/users/{PO_EMAIL_ADDRESS}/messages/{msg_id}/attachments"
+    response = http_requests.get(url, headers=headers)
+    response.raise_for_status()
+
+    attachments = []
+    for att in response.json().get('value', []):
+        if att.get('@odata.type') == '#microsoft.graph.fileAttachment':
+            filename = att.get('name', 'unnamed')
+            content_bytes = base64.b64decode(att['contentBytes'])
+            attachments.append((filename, content_bytes))
+            print(f"    📎 Downloaded attachment: {filename} ({len(content_bytes)} bytes)")
+        elif att.get('@odata.type') == '#microsoft.graph.itemAttachment':
+            # Forwarded email attachment - check for nested file attachments
+            item_att_url = f"{url}/{att['id']}?$expand=microsoft.graph.itemAttachment/item"
+            item_resp = http_requests.get(item_att_url, headers=headers)
+            if item_resp.ok:
+                item_data = item_resp.json()
+                nested_item = item_data.get('item', {})
+                if nested_item.get('attachments'):
+                    for nested_att in nested_item['attachments']:
+                        if nested_att.get('@odata.type') == '#microsoft.graph.fileAttachment':
+                            filename = nested_att.get('name', 'unnamed')
+                            content_bytes = base64.b64decode(nested_att['contentBytes'])
+                            attachments.append((filename, content_bytes))
+                            print(f"    📎 Downloaded nested attachment: {filename} ({len(content_bytes)} bytes)")
+
+    return attachments
+
+
+def fetch_emails():
+    """Unified email fetcher - tries Graph API first, falls back to IMAP"""
+    print(f"  MS_GRAPH_ENABLED={MS_GRAPH_ENABLED} (MSAL={MSAL_AVAILABLE}, TENANT={'set' if MS_TENANT_ID else 'empty'}, CLIENT={'set' if MS_CLIENT_ID else 'empty'}, SECRET={'set' if MS_CLIENT_SECRET else 'empty'})")
+
+    if MS_GRAPH_ENABLED:
+        print("📧 Using Microsoft Graph API (OAuth2)...")
+        result = fetch_emails_from_graph()
+        if not result['diagnostics'].get('error'):
+            result['diagnostics']['source'] = 'graph_api'
+            return result
+        else:
+            print(f"  ⚠ Graph API failed: {result['diagnostics']['error']}")
+            if PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD:
+                print("  Falling back to IMAP...")
+            else:
+                result['diagnostics']['source'] = 'graph_api'
+                return result
+    else:
+        print("  ⚠ Graph API not enabled, using IMAP")
+
+    if PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD:
+        print("📧 Using IMAP...")
+        result = fetch_emails_from_imap()
+        result['diagnostics']['source'] = 'imap'
+        return result
+
+    return {
+        'emails': [],
+        'diagnostics': {
+            'error': 'No email credentials configured. Set MS_TENANT_ID/MS_CLIENT_ID/MS_CLIENT_SECRET for Graph API, or PO_EMAIL_ADDRESS/PO_EMAIL_PASSWORD for IMAP.',
+            'source': 'none'
+        }
+    }
+
 
 def fetch_emails_from_imap():
     """
@@ -659,10 +903,11 @@ def auto_check_po_emails():
         print(f"   Provider: {PO_EMAIL_PROVIDER}")
         print(f"{'='*60}")
 
-        # Fetch emails from IMAP
-        result = fetch_emails_from_imap()
+        # Fetch emails (Graph API first, then IMAP fallback)
+        result = fetch_emails()
         emails = result.get('emails', [])
         diag = result.get('diagnostics', {})
+        source = diag.get('source', 'imap')
 
         if diag.get('error'):
             print(f"✗ Email fetch error: {diag['error']}")
@@ -677,8 +922,11 @@ def auto_check_po_emails():
         matched_count = 0
 
         for msg_uid, msg in emails:
-            # Extract attachments
-            attachments = extract_attachments_from_email(msg)
+            # Extract attachments based on source
+            if source == 'graph_api':
+                attachments = extract_attachments_from_graph_message(msg_uid)
+            else:
+                attachments = extract_attachments_from_email(msg)
             if not attachments:
                 continue
 
@@ -4066,19 +4314,21 @@ def check_po_emails():
     if not PO_EMAIL_MONITORING_ENABLED:
         return jsonify({
             'success': False,
-            'error': 'Email monitoring not configured. Set PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD environment variables.'
+            'error': 'Email monitoring not configured. Set MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET for Graph API (recommended), or PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD for IMAP.'
         })
 
     try:
         print(f"\n{'='*60}")
         print(f"📧 CHECKING PO EMAIL ACCOUNT: {PO_EMAIL_ADDRESS}")
-        print(f"   Provider: {PO_EMAIL_PROVIDER} (Server: {PO_EMAIL_IMAP_SERVER})")
+        print(f"   Graph API: {'Enabled' if MS_GRAPH_ENABLED else 'Not configured'}")
+        print(f"   IMAP: {PO_EMAIL_IMAP_SERVER}")
         print(f"{'='*60}")
 
-        # Fetch emails from IMAP
-        result = fetch_emails_from_imap()
+        # Fetch emails (Graph API first, then IMAP fallback)
+        result = fetch_emails()
         emails = result.get('emails', [])
         diagnostics = result.get('diagnostics', {})
+        source = diagnostics.get('source', 'imap')
 
         # If there was a connection/auth error, report it to the user
         if diagnostics.get('error'):
@@ -4115,8 +4365,11 @@ def check_po_emails():
         for msg_uid, msg in emails:
             print(f"\n📧 Processing email: {msg.get('Subject', 'No Subject')}")
 
-            # Extract attachments
-            attachments = extract_attachments_from_email(msg)
+            # Extract attachments based on source
+            if source == 'graph_api':
+                attachments = extract_attachments_from_graph_message(msg_uid)
+            else:
+                attachments = extract_attachments_from_email(msg)
             if not attachments:
                 continue
 
@@ -4191,9 +4444,10 @@ def rescan_all_po_emails():
 
         # Now run the standard email check
         print(f"\n📧 Starting full email scan...")
-        result = fetch_emails_from_imap()
+        result = fetch_emails()
         emails = result.get('emails', [])
         diagnostics = result.get('diagnostics', {})
+        source = diagnostics.get('source', 'imap')
 
         if diagnostics.get('error'):
             return jsonify({
@@ -4230,8 +4484,11 @@ def rescan_all_po_emails():
         for msg_uid, msg in emails:
             print(f"\n📧 Processing email: {msg.get('Subject', 'No Subject')}")
 
-            # Extract attachments
-            attachments = extract_attachments_from_email(msg)
+            # Extract attachments based on source
+            if source == 'graph_api':
+                attachments = extract_attachments_from_graph_message(msg_uid)
+            else:
+                attachments = extract_attachments_from_email(msg)
             if not attachments:
                 continue
 
@@ -9346,6 +9603,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     if (data.diagnostics) {
                         const d = data.diagnostics;
                         message += `\n\n--- Diagnostics ---`;
+                        message += `\nMethod: ${d.source || d.method || 'N/A'}`;
                         message += `\nServer: ${d.imap_server || 'N/A'}`;
                         message += `\nAccount: ${d.email_account || 'N/A'}`;
                         message += `\nConnected: ${d.connected ? 'Yes' : 'No'}`;
@@ -9363,6 +9621,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     if (data.diagnostics) {
                         const d = data.diagnostics;
                         errMsg += `\n\n--- Diagnostics ---`;
+                        errMsg += `\nMethod: ${d.source || d.method || 'N/A'}`;
                         errMsg += `\nServer: ${d.imap_server || 'N/A'}`;
                         errMsg += `\nConnected: ${d.connected ? 'Yes' : 'No'}`;
                         errMsg += `\nLogin OK: ${d.login_success ? 'Yes' : 'No'}`;
