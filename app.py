@@ -5172,7 +5172,9 @@ def extract_invoice_cost(text):
     patterns = [
         r'(?:Merchandise\s+)?(?:Invoice\s+)?(?:Sub\s*)?Total\s*[:=]?\s*\$?\s*([\d,]+\.\d{2})',
         r'(?:Amount\s*Due|Balance\s*Due|Net\s*Amount|Total\s*Due|Please\s*Pay)\s*[:=]?\s*\$?\s*([\d,]+\.\d{2})',
+        r'BALANCE\s*[:=]?\s*\$\s*([\d,]+\.\d{2})',
         r'(?:Grand\s*Total)\s*[:=]?\s*\$?\s*([\d,]+\.\d{2})',
+        r'SUB[\-\s]*TOTAL[*\s]*\$?\s*([\d,]+\.\d{2})',
         r'TOTAL\s*[:=]?\s*\$?\s*([\d,]+\.\d{2})',
     ]
 
@@ -5799,10 +5801,12 @@ def extract_invoice_data(text, po_map):
         (r'(?:Invoice\s+)?(?:Sub\s*)?Total[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Invoice/Sub Total:'),
         (r'Amount\s+Due[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Amount Due:'),
         (r'Grand\s+Total[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Grand Total:'),
-        (r'Balance\s+Due[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Balance Due:'),
+        (r'Balance\s*(?:Due)?[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Balance/Balance Due:'),
+        (r'BALANCE[:\s]*\$\s*([0-9,]+\.\d{2})', 'BALANCE $:'),
         (r'Net\s+Amount[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Net Amount:'),
         (r'TOTAL\s+DUE[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Total Due:'),
         (r'PLEASE\s+PAY[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Please Pay:'),
+        (r'SUB[\-\s]*TOTAL[*\s]*\$?\s*([0-9,]+\.\d{2})', 'Sub-Total:'),
         (r'TOTAL[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Total:'),
     ]
 
