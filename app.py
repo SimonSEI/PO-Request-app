@@ -4506,10 +4506,26 @@ def rescan_all_po_emails():
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("DELETE FROM email_processing_log")
+
+        # Reset POs that were matched with $0.00 cost so they get re-matched
+        c.execute("""UPDATE po_requests
+                     SET status='awaiting_invoice', invoice_filename=NULL, invoice_number=NULL,
+                         invoice_cost=NULL, match_method=NULL
+                     WHERE status='matched'
+                     AND (invoice_cost IS NULL OR invoice_cost = '' OR CAST(invoice_cost AS REAL) = 0)""")
+        reset_count = c.rowcount
+
+        # Also delete invoice records with $0.00 cost so they get re-created
+        c.execute("""DELETE FROM invoices
+                     WHERE (invoice_cost IS NULL OR invoice_cost = '' OR CAST(invoice_cost AS REAL) = 0)""")
+        deleted_invoices = c.rowcount
+
         conn.commit()
         conn.close()
 
         print(f"✓ Cleared email processing history - all emails marked for reprocessing")
+        print(f"✓ Reset {reset_count} matched POs with $0.00 cost back to awaiting_invoice")
+        print(f"✓ Deleted {deleted_invoices} invoice records with $0.00 cost")
 
         # Now run the standard email check
         print(f"\n📧 Starting full email scan...")
