@@ -15008,7 +15008,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             }
         }
 
-        function loadClockAddresses(communityId) {
+        function loadClockAddresses(communityId, flashMsg) {
             const container = document.getElementById(`verona-clocks-${communityId}`);
 
             fetch(`/verona_walk_clocks?community_id=${communityId}`)
@@ -15016,6 +15016,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 .then(data => {
                     if (data.success) {
                         displayClocks(communityId, data.clocks);
+                        if (flashMsg) {
+                            showSaveFlash(container);
+                        }
                     } else {
                         container.innerHTML = '<p style="color: #dc3545;">Error loading clocks</p>';
                     }
@@ -15121,6 +15124,15 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             toggle.classList.toggle('expanded');
         }
 
+        function showSaveFlash(targetEl) {
+            const flash = document.createElement('span');
+            flash.textContent = ' ✓ Saved!';
+            flash.style.cssText = 'color:#28a745;font-weight:600;font-size:12px;margin-left:8px;transition:opacity 0.5s;';
+            targetEl.appendChild(flash);
+            setTimeout(() => { flash.style.opacity = '0'; }, 1500);
+            setTimeout(() => { flash.remove(); }, 2000);
+        }
+
         function addClockAddress(communityId, clockNumber, isCommonArea) {
             const inputId = isCommonArea ? `ca-input-${communityId}-${clockNumber}` : `addr-input-${communityId}-${clockNumber}`;
             const input = document.getElementById(inputId);
@@ -15130,6 +15142,10 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 alert('Please enter an address');
                 return;
             }
+
+            const btn = input.parentElement.querySelector('.btn-add-address');
+            btn.disabled = true;
+            btn.textContent = 'Saving...';
 
             fetch('/verona_walk_add_address', {
                 method: 'POST',
@@ -15145,10 +15161,17 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             .then(data => {
                 if (data.success) {
                     input.value = '';
-                    loadClockAddresses(communityId);
+                    loadClockAddresses(communityId, true);
                 } else {
                     alert('Error: ' + data.error);
+                    btn.disabled = false;
+                    btn.textContent = isCommonArea ? 'Add Common Area' : 'Add Address';
                 }
+            })
+            .catch(err => {
+                alert('Network error - please try again');
+                btn.disabled = false;
+                btn.textContent = isCommonArea ? 'Add Common Area' : 'Add Address';
             });
         }
 
@@ -15165,11 +15188,13 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
-                    // Find community_id from the deleted item and reload
-                    loadClockAddresses(communityId);
+                    loadClockAddresses(communityId, true);
                 } else {
                     alert('Error: ' + data.error);
                 }
+            })
+            .catch(err => {
+                alert('Network error - please try again');
             });
         }
 
@@ -15210,10 +15235,13 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
-                    loadClockAddresses(communityId);
+                    loadClockAddresses(communityId, true);
                 } else {
                     alert('Error: ' + data.error);
                 }
+            })
+            .catch(err => {
+                alert('Network error - please try again');
             });
         }
 
