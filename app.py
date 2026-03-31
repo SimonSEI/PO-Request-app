@@ -1024,13 +1024,24 @@ def init_db():
                   address TEXT NOT NULL,
                   created_at TEXT NOT NULL,
                   is_common_area INTEGER NOT NULL DEFAULT 0,
+                  sort_order INTEGER NOT NULL DEFAULT 0,
                   FOREIGN KEY (community_id) REFERENCES communities(id) ON DELETE CASCADE)''')
 
-    # Migration: add is_common_area column if it doesn't exist yet
+    # Migrations for verona_walk_clock_addresses
     c.execute("PRAGMA table_info(verona_walk_clock_addresses)")
     columns = [col[1] for col in c.fetchall()]
     if 'is_common_area' not in columns:
         c.execute("ALTER TABLE verona_walk_clock_addresses ADD COLUMN is_common_area INTEGER NOT NULL DEFAULT 0")
+    if 'sort_order' not in columns:
+        c.execute("ALTER TABLE verona_walk_clock_addresses ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+        # Initialize sort_order from existing id order
+        c.execute("""UPDATE verona_walk_clock_addresses SET sort_order = (
+            SELECT COUNT(*) FROM verona_walk_clock_addresses AS a2
+            WHERE a2.community_id = verona_walk_clock_addresses.community_id
+              AND a2.clock_number = verona_walk_clock_addresses.clock_number
+              AND a2.is_common_area = verona_walk_clock_addresses.is_common_area
+              AND a2.id <= verona_walk_clock_addresses.id
+        )""")
 
     # Community nozzle prices table - stores pricing for each nozzle type per community
     c.execute('''CREATE TABLE IF NOT EXISTS community_nozzle_prices
@@ -15103,7 +15114,6 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         }
         .houses-list {
             display: none;
-            max-height: 300px;
             overflow-y: auto;
             margin-bottom: 12px;
         }
@@ -15263,6 +15273,43 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         }
         .btn-edit-address:hover {
             background: #0069d9;
+        }
+        .btn-insert-address {
+            background: #17a2b8;
+            color: white;
+            padding: 3px 6px;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 11px;
+            margin-right: 4px;
+        }
+        .btn-insert-address:hover {
+            background: #138496;
+        }
+        .insert-form {
+            background: #e8f4f8;
+            border: 1px dashed #17a2b8;
+            border-radius: 4px;
+            padding: 8px;
+            margin: 4px 0;
+        }
+        .insert-form textarea {
+            width: 100%;
+            padding: 6px 8px;
+            border: 1px solid #bee5eb;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: inherit;
+            resize: vertical;
+            min-height: 32px;
+            max-height: 150px;
+            margin-bottom: 6px;
+        }
+        .insert-form .form-row {
+            display: flex;
+            gap: 6px;
+            align-items: center;
         }
         .btn-delete-address {
             background: #dc3545;
@@ -15619,11 +15666,13 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                         return addrs.map(addr => `
                             <div class="address-item" id="address-item-${addr.id}">
                                 <span class="address-text" id="address-text-${addr.id}">${addr.address}</span>
-                                <div>
+                                <div style="white-space:nowrap;">
+                                    <button type="button" class="btn-insert-address" onclick="showInsertForm(${communityId}, ${addr.id})">Insert</button>
                                     <button type="button" class="btn-edit-address" onclick="editClockAddress(${communityId}, ${addr.id})">Edit</button>
                                     <button type="button" class="btn-delete-address" onclick="deleteClockAddress(${communityId}, ${addr.id})">Delete</button>
                                 </div>
                             </div>
+                            <div id="insert-form-${addr.id}" style="display:none;"></div>
                         `).join('');
                     }
 
@@ -15754,6 +15803,72 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 alert('Network error - please try again');
                 btn.disabled = false;
                 btn.textContent = isCommonArea ? 'Add Common Area' : 'Add Address(es)';
+            });
+        }
+
+        function showInsertForm(communityId, afterId) {
+            const container = document.getElementById(`insert-form-${afterId}`);
+            if (container.style.display === 'block') {
+                container.style.display = 'none';
+                container.innerHTML = '';
+                return;
+            }
+            container.style.display = 'block';
+            container.innerHTML = `
+                <div class="insert-form">
+                    <textarea id="insert-input-${afterId}" placeholder="Enter address(es) to insert below (paste multiple lines)" rows="1"></textarea>
+                    <div class="form-row">
+                        <button type="button" class="btn-add-address" onclick="insertClockAddresses(${communityId}, ${afterId})" style="font-size:11px;padding:4px 10px;">Insert Below</button>
+                        <button type="button" class="btn-delete-address" onclick="document.getElementById('insert-form-${afterId}').style.display='none'" style="background:#6c757d;font-size:11px;padding:4px 10px;">Cancel</button>
+                        <span class="add-address-hint">Each line becomes a separate address</span>
+                    </div>
+                </div>
+            `;
+            const ta = document.getElementById(`insert-input-${afterId}`);
+            ta.focus();
+            ta.addEventListener('input', function() {
+                this.rows = Math.max(1, Math.min(this.value.split(/\r?\n/).length, 8));
+            });
+            ta.addEventListener('paste', function() {
+                setTimeout(() => { this.rows = Math.max(1, Math.min(this.value.split(/\r?\n/).length, 8)); }, 0);
+            });
+        }
+
+        function insertClockAddresses(communityId, afterId) {
+            const textarea = document.getElementById(`insert-input-${afterId}`);
+            const addresses = textarea.value.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+
+            if (addresses.length === 0) {
+                alert('Please enter at least one address');
+                return;
+            }
+
+            const btn = textarea.closest('.insert-form').querySelector('.btn-add-address');
+            btn.disabled = true;
+            btn.textContent = 'Inserting...';
+
+            fetch('/verona_walk_insert_address', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    after_id: afterId,
+                    addresses: addresses
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    loadClockAddresses(communityId, true);
+                } else {
+                    alert('Error: ' + data.error);
+                    btn.disabled = false;
+                    btn.textContent = 'Insert Below';
+                }
+            })
+            .catch(err => {
+                alert('Network error - please try again');
+                btn.disabled = false;
+                btn.textContent = 'Insert Below';
             });
         }
 
@@ -17884,7 +17999,7 @@ def verona_walk_clocks():
     c.execute("""SELECT id, clock_number, address, COALESCE(is_common_area, 0)
                  FROM verona_walk_clock_addresses
                  WHERE community_id = ?
-                 ORDER BY clock_number, id""", (community_id,))
+                 ORDER BY clock_number, is_common_area, sort_order, id""", (community_id,))
 
     addresses = c.fetchall()
 
@@ -17925,10 +18040,15 @@ def verona_walk_add_address():
     c = conn.cursor()
 
     try:
+        # Get next sort_order
+        c.execute("""SELECT COALESCE(MAX(sort_order), 0) + 1 FROM verona_walk_clock_addresses
+                     WHERE community_id = ? AND clock_number = ? AND is_common_area = ?""",
+                 (community_id, clock_number, is_common_area))
+        next_order = c.fetchone()[0]
         c.execute("""INSERT INTO verona_walk_clock_addresses
-                     (community_id, clock_number, address, created_at, is_common_area)
-                     VALUES (?, ?, ?, ?, ?)""",
-                 (community_id, clock_number, address, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), is_common_area))
+                     (community_id, clock_number, address, created_at, is_common_area, sort_order)
+                     VALUES (?, ?, ?, ?, ?, ?)""",
+                 (community_id, clock_number, address, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), is_common_area, next_order))
         conn.commit()
         return jsonify({'success': True, 'message': 'Address added successfully'})
     except Exception as e:
@@ -17955,18 +18075,78 @@ def verona_walk_bulk_add_addresses():
     c = conn.cursor()
 
     try:
+        # Get next sort_order
+        c.execute("""SELECT COALESCE(MAX(sort_order), 0) FROM verona_walk_clock_addresses
+                     WHERE community_id = ? AND clock_number = ? AND is_common_area = ?""",
+                 (community_id, clock_number, is_common_area))
+        next_order = c.fetchone()[0] + 1
         added = 0
         for address in addresses:
             address = address.strip()
             if address:
                 c.execute("""INSERT INTO verona_walk_clock_addresses
-                             (community_id, clock_number, address, created_at, is_common_area)
-                             VALUES (?, ?, ?, ?, ?)""",
+                             (community_id, clock_number, address, created_at, is_common_area, sort_order)
+                             VALUES (?, ?, ?, ?, ?, ?)""",
                          (community_id, clock_number, address,
-                          datetime.now().strftime('%Y-%m-%d %H:%M:%S'), is_common_area))
+                          datetime.now().strftime('%Y-%m-%d %H:%M:%S'), is_common_area, next_order))
+                next_order += 1
                 added += 1
         conn.commit()
         return jsonify({'success': True, 'message': f'{added} address(es) added successfully'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+@app.route('/verona_walk_insert_address', methods=['POST'])
+def verona_walk_insert_address():
+    """Insert address(es) after a specific address to maintain order"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    after_id = data.get('after_id')
+    addresses = data.get('addresses', [])
+
+    if not after_id or not addresses:
+        return jsonify({'success': False, 'error': 'Missing required fields'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    try:
+        # Get the reference address details
+        c.execute("""SELECT community_id, clock_number, is_common_area, sort_order
+                     FROM verona_walk_clock_addresses WHERE id = ?""", (after_id,))
+        ref = c.fetchone()
+        if not ref:
+            return jsonify({'success': False, 'error': 'Reference address not found'})
+
+        community_id, clock_number, is_common_area, ref_order = ref
+        count = len([a for a in addresses if a.strip()])
+
+        # Shift all addresses after the reference point to make room
+        c.execute("""UPDATE verona_walk_clock_addresses
+                     SET sort_order = sort_order + ?
+                     WHERE community_id = ? AND clock_number = ? AND is_common_area = ?
+                       AND sort_order > ?""",
+                 (count, community_id, clock_number, is_common_area, ref_order))
+
+        # Insert the new addresses
+        added = 0
+        for address in addresses:
+            address = address.strip()
+            if address:
+                added += 1
+                c.execute("""INSERT INTO verona_walk_clock_addresses
+                             (community_id, clock_number, address, created_at, is_common_area, sort_order)
+                             VALUES (?, ?, ?, ?, ?, ?)""",
+                         (community_id, clock_number, address,
+                          datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                          is_common_area, ref_order + added))
+
+        conn.commit()
+        return jsonify({'success': True, 'message': f'{added} address(es) inserted'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
     finally:
