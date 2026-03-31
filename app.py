@@ -4548,18 +4548,9 @@ def check_po_emails_status():
         })
 
 
-@app.route('/rescan_all_po_emails', methods=['POST'])
-def rescan_all_po_emails():
-    """Force a full rescan of ALL emails in PO inbox (clears processed history and rescans)"""
-    if 'username' not in session or session['role'] != 'office':
-        return jsonify({'success': False, 'error': 'Unauthorized'})
-
-    if not PO_EMAIL_MONITORING_ENABLED:
-        return jsonify({
-            'success': False,
-            'error': 'Email monitoring not configured'
-        })
-
+def _run_rescan_background():
+    """Background worker for full email rescan"""
+    global _email_check_status
     try:
         print(f"\n{'='*60}")
         print(f"🔄 FORCE RESCAN: Clearing processed email history")
@@ -4598,23 +4589,28 @@ def rescan_all_po_emails():
         source = diagnostics.get('source', 'imap')
 
         if diagnostics.get('error'):
-            return jsonify({
-                'success': False,
-                'error': diagnostics['error'],
-                'diagnostics': diagnostics
-            })
+            with _email_check_lock:
+                _email_check_status['running'] = False
+                _email_check_status['completed_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                _email_check_status['result'] = {
+                    'success': False,
+                    'error': diagnostics['error'],
+                    'diagnostics': diagnostics
+                }
+            return
 
         if not emails:
-            return jsonify({
-                'success': True,
-                'message': 'Full rescan complete - no emails with attachments found',
-                'emails_checked': 0,
-                'emails_processed': 0,
-                'total_attachments': 0,
-                'total_matched': 0,
-                'total_unmatched': 0,
-                'diagnostics': diagnostics
-            })
+            with _email_check_lock:
+                _email_check_status['running'] = False
+                _email_check_status['completed_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                _email_check_status['result'] = {
+                    'success': True,
+                    'message': f'Full rescan complete - no emails with attachments found. Reset {reset_count} POs.',
+                    'emails_checked': 0, 'emails_processed': 0,
+                    'total_attachments': 0, 'total_matched': 0, 'total_unmatched': 0,
+                    'diagnostics': diagnostics
+                }
+            return
 
         all_results = {
             'success': True,
@@ -4628,11 +4624,9 @@ def rescan_all_po_emails():
             'diagnostics': diagnostics
         }
 
-        # Process each email
         for msg_uid, msg in emails:
             print(f"\n📧 Processing email: {msg.get('Subject', 'No Subject')}")
 
-            # Extract attachments based on source
             if source == 'graph_api':
                 attachments = extract_attachments_from_graph_message(msg_uid)
             else:
@@ -4643,14 +4637,11 @@ def rescan_all_po_emails():
             all_results['emails_processed'] += 1
             all_results['total_attachments'] += len(attachments)
 
-            # Process attachments
             email_results = process_email_attachments(msg_uid, msg, attachments)
 
-            # Update totals
             all_results['total_matched'] += email_results.get('matched', 0)
             all_results['total_unmatched'] += len(email_results.get('unmatched', []))
 
-            # Log to database
             log_email_processing(
                 msg_uid,
                 email_results.get('email_sender', 'Unknown'),
@@ -4662,25 +4653,67 @@ def rescan_all_po_emails():
 
             all_results['details'].append(email_results)
 
+            with _email_check_lock:
+                _email_check_status['result'] = all_results
+
         print(f"\n{'='*60}")
         print(f"✅ FULL RESCAN COMPLETE")
         print(f"  Emails processed: {all_results['emails_processed']}")
-        print(f"  Total attachments: {all_results['total_attachments']}")
         print(f"  Matched invoices: {all_results['total_matched']}")
-        print(f"  Unmatched invoices: {all_results['total_unmatched']}")
         print(f"{'='*60}")
 
-        return jsonify(all_results)
+        with _email_check_lock:
+            _email_check_status['running'] = False
+            _email_check_status['completed_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            _email_check_status['result'] = all_results
 
     except Exception as e:
         import traceback
         print(f"✗ Rescan error: {e}")
         traceback.print_exc()
+        with _email_check_lock:
+            _email_check_status['running'] = False
+            _email_check_status['completed_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            _email_check_status['result'] = {
+                'success': False,
+                'error': str(e)
+            }
+
+
+@app.route('/rescan_all_po_emails', methods=['POST'])
+def rescan_all_po_emails():
+    """Force a full rescan of ALL emails - clears history and re-processes everything"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    if not PO_EMAIL_MONITORING_ENABLED:
         return jsonify({
             'success': False,
-            'error': str(e),
-            'trace': traceback.format_exc()
+            'error': 'Email monitoring not configured'
         })
+
+    with _email_check_lock:
+        if _email_check_status['running']:
+            return jsonify({
+                'success': True,
+                'status': 'already_running',
+                'started_at': _email_check_status['started_at'],
+                'message': 'Email scan already in progress'
+            })
+
+        _email_check_status['running'] = True
+        _email_check_status['started_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        _email_check_status['completed_at'] = None
+        _email_check_status['result'] = None
+
+    thread = threading.Thread(target=_run_rescan_background, daemon=True)
+    thread.start()
+
+    return jsonify({
+        'success': True,
+        'status': 'started',
+        'message': 'Full email rescan started in background'
+    })
 
 
 @app.route('/email_processing_logs', methods=['GET'])
@@ -8603,7 +8636,8 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         <h1>🏢 Department Dashboard</h1>
         <div class="header-nav">
             <button onclick="openInvoiceUploadModal()" style="background: #28a745; color: white; padding: 10px 20px; border: none; text-decoration: none; border-radius: 5px; font-weight: bold; cursor: pointer;">📄 Upload Invoice</button>
-            <button onclick="checkPOEmails()" style="background: #0d6efd; color: white; padding: 10px 20px; border: none; text-decoration: none; border-radius: 5px; font-weight: bold; cursor: pointer;" id="check-emails-btn">📧 Check PO Emails</button>
+            <button onclick="checkPOEmails()" style="background: #0d6efd; color: white; padding: 10px 20px; border: none; text-decoration: none; border-radius: 5px; font-weight: bold; cursor: pointer;" id="check-emails-btn">📧 Check Recent Emails</button>
+            <button onclick="rescanAllEmails()" style="background: #ff9800; color: white; padding: 10px 20px; border: none; text-decoration: none; border-radius: 5px; font-weight: bold; cursor: pointer;" id="rescan-emails-btn">🔄 Scan All Emails</button>
             <a href="{{ url_for('dashboard') }}" style="background: #6c757d; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">← Dashboard</a>
             <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
         </div>
@@ -9923,6 +9957,81 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             });
         }
 
+        function rescanAllEmails() {
+            if (!confirm('This will rescan ALL emails and re-process all matches. This may take several minutes. Continue?')) {
+                return;
+            }
+            const btn = document.getElementById('rescan-emails-btn');
+            const recentBtn = document.getElementById('check-emails-btn');
+            const originalText = btn.textContent;
+            btn.textContent = '⏳ Starting full rescan...';
+            btn.disabled = true;
+            if (recentBtn) recentBtn.disabled = true;
+
+            fetch('/rescan_all_po_emails', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'started' || data.status === 'already_running') {
+                    btn.textContent = '⏳ Rescanning all emails...';
+                    pollRescanStatus(btn, recentBtn, originalText);
+                } else if (!data.success) {
+                    alert(`❌ Error starting rescan:\n${data.error || 'Unknown error'}`);
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                    if (recentBtn) recentBtn.disabled = false;
+                }
+            })
+            .catch(error => {
+                alert(`❌ Error:\n${error.message}`);
+                btn.textContent = originalText;
+                btn.disabled = false;
+                if (recentBtn) recentBtn.disabled = false;
+            });
+        }
+
+        function pollRescanStatus(btn, recentBtn, originalText) {
+            fetch('/check_po_emails_status')
+            .then(response => response.json())
+            .then(status => {
+                if (status.running) {
+                    const r = status.result;
+                    if (r && r.emails_processed !== undefined) {
+                        btn.textContent = `⏳ Rescanned ${r.emails_processed}/${r.emails_checked || '?'} emails (${r.total_matched || 0} matched)...`;
+                    }
+                    setTimeout(() => pollRescanStatus(btn, recentBtn, originalText), 2000);
+                } else {
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                    if (recentBtn) recentBtn.disabled = false;
+                    const data = status.result;
+                    if (!data) {
+                        alert('Full rescan completed but no results available.');
+                        location.reload();
+                        return;
+                    }
+                    if (data.success) {
+                        let message = `✅ Full rescan completed!\n\n`;
+                        message += `📧 Emails processed: ${data.emails_processed || 0}\n`;
+                        message += `📎 Total attachments: ${data.total_attachments || 0}\n`;
+                        message += `✅ Matched invoices: ${data.total_matched || 0}\n`;
+                        message += `⚠️  Unmatched invoices: ${data.total_unmatched || 0}`;
+                        if (data.message) {
+                            message += `\n\nℹ️  ${data.message}`;
+                        }
+                        alert(message);
+                        location.reload();
+                    } else {
+                        alert(`❌ Error during rescan:\n${data.error || 'Unknown error'}`);
+                    }
+                }
+            })
+            .catch(() => {
+                setTimeout(() => pollRescanStatus(btn, recentBtn, originalText), 3000);
+            });
+        }
         function submitInvoiceUpload() {
             console.log('submitInvoiceUpload called - selectedPoId:', selectedPoId, 'selectedFile:', selectedInvoiceFile);
 
