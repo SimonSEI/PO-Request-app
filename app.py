@@ -767,7 +767,14 @@ def init_db():
                   clock_number INTEGER NOT NULL,
                   address TEXT NOT NULL,
                   created_at TEXT NOT NULL,
+                  is_common_area INTEGER NOT NULL DEFAULT 0,
                   FOREIGN KEY (community_id) REFERENCES communities(id) ON DELETE CASCADE)''')
+
+    # Migration: add is_common_area column if it doesn't exist yet
+    c.execute("PRAGMA table_info(verona_walk_clock_addresses)")
+    columns = [col[1] for col in c.fetchall()]
+    if 'is_common_area' not in columns:
+        c.execute("ALTER TABLE verona_walk_clock_addresses ADD COLUMN is_common_area INTEGER NOT NULL DEFAULT 0")
 
     # Community nozzle prices table - stores pricing for each nozzle type per community
     c.execute('''CREATE TABLE IF NOT EXISTS community_nozzle_prices
@@ -14412,6 +14419,39 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         .clock-addresses.visible {
             display: block;
         }
+        .clock-subtabs {
+            display: flex;
+            gap: 0;
+            margin-bottom: 10px;
+            border-bottom: 2px solid #e0e0e0;
+        }
+        .clock-subtab {
+            padding: 6px 14px;
+            background: #f0f0f0;
+            border: 1px solid #e0e0e0;
+            border-bottom: none;
+            border-radius: 4px 4px 0 0;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            color: #666;
+            margin-right: 2px;
+        }
+        .clock-subtab:hover {
+            background: #e8e8e8;
+        }
+        .clock-subtab.active {
+            background: white;
+            color: #333;
+            border-bottom: 2px solid white;
+            margin-bottom: -2px;
+        }
+        .clock-subtab-content {
+            display: none;
+        }
+        .clock-subtab-content.active {
+            display: block;
+        }
         .address-item {
             background: #fafafa;
             border: 1px solid #eee;
@@ -14748,12 +14788,19 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         function displayClocks(communityId, clocks) {
             const container = document.getElementById(`verona-clocks-${communityId}`);
 
-            // Remember which clock sections are currently expanded
+            // Remember which clock sections are currently expanded and which subtab was active
             const openClocks = [];
+            const activeSubtabs = {};
             clocks.forEach(clock => {
                 const el = document.getElementById(`addresses-${communityId}-${clock.clock_number}`);
                 if (el && el.classList.contains('visible')) {
                     openClocks.push(clock.clock_number);
+                }
+                const caTab = document.getElementById(`subtab-ca-${communityId}-${clock.clock_number}`);
+                if (caTab && caTab.classList.contains('active')) {
+                    activeSubtabs[clock.clock_number] = 'ca';
+                } else {
+                    activeSubtabs[clock.clock_number] = 'addr';
                 }
             });
 
@@ -14763,6 +14810,22 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 let html = '';
                 clocks.forEach(clock => {
                     const isOpen = openClocks.includes(clock.clock_number);
+                    const activeTab = activeSubtabs[clock.clock_number] || 'addr';
+                    const regularAddresses = clock.addresses.filter(a => !a.is_common_area);
+                    const commonAreaAddresses = clock.common_area_addresses || [];
+
+                    function renderAddressList(addrs) {
+                        return addrs.map(addr => `
+                            <div class="address-item" id="address-item-${addr.id}">
+                                <span class="address-text" id="address-text-${addr.id}">${addr.address}</span>
+                                <div>
+                                    <button type="button" class="btn-edit-address" onclick="editClockAddress(${communityId}, ${addr.id})">Edit</button>
+                                    <button type="button" class="btn-delete-address" onclick="deleteClockAddress(${communityId}, ${addr.id})">Delete</button>
+                                </div>
+                            </div>
+                        `).join('');
+                    }
+
                     html += `
                         <div class="clock-container">
                             <div class="clock-header" onclick="toggleClockAddresses(event, ${communityId}, ${clock.clock_number})">
@@ -14770,20 +14833,27 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 <span class="clock-toggle${isOpen ? ' expanded' : ''}" id="toggle-${communityId}-${clock.clock_number}">▼</span>
                             </div>
                             <div class="clock-addresses${isOpen ? ' visible' : ''}" id="addresses-${communityId}-${clock.clock_number}">
-                                <div id="address-list-${communityId}-${clock.clock_number}">
-                                    ${clock.addresses.map(addr => `
-                                        <div class="address-item" id="address-item-${addr.id}">
-                                            <span class="address-text" id="address-text-${addr.id}">${addr.address}</span>
-                                            <div>
-                                                <button type="button" class="btn-edit-address" onclick="editClockAddress(${communityId}, ${addr.id})">Edit</button>
-                                                <button type="button" class="btn-delete-address" onclick="deleteClockAddress(${communityId}, ${addr.id})">Delete</button>
-                                            </div>
-                                        </div>
-                                    `).join('')}
+                                <div class="clock-subtabs">
+                                    <div class="clock-subtab${activeTab === 'addr' ? ' active' : ''}" id="subtab-addr-${communityId}-${clock.clock_number}" onclick="switchClockSubtab(${communityId}, ${clock.clock_number}, 'addr')">Addresses</div>
+                                    <div class="clock-subtab${activeTab === 'ca' ? ' active' : ''}" id="subtab-ca-${communityId}-${clock.clock_number}" onclick="switchClockSubtab(${communityId}, ${clock.clock_number}, 'ca')">Common Area</div>
                                 </div>
-                                <div class="add-address-form">
-                                    <input type="text" id="addr-input-${communityId}-${clock.clock_number}" placeholder="Enter address">
-                                    <button type="button" class="btn-add-address" onclick="addClockAddress(${communityId}, ${clock.clock_number})">Add Address</button>
+                                <div class="clock-subtab-content${activeTab === 'addr' ? ' active' : ''}" id="subtab-content-addr-${communityId}-${clock.clock_number}">
+                                    <div id="address-list-${communityId}-${clock.clock_number}">
+                                        ${renderAddressList(regularAddresses)}
+                                    </div>
+                                    <div class="add-address-form">
+                                        <input type="text" id="addr-input-${communityId}-${clock.clock_number}" placeholder="Enter address">
+                                        <button type="button" class="btn-add-address" onclick="addClockAddress(${communityId}, ${clock.clock_number}, 0)">Add Address</button>
+                                    </div>
+                                </div>
+                                <div class="clock-subtab-content${activeTab === 'ca' ? ' active' : ''}" id="subtab-content-ca-${communityId}-${clock.clock_number}">
+                                    <div id="ca-list-${communityId}-${clock.clock_number}">
+                                        ${renderAddressList(commonAreaAddresses)}
+                                    </div>
+                                    <div class="add-address-form">
+                                        <input type="text" id="ca-input-${communityId}-${clock.clock_number}" placeholder="Enter common area address">
+                                        <button type="button" class="btn-add-address" onclick="addClockAddress(${communityId}, ${clock.clock_number}, 1)">Add Common Area</button>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -14791,6 +14861,15 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 });
                 container.innerHTML = html;
             }
+        }
+
+        function switchClockSubtab(communityId, clockNumber, tab) {
+            // Toggle subtab buttons
+            document.getElementById(`subtab-addr-${communityId}-${clockNumber}`).classList.toggle('active', tab === 'addr');
+            document.getElementById(`subtab-ca-${communityId}-${clockNumber}`).classList.toggle('active', tab === 'ca');
+            // Toggle subtab content
+            document.getElementById(`subtab-content-addr-${communityId}-${clockNumber}`).classList.toggle('active', tab === 'addr');
+            document.getElementById(`subtab-content-ca-${communityId}-${clockNumber}`).classList.toggle('active', tab === 'ca');
         }
 
         function toggleClockAddresses(event, communityId, clockNumber) {
@@ -14802,8 +14881,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             toggle.classList.toggle('expanded');
         }
 
-        function addClockAddress(communityId, clockNumber) {
-            const input = document.getElementById(`addr-input-${communityId}-${clockNumber}`);
+        function addClockAddress(communityId, clockNumber, isCommonArea) {
+            const inputId = isCommonArea ? `ca-input-${communityId}-${clockNumber}` : `addr-input-${communityId}-${clockNumber}`;
+            const input = document.getElementById(inputId);
             const address = input.value.trim();
 
             if (!address) {
@@ -14817,7 +14897,8 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 body: JSON.stringify({
                     community_id: communityId,
                     clock_number: clockNumber,
-                    address: address
+                    address: address,
+                    is_common_area: isCommonArea ? 1 : 0
                 })
             })
             .then(r => r.json())
@@ -16954,21 +17035,26 @@ def verona_walk_clocks():
         })
 
     # Fetch all addresses for this community
-    c.execute("""SELECT id, clock_number, address
+    c.execute("""SELECT id, clock_number, address, COALESCE(is_common_area, 0)
                  FROM verona_walk_clock_addresses
                  WHERE community_id = ?
                  ORDER BY clock_number, id""", (community_id,))
 
     addresses = c.fetchall()
 
-    # Organize addresses by clock
-    for addr_id, clock_num, address in addresses:
+    # Add common_area_addresses list to each clock
+    for clock in clocks:
+        clock['common_area_addresses'] = []
+
+    # Organize addresses by clock and type
+    for addr_id, clock_num, address, is_ca in addresses:
         for clock in clocks:
             if clock['clock_number'] == clock_num:
-                clock['addresses'].append({
-                    'id': addr_id,
-                    'address': address
-                })
+                entry = {'id': addr_id, 'address': address, 'is_common_area': bool(is_ca)}
+                if is_ca:
+                    clock['common_area_addresses'].append(entry)
+                else:
+                    clock['addresses'].append(entry)
                 break
 
     conn.close()
@@ -16984,6 +17070,7 @@ def verona_walk_add_address():
     community_id = data.get('community_id')
     clock_number = data.get('clock_number')
     address = data.get('address', '').strip()
+    is_common_area = data.get('is_common_area', 0)
 
     if not community_id or clock_number is None or not address:
         return jsonify({'success': False, 'error': 'Missing required fields'})
@@ -16993,9 +17080,9 @@ def verona_walk_add_address():
 
     try:
         c.execute("""INSERT INTO verona_walk_clock_addresses
-                     (community_id, clock_number, address, created_at)
-                     VALUES (?, ?, ?, ?)""",
-                 (community_id, clock_number, address, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                     (community_id, clock_number, address, created_at, is_common_area)
+                     VALUES (?, ?, ?, ?, ?)""",
+                 (community_id, clock_number, address, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), is_common_area))
         conn.commit()
         return jsonify({'success': True, 'message': 'Address added successfully'})
     except Exception as e:
