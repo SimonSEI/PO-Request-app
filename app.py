@@ -14734,15 +14734,29 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         }
         .add-address-form {
             display: flex;
+            flex-direction: column;
             gap: 6px;
             margin-top: 8px;
         }
-        .add-address-form input {
-            flex: 1;
+        .add-address-form textarea {
+            width: 100%;
             padding: 6px 8px;
             border: 1px solid #ddd;
             border-radius: 4px;
             font-size: 12px;
+            font-family: inherit;
+            resize: vertical;
+            min-height: 32px;
+            max-height: 150px;
+        }
+        .add-address-form .form-row {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+        .add-address-hint {
+            font-size: 10px;
+            color: #999;
         }
         .btn-add-address {
             padding: 6px 10px;
@@ -15085,8 +15099,11 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                         ${renderAddressList(regularAddresses)}
                                     </div>
                                     <div class="add-address-form">
-                                        <input type="text" id="addr-input-${communityId}-${clock.clock_number}" placeholder="Enter address">
-                                        <button type="button" class="btn-add-address" onclick="addClockAddress(${communityId}, ${clock.clock_number}, 0)">Add Address</button>
+                                        <textarea id="addr-input-${communityId}-${clock.clock_number}" placeholder="Enter address (paste multiple lines from Excel)" rows="1"></textarea>
+                                        <div class="form-row">
+                                            <button type="button" class="btn-add-address" onclick="bulkAddClockAddresses(${communityId}, ${clock.clock_number}, 0)">Add Address(es)</button>
+                                            <span class="add-address-hint">Paste from Excel — each line becomes a separate address</span>
+                                        </div>
                                     </div>
                                 </div>
                                 <div class="clock-subtab-content${activeTab === 'ca' ? ' active' : ''}" id="subtab-content-ca-${communityId}-${clock.clock_number}">
@@ -15094,8 +15111,11 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                         ${renderAddressList(commonAreaAddresses)}
                                     </div>
                                     <div class="add-address-form">
-                                        <input type="text" id="ca-input-${communityId}-${clock.clock_number}" placeholder="Enter common area address">
-                                        <button type="button" class="btn-add-address" onclick="addClockAddress(${communityId}, ${clock.clock_number}, 1)">Add Common Area</button>
+                                        <textarea id="ca-input-${communityId}-${clock.clock_number}" placeholder="Enter common area address (paste multiple lines from Excel)" rows="1"></textarea>
+                                        <div class="form-row">
+                                            <button type="button" class="btn-add-address" onclick="bulkAddClockAddresses(${communityId}, ${clock.clock_number}, 1)">Add Common Area</button>
+                                            <span class="add-address-hint">Paste from Excel — each line becomes a separate address</span>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -15103,6 +15123,20 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     `;
                 });
                 container.innerHTML = html;
+
+                // Auto-expand textareas when content is pasted
+                container.querySelectorAll('.add-address-form textarea').forEach(ta => {
+                    ta.addEventListener('input', function() {
+                        const lines = this.value.split(/\r?\n/).length;
+                        this.rows = Math.max(1, Math.min(lines, 8));
+                    });
+                    ta.addEventListener('paste', function() {
+                        setTimeout(() => {
+                            const lines = this.value.split(/\r?\n/).length;
+                            this.rows = Math.max(1, Math.min(lines, 8));
+                        }, 0);
+                    });
+                });
             }
         }
 
@@ -15133,45 +15167,49 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             setTimeout(() => { flash.remove(); }, 2000);
         }
 
-        function addClockAddress(communityId, clockNumber, isCommonArea) {
+        function bulkAddClockAddresses(communityId, clockNumber, isCommonArea) {
             const inputId = isCommonArea ? `ca-input-${communityId}-${clockNumber}` : `addr-input-${communityId}-${clockNumber}`;
-            const input = document.getElementById(inputId);
-            const address = input.value.trim();
+            const textarea = document.getElementById(inputId);
+            const raw = textarea.value;
 
-            if (!address) {
-                alert('Please enter an address');
+            // Split by newlines, trim each, remove blanks
+            const addresses = raw.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+
+            if (addresses.length === 0) {
+                alert('Please enter at least one address');
                 return;
             }
 
-            const btn = input.parentElement.querySelector('.btn-add-address');
+            const btn = textarea.closest('.add-address-form').querySelector('.btn-add-address');
             btn.disabled = true;
-            btn.textContent = 'Saving...';
+            btn.textContent = `Saving ${addresses.length} address${addresses.length > 1 ? 'es' : ''}...`;
 
-            fetch('/verona_walk_add_address', {
+            fetch('/verona_walk_bulk_add_addresses', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
                     community_id: communityId,
                     clock_number: clockNumber,
-                    address: address,
+                    addresses: addresses,
                     is_common_area: isCommonArea ? 1 : 0
                 })
             })
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
-                    input.value = '';
+                    textarea.value = '';
+                    textarea.rows = 1;
                     loadClockAddresses(communityId, true);
                 } else {
                     alert('Error: ' + data.error);
                     btn.disabled = false;
-                    btn.textContent = isCommonArea ? 'Add Common Area' : 'Add Address';
+                    btn.textContent = isCommonArea ? 'Add Common Area' : 'Add Address(es)';
                 }
             })
             .catch(err => {
                 alert('Network error - please try again');
                 btn.disabled = false;
-                btn.textContent = isCommonArea ? 'Add Common Area' : 'Add Address';
+                btn.textContent = isCommonArea ? 'Add Common Area' : 'Add Address(es)';
             });
         }
 
@@ -17349,6 +17387,42 @@ def verona_walk_add_address():
                  (community_id, clock_number, address, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), is_common_area))
         conn.commit()
         return jsonify({'success': True, 'message': 'Address added successfully'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+@app.route('/verona_walk_bulk_add_addresses', methods=['POST'])
+def verona_walk_bulk_add_addresses():
+    """Bulk add addresses to a clock (supports paste from Excel)"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    community_id = data.get('community_id')
+    clock_number = data.get('clock_number')
+    addresses = data.get('addresses', [])
+    is_common_area = data.get('is_common_area', 0)
+
+    if not community_id or clock_number is None or not addresses:
+        return jsonify({'success': False, 'error': 'Missing required fields'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    try:
+        added = 0
+        for address in addresses:
+            address = address.strip()
+            if address:
+                c.execute("""INSERT INTO verona_walk_clock_addresses
+                             (community_id, clock_number, address, created_at, is_common_area)
+                             VALUES (?, ?, ?, ?, ?)""",
+                         (community_id, clock_number, address,
+                          datetime.now().strftime('%Y-%m-%d %H:%M:%S'), is_common_area))
+                added += 1
+        conn.commit()
+        return jsonify({'success': True, 'message': f'{added} address(es) added successfully'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
     finally:
