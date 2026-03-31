@@ -13631,6 +13631,118 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             color: #155724;
             border: 1px solid #c3e6cb;
         }
+        /* Verona Walk tech layout */
+        .vw-clock-selector {
+            margin-bottom: 15px;
+        }
+        .vw-clock-selector select {
+            width: 100%;
+            padding: 10px 12px;
+            font-size: 15px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            background: white;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .vw-clock-selector select:focus {
+            border-color: #667eea;
+            outline: none;
+        }
+        .vw-columns {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+        .vw-column {
+            flex: 1;
+            min-width: 0;
+        }
+        .vw-column-header {
+            font-weight: 700;
+            font-size: 14px;
+            padding: 10px 12px;
+            border-radius: 6px 6px 0 0;
+            text-align: center;
+        }
+        .vw-column-header.addresses {
+            background: #e3f2fd;
+            color: #1565c0;
+        }
+        .vw-column-header.common-area {
+            background: #fff3e0;
+            color: #e65100;
+        }
+        .vw-column-body {
+            border: 1px solid #e0e0e0;
+            border-top: none;
+            border-radius: 0 0 6px 6px;
+            padding: 10px;
+            min-height: 80px;
+            background: #fafafa;
+        }
+        .vw-address-card {
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        .vw-address-card:last-child {
+            margin-bottom: 0;
+        }
+        .vw-address-name {
+            font-weight: 600;
+            font-size: 13px;
+            color: #333;
+            margin-bottom: 8px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid #eee;
+        }
+        .vw-fields-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+            gap: 6px;
+        }
+        .vw-field {
+            display: flex;
+            flex-direction: column;
+        }
+        .vw-field label {
+            font-size: 10px;
+            color: #888;
+            margin-bottom: 2px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .vw-field input {
+            padding: 4px 6px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            font-size: 12px;
+            width: 100%;
+        }
+        .vw-field input:focus {
+            border-color: #667eea;
+            outline: none;
+        }
+        .vw-empty {
+            color: #999;
+            font-size: 13px;
+            text-align: center;
+            padding: 20px;
+        }
+        .vw-notes-field {
+            margin-top: 6px;
+        }
+        .vw-notes-field input {
+            width: 100%;
+            padding: 4px 6px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            font-size: 12px;
+        }
     </style>
 </head>
 <body>
@@ -13649,7 +13761,33 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
         <div id="message"></div>
 
-        <div class="spreadsheet">
+        {% if is_verona_walk %}
+        <!-- Verona Walk: Clock dropdown + two-column layout -->
+        <div id="veronaWalkLayout">
+            <div class="vw-clock-selector">
+                <select id="vwClockSelect" onchange="vwSelectClock(this.value)">
+                    <option value="">-- Select a Clock --</option>
+                    {% for i in range(1, 19) %}
+                    <option value="{{ i }}">Clock {{ i }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div id="vwClockContent" style="display:none;">
+                <div class="vw-columns">
+                    <div class="vw-column">
+                        <div class="vw-column-header addresses">Addresses</div>
+                        <div class="vw-column-body" id="vwAddressesCol"></div>
+                    </div>
+                    <div class="vw-column">
+                        <div class="vw-column-header common-area">Common Area</div>
+                        <div class="vw-column-body" id="vwCommonAreaCol"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="spreadsheet" {% if is_verona_walk %}style="display:none;"{% endif %}>
             <table>
                 <thead>
                     <tr>
@@ -13710,12 +13848,13 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         "status": {{ status|tojson }},
         "community": {{ community|tojson }},
         "workDate": {{ work_date|tojson }},
-        "communityId": {{ (community_id if community_id else None)|tojson }}
+        "communityId": {{ (community_id if community_id else None)|tojson }},
+        "isVeronaWalk": {{ is_verona_walk|tojson }}
     }
     </script>
 
     <script>
-        let submissionId, status, community, workDate, communityId;
+        let submissionId, status, community, workDate, communityId, isVeronaWalk;
 
         // Parse data from JSON
         try {
@@ -13726,9 +13865,110 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             community = data.community;
             workDate = data.workDate;
             communityId = data.communityId;
-            console.log('Page loaded:', {submissionId, status, community, workDate, communityId});
+            isVeronaWalk = data.isVeronaWalk || false;
+            console.log('Page loaded:', {submissionId, status, community, workDate, communityId, isVeronaWalk});
         } catch (e) {
             console.error('Failed to parse page data:', e);
+        }
+
+        // Verona Walk: clock dropdown + two-column layout
+        const fieldDefs = [
+            {key: 'nozzle', label: 'Nozzle'},
+            {key: 'pop_up_6_inch', label: '6" Pop Up'},
+            {key: 'pop_up_12_inch', label: '12" Pop Up'},
+            {key: 'rotor_6_inch', label: '6" Rotor'},
+            {key: 'new_pop_up_6_inch', label: 'NEW 6" Pop Up'},
+            {key: 'new_pop_up_12_inch', label: 'NEW 12" Pop Up'},
+            {key: 'riser', label: 'Riser'},
+            {key: 'solenoid', label: 'Solenoid'},
+            {key: 'stat_decoder_1', label: '1 Stat Decoder'}
+        ];
+
+        function vwParseRows() {
+            // Parse hidden table rows into structured data
+            const rows = document.querySelectorAll('#tableBody .item-row');
+            const items = [];
+            rows.forEach(row => {
+                const zone = (row.querySelector('.zone')?.textContent || '').trim();
+                const itemId = row.dataset.itemId;
+                // Parse clock number and common area flag from zone text
+                // Format: "Clock N - Address" or "Clock N Common Area - Address"
+                const caMatch = zone.match(/^Clock\s+(\d+)\s+Common Area\s*-\s*(.+)$/i);
+                const addrMatch = zone.match(/^Clock\s+(\d+)\s*-\s*(.+)$/i);
+                let clockNum = 0, isCA = false, addressText = zone;
+                if (caMatch) {
+                    clockNum = parseInt(caMatch[1]);
+                    isCA = true;
+                    addressText = caMatch[2].trim();
+                } else if (addrMatch) {
+                    clockNum = parseInt(addrMatch[1]);
+                    isCA = false;
+                    addressText = addrMatch[2].trim();
+                }
+                // Read current field values
+                const vals = {};
+                fieldDefs.forEach(f => {
+                    vals[f.key] = row.querySelector('.' + f.key)?.value || '';
+                });
+                vals.notes = row.querySelector('.notes')?.value || '';
+                items.push({itemId, clockNum, isCA, addressText, zone, vals});
+            });
+            return items;
+        }
+
+        function vwSelectClock(clockNum) {
+            const content = document.getElementById('vwClockContent');
+            if (!clockNum) {
+                content.style.display = 'none';
+                return;
+            }
+            content.style.display = 'block';
+            clockNum = parseInt(clockNum);
+            const items = vwParseRows();
+            const addresses = items.filter(i => i.clockNum === clockNum && !i.isCA);
+            const commonArea = items.filter(i => i.clockNum === clockNum && i.isCA);
+
+            document.getElementById('vwAddressesCol').innerHTML = vwRenderCards(addresses);
+            document.getElementById('vwCommonAreaCol').innerHTML = vwRenderCards(commonArea);
+        }
+
+        function vwRenderCards(items) {
+            if (items.length === 0) {
+                return '<div class="vw-empty">No addresses</div>';
+            }
+            return items.map(item => {
+                const isDisabled = status === 'submitted' ? 'disabled' : '';
+                let fieldsHtml = '<div class="vw-fields-grid">';
+                fieldDefs.forEach(f => {
+                    fieldsHtml += `
+                        <div class="vw-field">
+                            <label>${f.label}</label>
+                            <input type="number" min="0" value="${item.vals[f.key]}" ${isDisabled}
+                                   onchange="vwUpdateField('${item.itemId}', '${f.key}', this.value)">
+                        </div>`;
+                });
+                fieldsHtml += '</div>';
+                fieldsHtml += `
+                    <div class="vw-notes-field">
+                        <div class="vw-field">
+                            <label>Notes</label>
+                            <input type="text" value="${(item.vals.notes || '').replace(/"/g, '&quot;')}" placeholder="Add notes..." ${isDisabled}
+                                   onchange="vwUpdateField('${item.itemId}', 'notes', this.value)">
+                        </div>
+                    </div>`;
+                return `<div class="vw-address-card">
+                    <div class="vw-address-name">${item.addressText}</div>
+                    ${fieldsHtml}
+                </div>`;
+            }).join('');
+        }
+
+        function vwUpdateField(itemId, fieldKey, value) {
+            // Sync back to the hidden table row so autosave picks it up
+            const row = document.querySelector(`[data-item-id="${itemId}"]`);
+            if (!row) return;
+            const input = row.querySelector('.' + fieldKey);
+            if (input) input.value = value;
         }
 
         function setupAutoSave() {
@@ -16061,15 +16301,15 @@ def community_billing_spreadsheet():
             # Check if this is Verona Walk HOA
             if community == 'Verona Walk HOA':
                 # Get all clock addresses for this community
-                c.execute("""SELECT clock_number, address FROM verona_walk_clock_addresses
+                c.execute("""SELECT clock_number, address, COALESCE(is_common_area, 0) FROM verona_walk_clock_addresses
                              WHERE community_id = ?
                              ORDER BY clock_number, id""", (community_id,))
                 addresses = c.fetchall()
 
                 # Create a line item for each address
-                for clock_num, address in addresses:
-                    if clock_num == 0:
-                        label = f"Common Area - {address}"
+                for clock_num, address, is_ca in addresses:
+                    if is_ca:
+                        label = f"Clock {clock_num} Common Area - {address}"
                     else:
                         label = f"Clock {clock_num} - {address}"
 
@@ -16126,13 +16366,16 @@ def community_billing_spreadsheet():
 
     conn.close()
 
+    is_verona_walk = (community == 'Verona Walk HOA')
+
     return render_template_string(COMMUNITY_BILLING_SPREADSHEET_TEMPLATE,
                                  submission_id=submission_id,
                                  community=community,
                                  community_id=community_id,
                                  work_date=work_date,
                                  line_items=line_items,
-                                 status=status)
+                                 status=status,
+                                 is_verona_walk=is_verona_walk)
 
 @app.route('/community_billing_save_item', methods=['POST'])
 def community_billing_save_item():
@@ -17018,13 +17261,6 @@ def verona_walk_clocks():
 
     # Build the clock structure with addresses
     clocks = []
-
-    # Common Area (clock 0)
-    clocks.append({
-        'clock_number': 0,
-        'clock_label': 'Common Area',
-        'addresses': []
-    })
 
     # Clock 1-18
     for i in range(1, 19):
