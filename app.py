@@ -15460,6 +15460,17 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 </div>
 
                                 <div class="houses-list" id="houses-list-{{ community.id }}">
+                                    <!-- Excel Import Section -->
+                                    <div style="margin-bottom: 15px; padding: 12px; background: #f0f7ff; border: 1px solid #b8daff; border-radius: 6px;">
+                                        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                                            <strong style="font-size: 13px;">Import from Excel:</strong>
+                                            <input type="file" id="excel-import-houses-{{ community.id }}" accept=".xlsx,.xls" style="font-size: 12px;">
+                                            <button type="button" class="btn-save" onclick="previewHouseImport({{ community.id }})" style="padding: 5px 12px; font-size: 12px;">Preview Import</button>
+                                            <span style="font-size: 11px; color: #666;">Upload .xlsx with house numbers in any column</span>
+                                        </div>
+                                        <div id="import-preview-houses-{{ community.id }}" style="display:none; margin-top: 10px;"></div>
+                                    </div>
+
                                     <div id="houses-{{ community.id }}" style="min-height: 30px;">
                                         <p style="color: #666; font-size: 13px;">Loading...</p>
                                     </div>
@@ -15506,7 +15517,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                             <strong style="font-size: 13px;">Import from Excel:</strong>
                                             <input type="file" id="excel-import-{{ community.id }}" accept=".xlsx,.xls" style="font-size: 12px;">
                                             <button type="button" class="btn-save" onclick="previewExcelImport({{ community.id }})" style="padding: 5px 12px; font-size: 12px;">Preview Import</button>
-                                            <span style="font-size: 11px; color: #666;">Upload your Verona Walk .xlsx file with CLOCK sheets</span>
+                                            <span style="font-size: 11px; color: #666;">Upload .xlsx file with CLOCK sheets (e.g., CLOCK 1, CLOCK 2...)</span>
                                         </div>
                                         <div id="import-preview-{{ community.id }}" style="display:none; margin-top: 10px;"></div>
                                     </div>
@@ -16174,6 +16185,150 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     document.getElementById(`excel-import-${communityId}`).value = '';
                     delete _importPreviewData[communityId];
                     loadClockAddresses(communityId, true);
+                    setTimeout(() => { previewDiv.style.display = 'none'; }, 3000);
+                } else {
+                    previewDiv.innerHTML = `<p style="color:#dc3545;">Import failed: ${data.error}</p>`;
+                }
+            })
+            .catch(err => {
+                previewDiv.innerHTML = `<p style="color:#dc3545;">Network error: ${err}</p>`;
+            });
+        }
+
+        // House number Excel import functions
+        var _houseImportData = {};
+
+        function previewHouseImport(communityId) {
+            const fileInput = document.getElementById(`excel-import-houses-${communityId}`);
+            const previewDiv = document.getElementById(`import-preview-houses-${communityId}`);
+
+            if (!fileInput.files || !fileInput.files[0]) {
+                alert('Please select an Excel file first');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('community_id', communityId);
+            formData.append('preview', '1');
+
+            previewDiv.style.display = 'block';
+            previewDiv.innerHTML = '<p style="color:#666;">Parsing Excel file...</p>';
+
+            fetch('/community_import_house_numbers_excel', {
+                method: 'POST',
+                body: formData
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (!data.success) {
+                    previewDiv.innerHTML = `<p style="color:#dc3545;">Error: ${data.error}</p>`;
+                    return;
+                }
+
+                // Store entries for review, flag duplicates
+                let entryId = 0;
+                const dupeSet = new Set(data.duplicate_list || []);
+                const entries = data.house_numbers.map(h => ({
+                    id: entryId++,
+                    text: h,
+                    included: true,
+                    duplicate: dupeSet.has(h)
+                }));
+                _houseImportData[communityId] = entries;
+
+                renderHouseImportPreview(communityId);
+            })
+            .catch(err => {
+                previewDiv.innerHTML = `<p style="color:#dc3545;">Network error: ${err}</p>`;
+            });
+        }
+
+        function renderHouseImportPreview(communityId) {
+            const previewDiv = document.getElementById(`import-preview-houses-${communityId}`);
+            const entries = _houseImportData[communityId] || [];
+
+            const included = entries.filter(e => e.included);
+            const excluded = entries.filter(e => !e.included);
+
+            let html = `<div style="background:#fff;border:1px solid #ddd;border-radius:6px;padding:12px;">`;
+            html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:6px;">`;
+            html += `<p style="font-weight:600;margin:0;">Found ${entries.length} house numbers — <span style="color:#28a745;">${included.length} to import</span>`;
+            if (excluded.length > 0) html += ` <span style="color:#999;">(${excluded.length} excluded)</span>`;
+            html += `</p>`;
+            html += `</div>`;
+
+            html += `<div style="max-height:350px;overflow-y:auto;border:1px solid #e9ecef;border-radius:4px;padding:6px;">`;
+            entries.forEach(entry => {
+                const textStyle = entry.included ? 'color:#333;' : 'text-decoration:line-through;color:#999;';
+                html += `<div style="display:flex;align-items:center;gap:8px;padding:3px 4px;border-bottom:1px solid #f0f0f0;font-size:12px;${entry.included ? '' : 'opacity:0.5;'}">`;
+                html += `<span style="flex:1;${textStyle}">${entry.text}</span>`;
+                if (entry.duplicate) {
+                    html += `<span style="flex:0 0 auto;font-size:10px;padding:1px 5px;background:#ffc107;color:#333;border-radius:3px;white-space:nowrap;">Already exists</span>`;
+                }
+                if (entry.included) {
+                    html += `<button type="button" onclick="toggleHouseImportEntry(${communityId}, ${entry.id})" style="flex:0 0 auto;font-size:10px;padding:2px 6px;background:#dc3545;color:#fff;border:none;border-radius:3px;cursor:pointer;">Exclude</button>`;
+                } else {
+                    html += `<button type="button" onclick="toggleHouseImportEntry(${communityId}, ${entry.id})" style="flex:0 0 auto;font-size:10px;padding:2px 6px;background:#28a745;color:#fff;border:none;border-radius:3px;cursor:pointer;">Include</button>`;
+                }
+                html += `</div>`;
+            });
+            html += `</div>`;
+            html += `</div>`;
+
+            html += `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">`;
+            html += `<button type="button" onclick="confirmHouseImport(${communityId})" style="padding:8px 20px;font-size:13px;background:#28a745;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Confirm Import (${included.length} house numbers)</button>`;
+            html += `<button type="button" onclick="document.getElementById('import-preview-houses-${communityId}').style.display='none'; delete _houseImportData[${communityId}];" style="padding:8px 20px;font-size:13px;background:#6c757d;color:#fff;border:none;border-radius:4px;cursor:pointer;">Cancel</button>`;
+            html += `</div>`;
+
+            previewDiv.innerHTML = html;
+        }
+
+        function toggleHouseImportEntry(communityId, entryId) {
+            const entries = _houseImportData[communityId];
+            if (!entries) return;
+            const entry = entries.find(e => e.id === entryId);
+            if (!entry) return;
+            entry.included = !entry.included;
+            renderHouseImportPreview(communityId);
+        }
+
+        function confirmHouseImport(communityId) {
+            const previewDiv = document.getElementById(`import-preview-houses-${communityId}`);
+            const entries = _houseImportData[communityId];
+
+            if (!entries || entries.length === 0) {
+                alert('No import data. Please preview again.');
+                return;
+            }
+
+            const included = entries.filter(e => e.included).map(e => e.text);
+            if (included.length === 0) {
+                alert('All entries excluded. Nothing to import.');
+                return;
+            }
+
+            if (!confirm(`This will import ${included.length} house numbers. Existing house numbers will NOT be removed. Continue?`)) {
+                return;
+            }
+
+            previewDiv.innerHTML = '<p style="color:#666;">Importing... please wait.</p>';
+
+            fetch('/community_import_house_numbers_confirmed', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    community_id: communityId,
+                    house_numbers: included
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    previewDiv.innerHTML = `<p style="color:#28a745;font-weight:600;">${data.message}</p>`;
+                    document.getElementById(`excel-import-houses-${communityId}`).value = '';
+                    delete _houseImportData[communityId];
+                    loadHouseNumbers(communityId);
                     setTimeout(() => { previewDiv.style.display = 'none'; }, 3000);
                 } else {
                     previewDiv.innerHTML = `<p style="color:#dc3545;">Import failed: ${data.error}</p>`;
@@ -18208,6 +18363,129 @@ def community_delete_house_number():
         return jsonify({'success': False, 'error': str(e)})
     finally:
         conn.close()
+
+# ============================================================================
+# COMMUNITY HOUSE NUMBER EXCEL IMPORT
+# ============================================================================
+
+@app.route('/community_import_house_numbers_excel', methods=['POST'])
+def community_import_house_numbers_excel():
+    """Parse an Excel file to extract house numbers for a standard community.
+
+    Reads all sheets and collects unique non-empty text values from all cells.
+    Returns a preview list for user review before confirming.
+    """
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return jsonify({'success': False, 'error': 'openpyxl not installed'})
+
+    community_id = request.form.get('community_id')
+    if not community_id:
+        return jsonify({'success': False, 'error': 'Missing community_id'})
+
+    file = request.files.get('file')
+    if not file or not file.filename.endswith(('.xlsx', '.xls')):
+        return jsonify({'success': False, 'error': 'Please upload a valid Excel file (.xlsx)'})
+
+    try:
+        wb = load_workbook(file, data_only=True)
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Could not read Excel file: {str(e)}'})
+
+    # Collect all non-empty values across all sheets
+    house_numbers = []
+    seen = set()
+
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        for row in ws.iter_rows(values_only=True):
+            for cell_value in row:
+                if cell_value is None:
+                    continue
+                val = str(cell_value).strip()
+                if not val:
+                    continue
+                # Skip obvious header/label rows
+                val_upper = val.upper()
+                if val_upper in ('HOUSE NUMBER', 'HOUSE #', 'ADDRESS', 'HOUSE', 'NUMBER', '#',
+                                 'ZONE', 'SERIAL NUMBER', 'DESCRIPTION', 'ID', 'NOTES'):
+                    continue
+                if val not in seen:
+                    seen.add(val)
+                    house_numbers.append(val)
+
+    if not house_numbers:
+        return jsonify({'success': False, 'error': 'No house numbers found in the Excel file.'})
+
+    # Get existing house numbers for this community to flag duplicates
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT house_number FROM community_house_numbers WHERE community_id = ?", (community_id,))
+    existing = set(row[0] for row in c.fetchall())
+    conn.close()
+
+    # Mark which ones already exist
+    results = []
+    for h in house_numbers:
+        results.append(h)
+
+    duplicates = [h for h in house_numbers if h in existing]
+
+    return jsonify({
+        'success': True,
+        'house_numbers': results,
+        'total': len(results),
+        'duplicates': len(duplicates),
+        'duplicate_list': duplicates
+    })
+
+
+@app.route('/community_import_house_numbers_confirmed', methods=['POST'])
+def community_import_house_numbers_confirmed():
+    """Import the user-reviewed house numbers into a standard community."""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    community_id = data.get('community_id')
+    house_numbers = data.get('house_numbers', [])
+
+    if not community_id or not house_numbers:
+        return jsonify({'success': False, 'error': 'Missing required fields'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        added = 0
+        skipped = 0
+        for house_number in house_numbers:
+            house_number = str(house_number).strip()
+            if not house_number:
+                continue
+            try:
+                c.execute("""INSERT INTO community_house_numbers
+                             (community_id, house_number, created_at)
+                             VALUES (?, ?, ?)""",
+                         (community_id, house_number, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                added += 1
+            except sqlite3.IntegrityError:
+                skipped += 1  # Duplicate - already exists
+
+        conn.commit()
+        msg = f'Successfully imported {added} house numbers'
+        if skipped > 0:
+            msg += f' ({skipped} duplicates skipped)'
+        return jsonify({'success': True, 'message': msg, 'imported': added, 'skipped': skipped})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
 
 # ============================================================================
 # VERONA WALK HOA CLOCK ROUTES
