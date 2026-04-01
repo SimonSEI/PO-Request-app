@@ -14011,7 +14011,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             background: white;
             border-radius: 8px;
             box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-            padding: 20px;
+            padding: 70px 20px 20px 20px;
         }
         .header {
             margin-bottom: 20px;
@@ -14111,14 +14111,17 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             background: #c82333;
         }
         .controls {
-            margin-top: 20px;
-            padding-top: 20px;
-            border-top: 1px solid #eee;
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            z-index: 1000;
             display: flex;
             gap: 10px;
             flex-wrap: wrap;
-            z-index: 1;
-            position: relative;
+            background: white;
+            padding: 10px 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
         }
         .controls button {
             cursor: pointer;
