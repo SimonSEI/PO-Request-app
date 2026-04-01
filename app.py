@@ -15968,6 +15968,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         }
 
         // Excel Import functions
+        // Stores parsed import data so user can review/modify before confirming
+        var _importPreviewData = {};
+
         function previewExcelImport(communityId) {
             const fileInput = document.getElementById(`excel-import-${communityId}`);
             const previewDiv = document.getElementById(`import-preview-${communityId}`);
@@ -15996,78 +15999,180 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     return;
                 }
 
-                let html = `<div style="background:#fff;border:1px solid #ddd;border-radius:4px;padding:10px;max-height:400px;overflow-y:auto;">`;
-                html += `<p style="font-weight:600;margin-bottom:8px;">Found ${data.total} entries: ${data.total_addresses} addresses + ${data.total_common_area} common area</p>`;
-
+                // Store data for modification — build flat entry list with unique ids
+                let entryId = 0;
+                const entries = [];
                 const clockNums = Object.keys(data.clocks).sort((a,b) => parseInt(a) - parseInt(b));
                 clockNums.forEach(clockNum => {
                     const clock = data.clocks[clockNum];
-                    html += `<div style="margin-bottom:8px;border-bottom:1px solid #eee;padding-bottom:8px;">`;
-                    html += `<strong style="font-size:13px;">Clock ${clockNum}</strong>`;
-                    html += `<span style="color:#666;font-size:11px;margin-left:8px;">${clock.addresses.length} addr, ${clock.common_area.length} common</span>`;
-
-                    if (clock.addresses.length > 0) {
-                        html += `<div style="margin-left:12px;margin-top:4px;"><span style="color:#28a745;font-size:11px;font-weight:600;">Addresses:</span>`;
-                        clock.addresses.slice(0, 3).forEach(a => {
-                            html += `<div style="font-size:11px;color:#333;padding:1px 0;">${a}</div>`;
-                        });
-                        if (clock.addresses.length > 3) html += `<div style="font-size:11px;color:#999;">... and ${clock.addresses.length - 3} more</div>`;
-                        html += `</div>`;
-                    }
-                    if (clock.common_area.length > 0) {
-                        html += `<div style="margin-left:12px;margin-top:4px;"><span style="color:#007bff;font-size:11px;font-weight:600;">Common Area:</span>`;
-                        clock.common_area.slice(0, 3).forEach(a => {
-                            html += `<div style="font-size:11px;color:#333;padding:1px 0;">${a}</div>`;
-                        });
-                        if (clock.common_area.length > 3) html += `<div style="font-size:11px;color:#999;">... and ${clock.common_area.length - 3} more</div>`;
-                        html += `</div>`;
-                    }
-                    html += `</div>`;
+                    clock.addresses.forEach(addr => {
+                        entries.push({ id: entryId++, clock: parseInt(clockNum), text: addr, type: 'address', included: true });
+                    });
+                    clock.common_area.forEach(addr => {
+                        entries.push({ id: entryId++, clock: parseInt(clockNum), text: addr, type: 'common_area', included: true });
+                    });
                 });
+                _importPreviewData[communityId] = entries;
 
-                html += `</div>`;
-                html += `<div style="margin-top:10px;display:flex;gap:8px;">`;
-                html += `<button type="button" class="btn-save" onclick="confirmExcelImport(${communityId})" style="padding:6px 16px;font-size:13px;background:#28a745;color:#fff;border:none;border-radius:4px;cursor:pointer;">Import All ${data.total} Entries</button>`;
-                html += `<button type="button" onclick="document.getElementById('import-preview-${communityId}').style.display='none'" style="padding:6px 16px;font-size:13px;background:#6c757d;color:#fff;border:none;border-radius:4px;cursor:pointer;">Cancel</button>`;
-                html += `</div>`;
-                html += `<p style="font-size:11px;color:#666;margin-top:6px;">Classification: ROTORS and entries with SIDEWALK/LAKE BANK/CUL D SAC/COMMON AREA → Common Area tab. All other SPRAYS → Addresses tab.</p>`;
-
-                previewDiv.innerHTML = html;
+                renderImportPreview(communityId);
             })
             .catch(err => {
                 previewDiv.innerHTML = `<p style="color:#dc3545;">Network error: ${err}</p>`;
             });
         }
 
-        function confirmExcelImport(communityId) {
-            const fileInput = document.getElementById(`excel-import-${communityId}`);
+        function renderImportPreview(communityId) {
             const previewDiv = document.getElementById(`import-preview-${communityId}`);
+            const entries = _importPreviewData[communityId] || [];
 
-            if (!fileInput.files || !fileInput.files[0]) {
-                alert('File no longer selected. Please re-select and preview again.');
+            // Group by clock for display
+            const byClock = {};
+            let totalAddr = 0, totalCA = 0, totalExcluded = 0;
+            entries.forEach(e => {
+                if (!byClock[e.clock]) byClock[e.clock] = [];
+                byClock[e.clock].push(e);
+                if (!e.included) { totalExcluded++; return; }
+                if (e.type === 'address') totalAddr++;
+                else totalCA++;
+            });
+            const totalIncluded = totalAddr + totalCA;
+
+            let html = `<div style="background:#fff;border:1px solid #ddd;border-radius:6px;padding:12px;">`;
+            html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:6px;">`;
+            html += `<p style="font-weight:600;margin:0;" id="import-summary-${communityId}">`;
+            html += `Will import <span style="color:#28a745;">${totalAddr} addresses</span> + <span style="color:#007bff;">${totalCA} common area</span> = ${totalIncluded} entries`;
+            if (totalExcluded > 0) html += ` <span style="color:#999;">(${totalExcluded} excluded)</span>`;
+            html += `</p>`;
+            html += `</div>`;
+
+            html += `<p style="font-size:11px;color:#666;margin:0 0 10px 0;">Review each entry below. Use <strong>Switch</strong> to move between Address / Common Area. Use <strong>Exclude</strong> to skip entries. Click a clock header to expand/collapse.</p>`;
+
+            const clockNums = Object.keys(byClock).sort((a,b) => parseInt(a) - parseInt(b));
+            clockNums.forEach(clockNum => {
+                const clockEntries = byClock[clockNum];
+                const cAddr = clockEntries.filter(e => e.type === 'address' && e.included).length;
+                const cCA = clockEntries.filter(e => e.type === 'common_area' && e.included).length;
+                const cExcl = clockEntries.filter(e => !e.included).length;
+
+                html += `<div style="border:1px solid #e9ecef;border-radius:4px;margin-bottom:6px;">`;
+                html += `<div onclick="toggleImportClock(this)" style="cursor:pointer;padding:8px 10px;background:#f8f9fa;display:flex;justify-content:space-between;align-items:center;border-radius:4px;">`;
+                html += `<strong style="font-size:13px;">Clock ${clockNum}</strong>`;
+                html += `<span style="font-size:11px;color:#666;">${cAddr} addr, ${cCA} common${cExcl > 0 ? ', ' + cExcl + ' excluded' : ''} ▼</span>`;
+                html += `</div>`;
+                html += `<div style="display:none;padding:6px 10px;max-height:300px;overflow-y:auto;">`;
+
+                // Show addresses first, then common area
+                const sorted = [...clockEntries].sort((a,b) => {
+                    if (a.type === b.type) return 0;
+                    return a.type === 'address' ? -1 : 1;
+                });
+
+                sorted.forEach(entry => {
+                    const isCA = entry.type === 'common_area';
+                    const excluded = !entry.included;
+                    const typeBadge = isCA
+                        ? `<span style="background:#007bff;color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;white-space:nowrap;">Common Area</span>`
+                        : `<span style="background:#28a745;color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;white-space:nowrap;">Address</span>`;
+                    const textStyle = excluded ? 'text-decoration:line-through;color:#999;' : 'color:#333;';
+
+                    html += `<div id="import-entry-${entry.id}" style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid #f0f0f0;font-size:12px;${excluded ? 'opacity:0.5;' : ''}">`;
+                    html += `<span style="flex:0 0 auto;">${typeBadge}</span>`;
+                    html += `<span style="flex:1;${textStyle}" title="${entry.text}">${entry.text}</span>`;
+                    html += `<button type="button" onclick="toggleImportEntryType(${communityId}, ${entry.id})" style="flex:0 0 auto;font-size:10px;padding:2px 6px;background:#ffc107;color:#333;border:1px solid #dda600;border-radius:3px;cursor:pointer;white-space:nowrap;" title="Switch between Address and Common Area">Switch</button>`;
+                    if (!excluded) {
+                        html += `<button type="button" onclick="toggleImportEntryInclude(${communityId}, ${entry.id})" style="flex:0 0 auto;font-size:10px;padding:2px 6px;background:#dc3545;color:#fff;border:none;border-radius:3px;cursor:pointer;white-space:nowrap;">Exclude</button>`;
+                    } else {
+                        html += `<button type="button" onclick="toggleImportEntryInclude(${communityId}, ${entry.id})" style="flex:0 0 auto;font-size:10px;padding:2px 6px;background:#28a745;color:#fff;border:none;border-radius:3px;cursor:pointer;white-space:nowrap;">Include</button>`;
+                    }
+                    html += `</div>`;
+                });
+
+                html += `</div></div>`;
+            });
+
+            html += `</div>`;
+
+            // Action buttons
+            html += `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">`;
+            html += `<button type="button" onclick="confirmExcelImport(${communityId})" style="padding:8px 20px;font-size:13px;background:#28a745;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Confirm Import (${totalIncluded} entries)</button>`;
+            html += `<button type="button" onclick="document.getElementById('import-preview-${communityId}').style.display='none'; delete _importPreviewData[${communityId}];" style="padding:8px 20px;font-size:13px;background:#6c757d;color:#fff;border:none;border-radius:4px;cursor:pointer;">Cancel</button>`;
+            html += `</div>`;
+
+            previewDiv.innerHTML = html;
+        }
+
+        function toggleImportClock(headerEl) {
+            const content = headerEl.nextElementSibling;
+            const isOpen = content.style.display !== 'none';
+            content.style.display = isOpen ? 'none' : 'block';
+            // Update arrow
+            const span = headerEl.querySelector('span');
+            if (span) {
+                span.innerHTML = span.innerHTML.replace(isOpen ? '▲' : '▼', isOpen ? '▼' : '▲');
+            }
+        }
+
+        function toggleImportEntryType(communityId, entryId) {
+            const entries = _importPreviewData[communityId];
+            if (!entries) return;
+            const entry = entries.find(e => e.id === entryId);
+            if (!entry) return;
+            entry.type = entry.type === 'address' ? 'common_area' : 'address';
+            renderImportPreview(communityId);
+        }
+
+        function toggleImportEntryInclude(communityId, entryId) {
+            const entries = _importPreviewData[communityId];
+            if (!entries) return;
+            const entry = entries.find(e => e.id === entryId);
+            if (!entry) return;
+            entry.included = !entry.included;
+            renderImportPreview(communityId);
+        }
+
+        function confirmExcelImport(communityId) {
+            const previewDiv = document.getElementById(`import-preview-${communityId}`);
+            const entries = _importPreviewData[communityId];
+
+            if (!entries || entries.length === 0) {
+                alert('No import data available. Please preview again.');
                 return;
             }
 
-            if (!confirm('This will add all entries from the Excel file. Existing addresses will NOT be removed. Continue?')) {
+            const included = entries.filter(e => e.included);
+            if (included.length === 0) {
+                alert('All entries have been excluded. Nothing to import.');
                 return;
             }
 
-            const formData = new FormData();
-            formData.append('file', fileInput.files[0]);
-            formData.append('community_id', communityId);
+            if (!confirm(`This will import ${included.length} entries. Existing addresses will NOT be removed. Continue?`)) {
+                return;
+            }
+
+            // Build the payload grouped by clock
+            const clocks = {};
+            included.forEach(e => {
+                if (!clocks[e.clock]) clocks[e.clock] = { addresses: [], common_area: [] };
+                if (e.type === 'address') clocks[e.clock].addresses.push(e.text);
+                else clocks[e.clock].common_area.push(e.text);
+            });
 
             previewDiv.innerHTML = '<p style="color:#666;">Importing... please wait.</p>';
 
-            fetch('/verona_walk_import_excel', {
+            fetch('/verona_walk_import_confirmed', {
                 method: 'POST',
-                body: formData
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    community_id: communityId,
+                    clocks: clocks
+                })
             })
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
                     previewDiv.innerHTML = `<p style="color:#28a745;font-weight:600;">${data.message}</p>`;
-                    fileInput.value = '';
-                    // Reload clock addresses to show new data
+                    document.getElementById(`excel-import-${communityId}`).value = '';
+                    delete _importPreviewData[communityId];
                     loadClockAddresses(communityId, true);
                     setTimeout(() => { previewDiv.style.display = 'none'; }, 3000);
                 } else {
@@ -18502,6 +18607,88 @@ def verona_walk_import_excel():
         return jsonify({
             'success': True,
             'message': f'Successfully imported {imported_count} entries across {len(results)} clocks ({total_addresses} addresses, {total_common_area} common area)',
+            'imported': imported_count
+        })
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+
+@app.route('/verona_walk_import_confirmed', methods=['POST'])
+def verona_walk_import_confirmed():
+    """Import reviewed/modified address data from the preview step.
+
+    Accepts JSON with the user's final selections (after review),
+    rather than re-parsing the Excel file.
+    """
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    community_id = data.get('community_id')
+    clocks = data.get('clocks', {})
+
+    if not community_id or not clocks:
+        return jsonify({'success': False, 'error': 'Missing required fields'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        imported_count = 0
+        clock_count = 0
+
+        for clock_number_str, clock_data in clocks.items():
+            clock_number = int(clock_number_str)
+            addresses = clock_data.get('addresses', [])
+            common_area = clock_data.get('common_area', [])
+
+            if not addresses and not common_area:
+                continue
+
+            clock_count += 1
+
+            # Import regular addresses
+            if addresses:
+                c.execute("""SELECT COALESCE(MAX(sort_order), 0) FROM verona_walk_clock_addresses
+                             WHERE community_id = ? AND clock_number = ? AND is_common_area = 0""",
+                         (community_id, clock_number))
+                next_order = c.fetchone()[0] + 1
+                for address in addresses:
+                    address = str(address).strip()
+                    if address:
+                        c.execute("""INSERT INTO verona_walk_clock_addresses
+                                     (community_id, clock_number, address, created_at, is_common_area, sort_order)
+                                     VALUES (?, ?, ?, ?, 0, ?)""",
+                                 (community_id, clock_number, address,
+                                  datetime.now().strftime('%Y-%m-%d %H:%M:%S'), next_order))
+                        next_order += 1
+                        imported_count += 1
+
+            # Import common area entries
+            if common_area:
+                c.execute("""SELECT COALESCE(MAX(sort_order), 0) FROM verona_walk_clock_addresses
+                             WHERE community_id = ? AND clock_number = ? AND is_common_area = 1""",
+                         (community_id, clock_number))
+                next_order = c.fetchone()[0] + 1
+                for address in common_area:
+                    address = str(address).strip()
+                    if address:
+                        c.execute("""INSERT INTO verona_walk_clock_addresses
+                                     (community_id, clock_number, address, created_at, is_common_area, sort_order)
+                                     VALUES (?, ?, ?, ?, 1, ?)""",
+                                 (community_id, clock_number, address,
+                                  datetime.now().strftime('%Y-%m-%d %H:%M:%S'), next_order))
+                        next_order += 1
+                        imported_count += 1
+
+        conn.commit()
+        total_addr = sum(len(c.get('addresses', [])) for c in clocks.values())
+        total_ca = sum(len(c.get('common_area', [])) for c in clocks.values())
+        return jsonify({
+            'success': True,
+            'message': f'Successfully imported {imported_count} entries across {clock_count} clocks ({total_addr} addresses, {total_ca} common area)',
             'imported': imported_count
         })
     except Exception as e:
