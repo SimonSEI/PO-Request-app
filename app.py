@@ -13880,7 +13880,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
                         </button>
                     </form>
                     {% if submission.status == 'draft' %}
-                    <button type="button" onclick="deleteDraft({{ submission.id }}, '{{ submission.community }}')" title="Delete Draft" style="background: #fff; border: 1px solid #e0e0e0; border-radius: 6px; padding: 8px 12px; cursor: pointer; color: #dc3545; font-size: 14px; font-weight: 600; transition: all 0.3s; display: flex; align-items: center; justify-content: center; white-space: nowrap;" onmouseover="this.style.background='#dc3545'; this.style.color='white'; this.style.borderColor='#dc3545';" onmouseout="this.style.background='#fff'; this.style.color='#dc3545'; this.style.borderColor='#e0e0e0';">🗑 Delete This Draft</button>
+                    <button type="button" onclick="deleteDraft({{ submission.id }}, '{{ submission.community }}')" title="Delete Draft" style="background: #fff; border: 1px solid #e0e0e0; border-radius: 4px; padding: 4px 8px; cursor: pointer; color: #dc3545; font-size: 11px; font-weight: 600; transition: all 0.3s; display: flex; align-items: center; justify-content: center; white-space: nowrap;" onmouseover="this.style.background='#dc3545'; this.style.color='white'; this.style.borderColor='#dc3545';" onmouseout="this.style.background='#fff'; this.style.color='#dc3545'; this.style.borderColor='#e0e0e0';">🗑 Delete This Draft</button>
                     {% endif %}
                 </div>
                 {% endfor %}
