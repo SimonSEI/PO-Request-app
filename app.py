@@ -13318,22 +13318,30 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             <h2 style="margin-top: 0; color: #333; font-size: 18px;">📋 Your Submissions & Drafts</h2>
             <div style="display: grid; grid-template-columns: 1fr; gap: 12px;">
                 {% for submission in submissions %}
-                <form method="get" action="/community_billing_spreadsheet" style="margin: 0;">
-                    <input type="hidden" name="community" value="{{ submission.community }}">
-                    <input type="hidden" name="work_date" value="{{ submission.work_date }}">
-                    <button type="submit" style="width: 100%; text-align: left; background: white; border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: all 0.3s;">
-                        <div>
-                            <div style="font-weight: 600; color: #333;">{{ submission.community }}</div>
-                            <div style="font-size: 13px; color: #666;">Date: {{ submission.work_date }}</div>
-                            {% if submission.status == 'submitted' %}
-                                <div style="font-size: 12px; color: #28a745; font-weight: 600;">✓ Finalized</div>
-                            {% else %}
-                                <div style="font-size: 12px; color: #ff9800; font-weight: 600;">● Draft</div>
-                            {% endif %}
-                        </div>
-                        <div style="color: #667eea; font-weight: 600;">{% if submission.status == 'submitted' %}View →{% else %}Edit →{% endif %}</div>
+                <div style="display: flex; gap: 8px; align-items: stretch;">
+                    <form method="get" action="/community_billing_spreadsheet" style="margin: 0; flex: 1;">
+                        <input type="hidden" name="community" value="{{ submission.community }}">
+                        <input type="hidden" name="work_date" value="{{ submission.work_date }}">
+                        <button type="submit" style="width: 100%; text-align: left; background: white; border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: all 0.3s;">
+                            <div>
+                                <div style="font-weight: 600; color: #333;">{{ submission.community }}</div>
+                                <div style="font-size: 13px; color: #666;">Date: {{ submission.work_date }}</div>
+                                {% if submission.status == 'submitted' %}
+                                    <div style="font-size: 12px; color: #28a745; font-weight: 600;">✓ Finalized</div>
+                                {% else %}
+                                    <div style="font-size: 12px; color: #ff9800; font-weight: 600;">● Draft</div>
+                                {% endif %}
+                            </div>
+                            <div style="color: #667eea; font-weight: 600;">{% if submission.status == 'submitted' %}View →{% else %}Edit →{% endif %}</div>
+                        </button>
+                    </form>
+                    {% if submission.status != 'submitted' %}
+                    <button type="button" onclick="event.stopPropagation(); deleteDraft({{ submission.id }}, '{{ submission.community|e }}')"
+                        style="background: #dc3545; color: white; border: none; border-radius: 6px; padding: 8px 14px; cursor: pointer; font-size: 12px; font-weight: 600; white-space: nowrap; align-self: center;">
+                        Delete
                     </button>
-                </form>
+                    {% endif %}
+                </div>
                 {% endfor %}
             </div>
         </div>
