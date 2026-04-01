@@ -15500,6 +15500,17 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 </div>
 
                                 <div class="houses-list" id="houses-list-{{ community.id }}">
+                                    <!-- Excel Import Section -->
+                                    <div style="margin-bottom: 15px; padding: 12px; background: #f0f7ff; border: 1px solid #b8daff; border-radius: 6px;">
+                                        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                                            <strong style="font-size: 13px;">Import from Excel:</strong>
+                                            <input type="file" id="excel-import-{{ community.id }}" accept=".xlsx,.xls" style="font-size: 12px;">
+                                            <button type="button" class="btn-save" onclick="previewExcelImport({{ community.id }})" style="padding: 5px 12px; font-size: 12px;">Preview Import</button>
+                                            <span style="font-size: 11px; color: #666;">Upload your Verona Walk .xlsx file with CLOCK sheets</span>
+                                        </div>
+                                        <div id="import-preview-{{ community.id }}" style="display:none; margin-top: 10px;"></div>
+                                    </div>
+
                                     <div id="verona-clocks-{{ community.id }}" style="min-height: 30px;">
                                         <p style="color: #666; font-size: 13px;">Loading...</p>
                                     </div>
@@ -15953,6 +15964,118 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             })
             .catch(err => {
                 alert('Network error - please try again');
+            });
+        }
+
+        // Excel Import functions
+        function previewExcelImport(communityId) {
+            const fileInput = document.getElementById(`excel-import-${communityId}`);
+            const previewDiv = document.getElementById(`import-preview-${communityId}`);
+
+            if (!fileInput.files || !fileInput.files[0]) {
+                alert('Please select an Excel file first');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('community_id', communityId);
+            formData.append('preview', '1');
+
+            previewDiv.style.display = 'block';
+            previewDiv.innerHTML = '<p style="color:#666;">Parsing Excel file...</p>';
+
+            fetch('/verona_walk_import_excel', {
+                method: 'POST',
+                body: formData
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (!data.success) {
+                    previewDiv.innerHTML = `<p style="color:#dc3545;">Error: ${data.error}</p>`;
+                    return;
+                }
+
+                let html = `<div style="background:#fff;border:1px solid #ddd;border-radius:4px;padding:10px;max-height:400px;overflow-y:auto;">`;
+                html += `<p style="font-weight:600;margin-bottom:8px;">Found ${data.total} entries: ${data.total_addresses} addresses + ${data.total_common_area} common area</p>`;
+
+                const clockNums = Object.keys(data.clocks).sort((a,b) => parseInt(a) - parseInt(b));
+                clockNums.forEach(clockNum => {
+                    const clock = data.clocks[clockNum];
+                    html += `<div style="margin-bottom:8px;border-bottom:1px solid #eee;padding-bottom:8px;">`;
+                    html += `<strong style="font-size:13px;">Clock ${clockNum}</strong>`;
+                    html += `<span style="color:#666;font-size:11px;margin-left:8px;">${clock.addresses.length} addr, ${clock.common_area.length} common</span>`;
+
+                    if (clock.addresses.length > 0) {
+                        html += `<div style="margin-left:12px;margin-top:4px;"><span style="color:#28a745;font-size:11px;font-weight:600;">Addresses:</span>`;
+                        clock.addresses.slice(0, 3).forEach(a => {
+                            html += `<div style="font-size:11px;color:#333;padding:1px 0;">${a}</div>`;
+                        });
+                        if (clock.addresses.length > 3) html += `<div style="font-size:11px;color:#999;">... and ${clock.addresses.length - 3} more</div>`;
+                        html += `</div>`;
+                    }
+                    if (clock.common_area.length > 0) {
+                        html += `<div style="margin-left:12px;margin-top:4px;"><span style="color:#007bff;font-size:11px;font-weight:600;">Common Area:</span>`;
+                        clock.common_area.slice(0, 3).forEach(a => {
+                            html += `<div style="font-size:11px;color:#333;padding:1px 0;">${a}</div>`;
+                        });
+                        if (clock.common_area.length > 3) html += `<div style="font-size:11px;color:#999;">... and ${clock.common_area.length - 3} more</div>`;
+                        html += `</div>`;
+                    }
+                    html += `</div>`;
+                });
+
+                html += `</div>`;
+                html += `<div style="margin-top:10px;display:flex;gap:8px;">`;
+                html += `<button type="button" class="btn-save" onclick="confirmExcelImport(${communityId})" style="padding:6px 16px;font-size:13px;background:#28a745;color:#fff;border:none;border-radius:4px;cursor:pointer;">Import All ${data.total} Entries</button>`;
+                html += `<button type="button" onclick="document.getElementById('import-preview-${communityId}').style.display='none'" style="padding:6px 16px;font-size:13px;background:#6c757d;color:#fff;border:none;border-radius:4px;cursor:pointer;">Cancel</button>`;
+                html += `</div>`;
+                html += `<p style="font-size:11px;color:#666;margin-top:6px;">Classification: ROTORS and entries with SIDEWALK/LAKE BANK/CUL D SAC/COMMON AREA → Common Area tab. All other SPRAYS → Addresses tab.</p>`;
+
+                previewDiv.innerHTML = html;
+            })
+            .catch(err => {
+                previewDiv.innerHTML = `<p style="color:#dc3545;">Network error: ${err}</p>`;
+            });
+        }
+
+        function confirmExcelImport(communityId) {
+            const fileInput = document.getElementById(`excel-import-${communityId}`);
+            const previewDiv = document.getElementById(`import-preview-${communityId}`);
+
+            if (!fileInput.files || !fileInput.files[0]) {
+                alert('File no longer selected. Please re-select and preview again.');
+                return;
+            }
+
+            if (!confirm('This will add all entries from the Excel file. Existing addresses will NOT be removed. Continue?')) {
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('community_id', communityId);
+
+            previewDiv.innerHTML = '<p style="color:#666;">Importing... please wait.</p>';
+
+            fetch('/verona_walk_import_excel', {
+                method: 'POST',
+                body: formData
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    previewDiv.innerHTML = `<p style="color:#28a745;font-weight:600;">${data.message}</p>`;
+                    fileInput.value = '';
+                    // Reload clock addresses to show new data
+                    loadClockAddresses(communityId, true);
+                    setTimeout(() => { previewDiv.style.display = 'none'; }, 3000);
+                } else {
+                    previewDiv.innerHTML = `<p style="color:#dc3545;">Import failed: ${data.error}</p>`;
+                }
+            })
+            .catch(err => {
+                previewDiv.innerHTML = `<p style="color:#dc3545;">Network error: ${err}</p>`;
             });
         }
 
@@ -18214,6 +18337,179 @@ def verona_walk_edit_address():
         return jsonify({'success': False, 'error': str(e)})
     finally:
         conn.close()
+
+# ============================================================================
+# EXCEL IMPORT FOR VERONA WALK CLOCK ADDRESSES
+# ============================================================================
+
+@app.route('/verona_walk_import_excel', methods=['POST'])
+def verona_walk_import_excel():
+    """Import addresses from a Verona Walk Excel spreadsheet.
+
+    Expected Excel format:
+    - Each sheet named 'CLOCK N' (e.g., 'CLOCK 18', 'CLOCK 5')
+    - Columns: A=Zone, B=Serial Number, C=Description
+    - Row 1 is blank, Row 2 is header, data starts at Row 3
+    - Descriptions starting with 'ROTORS' or containing 'SIDEWALK', 'LAKE BANK',
+      'COMMON AREA', 'CUL D SAC', 'PUMP' → Common Area
+    - All other entries (typically 'SPRAYS' with address numbers) → Addresses
+    """
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return jsonify({'success': False, 'error': 'openpyxl not installed'})
+
+    community_id = request.form.get('community_id')
+    if not community_id:
+        return jsonify({'success': False, 'error': 'Missing community_id'})
+
+    file = request.files.get('file')
+    if not file or not file.filename.endswith(('.xlsx', '.xls')):
+        return jsonify({'success': False, 'error': 'Please upload a valid Excel file (.xlsx)'})
+
+    preview_only = request.form.get('preview') == '1'
+
+    try:
+        wb = load_workbook(file, data_only=True)
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Could not read Excel file: {str(e)}'})
+
+    # Common area keywords in description
+    COMMON_AREA_KEYWORDS = ['ROTORS', 'SIDEWALK', 'LAKE BANK', 'COMMON AREA', 'CUL D SAC', 'CUL DE SAC']
+
+    def is_common_area_entry(description):
+        """Determine if a description should be classified as Common Area."""
+        desc_upper = description.upper().strip()
+        # ROTORS are always common area
+        if desc_upper.startswith('ROTORS'):
+            return True
+        # Check for common area keywords in SPRAYS entries
+        for keyword in COMMON_AREA_KEYWORDS[1:]:  # Skip 'ROTORS', already checked
+            if keyword in desc_upper:
+                return True
+        return False
+
+    results = {}  # {clock_number: {'addresses': [...], 'common_area': [...]}}
+    total_addresses = 0
+    total_common_area = 0
+
+    for sheet_name in wb.sheetnames:
+        # Parse clock number from sheet name (e.g., "CLOCK 18" → 18)
+        match = re.match(r'CLOCK\s*(\d+)', sheet_name.strip(), re.IGNORECASE)
+        if not match:
+            continue
+
+        clock_number = int(match.group(1))
+        ws = wb[sheet_name]
+
+        addresses = []
+        common_area = []
+
+        for row in ws.iter_rows(min_row=3, values_only=False):  # Skip header rows
+            zone_cell = row[0].value if len(row) > 0 else None
+            desc_cell = row[2].value if len(row) > 2 else None
+
+            if zone_cell is None or desc_cell is None:
+                continue
+
+            # Build the formatted entry: "ZONE {zone} - {description}"
+            try:
+                zone_num = int(zone_cell)
+            except (ValueError, TypeError):
+                continue
+
+            description = str(desc_cell).strip()
+            if not description:
+                continue
+
+            # Format: "ZONE 1 - SPRAYS ALONG SIDEWALK EAST OF GENOVA"
+            # Split description type from rest for consistent formatting
+            formatted = f"ZONE {zone_num} - {description}"
+
+            if is_common_area_entry(description):
+                common_area.append(formatted)
+                total_common_area += 1
+            else:
+                addresses.append(formatted)
+                total_addresses += 1
+
+        if addresses or common_area:
+            results[clock_number] = {
+                'addresses': addresses,
+                'common_area': common_area
+            }
+
+    if not results:
+        return jsonify({'success': False, 'error': 'No valid CLOCK sheets found in Excel file. Sheets should be named "CLOCK 1", "CLOCK 2", etc.'})
+
+    # Preview mode - return parsed data for review
+    if preview_only:
+        preview_data = {}
+        for clock_num in sorted(results.keys()):
+            preview_data[str(clock_num)] = {
+                'addresses': results[clock_num]['addresses'],
+                'common_area': results[clock_num]['common_area']
+            }
+        return jsonify({
+            'success': True,
+            'preview': True,
+            'clocks': preview_data,
+            'total_addresses': total_addresses,
+            'total_common_area': total_common_area,
+            'total': total_addresses + total_common_area
+        })
+
+    # Import mode - insert into database
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        imported_count = 0
+        for clock_number, data in results.items():
+            # Import regular addresses
+            if data['addresses']:
+                c.execute("""SELECT COALESCE(MAX(sort_order), 0) FROM verona_walk_clock_addresses
+                             WHERE community_id = ? AND clock_number = ? AND is_common_area = 0""",
+                         (community_id, clock_number))
+                next_order = c.fetchone()[0] + 1
+                for address in data['addresses']:
+                    c.execute("""INSERT INTO verona_walk_clock_addresses
+                                 (community_id, clock_number, address, created_at, is_common_area, sort_order)
+                                 VALUES (?, ?, ?, ?, 0, ?)""",
+                             (community_id, clock_number, address,
+                              datetime.now().strftime('%Y-%m-%d %H:%M:%S'), next_order))
+                    next_order += 1
+                    imported_count += 1
+
+            # Import common area entries
+            if data['common_area']:
+                c.execute("""SELECT COALESCE(MAX(sort_order), 0) FROM verona_walk_clock_addresses
+                             WHERE community_id = ? AND clock_number = ? AND is_common_area = 1""",
+                         (community_id, clock_number))
+                next_order = c.fetchone()[0] + 1
+                for address in data['common_area']:
+                    c.execute("""INSERT INTO verona_walk_clock_addresses
+                                 (community_id, clock_number, address, created_at, is_common_area, sort_order)
+                                 VALUES (?, ?, ?, ?, 1, ?)""",
+                             (community_id, clock_number, address,
+                              datetime.now().strftime('%Y-%m-%d %H:%M:%S'), next_order))
+                    next_order += 1
+                    imported_count += 1
+
+        conn.commit()
+        return jsonify({
+            'success': True,
+            'message': f'Successfully imported {imported_count} entries across {len(results)} clocks ({total_addresses} addresses, {total_common_area} common area)',
+            'imported': imported_count
+        })
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
 
 # ============================================================================
 # COMMUNITY PRICING ROUTES
