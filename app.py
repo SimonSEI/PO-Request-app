@@ -15052,6 +15052,12 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             event.target.classList.add('active');
         }
 
+        // Helper to split text by newlines (avoids regex escape issues in templates)
+        var _nl = new RegExp(String.fromCharCode(13) + '?' + String.fromCharCode(10));
+        function splitLines(text) {
+            return text.split(_nl);
+        }
+
         // Verona Walk HOA clock management functions
         function toggleClockSection(event, communityId) {
             event.preventDefault();
@@ -15176,12 +15182,12 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 // Auto-expand textareas when content is pasted
                 container.querySelectorAll('.add-address-form textarea').forEach(ta => {
                     ta.addEventListener('input', function() {
-                        const lines = this.value.split(/\r?\n/).length;
+                        const lines = this.value.split(_nl).length;
                         this.rows = Math.max(1, Math.min(lines, 8));
                     });
                     ta.addEventListener('paste', function() {
                         setTimeout(() => {
-                            const lines = this.value.split(/\r?\n/).length;
+                            const lines = this.value.split(_nl).length;
                             this.rows = Math.max(1, Math.min(lines, 8));
                         }, 0);
                     });
@@ -15222,7 +15228,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             const raw = textarea.value;
 
             // Split by newlines, trim each, remove blanks
-            const addresses = raw.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+            const addresses = raw.split(_nl).map(l => l.trim()).filter(l => l.length > 0);
 
             if (addresses.length === 0) {
                 alert('Please enter at least one address');
@@ -15283,16 +15289,16 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             const ta = document.getElementById(`insert-input-${afterId}`);
             ta.focus();
             ta.addEventListener('input', function() {
-                this.rows = Math.max(1, Math.min(this.value.split(/\r?\n/).length, 8));
+                this.rows = Math.max(1, Math.min(this.value.split(_nl).length, 8));
             });
             ta.addEventListener('paste', function() {
-                setTimeout(() => { this.rows = Math.max(1, Math.min(this.value.split(/\r?\n/).length, 8)); }, 0);
+                setTimeout(() => { this.rows = Math.max(1, Math.min(this.value.split(_nl).length, 8)); }, 0);
             });
         }
 
         function insertClockAddresses(communityId, afterId) {
             const textarea = document.getElementById(`insert-input-${afterId}`);
-            const addresses = textarea.value.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+            const addresses = textarea.value.split(_nl).map(l => l.trim()).filter(l => l.length > 0);
 
             if (addresses.length === 0) {
                 alert('Please enter at least one address');
