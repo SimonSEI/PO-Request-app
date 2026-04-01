@@ -16181,13 +16181,55 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
-                    previewDiv.innerHTML = `<p style="color:#28a745;font-weight:600;">${data.message}</p>`;
+                    let undoHtml = `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">`;
+                    undoHtml += `<p style="color:#28a745;font-weight:600;margin:0;">${data.message}</p>`;
+                    undoHtml += `<button type="button" onclick="undoImport(${communityId}, '${data.import_type}', ${JSON.stringify(data.inserted_ids)}, 'clock')" style="padding:5px 14px;font-size:12px;background:#dc3545;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Undo Import</button>`;
+                    undoHtml += `</div>`;
+                    previewDiv.innerHTML = undoHtml;
                     document.getElementById(`excel-import-${communityId}`).value = '';
                     delete _importPreviewData[communityId];
                     loadClockAddresses(communityId, true);
-                    setTimeout(() => { previewDiv.style.display = 'none'; }, 3000);
                 } else {
                     previewDiv.innerHTML = `<p style="color:#dc3545;">Import failed: ${data.error}</p>`;
+                }
+            })
+            .catch(err => {
+                previewDiv.innerHTML = `<p style="color:#dc3545;">Network error: ${err}</p>`;
+            });
+        }
+
+        function undoImport(communityId, importType, insertedIds, refreshType) {
+            if (!confirm(`Are you sure you want to undo this import? This will remove ${insertedIds.length} entries.`)) {
+                return;
+            }
+
+            // Determine which preview div to update
+            const previewDiv = refreshType === 'house'
+                ? document.getElementById(`import-preview-houses-${communityId}`)
+                : document.getElementById(`import-preview-${communityId}`);
+
+            previewDiv.innerHTML = '<p style="color:#666;">Undoing import...</p>';
+
+            fetch('/undo_import', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    import_type: importType,
+                    inserted_ids: insertedIds
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    previewDiv.innerHTML = `<p style="color:#28a745;font-weight:600;">${data.message}</p>`;
+                    if (refreshType === 'house') {
+                        loadHouseNumbers(communityId);
+                    } else {
+                        loadClockAddresses(communityId, true);
+                    }
+                    setTimeout(() => { previewDiv.style.display = 'none'; }, 3000);
+                } else {
+                    previewDiv.innerHTML = `<p style="color:#dc3545;">Undo failed: ${data.error}</p>`;
                 }
             })
             .catch(err => {
@@ -16325,11 +16367,16 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
-                    previewDiv.innerHTML = `<p style="color:#28a745;font-weight:600;">${data.message}</p>`;
+                    let undoHtml = `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">`;
+                    undoHtml += `<p style="color:#28a745;font-weight:600;margin:0;">${data.message}</p>`;
+                    if (data.inserted_ids && data.inserted_ids.length > 0) {
+                        undoHtml += `<button type="button" onclick="undoImport(${communityId}, '${data.import_type}', ${JSON.stringify(data.inserted_ids)}, 'house')" style="padding:5px 14px;font-size:12px;background:#dc3545;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Undo Import</button>`;
+                    }
+                    undoHtml += `</div>`;
+                    previewDiv.innerHTML = undoHtml;
                     document.getElementById(`excel-import-houses-${communityId}`).value = '';
                     delete _houseImportData[communityId];
                     loadHouseNumbers(communityId);
-                    setTimeout(() => { previewDiv.style.display = 'none'; }, 3000);
                 } else {
                     previewDiv.innerHTML = `<p style="color:#dc3545;">Import failed: ${data.error}</p>`;
                 }
@@ -18462,6 +18509,7 @@ def community_import_house_numbers_confirmed():
     try:
         added = 0
         skipped = 0
+        inserted_ids = []
         for house_number in house_numbers:
             house_number = str(house_number).strip()
             if not house_number:
@@ -18471,6 +18519,7 @@ def community_import_house_numbers_confirmed():
                              (community_id, house_number, created_at)
                              VALUES (?, ?, ?)""",
                          (community_id, house_number, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                inserted_ids.append(c.lastrowid)
                 added += 1
             except sqlite3.IntegrityError:
                 skipped += 1  # Duplicate - already exists
@@ -18479,7 +18528,8 @@ def community_import_house_numbers_confirmed():
         msg = f'Successfully imported {added} house numbers'
         if skipped > 0:
             msg += f' ({skipped} duplicates skipped)'
-        return jsonify({'success': True, 'message': msg, 'imported': added, 'skipped': skipped})
+        return jsonify({'success': True, 'message': msg, 'imported': added, 'skipped': skipped,
+                        'inserted_ids': inserted_ids, 'import_type': 'house_numbers'})
     except Exception as e:
         conn.rollback()
         return jsonify({'success': False, 'error': str(e)})
@@ -18916,6 +18966,7 @@ def verona_walk_import_confirmed():
     try:
         imported_count = 0
         clock_count = 0
+        inserted_ids = []
 
         for clock_number_str, clock_data in clocks.items():
             clock_number = int(clock_number_str)
@@ -18941,6 +18992,7 @@ def verona_walk_import_confirmed():
                                      VALUES (?, ?, ?, ?, 0, ?)""",
                                  (community_id, clock_number, address,
                                   datetime.now().strftime('%Y-%m-%d %H:%M:%S'), next_order))
+                        inserted_ids.append(c.lastrowid)
                         next_order += 1
                         imported_count += 1
 
@@ -18958,6 +19010,7 @@ def verona_walk_import_confirmed():
                                      VALUES (?, ?, ?, ?, 1, ?)""",
                                  (community_id, clock_number, address,
                                   datetime.now().strftime('%Y-%m-%d %H:%M:%S'), next_order))
+                        inserted_ids.append(c.lastrowid)
                         next_order += 1
                         imported_count += 1
 
@@ -18967,8 +19020,47 @@ def verona_walk_import_confirmed():
         return jsonify({
             'success': True,
             'message': f'Successfully imported {imported_count} entries across {clock_count} clocks ({total_addr} addresses, {total_ca} common area)',
-            'imported': imported_count
+            'imported': imported_count,
+            'inserted_ids': inserted_ids,
+            'import_type': 'clock_addresses'
         })
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+
+@app.route('/undo_import', methods=['POST'])
+def undo_import():
+    """Undo a recent import by deleting the inserted records by their IDs."""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    import_type = data.get('import_type')
+    inserted_ids = data.get('inserted_ids', [])
+
+    if not import_type or not inserted_ids:
+        return jsonify({'success': False, 'error': 'Missing required fields'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        deleted = 0
+        if import_type == 'clock_addresses':
+            for row_id in inserted_ids:
+                c.execute("DELETE FROM verona_walk_clock_addresses WHERE id = ?", (row_id,))
+                deleted += c.rowcount
+        elif import_type == 'house_numbers':
+            for row_id in inserted_ids:
+                c.execute("DELETE FROM community_house_numbers WHERE id = ?", (row_id,))
+                deleted += c.rowcount
+        else:
+            return jsonify({'success': False, 'error': 'Unknown import type'})
+
+        conn.commit()
+        return jsonify({'success': True, 'message': f'Import undone — {deleted} entries removed', 'deleted': deleted})
     except Exception as e:
         conn.rollback()
         return jsonify({'success': False, 'error': str(e)})
