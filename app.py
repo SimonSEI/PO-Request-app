@@ -13862,7 +13862,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             <h2 style="margin-top: 0; color: #333; font-size: 18px;">📋 Your Submissions & Drafts</h2>
             <div style="display: grid; grid-template-columns: 1fr; gap: 12px;">
                 {% for submission in submissions %}
-                <div style="display: flex; gap: 8px; align-items: stretch;">
+                <div style="display: flex; gap: 8px; align-items: center;">
                     <form method="get" action="/community_billing_spreadsheet" style="margin: 0; flex: 1;">
                         <input type="hidden" name="community" value="{{ submission.community }}">
                         <input type="hidden" name="work_date" value="{{ submission.work_date }}">
