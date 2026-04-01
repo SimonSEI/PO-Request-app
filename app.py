@@ -13751,6 +13751,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
 <html>
 <head>
     <title>Community Maintenance - Technician</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -13760,25 +13761,25 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             display: flex;
             justify-content: center;
             align-items: center;
-            padding: 20px;
+            padding: 15px;
         }
         .container {
             background: white;
             border-radius: 12px;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
-            padding: 40px;
+            padding: 25px;
             max-width: 500px;
             width: 100%;
         }
         h1 {
             color: #333;
             margin-bottom: 10px;
-            font-size: 28px;
+            font-size: 24px;
         }
         .subtitle {
             color: #666;
-            margin-bottom: 30px;
-            font-size: 14px;
+            margin-bottom: 25px;
+            font-size: 16px;
         }
         .form-group {
             margin-bottom: 25px;
@@ -13788,16 +13789,17 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             color: #333;
             font-weight: 600;
             margin-bottom: 8px;
-            font-size: 14px;
+            font-size: 16px;
         }
         select, input[type="date"] {
             width: 100%;
-            padding: 12px;
+            padding: 14px;
             border: 2px solid #ddd;
-            border-radius: 6px;
-            font-size: 14px;
+            border-radius: 8px;
+            font-size: 16px;
             transition: border-color 0.3s;
             font-family: inherit;
+            -webkit-appearance: none;
         }
         select:focus, input[type="date"]:focus {
             outline: none;
@@ -13810,10 +13812,10 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
         }
         button {
             flex: 1;
-            padding: 12px;
+            padding: 14px;
             border: none;
-            border-radius: 6px;
-            font-size: 14px;
+            border-radius: 8px;
+            font-size: 16px;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.3s;
@@ -13846,6 +13848,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             border-radius: 6px;
             margin-bottom: 20px;
             display: none;
+            font-size: 15px;
         }
     </style>
 </head>
@@ -13858,29 +13861,29 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
 
         <!-- Past Submissions and Drafts Section -->
         {% if submissions %}
-        <div style="background: #f5f7fa; border-radius: 8px; padding: 20px; margin-bottom: 30px; border: 1px solid #ddd;">
-            <h2 style="margin-top: 0; color: #333; font-size: 18px;">📋 Your Submissions & Drafts</h2>
-            <div style="display: grid; grid-template-columns: 1fr; gap: 12px;">
+        <div style="background: #f5f7fa; border-radius: 10px; padding: 16px; margin-bottom: 25px; border: 1px solid #ddd;">
+            <h2 style="margin-top: 0; margin-bottom: 14px; color: #333; font-size: 20px;">📋 Your Submissions & Drafts</h2>
+            <div style="display: grid; grid-template-columns: 1fr; gap: 14px;">
                 {% for submission in submissions %}
-                <div style="display: flex; gap: 8px; align-items: center;">
-                    <form method="get" action="/community_billing_spreadsheet" style="margin: 0; flex: 1;">
+                <div style="display: flex; flex-direction: column; gap: 0;">
+                    <form method="get" action="/community_billing_spreadsheet" style="margin: 0;">
                         <input type="hidden" name="community" value="{{ submission.community }}">
                         <input type="hidden" name="work_date" value="{{ submission.work_date }}">
-                        <button type="submit" style="width: 100%; text-align: left; background: white; border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: all 0.3s;">
+                        <button type="submit" style="width: 100%; text-align: left; background: white; border: 1px solid #e0e0e0; border-radius: {% if submission.status == 'draft' %}8px 8px 0 0{% else %}8px{% endif %}; padding: 16px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: all 0.3s; min-height: 70px;">
                             <div>
-                                <div style="font-weight: 600; color: #333;">{{ submission.community }}</div>
-                                <div style="font-size: 13px; color: #666;">Date: {{ submission.work_date }}</div>
+                                <div style="font-weight: 700; color: #333; font-size: 17px;">{{ submission.community }}</div>
+                                <div style="font-size: 15px; color: #666; margin-top: 4px;">Date: {{ submission.work_date }}</div>
                                 {% if submission.status == 'submitted' %}
-                                    <div style="font-size: 12px; color: #28a745; font-weight: 600;">✓ Finalized</div>
+                                    <div style="font-size: 14px; color: #28a745; font-weight: 600; margin-top: 4px;">✓ Finalized</div>
                                 {% else %}
-                                    <div style="font-size: 12px; color: #ff9800; font-weight: 600;">● Draft</div>
+                                    <div style="font-size: 14px; color: #ff9800; font-weight: 600; margin-top: 4px;">● Draft</div>
                                 {% endif %}
                             </div>
-                            <div style="color: #667eea; font-weight: 600;">{% if submission.status == 'submitted' %}View →{% else %}Edit →{% endif %}</div>
+                            <div style="color: #667eea; font-weight: 700; font-size: 16px;">{% if submission.status == 'submitted' %}View →{% else %}Edit →{% endif %}</div>
                         </button>
                     </form>
                     {% if submission.status == 'draft' %}
-                    <button type="button" onclick="deleteDraft({{ submission.id }}, '{{ submission.community }}')" title="Delete Draft" style="background: #fff; border: 1px solid #e0e0e0; border-radius: 4px; padding: 4px 8px; cursor: pointer; color: #dc3545; font-size: 11px; font-weight: 600; transition: all 0.3s; display: flex; align-items: center; justify-content: center; white-space: nowrap;" onmouseover="this.style.background='#dc3545'; this.style.color='white'; this.style.borderColor='#dc3545';" onmouseout="this.style.background='#fff'; this.style.color='#dc3545'; this.style.borderColor='#e0e0e0';">🗑 Delete This Draft</button>
+                    <button type="button" onclick="event.stopPropagation(); deleteDraft({{ submission.id }}, '{{ submission.community }}')" style="background: #fff5f5; border: 1px solid #e0e0e0; border-top: none; border-radius: 0 0 8px 8px; padding: 10px 16px; cursor: pointer; color: #dc3545; font-size: 14px; font-weight: 600; transition: all 0.3s; text-align: center; width: 100%;">🗑 Delete This Draft</button>
                     {% endif %}
                 </div>
                 {% endfor %}
