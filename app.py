@@ -17348,6 +17348,61 @@ def sales_delete_price():
 # COMMUNITY BILLING ROUTES
 # ============================================================================
 
+
+def sync_community_drafts(c, community_name, community_id):
+    """Sync all draft submission line items with current community addresses.
+
+    When office edits addresses (add/delete/import), this ensures every open
+    draft for that community gets updated: new addresses are added as blank
+    line items and removed addresses have their line items deleted.
+    """
+    c.execute("""SELECT id FROM community_billing_submissions
+                 WHERE community_name = ? AND status = 'draft'""", (community_name,))
+    draft_ids = [row[0] for row in c.fetchall()]
+
+    if not draft_ids:
+        return
+
+    # Build expected labels from current addresses
+    expected_labels = []
+    if community_name == 'Verona Walk HOA':
+        c.execute("""SELECT clock_number, address, COALESCE(is_common_area, 0)
+                     FROM verona_walk_clock_addresses
+                     WHERE community_id = ?
+                     ORDER BY clock_number, is_common_area, sort_order, id""", (community_id,))
+        for clock_num, address, is_ca in c.fetchall():
+            if is_ca:
+                expected_labels.append(f"Clock {clock_num} Common Area - {address}")
+            else:
+                expected_labels.append(f"Clock {clock_num} - {address}")
+    else:
+        c.execute("""SELECT house_number FROM community_house_numbers
+                     WHERE community_id = ? ORDER BY house_number""", (community_id,))
+        expected_labels = [row[0] for row in c.fetchall()]
+
+    expected_set = set(expected_labels)
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    for submission_id in draft_ids:
+        c.execute("""SELECT id, zone_and_address FROM community_billing_line_items
+                     WHERE submission_id = ?""", (submission_id,))
+        current_items = c.fetchall()
+        current_labels = {row[1] for row in current_items}
+
+        # Add line items for new addresses
+        for label in expected_labels:
+            if label not in current_labels:
+                c.execute("""INSERT INTO community_billing_line_items
+                             (submission_id, zone_and_address, created_at)
+                             VALUES (?, ?, ?)""",
+                         (submission_id, label, now))
+
+        # Remove line items for deleted addresses
+        for item_id, label in current_items:
+            if label not in expected_set:
+                c.execute("DELETE FROM community_billing_line_items WHERE id = ?", (item_id,))
+
+
 @app.route('/community_billing')
 def community_billing():
     """Main community billing page - redirects based on user role"""
@@ -18382,6 +18437,13 @@ def community_add_house_number():
                      (community_id, house_number, created_at)
                      VALUES (?, ?, ?)""",
                  (community_id, house_number, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+
+        # Sync drafts with updated addresses
+        c.execute("SELECT name FROM communities WHERE id = ?", (community_id,))
+        community_row = c.fetchone()
+        if community_row:
+            sync_community_drafts(c, community_row[0], community_id)
+
         conn.commit()
         return jsonify({'success': True, 'message': 'House number added successfully'})
     except sqlite3.IntegrityError:
@@ -18407,7 +18469,19 @@ def community_delete_house_number():
     c = conn.cursor()
 
     try:
+        # Get community info before deleting
+        c.execute("""SELECT chn.community_id, com.name
+                     FROM community_house_numbers chn
+                     JOIN communities com ON com.id = chn.community_id
+                     WHERE chn.id = ?""", (house_number_id,))
+        info = c.fetchone()
+
         c.execute("DELETE FROM community_house_numbers WHERE id = ?", (house_number_id,))
+
+        # Sync drafts with updated addresses
+        if info:
+            sync_community_drafts(c, info[1], info[0])
+
         conn.commit()
         return jsonify({'success': True, 'message': 'House number deleted successfully'})
     except Exception as e:
@@ -18528,6 +18602,13 @@ def community_import_house_numbers_confirmed():
             except sqlite3.IntegrityError:
                 skipped += 1  # Duplicate - already exists
 
+        # Sync drafts with updated addresses
+        if added > 0:
+            c.execute("SELECT name FROM communities WHERE id = ?", (community_id,))
+            community_row = c.fetchone()
+            if community_row:
+                sync_community_drafts(c, community_row[0], community_id)
+
         conn.commit()
         msg = f'Successfully imported {added} house numbers'
         if skipped > 0:
@@ -18623,6 +18704,10 @@ def verona_walk_add_address():
                      (community_id, clock_number, address, created_at, is_common_area, sort_order)
                      VALUES (?, ?, ?, ?, ?, ?)""",
                  (community_id, clock_number, address, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), is_common_area, next_order))
+
+        # Sync drafts with updated addresses
+        sync_community_drafts(c, 'Verona Walk HOA', community_id)
+
         conn.commit()
         return jsonify({'success': True, 'message': 'Address added successfully'})
     except Exception as e:
@@ -18665,6 +18750,11 @@ def verona_walk_bulk_add_addresses():
                           datetime.now().strftime('%Y-%m-%d %H:%M:%S'), is_common_area, next_order))
                 next_order += 1
                 added += 1
+
+        # Sync drafts with updated addresses
+        if added > 0:
+            sync_community_drafts(c, 'Verona Walk HOA', community_id)
+
         conn.commit()
         return jsonify({'success': True, 'message': f'{added} address(es) added successfully'})
     except Exception as e:
@@ -18719,6 +18809,10 @@ def verona_walk_insert_address():
                           datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                           is_common_area, ref_order + added))
 
+        # Sync drafts with updated addresses
+        if added > 0:
+            sync_community_drafts(c, 'Verona Walk HOA', community_id)
+
         conn.commit()
         return jsonify({'success': True, 'message': f'{added} address(es) inserted'})
     except Exception as e:
@@ -18742,7 +18836,16 @@ def verona_walk_delete_address():
     c = conn.cursor()
 
     try:
+        # Get community_id before deleting
+        c.execute("SELECT community_id FROM verona_walk_clock_addresses WHERE id = ?", (address_id,))
+        addr_row = c.fetchone()
+
         c.execute("DELETE FROM verona_walk_clock_addresses WHERE id = ?", (address_id,))
+
+        # Sync drafts with updated addresses
+        if addr_row:
+            sync_community_drafts(c, 'Verona Walk HOA', addr_row[0])
+
         conn.commit()
         return jsonify({'success': True, 'message': 'Address deleted successfully'})
     except Exception as e:
@@ -18767,7 +18870,31 @@ def verona_walk_edit_address():
     c = conn.cursor()
 
     try:
+        # Get old address details to build old label
+        c.execute("""SELECT community_id, clock_number, address, COALESCE(is_common_area, 0)
+                     FROM verona_walk_clock_addresses WHERE id = ?""", (address_id,))
+        old = c.fetchone()
+
         c.execute("UPDATE verona_walk_clock_addresses SET address = ? WHERE id = ?", (address, address_id))
+
+        # Update the label in all draft line items to preserve entered data
+        if old:
+            community_id, clock_num, old_address, is_ca = old
+            if is_ca:
+                old_label = f"Clock {clock_num} Common Area - {old_address}"
+                new_label = f"Clock {clock_num} Common Area - {address}"
+            else:
+                old_label = f"Clock {clock_num} - {old_address}"
+                new_label = f"Clock {clock_num} - {address}"
+
+            c.execute("""UPDATE community_billing_line_items
+                         SET zone_and_address = ?
+                         WHERE zone_and_address = ?
+                           AND submission_id IN (
+                               SELECT id FROM community_billing_submissions
+                               WHERE community_name = 'Verona Walk HOA' AND status = 'draft'
+                           )""", (new_label, old_label))
+
         conn.commit()
         return jsonify({'success': True, 'message': 'Address updated successfully'})
     except Exception as e:
@@ -18935,6 +19062,10 @@ def verona_walk_import_excel():
                     next_order += 1
                     imported_count += 1
 
+        # Sync drafts with updated addresses
+        if imported_count > 0:
+            sync_community_drafts(c, 'Verona Walk HOA', community_id)
+
         conn.commit()
         return jsonify({
             'success': True,
@@ -19018,6 +19149,10 @@ def verona_walk_import_confirmed():
                         next_order += 1
                         imported_count += 1
 
+        # Sync drafts with updated addresses
+        if imported_count > 0:
+            sync_community_drafts(c, 'Verona Walk HOA', community_id)
+
         conn.commit()
         total_addr = sum(len(c.get('addresses', [])) for c in clocks.values())
         total_ca = sum(len(c.get('common_area', [])) for c in clocks.values())
@@ -19051,6 +19186,24 @@ def undo_import():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
+        # Look up community info before deleting so we can sync drafts
+        community_id = None
+        community_name = None
+        if inserted_ids:
+            if import_type == 'clock_addresses':
+                c.execute("""SELECT ca.community_id, com.name
+                             FROM verona_walk_clock_addresses ca
+                             JOIN communities com ON com.id = ca.community_id
+                             WHERE ca.id = ?""", (inserted_ids[0],))
+            elif import_type == 'house_numbers':
+                c.execute("""SELECT chn.community_id, com.name
+                             FROM community_house_numbers chn
+                             JOIN communities com ON com.id = chn.community_id
+                             WHERE chn.id = ?""", (inserted_ids[0],))
+            info = c.fetchone()
+            if info:
+                community_id, community_name = info
+
         deleted = 0
         if import_type == 'clock_addresses':
             for row_id in inserted_ids:
@@ -19062,6 +19215,10 @@ def undo_import():
                 deleted += c.rowcount
         else:
             return jsonify({'success': False, 'error': 'Unknown import type'})
+
+        # Sync drafts with updated addresses
+        if deleted > 0 and community_id and community_name:
+            sync_community_drafts(c, community_name, community_id)
 
         conn.commit()
         return jsonify({'success': True, 'message': f'Import undone — {deleted} entries removed', 'deleted': deleted})
