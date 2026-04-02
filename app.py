@@ -18895,6 +18895,10 @@ def verona_walk_edit_address():
                                WHERE community_name = 'Verona Walk HOA' AND status = 'draft'
                            )""", (new_label, old_label))
 
+            # Also do a full sync to fix any stale labels in drafts that were created
+            # before address edits were tracked (handles previously-edited addresses)
+            sync_community_drafts(c, 'Verona Walk HOA', community_id)
+
         conn.commit()
         return jsonify({'success': True, 'message': 'Address updated successfully'})
     except Exception as e:
