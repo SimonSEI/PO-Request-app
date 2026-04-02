@@ -16823,6 +16823,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 return;
             }
 
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = '<div style="text-align:center;padding:20px;color:#666;">Loading...</div>';
+
             const workMonthStr = workYear + '-' + workMonth;
 
             fetch('/community_billing_office_data', {
@@ -16833,12 +16836,21 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     work_month: workMonthStr
                 })
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Server error: ' + response.status + ' ' + response.statusText);
+                }
+                return response.json();
+            })
             .then(data => {
-                displayResults(data);
+                try {
+                    displayResults(data);
+                } catch (e) {
+                    resultsDiv.innerHTML = '<div class="alert alert-error">Display error: ' + e.message + '<br><pre style="font-size:11px;margin-top:6px;">' + e.stack + '</pre></div>';
+                }
             })
             .catch(error => {
-                document.getElementById('results').innerHTML = '<div class="alert alert-error">Error: ' + error + '</div>';
+                document.getElementById('results').innerHTML = '<div class="alert alert-error">Error loading submissions: ' + error.message + '</div>';
             });
         }
 
