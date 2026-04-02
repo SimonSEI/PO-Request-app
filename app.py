@@ -16930,7 +16930,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                         } else if (clockMatch) {
                             const n = parseInt(clockMatch[1]);
                             key = 'clock_' + String(n).padStart(4, '0');
-                            if (!clockGroups[key]) clockGroups[key] = { label: '\uD83D\uDD50 Clock ' + n, sortKey: n * 10, items: [] };
+                            if (!clockGroups[key]) clockGroups[key] = { label: '🕐 Clock ' + n, sortKey: n * 10, items: [] };
                         } else if (zone.toLowerCase().startsWith('common area')) {
                             key = 'common_area';
                             if (!clockGroups[key]) clockGroups[key] = { label: 'Common Area', sortKey: -1, items: [] };
