@@ -984,7 +984,7 @@ def init_db():
 
     c.execute('''CREATE TABLE IF NOT EXISTS po_requests
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  tech_username TEXT, tech_name TEXT, job_name TEXT, store_name TEXT,
+                  tech_username TEXT, tech_name TEXT, job_name TEXT,
                   estimated_cost REAL, description TEXT, status TEXT DEFAULT 'pending',
                   request_date TEXT, approval_date TEXT, approval_notes TEXT,
                   approved_by TEXT, invoice_filename TEXT, invoice_number TEXT,
@@ -2630,7 +2630,7 @@ def office_dashboard():
 
             # Get ALL POs for this job (for complete history)
             c.execute("""
-                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date, description, client_name, store_name
+                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date, description, client_name
                 FROM po_requests
                 WHERE job_name=?
                 ORDER BY id DESC
@@ -2742,14 +2742,8 @@ def submit_request():
     tech_name = request.form['tech_name']
     custom_po_number = request.form.get('custom_po_number', '').strip()
     job_name = request.form['job_name'].strip()
-    store_name = request.form.get('store_name', '').strip()
     description = request.form.get('description', '').strip()
     client_name = request.form.get('client_name', '').strip()  # Optional - for Service POs
-
-    # VALIDATE REQUIRED FIELDS: store_name and description
-    if not store_name:
-        flash('❌ ERROR: Store name is required. Please enter a store name.')
-        return redirect(url_for('tech_dashboard'))
 
     if not description:
         flash('❌ ERROR: Description is required. Please enter a description for this PO.')
@@ -2805,10 +2799,10 @@ def submit_request():
             # Insert with EXPLICIT ID - set to awaiting_invoice
             now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             c.execute("""INSERT INTO po_requests
-                         (id, tech_username, tech_name, job_name, store_name,
+                         (id, tech_username, tech_name, job_name,
                           description, status, request_date, client_name, po_type)
-                         VALUES (?, ?, ?, ?, ?, ?, 'awaiting_invoice', ?, ?, ?)""",
-                     (po_id, session['username'], tech_name, job_name, store_name,
+                         VALUES (?, ?, ?, ?, ?, 'awaiting_invoice', ?, ?, ?)""",
+                     (po_id, session['username'], tech_name, job_name,
                       description, now_str, client_name if client_name else None, tech_type))
 
             conn.commit()
@@ -2842,10 +2836,10 @@ def submit_request():
         # Create PO with awaiting_invoice status and po_type
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         c.execute("""INSERT INTO po_requests
-                     (tech_username, tech_name, job_name, store_name,
+                     (tech_username, tech_name, job_name,
                       description, status, request_date, client_name, po_type)
-                     VALUES (?, ?, ?, ?, ?, 'awaiting_invoice', ?, ?, ?)""",
-                 (session['username'], tech_name, job_name, store_name,
+                     VALUES (?, ?, ?, ?, 'awaiting_invoice', ?, ?, ?)""",
+                 (session['username'], tech_name, job_name,
                   description, now_str, client_name if client_name else None, tech_type))
 
         new_id = c.lastrowid
@@ -8230,11 +8224,6 @@ TECH_DASHBOARD_TEMPLATE = '''
             {% endif %}
 
             <div class="form-group">
-                <label>Store Name</label>
-                <input type="text" name="store_name" required placeholder="e.g., Home Depot, Lowes">
-            </div>
-
-            <div class="form-group">
                 <label>Description / Items Needed</label>
                 <textarea name="description" required placeholder="List what you need to purchase..."></textarea>
             </div>
@@ -8366,7 +8355,6 @@ TECH_DASHBOARD_TEMPLATE = '''
                         </div>
                         <div style="font-size: 16px; color: #333; font-weight: bold;">{% if client_name_idx is not none and req|length > client_name_idx and req[client_name_idx] %}{{ req[client_name_idx] }}{% else %}Service{% endif %}</div>
                     </div>
-                    <p><strong>Store:</strong> {{ req[4] }}</p>
                     {% if client_name_idx is not none and req|length > client_name_idx and req[client_name_idx] %}
                         <p style="margin-left: 0; color: #666; font-size: 14px;">📍 Client: <strong>{{ req[client_name_idx] }}</strong></p>
                     {% endif %}
@@ -9025,7 +9013,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 return;
             }
 
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Store</th><th>Tech</th><th>Description</th><th>Status</th><th>Invoices</th><th>Client</th><th>Date</th></tr></thead><tbody>';
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Tech</th><th>Description</th><th>Status</th><th>Invoices</th><th>Client</th><th>Date</th></tr></thead><tbody>';
             let found = 0;
 
             for (const [jobId, pos] of Object.entries(jobAllPOs)) {
@@ -9043,7 +9031,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                         const estimated = po[4] || 0;
                         const date = po[6] ? po[6].substring(0, 10) : 'N/A';
                         const clientName = po[8] || 'N/A';
-                        const storeName = po[9] || 'N/A';
                         const invoiceCount = (poInvoices[po[0]] || []).length;
                         const invoiceDisplay = invoiceCount > 0
                             ? `<button onclick="showInvoicesModal(${po[0]}, '${poDisplay.replace(/'/g, "\\'")}', event)" style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold; border: none; cursor: pointer;">${invoiceCount}</button>`
@@ -9051,7 +9038,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
                         html += `<tr>
                             <td><strong>#${poDisplay}</strong></td>
-                            <td>${escapeHtml(storeName)}</td>
                             <td>${techName}</td>
                             <td>${escapeHtml(description)}</td>
                             <td><span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span></td>
@@ -9148,7 +9134,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         function renderServicePOs() {
             const resultsDiv = document.getElementById('service-po-results');
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Store</th><th>Tech</th><th>Client</th><th>Status</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Tech</th><th>Client</th><th>Status</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
             let totalPOs = 0;
 
             // Get all service POs from serviceJobs and jobAllPOs
@@ -9160,7 +9146,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 pos.forEach(po => {
                     const poId = po[0];
                     const clientName = po[8] || 'N/A';
-                    const storeName = po[9] || 'N/A';
                     const poDisplay = `S-${poId} ${clientName}`;
                     const techName = getTechName(po[2]);
                     const status = po[3];
@@ -9176,7 +9161,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     html += `
                         <tr>
                             <td><strong>${escapeHtml(poDisplay)}</strong></td>
-                            <td>${escapeHtml(storeName)}</td>
                             <td>${escapeHtml(techName)}</td>
                             <td>${escapeHtml(clientName)}</td>
                             <td><span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span></td>
@@ -9422,7 +9406,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             const keywordSearch = document.getElementById('service-po-keyword-search').value.toLowerCase().trim();
 
             const resultsDiv = document.getElementById('service-po-results');
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Store</th><th>Tech</th><th>Client</th><th>Status</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Tech</th><th>Client</th><th>Status</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
             let found = 0;
 
             // Get all service POs from serviceJobs and jobAllPOs
@@ -9435,7 +9419,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 pos.forEach(po => {
                     const poId = po[0];
                     const clientName = po[8] || 'N/A';
-                    const storeName = po[9] || 'N/A';
                     const poDisplay = `S-${poId} ${clientName}`;
                     const techName = getTechName(po[2]);
                     const status = po[3];
@@ -9447,7 +9430,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
                     // Filter by client and keyword
                     const matchesClient = !clientSearch || clientName.toLowerCase().includes(clientSearch);
-                    const matchesKeyword = !keywordSearch || description.toLowerCase().includes(keywordSearch) || storeName.toLowerCase().includes(keywordSearch) || techName.toLowerCase().includes(keywordSearch);
+                    const matchesKeyword = !keywordSearch || description.toLowerCase().includes(keywordSearch) || techName.toLowerCase().includes(keywordSearch);
 
                     if (matchesClient && matchesKeyword) {
                         const invoiceDisplay = invoiceCount > 0
@@ -9457,7 +9440,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                         html += `
                             <tr>
                                 <td><strong>${escapeHtml(poDisplay)}</strong></td>
-                                <td>${escapeHtml(storeName)}</td>
                                 <td>${escapeHtml(techName)}</td>
                                 <td>${escapeHtml(clientName)}</td>
                                 <td><span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span></td>
@@ -11352,7 +11334,6 @@ function searchInTab(tabId, searchInputId) {
                 <h3>📱 {{ format_po_number(req[0], req[3]) }} - {{ req[3] }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
-                <p><strong>Store:</strong> {{ req[4] }}</p>
                 <p><strong>Description:</strong> {{ req[6] }}</p>
                 <p><strong>Requested:</strong> {{ req[8] }}</p>
                 <div class="invoice-upload-section">
@@ -11432,7 +11413,6 @@ function searchInTab(tabId, searchInputId) {
                 <h3>🔧 {{ format_po_number(req[0], req[3]) }} - {{ req[3] }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
-                <p><strong>Store:</strong> {{ req[4] }}</p>
                 <p><strong>Description:</strong> {{ req[6] }}</p>
                 <p><strong>Requested:</strong> {{ req[8] }}</p>
                 <div class="invoice-upload-section">
@@ -11513,7 +11493,6 @@ function searchInTab(tabId, searchInputId) {
                 <h3>📦 {{ format_po_number(req[0], req[3]) }} - {{ req[3] }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
-                <p><strong>Store:</strong> {{ req[4] }}</p>
                 <p><strong>Description:</strong> {{ req[6] }}</p>
                 <p><strong>Requested:</strong> {{ req[8] }}</p>
                 <div class="invoice-upload-section">
