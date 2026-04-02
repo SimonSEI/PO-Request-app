@@ -14006,6 +14006,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 <html>
 <head>
     <title>Community Maintenance Spreadsheet</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -14275,7 +14276,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             flex-direction: column;
         }
         .vw-field label {
-            font-size: 10px;
+            font-size: 12px;
             color: #888;
             margin-bottom: 2px;
             white-space: nowrap;
@@ -14283,10 +14284,10 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             text-overflow: ellipsis;
         }
         .vw-field input {
-            padding: 4px 6px;
+            padding: 6px 8px;
             border: 1px solid #ddd;
             border-radius: 3px;
-            font-size: 12px;
+            font-size: 16px;
             width: 100%;
         }
         .vw-field input:focus {
@@ -14304,10 +14305,10 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         }
         .vw-notes-field input {
             width: 100%;
-            padding: 4px 6px;
+            padding: 6px 8px;
             border: 1px solid #ddd;
             border-radius: 3px;
-            font-size: 12px;
+            font-size: 16px;
         }
     </style>
 </head>
@@ -14510,7 +14511,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         <div class="vw-field">
                             <label>${f.label}</label>
                             <input type="number" min="0" value="${item.vals[f.key]}" ${isDisabled}
-                                   onchange="vwUpdateField('${item.itemId}', '${f.key}', this.value)">
+                                   oninput="vwUpdateField('${item.itemId}', '${f.key}', this.value)">
                         </div>`;
                 });
                 fieldsHtml += '</div>';
@@ -14519,7 +14520,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         <div class="vw-field">
                             <label>Notes</label>
                             <input type="text" value="${(item.vals.notes || '').replace(/"/g, '&quot;')}" placeholder="Add notes..." ${isDisabled}
-                                   onchange="vwUpdateField('${item.itemId}', 'notes', this.value)">
+                                   oninput="vwUpdateField('${item.itemId}', 'notes', this.value)">
                         </div>
                     </div>`;
                 return `<div class="vw-address-card">
