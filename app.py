@@ -17521,7 +17521,8 @@ def community_billing_spreadsheet():
     # If no line items yet, populate from house numbers or clock addresses added by office user
     if not line_items:
         # Get community ID first
-        c.execute("SELECT id FROM communities WHERE name = ? AND active = 1", (community,))        community_row = c.fetchone()
+        c.execute("SELECT id FROM communities WHERE name = ? AND active = 1", (community,))
+        community_row = c.fetchone()
         if community_row:
             community_id = community_row[0]
 
