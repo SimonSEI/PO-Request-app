@@ -7533,16 +7533,36 @@ DASHBOARD_MENU_TEMPLATE = '''
         .logout-btn:hover {
             background: rgba(255,255,255,0.3);
         }
+        .lang-toggle-btn {
+            background: rgba(255,255,255,0.15);
+            color: white;
+            padding: 8px 16px;
+            border: 2px solid rgba(255,255,255,0.7);
+            border-radius: 5px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.3s ease;
+            margin-bottom: 10px;
+        }
+        .lang-toggle-btn:hover { background: rgba(255,255,255,0.3); }
+        .lang-toggle-btn.es-active { background: rgba(200,16,46,0.7); border-color: white; }
+        .top-right {
+            position: fixed; top: 16px; right: 20px;
+        }
     </style>
 </head>
 <body>
+    <div class="top-right">
+        <button class="lang-toggle-btn" id="langToggleBtn" onclick="toggleLanguage()">🇪🇸 Español</button>
+    </div>
     <div class="header">
-        <h1>🌱 Welcome to Your Dashboard</h1>
-        <p>Choose an application to continue</p>
+        <h1 data-i18n="welcome_title">🌱 Welcome to Your Dashboard</h1>
+        <p data-i18n="choose_app">Choose an application to continue</p>
     </div>
 
     <div class="user-info">
-        <p>Logged in as: <strong>{{ full_name }}</strong> ({{ role }})</p>
+        <p><span data-i18n="logged_in_as">Logged in as:</span> <strong>{{ full_name }}</strong> ({{ role }})</p>
     </div>
 
     <div class="container">
@@ -7550,9 +7570,9 @@ DASHBOARD_MENU_TEMPLATE = '''
         <a href="{% if role == 'technician' %}{{ url_for('tech_dashboard') }}{% elif role == 'admin' %}{{ url_for('admin_dashboard') }}{% else %}{{ url_for('office_dashboard') }}{% endif %}" style="text-decoration: none;">
             <div class="app-card">
                 <div class="app-icon">📋</div>
-                <h2>PO Request App</h2>
-                <p>Manage purchase orders, track invoices, and monitor project costs</p>
-                <button class="app-button">Open PO App</button>
+                <h2 data-i18n="po_app_title">PO Request App</h2>
+                <p data-i18n="po_app_desc">Manage purchase orders, track invoices, and monitor project costs</p>
+                <button class="app-button" data-i18n="po_app_btn">Open PO App</button>
             </div>
         </a>
 
@@ -7561,9 +7581,9 @@ DASHBOARD_MENU_TEMPLATE = '''
         <a href="{{ url_for('office_admin') }}" style="text-decoration: none;">
             <div class="app-card">
                 <div class="app-icon">🔐</div>
-                <h2>Office Administrator</h2>
-                <p>Manage technician accounts, passwords, and system settings</p>
-                <button class="app-button">Open Admin Panel</button>
+                <h2 data-i18n="admin_title">Office Administrator</h2>
+                <p data-i18n="admin_desc">Manage technician accounts, passwords, and system settings</p>
+                <button class="app-button" data-i18n="admin_btn">Open Admin Panel</button>
             </div>
         </a>
         {% endif %}
@@ -7573,9 +7593,9 @@ DASHBOARD_MENU_TEMPLATE = '''
         <a href="{{ url_for('sales') }}" style="text-decoration: none;">
             <div class="app-card">
                 <div class="app-icon">📊</div>
-                <h2>Sales</h2>
-                <p>Manage sales orders and track sales activities</p>
-                <button class="app-button">Open Sales App</button>
+                <h2 data-i18n="sales_title">Sales</h2>
+                <p data-i18n="sales_desc">Manage sales orders and track sales activities</p>
+                <button class="app-button" data-i18n="sales_btn">Open Sales App</button>
             </div>
         </a>
         {% endif %}
@@ -7584,16 +7604,87 @@ DASHBOARD_MENU_TEMPLATE = '''
         <a href="{{ url_for('community_billing') }}" style="text-decoration: none;">
             <div class="app-card" onclick="window.location.href='{{ url_for('community_billing') }}'">
                 <div class="app-icon">💰</div>
-                <h2>Community Maintenance</h2>
-                <p>Enter and review equipment installation data by community</p>
-                <button class="app-button">Access Community Maintenance</button>
+                <h2 data-i18n="cm_title">Community Maintenance</h2>
+                <p data-i18n="cm_desc">Enter and review equipment installation data by community</p>
+                <button class="app-button" data-i18n="cm_btn">Access Community Maintenance</button>
             </div>
         </a>
     </div>
 
     <div class="footer">
-        <a href="{{ url_for('logout') }}" class="logout-btn">Logout</a>
+        <a href="{{ url_for('logout') }}" class="logout-btn" data-i18n="logout">Logout</a>
     </div>
+
+<script>
+    const TRANSLATIONS = {
+        en: {
+            welcome_title: '🌱 Welcome to Your Dashboard',
+            choose_app: 'Choose an application to continue',
+            logged_in_as: 'Logged in as:',
+            po_app_title: 'PO Request App',
+            po_app_desc: 'Manage purchase orders, track invoices, and monitor project costs',
+            po_app_btn: 'Open PO App',
+            admin_title: 'Office Administrator',
+            admin_desc: 'Manage technician accounts, passwords, and system settings',
+            admin_btn: 'Open Admin Panel',
+            sales_title: 'Sales',
+            sales_desc: 'Manage sales orders and track sales activities',
+            sales_btn: 'Open Sales App',
+            cm_title: 'Community Maintenance',
+            cm_desc: 'Enter and review equipment installation data by community',
+            cm_btn: 'Access Community Maintenance',
+            logout: 'Logout',
+        },
+        es: {
+            welcome_title: '🌱 Bienvenido a Su Panel',
+            choose_app: 'Elija una aplicación para continuar',
+            logged_in_as: 'Conectado como:',
+            po_app_title: 'App de Solicitudes de PO',
+            po_app_desc: 'Gestionar órdenes de compra, rastrear facturas y monitorear costos del proyecto',
+            po_app_btn: 'Abrir App de PO',
+            admin_title: 'Administrador de Oficina',
+            admin_desc: 'Gestionar cuentas de técnicos, contraseñas y configuraciones del sistema',
+            admin_btn: 'Abrir Panel de Admin',
+            sales_title: 'Ventas',
+            sales_desc: 'Gestionar órdenes de ventas y rastrear actividades de ventas',
+            sales_btn: 'Abrir App de Ventas',
+            cm_title: 'Mantenimiento Comunitario',
+            cm_desc: 'Ingresar y revisar datos de instalación de equipos por comunidad',
+            cm_btn: 'Acceder a Mantenimiento Comunitario',
+            logout: 'Cerrar Sesión',
+        }
+    };
+
+    let currentLang = localStorage.getItem('techDashLang') || 'en';
+
+    function applyLanguage(lang) {
+        const t = TRANSLATIONS[lang];
+        document.querySelectorAll('[data-i18n]').forEach(el => {
+            const key = el.getAttribute('data-i18n');
+            if (t[key] !== undefined) el.textContent = t[key];
+        });
+        const btn = document.getElementById('langToggleBtn');
+        if (btn) {
+            if (lang === 'es') {
+                btn.textContent = '🇺🇸 English';
+                btn.classList.add('es-active');
+            } else {
+                btn.textContent = '🇪🇸 Español';
+                btn.classList.remove('es-active');
+            }
+        }
+    }
+
+    function toggleLanguage() {
+        currentLang = currentLang === 'en' ? 'es' : 'en';
+        localStorage.setItem('techDashLang', currentLang);
+        applyLanguage(currentLang);
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        applyLanguage(currentLang);
+    });
+</script>
 </body>
 </html>
 '''
