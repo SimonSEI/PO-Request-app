@@ -16842,6 +16842,13 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             });
         }
 
+        function toggleResultGroup(groupId) {
+            const content = document.getElementById(groupId);
+            const toggle = document.getElementById('toggle-' + groupId);
+            if (content) content.classList.toggle('visible');
+            if (toggle) toggle.classList.toggle('expanded');
+        }
+
         function displayResults(data) {
             const resultsDiv = document.getElementById('results');
             const exportExcelBtn = document.getElementById('exportExcelBtn');
@@ -16888,36 +16895,72 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 html += '<div class="alert alert-info">' + data.submissions.length + ' submission(s) found - Pricing not configured</div>';
             }
 
-            data.submissions.forEach(submission => {
-                html += '<div class="submission-card">';
-                html += '<div class="submission-header" style="display: flex; justify-content: space-between; align-items: flex-start;">';
-                html += '<div>';
-                html += '<div class="tech-name">' + submission.tech_username + '</div>';
-                html += '<div class="submission-date">Submitted: ' + submission.submitted_at + '</div>';
-                html += '</div>';
-                html += '<button type="button" style="padding: 6px 12px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;" onclick="deleteSubmission(' + submission.id + ', ' + JSON.stringify(submission.tech_username) + ')">Delete</button>';
+            if (data.community === 'Verona Walk HOA') {
+                // --- Verona Walk HOA: group line items by clock across all submissions ---
+
+                // Show submissions list with delete buttons
+                html += '<div style="margin-bottom: 16px;">';
+                html += '<div style="font-size: 13px; font-weight: 600; color: #333; margin-bottom: 8px;">Submissions:</div>';
+                data.submissions.forEach(submission => {
+                    html += '<div style="display: flex; justify-content: space-between; align-items: center; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px; padding: 8px 12px; margin-bottom: 6px;">';
+                    html += '<div>';
+                    html += '<span style="font-weight: 600; color: #333;">' + submission.tech_username + '</span>';
+                    html += '<span style="color: #666; font-size: 12px; margin-left: 10px;">Submitted: ' + submission.submitted_at + '</span>';
+                    html += '</div>';
+                    html += '<button type="button" style="padding: 4px 10px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;" onclick="deleteSubmission(' + submission.id + ', ' + JSON.stringify(submission.tech_username) + ')">Delete</button>';
+                    html += '</div>';
+                });
                 html += '</div>';
 
-                if (submission.line_items.length > 0) {
-                    html += '<table class="spreadsheet-table">';
-                    html += '<thead><tr>';
-                    html += '<th>Zone & Address</th>';
-                    html += '<th>Nozzle</th>';
-                    html += '<th>6" Pop Up</th>';
-                    html += '<th>12" Pop Up</th>';
-                    html += '<th>6" Rotor</th>';
-                    html += '<th>NEW 6" Pop Up</th>';
-                    html += '<th>NEW 12" Pop Up</th>';
-                    html += '<th>Riser</th>';
-                    html += '<th>Solenoid</th>';
-                    html += '<th>1 Stat Decoder</th>';
-                    html += '<th>Notes</th>';
-                    html += '</tr></thead>';
-                    html += '<tbody>';
-
+                // Group items by clock
+                const clockGroups = {};
+                data.submissions.forEach(submission => {
                     submission.line_items.forEach(item => {
+                        const zone = item.zone_and_address || '';
+                        const caMatch = zone.match(/^Clock\s+(\d+)\s+Common Area\s*[-\u2013]\s*(.*)$/i);
+                        const clockMatch = zone.match(/^Clock\s+(\d+)\s*[-\u2013]\s*(.*)$/i);
+                        const enriched = Object.assign({}, item, {
+                            tech_username: submission.tech_username
+                        });
+                        let key;
+                        if (caMatch) {
+                            const n = parseInt(caMatch[1]);
+                            key = 'ca_' + String(n).padStart(4, '0');
+                            if (!clockGroups[key]) clockGroups[key] = { label: 'Clock ' + n + ' \u2014 Common Area', sortKey: n * 10 + 1, items: [] };
+                        } else if (clockMatch) {
+                            const n = parseInt(clockMatch[1]);
+                            key = 'clock_' + String(n).padStart(4, '0');
+                            if (!clockGroups[key]) clockGroups[key] = { label: '\uD83D\uDD50 Clock ' + n, sortKey: n * 10, items: [] };
+                        } else if (zone.toLowerCase().startsWith('common area')) {
+                            key = 'common_area';
+                            if (!clockGroups[key]) clockGroups[key] = { label: 'Common Area', sortKey: -1, items: [] };
+                        } else {
+                            key = 'other';
+                            if (!clockGroups[key]) clockGroups[key] = { label: 'Other', sortKey: 99999, items: [] };
+                        }
+                        clockGroups[key].items.push(enriched);
+                    });
+                });
+
+                // Sort groups
+                const sortedKeys = Object.keys(clockGroups).sort((a, b) => clockGroups[a].sortKey - clockGroups[b].sortKey);
+
+                sortedKeys.forEach(key => {
+                    const group = clockGroups[key];
+                    const gid = 'rg-' + key;
+                    html += '<div class="clock-container">';
+                    html += '<div class="clock-header" onclick="toggleResultGroup(\'' + gid + '\')">';
+                    html += '<span class="clock-title">' + group.label + ' <span style="font-size: 12px; font-weight: normal; color: #888;">(' + group.items.length + ' item' + (group.items.length !== 1 ? 's' : '') + ')</span></span>';
+                    html += '<span class="clock-toggle" id="toggle-' + gid + '">&#9660;</span>';
+                    html += '</div>';
+                    html += '<div class="clock-addresses" id="' + gid + '">';
+                    html += '<table class="spreadsheet-table">';
+                    html += '<thead><tr><th>Zone &amp; Address</th><th>Technician</th><th>Nozzle</th><th>6&quot; Pop Up</th><th>12&quot; Pop Up</th><th>6&quot; Rotor</th><th>NEW 6&quot; Pop Up</th><th>NEW 12&quot; Pop Up</th><th>Riser</th><th>Solenoid</th><th>1 Stat Decoder</th><th>Notes</th></tr></thead>';
+                    html += '<tbody>';
+                    group.items.forEach(item => {
                         html += '<tr>';
                         html += '<td>' + (item.zone_and_address || '') + '</td>';
+                        html += '<td style="white-space:nowrap;font-size:12px;color:#555;">' + item.tech_username + '</td>';
                         html += '<td>' + item.nozzle + '</td>';
                         html += '<td>' + item.pop_up_6_inch + '</td>';
                         html += '<td>' + item.pop_up_12_inch + '</td>';
@@ -16930,14 +16973,51 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                         html += '<td>' + (item.notes || '') + '</td>';
                         html += '</tr>';
                     });
-
                     html += '</tbody></table>';
-                } else {
-                    html += '<p style="color: #666; font-size: 13px; margin-top: 10px;">No items entered</p>';
-                }
+                    html += '</div>';
+                    html += '</div>';
+                });
 
-                html += '</div>';
-            });
+            } else {
+                // --- Other communities: each submission is a collapsible dropdown ---
+                data.submissions.forEach(submission => {
+                    const gid = 'rs-' + submission.id;
+                    html += '<div class="clock-container">';
+                    html += '<div class="clock-header" onclick="toggleResultGroup(\'' + gid + '\')">';
+                    html += '<span class="clock-title">' + submission.tech_username + ' <span style="font-size: 12px; font-weight: normal; color: #888;">Submitted: ' + submission.submitted_at + '</span></span>';
+                    html += '<div style="display:flex;align-items:center;gap:10px;">';
+                    html += '<button type="button" style="padding:4px 10px;background:#dc3545;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;" onclick="event.stopPropagation();deleteSubmission(' + submission.id + ',' + JSON.stringify(submission.tech_username) + ')">Delete</button>';
+                    html += '<span class="clock-toggle" id="toggle-' + gid + '">&#9660;</span>';
+                    html += '</div>';
+                    html += '</div>';
+                    html += '<div class="clock-addresses" id="' + gid + '">';
+                    if (submission.line_items.length > 0) {
+                        html += '<table class="spreadsheet-table">';
+                        html += '<thead><tr><th>Zone &amp; Address</th><th>Nozzle</th><th>6&quot; Pop Up</th><th>12&quot; Pop Up</th><th>6&quot; Rotor</th><th>NEW 6&quot; Pop Up</th><th>NEW 12&quot; Pop Up</th><th>Riser</th><th>Solenoid</th><th>1 Stat Decoder</th><th>Notes</th></tr></thead>';
+                        html += '<tbody>';
+                        submission.line_items.forEach(item => {
+                            html += '<tr>';
+                            html += '<td>' + (item.zone_and_address || '') + '</td>';
+                            html += '<td>' + item.nozzle + '</td>';
+                            html += '<td>' + item.pop_up_6_inch + '</td>';
+                            html += '<td>' + item.pop_up_12_inch + '</td>';
+                            html += '<td>' + item.rotor_6_inch + '</td>';
+                            html += '<td>' + item.new_pop_up_6_inch + '</td>';
+                            html += '<td>' + item.new_pop_up_12_inch + '</td>';
+                            html += '<td>' + item.riser + '</td>';
+                            html += '<td>' + item.solenoid + '</td>';
+                            html += '<td>' + item.stat_decoder_1 + '</td>';
+                            html += '<td>' + (item.notes || '') + '</td>';
+                            html += '</tr>';
+                        });
+                        html += '</tbody></table>';
+                    } else {
+                        html += '<p style="color:#666;font-size:13px;margin-top:10px;">No items entered</p>';
+                    }
+                    html += '</div>';
+                    html += '</div>';
+                });
+            }
 
             resultsDiv.innerHTML = html;
         }
