@@ -8145,12 +8145,23 @@ TECH_DASHBOARD_TEMPLATE = '''
             border-left: 4px solid #dc3545;
             font-weight: bold;
         }
+        .lang-toggle-btn {
+            background: #f0f0f0; color: #333; padding: 10px 16px;
+            border: 2px solid #ccc; border-radius: 5px; font-size: 14px;
+            cursor: pointer; font-weight: bold; transition: all 0.2s;
+        }
+        .lang-toggle-btn:hover { background: #e0e0e0; border-color: #999; }
+        .lang-toggle-btn.es-active { background: #c8102e; color: white; border-color: #c8102e; }
+        .header-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>{% if tech_type == 'install' %}🔧 Install Technician Dashboard - {{ full_name }}{% else %}📱 Service Technician Dashboard - {{ full_name }}{% endif %}</h1>
-        <a href="{{ url_for('logout') }}" class="logout-btn">Logout</a>
+        <h1>{% if tech_type == 'install' %}<span data-i18n-dynamic="dashboard_title_install" data-name="{{ full_name }}">🔧 Install Technician Dashboard - {{ full_name }}</span>{% else %}<span data-i18n-dynamic="dashboard_title_service" data-name="{{ full_name }}">📱 Service Technician Dashboard - {{ full_name }}</span>{% endif %}</h1>
+        <div class="header-actions">
+            <button class="lang-toggle-btn" id="langToggleBtn" onclick="toggleLanguage()">🇪🇸 Español</button>
+            <a href="{{ url_for('logout') }}" class="logout-btn" data-i18n="logout">Logout</a>
+        </div>
     </div>
 
     {% with messages = get_flashed_messages() %}
@@ -8161,11 +8172,11 @@ TECH_DASHBOARD_TEMPLATE = '''
                     {% set po_num = parts[0] %}
                     {% set job_nm = parts[1] %}
                     <div style="background: #28a745; color: white; padding: 25px; border-radius: 10px; margin-bottom: 20px; text-align: center; box-shadow: 0 4px 12px rgba(40,167,69,0.4);">
-                        <div style="font-size: 28px; font-weight: bold; margin-bottom: 8px;">PO SUBMITTED!</div>
+                        <div style="font-size: 28px; font-weight: bold; margin-bottom: 8px;" data-i18n="po_submitted">PO SUBMITTED!</div>
                         <div style="font-size: 42px; font-weight: bold; letter-spacing: 2px; margin: 10px 0;">{{ po_num }}</div>
-                        <div style="font-size: 22px; margin-bottom: 12px;">Job: <strong>{{ job_nm }}</strong></div>
+                        <div style="font-size: 22px; margin-bottom: 12px;"><span data-i18n="job_label">Job:</span> <strong>{{ job_nm }}</strong></div>
                         <div style="font-size: 18px; background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px; margin-top: 10px;">
-                            Use <strong>{{ po_num }}</strong> when placing your order at the store
+                            <span data-i18n-dynamic="use_po_number" data-po="{{ po_num }}">Use <strong>{{ po_num }}</strong> when placing your order at the store</span>
                         </div>
                     </div>
                 {% elif 'ERROR' in message or '❌' in message %}
@@ -8178,7 +8189,7 @@ TECH_DASHBOARD_TEMPLATE = '''
     {% endwith %}
 
     <div class="card">
-        <h2>📝 Submit New {% if tech_type == 'install' %}Install{% else %}Service{% endif %} PO Request <span style="background: #007bff; color: white; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-left: 10px;">PO Prefix: {% if tech_type == 'install' %}I{% else %}S{% endif %}</span></h2>
+        <h2>📝 <span data-i18n="submit_new">Submit New</span> {% if tech_type == 'install' %}<span data-i18n="install_label">Install</span>{% else %}<span data-i18n="service_label">Service</span>{% endif %} <span data-i18n="po_request_label">PO Request</span> <span style="background: #007bff; color: white; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-left: 10px;"><span data-i18n="po_prefix_label">PO Prefix:</span> {% if tech_type == 'install' %}I{% else %}S{% endif %}</span></h2>
         <form method="POST" action="{{ url_for('submit_request') }}">
             {# Auto-populate tech_name from the logged-in user's full_name #}
             <input type="hidden" name="tech_name" value="{{ full_name }}">
@@ -8186,9 +8197,9 @@ TECH_DASHBOARD_TEMPLATE = '''
             {# Job selection for install techs, auto-populated for service techs #}
             {% if tech_type == 'install' %}
                 <div class="form-group">
-                    <label>Job/Project Name <span style="color: red;">*</span></label>
+                    <label><span data-i18n="job_project_name">Job/Project Name</span> <span style="color: red;">*</span></label>
                     <select id="job_name" name="job_name" required style="width: 100%; padding: 10px; border: 2px solid #ddd; border-radius: 5px; font-size: 16px;">
-                        <option value="">-- Select a Job --</option>
+                        <option value="" data-i18n="select_job">-- Select a Job --</option>
                         {% for job in available_jobs %}
                             <option value="{{ job }}">{{ job }}</option>
                         {% endfor %}
@@ -8203,38 +8214,199 @@ TECH_DASHBOARD_TEMPLATE = '''
                 <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
                     <input type="checkbox" id="use-custom-po" style="width: auto; margin: 0; cursor: pointer;"
                            onclick="var f=document.getElementById('custom-po-field'); var i=document.getElementById('custom_po_number'); if(this.checked){f.style.display='block';i.required=true;}else{f.style.display='none';i.required=false;i.value='';}">
-                    Use Custom PO Number
+                    <span data-i18n="use_custom_po">Use Custom PO Number</span>
                 </label>
             </div>
 
             <div class="form-group" id="custom-po-field" style="display: none;">
-                <label>Custom PO Number</label>
-                <input type="number" id="custom_po_number" name="custom_po_number" placeholder="e.g., 9810" min="1">
-                <small style="color: #666;">Enter specific PO number (must be 9000 or higher)</small>
+                <label data-i18n="custom_po_number_label">Custom PO Number</label>
+                <input type="number" id="custom_po_number" name="custom_po_number" placeholder="e.g., 9810" min="1" data-i18n-placeholder="custom_po_placeholder">
+                <small style="color: #666;" data-i18n="custom_po_hint">Enter specific PO number (must be 9000 or higher)</small>
             </div>
 
             {% if tech_type == 'service' %}
             <div class="form-group">
-                <label>Client Name <span style="color: red;">*</span></label>
-                <input type="text" id="client_name" name="client_name" placeholder="e.g., Somerville, Heron's Glen, Reserve" required>
-                <small style="color: #666; display: block; margin-top: 5px;">📍 Enter the client/location name for this service (e.g., Somerville, Heron's Glen, etc.)</small>
+                <label><span data-i18n="client_name_label">Client Name</span> <span style="color: red;">*</span></label>
+                <input type="text" id="client_name" name="client_name" placeholder="e.g., Somerville, Heron's Glen, Reserve" required data-i18n-placeholder="client_name_placeholder">
+                <small style="color: #666; display: block; margin-top: 5px;" data-i18n="client_name_hint">📍 Enter the client/location name for this service (e.g., Somerville, Heron's Glen, etc.)</small>
             </div>
             {% else %}
             <input type="hidden" name="client_name" value="">
             {% endif %}
 
             <div class="form-group">
-                <label>Description / Items Needed</label>
-                <textarea name="description" required placeholder="List what you need to purchase..."></textarea>
+                <label data-i18n="description_label">Description / Items Needed</label>
+                <textarea name="description" required placeholder="List what you need to purchase..." data-i18n-placeholder="description_placeholder"></textarea>
             </div>
 
-            <button type="submit">Submit Request</button>
+            <button type="submit" data-i18n="submit_request">Submit Request</button>
         </form>
     </div>
 
 <script>
-    // Form setup and PO search functionality
+    // ── Translation dictionary ──────────────────────────────────────────────
+    const TRANSLATIONS = {
+        en: {
+            logout: 'Logout',
+            po_submitted: 'PO SUBMITTED!',
+            job_label: 'Job:',
+            submit_new: 'Submit New',
+            install_label: 'Install',
+            service_label: 'Service',
+            po_request_label: 'PO Request',
+            po_prefix_label: 'PO Prefix:',
+            job_project_name: 'Job/Project Name',
+            select_job: '-- Select a Job --',
+            use_custom_po: 'Use Custom PO Number',
+            custom_po_number_label: 'Custom PO Number',
+            custom_po_placeholder: 'e.g., 9810',
+            custom_po_hint: 'Enter specific PO number (must be 9000 or higher)',
+            client_name_label: 'Client Name',
+            client_name_placeholder: "e.g., Somerville, Heron's Glen, Reserve",
+            client_name_hint: "📍 Enter the client/location name for this service (e.g., Somerville, Heron's Glen, etc.)",
+            description_label: 'Description / Items Needed',
+            description_placeholder: 'List what you need to purchase...',
+            submit_request: 'Submit Request',
+            my_po_requests: 'My PO Requests',
+            search_my_pos: '🔍 Search My POs',
+            search_placeholder: 'Search by client name or description...',
+            clear_btn: 'Clear',
+            delete_btn: '🗑️ Delete',
+            client_label: 'Client:',
+            description_field: 'Description:',
+            submitted_field: 'Submitted:',
+            status_denied: 'DENIED',
+            reason_field: 'Reason:',
+            invoice_entered: '📄 Invoice Entered by Office',
+            invoice_number_field: 'Invoice Number:',
+            total_cost_field: 'Total Cost:',
+            entered_field: 'Entered:',
+            invoice_pending: '⏳ Invoice not yet entered by office',
+            no_results: '❌ No POs match your search criteria.',
+            no_requests: 'No requests yet. Submit your first PO request above!',
+            confirm_delete: 'Are you sure you want to delete this PO request? This action cannot be undone.',
+            delete_success: 'PO request deleted successfully',
+            delete_error: 'Error deleting request',
+            dashboard_title_install: '🔧 Install Technician Dashboard',
+            dashboard_title_service: '📱 Service Technician Dashboard',
+            use_po_at_store: 'when placing your order at the store',
+        },
+        es: {
+            logout: 'Cerrar Sesión',
+            po_submitted: '¡PO ENVIADO!',
+            job_label: 'Trabajo:',
+            submit_new: 'Enviar Nueva',
+            install_label: 'Instalación',
+            service_label: 'Servicio',
+            po_request_label: 'Solicitud de PO',
+            po_prefix_label: 'Prefijo PO:',
+            job_project_name: 'Nombre del Trabajo/Proyecto',
+            select_job: '-- Seleccionar un Trabajo --',
+            use_custom_po: 'Usar Número de PO Personalizado',
+            custom_po_number_label: 'Número de PO Personalizado',
+            custom_po_placeholder: 'ej., 9810',
+            custom_po_hint: 'Ingrese número de PO específico (debe ser 9000 o mayor)',
+            client_name_label: 'Nombre del Cliente',
+            client_name_placeholder: 'ej., Somerville, Heron\'s Glen, Reserve',
+            client_name_hint: '📍 Ingrese el nombre del cliente/ubicación para este servicio (ej., Somerville, Heron\'s Glen, etc.)',
+            description_label: 'Descripción / Artículos Necesarios',
+            description_placeholder: 'Enumere lo que necesita comprar...',
+            submit_request: 'Enviar Solicitud',
+            my_po_requests: 'Mis Solicitudes de PO',
+            search_my_pos: '🔍 Buscar Mis POs',
+            search_placeholder: 'Buscar por nombre de cliente o descripción...',
+            clear_btn: 'Limpiar',
+            delete_btn: '🗑️ Eliminar',
+            client_label: 'Cliente:',
+            description_field: 'Descripción:',
+            submitted_field: 'Enviado:',
+            status_denied: 'RECHAZADO',
+            reason_field: 'Motivo:',
+            invoice_entered: '📄 Factura Ingresada por la Oficina',
+            invoice_number_field: 'Número de Factura:',
+            total_cost_field: 'Costo Total:',
+            entered_field: 'Ingresado:',
+            invoice_pending: '⏳ Factura aún no ingresada por la oficina',
+            no_results: '❌ Ningún PO coincide con sus criterios de búsqueda.',
+            no_requests: '¡Aún no hay solicitudes. Envíe su primera solicitud de PO arriba!',
+            confirm_delete: '¿Está seguro de que desea eliminar esta solicitud de PO? Esta acción no se puede deshacer.',
+            delete_success: 'Solicitud de PO eliminada con éxito',
+            delete_error: 'Error al eliminar la solicitud',
+            dashboard_title_install: '🔧 Panel del Técnico de Instalación',
+            dashboard_title_service: '📱 Panel del Técnico de Servicio',
+            use_po_at_store: 'al realizar su pedido en la tienda',
+        }
+    };
+
+    let currentLang = localStorage.getItem('techDashLang') || 'en';
+
+    function applyLanguage(lang) {
+        const t = TRANSLATIONS[lang];
+
+        // Simple data-i18n elements (replace textContent)
+        document.querySelectorAll('[data-i18n]').forEach(el => {
+            const key = el.getAttribute('data-i18n');
+            if (t[key] !== undefined) el.textContent = t[key];
+        });
+
+        // Placeholder translations
+        document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+            const key = el.getAttribute('data-i18n-placeholder');
+            if (t[key] !== undefined) el.placeholder = t[key];
+        });
+
+        // Dynamic elements (need special handling)
+        document.querySelectorAll('[data-i18n-dynamic]').forEach(el => {
+            const key = el.getAttribute('data-i18n-dynamic');
+            if (key === 'dashboard_title_install') {
+                const name = el.getAttribute('data-name');
+                el.textContent = t['dashboard_title_install'] + ' - ' + name;
+            } else if (key === 'dashboard_title_service') {
+                const name = el.getAttribute('data-name');
+                el.textContent = t['dashboard_title_service'] + ' - ' + name;
+            } else if (key === 'use_po_number') {
+                const po = el.getAttribute('data-po');
+                el.innerHTML = 'Use <strong>' + po + '</strong> ' + t['use_po_at_store'];
+                if (lang === 'es') {
+                    el.innerHTML = 'Use <strong>' + po + '</strong> ' + t['use_po_at_store'];
+                }
+            }
+        });
+
+        // Select option for "-- Select a Job --"
+        document.querySelectorAll('option[data-i18n]').forEach(el => {
+            const key = el.getAttribute('data-i18n');
+            if (t[key] !== undefined) el.textContent = t[key];
+        });
+
+        // Update toggle button appearance
+        const btn = document.getElementById('langToggleBtn');
+        if (btn) {
+            if (lang === 'es') {
+                btn.textContent = '🇺🇸 English';
+                btn.classList.add('es-active');
+            } else {
+                btn.textContent = '🇪🇸 Español';
+                btn.classList.remove('es-active');
+            }
+        }
+
+        // Update no-results message if visible
+        const noResultsMsg = document.querySelector('.no-results-message');
+        if (noResultsMsg) noResultsMsg.textContent = t['no_results'];
+    }
+
+    function toggleLanguage() {
+        currentLang = currentLang === 'en' ? 'es' : 'en';
+        localStorage.setItem('techDashLang', currentLang);
+        applyLanguage(currentLang);
+    }
+
+    // ── Form setup and PO search functionality ──────────────────────────────
     document.addEventListener('DOMContentLoaded', function() {
+        // Apply saved language on load
+        applyLanguage(currentLang);
+
         const customPoCheckbox = document.getElementById('use-custom-po');
         if (customPoCheckbox) {
             const customPoField = document.getElementById('custom-po-field');
@@ -8271,7 +8443,6 @@ TECH_DASHBOARD_TEMPLATE = '''
             const client = po.getAttribute('data-client') || '';
             const description = po.getAttribute('data-description') || '';
 
-            // Match if search term is in either client or description
             const matches = !searchTerm || client.includes(searchTerm) || description.includes(searchTerm);
 
             if (matches) {
@@ -8282,7 +8453,6 @@ TECH_DASHBOARD_TEMPLATE = '''
             }
         });
 
-        // Show "no results" message if nothing matches
         const posContainer_id = document.getElementById('posContainer');
         if (visibleCount === 0 && searchTerm) {
             let noResults = posContainer_id.querySelector('.no-results-message');
@@ -8290,9 +8460,9 @@ TECH_DASHBOARD_TEMPLATE = '''
                 noResults = document.createElement('div');
                 noResults.className = 'no-results-message';
                 noResults.style.cssText = 'background: #fff3cd; color: #856404; padding: 15px; border-radius: 5px; margin-top: 15px; border-left: 4px solid #ffc107;';
-                noResults.textContent = '❌ No POs match your search criteria.';
                 posContainer_id.appendChild(noResults);
             }
+            noResults.textContent = TRANSLATIONS[currentLang]['no_results'];
             noResults.style.display = 'block';
         } else {
             const noResults = posContainer_id.querySelector('.no-results-message');
@@ -8308,7 +8478,8 @@ TECH_DASHBOARD_TEMPLATE = '''
     }
 
     function deleteRequest(requestId) {
-        if (confirm('Are you sure you want to delete this PO request? This action cannot be undone.')) {
+        const t = TRANSLATIONS[currentLang];
+        if (confirm(t['confirm_delete'])) {
             fetch('/delete_request', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -8317,14 +8488,14 @@ TECH_DASHBOARD_TEMPLATE = '''
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    alert('PO request deleted successfully');
+                    alert(t['delete_success']);
                     location.reload();
                 } else {
                     alert('Error: ' + data.error);
                 }
             })
             .catch(error => {
-                alert('Error deleting request');
+                alert(t['delete_error']);
             });
         }
     }
@@ -8332,14 +8503,14 @@ TECH_DASHBOARD_TEMPLATE = '''
 </script>
 
     <div class="card">
-        <h2>📋 My PO Requests</h2>
+        <h2>📋 <span data-i18n="my_po_requests">My PO Requests</span></h2>
 
         {% if requests %}
         <div style="background: #f9f9f9; padding: 15px; border-radius: 5px; margin-bottom: 20px; border-left: 4px solid #667eea;">
-            <h3 style="color: #333; margin-bottom: 15px; font-size: 16px;">🔍 Search My POs</h3>
+            <h3 style="color: #333; margin-bottom: 15px; font-size: 16px;" data-i18n="search_my_pos">🔍 Search My POs</h3>
             <div style="display: flex; gap: 10px; align-items: flex-end;">
-                <input type="text" id="poSearchFilter" placeholder="Search by client name or description..." style="flex: 1; padding: 10px; border: 2px solid #ddd; border-radius: 4px; font-size: 14px;">
-                <button onclick="clearFilters()" style="background: #6c757d; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Clear</button>
+                <input type="text" id="poSearchFilter" placeholder="Search by client name or description..." style="flex: 1; padding: 10px; border: 2px solid #ddd; border-radius: 4px; font-size: 14px;" data-i18n-placeholder="search_placeholder">
+                <button onclick="clearFilters()" style="background: #6c757d; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;" data-i18n="clear_btn">Clear</button>
             </div>
         </div>
         {% endif %}
@@ -8348,7 +8519,7 @@ TECH_DASHBOARD_TEMPLATE = '''
             <div id="posContainer">
             {% for req in requests %}
                 <div class="request-item {{ req[7] }}" data-client="{% if client_name_idx is not none and req|length > client_name_idx and req[client_name_idx] %}{{ req[client_name_idx]|lower }}{% else %}{{ req[4]|lower }}{% endif %}" data-description="{{ req[6]|lower }}">
-                    <button onclick="deleteRequest({{ req[0] }})" style="position: absolute; top: 15px; right: 15px; background: #dc3545; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 12px;">🗑️ Delete</button>
+                    <button onclick="deleteRequest({{ req[0] }})" style="position: absolute; top: 15px; right: 15px; background: #dc3545; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 12px;" data-i18n="delete_btn">🗑️ Delete</button>
                     <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-wrap: wrap;">
                         <div style="background: #28a745; color: white; padding: 6px 16px; border-radius: 20px; font-size: 18px; font-weight: bold; letter-spacing: 1px;">
                             PO #{{ format_po_number(req[0], req[3]) }}
@@ -8356,33 +8527,33 @@ TECH_DASHBOARD_TEMPLATE = '''
                         <div style="font-size: 16px; color: #333; font-weight: bold;">{% if client_name_idx is not none and req|length > client_name_idx and req[client_name_idx] %}{{ req[client_name_idx] }}{% else %}Service{% endif %}</div>
                     </div>
                     {% if client_name_idx is not none and req|length > client_name_idx and req[client_name_idx] %}
-                        <p style="margin-left: 0; color: #666; font-size: 14px;">📍 Client: <strong>{{ req[client_name_idx] }}</strong></p>
+                        <p style="margin-left: 0; color: #666; font-size: 14px;">📍 <span data-i18n="client_label">Client:</span> <strong>{{ req[client_name_idx] }}</strong></p>
                     {% endif %}
-                    <p><strong>Description:</strong> {{ req[6] }}</p>
-                    <p><strong>Submitted:</strong> {{ req[8] }}</p>
+                    <p><strong data-i18n="description_field">Description:</strong> {{ req[6] }}</p>
+                    <p><strong data-i18n="submitted_field">Submitted:</strong> {{ req[8] }}</p>
 
                     {% if req[7] == 'denied' %}
-                        <span class="status denied">DENIED</span>
+                        <span class="status denied" data-i18n="status_denied">DENIED</span>
                         {% if req[10] %}
-                            <p><strong>Reason:</strong> {{ req[10] }}</p>
+                            <p><strong data-i18n="reason_field">Reason:</strong> {{ req[10] }}</p>
                         {% endif %}
                     {% elif req[7] == 'approved' %}
                         {% if req|length > inv_filename_idx and req[inv_filename_idx] and req[inv_filename_idx] != '' %}
                             <div class="invoice-data">
-                                <h4>📄 Invoice Entered by Office</h4>
-                                <p><strong>Invoice Number:</strong> {{ req[inv_number_idx] if req|length > inv_number_idx else 'N/A' }}</p>
-                                <p><strong>Total Cost:</strong> ${{ req[inv_cost_idx] if req|length > inv_cost_idx else '0.00' }}</p>
-                                <p><strong>Entered:</strong> {{ req[inv_upload_idx] if req|length > inv_upload_idx else 'N/A' }}</p>
+                                <h4 data-i18n="invoice_entered">📄 Invoice Entered by Office</h4>
+                                <p><strong data-i18n="invoice_number_field">Invoice Number:</strong> {{ req[inv_number_idx] if req|length > inv_number_idx else 'N/A' }}</p>
+                                <p><strong data-i18n="total_cost_field">Total Cost:</strong> ${{ req[inv_cost_idx] if req|length > inv_cost_idx else '0.00' }}</p>
+                                <p><strong data-i18n="entered_field">Entered:</strong> {{ req[inv_upload_idx] if req|length > inv_upload_idx else 'N/A' }}</p>
                             </div>
                         {% else %}
-                            <p style="color: #666; margin-top: 10px; font-size: 14px;">⏳ Invoice not yet entered by office</p>
+                            <p style="color: #666; margin-top: 10px; font-size: 14px;" data-i18n="invoice_pending">⏳ Invoice not yet entered by office</p>
                         {% endif %}
                     {% endif %}
                 </div>
             {% endfor %}
             </div>
         {% else %}
-            <p style="color: #999;">No requests yet. Submit your first PO request above!</p>
+            <p style="color: #999;" data-i18n="no_requests">No requests yet. Submit your first PO request above!</p>
         {% endif %}
     </div>
 </body>
