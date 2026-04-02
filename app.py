@@ -17521,8 +17521,7 @@ def community_billing_spreadsheet():
     # If no line items yet, populate from house numbers or clock addresses added by office user
     if not line_items:
         # Get community ID first
-        c.execute("SELECT id FROM communities WHERE name = ? AND active = 1", (community,))
-        community_row = c.fetchone()
+        c.execute("SELECT id FROM communities WHERE name = ? AND active = 1", (community,))        community_row = c.fetchone()
         if community_row:
             community_id = community_row[0]
 
@@ -17591,6 +17590,36 @@ def community_billing_spreadsheet():
     c.execute("SELECT id FROM communities WHERE name = ? AND active = 1", (community,))
     community_row = c.fetchone()
     community_id = community_row[0] if community_row else None
+
+    # Sync draft line items with current community addresses on every page load.
+    # This catches any address changes the office made since the draft was created.
+    if community_id and status == 'draft':
+        sync_community_drafts(c, community, community_id)
+        conn.commit()
+
+        # Re-fetch line items so the page renders the up-to-date labels
+        c.execute("""SELECT id, zone_and_address, nozzle, pop_up_6_inch, pop_up_12_inch,
+                            rotor_6_inch, new_pop_up_6_inch, new_pop_up_12_inch,
+                            riser, solenoid, stat_decoder_1, notes
+                     FROM community_billing_line_items
+                     WHERE submission_id = ?
+                     ORDER BY id""", (submission_id,))
+        line_items = []
+        for row in c.fetchall():
+            line_items.append({
+                'id': row[0],
+                'zone_and_address': row[1],
+                'nozzle': row[2],
+                'pop_up_6_inch': row[3],
+                'pop_up_12_inch': row[4],
+                'rotor_6_inch': row[5],
+                'new_pop_up_6_inch': row[6],
+                'new_pop_up_12_inch': row[7],
+                'riser': row[8],
+                'solenoid': row[9],
+                'stat_decoder_1': row[10],
+                'notes': row[11]
+            })
 
     conn.close()
 
