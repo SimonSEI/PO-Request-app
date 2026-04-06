@@ -15529,6 +15529,26 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             font-size: 11px;
             margin-right: 4px;
         }
+        .btn-move-address {
+            background: #6f42c1;
+            color: white;
+            padding: 3px 6px;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 11px;
+            margin-right: 4px;
+        }
+        .btn-move-address:hover {
+            background: #5a32a3;
+        }
+        .btn-mass-move {
+            background: #6f42c1;
+            color: white;
+        }
+        .btn-mass-move:hover {
+            background: #5a32a3;
+        }
         .btn-insert-address:hover {
             background: #138496;
         }
@@ -16013,9 +16033,13 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
                     function renderAddressList(addrs, listId) {
                         if (addrs.length === 0) return '';
+                        const isCA = listId.startsWith('ca-');
+                        const moveLabel = isCA ? 'Move to Addresses' : 'Move to Common Area';
+                        const moveBulkLabel = isCA ? 'Move Selected to Addresses' : 'Move Selected to Common Area';
                         let html = `<div class="mass-delete-bar" id="mass-bar-${listId}" style="display:none;">
                             <button type="button" class="btn-select-all" onclick="toggleSelectAll('${listId}')">Select All</button>
                             <span id="mass-count-${listId}">0 selected</span>
+                            <button type="button" class="btn-mass-move" onclick="massMoveAddresses(${communityId}, '${listId}')">${moveBulkLabel}</button>
                             <button type="button" class="btn-mass-delete" onclick="massDeleteAddresses(${communityId}, '${listId}')">Delete Selected</button>
                         </div>`;
                         html += addrs.map(addr => `
@@ -16023,6 +16047,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 <input type="checkbox" class="address-checkbox" data-list="${listId}" data-id="${addr.id}" onclick="handleCheckboxClick(event, this, '${listId}')">
                                 <span class="address-text" id="address-text-${addr.id}">${addr.address}</span>
                                 <div style="white-space:nowrap;">
+                                    <button type="button" class="btn-move-address" onclick="moveAddress(${communityId}, ${addr.id}, ${isCA ? 0 : 1})">${moveLabel}</button>
                                     <button type="button" class="btn-insert-address" onclick="showInsertForm(${communityId}, ${addr.id})">Insert</button>
                                     <button type="button" class="btn-edit-address" onclick="editClockAddress(${communityId}, ${addr.id})">Edit</button>
                                     <button type="button" class="btn-delete-address" onclick="deleteClockAddress(${communityId}, ${addr.id})">Delete</button>
@@ -16215,6 +16240,48 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({ address_ids: ids })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    loadClockAddresses(communityId, true);
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            })
+            .catch(err => alert('Network error - please try again'));
+        }
+
+        function moveAddress(communityId, addressId, newIsCommonArea) {
+            fetch('/verona_walk_move_addresses', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ address_ids: [addressId], is_common_area: newIsCommonArea })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    loadClockAddresses(communityId, true);
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            })
+            .catch(err => alert('Network error - please try again'));
+        }
+
+        function massMoveAddresses(communityId, listId) {
+            const checked = document.querySelectorAll(`.address-checkbox[data-list="${listId}"]:checked`);
+            const ids = Array.from(checked).map(cb => parseInt(cb.dataset.id));
+            if (ids.length === 0) return;
+
+            const isCA = listId.startsWith('ca-');
+            const target = isCA ? 'Addresses' : 'Common Area';
+            if (!confirm('Move ' + ids.length + ' selected address(es) to ' + target + '?')) return;
+
+            fetch('/verona_walk_move_addresses', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ address_ids: ids, is_common_area: isCA ? 0 : 1 })
             })
             .then(r => r.json())
             .then(data => {
@@ -19430,6 +19497,34 @@ def verona_walk_insert_address():
 
         conn.commit()
         return jsonify({'success': True, 'message': f'{added} address(es) inserted'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+@app.route('/verona_walk_move_addresses', methods=['POST'])
+def verona_walk_move_addresses():
+    """Move addresses between Addresses and Common Area"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    address_ids = data.get('address_ids', [])
+    is_common_area = data.get('is_common_area')
+
+    if not address_ids or is_common_area is None:
+        return jsonify({'success': False, 'error': 'Missing required fields'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    try:
+        placeholders = ','.join(['?' for _ in address_ids])
+        c.execute(f"UPDATE verona_walk_clock_addresses SET is_common_area = ? WHERE id IN ({placeholders})",
+                 [is_common_area] + address_ids)
+        moved = c.rowcount
+        conn.commit()
+        return jsonify({'success': True, 'message': f'{moved} address(es) moved'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
     finally:
