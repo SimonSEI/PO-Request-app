@@ -16,6 +16,15 @@ import email
 from email.parser import Parser
 from email.header import decode_header
 import base64
+import threading
+import requests as http_requests  # aliased to avoid conflict with flask.request
+
+# Microsoft Graph API (OAuth2)
+try:
+    import msal
+    MSAL_AVAILABLE = True
+except ImportError:
+    MSAL_AVAILABLE = False
 
 # Background task scheduler for automatic email checking
 try:
@@ -178,9 +187,23 @@ if not PO_EMAIL_IMAP_SERVER:
         PO_EMAIL_IMAP_SERVER = 'outlook.office365.com'
 PO_EMAIL_IMAP_PORT = 993
 
-PO_EMAIL_MONITORING_ENABLED = bool(PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD)
+# Microsoft Graph API (OAuth2) - recommended for Microsoft 365
+MS_TENANT_ID = os.environ.get('MS_TENANT_ID', '')
+MS_CLIENT_ID = os.environ.get('MS_CLIENT_ID', '')
+MS_CLIENT_SECRET = os.environ.get('MS_CLIENT_SECRET', '')
+MS_GRAPH_ENABLED = bool(MS_TENANT_ID and MS_CLIENT_ID and MS_CLIENT_SECRET and MSAL_AVAILABLE)
 
-# ... rest of your code continues ...
+# Log email configuration at startup
+print(f"📧 Email Config:")
+print(f"   PO_EMAIL_ADDRESS: {'set' if PO_EMAIL_ADDRESS else 'NOT SET'}")
+print(f"   PO_EMAIL_PASSWORD: {'set' if PO_EMAIL_PASSWORD else 'NOT SET'}")
+print(f"   MS_TENANT_ID: {'set' if MS_TENANT_ID else 'NOT SET'}")
+print(f"   MS_CLIENT_ID: {'set' if MS_CLIENT_ID else 'NOT SET'}")
+print(f"   MS_CLIENT_SECRET: {'set' if MS_CLIENT_SECRET else 'NOT SET'}")
+print(f"   MSAL_AVAILABLE: {MSAL_AVAILABLE}")
+print(f"   MS_GRAPH_ENABLED: {MS_GRAPH_ENABLED}")
+
+PO_EMAIL_MONITORING_ENABLED = bool(PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD) or (MS_GRAPH_ENABLED and bool(PO_EMAIL_ADDRESS))
 
 def send_reset_email(email, reset_token):
     """Send password reset email"""
@@ -325,6 +348,235 @@ def log_activity(username, action, target_type, target_id, details=''):
         print(f"✓ Logged: {username} - {action}")
     except Exception as e:
         print(f"✗ Activity log error: {e}")
+
+# ============================================================
+# Microsoft Graph API Email Functions (OAuth2)
+# ============================================================
+
+class GraphEmailMessage:
+    """Adapter to make a Graph API message dict behave like email.message.EmailMessage for header access"""
+    def __init__(self, graph_msg):
+        self._msg = graph_msg
+        from_info = graph_msg.get('from', {}).get('emailAddress', {})
+        from_str = from_info.get('address', 'Unknown')
+        from_name = from_info.get('name', '')
+        if from_name:
+            from_str = f"{from_name} <{from_info.get('address', '')}>"
+        self._headers = {
+            'From': from_str,
+            'Subject': graph_msg.get('subject', 'No Subject'),
+            'Date': graph_msg.get('receivedDateTime', ''),
+        }
+        self._graph_id = graph_msg.get('id', '')
+
+    def get(self, key, default=None):
+        return self._headers.get(key, default)
+
+    def walk(self):
+        return iter([])
+
+
+def _get_graph_access_token():
+    """Get OAuth2 access token using Client Credentials flow via MSAL"""
+    authority = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
+    app = msal.ConfidentialClientApplication(
+        MS_CLIENT_ID,
+        authority=authority,
+        client_credential=MS_CLIENT_SECRET,
+    )
+    result = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
+    if "access_token" in result:
+        return result["access_token"]
+    raise Exception(f"Graph auth failed: {result.get('error_description', result.get('error', 'Unknown'))}")
+
+
+def fetch_emails_from_graph():
+    """
+    Fetch emails using Microsoft Graph API (OAuth2 Client Credentials).
+    Returns dict with 'emails' list and 'diagnostics' info.
+    """
+    diagnostics = {
+        'method': 'graph_api',
+        'imap_server': 'graph.microsoft.com',
+        'email_account': PO_EMAIL_ADDRESS,
+        'provider': 'Microsoft Graph API (OAuth2)',
+        'connected': False,
+        'login_success': False,
+        'total_in_inbox': 0,
+        'already_processed': 0,
+        'unprocessed_checked': 0,
+        'with_attachments': 0,
+        'without_attachments': 0,
+        'error': None
+    }
+    emails_out = []
+
+    try:
+        print(f"  Authenticating with Microsoft Graph API...")
+        token = _get_graph_access_token()
+        diagnostics['connected'] = True
+        diagnostics['login_success'] = True
+        print(f"  ✓ Graph API authentication successful")
+        headers = {'Authorization': f'Bearer {token}'}
+
+        # Get processed UIDs from database
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT email_uid FROM email_processing_log")
+        processed_uids = {row[0] for row in c.fetchall()}
+        conn.close()
+        diagnostics['already_processed'] = len(processed_uids)
+
+        # Fetch messages with attachments
+        # Note: Graph API doesn't support $filter + $orderby together on messages
+        # so we fetch filtered results and sort client-side
+        # Use $expand=attachments($select=id,name,contentType) to avoid per-message API calls
+        user_email = PO_EMAIL_ADDRESS
+        url = f"https://graph.microsoft.com/v1.0/users/{user_email}/messages"
+        params = {
+            '$filter': 'hasAttachments eq true',
+            '$top': 50,
+            '$select': 'id,subject,from,receivedDateTime,hasAttachments',
+            '$expand': 'attachments($select=id,name,contentType,size)'
+        }
+
+        all_messages = []
+        while url:
+            response = http_requests.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            data = response.json()
+            all_messages.extend(data.get('value', []))
+            url = data.get('@odata.nextLink', None)
+            params = None  # nextLink includes params already
+
+        # Sort newest first
+        all_messages.sort(key=lambda m: m.get('receivedDateTime', ''), reverse=True)
+
+        diagnostics['total_in_inbox'] = len(all_messages)
+        print(f"  📧 Found {len(all_messages)} emails with attachments via Graph API")
+        print(f"     Already processed: {len(processed_uids)}")
+
+        for msg_data in all_messages:
+            msg_id = msg_data['id']
+            subject = msg_data.get('subject', 'No Subject')
+
+            if msg_id in processed_uids:
+                continue
+
+            diagnostics['unprocessed_checked'] += 1
+
+            # Check for PDF attachments using expanded data (no extra API call needed)
+            att_list = msg_data.get('attachments', [])
+            has_pdf = any(
+                a.get('name', '').lower().endswith('.pdf') or
+                a.get('contentType', '') == 'application/pdf'
+                for a in att_list
+            )
+
+            if has_pdf:
+                wrapped_msg = GraphEmailMessage(msg_data)
+                emails_out.append((msg_id, wrapped_msg))
+                diagnostics['with_attachments'] += 1
+                print(f"  ✓ Found email with PDF attachment(s): {subject[:60]}")
+            else:
+                diagnostics['without_attachments'] += 1
+                print(f"  ⊘ Skipped (no PDF attachments): {subject[:60]}")
+
+        print(f"  ✓ Graph API complete - {len(emails_out)} new emails with PDF attachments")
+        return {'emails': emails_out, 'diagnostics': diagnostics}
+
+    except Exception as e:
+        error_msg = str(e)
+        # Try to get the actual error response body from Microsoft
+        detail = ''
+        if hasattr(e, 'response') and e.response is not None:
+            try:
+                err_body = e.response.json()
+                err_info = err_body.get('error', {})
+                detail = f" - {err_info.get('code', '')}: {err_info.get('message', '')}"
+            except Exception:
+                detail = f" - HTTP {e.response.status_code}: {e.response.text[:200]}"
+
+        print(f"  ✗ Graph API error: {error_msg}{detail}")
+
+        if 'acquire_token' in error_msg or 'auth' in error_msg.lower():
+            diagnostics['error'] = f'Graph API authentication failed: {error_msg}{detail}'
+        elif 'MailboxNotFound' in error_msg or '404' in error_msg or 'MailboxNotFound' in detail:
+            diagnostics['error'] = f'Mailbox not found for {PO_EMAIL_ADDRESS}. Check the email address and ensure Mail.Read permission with admin consent is granted.{detail}'
+        elif '403' in error_msg or 'Forbidden' in error_msg or '403' in detail or 'Authorization' in detail:
+            diagnostics['error'] = f'Access denied. Make sure Mail.Read APPLICATION permission (not Delegated) is added AND admin consent is granted in Azure.{detail}'
+        else:
+            diagnostics['error'] = f'Graph API error: {error_msg}{detail}'
+        import traceback
+        traceback.print_exc()
+        return {'emails': [], 'diagnostics': diagnostics}
+
+
+def extract_attachments_from_graph_message(msg_id, token=None):
+    """
+    Download attachments from a Graph API message.
+    Returns list of (filename, file_content_bytes) tuples - same format as extract_attachments_from_email.
+    """
+    if token is None:
+        token = _get_graph_access_token()
+
+    headers = {'Authorization': f'Bearer {token}'}
+    url = f"https://graph.microsoft.com/v1.0/users/{PO_EMAIL_ADDRESS}/messages/{msg_id}/attachments"
+    response = http_requests.get(url, headers=headers)
+    response.raise_for_status()
+
+    attachments = []
+    for att in response.json().get('value', []):
+        if att.get('@odata.type') == '#microsoft.graph.fileAttachment':
+            filename = att.get('name', 'unnamed')
+            content_bytes = base64.b64decode(att['contentBytes'])
+            attachments.append((filename, content_bytes))
+            print(f"    📎 Downloaded attachment: {filename} ({len(content_bytes)} bytes)")
+        elif att.get('@odata.type') == '#microsoft.graph.itemAttachment':
+            # Forwarded email attachment - check for nested file attachments
+            item_att_url = f"{url}/{att['id']}?$expand=microsoft.graph.itemAttachment/item"
+            item_resp = http_requests.get(item_att_url, headers=headers)
+            if item_resp.ok:
+                item_data = item_resp.json()
+                nested_item = item_data.get('item', {})
+                if nested_item.get('attachments'):
+                    for nested_att in nested_item['attachments']:
+                        if nested_att.get('@odata.type') == '#microsoft.graph.fileAttachment':
+                            filename = nested_att.get('name', 'unnamed')
+                            content_bytes = base64.b64decode(nested_att['contentBytes'])
+                            attachments.append((filename, content_bytes))
+                            print(f"    📎 Downloaded nested attachment: {filename} ({len(content_bytes)} bytes)")
+
+    return attachments
+
+
+def fetch_emails():
+    """Unified email fetcher - tries Graph API first, falls back to IMAP"""
+    print(f"  MS_GRAPH_ENABLED={MS_GRAPH_ENABLED} (MSAL={MSAL_AVAILABLE}, TENANT={'set' if MS_TENANT_ID else 'empty'}, CLIENT={'set' if MS_CLIENT_ID else 'empty'}, SECRET={'set' if MS_CLIENT_SECRET else 'empty'})")
+
+    if MS_GRAPH_ENABLED:
+        print("📧 Using Microsoft Graph API (OAuth2)...")
+        result = fetch_emails_from_graph()
+        result['diagnostics']['source'] = 'graph_api'
+        # Always return Graph API result when it's configured - don't silently fall back to IMAP
+        return result
+    else:
+        print("  ⚠ Graph API not enabled, using IMAP")
+
+    if PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD:
+        print("📧 Using IMAP...")
+        result = fetch_emails_from_imap()
+        result['diagnostics']['source'] = 'imap'
+        return result
+
+    return {
+        'emails': [],
+        'diagnostics': {
+            'error': 'No email credentials configured. Set MS_TENANT_ID/MS_CLIENT_ID/MS_CLIENT_SECRET for Graph API, or PO_EMAIL_ADDRESS/PO_EMAIL_PASSWORD for IMAP.',
+            'source': 'none'
+        }
+    }
+
 
 def fetch_emails_from_imap():
     """
@@ -659,10 +911,11 @@ def auto_check_po_emails():
         print(f"   Provider: {PO_EMAIL_PROVIDER}")
         print(f"{'='*60}")
 
-        # Fetch emails from IMAP
-        result = fetch_emails_from_imap()
+        # Fetch emails (Graph API first, then IMAP fallback)
+        result = fetch_emails()
         emails = result.get('emails', [])
         diag = result.get('diagnostics', {})
+        source = diag.get('source', 'imap')
 
         if diag.get('error'):
             print(f"✗ Email fetch error: {diag['error']}")
@@ -677,8 +930,11 @@ def auto_check_po_emails():
         matched_count = 0
 
         for msg_uid, msg in emails:
-            # Extract attachments
-            attachments = extract_attachments_from_email(msg)
+            # Extract attachments based on source
+            if source == 'graph_api':
+                attachments = extract_attachments_from_graph_message(msg_uid)
+            else:
+                attachments = extract_attachments_from_email(msg)
             if not attachments:
                 continue
 
@@ -728,7 +984,7 @@ def init_db():
 
     c.execute('''CREATE TABLE IF NOT EXISTS po_requests
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  tech_username TEXT, tech_name TEXT, job_name TEXT, store_name TEXT,
+                  tech_username TEXT, tech_name TEXT, job_name TEXT,
                   estimated_cost REAL, description TEXT, status TEXT DEFAULT 'pending',
                   request_date TEXT, approval_date TEXT, approval_notes TEXT,
                   approved_by TEXT, invoice_filename TEXT, invoice_number TEXT,
@@ -2367,14 +2623,14 @@ def office_dashboard():
             c.execute("""
                 SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date, client_name
                 FROM po_requests
-                WHERE job_name=? AND status IN ('approved', 'awaiting_invoice')
+                WHERE job_name=? AND status IN ('approved', 'awaiting_invoice', 'matched')
                 ORDER BY id DESC
             """, (job_name,))
             job_pos[job[0]] = c.fetchall()
 
             # Get ALL POs for this job (for complete history)
             c.execute("""
-                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date, description, client_name, store_name
+                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date, description, client_name
                 FROM po_requests
                 WHERE job_name=?
                 ORDER BY id DESC
@@ -2486,14 +2742,8 @@ def submit_request():
     tech_name = request.form['tech_name']
     custom_po_number = request.form.get('custom_po_number', '').strip()
     job_name = request.form['job_name'].strip()
-    store_name = request.form.get('store_name', '').strip()
     description = request.form.get('description', '').strip()
     client_name = request.form.get('client_name', '').strip()  # Optional - for Service POs
-
-    # VALIDATE REQUIRED FIELDS: store_name and description
-    if not store_name:
-        flash('❌ ERROR: Store name is required. Please enter a store name.')
-        return redirect(url_for('tech_dashboard'))
 
     if not description:
         flash('❌ ERROR: Description is required. Please enter a description for this PO.')
@@ -2549,10 +2799,10 @@ def submit_request():
             # Insert with EXPLICIT ID - set to awaiting_invoice
             now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             c.execute("""INSERT INTO po_requests
-                         (id, tech_username, tech_name, job_name, store_name,
+                         (id, tech_username, tech_name, job_name,
                           description, status, request_date, client_name, po_type)
-                         VALUES (?, ?, ?, ?, ?, ?, 'awaiting_invoice', ?, ?, ?)""",
-                     (po_id, session['username'], tech_name, job_name, store_name,
+                         VALUES (?, ?, ?, ?, ?, 'awaiting_invoice', ?, ?, ?)""",
+                     (po_id, session['username'], tech_name, job_name,
                       description, now_str, client_name if client_name else None, tech_type))
 
             conn.commit()
@@ -2586,10 +2836,10 @@ def submit_request():
         # Create PO with awaiting_invoice status and po_type
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         c.execute("""INSERT INTO po_requests
-                     (tech_username, tech_name, job_name, store_name,
+                     (tech_username, tech_name, job_name,
                       description, status, request_date, client_name, po_type)
-                     VALUES (?, ?, ?, ?, ?, 'awaiting_invoice', ?, ?, ?)""",
-                 (session['username'], tech_name, job_name, store_name,
+                     VALUES (?, ?, ?, ?, 'awaiting_invoice', ?, ?, ?)""",
+                 (session['username'], tech_name, job_name,
                   description, now_str, client_name if client_name else None, tech_type))
 
         new_id = c.lastrowid
@@ -3298,6 +3548,69 @@ def delete_po():
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': f'Server error: {str(e)}'})
+
+@app.route('/undo_invoice_match', methods=['POST'])
+def undo_invoice_match():
+    """Undo an invoice match - resets PO back to awaiting_invoice for re-matching"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    data = request.get_json()
+    po_id = data.get('po_id')
+    invoice_id = data.get('invoice_id')
+
+    if not po_id:
+        return jsonify({'success': False, 'error': 'Missing po_id'})
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Delete the specific invoice record if provided
+        if invoice_id:
+            c.execute("DELETE FROM invoices WHERE id=? AND po_id=?", (invoice_id, po_id))
+            print(f"✓ Deleted invoice record {invoice_id} for PO {po_id}")
+
+        # Check if there are remaining invoices for this PO
+        c.execute("SELECT COUNT(*) FROM invoices WHERE po_id=?", (po_id,))
+        remaining = c.fetchone()[0]
+
+        if remaining == 0:
+            # No more invoices - reset PO back to awaiting_invoice
+            c.execute("""UPDATE po_requests
+                         SET status='awaiting_invoice',
+                             invoice_filename=NULL, invoice_number=NULL,
+                             invoice_cost=NULL, match_method=NULL,
+                             invoice_date=NULL, invoice_upload_date=NULL
+                         WHERE id=?""", (po_id,))
+            print(f"✓ Reset PO {po_id} back to awaiting_invoice (no remaining invoices)")
+
+            # Also clear the email processing log entries that matched this PO
+            # so the system will re-process those emails
+            c.execute("DELETE FROM email_processing_log WHERE results LIKE ?",
+                      (f'%"po_number": {po_id}%',))
+        else:
+            # Still has other invoices - update PO cost from remaining invoices
+            c.execute("SELECT SUM(CAST(invoice_cost AS REAL)) FROM invoices WHERE po_id=?", (po_id,))
+            total_cost = c.fetchone()[0] or 0
+            c.execute("UPDATE po_requests SET invoice_cost=? WHERE id=?", (total_cost, po_id))
+            print(f"✓ Removed one invoice from PO {po_id}, {remaining} remaining, updated cost to ${total_cost:.2f}")
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'message': f'Invoice match undone for PO {po_id}',
+            'remaining_invoices': remaining
+        })
+
+    except Exception as e:
+        print(f"✗ Error undoing invoice match: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)})
+
 
 @app.route('/view_invoice/<filename>')
 def view_invoice(filename):
@@ -4075,48 +4388,56 @@ def bulk_upload_invoices():
         return jsonify({'success': False, 'error': str(e), 'trace': traceback.format_exc()})
 
 
-@app.route('/check_po_emails', methods=['POST'])
-def check_po_emails():
-    """Check IMAP email account for new invoices and process them automatically"""
-    if 'username' not in session or session['role'] != 'office':
-        return jsonify({'success': False, 'error': 'Unauthorized'})
+# Background email check status tracking
+_email_check_status = {
+    'running': False,
+    'started_at': None,
+    'completed_at': None,
+    'result': None
+}
+_email_check_lock = threading.Lock()
 
-    if not PO_EMAIL_MONITORING_ENABLED:
-        return jsonify({
-            'success': False,
-            'error': 'Email monitoring not configured. Set PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD environment variables.'
-        })
 
+def _run_email_check_background():
+    """Background worker for email checking"""
+    global _email_check_status
     try:
         print(f"\n{'='*60}")
         print(f"📧 CHECKING PO EMAIL ACCOUNT: {PO_EMAIL_ADDRESS}")
-        print(f"   Provider: {PO_EMAIL_PROVIDER} (Server: {PO_EMAIL_IMAP_SERVER})")
+        print(f"   Graph API: {'Enabled' if MS_GRAPH_ENABLED else 'Not configured'}")
         print(f"{'='*60}")
 
-        # Fetch emails from IMAP
-        result = fetch_emails_from_imap()
+        result = fetch_emails()
         emails = result.get('emails', [])
         diagnostics = result.get('diagnostics', {})
+        source = diagnostics.get('source', 'imap')
 
-        # If there was a connection/auth error, report it to the user
         if diagnostics.get('error'):
-            return jsonify({
-                'success': False,
-                'error': diagnostics['error'],
-                'diagnostics': diagnostics
-            })
+            with _email_check_lock:
+                _email_check_status['running'] = False
+                _email_check_status['completed_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                _email_check_status['result'] = {
+                    'success': False,
+                    'error': diagnostics['error'],
+                    'diagnostics': diagnostics
+                }
+            return
 
         if not emails:
-            return jsonify({
-                'success': True,
-                'message': 'No new emails with attachments found',
-                'emails_checked': 0,
-                'emails_processed': 0,
-                'total_attachments': 0,
-                'total_matched': 0,
-                'total_unmatched': 0,
-                'diagnostics': diagnostics
-            })
+            with _email_check_lock:
+                _email_check_status['running'] = False
+                _email_check_status['completed_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                _email_check_status['result'] = {
+                    'success': True,
+                    'message': 'No new emails with attachments found',
+                    'emails_checked': 0,
+                    'emails_processed': 0,
+                    'total_attachments': 0,
+                    'total_matched': 0,
+                    'total_unmatched': 0,
+                    'diagnostics': diagnostics
+                }
+            return
 
         all_results = {
             'success': True,
@@ -4129,26 +4450,24 @@ def check_po_emails():
             'diagnostics': diagnostics
         }
 
-        # Process each email
         for msg_uid, msg in emails:
             print(f"\n📧 Processing email: {msg.get('Subject', 'No Subject')}")
 
-            # Extract attachments
-            attachments = extract_attachments_from_email(msg)
+            if source == 'graph_api':
+                attachments = extract_attachments_from_graph_message(msg_uid)
+            else:
+                attachments = extract_attachments_from_email(msg)
             if not attachments:
                 continue
 
             all_results['emails_processed'] += 1
             all_results['total_attachments'] += len(attachments)
 
-            # Process attachments
             email_results = process_email_attachments(msg_uid, msg, attachments)
 
-            # Update totals
             all_results['total_matched'] += email_results.get('matched', 0)
             all_results['total_unmatched'] += len(email_results.get('unmatched', []))
 
-            # Log to database
             log_email_processing(
                 msg_uid,
                 email_results.get('email_sender', 'Unknown'),
@@ -4160,6 +4479,10 @@ def check_po_emails():
 
             all_results['details'].append(email_results)
 
+            # Update status as we go so the UI can show progress
+            with _email_check_lock:
+                _email_check_status['result'] = all_results
+
         print(f"\n{'='*60}")
         print(f"✅ EMAIL CHECK COMPLETE")
         print(f"  Emails processed: {all_results['emails_processed']}")
@@ -4168,16 +4491,72 @@ def check_po_emails():
         print(f"  Unmatched invoices: {all_results['total_unmatched']}")
         print(f"{'='*60}")
 
-        return jsonify(all_results)
+        with _email_check_lock:
+            _email_check_status['running'] = False
+            _email_check_status['completed_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            _email_check_status['result'] = all_results
 
     except Exception as e:
         import traceback
         print(f"✗ Email check error: {e}")
         traceback.print_exc()
+        with _email_check_lock:
+            _email_check_status['running'] = False
+            _email_check_status['completed_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            _email_check_status['result'] = {
+                'success': False,
+                'error': str(e)
+            }
+
+
+@app.route('/check_po_emails', methods=['POST'])
+def check_po_emails():
+    """Start background email check - returns immediately"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    if not PO_EMAIL_MONITORING_ENABLED:
         return jsonify({
             'success': False,
-            'error': str(e),
-            'trace': traceback.format_exc()
+            'error': 'Email monitoring not configured. Set MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET for Graph API (recommended), or PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD for IMAP.'
+        })
+
+    with _email_check_lock:
+        if _email_check_status['running']:
+            return jsonify({
+                'success': True,
+                'status': 'already_running',
+                'started_at': _email_check_status['started_at'],
+                'message': 'Email check already in progress'
+            })
+
+        _email_check_status['running'] = True
+        _email_check_status['started_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        _email_check_status['completed_at'] = None
+        _email_check_status['result'] = None
+
+    thread = threading.Thread(target=_run_email_check_background, daemon=True)
+    thread.start()
+
+    return jsonify({
+        'success': True,
+        'status': 'started',
+        'message': 'Email check started in background'
+    })
+
+
+@app.route('/check_po_emails_status', methods=['GET'])
+def check_po_emails_status():
+    """Poll for email check status"""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Unauthorized'})
+
+    with _email_check_lock:
+        return jsonify({
+            'running': _email_check_status['running'],
+            'started_at': _email_check_status['started_at'],
+            'completed_at': _email_check_status['completed_at'],
+            'result': _email_check_status['result']
         })
 
 
@@ -4202,16 +4581,33 @@ def rescan_all_po_emails():
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("DELETE FROM email_processing_log")
+
+        # Reset POs that were matched with $0.00 cost so they get re-matched
+        c.execute("""UPDATE po_requests
+                     SET status='awaiting_invoice', invoice_filename=NULL, invoice_number=NULL,
+                         invoice_cost=NULL, match_method=NULL
+                     WHERE status='matched'
+                     AND (invoice_cost IS NULL OR invoice_cost = '' OR CAST(invoice_cost AS REAL) = 0)""")
+        reset_count = c.rowcount
+
+        # Also delete invoice records with $0.00 cost so they get re-created
+        c.execute("""DELETE FROM invoices
+                     WHERE (invoice_cost IS NULL OR invoice_cost = '' OR CAST(invoice_cost AS REAL) = 0)""")
+        deleted_invoices = c.rowcount
+
         conn.commit()
         conn.close()
 
         print(f"✓ Cleared email processing history - all emails marked for reprocessing")
+        print(f"✓ Reset {reset_count} matched POs with $0.00 cost back to awaiting_invoice")
+        print(f"✓ Deleted {deleted_invoices} invoice records with $0.00 cost")
 
         # Now run the standard email check
         print(f"\n📧 Starting full email scan...")
-        result = fetch_emails_from_imap()
+        result = fetch_emails()
         emails = result.get('emails', [])
         diagnostics = result.get('diagnostics', {})
+        source = diagnostics.get('source', 'imap')
 
         if diagnostics.get('error'):
             return jsonify({
@@ -4248,8 +4644,11 @@ def rescan_all_po_emails():
         for msg_uid, msg in emails:
             print(f"\n📧 Processing email: {msg.get('Subject', 'No Subject')}")
 
-            # Extract attachments
-            attachments = extract_attachments_from_email(msg)
+            # Extract attachments based on source
+            if source == 'graph_api':
+                attachments = extract_attachments_from_graph_message(msg_uid)
+            else:
+                attachments = extract_attachments_from_email(msg)
             if not attachments:
                 continue
 
@@ -4559,6 +4958,25 @@ def process_bulk_pdf(pdf_path, timestamp):
             invoice_data = group['data']
             po_id = invoice_data['po_id']
 
+            # If cost is 0.00, try re-extracting from ALL pages of this invoice group
+            if invoice_data.get('cost', '0.00') == '0.00' and group['texts']:
+                combined_text = '\n'.join(group['texts'])
+                print(f"  🔍 Cost is $0.00 for invoice {inv_num}, re-extracting from {len(group['texts'])} page(s)...")
+                re_extracted_cost = extract_invoice_cost(combined_text)
+                if re_extracted_cost and re_extracted_cost != '0.00':
+                    invoice_data['cost'] = re_extracted_cost
+                    print(f"  ✅ Re-extracted cost: ${re_extracted_cost}")
+                else:
+                    # Try finding largest dollar amount across all pages
+                    all_amounts = re.findall(r'\$\s*([\d,]+\.\d{2})', combined_text)
+                    if all_amounts:
+                        largest = max(float(a.replace(',', '')) for a in all_amounts)
+                        if largest > 0:
+                            invoice_data['cost'] = f"{largest:.2f}"
+                            print(f"  ✅ Using largest dollar amount: ${invoice_data['cost']}")
+                        else:
+                            print(f"  ⚠ Still could not extract cost for invoice {inv_num}")
+
             # Create multi-page PDF
             pdf_writer = PyPDF2.PdfWriter()
             for page_idx in group['pages']:
@@ -4622,6 +5040,17 @@ def process_bulk_pdf(pdf_path, timestamp):
                           float(invoice_data['cost']),
                           invoice_data.get('match_method', 'Unknown'), 'matched', new_job_name, manual_review_flag, po_id))
                 job_name = new_job_name  # Update job_name for results
+
+                # Also insert into invoices table
+                try:
+                    c.execute("""INSERT INTO invoices (po_id, invoice_number, invoice_cost, invoice_filename,
+                                                       invoice_date, invoice_upload_date, created_at)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                             (po_id, inv_num, float(invoice_data['cost']), filename,
+                              'N/A', datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                              datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                except Exception as inv_err:
+                    print(f"    ⚠ Could not insert into invoices table: {inv_err}")
             else:
                 # Normal PO - no job name change
                 c.execute("""UPDATE po_requests
@@ -4633,6 +5062,17 @@ def process_bulk_pdf(pdf_path, timestamp):
                           datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                           float(invoice_data['cost']),
                           invoice_data.get('match_method', 'Unknown'), 'matched', po_id))
+
+            # Also insert into invoices table so it shows in the invoices count/modal
+            try:
+                c.execute("""INSERT INTO invoices (po_id, invoice_number, invoice_cost, invoice_filename,
+                                                   invoice_date, invoice_upload_date, created_at)
+                             VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                         (po_id, inv_num, float(invoice_data['cost']), filename,
+                          'N/A', datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                          datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+            except Exception as inv_err:
+                print(f"    ⚠ Could not insert into invoices table: {inv_err}")
 
             results['matched'] += 1
 
@@ -4819,11 +5259,14 @@ def extract_invoice_cost(text):
     if not text:
         return None
 
-    # Patterns for cost extraction (prioritized)
+    # Patterns for cost extraction (prioritized - most specific first)
     patterns = [
-        r'(?:Total|Amount\s*Due|Invoice\s*Total|Grand\s*Total)\s*[:=]?\s*\$?\s*([\d,]+\.?\d*)',
-        r'\$\s*([\d,]+\.?\d{2})',  # $1,234.56
-        r'(?:Total|Amount)\s+([0-9]+\.[0-9]{2})',
+        r'(?:Merchandise\s+)?(?:Invoice\s+)?(?:Sub\s*)?Total\s*[:=]?\s*\$?\s*([\d,]+\.\d{2})',
+        r'(?:Amount\s*Due|Balance\s*Due|Net\s*Amount|Total\s*Due|Please\s*Pay)\s*[:=]?\s*\$?\s*([\d,]+\.\d{2})',
+        r'BALANCE\s*[:=]?\s*\$\s*([\d,]+\.\d{2})',
+        r'(?:Grand\s*Total)\s*[:=]?\s*\$?\s*([\d,]+\.\d{2})',
+        r'SUB[\-\s]*TOTAL[*\s]*\$?\s*([\d,]+\.\d{2})',
+        r'TOTAL\s*[:=]?\s*\$?\s*([\d,]+\.\d{2})',
     ]
 
     for pattern in patterns:
@@ -5446,9 +5889,16 @@ def extract_invoice_data(text, po_map):
     cost = "0.00"
 
     cost_patterns = [
-        (r'TOTAL[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Total:'),
+        (r'(?:Invoice\s+)?(?:Sub\s*)?Total[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Invoice/Sub Total:'),
         (r'Amount\s+Due[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Amount Due:'),
         (r'Grand\s+Total[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Grand Total:'),
+        (r'Balance\s*(?:Due)?[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Balance/Balance Due:'),
+        (r'BALANCE[:\s]*\$\s*([0-9,]+\.\d{2})', 'BALANCE $:'),
+        (r'Net\s+Amount[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Net Amount:'),
+        (r'TOTAL\s+DUE[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Total Due:'),
+        (r'PLEASE\s+PAY[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Please Pay:'),
+        (r'SUB[\-\s]*TOTAL[*\s]*\$?\s*([0-9,]+\.\d{2})', 'Sub-Total:'),
+        (r'TOTAL[:\s]*\$?\s*([0-9,]+\.\d{2})', 'Total:'),
     ]
 
     for pattern, desc in cost_patterns:
@@ -5463,6 +5913,26 @@ def extract_invoice_data(text, po_map):
                 break
             except:
                 pass
+
+    # Fallback: if cost is still 0, look for the largest dollar amount on the page
+    # (likely the total, as line items are smaller)
+    if cost == "0.00":
+        print("  🔍 No total found, scanning for largest dollar amount...")
+        all_amounts = re.findall(r'\$\s*([\d,]+\.\d{2})', text)
+        if all_amounts:
+            largest = max(float(a.replace(',', '')) for a in all_amounts)
+            if largest > 0:
+                cost = f"{largest:.2f}"
+                print(f"  ✅ Using largest dollar amount as cost: ${cost}")
+
+    # Second fallback: look for amounts without $ sign at end of lines (common in tables)
+    if cost == "0.00":
+        all_amounts = re.findall(r'(?:^|[\s|])([\d,]+\.\d{2})\s*$', text, re.MULTILINE)
+        if all_amounts:
+            largest = max(float(a.replace(',', '')) for a in all_amounts)
+            if largest > 0:
+                cost = f"{largest:.2f}"
+                print(f"  ✅ Using largest line-end amount as cost: ${cost}")
 
     # === FINAL RESULT ===
     print(f"\n{'='*60}")
@@ -7063,16 +7533,36 @@ DASHBOARD_MENU_TEMPLATE = '''
         .logout-btn:hover {
             background: rgba(255,255,255,0.3);
         }
+        .lang-toggle-btn {
+            background: rgba(255,255,255,0.15);
+            color: white;
+            padding: 8px 16px;
+            border: 2px solid rgba(255,255,255,0.7);
+            border-radius: 5px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.3s ease;
+            margin-bottom: 10px;
+        }
+        .lang-toggle-btn:hover { background: rgba(255,255,255,0.3); }
+        .lang-toggle-btn.es-active { background: rgba(200,16,46,0.7); border-color: white; }
+        .top-right {
+            position: fixed; top: 16px; right: 20px;
+        }
     </style>
 </head>
 <body>
+    <div class="top-right">
+        <button class="lang-toggle-btn" id="langToggleBtn" onclick="toggleLanguage()">🇪🇸 Español</button>
+    </div>
     <div class="header">
-        <h1>🌱 Welcome to Your Dashboard</h1>
-        <p>Choose an application to continue</p>
+        <h1 data-i18n="welcome_title">🌱 Welcome to Your Dashboard</h1>
+        <p data-i18n="choose_app">Choose an application to continue</p>
     </div>
 
     <div class="user-info">
-        <p>Logged in as: <strong>{{ full_name }}</strong> ({{ role }})</p>
+        <p><span data-i18n="logged_in_as">Logged in as:</span> <strong>{{ full_name }}</strong> ({{ role }})</p>
     </div>
 
     <div class="container">
@@ -7080,9 +7570,9 @@ DASHBOARD_MENU_TEMPLATE = '''
         <a href="{% if role == 'technician' %}{{ url_for('tech_dashboard') }}{% elif role == 'admin' %}{{ url_for('admin_dashboard') }}{% else %}{{ url_for('office_dashboard') }}{% endif %}" style="text-decoration: none;">
             <div class="app-card">
                 <div class="app-icon">📋</div>
-                <h2>PO Request App</h2>
-                <p>Manage purchase orders, track invoices, and monitor project costs</p>
-                <button class="app-button">Open PO App</button>
+                <h2 data-i18n="po_app_title">PO Request App</h2>
+                <p data-i18n="po_app_desc">Manage purchase orders, track invoices, and monitor project costs</p>
+                <button class="app-button" data-i18n="po_app_btn">Open PO App</button>
             </div>
         </a>
 
@@ -7091,9 +7581,9 @@ DASHBOARD_MENU_TEMPLATE = '''
         <a href="{{ url_for('office_admin') }}" style="text-decoration: none;">
             <div class="app-card">
                 <div class="app-icon">🔐</div>
-                <h2>Office Administrator</h2>
-                <p>Manage technician accounts, passwords, and system settings</p>
-                <button class="app-button">Open Admin Panel</button>
+                <h2 data-i18n="admin_title">Office Administrator</h2>
+                <p data-i18n="admin_desc">Manage technician accounts, passwords, and system settings</p>
+                <button class="app-button" data-i18n="admin_btn">Open Admin Panel</button>
             </div>
         </a>
         {% endif %}
@@ -7103,9 +7593,9 @@ DASHBOARD_MENU_TEMPLATE = '''
         <a href="{{ url_for('sales') }}" style="text-decoration: none;">
             <div class="app-card">
                 <div class="app-icon">📊</div>
-                <h2>Sales</h2>
-                <p>Manage sales orders and track sales activities</p>
-                <button class="app-button">Open Sales App</button>
+                <h2 data-i18n="sales_title">Sales</h2>
+                <p data-i18n="sales_desc">Manage sales orders and track sales activities</p>
+                <button class="app-button" data-i18n="sales_btn">Open Sales App</button>
             </div>
         </a>
         {% endif %}
@@ -7114,16 +7604,87 @@ DASHBOARD_MENU_TEMPLATE = '''
         <a href="{{ url_for('community_billing') }}" style="text-decoration: none;">
             <div class="app-card" onclick="window.location.href='{{ url_for('community_billing') }}'">
                 <div class="app-icon">💰</div>
-                <h2>Community Maintenance</h2>
-                <p>Enter and review equipment installation data by community</p>
-                <button class="app-button">Access Community Maintenance</button>
+                <h2 data-i18n="cm_title">Community Maintenance</h2>
+                <p data-i18n="cm_desc">Enter and review equipment installation data by community</p>
+                <button class="app-button" data-i18n="cm_btn">Access Community Maintenance</button>
             </div>
         </a>
     </div>
 
     <div class="footer">
-        <a href="{{ url_for('logout') }}" class="logout-btn">Logout</a>
+        <a href="{{ url_for('logout') }}" class="logout-btn" data-i18n="logout">Logout</a>
     </div>
+
+<script>
+    const TRANSLATIONS = {
+        en: {
+            welcome_title: '🌱 Welcome to Your Dashboard',
+            choose_app: 'Choose an application to continue',
+            logged_in_as: 'Logged in as:',
+            po_app_title: 'PO Request App',
+            po_app_desc: 'Manage purchase orders, track invoices, and monitor project costs',
+            po_app_btn: 'Open PO App',
+            admin_title: 'Office Administrator',
+            admin_desc: 'Manage technician accounts, passwords, and system settings',
+            admin_btn: 'Open Admin Panel',
+            sales_title: 'Sales',
+            sales_desc: 'Manage sales orders and track sales activities',
+            sales_btn: 'Open Sales App',
+            cm_title: 'Community Maintenance',
+            cm_desc: 'Enter and review equipment installation data by community',
+            cm_btn: 'Access Community Maintenance',
+            logout: 'Logout',
+        },
+        es: {
+            welcome_title: '🌱 Bienvenido a Su Panel',
+            choose_app: 'Elija una aplicación para continuar',
+            logged_in_as: 'Conectado como:',
+            po_app_title: 'App de Solicitudes de PO',
+            po_app_desc: 'Gestionar órdenes de compra, rastrear facturas y monitorear costos del proyecto',
+            po_app_btn: 'Abrir App de PO',
+            admin_title: 'Administrador de Oficina',
+            admin_desc: 'Gestionar cuentas de técnicos, contraseñas y configuraciones del sistema',
+            admin_btn: 'Abrir Panel de Admin',
+            sales_title: 'Ventas',
+            sales_desc: 'Gestionar órdenes de ventas y rastrear actividades de ventas',
+            sales_btn: 'Abrir App de Ventas',
+            cm_title: 'Mantenimiento Comunitario',
+            cm_desc: 'Ingresar y revisar datos de instalación de equipos por comunidad',
+            cm_btn: 'Acceder a Mantenimiento Comunitario',
+            logout: 'Cerrar Sesión',
+        }
+    };
+
+    let currentLang = localStorage.getItem('techDashLang') || 'en';
+
+    function applyLanguage(lang) {
+        const t = TRANSLATIONS[lang];
+        document.querySelectorAll('[data-i18n]').forEach(el => {
+            const key = el.getAttribute('data-i18n');
+            if (t[key] !== undefined) el.textContent = t[key];
+        });
+        const btn = document.getElementById('langToggleBtn');
+        if (btn) {
+            if (lang === 'es') {
+                btn.textContent = '🇺🇸 English';
+                btn.classList.add('es-active');
+            } else {
+                btn.textContent = '🇪🇸 Español';
+                btn.classList.remove('es-active');
+            }
+        }
+    }
+
+    function toggleLanguage() {
+        currentLang = currentLang === 'en' ? 'es' : 'en';
+        localStorage.setItem('techDashLang', currentLang);
+        applyLanguage(currentLang);
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        applyLanguage(currentLang);
+    });
+</script>
 </body>
 </html>
 '''
@@ -7675,12 +8236,23 @@ TECH_DASHBOARD_TEMPLATE = '''
             border-left: 4px solid #dc3545;
             font-weight: bold;
         }
+        .lang-toggle-btn {
+            background: #f0f0f0; color: #333; padding: 10px 16px;
+            border: 2px solid #ccc; border-radius: 5px; font-size: 14px;
+            cursor: pointer; font-weight: bold; transition: all 0.2s;
+        }
+        .lang-toggle-btn:hover { background: #e0e0e0; border-color: #999; }
+        .lang-toggle-btn.es-active { background: #c8102e; color: white; border-color: #c8102e; }
+        .header-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>{% if tech_type == 'install' %}🔧 Install Technician Dashboard - {{ full_name }}{% else %}📱 Service Technician Dashboard - {{ full_name }}{% endif %}</h1>
-        <a href="{{ url_for('logout') }}" class="logout-btn">Logout</a>
+        <h1>{% if tech_type == 'install' %}<span data-i18n-dynamic="dashboard_title_install" data-name="{{ full_name }}">🔧 Install Technician Dashboard - {{ full_name }}</span>{% else %}<span data-i18n-dynamic="dashboard_title_service" data-name="{{ full_name }}">📱 Service Technician Dashboard - {{ full_name }}</span>{% endif %}</h1>
+        <div class="header-actions">
+            <button class="lang-toggle-btn" id="langToggleBtn" onclick="toggleLanguage()">🇪🇸 Español</button>
+            <a href="{{ url_for('logout') }}" class="logout-btn" data-i18n="logout">Logout</a>
+        </div>
     </div>
 
     {% with messages = get_flashed_messages() %}
@@ -7691,11 +8263,11 @@ TECH_DASHBOARD_TEMPLATE = '''
                     {% set po_num = parts[0] %}
                     {% set job_nm = parts[1] %}
                     <div style="background: #28a745; color: white; padding: 25px; border-radius: 10px; margin-bottom: 20px; text-align: center; box-shadow: 0 4px 12px rgba(40,167,69,0.4);">
-                        <div style="font-size: 28px; font-weight: bold; margin-bottom: 8px;">PO SUBMITTED!</div>
+                        <div style="font-size: 28px; font-weight: bold; margin-bottom: 8px;" data-i18n="po_submitted">PO SUBMITTED!</div>
                         <div style="font-size: 42px; font-weight: bold; letter-spacing: 2px; margin: 10px 0;">{{ po_num }}</div>
-                        <div style="font-size: 22px; margin-bottom: 12px;">Job: <strong>{{ job_nm }}</strong></div>
+                        <div style="font-size: 22px; margin-bottom: 12px;"><span data-i18n="job_label">Job:</span> <strong>{{ job_nm }}</strong></div>
                         <div style="font-size: 18px; background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px; margin-top: 10px;">
-                            Use <strong>{{ po_num }}</strong> when placing your order at the store
+                            <span data-i18n-dynamic="use_po_number" data-po="{{ po_num }}">Use <strong>{{ po_num }}</strong> when placing your order at the store</span>
                         </div>
                     </div>
                 {% elif 'ERROR' in message or '❌' in message %}
@@ -7708,7 +8280,7 @@ TECH_DASHBOARD_TEMPLATE = '''
     {% endwith %}
 
     <div class="card">
-        <h2>📝 Submit New {% if tech_type == 'install' %}Install{% else %}Service{% endif %} PO Request <span style="background: #007bff; color: white; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-left: 10px;">PO Prefix: {% if tech_type == 'install' %}I{% else %}S{% endif %}</span></h2>
+        <h2>📝 <span data-i18n="submit_new">Submit New</span> {% if tech_type == 'install' %}<span data-i18n="install_label">Install</span>{% else %}<span data-i18n="service_label">Service</span>{% endif %} <span data-i18n="po_request_label">PO Request</span> <span style="background: #007bff; color: white; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-left: 10px;"><span data-i18n="po_prefix_label">PO Prefix:</span> {% if tech_type == 'install' %}I{% else %}S{% endif %}</span></h2>
         <form method="POST" action="{{ url_for('submit_request') }}">
             {# Auto-populate tech_name from the logged-in user's full_name #}
             <input type="hidden" name="tech_name" value="{{ full_name }}">
@@ -7716,9 +8288,9 @@ TECH_DASHBOARD_TEMPLATE = '''
             {# Job selection for install techs, auto-populated for service techs #}
             {% if tech_type == 'install' %}
                 <div class="form-group">
-                    <label>Job/Project Name <span style="color: red;">*</span></label>
+                    <label><span data-i18n="job_project_name">Job/Project Name</span> <span style="color: red;">*</span></label>
                     <select id="job_name" name="job_name" required style="width: 100%; padding: 10px; border: 2px solid #ddd; border-radius: 5px; font-size: 16px;">
-                        <option value="">-- Select a Job --</option>
+                        <option value="" data-i18n="select_job">-- Select a Job --</option>
                         {% for job in available_jobs %}
                             <option value="{{ job }}">{{ job }}</option>
                         {% endfor %}
@@ -7733,43 +8305,199 @@ TECH_DASHBOARD_TEMPLATE = '''
                 <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
                     <input type="checkbox" id="use-custom-po" style="width: auto; margin: 0; cursor: pointer;"
                            onclick="var f=document.getElementById('custom-po-field'); var i=document.getElementById('custom_po_number'); if(this.checked){f.style.display='block';i.required=true;}else{f.style.display='none';i.required=false;i.value='';}">
-                    Use Custom PO Number
+                    <span data-i18n="use_custom_po">Use Custom PO Number</span>
                 </label>
             </div>
 
             <div class="form-group" id="custom-po-field" style="display: none;">
-                <label>Custom PO Number</label>
-                <input type="number" id="custom_po_number" name="custom_po_number" placeholder="e.g., 9810" min="1">
-                <small style="color: #666;">Enter specific PO number (must be 9000 or higher)</small>
+                <label data-i18n="custom_po_number_label">Custom PO Number</label>
+                <input type="number" id="custom_po_number" name="custom_po_number" placeholder="e.g., 9810" min="1" data-i18n-placeholder="custom_po_placeholder">
+                <small style="color: #666;" data-i18n="custom_po_hint">Enter specific PO number (must be 9000 or higher)</small>
             </div>
 
             {% if tech_type == 'service' %}
             <div class="form-group">
-                <label>Client Name <span style="color: red;">*</span></label>
-                <input type="text" id="client_name" name="client_name" placeholder="e.g., Somerville, Heron's Glen, Reserve" required>
-                <small style="color: #666; display: block; margin-top: 5px;">📍 Enter the client/location name for this service (e.g., Somerville, Heron's Glen, etc.)</small>
+                <label><span data-i18n="client_name_label">Client Name</span> <span style="color: red;">*</span></label>
+                <input type="text" id="client_name" name="client_name" placeholder="e.g., Somerville, Heron's Glen, Reserve" required data-i18n-placeholder="client_name_placeholder">
+                <small style="color: #666; display: block; margin-top: 5px;" data-i18n="client_name_hint">📍 Enter the client/location name for this service (e.g., Somerville, Heron's Glen, etc.)</small>
             </div>
             {% else %}
             <input type="hidden" name="client_name" value="">
             {% endif %}
 
             <div class="form-group">
-                <label>Store Name</label>
-                <input type="text" name="store_name" required placeholder="e.g., Home Depot, Lowes">
+                <label data-i18n="description_label">Description / Items Needed</label>
+                <textarea name="description" required placeholder="List what you need to purchase..." data-i18n-placeholder="description_placeholder"></textarea>
             </div>
 
-            <div class="form-group">
-                <label>Description / Items Needed</label>
-                <textarea name="description" required placeholder="List what you need to purchase..."></textarea>
-            </div>
-
-            <button type="submit">Submit Request</button>
+            <button type="submit" data-i18n="submit_request">Submit Request</button>
         </form>
     </div>
 
 <script>
-    // Form setup and PO search functionality
+    // ── Translation dictionary ──────────────────────────────────────────────
+    const TRANSLATIONS = {
+        en: {
+            logout: 'Logout',
+            po_submitted: 'PO SUBMITTED!',
+            job_label: 'Job:',
+            submit_new: 'Submit New',
+            install_label: 'Install',
+            service_label: 'Service',
+            po_request_label: 'PO Request',
+            po_prefix_label: 'PO Prefix:',
+            job_project_name: 'Job/Project Name',
+            select_job: '-- Select a Job --',
+            use_custom_po: 'Use Custom PO Number',
+            custom_po_number_label: 'Custom PO Number',
+            custom_po_placeholder: 'e.g., 9810',
+            custom_po_hint: 'Enter specific PO number (must be 9000 or higher)',
+            client_name_label: 'Client Name',
+            client_name_placeholder: "e.g., Somerville, Heron's Glen, Reserve",
+            client_name_hint: "📍 Enter the client/location name for this service (e.g., Somerville, Heron's Glen, etc.)",
+            description_label: 'Description / Items Needed',
+            description_placeholder: 'List what you need to purchase...',
+            submit_request: 'Submit Request',
+            my_po_requests: 'My PO Requests',
+            search_my_pos: '🔍 Search My POs',
+            search_placeholder: 'Search by client name or description...',
+            clear_btn: 'Clear',
+            delete_btn: '🗑️ Delete',
+            client_label: 'Client:',
+            description_field: 'Description:',
+            submitted_field: 'Submitted:',
+            status_denied: 'DENIED',
+            reason_field: 'Reason:',
+            invoice_entered: '📄 Invoice Entered by Office',
+            invoice_number_field: 'Invoice Number:',
+            total_cost_field: 'Total Cost:',
+            entered_field: 'Entered:',
+            invoice_pending: '⏳ Invoice not yet entered by office',
+            no_results: '❌ No POs match your search criteria.',
+            no_requests: 'No requests yet. Submit your first PO request above!',
+            confirm_delete: 'Are you sure you want to delete this PO request? This action cannot be undone.',
+            delete_success: 'PO request deleted successfully',
+            delete_error: 'Error deleting request',
+            dashboard_title_install: '🔧 Install Technician Dashboard',
+            dashboard_title_service: '📱 Service Technician Dashboard',
+            use_po_at_store: 'when placing your order at the store',
+        },
+        es: {
+            logout: 'Cerrar Sesión',
+            po_submitted: '¡PO ENVIADO!',
+            job_label: 'Trabajo:',
+            submit_new: 'Enviar Nueva',
+            install_label: 'Instalación',
+            service_label: 'Servicio',
+            po_request_label: 'Solicitud de PO',
+            po_prefix_label: 'Prefijo PO:',
+            job_project_name: 'Nombre del Trabajo/Proyecto',
+            select_job: '-- Seleccionar un Trabajo --',
+            use_custom_po: 'Usar Número de PO Personalizado',
+            custom_po_number_label: 'Número de PO Personalizado',
+            custom_po_placeholder: 'ej., 9810',
+            custom_po_hint: 'Ingrese número de PO específico (debe ser 9000 o mayor)',
+            client_name_label: 'Nombre del Cliente',
+            client_name_placeholder: 'ej., Somerville, Heron\'s Glen, Reserve',
+            client_name_hint: '📍 Ingrese el nombre del cliente/ubicación para este servicio (ej., Somerville, Heron\'s Glen, etc.)',
+            description_label: 'Descripción / Artículos Necesarios',
+            description_placeholder: 'Enumere lo que necesita comprar...',
+            submit_request: 'Enviar Solicitud',
+            my_po_requests: 'Mis Solicitudes de PO',
+            search_my_pos: '🔍 Buscar Mis POs',
+            search_placeholder: 'Buscar por nombre de cliente o descripción...',
+            clear_btn: 'Limpiar',
+            delete_btn: '🗑️ Eliminar',
+            client_label: 'Cliente:',
+            description_field: 'Descripción:',
+            submitted_field: 'Enviado:',
+            status_denied: 'RECHAZADO',
+            reason_field: 'Motivo:',
+            invoice_entered: '📄 Factura Ingresada por la Oficina',
+            invoice_number_field: 'Número de Factura:',
+            total_cost_field: 'Costo Total:',
+            entered_field: 'Ingresado:',
+            invoice_pending: '⏳ Factura aún no ingresada por la oficina',
+            no_results: '❌ Ningún PO coincide con sus criterios de búsqueda.',
+            no_requests: '¡Aún no hay solicitudes. Envíe su primera solicitud de PO arriba!',
+            confirm_delete: '¿Está seguro de que desea eliminar esta solicitud de PO? Esta acción no se puede deshacer.',
+            delete_success: 'Solicitud de PO eliminada con éxito',
+            delete_error: 'Error al eliminar la solicitud',
+            dashboard_title_install: '🔧 Panel del Técnico de Instalación',
+            dashboard_title_service: '📱 Panel del Técnico de Servicio',
+            use_po_at_store: 'al realizar su pedido en la tienda',
+        }
+    };
+
+    let currentLang = localStorage.getItem('techDashLang') || 'en';
+
+    function applyLanguage(lang) {
+        const t = TRANSLATIONS[lang];
+
+        // Simple data-i18n elements (replace textContent)
+        document.querySelectorAll('[data-i18n]').forEach(el => {
+            const key = el.getAttribute('data-i18n');
+            if (t[key] !== undefined) el.textContent = t[key];
+        });
+
+        // Placeholder translations
+        document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+            const key = el.getAttribute('data-i18n-placeholder');
+            if (t[key] !== undefined) el.placeholder = t[key];
+        });
+
+        // Dynamic elements (need special handling)
+        document.querySelectorAll('[data-i18n-dynamic]').forEach(el => {
+            const key = el.getAttribute('data-i18n-dynamic');
+            if (key === 'dashboard_title_install') {
+                const name = el.getAttribute('data-name');
+                el.textContent = t['dashboard_title_install'] + ' - ' + name;
+            } else if (key === 'dashboard_title_service') {
+                const name = el.getAttribute('data-name');
+                el.textContent = t['dashboard_title_service'] + ' - ' + name;
+            } else if (key === 'use_po_number') {
+                const po = el.getAttribute('data-po');
+                el.innerHTML = 'Use <strong>' + po + '</strong> ' + t['use_po_at_store'];
+                if (lang === 'es') {
+                    el.innerHTML = 'Use <strong>' + po + '</strong> ' + t['use_po_at_store'];
+                }
+            }
+        });
+
+        // Select option for "-- Select a Job --"
+        document.querySelectorAll('option[data-i18n]').forEach(el => {
+            const key = el.getAttribute('data-i18n');
+            if (t[key] !== undefined) el.textContent = t[key];
+        });
+
+        // Update toggle button appearance
+        const btn = document.getElementById('langToggleBtn');
+        if (btn) {
+            if (lang === 'es') {
+                btn.textContent = '🇺🇸 English';
+                btn.classList.add('es-active');
+            } else {
+                btn.textContent = '🇪🇸 Español';
+                btn.classList.remove('es-active');
+            }
+        }
+
+        // Update no-results message if visible
+        const noResultsMsg = document.querySelector('.no-results-message');
+        if (noResultsMsg) noResultsMsg.textContent = t['no_results'];
+    }
+
+    function toggleLanguage() {
+        currentLang = currentLang === 'en' ? 'es' : 'en';
+        localStorage.setItem('techDashLang', currentLang);
+        applyLanguage(currentLang);
+    }
+
+    // ── Form setup and PO search functionality ──────────────────────────────
     document.addEventListener('DOMContentLoaded', function() {
+        // Apply saved language on load
+        applyLanguage(currentLang);
+
         const customPoCheckbox = document.getElementById('use-custom-po');
         if (customPoCheckbox) {
             const customPoField = document.getElementById('custom-po-field');
@@ -7806,7 +8534,6 @@ TECH_DASHBOARD_TEMPLATE = '''
             const client = po.getAttribute('data-client') || '';
             const description = po.getAttribute('data-description') || '';
 
-            // Match if search term is in either client or description
             const matches = !searchTerm || client.includes(searchTerm) || description.includes(searchTerm);
 
             if (matches) {
@@ -7817,7 +8544,6 @@ TECH_DASHBOARD_TEMPLATE = '''
             }
         });
 
-        // Show "no results" message if nothing matches
         const posContainer_id = document.getElementById('posContainer');
         if (visibleCount === 0 && searchTerm) {
             let noResults = posContainer_id.querySelector('.no-results-message');
@@ -7825,9 +8551,9 @@ TECH_DASHBOARD_TEMPLATE = '''
                 noResults = document.createElement('div');
                 noResults.className = 'no-results-message';
                 noResults.style.cssText = 'background: #fff3cd; color: #856404; padding: 15px; border-radius: 5px; margin-top: 15px; border-left: 4px solid #ffc107;';
-                noResults.textContent = '❌ No POs match your search criteria.';
                 posContainer_id.appendChild(noResults);
             }
+            noResults.textContent = TRANSLATIONS[currentLang]['no_results'];
             noResults.style.display = 'block';
         } else {
             const noResults = posContainer_id.querySelector('.no-results-message');
@@ -7843,7 +8569,8 @@ TECH_DASHBOARD_TEMPLATE = '''
     }
 
     function deleteRequest(requestId) {
-        if (confirm('Are you sure you want to delete this PO request? This action cannot be undone.')) {
+        const t = TRANSLATIONS[currentLang];
+        if (confirm(t['confirm_delete'])) {
             fetch('/delete_request', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -7852,14 +8579,14 @@ TECH_DASHBOARD_TEMPLATE = '''
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    alert('PO request deleted successfully');
+                    alert(t['delete_success']);
                     location.reload();
                 } else {
                     alert('Error: ' + data.error);
                 }
             })
             .catch(error => {
-                alert('Error deleting request');
+                alert(t['delete_error']);
             });
         }
     }
@@ -7867,14 +8594,14 @@ TECH_DASHBOARD_TEMPLATE = '''
 </script>
 
     <div class="card">
-        <h2>📋 My PO Requests</h2>
+        <h2>📋 <span data-i18n="my_po_requests">My PO Requests</span></h2>
 
         {% if requests %}
         <div style="background: #f9f9f9; padding: 15px; border-radius: 5px; margin-bottom: 20px; border-left: 4px solid #667eea;">
-            <h3 style="color: #333; margin-bottom: 15px; font-size: 16px;">🔍 Search My POs</h3>
+            <h3 style="color: #333; margin-bottom: 15px; font-size: 16px;" data-i18n="search_my_pos">🔍 Search My POs</h3>
             <div style="display: flex; gap: 10px; align-items: flex-end;">
-                <input type="text" id="poSearchFilter" placeholder="Search by client name or description..." style="flex: 1; padding: 10px; border: 2px solid #ddd; border-radius: 4px; font-size: 14px;">
-                <button onclick="clearFilters()" style="background: #6c757d; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Clear</button>
+                <input type="text" id="poSearchFilter" placeholder="Search by client name or description..." style="flex: 1; padding: 10px; border: 2px solid #ddd; border-radius: 4px; font-size: 14px;" data-i18n-placeholder="search_placeholder">
+                <button onclick="clearFilters()" style="background: #6c757d; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;" data-i18n="clear_btn">Clear</button>
             </div>
         </div>
         {% endif %}
@@ -7883,42 +8610,41 @@ TECH_DASHBOARD_TEMPLATE = '''
             <div id="posContainer">
             {% for req in requests %}
                 <div class="request-item {{ req[7] }}" data-client="{% if client_name_idx is not none and req|length > client_name_idx and req[client_name_idx] %}{{ req[client_name_idx]|lower }}{% else %}{{ req[4]|lower }}{% endif %}" data-description="{{ req[6]|lower }}">
-                    <button onclick="deleteRequest({{ req[0] }})" style="position: absolute; top: 15px; right: 15px; background: #dc3545; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 12px;">🗑️ Delete</button>
+                    <button onclick="deleteRequest({{ req[0] }})" style="position: absolute; top: 15px; right: 15px; background: #dc3545; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 12px;" data-i18n="delete_btn">🗑️ Delete</button>
                     <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-wrap: wrap;">
                         <div style="background: #28a745; color: white; padding: 6px 16px; border-radius: 20px; font-size: 18px; font-weight: bold; letter-spacing: 1px;">
                             PO #{{ format_po_number(req[0], req[3]) }}
                         </div>
                         <div style="font-size: 16px; color: #333; font-weight: bold;">{% if client_name_idx is not none and req|length > client_name_idx and req[client_name_idx] %}{{ req[client_name_idx] }}{% else %}Service{% endif %}</div>
                     </div>
-                    <p><strong>Store:</strong> {{ req[4] }}</p>
                     {% if client_name_idx is not none and req|length > client_name_idx and req[client_name_idx] %}
-                        <p style="margin-left: 0; color: #666; font-size: 14px;">📍 Client: <strong>{{ req[client_name_idx] }}</strong></p>
+                        <p style="margin-left: 0; color: #666; font-size: 14px;">📍 <span data-i18n="client_label">Client:</span> <strong>{{ req[client_name_idx] }}</strong></p>
                     {% endif %}
-                    <p><strong>Description:</strong> {{ req[6] }}</p>
-                    <p><strong>Submitted:</strong> {{ req[8] }}</p>
+                    <p><strong data-i18n="description_field">Description:</strong> {{ req[6] }}</p>
+                    <p><strong data-i18n="submitted_field">Submitted:</strong> {{ req[8] }}</p>
 
                     {% if req[7] == 'denied' %}
-                        <span class="status denied">DENIED</span>
+                        <span class="status denied" data-i18n="status_denied">DENIED</span>
                         {% if req[10] %}
-                            <p><strong>Reason:</strong> {{ req[10] }}</p>
+                            <p><strong data-i18n="reason_field">Reason:</strong> {{ req[10] }}</p>
                         {% endif %}
                     {% elif req[7] == 'approved' %}
                         {% if req|length > inv_filename_idx and req[inv_filename_idx] and req[inv_filename_idx] != '' %}
                             <div class="invoice-data">
-                                <h4>📄 Invoice Entered by Office</h4>
-                                <p><strong>Invoice Number:</strong> {{ req[inv_number_idx] if req|length > inv_number_idx else 'N/A' }}</p>
-                                <p><strong>Total Cost:</strong> ${{ req[inv_cost_idx] if req|length > inv_cost_idx else '0.00' }}</p>
-                                <p><strong>Entered:</strong> {{ req[inv_upload_idx] if req|length > inv_upload_idx else 'N/A' }}</p>
+                                <h4 data-i18n="invoice_entered">📄 Invoice Entered by Office</h4>
+                                <p><strong data-i18n="invoice_number_field">Invoice Number:</strong> {{ req[inv_number_idx] if req|length > inv_number_idx else 'N/A' }}</p>
+                                <p><strong data-i18n="total_cost_field">Total Cost:</strong> ${{ req[inv_cost_idx] if req|length > inv_cost_idx else '0.00' }}</p>
+                                <p><strong data-i18n="entered_field">Entered:</strong> {{ req[inv_upload_idx] if req|length > inv_upload_idx else 'N/A' }}</p>
                             </div>
                         {% else %}
-                            <p style="color: #666; margin-top: 10px; font-size: 14px;">⏳ Invoice not yet entered by office</p>
+                            <p style="color: #666; margin-top: 10px; font-size: 14px;" data-i18n="invoice_pending">⏳ Invoice not yet entered by office</p>
                         {% endif %}
                     {% endif %}
                 </div>
             {% endfor %}
             </div>
         {% else %}
-            <p style="color: #999;">No requests yet. Submit your first PO request above!</p>
+            <p style="color: #999;" data-i18n="no_requests">No requests yet. Submit your first PO request above!</p>
         {% endif %}
     </div>
 </body>
@@ -8020,6 +8746,8 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         .po-status { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 11px; margin-left: 8px; }
         .po-status.approved { background: #28a745; color: white; }
         .po-status.awaiting { background: #ffc107; color: #333; }
+        .po-status.matched { background: #28a745; color: white; }
+        .po-status.awaiting_invoice { background: #ffc107; color: #333; }
 
         .job-actions { display: flex; gap: 10px; margin-top: 15px; }
         .job-actions button { padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; font-size: 13px; }
@@ -8547,7 +9275,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 return;
             }
 
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Store</th><th>Tech</th><th>Description</th><th>Status</th><th>Invoices</th><th>Client</th><th>Date</th></tr></thead><tbody>';
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Tech</th><th>Description</th><th>Status</th><th>Invoices</th><th>Client</th><th>Date</th></tr></thead><tbody>';
             let found = 0;
 
             for (const [jobId, pos] of Object.entries(jobAllPOs)) {
@@ -8565,7 +9293,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                         const estimated = po[4] || 0;
                         const date = po[6] ? po[6].substring(0, 10) : 'N/A';
                         const clientName = po[8] || 'N/A';
-                        const storeName = po[9] || 'N/A';
                         const invoiceCount = (poInvoices[po[0]] || []).length;
                         const invoiceDisplay = invoiceCount > 0
                             ? `<button onclick="showInvoicesModal(${po[0]}, '${poDisplay.replace(/'/g, "\\'")}', event)" style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold; border: none; cursor: pointer;">${invoiceCount}</button>`
@@ -8573,10 +9300,9 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
                         html += `<tr>
                             <td><strong>#${poDisplay}</strong></td>
-                            <td>${escapeHtml(storeName)}</td>
                             <td>${techName}</td>
                             <td>${escapeHtml(description)}</td>
-                            <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
+                            <td><span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span></td>
                             <td>${invoiceDisplay}</td>
                             <td>${escapeHtml(clientName)}</td>
                             <td>${date}</td>
@@ -8670,7 +9396,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         function renderServicePOs() {
             const resultsDiv = document.getElementById('service-po-results');
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Store</th><th>Tech</th><th>Client</th><th>Status</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Tech</th><th>Client</th><th>Status</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
             let totalPOs = 0;
 
             // Get all service POs from serviceJobs and jobAllPOs
@@ -8682,7 +9408,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 pos.forEach(po => {
                     const poId = po[0];
                     const clientName = po[8] || 'N/A';
-                    const storeName = po[9] || 'N/A';
                     const poDisplay = `S-${poId} ${clientName}`;
                     const techName = getTechName(po[2]);
                     const status = po[3];
@@ -8698,10 +9423,9 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     html += `
                         <tr>
                             <td><strong>${escapeHtml(poDisplay)}</strong></td>
-                            <td>${escapeHtml(storeName)}</td>
                             <td>${escapeHtml(techName)}</td>
                             <td>${escapeHtml(clientName)}</td>
-                            <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
+                            <td><span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span></td>
                             <td>${formatCurrency(invoiced)}</td>
                             <td>${invoiceDisplay}</td>
                             <td>${date}</td>
@@ -8854,7 +9578,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                             <div class="po-item-header">
                                 <div class="po-item-content">
                                     <strong>PO #${poDisplay}</strong> - <span class="po-tech">${techName}</span>
-                                    <span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span>
+                                    <span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span>
                                     <br><small>Est: ${formatCurrency(estimated)} | Inv: ${formatCurrency(invoiced_po)}</small>
                                     ${clientDisplay}
                                 </div>
@@ -8944,7 +9668,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             const keywordSearch = document.getElementById('service-po-keyword-search').value.toLowerCase().trim();
 
             const resultsDiv = document.getElementById('service-po-results');
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Store</th><th>Tech</th><th>Client</th><th>Status</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Tech</th><th>Client</th><th>Status</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
             let found = 0;
 
             // Get all service POs from serviceJobs and jobAllPOs
@@ -8957,7 +9681,6 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 pos.forEach(po => {
                     const poId = po[0];
                     const clientName = po[8] || 'N/A';
-                    const storeName = po[9] || 'N/A';
                     const poDisplay = `S-${poId} ${clientName}`;
                     const techName = getTechName(po[2]);
                     const status = po[3];
@@ -8969,7 +9692,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
                     // Filter by client and keyword
                     const matchesClient = !clientSearch || clientName.toLowerCase().includes(clientSearch);
-                    const matchesKeyword = !keywordSearch || description.toLowerCase().includes(keywordSearch) || storeName.toLowerCase().includes(keywordSearch) || techName.toLowerCase().includes(keywordSearch);
+                    const matchesKeyword = !keywordSearch || description.toLowerCase().includes(keywordSearch) || techName.toLowerCase().includes(keywordSearch);
 
                     if (matchesClient && matchesKeyword) {
                         const invoiceDisplay = invoiceCount > 0
@@ -8979,10 +9702,9 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                         html += `
                             <tr>
                                 <td><strong>${escapeHtml(poDisplay)}</strong></td>
-                                <td>${escapeHtml(storeName)}</td>
                                 <td>${escapeHtml(techName)}</td>
                                 <td>${escapeHtml(clientName)}</td>
-                                <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
+                                <td><span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span></td>
                                 <td>${formatCurrency(invoiced)}</td>
                                 <td>${invoiceDisplay}</td>
                                 <td>${date}</td>
@@ -9130,7 +9852,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     html += `<tr>
                         <td><strong>#${poDisplay}</strong></td>
                         <td>${techName}</td>
-                        <td><span class="po-status ${status === 'approved' ? 'approved' : 'awaiting'}">${status}</span></td>
+                        <td><span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span></td>
                         <td>${formatCurrency(invoiced)}</td>
                         <td>${invoiceDisplay}</td>
                         <td>${escapeHtml(clientName)}</td>
@@ -9164,14 +9886,26 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     const invDate = invoice[5] ? invoice[5].substring(0, 10) : 'N/A';
                     const jobberInv = invoice[6] || '';
 
+                    const hasFile = invFile && invFile !== 'N/A' && invFile !== 'MANUAL_ENTRY';
+                    const invoiceId = invoice[0];
                     html += `
-                        <div style="background: #f9f9f9; padding: 15px; margin-bottom: 15px; border-radius: 8px; border-left: 4px solid #28a745;">
+                        <div id="invoice-item-${invoiceId}" style="background: #f9f9f9; padding: 15px; margin-bottom: 15px; border-radius: 8px; border-left: 4px solid #28a745;">
                             <div style="display: grid; gap: 10px;">
                                 <div><strong>📄 Invoice Number:</strong> ${escapeHtml(invNum)}</div>
                                 <div><strong>💰 Amount:</strong> <span style="color: #28a745; font-weight: bold;">${formatCurrency(invCost)}</span></div>
                                 <div><strong>📅 Date:</strong> ${invDate}</div>
                                 <div><strong>📎 File:</strong> ${escapeHtml(invFile)}</div>
                                 ${jobberInv ? `<div><strong>🔖 Jobber #:</strong> ${escapeHtml(jobberInv)}</div>` : ''}
+                                <div style="margin-top: 8px; display: flex; gap: 8px;">
+                                    ${hasFile ? `<a href="/view_invoice/${encodeURIComponent(invFile)}" target="_blank"
+                                       style="display: inline-block; background: #0d6efd; color: white; padding: 6px 16px; border-radius: 5px; text-decoration: none; font-weight: bold; font-size: 13px;">
+                                       📄 View PDF
+                                    </a>` : ''}
+                                    <button onclick="undoInvoiceMatch(${poNum}, ${invoiceId}, '${escapeHtml(invNum)}')"
+                                       style="background: #dc3545; color: white; padding: 6px 16px; border-radius: 5px; border: none; font-weight: bold; font-size: 13px; cursor: pointer;">
+                                       ↩ Undo Match
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     `;
@@ -9184,6 +9918,30 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         function closeInvoicesModal() {
             document.getElementById('invoices-modal').classList.remove('open');
+        }
+
+        function undoInvoiceMatch(poId, invoiceId, invoiceNum) {
+            if (!confirm(`Undo match for invoice ${invoiceNum} on PO ${poId}?\n\nThis will reset the PO back to "awaiting_invoice" so the system can re-match it on the next email check.`)) {
+                return;
+            }
+
+            fetch('/undo_invoice_match', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ po_id: poId, invoice_id: invoiceId })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert(`Match undone for PO ${poId}. It will be re-matched on the next email check.`);
+                    location.reload();
+                } else {
+                    alert(`Error: ${data.error}`);
+                }
+            })
+            .catch(error => {
+                alert(`Error: ${error.message}`);
+            });
         }
 
         // Track pending PO deletions for undo functionality
@@ -9341,59 +10099,89 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         function checkPOEmails() {
             const btn = document.getElementById('check-emails-btn');
             const originalText = btn.textContent;
-            btn.textContent = '⏳ Checking emails...';
+            btn.textContent = '⏳ Starting email check...';
             btn.disabled = true;
 
+            // Start background check
             fetch('/check_po_emails', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                }
+                headers: { 'Content-Type': 'application/json' }
             })
             .then(response => response.json())
             .then(data => {
-                if (data.success) {
-                    let message = `✅ Email check completed!\n\n`;
-                    message += `📧 Emails processed: ${data.emails_processed || 0}\n`;
-                    message += `📎 Total attachments: ${data.total_attachments || 0}\n`;
-                    message += `✅ Matched invoices: ${data.total_matched || 0}\n`;
-                    message += `⚠️  Unmatched invoices: ${data.total_unmatched || 0}`;
-                    if (data.message) {
-                        message += `\n\nℹ️  ${data.message}`;
-                    }
-                    if (data.diagnostics) {
-                        const d = data.diagnostics;
-                        message += `\n\n--- Diagnostics ---`;
-                        message += `\nServer: ${d.imap_server || 'N/A'}`;
-                        message += `\nAccount: ${d.email_account || 'N/A'}`;
-                        message += `\nConnected: ${d.connected ? 'Yes' : 'No'}`;
-                        message += `\nLogin OK: ${d.login_success ? 'Yes' : 'No'}`;
-                        message += `\nInbox total: ${d.total_in_inbox || 0}`;
-                        message += `\nAlready processed: ${d.already_processed || 0}`;
-                        message += `\nUnprocessed checked: ${d.unprocessed_checked || 0}`;
-                        message += `\nWith attachments: ${d.with_attachments || 0}`;
-                    }
-                    alert(message);
-                    // Reload page to show updated data
-                    setTimeout(() => location.reload(), 1000);
-                } else {
-                    let errMsg = `❌ Error checking emails:\n${data.error}`;
-                    if (data.diagnostics) {
-                        const d = data.diagnostics;
-                        errMsg += `\n\n--- Diagnostics ---`;
-                        errMsg += `\nServer: ${d.imap_server || 'N/A'}`;
-                        errMsg += `\nConnected: ${d.connected ? 'Yes' : 'No'}`;
-                        errMsg += `\nLogin OK: ${d.login_success ? 'Yes' : 'No'}`;
-                    }
-                    alert(errMsg);
+                if (data.status === 'started' || data.status === 'already_running') {
+                    btn.textContent = '⏳ Processing emails...';
+                    // Poll for completion
+                    pollEmailCheckStatus(btn, originalText);
+                } else if (!data.success) {
+                    alert(`❌ Error checking emails:\n${data.error || 'Unknown error'}`);
+                    btn.textContent = originalText;
+                    btn.disabled = false;
                 }
             })
             .catch(error => {
                 alert(`❌ Error:\n${error.message}`);
-            })
-            .finally(() => {
                 btn.textContent = originalText;
                 btn.disabled = false;
+            });
+        }
+
+        function pollEmailCheckStatus(btn, originalText) {
+            fetch('/check_po_emails_status')
+            .then(response => response.json())
+            .then(status => {
+                if (status.running) {
+                    // Still running - update button with progress and poll again
+                    const r = status.result;
+                    if (r && r.emails_processed !== undefined) {
+                        btn.textContent = `⏳ Processed ${r.emails_processed}/${r.emails_checked || '?'} emails (${r.total_matched || 0} matched)...`;
+                    }
+                    setTimeout(() => pollEmailCheckStatus(btn, originalText), 2000);
+                } else {
+                    // Done - show results
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                    const data = status.result;
+                    if (!data) {
+                        alert('Email check completed but no results available.');
+                        location.reload();
+                        return;
+                    }
+                    if (data.success) {
+                        let message = `✅ Email check completed!\n\n`;
+                        message += `📧 Emails processed: ${data.emails_processed || 0}\n`;
+                        message += `📎 Total attachments: ${data.total_attachments || 0}\n`;
+                        message += `✅ Matched invoices: ${data.total_matched || 0}\n`;
+                        message += `⚠️  Unmatched invoices: ${data.total_unmatched || 0}`;
+                        if (data.message) {
+                            message += `\n\nℹ️  ${data.message}`;
+                        }
+                        if (data.diagnostics) {
+                            const d = data.diagnostics;
+                            message += `\n\n--- Diagnostics ---`;
+                            message += `\nMethod: ${d.source || d.method || 'N/A'}`;
+                            message += `\nAccount: ${d.email_account || 'N/A'}`;
+                            message += `\nLogin OK: ${d.login_success ? 'Yes' : 'No'}`;
+                            message += `\nInbox total: ${d.total_in_inbox || 0}`;
+                            message += `\nWith PDF attachments: ${d.with_attachments || 0}`;
+                        }
+                        alert(message);
+                        location.reload();
+                    } else {
+                        let errMsg = `❌ Error checking emails:\n${data.error}`;
+                        if (data.diagnostics) {
+                            const d = data.diagnostics;
+                            errMsg += `\n\n--- Diagnostics ---`;
+                            errMsg += `\nMethod: ${d.source || d.method || 'N/A'}`;
+                            errMsg += `\nLogin OK: ${d.login_success ? 'Yes' : 'No'}`;
+                        }
+                        alert(errMsg);
+                    }
+                }
+            })
+            .catch(() => {
+                // Network error polling - retry
+                setTimeout(() => pollEmailCheckStatus(btn, originalText), 3000);
             });
         }
 
@@ -10808,7 +11596,6 @@ function searchInTab(tabId, searchInputId) {
                 <h3>📱 {{ format_po_number(req[0], req[3]) }} - {{ req[3] }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
-                <p><strong>Store:</strong> {{ req[4] }}</p>
                 <p><strong>Description:</strong> {{ req[6] }}</p>
                 <p><strong>Requested:</strong> {{ req[8] }}</p>
                 <div class="invoice-upload-section">
@@ -10888,7 +11675,6 @@ function searchInTab(tabId, searchInputId) {
                 <h3>🔧 {{ format_po_number(req[0], req[3]) }} - {{ req[3] }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
-                <p><strong>Store:</strong> {{ req[4] }}</p>
                 <p><strong>Description:</strong> {{ req[6] }}</p>
                 <p><strong>Requested:</strong> {{ req[8] }}</p>
                 <div class="invoice-upload-section">
@@ -10969,7 +11755,6 @@ function searchInTab(tabId, searchInputId) {
                 <h3>📦 {{ format_po_number(req[0], req[3]) }} - {{ req[3] }}</h3>
                 <p><strong>Technician:</strong> {{ req[2] }} ({{ req[1] }})</p>
                 <p><strong>Job:</strong> {{ req[3] }}</p>
-                <p><strong>Store:</strong> {{ req[4] }}</p>
                 <p><strong>Description:</strong> {{ req[6] }}</p>
                 <p><strong>Requested:</strong> {{ req[8] }}</p>
                 <div class="invoice-upload-section">
@@ -13207,6 +13992,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
 <html>
 <head>
     <title>Community Maintenance - Technician</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -13216,25 +14002,25 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             display: flex;
             justify-content: center;
             align-items: center;
-            padding: 20px;
+            padding: 15px;
         }
         .container {
             background: white;
             border-radius: 12px;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
-            padding: 40px;
+            padding: 25px;
             max-width: 500px;
             width: 100%;
         }
         h1 {
             color: #333;
             margin-bottom: 10px;
-            font-size: 28px;
+            font-size: 24px;
         }
         .subtitle {
             color: #666;
-            margin-bottom: 30px;
-            font-size: 14px;
+            margin-bottom: 25px;
+            font-size: 16px;
         }
         .form-group {
             margin-bottom: 25px;
@@ -13244,16 +14030,17 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             color: #333;
             font-weight: 600;
             margin-bottom: 8px;
-            font-size: 14px;
+            font-size: 16px;
         }
         select, input[type="date"] {
             width: 100%;
-            padding: 12px;
+            padding: 14px;
             border: 2px solid #ddd;
-            border-radius: 6px;
-            font-size: 14px;
+            border-radius: 8px;
+            font-size: 16px;
             transition: border-color 0.3s;
             font-family: inherit;
+            -webkit-appearance: none;
         }
         select:focus, input[type="date"]:focus {
             outline: none;
@@ -13266,10 +14053,10 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
         }
         button {
             flex: 1;
-            padding: 12px;
+            padding: 14px;
             border: none;
-            border-radius: 6px;
-            font-size: 14px;
+            border-radius: 8px;
+            font-size: 16px;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.3s;
@@ -13302,6 +14089,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             border-radius: 6px;
             margin-bottom: 20px;
             display: none;
+            font-size: 15px;
         }
     </style>
 </head>
@@ -13314,32 +14102,29 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
 
         <!-- Past Submissions and Drafts Section -->
         {% if submissions %}
-        <div style="background: #f5f7fa; border-radius: 8px; padding: 20px; margin-bottom: 30px; border: 1px solid #ddd;">
-            <h2 style="margin-top: 0; color: #333; font-size: 18px;">📋 Your Submissions & Drafts</h2>
-            <div style="display: grid; grid-template-columns: 1fr; gap: 12px;">
+        <div style="background: #f5f7fa; border-radius: 10px; padding: 16px; margin-bottom: 25px; border: 1px solid #ddd;">
+            <h2 style="margin-top: 0; margin-bottom: 14px; color: #333; font-size: 20px;">📋 Your Submissions & Drafts</h2>
+            <div style="display: grid; grid-template-columns: 1fr; gap: 14px;">
                 {% for submission in submissions %}
-                <div style="display: flex; gap: 8px; align-items: stretch;">
-                    <form method="get" action="/community_billing_spreadsheet" style="margin: 0; flex: 1;">
+                <div style="display: flex; flex-direction: column; gap: 0;">
+                    <form method="get" action="/community_billing_spreadsheet" style="margin: 0;">
                         <input type="hidden" name="community" value="{{ submission.community }}">
                         <input type="hidden" name="work_date" value="{{ submission.work_date }}">
-                        <button type="submit" style="width: 100%; text-align: left; background: white; border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: all 0.3s;">
+                        <button type="submit" style="width: 100%; text-align: left; background: white; border: 1px solid #e0e0e0; border-radius: {% if submission.status == 'draft' %}8px 8px 0 0{% else %}8px{% endif %}; padding: 16px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: all 0.3s; min-height: 70px;">
                             <div>
-                                <div style="font-weight: 600; color: #333;">{{ submission.community }}</div>
-                                <div style="font-size: 13px; color: #666;">Date: {{ submission.work_date }}</div>
+                                <div style="font-weight: 700; color: #333; font-size: 17px;">{{ submission.community }}</div>
+                                <div style="font-size: 15px; color: #666; margin-top: 4px;">Date: {{ submission.work_date }}</div>
                                 {% if submission.status == 'submitted' %}
-                                    <div style="font-size: 12px; color: #28a745; font-weight: 600;">✓ Finalized</div>
+                                    <div style="font-size: 14px; color: #28a745; font-weight: 600; margin-top: 4px;">✓ Finalized</div>
                                 {% else %}
-                                    <div style="font-size: 12px; color: #ff9800; font-weight: 600;">● Draft</div>
+                                    <div style="font-size: 14px; color: #ff9800; font-weight: 600; margin-top: 4px;">● Draft</div>
                                 {% endif %}
                             </div>
-                            <div style="color: #667eea; font-weight: 600;">{% if submission.status == 'submitted' %}View →{% else %}Edit →{% endif %}</div>
+                            <div style="color: #667eea; font-weight: 700; font-size: 16px;">{% if submission.status == 'submitted' %}View →{% else %}Edit →{% endif %}</div>
                         </button>
                     </form>
-                    {% if submission.status != 'submitted' %}
-                    <button type="button" onclick="event.stopPropagation(); deleteDraft({{ submission.id }}, '{{ submission.community|e }}')"
-                        style="background: #dc3545; color: white; border: none; border-radius: 6px; padding: 8px 14px; cursor: pointer; font-size: 12px; font-weight: 600; white-space: nowrap; align-self: center;">
-                        Delete
-                    </button>
+                    {% if submission.status == 'draft' %}
+                    <button type="button" onclick="event.stopPropagation(); deleteDraft({{ submission.id }}, '{{ submission.community }}')" style="background: #fff5f5; border: 1px solid #e0e0e0; border-top: none; border-radius: 0 0 8px 8px; padding: 10px 16px; cursor: pointer; color: #dc3545; font-size: 14px; font-weight: 600; transition: all 0.3s; text-align: center; width: 100%;">🗑 Delete This Draft</button>
                     {% endif %}
                 </div>
                 {% endfor %}
@@ -13462,6 +14247,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 <html>
 <head>
     <title>Community Maintenance Spreadsheet</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -13731,7 +14517,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             flex-direction: column;
         }
         .vw-field label {
-            font-size: 10px;
+            font-size: 12px;
             color: #888;
             margin-bottom: 2px;
             white-space: nowrap;
@@ -13739,10 +14525,10 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             text-overflow: ellipsis;
         }
         .vw-field input {
-            padding: 4px 6px;
+            padding: 6px 8px;
             border: 1px solid #ddd;
             border-radius: 3px;
-            font-size: 12px;
+            font-size: 16px;
             width: 100%;
         }
         .vw-field input:focus {
@@ -13760,10 +14546,10 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         }
         .vw-notes-field input {
             width: 100%;
-            padding: 4px 6px;
+            padding: 6px 8px;
             border: 1px solid #ddd;
             border-radius: 3px;
-            font-size: 12px;
+            font-size: 16px;
         }
     </style>
 </head>
@@ -13966,7 +14752,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         <div class="vw-field">
                             <label>${f.label}</label>
                             <input type="number" min="0" value="${item.vals[f.key]}" ${isDisabled}
-                                   onchange="vwUpdateField('${item.itemId}', '${f.key}', this.value)">
+                                   oninput="vwUpdateField('${item.itemId}', '${f.key}', this.value)">
                         </div>`;
                 });
                 fieldsHtml += '</div>';
@@ -13975,7 +14761,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         <div class="vw-field">
                             <label>Notes</label>
                             <input type="text" value="${(item.vals.notes || '').replace(/"/g, '&quot;')}" placeholder="Add notes..." ${isDisabled}
-                                   onchange="vwUpdateField('${item.itemId}', 'notes', this.value)">
+                                   oninput="vwUpdateField('${item.itemId}', 'notes', this.value)">
                         </div>
                     </div>`;
                 return `<div class="vw-address-card">
@@ -14995,6 +15781,17 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 </div>
 
                                 <div class="houses-list" id="houses-list-{{ community.id }}">
+                                    <!-- Excel Import Section -->
+                                    <div style="margin-bottom: 15px; padding: 12px; background: #f0f7ff; border: 1px solid #b8daff; border-radius: 6px;">
+                                        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                                            <strong style="font-size: 13px;">Import from Excel:</strong>
+                                            <input type="file" id="excel-import-houses-{{ community.id }}" accept=".xlsx,.xls" style="font-size: 12px;">
+                                            <button type="button" class="btn-save" onclick="previewHouseImport({{ community.id }})" style="padding: 5px 12px; font-size: 12px;">Preview Import</button>
+                                            <span style="font-size: 11px; color: #666;">Upload .xlsx with house numbers in any column</span>
+                                        </div>
+                                        <div id="import-preview-houses-{{ community.id }}" style="display:none; margin-top: 10px;"></div>
+                                    </div>
+
                                     <div id="houses-{{ community.id }}" style="min-height: 30px;">
                                         <p style="color: #666; font-size: 13px;">Loading...</p>
                                     </div>
@@ -15035,6 +15832,17 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 </div>
 
                                 <div class="houses-list" id="houses-list-{{ community.id }}">
+                                    <!-- Excel Import Section -->
+                                    <div style="margin-bottom: 15px; padding: 12px; background: #f0f7ff; border: 1px solid #b8daff; border-radius: 6px;">
+                                        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                                            <strong style="font-size: 13px;">Import from Excel:</strong>
+                                            <input type="file" id="excel-import-{{ community.id }}" accept=".xlsx,.xls" style="font-size: 12px;">
+                                            <button type="button" class="btn-save" onclick="previewExcelImport({{ community.id }})" style="padding: 5px 12px; font-size: 12px;">Preview Import</button>
+                                            <span style="font-size: 11px; color: #666;">Upload .xlsx file with CLOCK sheets (e.g., CLOCK 1, CLOCK 2...)</span>
+                                        </div>
+                                        <div id="import-preview-{{ community.id }}" style="display:none; margin-top: 10px;"></div>
+                                    </div>
+
                                     <div id="verona-clocks-{{ community.id }}" style="min-height: 30px;">
                                         <p style="color: #666; font-size: 13px;">Loading...</p>
                                     </div>
@@ -15620,6 +16428,414 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             });
         }
 
+        // Excel Import functions
+        // Stores parsed import data so user can review/modify before confirming
+        var _importPreviewData = {};
+
+        function previewExcelImport(communityId) {
+            const fileInput = document.getElementById(`excel-import-${communityId}`);
+            const previewDiv = document.getElementById(`import-preview-${communityId}`);
+
+            if (!fileInput.files || !fileInput.files[0]) {
+                alert('Please select an Excel file first');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('community_id', communityId);
+            formData.append('preview', '1');
+
+            previewDiv.style.display = 'block';
+            previewDiv.innerHTML = '<p style="color:#666;">Parsing Excel file...</p>';
+
+            fetch('/verona_walk_import_excel', {
+                method: 'POST',
+                body: formData
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (!data.success) {
+                    previewDiv.innerHTML = `<p style="color:#dc3545;">Error: ${data.error}</p>`;
+                    return;
+                }
+
+                // Store data for modification — build flat entry list with unique ids
+                let entryId = 0;
+                const entries = [];
+                const clockNums = Object.keys(data.clocks).sort((a,b) => parseInt(a) - parseInt(b));
+                clockNums.forEach(clockNum => {
+                    const clock = data.clocks[clockNum];
+                    clock.addresses.forEach(addr => {
+                        entries.push({ id: entryId++, clock: parseInt(clockNum), text: addr, type: 'address', included: true });
+                    });
+                    clock.common_area.forEach(addr => {
+                        entries.push({ id: entryId++, clock: parseInt(clockNum), text: addr, type: 'common_area', included: true });
+                    });
+                });
+                _importPreviewData[communityId] = entries;
+
+                renderImportPreview(communityId);
+            })
+            .catch(err => {
+                previewDiv.innerHTML = `<p style="color:#dc3545;">Network error: ${err}</p>`;
+            });
+        }
+
+        function renderImportPreview(communityId) {
+            const previewDiv = document.getElementById(`import-preview-${communityId}`);
+            const entries = _importPreviewData[communityId] || [];
+
+            // Group by clock for display
+            const byClock = {};
+            let totalAddr = 0, totalCA = 0, totalExcluded = 0;
+            entries.forEach(e => {
+                if (!byClock[e.clock]) byClock[e.clock] = [];
+                byClock[e.clock].push(e);
+                if (!e.included) { totalExcluded++; return; }
+                if (e.type === 'address') totalAddr++;
+                else totalCA++;
+            });
+            const totalIncluded = totalAddr + totalCA;
+
+            let html = `<div style="background:#fff;border:1px solid #ddd;border-radius:6px;padding:12px;">`;
+            html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:6px;">`;
+            html += `<p style="font-weight:600;margin:0;" id="import-summary-${communityId}">`;
+            html += `Will import <span style="color:#28a745;">${totalAddr} addresses</span> + <span style="color:#007bff;">${totalCA} common area</span> = ${totalIncluded} entries`;
+            if (totalExcluded > 0) html += ` <span style="color:#999;">(${totalExcluded} excluded)</span>`;
+            html += `</p>`;
+            html += `</div>`;
+
+            html += `<p style="font-size:11px;color:#666;margin:0 0 10px 0;">Review each entry below. Use <strong>Switch</strong> to move between Address / Common Area. Use <strong>Exclude</strong> to skip entries. Click a clock header to expand/collapse.</p>`;
+
+            const clockNums = Object.keys(byClock).sort((a,b) => parseInt(a) - parseInt(b));
+            clockNums.forEach(clockNum => {
+                const clockEntries = byClock[clockNum];
+                const cAddr = clockEntries.filter(e => e.type === 'address' && e.included).length;
+                const cCA = clockEntries.filter(e => e.type === 'common_area' && e.included).length;
+                const cExcl = clockEntries.filter(e => !e.included).length;
+
+                html += `<div style="border:1px solid #e9ecef;border-radius:4px;margin-bottom:6px;">`;
+                html += `<div onclick="toggleImportClock(this)" style="cursor:pointer;padding:8px 10px;background:#f8f9fa;display:flex;justify-content:space-between;align-items:center;border-radius:4px;">`;
+                html += `<strong style="font-size:13px;">Clock ${clockNum}</strong>`;
+                html += `<span style="font-size:11px;color:#666;">${cAddr} addr, ${cCA} common${cExcl > 0 ? ', ' + cExcl + ' excluded' : ''} ▼</span>`;
+                html += `</div>`;
+                html += `<div style="display:none;padding:6px 10px;max-height:300px;overflow-y:auto;">`;
+
+                // Show addresses first, then common area
+                const sorted = [...clockEntries].sort((a,b) => {
+                    if (a.type === b.type) return 0;
+                    return a.type === 'address' ? -1 : 1;
+                });
+
+                sorted.forEach(entry => {
+                    const isCA = entry.type === 'common_area';
+                    const excluded = !entry.included;
+                    const typeBadge = isCA
+                        ? `<span style="background:#007bff;color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;white-space:nowrap;">Common Area</span>`
+                        : `<span style="background:#28a745;color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;white-space:nowrap;">Address</span>`;
+                    const textStyle = excluded ? 'text-decoration:line-through;color:#999;' : 'color:#333;';
+
+                    html += `<div id="import-entry-${entry.id}" style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid #f0f0f0;font-size:12px;${excluded ? 'opacity:0.5;' : ''}">`;
+                    html += `<span style="flex:0 0 auto;">${typeBadge}</span>`;
+                    html += `<span style="flex:1;${textStyle}" title="${entry.text}">${entry.text}</span>`;
+                    html += `<button type="button" onclick="toggleImportEntryType(${communityId}, ${entry.id})" style="flex:0 0 auto;font-size:10px;padding:2px 6px;background:#ffc107;color:#333;border:1px solid #dda600;border-radius:3px;cursor:pointer;white-space:nowrap;" title="Switch between Address and Common Area">Switch</button>`;
+                    if (!excluded) {
+                        html += `<button type="button" onclick="toggleImportEntryInclude(${communityId}, ${entry.id})" style="flex:0 0 auto;font-size:10px;padding:2px 6px;background:#dc3545;color:#fff;border:none;border-radius:3px;cursor:pointer;white-space:nowrap;">Exclude</button>`;
+                    } else {
+                        html += `<button type="button" onclick="toggleImportEntryInclude(${communityId}, ${entry.id})" style="flex:0 0 auto;font-size:10px;padding:2px 6px;background:#28a745;color:#fff;border:none;border-radius:3px;cursor:pointer;white-space:nowrap;">Include</button>`;
+                    }
+                    html += `</div>`;
+                });
+
+                html += `</div></div>`;
+            });
+
+            html += `</div>`;
+
+            // Action buttons
+            html += `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">`;
+            html += `<button type="button" onclick="confirmExcelImport(${communityId})" style="padding:8px 20px;font-size:13px;background:#28a745;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Confirm Import (${totalIncluded} entries)</button>`;
+            html += `<button type="button" onclick="document.getElementById('import-preview-${communityId}').style.display='none'; delete _importPreviewData[${communityId}];" style="padding:8px 20px;font-size:13px;background:#6c757d;color:#fff;border:none;border-radius:4px;cursor:pointer;">Cancel</button>`;
+            html += `</div>`;
+
+            previewDiv.innerHTML = html;
+        }
+
+        function toggleImportClock(headerEl) {
+            const content = headerEl.nextElementSibling;
+            const isOpen = content.style.display !== 'none';
+            content.style.display = isOpen ? 'none' : 'block';
+            // Update arrow
+            const span = headerEl.querySelector('span');
+            if (span) {
+                span.innerHTML = span.innerHTML.replace(isOpen ? '▲' : '▼', isOpen ? '▼' : '▲');
+            }
+        }
+
+        function toggleImportEntryType(communityId, entryId) {
+            const entries = _importPreviewData[communityId];
+            if (!entries) return;
+            const entry = entries.find(e => e.id === entryId);
+            if (!entry) return;
+            entry.type = entry.type === 'address' ? 'common_area' : 'address';
+            renderImportPreview(communityId);
+        }
+
+        function toggleImportEntryInclude(communityId, entryId) {
+            const entries = _importPreviewData[communityId];
+            if (!entries) return;
+            const entry = entries.find(e => e.id === entryId);
+            if (!entry) return;
+            entry.included = !entry.included;
+            renderImportPreview(communityId);
+        }
+
+        function confirmExcelImport(communityId) {
+            const previewDiv = document.getElementById(`import-preview-${communityId}`);
+            const entries = _importPreviewData[communityId];
+
+            if (!entries || entries.length === 0) {
+                alert('No import data available. Please preview again.');
+                return;
+            }
+
+            const included = entries.filter(e => e.included);
+            if (included.length === 0) {
+                alert('All entries have been excluded. Nothing to import.');
+                return;
+            }
+
+            if (!confirm(`This will import ${included.length} entries. Existing addresses will NOT be removed. Continue?`)) {
+                return;
+            }
+
+            // Build the payload grouped by clock
+            const clocks = {};
+            included.forEach(e => {
+                if (!clocks[e.clock]) clocks[e.clock] = { addresses: [], common_area: [] };
+                if (e.type === 'address') clocks[e.clock].addresses.push(e.text);
+                else clocks[e.clock].common_area.push(e.text);
+            });
+
+            previewDiv.innerHTML = '<p style="color:#666;">Importing... please wait.</p>';
+
+            fetch('/verona_walk_import_confirmed', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    community_id: communityId,
+                    clocks: clocks
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    let undoHtml = `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">`;
+                    undoHtml += `<p style="color:#28a745;font-weight:600;margin:0;">${data.message}</p>`;
+                    undoHtml += `<button type="button" onclick="undoImport(${communityId}, '${data.import_type}', ${JSON.stringify(data.inserted_ids)}, 'clock')" style="padding:5px 14px;font-size:12px;background:#dc3545;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Undo Import</button>`;
+                    undoHtml += `</div>`;
+                    previewDiv.innerHTML = undoHtml;
+                    document.getElementById(`excel-import-${communityId}`).value = '';
+                    delete _importPreviewData[communityId];
+                    loadClockAddresses(communityId, true);
+                } else {
+                    previewDiv.innerHTML = `<p style="color:#dc3545;">Import failed: ${data.error}</p>`;
+                }
+            })
+            .catch(err => {
+                previewDiv.innerHTML = `<p style="color:#dc3545;">Network error: ${err}</p>`;
+            });
+        }
+
+        function undoImport(communityId, importType, insertedIds, refreshType) {
+            if (!confirm(`Are you sure you want to undo this import? This will remove ${insertedIds.length} entries.`)) {
+                return;
+            }
+
+            // Determine which preview div to update
+            const previewDiv = refreshType === 'house'
+                ? document.getElementById(`import-preview-houses-${communityId}`)
+                : document.getElementById(`import-preview-${communityId}`);
+
+            previewDiv.innerHTML = '<p style="color:#666;">Undoing import...</p>';
+
+            fetch('/undo_import', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    import_type: importType,
+                    inserted_ids: insertedIds
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    previewDiv.innerHTML = `<p style="color:#28a745;font-weight:600;">${data.message}</p>`;
+                    if (refreshType === 'house') {
+                        loadHouseNumbers(communityId);
+                    } else {
+                        loadClockAddresses(communityId, true);
+                    }
+                    setTimeout(() => { previewDiv.style.display = 'none'; }, 3000);
+                } else {
+                    previewDiv.innerHTML = `<p style="color:#dc3545;">Undo failed: ${data.error}</p>`;
+                }
+            })
+            .catch(err => {
+                previewDiv.innerHTML = `<p style="color:#dc3545;">Network error: ${err}</p>`;
+            });
+        }
+
+        // House number Excel import functions
+        var _houseImportData = {};
+
+        function previewHouseImport(communityId) {
+            const fileInput = document.getElementById(`excel-import-houses-${communityId}`);
+            const previewDiv = document.getElementById(`import-preview-houses-${communityId}`);
+
+            if (!fileInput.files || !fileInput.files[0]) {
+                alert('Please select an Excel file first');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('community_id', communityId);
+            formData.append('preview', '1');
+
+            previewDiv.style.display = 'block';
+            previewDiv.innerHTML = '<p style="color:#666;">Parsing Excel file...</p>';
+
+            fetch('/community_import_house_numbers_excel', {
+                method: 'POST',
+                body: formData
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (!data.success) {
+                    previewDiv.innerHTML = `<p style="color:#dc3545;">Error: ${data.error}</p>`;
+                    return;
+                }
+
+                // Store entries for review, flag duplicates
+                let entryId = 0;
+                const dupeSet = new Set(data.duplicate_list || []);
+                const entries = data.house_numbers.map(h => ({
+                    id: entryId++,
+                    text: h,
+                    included: true,
+                    duplicate: dupeSet.has(h)
+                }));
+                _houseImportData[communityId] = entries;
+
+                renderHouseImportPreview(communityId);
+            })
+            .catch(err => {
+                previewDiv.innerHTML = `<p style="color:#dc3545;">Network error: ${err}</p>`;
+            });
+        }
+
+        function renderHouseImportPreview(communityId) {
+            const previewDiv = document.getElementById(`import-preview-houses-${communityId}`);
+            const entries = _houseImportData[communityId] || [];
+
+            const included = entries.filter(e => e.included);
+            const excluded = entries.filter(e => !e.included);
+
+            let html = `<div style="background:#fff;border:1px solid #ddd;border-radius:6px;padding:12px;">`;
+            html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:6px;">`;
+            html += `<p style="font-weight:600;margin:0;">Found ${entries.length} house numbers — <span style="color:#28a745;">${included.length} to import</span>`;
+            if (excluded.length > 0) html += ` <span style="color:#999;">(${excluded.length} excluded)</span>`;
+            html += `</p>`;
+            html += `</div>`;
+
+            html += `<div style="max-height:350px;overflow-y:auto;border:1px solid #e9ecef;border-radius:4px;padding:6px;">`;
+            entries.forEach(entry => {
+                const textStyle = entry.included ? 'color:#333;' : 'text-decoration:line-through;color:#999;';
+                html += `<div style="display:flex;align-items:center;gap:8px;padding:3px 4px;border-bottom:1px solid #f0f0f0;font-size:12px;${entry.included ? '' : 'opacity:0.5;'}">`;
+                html += `<span style="flex:1;${textStyle}">${entry.text}</span>`;
+                if (entry.duplicate) {
+                    html += `<span style="flex:0 0 auto;font-size:10px;padding:1px 5px;background:#ffc107;color:#333;border-radius:3px;white-space:nowrap;">Already exists</span>`;
+                }
+                if (entry.included) {
+                    html += `<button type="button" onclick="toggleHouseImportEntry(${communityId}, ${entry.id})" style="flex:0 0 auto;font-size:10px;padding:2px 6px;background:#dc3545;color:#fff;border:none;border-radius:3px;cursor:pointer;">Exclude</button>`;
+                } else {
+                    html += `<button type="button" onclick="toggleHouseImportEntry(${communityId}, ${entry.id})" style="flex:0 0 auto;font-size:10px;padding:2px 6px;background:#28a745;color:#fff;border:none;border-radius:3px;cursor:pointer;">Include</button>`;
+                }
+                html += `</div>`;
+            });
+            html += `</div>`;
+            html += `</div>`;
+
+            html += `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">`;
+            html += `<button type="button" onclick="confirmHouseImport(${communityId})" style="padding:8px 20px;font-size:13px;background:#28a745;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Confirm Import (${included.length} house numbers)</button>`;
+            html += `<button type="button" onclick="document.getElementById('import-preview-houses-${communityId}').style.display='none'; delete _houseImportData[${communityId}];" style="padding:8px 20px;font-size:13px;background:#6c757d;color:#fff;border:none;border-radius:4px;cursor:pointer;">Cancel</button>`;
+            html += `</div>`;
+
+            previewDiv.innerHTML = html;
+        }
+
+        function toggleHouseImportEntry(communityId, entryId) {
+            const entries = _houseImportData[communityId];
+            if (!entries) return;
+            const entry = entries.find(e => e.id === entryId);
+            if (!entry) return;
+            entry.included = !entry.included;
+            renderHouseImportPreview(communityId);
+        }
+
+        function confirmHouseImport(communityId) {
+            const previewDiv = document.getElementById(`import-preview-houses-${communityId}`);
+            const entries = _houseImportData[communityId];
+
+            if (!entries || entries.length === 0) {
+                alert('No import data. Please preview again.');
+                return;
+            }
+
+            const included = entries.filter(e => e.included).map(e => e.text);
+            if (included.length === 0) {
+                alert('All entries excluded. Nothing to import.');
+                return;
+            }
+
+            if (!confirm(`This will import ${included.length} house numbers. Existing house numbers will NOT be removed. Continue?`)) {
+                return;
+            }
+
+            previewDiv.innerHTML = '<p style="color:#666;">Importing... please wait.</p>';
+
+            fetch('/community_import_house_numbers_confirmed', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    community_id: communityId,
+                    house_numbers: included
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    let undoHtml = `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">`;
+                    undoHtml += `<p style="color:#28a745;font-weight:600;margin:0;">${data.message}</p>`;
+                    if (data.inserted_ids && data.inserted_ids.length > 0) {
+                        undoHtml += `<button type="button" onclick="undoImport(${communityId}, '${data.import_type}', ${JSON.stringify(data.inserted_ids)}, 'house')" style="padding:5px 14px;font-size:12px;background:#dc3545;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Undo Import</button>`;
+                    }
+                    undoHtml += `</div>`;
+                    previewDiv.innerHTML = undoHtml;
+                    document.getElementById(`excel-import-houses-${communityId}`).value = '';
+                    delete _houseImportData[communityId];
+                    loadHouseNumbers(communityId);
+                } else {
+                    previewDiv.innerHTML = `<p style="color:#dc3545;">Import failed: ${data.error}</p>`;
+                }
+            })
+            .catch(err => {
+                previewDiv.innerHTML = `<p style="color:#dc3545;">Network error: ${err}</p>`;
+            });
+        }
+
         // House numbers management functions
         function toggleHousesSection(event, communityId) {
             event.preventDefault();
@@ -15812,6 +17028,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 return;
             }
 
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = '<div style="text-align:center;padding:20px;color:#666;">Loading...</div>';
+
             const workMonthStr = workYear + '-' + workMonth;
 
             fetch('/community_billing_office_data', {
@@ -15822,13 +17041,29 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     work_month: workMonthStr
                 })
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Server error: ' + response.status + ' ' + response.statusText);
+                }
+                return response.json();
+            })
             .then(data => {
-                displayResults(data);
+                try {
+                    displayResults(data);
+                } catch (e) {
+                    resultsDiv.innerHTML = '<div class="alert alert-error">Display error: ' + e.message + '<br><pre style="font-size:11px;margin-top:6px;">' + e.stack + '</pre></div>';
+                }
             })
             .catch(error => {
-                document.getElementById('results').innerHTML = '<div class="alert alert-error">Error: ' + error + '</div>';
+                document.getElementById('results').innerHTML = '<div class="alert alert-error">Error loading submissions: ' + error.message + '</div>';
             });
+        }
+
+        function toggleResultGroup(groupId) {
+            const content = document.getElementById(groupId);
+            const toggle = document.getElementById('toggle-' + groupId);
+            if (content) content.classList.toggle('visible');
+            if (toggle) toggle.classList.toggle('expanded');
         }
 
         function displayResults(data) {
@@ -15877,36 +17112,72 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 html += '<div class="alert alert-info">' + data.submissions.length + ' submission(s) found - Pricing not configured</div>';
             }
 
-            data.submissions.forEach(submission => {
-                html += '<div class="submission-card">';
-                html += '<div class="submission-header" style="display: flex; justify-content: space-between; align-items: flex-start;">';
-                html += '<div>';
-                html += '<div class="tech-name">' + submission.tech_username + '</div>';
-                html += '<div class="submission-date">Submitted: ' + submission.submitted_at + '</div>';
-                html += '</div>';
-                html += '<button type="button" style="padding: 6px 12px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;" onclick="deleteSubmission(' + submission.id + ', ' + JSON.stringify(submission.tech_username) + ')">Delete</button>';
+            if (data.community === 'Verona Walk HOA') {
+                // --- Verona Walk HOA: group line items by clock across all submissions ---
+
+                // Show submissions list with delete buttons
+                html += '<div style="margin-bottom: 16px;">';
+                html += '<div style="font-size: 13px; font-weight: 600; color: #333; margin-bottom: 8px;">Submissions:</div>';
+                data.submissions.forEach(submission => {
+                    html += '<div style="display: flex; justify-content: space-between; align-items: center; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px; padding: 8px 12px; margin-bottom: 6px;">';
+                    html += '<div>';
+                    html += '<span style="font-weight: 600; color: #333;">' + submission.tech_username + '</span>';
+                    html += '<span style="color: #666; font-size: 12px; margin-left: 10px;">Submitted: ' + submission.submitted_at + '</span>';
+                    html += '</div>';
+                    html += '<button type="button" style="padding: 4px 10px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;" onclick="deleteSubmission(' + submission.id + ', ' + JSON.stringify(submission.tech_username) + ')">Delete</button>';
+                    html += '</div>';
+                });
                 html += '</div>';
 
-                if (submission.line_items.length > 0) {
-                    html += '<table class="spreadsheet-table">';
-                    html += '<thead><tr>';
-                    html += '<th>Zone & Address</th>';
-                    html += '<th>Nozzle</th>';
-                    html += '<th>6" Pop Up</th>';
-                    html += '<th>12" Pop Up</th>';
-                    html += '<th>6" Rotor</th>';
-                    html += '<th>NEW 6" Pop Up</th>';
-                    html += '<th>NEW 12" Pop Up</th>';
-                    html += '<th>Riser</th>';
-                    html += '<th>Solenoid</th>';
-                    html += '<th>1 Stat Decoder</th>';
-                    html += '<th>Notes</th>';
-                    html += '</tr></thead>';
-                    html += '<tbody>';
-
+                // Group items by clock
+                const clockGroups = {};
+                data.submissions.forEach(submission => {
                     submission.line_items.forEach(item => {
+                        const zone = item.zone_and_address || '';
+                        const caMatch = zone.match(/^Clock\s+(\d+)\s+Common Area\s*[-\u2013]\s*(.*)$/i);
+                        const clockMatch = zone.match(/^Clock\s+(\d+)\s*[-\u2013]\s*(.*)$/i);
+                        const enriched = Object.assign({}, item, {
+                            tech_username: submission.tech_username
+                        });
+                        let key;
+                        if (caMatch) {
+                            const n = parseInt(caMatch[1]);
+                            key = 'ca_' + String(n).padStart(4, '0');
+                            if (!clockGroups[key]) clockGroups[key] = { label: 'Clock ' + n + ' \u2014 Common Area', sortKey: n * 10 + 1, items: [] };
+                        } else if (clockMatch) {
+                            const n = parseInt(clockMatch[1]);
+                            key = 'clock_' + String(n).padStart(4, '0');
+                            if (!clockGroups[key]) clockGroups[key] = { label: '🕐 Clock ' + n, sortKey: n * 10, items: [] };
+                        } else if (zone.toLowerCase().startsWith('common area')) {
+                            key = 'common_area';
+                            if (!clockGroups[key]) clockGroups[key] = { label: 'Common Area', sortKey: -1, items: [] };
+                        } else {
+                            key = 'other';
+                            if (!clockGroups[key]) clockGroups[key] = { label: 'Other', sortKey: 99999, items: [] };
+                        }
+                        clockGroups[key].items.push(enriched);
+                    });
+                });
+
+                // Sort groups
+                const sortedKeys = Object.keys(clockGroups).sort((a, b) => clockGroups[a].sortKey - clockGroups[b].sortKey);
+
+                sortedKeys.forEach(key => {
+                    const group = clockGroups[key];
+                    const gid = 'rg-' + key;
+                    html += '<div class="clock-container">';
+                    html += '<div class="clock-header" onclick="toggleResultGroup(\'' + gid + '\')">';
+                    html += '<span class="clock-title">' + group.label + ' <span style="font-size: 12px; font-weight: normal; color: #888;">(' + group.items.length + ' item' + (group.items.length !== 1 ? 's' : '') + ')</span></span>';
+                    html += '<span class="clock-toggle" id="toggle-' + gid + '">&#9660;</span>';
+                    html += '</div>';
+                    html += '<div class="clock-addresses" id="' + gid + '">';
+                    html += '<table class="spreadsheet-table">';
+                    html += '<thead><tr><th>Zone &amp; Address</th><th>Technician</th><th>Nozzle</th><th>6&quot; Pop Up</th><th>12&quot; Pop Up</th><th>6&quot; Rotor</th><th>NEW 6&quot; Pop Up</th><th>NEW 12&quot; Pop Up</th><th>Riser</th><th>Solenoid</th><th>1 Stat Decoder</th><th>Notes</th></tr></thead>';
+                    html += '<tbody>';
+                    group.items.forEach(item => {
                         html += '<tr>';
                         html += '<td>' + (item.zone_and_address || '') + '</td>';
+                        html += '<td style="white-space:nowrap;font-size:12px;color:#555;">' + item.tech_username + '</td>';
                         html += '<td>' + item.nozzle + '</td>';
                         html += '<td>' + item.pop_up_6_inch + '</td>';
                         html += '<td>' + item.pop_up_12_inch + '</td>';
@@ -15919,14 +17190,51 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                         html += '<td>' + (item.notes || '') + '</td>';
                         html += '</tr>';
                     });
-
                     html += '</tbody></table>';
-                } else {
-                    html += '<p style="color: #666; font-size: 13px; margin-top: 10px;">No items entered</p>';
-                }
+                    html += '</div>';
+                    html += '</div>';
+                });
 
-                html += '</div>';
-            });
+            } else {
+                // --- Other communities: each submission is a collapsible dropdown ---
+                data.submissions.forEach(submission => {
+                    const gid = 'rs-' + submission.id;
+                    html += '<div class="clock-container">';
+                    html += '<div class="clock-header" onclick="toggleResultGroup(\'' + gid + '\')">';
+                    html += '<span class="clock-title">' + submission.tech_username + ' <span style="font-size: 12px; font-weight: normal; color: #888;">Submitted: ' + submission.submitted_at + '</span></span>';
+                    html += '<div style="display:flex;align-items:center;gap:10px;">';
+                    html += '<button type="button" style="padding:4px 10px;background:#dc3545;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;" onclick="event.stopPropagation();deleteSubmission(' + submission.id + ',' + JSON.stringify(submission.tech_username) + ')">Delete</button>';
+                    html += '<span class="clock-toggle" id="toggle-' + gid + '">&#9660;</span>';
+                    html += '</div>';
+                    html += '</div>';
+                    html += '<div class="clock-addresses" id="' + gid + '">';
+                    if (submission.line_items.length > 0) {
+                        html += '<table class="spreadsheet-table">';
+                        html += '<thead><tr><th>Zone &amp; Address</th><th>Nozzle</th><th>6&quot; Pop Up</th><th>12&quot; Pop Up</th><th>6&quot; Rotor</th><th>NEW 6&quot; Pop Up</th><th>NEW 12&quot; Pop Up</th><th>Riser</th><th>Solenoid</th><th>1 Stat Decoder</th><th>Notes</th></tr></thead>';
+                        html += '<tbody>';
+                        submission.line_items.forEach(item => {
+                            html += '<tr>';
+                            html += '<td>' + (item.zone_and_address || '') + '</td>';
+                            html += '<td>' + item.nozzle + '</td>';
+                            html += '<td>' + item.pop_up_6_inch + '</td>';
+                            html += '<td>' + item.pop_up_12_inch + '</td>';
+                            html += '<td>' + item.rotor_6_inch + '</td>';
+                            html += '<td>' + item.new_pop_up_6_inch + '</td>';
+                            html += '<td>' + item.new_pop_up_12_inch + '</td>';
+                            html += '<td>' + item.riser + '</td>';
+                            html += '<td>' + item.solenoid + '</td>';
+                            html += '<td>' + item.stat_decoder_1 + '</td>';
+                            html += '<td>' + (item.notes || '') + '</td>';
+                            html += '</tr>';
+                        });
+                        html += '</tbody></table>';
+                    } else {
+                        html += '<p style="color:#666;font-size:13px;margin-top:10px;">No items entered</p>';
+                    }
+                    html += '</div>';
+                    html += '</div>';
+                });
+            }
 
             resultsDiv.innerHTML = html;
         }
@@ -16578,6 +17886,61 @@ def sales_delete_price():
 # COMMUNITY BILLING ROUTES
 # ============================================================================
 
+
+def sync_community_drafts(c, community_name, community_id):
+    """Sync all draft submission line items with current community addresses.
+
+    When office edits addresses (add/delete/import), this ensures every open
+    draft for that community gets updated: new addresses are added as blank
+    line items and removed addresses have their line items deleted.
+    """
+    c.execute("""SELECT id FROM community_billing_submissions
+                 WHERE community_name = ? AND status = 'draft'""", (community_name,))
+    draft_ids = [row[0] for row in c.fetchall()]
+
+    if not draft_ids:
+        return
+
+    # Build expected labels from current addresses
+    expected_labels = []
+    if community_name == 'Verona Walk HOA':
+        c.execute("""SELECT clock_number, address, COALESCE(is_common_area, 0)
+                     FROM verona_walk_clock_addresses
+                     WHERE community_id = ?
+                     ORDER BY clock_number, is_common_area, sort_order, id""", (community_id,))
+        for clock_num, address, is_ca in c.fetchall():
+            if is_ca:
+                expected_labels.append(f"Clock {clock_num} Common Area - {address}")
+            else:
+                expected_labels.append(f"Clock {clock_num} - {address}")
+    else:
+        c.execute("""SELECT house_number FROM community_house_numbers
+                     WHERE community_id = ? ORDER BY house_number""", (community_id,))
+        expected_labels = [row[0] for row in c.fetchall()]
+
+    expected_set = set(expected_labels)
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    for submission_id in draft_ids:
+        c.execute("""SELECT id, zone_and_address FROM community_billing_line_items
+                     WHERE submission_id = ?""", (submission_id,))
+        current_items = c.fetchall()
+        current_labels = {row[1] for row in current_items}
+
+        # Add line items for new addresses
+        for label in expected_labels:
+            if label not in current_labels:
+                c.execute("""INSERT INTO community_billing_line_items
+                             (submission_id, zone_and_address, created_at)
+                             VALUES (?, ?, ?)""",
+                         (submission_id, label, now))
+
+        # Remove line items for deleted addresses
+        for item_id, label in current_items:
+            if label not in expected_set:
+                c.execute("DELETE FROM community_billing_line_items WHERE id = ?", (item_id,))
+
+
 @app.route('/community_billing')
 def community_billing():
     """Main community billing page - redirects based on user role"""
@@ -16766,6 +18129,36 @@ def community_billing_spreadsheet():
     c.execute("SELECT id FROM communities WHERE name = ? AND active = 1", (community,))
     community_row = c.fetchone()
     community_id = community_row[0] if community_row else None
+
+    # Sync draft line items with current community addresses on every page load.
+    # This catches any address changes the office made since the draft was created.
+    if community_id and status == 'draft':
+        sync_community_drafts(c, community, community_id)
+        conn.commit()
+
+        # Re-fetch line items so the page renders the up-to-date labels
+        c.execute("""SELECT id, zone_and_address, nozzle, pop_up_6_inch, pop_up_12_inch,
+                            rotor_6_inch, new_pop_up_6_inch, new_pop_up_12_inch,
+                            riser, solenoid, stat_decoder_1, notes
+                     FROM community_billing_line_items
+                     WHERE submission_id = ?
+                     ORDER BY id""", (submission_id,))
+        line_items = []
+        for row in c.fetchall():
+            line_items.append({
+                'id': row[0],
+                'zone_and_address': row[1],
+                'nozzle': row[2],
+                'pop_up_6_inch': row[3],
+                'pop_up_12_inch': row[4],
+                'rotor_6_inch': row[5],
+                'new_pop_up_6_inch': row[6],
+                'new_pop_up_12_inch': row[7],
+                'riser': row[8],
+                'solenoid': row[9],
+                'stat_decoder_1': row[10],
+                'notes': row[11]
+            })
 
     conn.close()
 
@@ -17612,6 +19005,13 @@ def community_add_house_number():
                      (community_id, house_number, created_at)
                      VALUES (?, ?, ?)""",
                  (community_id, house_number, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+
+        # Sync drafts with updated addresses
+        c.execute("SELECT name FROM communities WHERE id = ?", (community_id,))
+        community_row = c.fetchone()
+        if community_row:
+            sync_community_drafts(c, community_row[0], community_id)
+
         conn.commit()
         return jsonify({'success': True, 'message': 'House number added successfully'})
     except sqlite3.IntegrityError:
@@ -17637,13 +19037,158 @@ def community_delete_house_number():
     c = conn.cursor()
 
     try:
+        # Get community info before deleting
+        c.execute("""SELECT chn.community_id, com.name
+                     FROM community_house_numbers chn
+                     JOIN communities com ON com.id = chn.community_id
+                     WHERE chn.id = ?""", (house_number_id,))
+        info = c.fetchone()
+
         c.execute("DELETE FROM community_house_numbers WHERE id = ?", (house_number_id,))
+
+        # Sync drafts with updated addresses
+        if info:
+            sync_community_drafts(c, info[1], info[0])
+
         conn.commit()
         return jsonify({'success': True, 'message': 'House number deleted successfully'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
     finally:
         conn.close()
+
+# ============================================================================
+# COMMUNITY HOUSE NUMBER EXCEL IMPORT
+# ============================================================================
+
+@app.route('/community_import_house_numbers_excel', methods=['POST'])
+def community_import_house_numbers_excel():
+    """Parse an Excel file to extract house numbers for a standard community.
+
+    Reads all sheets and collects unique non-empty text values from all cells.
+    Returns a preview list for user review before confirming.
+    """
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return jsonify({'success': False, 'error': 'openpyxl not installed'})
+
+    community_id = request.form.get('community_id')
+    if not community_id:
+        return jsonify({'success': False, 'error': 'Missing community_id'})
+
+    file = request.files.get('file')
+    if not file or not file.filename.endswith(('.xlsx', '.xls')):
+        return jsonify({'success': False, 'error': 'Please upload a valid Excel file (.xlsx)'})
+
+    try:
+        wb = load_workbook(file, data_only=True)
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Could not read Excel file: {str(e)}'})
+
+    # Collect all non-empty values across all sheets
+    house_numbers = []
+    seen = set()
+
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        for row in ws.iter_rows(values_only=True):
+            for cell_value in row:
+                if cell_value is None:
+                    continue
+                val = str(cell_value).strip()
+                if not val:
+                    continue
+                # Skip obvious header/label rows
+                val_upper = val.upper()
+                if val_upper in ('HOUSE NUMBER', 'HOUSE #', 'ADDRESS', 'HOUSE', 'NUMBER', '#',
+                                 'ZONE', 'SERIAL NUMBER', 'DESCRIPTION', 'ID', 'NOTES'):
+                    continue
+                if val not in seen:
+                    seen.add(val)
+                    house_numbers.append(val)
+
+    if not house_numbers:
+        return jsonify({'success': False, 'error': 'No house numbers found in the Excel file.'})
+
+    # Get existing house numbers for this community to flag duplicates
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT house_number FROM community_house_numbers WHERE community_id = ?", (community_id,))
+    existing = set(row[0] for row in c.fetchall())
+    conn.close()
+
+    # Mark which ones already exist
+    results = []
+    for h in house_numbers:
+        results.append(h)
+
+    duplicates = [h for h in house_numbers if h in existing]
+
+    return jsonify({
+        'success': True,
+        'house_numbers': results,
+        'total': len(results),
+        'duplicates': len(duplicates),
+        'duplicate_list': duplicates
+    })
+
+
+@app.route('/community_import_house_numbers_confirmed', methods=['POST'])
+def community_import_house_numbers_confirmed():
+    """Import the user-reviewed house numbers into a standard community."""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    community_id = data.get('community_id')
+    house_numbers = data.get('house_numbers', [])
+
+    if not community_id or not house_numbers:
+        return jsonify({'success': False, 'error': 'Missing required fields'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        added = 0
+        skipped = 0
+        inserted_ids = []
+        for house_number in house_numbers:
+            house_number = str(house_number).strip()
+            if not house_number:
+                continue
+            try:
+                c.execute("""INSERT INTO community_house_numbers
+                             (community_id, house_number, created_at)
+                             VALUES (?, ?, ?)""",
+                         (community_id, house_number, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                inserted_ids.append(c.lastrowid)
+                added += 1
+            except sqlite3.IntegrityError:
+                skipped += 1  # Duplicate - already exists
+
+        # Sync drafts with updated addresses
+        if added > 0:
+            c.execute("SELECT name FROM communities WHERE id = ?", (community_id,))
+            community_row = c.fetchone()
+            if community_row:
+                sync_community_drafts(c, community_row[0], community_id)
+
+        conn.commit()
+        msg = f'Successfully imported {added} house numbers'
+        if skipped > 0:
+            msg += f' ({skipped} duplicates skipped)'
+        return jsonify({'success': True, 'message': msg, 'imported': added, 'skipped': skipped,
+                        'inserted_ids': inserted_ids, 'import_type': 'house_numbers'})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
 
 # ============================================================================
 # VERONA WALK HOA CLOCK ROUTES
@@ -17727,6 +19272,10 @@ def verona_walk_add_address():
                      (community_id, clock_number, address, created_at, is_common_area, sort_order)
                      VALUES (?, ?, ?, ?, ?, ?)""",
                  (community_id, clock_number, address, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), is_common_area, next_order))
+
+        # Sync drafts with updated addresses
+        sync_community_drafts(c, 'Verona Walk HOA', community_id)
+
         conn.commit()
         return jsonify({'success': True, 'message': 'Address added successfully'})
     except Exception as e:
@@ -17769,6 +19318,11 @@ def verona_walk_bulk_add_addresses():
                           datetime.now().strftime('%Y-%m-%d %H:%M:%S'), is_common_area, next_order))
                 next_order += 1
                 added += 1
+
+        # Sync drafts with updated addresses
+        if added > 0:
+            sync_community_drafts(c, 'Verona Walk HOA', community_id)
+
         conn.commit()
         return jsonify({'success': True, 'message': f'{added} address(es) added successfully'})
     except Exception as e:
@@ -17823,6 +19377,10 @@ def verona_walk_insert_address():
                           datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                           is_common_area, ref_order + added))
 
+        # Sync drafts with updated addresses
+        if added > 0:
+            sync_community_drafts(c, 'Verona Walk HOA', community_id)
+
         conn.commit()
         return jsonify({'success': True, 'message': f'{added} address(es) inserted'})
     except Exception as e:
@@ -17872,7 +19430,16 @@ def verona_walk_delete_address():
     c = conn.cursor()
 
     try:
+        # Get community_id before deleting
+        c.execute("SELECT community_id FROM verona_walk_clock_addresses WHERE id = ?", (address_id,))
+        addr_row = c.fetchone()
+
         c.execute("DELETE FROM verona_walk_clock_addresses WHERE id = ?", (address_id,))
+
+        # Sync drafts with updated addresses
+        if addr_row:
+            sync_community_drafts(c, 'Verona Walk HOA', addr_row[0])
+
         conn.commit()
         return jsonify({'success': True, 'message': 'Address deleted successfully'})
     except Exception as e:
@@ -17897,13 +19464,368 @@ def verona_walk_edit_address():
     c = conn.cursor()
 
     try:
+        # Get old address details to build old label
+        c.execute("""SELECT community_id, clock_number, address, COALESCE(is_common_area, 0)
+                     FROM verona_walk_clock_addresses WHERE id = ?""", (address_id,))
+        old = c.fetchone()
+
         c.execute("UPDATE verona_walk_clock_addresses SET address = ? WHERE id = ?", (address, address_id))
+
+        # Update the label in all draft line items to preserve entered data
+        if old:
+            community_id, clock_num, old_address, is_ca = old
+            if is_ca:
+                old_label = f"Clock {clock_num} Common Area - {old_address}"
+                new_label = f"Clock {clock_num} Common Area - {address}"
+            else:
+                old_label = f"Clock {clock_num} - {old_address}"
+                new_label = f"Clock {clock_num} - {address}"
+
+            c.execute("""UPDATE community_billing_line_items
+                         SET zone_and_address = ?
+                         WHERE zone_and_address = ?
+                           AND submission_id IN (
+                               SELECT id FROM community_billing_submissions
+                               WHERE community_name = 'Verona Walk HOA' AND status = 'draft'
+                           )""", (new_label, old_label))
+
+            # Also do a full sync to fix any stale labels in drafts that were created
+            # before address edits were tracked (handles previously-edited addresses)
+            sync_community_drafts(c, 'Verona Walk HOA', community_id)
+
         conn.commit()
         return jsonify({'success': True, 'message': 'Address updated successfully'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
     finally:
         conn.close()
+
+# ============================================================================
+# EXCEL IMPORT FOR VERONA WALK CLOCK ADDRESSES
+# ============================================================================
+
+@app.route('/verona_walk_import_excel', methods=['POST'])
+def verona_walk_import_excel():
+    """Import addresses from a Verona Walk Excel spreadsheet.
+
+    Expected Excel format:
+    - Each sheet named 'CLOCK N' (e.g., 'CLOCK 18', 'CLOCK 5')
+    - Columns: A=Zone, B=Serial Number, C=Description
+    - Row 1 is blank, Row 2 is header, data starts at Row 3
+    - Descriptions starting with 'ROTORS' or containing 'SIDEWALK', 'LAKE BANK',
+      'COMMON AREA', 'CUL D SAC', 'PUMP' → Common Area
+    - All other entries (typically 'SPRAYS' with address numbers) → Addresses
+    """
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return jsonify({'success': False, 'error': 'openpyxl not installed'})
+
+    community_id = request.form.get('community_id')
+    if not community_id:
+        return jsonify({'success': False, 'error': 'Missing community_id'})
+
+    file = request.files.get('file')
+    if not file or not file.filename.endswith(('.xlsx', '.xls')):
+        return jsonify({'success': False, 'error': 'Please upload a valid Excel file (.xlsx)'})
+
+    preview_only = request.form.get('preview') == '1'
+
+    try:
+        wb = load_workbook(file, data_only=True)
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Could not read Excel file: {str(e)}'})
+
+    # Common area keywords in description
+    COMMON_AREA_KEYWORDS = ['ROTORS', 'SIDEWALK', 'LAKE BANK', 'COMMON AREA', 'CUL D SAC', 'CUL DE SAC']
+
+    def is_common_area_entry(description):
+        """Determine if a description should be classified as Common Area."""
+        desc_upper = description.upper().strip()
+        # ROTORS are always common area
+        if desc_upper.startswith('ROTORS'):
+            return True
+        # Check for common area keywords in SPRAYS entries
+        for keyword in COMMON_AREA_KEYWORDS[1:]:  # Skip 'ROTORS', already checked
+            if keyword in desc_upper:
+                return True
+        return False
+
+    results = {}  # {clock_number: {'addresses': [...], 'common_area': [...]}}
+    total_addresses = 0
+    total_common_area = 0
+
+    for sheet_name in wb.sheetnames:
+        # Parse clock number from sheet name (e.g., "CLOCK 18" → 18)
+        match = re.match(r'CLOCK\s*(\d+)', sheet_name.strip(), re.IGNORECASE)
+        if not match:
+            continue
+
+        clock_number = int(match.group(1))
+        ws = wb[sheet_name]
+
+        addresses = []
+        common_area = []
+
+        for row in ws.iter_rows(min_row=3, values_only=False):  # Skip header rows
+            zone_cell = row[0].value if len(row) > 0 else None
+            desc_cell = row[2].value if len(row) > 2 else None
+
+            if zone_cell is None or desc_cell is None:
+                continue
+
+            # Build the formatted entry: "ZONE {zone} - {description}"
+            try:
+                zone_num = int(zone_cell)
+            except (ValueError, TypeError):
+                continue
+
+            description = str(desc_cell).strip()
+            if not description:
+                continue
+
+            # Format: "ZONE 1 - SPRAYS ALONG SIDEWALK EAST OF GENOVA"
+            # Split description type from rest for consistent formatting
+            formatted = f"ZONE {zone_num} - {description}"
+
+            if is_common_area_entry(description):
+                common_area.append(formatted)
+                total_common_area += 1
+            else:
+                addresses.append(formatted)
+                total_addresses += 1
+
+        if addresses or common_area:
+            results[clock_number] = {
+                'addresses': addresses,
+                'common_area': common_area
+            }
+
+    if not results:
+        return jsonify({'success': False, 'error': 'No valid CLOCK sheets found in Excel file. Sheets should be named "CLOCK 1", "CLOCK 2", etc.'})
+
+    # Preview mode - return parsed data for review
+    if preview_only:
+        preview_data = {}
+        for clock_num in sorted(results.keys()):
+            preview_data[str(clock_num)] = {
+                'addresses': results[clock_num]['addresses'],
+                'common_area': results[clock_num]['common_area']
+            }
+        return jsonify({
+            'success': True,
+            'preview': True,
+            'clocks': preview_data,
+            'total_addresses': total_addresses,
+            'total_common_area': total_common_area,
+            'total': total_addresses + total_common_area
+        })
+
+    # Import mode - insert into database
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        imported_count = 0
+        for clock_number, data in results.items():
+            # Import regular addresses
+            if data['addresses']:
+                c.execute("""SELECT COALESCE(MAX(sort_order), 0) FROM verona_walk_clock_addresses
+                             WHERE community_id = ? AND clock_number = ? AND is_common_area = 0""",
+                         (community_id, clock_number))
+                next_order = c.fetchone()[0] + 1
+                for address in data['addresses']:
+                    c.execute("""INSERT INTO verona_walk_clock_addresses
+                                 (community_id, clock_number, address, created_at, is_common_area, sort_order)
+                                 VALUES (?, ?, ?, ?, 0, ?)""",
+                             (community_id, clock_number, address,
+                              datetime.now().strftime('%Y-%m-%d %H:%M:%S'), next_order))
+                    next_order += 1
+                    imported_count += 1
+
+            # Import common area entries
+            if data['common_area']:
+                c.execute("""SELECT COALESCE(MAX(sort_order), 0) FROM verona_walk_clock_addresses
+                             WHERE community_id = ? AND clock_number = ? AND is_common_area = 1""",
+                         (community_id, clock_number))
+                next_order = c.fetchone()[0] + 1
+                for address in data['common_area']:
+                    c.execute("""INSERT INTO verona_walk_clock_addresses
+                                 (community_id, clock_number, address, created_at, is_common_area, sort_order)
+                                 VALUES (?, ?, ?, ?, 1, ?)""",
+                             (community_id, clock_number, address,
+                              datetime.now().strftime('%Y-%m-%d %H:%M:%S'), next_order))
+                    next_order += 1
+                    imported_count += 1
+
+        # Sync drafts with updated addresses
+        if imported_count > 0:
+            sync_community_drafts(c, 'Verona Walk HOA', community_id)
+
+        conn.commit()
+        return jsonify({
+            'success': True,
+            'message': f'Successfully imported {imported_count} entries across {len(results)} clocks ({total_addresses} addresses, {total_common_area} common area)',
+            'imported': imported_count
+        })
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+
+@app.route('/verona_walk_import_confirmed', methods=['POST'])
+def verona_walk_import_confirmed():
+    """Import reviewed/modified address data from the preview step.
+
+    Accepts JSON with the user's final selections (after review),
+    rather than re-parsing the Excel file.
+    """
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    community_id = data.get('community_id')
+    clocks = data.get('clocks', {})
+
+    if not community_id or not clocks:
+        return jsonify({'success': False, 'error': 'Missing required fields'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        imported_count = 0
+        clock_count = 0
+        inserted_ids = []
+
+        for clock_number_str, clock_data in clocks.items():
+            clock_number = int(clock_number_str)
+            addresses = clock_data.get('addresses', [])
+            common_area = clock_data.get('common_area', [])
+
+            if not addresses and not common_area:
+                continue
+
+            clock_count += 1
+
+            # Import regular addresses
+            if addresses:
+                c.execute("""SELECT COALESCE(MAX(sort_order), 0) FROM verona_walk_clock_addresses
+                             WHERE community_id = ? AND clock_number = ? AND is_common_area = 0""",
+                         (community_id, clock_number))
+                next_order = c.fetchone()[0] + 1
+                for address in addresses:
+                    address = str(address).strip()
+                    if address:
+                        c.execute("""INSERT INTO verona_walk_clock_addresses
+                                     (community_id, clock_number, address, created_at, is_common_area, sort_order)
+                                     VALUES (?, ?, ?, ?, 0, ?)""",
+                                 (community_id, clock_number, address,
+                                  datetime.now().strftime('%Y-%m-%d %H:%M:%S'), next_order))
+                        inserted_ids.append(c.lastrowid)
+                        next_order += 1
+                        imported_count += 1
+
+            # Import common area entries
+            if common_area:
+                c.execute("""SELECT COALESCE(MAX(sort_order), 0) FROM verona_walk_clock_addresses
+                             WHERE community_id = ? AND clock_number = ? AND is_common_area = 1""",
+                         (community_id, clock_number))
+                next_order = c.fetchone()[0] + 1
+                for address in common_area:
+                    address = str(address).strip()
+                    if address:
+                        c.execute("""INSERT INTO verona_walk_clock_addresses
+                                     (community_id, clock_number, address, created_at, is_common_area, sort_order)
+                                     VALUES (?, ?, ?, ?, 1, ?)""",
+                                 (community_id, clock_number, address,
+                                  datetime.now().strftime('%Y-%m-%d %H:%M:%S'), next_order))
+                        inserted_ids.append(c.lastrowid)
+                        next_order += 1
+                        imported_count += 1
+
+        # Sync drafts with updated addresses
+        if imported_count > 0:
+            sync_community_drafts(c, 'Verona Walk HOA', community_id)
+
+        conn.commit()
+        total_addr = sum(len(c.get('addresses', [])) for c in clocks.values())
+        total_ca = sum(len(c.get('common_area', [])) for c in clocks.values())
+        return jsonify({
+            'success': True,
+            'message': f'Successfully imported {imported_count} entries across {clock_count} clocks ({total_addr} addresses, {total_ca} common area)',
+            'imported': imported_count,
+            'inserted_ids': inserted_ids,
+            'import_type': 'clock_addresses'
+        })
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+
+@app.route('/undo_import', methods=['POST'])
+def undo_import():
+    """Undo a recent import by deleting the inserted records by their IDs."""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    import_type = data.get('import_type')
+    inserted_ids = data.get('inserted_ids', [])
+
+    if not import_type or not inserted_ids:
+        return jsonify({'success': False, 'error': 'Missing required fields'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        # Look up community info before deleting so we can sync drafts
+        community_id = None
+        community_name = None
+        if inserted_ids:
+            if import_type == 'clock_addresses':
+                c.execute("""SELECT ca.community_id, com.name
+                             FROM verona_walk_clock_addresses ca
+                             JOIN communities com ON com.id = ca.community_id
+                             WHERE ca.id = ?""", (inserted_ids[0],))
+            elif import_type == 'house_numbers':
+                c.execute("""SELECT chn.community_id, com.name
+                             FROM community_house_numbers chn
+                             JOIN communities com ON com.id = chn.community_id
+                             WHERE chn.id = ?""", (inserted_ids[0],))
+            info = c.fetchone()
+            if info:
+                community_id, community_name = info
+
+        deleted = 0
+        if import_type == 'clock_addresses':
+            for row_id in inserted_ids:
+                c.execute("DELETE FROM verona_walk_clock_addresses WHERE id = ?", (row_id,))
+                deleted += c.rowcount
+        elif import_type == 'house_numbers':
+            for row_id in inserted_ids:
+                c.execute("DELETE FROM community_house_numbers WHERE id = ?", (row_id,))
+                deleted += c.rowcount
+        else:
+            return jsonify({'success': False, 'error': 'Unknown import type'})
+
+        # Sync drafts with updated addresses
+        if deleted > 0 and community_id and community_name:
+            sync_community_drafts(c, community_name, community_id)
+
+        conn.commit()
+        return jsonify({'success': True, 'message': f'Import undone — {deleted} entries removed', 'deleted': deleted})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
 
 # ============================================================================
 # COMMUNITY PRICING ROUTES
