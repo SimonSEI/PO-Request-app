@@ -16028,7 +16028,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                         </div>`;
                         html += addrs.map(addr => `
                             <div class="address-item" id="address-item-${addr.id}">
-                                <input type="checkbox" class="address-checkbox" data-list="${listId}" data-id="${addr.id}" onchange="updateMassDeleteBar('${listId}')">
+                                <input type="checkbox" class="address-checkbox" data-list="${listId}" data-id="${addr.id}" onclick="handleCheckboxClick(event, this, '${listId}')">
                                 <span class="address-text" id="address-text-${addr.id}">${addr.address}</span>
                                 <div style="white-space:nowrap;">
                                     <button type="button" class="btn-insert-address" onclick="showInsertForm(${communityId}, ${addr.id})">Insert</button>
@@ -16176,6 +16176,22 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 btn.disabled = false;
                 btn.textContent = isCommonArea ? 'Add Common Area' : 'Add Address(es)';
             });
+        }
+
+        var _lastChecked = {};
+        function handleCheckboxClick(e, cb, listId) {
+            const checkboxes = Array.from(document.querySelectorAll(`.address-checkbox[data-list="${listId}"]`));
+            if (e.shiftKey && _lastChecked[listId]) {
+                const start = checkboxes.indexOf(_lastChecked[listId]);
+                const end = checkboxes.indexOf(cb);
+                const lo = Math.min(start, end);
+                const hi = Math.max(start, end);
+                for (let i = lo; i <= hi; i++) {
+                    checkboxes[i].checked = cb.checked;
+                }
+            }
+            _lastChecked[listId] = cb;
+            updateMassDeleteBar(listId);
         }
 
         function updateMassDeleteBar(listId) {
