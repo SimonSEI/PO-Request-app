@@ -16254,6 +16254,24 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             return line;
         }
 
+        function isDirectAddress(line) {
+            var upper = line.toUpperCase();
+            // Explicitly says COMMON AREA -> not a direct address
+            if (upper.indexOf('COMMON AREA') !== -1) return false;
+            // Has HOUSE keyword -> direct address
+            if (upper.indexOf('HOUSE') !== -1) return true;
+            // Has BETWEEN or BTW -> direct address (references houses)
+            if (upper.indexOf('BETWEEN') !== -1 || upper.indexOf(' BTW ') !== -1) return true;
+            // Has house number pairs with & (e.g. "7533 & 7529", "7549 &7543")
+            if (/\d{3,5}\s*&\s*\d{3,5}/.test(line)) return true;
+            // Has "REAR OF" or "REAR" with a house number
+            if (/REAR\b.*\d{3,5}/i.test(line)) return true;
+            // Has "SPR BTW" pattern
+            if (upper.indexOf('SPR BTW') !== -1) return true;
+            // No direct address indicators found -> common area
+            return false;
+        }
+
         function smartPasteAddresses(communityId, clockNumber) {
             const textarea = document.getElementById(`smart-paste-${communityId}-${clockNumber}`);
             const rawLines = textarea.value.split(_nl).map(l => l.trim()).filter(l => l.length > 0);
@@ -16267,10 +16285,10 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             rawLines.forEach(raw => {
                 const line = formatPastedLine(raw);
                 if (!line) return;
-                if (line.toUpperCase().indexOf('COMMON AREA') !== -1) {
-                    commonArea.push(line);
-                } else {
+                if (isDirectAddress(line)) {
                     regular.push(line);
+                } else {
+                    commonArea.push(line);
                 }
             });
 
