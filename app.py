@@ -14570,7 +14570,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         <div id="message"></div>
 
         {% if is_verona_walk %}
-        <!-- Verona Walk: Clock dropdown + two-column layout -->
+        <!-- Verona Walk: Clock dropdown + zones list -->
         <div id="veronaWalkLayout">
             <div class="vw-clock-selector">
                 <select id="vwClockSelect" onchange="vwSelectClock(this.value)">
@@ -14580,18 +14580,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     {% endfor %}
                 </select>
             </div>
-            <div id="vwClockContent" style="display:none;">
-                <div class="vw-columns">
-                    <div class="vw-column">
-                        <div class="vw-column-header addresses">Addresses</div>
-                        <div class="vw-column-body" id="vwAddressesCol"></div>
-                    </div>
-                    <div class="vw-column">
-                        <div class="vw-column-header common-area">Common Area</div>
-                        <div class="vw-column-body" id="vwCommonAreaCol"></div>
-                    </div>
-                </div>
-            </div>
+            <div id="vwClockContent" style="display:none;"></div>
         </div>
         {% endif %}
 
@@ -14733,11 +14722,14 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             content.style.display = 'block';
             clockNum = parseInt(clockNum);
             const items = vwParseRows();
-            const addresses = items.filter(i => i.clockNum === clockNum && !i.isCA);
-            const commonArea = items.filter(i => i.clockNum === clockNum && i.isCA);
-
-            document.getElementById('vwAddressesCol').innerHTML = vwRenderCards(addresses);
-            document.getElementById('vwCommonAreaCol').innerHTML = vwRenderCards(commonArea);
+            // Combine all zones for this clock and sort by zone number
+            const allZones = items.filter(i => i.clockNum === clockNum);
+            allZones.sort(function(a, b) {
+                var numA = parseInt((a.addressText.match(/^ZONE\s+(\d+)/i) || [0,0])[1]) || 0;
+                var numB = parseInt((b.addressText.match(/^ZONE\s+(\d+)/i) || [0,0])[1]) || 0;
+                return numA - numB;
+            });
+            content.innerHTML = vwRenderCards(allZones);
         }
 
         function vwRenderCards(items) {
