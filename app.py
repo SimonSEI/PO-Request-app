@@ -16137,8 +16137,8 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             const textarea = document.getElementById(inputId);
             const raw = textarea.value;
 
-            // Split by newlines, trim each, remove blanks
-            const addresses = raw.split(_nl).map(l => l.trim()).filter(l => l.length > 0);
+            // Split by newlines, format each, remove blanks
+            const addresses = raw.split(_nl).map(l => formatPastedLine(l)).filter(l => l !== null && l.length > 0);
 
             if (addresses.length === 0) {
                 alert('Please enter at least one address');
@@ -16235,17 +16235,38 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             .catch(err => alert('Network error - please try again'));
         }
 
+        function formatPastedLine(line) {
+            // Strip leading whitespace
+            line = line.trim();
+            // If already starts with ZONE, keep as-is
+            if (line.toUpperCase().startsWith('ZONE')) return line;
+            // Try to detect: number (tab or spaces) description
+            // Excel pastes as: "3\tHOUSE 7525 GARIBALDI" or "3  HOUSE 7525"
+            var match = line.match(/^(\d+)[\t\s]+[\\-\\s]*(.+)$/);
+            if (match) {
+                var zoneNum = match[1];
+                var desc = match[2].replace(/^-\s*/, '').trim();
+                return 'ZONE ' + zoneNum + ' - ' + desc;
+            }
+            // If just a number, skip it (empty serial row)
+            if (/^\d+$/.test(line)) return null;
+            // Otherwise return as-is
+            return line;
+        }
+
         function smartPasteAddresses(communityId, clockNumber) {
             const textarea = document.getElementById(`smart-paste-${communityId}-${clockNumber}`);
-            const lines = textarea.value.split(_nl).map(l => l.trim()).filter(l => l.length > 0);
-            if (lines.length === 0) {
+            const rawLines = textarea.value.split(_nl).map(l => l.trim()).filter(l => l.length > 0);
+            if (rawLines.length === 0) {
                 alert('Please paste addresses first');
                 return;
             }
 
             const regular = [];
             const commonArea = [];
-            lines.forEach(line => {
+            rawLines.forEach(raw => {
+                const line = formatPastedLine(raw);
+                if (!line) return;
                 if (line.toUpperCase().indexOf('COMMON AREA') !== -1) {
                     commonArea.push(line);
                 } else {
@@ -16338,7 +16359,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
         function insertClockAddresses(communityId, afterId) {
             const textarea = document.getElementById(`insert-input-${afterId}`);
-            const addresses = textarea.value.split(_nl).map(l => l.trim()).filter(l => l.length > 0);
+            const addresses = textarea.value.split(_nl).map(l => formatPastedLine(l)).filter(l => l !== null && l.length > 0);
 
             if (addresses.length === 0) {
                 alert('Please enter at least one address');
