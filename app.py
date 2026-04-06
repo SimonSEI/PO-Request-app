@@ -14778,6 +14778,82 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             gap: 6px;
             align-items: center;
         }
+        .mass-delete-bar {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 8px;
+            padding: 6px 8px;
+            background: #fff3f3;
+            border: 1px solid #f5c6cb;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        .mass-delete-bar button {
+            padding: 3px 10px;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .btn-mass-delete {
+            background: #dc3545;
+            color: white;
+        }
+        .btn-mass-delete:hover {
+            background: #c82333;
+        }
+        .btn-select-all {
+            background: #6c757d;
+            color: white;
+        }
+        .btn-select-all:hover {
+            background: #5a6268;
+        }
+        .address-checkbox {
+            margin-right: 8px;
+            cursor: pointer;
+            width: 16px;
+            height: 16px;
+        }
+        .smart-paste-form {
+            background: #f0f7ff;
+            border: 1px dashed #007bff;
+            border-radius: 4px;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        .smart-paste-form textarea {
+            width: 100%;
+            padding: 6px 8px;
+            border: 1px solid #b8daff;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: inherit;
+            resize: vertical;
+            min-height: 32px;
+            max-height: 200px;
+            margin-bottom: 6px;
+        }
+        .smart-paste-form .form-row {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+        .btn-smart-paste {
+            padding: 6px 12px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .btn-smart-paste:hover {
+            background: #0069d9;
+        }
         .btn-delete-address {
             background: #dc3545;
             color: white;
@@ -15135,9 +15211,16 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     const regularAddresses = clock.addresses.filter(a => !a.is_common_area);
                     const commonAreaAddresses = clock.common_area_addresses || [];
 
-                    function renderAddressList(addrs) {
-                        return addrs.map(addr => `
+                    function renderAddressList(addrs, listId) {
+                        if (addrs.length === 0) return '';
+                        let html = `<div class="mass-delete-bar" id="mass-bar-${listId}" style="display:none;">
+                            <button type="button" class="btn-select-all" onclick="toggleSelectAll('${listId}')">Select All</button>
+                            <span id="mass-count-${listId}">0 selected</span>
+                            <button type="button" class="btn-mass-delete" onclick="massDeleteAddresses(${communityId}, '${listId}')">Delete Selected</button>
+                        </div>`;
+                        html += addrs.map(addr => `
                             <div class="address-item" id="address-item-${addr.id}">
+                                <input type="checkbox" class="address-checkbox" data-list="${listId}" data-id="${addr.id}" onchange="updateMassDeleteBar('${listId}')">
                                 <span class="address-text" id="address-text-${addr.id}">${addr.address}</span>
                                 <div style="white-space:nowrap;">
                                     <button type="button" class="btn-insert-address" onclick="showInsertForm(${communityId}, ${addr.id})">Insert</button>
@@ -15147,6 +15230,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                             </div>
                             <div id="insert-form-${addr.id}" style="display:none;"></div>
                         `).join('');
+                        return html;
                     }
 
                     html += `
@@ -15156,13 +15240,20 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 <span class="clock-toggle${isOpen ? ' expanded' : ''}" id="toggle-${communityId}-${clock.clock_number}">▼</span>
                             </div>
                             <div class="clock-addresses${isOpen ? ' visible' : ''}" id="addresses-${communityId}-${clock.clock_number}">
+                                <div class="smart-paste-form">
+                                    <textarea id="smart-paste-${communityId}-${clock.clock_number}" placeholder="Smart Paste: paste all addresses here — lines with COMMON AREA go to Common Area tab, the rest go to Addresses" rows="1"></textarea>
+                                    <div class="form-row">
+                                        <button type="button" class="btn-smart-paste" onclick="smartPasteAddresses(${communityId}, ${clock.clock_number})">Smart Paste</button>
+                                        <span class="add-address-hint">Auto-sorts: lines containing "COMMON AREA" go to Common Area, rest go to Addresses</span>
+                                    </div>
+                                </div>
                                 <div class="clock-subtabs">
                                     <div class="clock-subtab${activeTab === 'addr' ? ' active' : ''}" id="subtab-addr-${communityId}-${clock.clock_number}" onclick="switchClockSubtab(${communityId}, ${clock.clock_number}, 'addr')">Addresses</div>
                                     <div class="clock-subtab${activeTab === 'ca' ? ' active' : ''}" id="subtab-ca-${communityId}-${clock.clock_number}" onclick="switchClockSubtab(${communityId}, ${clock.clock_number}, 'ca')">Common Area</div>
                                 </div>
                                 <div class="clock-subtab-content${activeTab === 'addr' ? ' active' : ''}" id="subtab-content-addr-${communityId}-${clock.clock_number}">
                                     <div id="address-list-${communityId}-${clock.clock_number}">
-                                        ${renderAddressList(regularAddresses)}
+                                        ${renderAddressList(regularAddresses, 'addr-' + communityId + '-' + clock.clock_number)}
                                     </div>
                                     <div class="add-address-form">
                                         <textarea id="addr-input-${communityId}-${clock.clock_number}" placeholder="Enter address (paste multiple lines from Excel)" rows="1"></textarea>
@@ -15174,7 +15265,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 </div>
                                 <div class="clock-subtab-content${activeTab === 'ca' ? ' active' : ''}" id="subtab-content-ca-${communityId}-${clock.clock_number}">
                                     <div id="ca-list-${communityId}-${clock.clock_number}">
-                                        ${renderAddressList(commonAreaAddresses)}
+                                        ${renderAddressList(commonAreaAddresses, 'ca-' + communityId + '-' + clock.clock_number)}
                                     </div>
                                     <div class="add-address-form">
                                         <textarea id="ca-input-${communityId}-${clock.clock_number}" placeholder="Enter common area address (paste multiple lines from Excel)" rows="1"></textarea>
@@ -15191,7 +15282,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 container.innerHTML = html;
 
                 // Auto-expand textareas when content is pasted
-                container.querySelectorAll('.add-address-form textarea').forEach(ta => {
+                container.querySelectorAll('.add-address-form textarea, .smart-paste-form textarea').forEach(ta => {
                     ta.addEventListener('input', function() {
                         const lines = this.value.split(_nl).length;
                         this.rows = Math.max(1, Math.min(lines, 8));
@@ -15276,6 +15367,120 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 alert('Network error - please try again');
                 btn.disabled = false;
                 btn.textContent = isCommonArea ? 'Add Common Area' : 'Add Address(es)';
+            });
+        }
+
+        function updateMassDeleteBar(listId) {
+            const checkboxes = document.querySelectorAll(`.address-checkbox[data-list="${listId}"]`);
+            const checked = document.querySelectorAll(`.address-checkbox[data-list="${listId}"]:checked`);
+            const bar = document.getElementById(`mass-bar-${listId}`);
+            if (bar) {
+                bar.style.display = checked.length > 0 ? 'flex' : 'none';
+                const countEl = document.getElementById(`mass-count-${listId}`);
+                if (countEl) countEl.textContent = checked.length + ' selected';
+            }
+        }
+
+        function toggleSelectAll(listId) {
+            const checkboxes = document.querySelectorAll(`.address-checkbox[data-list="${listId}"]`);
+            const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+            checkboxes.forEach(cb => cb.checked = !allChecked);
+            updateMassDeleteBar(listId);
+        }
+
+        function massDeleteAddresses(communityId, listId) {
+            const checked = document.querySelectorAll(`.address-checkbox[data-list="${listId}"]:checked`);
+            const ids = Array.from(checked).map(cb => parseInt(cb.dataset.id));
+            if (ids.length === 0) return;
+
+            if (!confirm('Delete ' + ids.length + ' selected address(es)? This cannot be undone.')) return;
+
+            fetch('/verona_walk_bulk_delete_addresses', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ address_ids: ids })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    loadClockAddresses(communityId, true);
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            })
+            .catch(err => alert('Network error - please try again'));
+        }
+
+        function smartPasteAddresses(communityId, clockNumber) {
+            const textarea = document.getElementById(`smart-paste-${communityId}-${clockNumber}`);
+            const lines = textarea.value.split(_nl).map(l => l.trim()).filter(l => l.length > 0);
+            if (lines.length === 0) {
+                alert('Please paste addresses first');
+                return;
+            }
+
+            const regular = [];
+            const commonArea = [];
+            lines.forEach(line => {
+                if (line.toUpperCase().indexOf('COMMON AREA') !== -1) {
+                    commonArea.push(line);
+                } else {
+                    regular.push(line);
+                }
+            });
+
+            const btn = textarea.closest('.smart-paste-form').querySelector('.btn-smart-paste');
+            btn.disabled = true;
+            btn.textContent = 'Sorting & saving...';
+
+            let promises = [];
+            if (regular.length > 0) {
+                promises.push(
+                    fetch('/verona_walk_bulk_add_addresses', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            community_id: communityId,
+                            clock_number: clockNumber,
+                            addresses: regular,
+                            is_common_area: 0
+                        })
+                    }).then(r => r.json())
+                );
+            }
+            if (commonArea.length > 0) {
+                promises.push(
+                    fetch('/verona_walk_bulk_add_addresses', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            community_id: communityId,
+                            clock_number: clockNumber,
+                            addresses: commonArea,
+                            is_common_area: 1
+                        })
+                    }).then(r => r.json())
+                );
+            }
+
+            Promise.all(promises)
+            .then(results => {
+                const failed = results.find(r => !r.success);
+                if (failed) {
+                    alert('Error: ' + failed.error);
+                } else {
+                    textarea.value = '';
+                    textarea.rows = 1;
+                    alert(regular.length + ' address(es) added to Addresses, ' + commonArea.length + ' added to Common Area');
+                    loadClockAddresses(communityId, true);
+                }
+                btn.disabled = false;
+                btn.textContent = 'Smart Paste';
+            })
+            .catch(err => {
+                alert('Network error - please try again');
+                btn.disabled = false;
+                btn.textContent = 'Smart Paste';
             });
         }
 
@@ -17620,6 +17825,32 @@ def verona_walk_insert_address():
 
         conn.commit()
         return jsonify({'success': True, 'message': f'{added} address(es) inserted'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+@app.route('/verona_walk_bulk_delete_addresses', methods=['POST'])
+def verona_walk_bulk_delete_addresses():
+    """Bulk delete addresses by IDs"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    address_ids = data.get('address_ids', [])
+
+    if not address_ids:
+        return jsonify({'success': False, 'error': 'No addresses selected'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    try:
+        placeholders = ','.join(['?' for _ in address_ids])
+        c.execute(f"DELETE FROM verona_walk_clock_addresses WHERE id IN ({placeholders})", address_ids)
+        deleted = c.rowcount
+        conn.commit()
+        return jsonify({'success': True, 'message': f'{deleted} address(es) deleted'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
     finally:
