@@ -5041,16 +5041,6 @@ def process_bulk_pdf(pdf_path, timestamp):
                           invoice_data.get('match_method', 'Unknown'), 'matched', new_job_name, manual_review_flag, po_id))
                 job_name = new_job_name  # Update job_name for results
 
-                # Also insert into invoices table
-                try:
-                    c.execute("""INSERT INTO invoices (po_id, invoice_number, invoice_cost, invoice_filename,
-                                                       invoice_date, invoice_upload_date, created_at)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                             (po_id, inv_num, float(invoice_data['cost']), filename,
-                              'N/A', datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                              datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
-                except Exception as inv_err:
-                    print(f"    ⚠ Could not insert into invoices table: {inv_err}")
             else:
                 # Normal PO - no job name change
                 c.execute("""UPDATE po_requests
@@ -5063,14 +5053,21 @@ def process_bulk_pdf(pdf_path, timestamp):
                           float(invoice_data['cost']),
                           invoice_data.get('match_method', 'Unknown'), 'matched', po_id))
 
-            # Also insert into invoices table so it shows in the invoices count/modal
+            # Insert into invoices table so it shows in the invoices count/modal
+            # Check for duplicates first to prevent the same invoice being added multiple times
             try:
-                c.execute("""INSERT INTO invoices (po_id, invoice_number, invoice_cost, invoice_filename,
-                                                   invoice_date, invoice_upload_date, created_at)
-                             VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                         (po_id, inv_num, float(invoice_data['cost']), filename,
-                          'N/A', datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                          datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                existing = c.execute("""SELECT id FROM invoices
+                                        WHERE po_id=? AND invoice_number=? AND invoice_filename=?""",
+                                     (po_id, inv_num, filename)).fetchone()
+                if not existing:
+                    c.execute("""INSERT INTO invoices (po_id, invoice_number, invoice_cost, invoice_filename,
+                                                       invoice_date, invoice_upload_date, created_at)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                             (po_id, inv_num, float(invoice_data['cost']), filename,
+                              'N/A', datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                              datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                else:
+                    print(f"    ℹ Invoice {inv_num} already exists for PO {po_id}, skipping duplicate insert")
             except Exception as inv_err:
                 print(f"    ⚠ Could not insert into invoices table: {inv_err}")
 
