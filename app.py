@@ -17321,7 +17321,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     const group = clockGroups[key];
                     const gid = 'rg-' + key;
                     html += '<div class="clock-container">';
-                    html += '<div class="clock-header" onclick="toggleResultGroup(\'' + gid + '\')">';
+                    html += '<div class="clock-header" onclick="toggleResultGroup(\\'' + gid + '\\')">';
                     html += '<span class="clock-title">' + group.label + ' <span style="font-size: 12px; font-weight: normal; color: #888;">(' + group.items.length + ' item' + (group.items.length !== 1 ? 's' : '') + ')</span></span>';
                     html += '<span class="clock-toggle" id="toggle-' + gid + '">&#9660;</span>';
                     html += '</div>';
@@ -17355,7 +17355,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 data.submissions.forEach(submission => {
                     const gid = 'rs-' + submission.id;
                     html += '<div class="clock-container">';
-                    html += '<div class="clock-header" onclick="toggleResultGroup(\'' + gid + '\')">';
+                    html += '<div class="clock-header" onclick="toggleResultGroup(\\'' + gid + '\\')">';
                     html += '<span class="clock-title">' + submission.tech_username + ' <span style="font-size: 12px; font-weight: normal; color: #888;">Submitted: ' + submission.submitted_at + '</span></span>';
                     html += '<div style="display:flex;align-items:center;gap:10px;">';
                     html += '<button type="button" style="padding:4px 10px;background:#dc3545;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;" onclick="event.stopPropagation();deleteSubmission(' + submission.id + ',' + JSON.stringify(submission.tech_username) + ')">Delete</button>';
