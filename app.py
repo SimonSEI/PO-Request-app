@@ -15830,7 +15830,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                         <div><label>Solenoid:</label> $<input type="number" id="price-solenoid-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
                                         <div><label>1 Stat Decoder:</label> $<input type="number" id="price-stat_decoder_1-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
                                     </div>
-                                    <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="margin-top: 10px; padding: 6px 12px; font-size: 12px;">Save Pricing</button>
+                                    <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="margin-top: 12px; padding: 10px 24px; font-size: 14px; font-weight: 600; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer;">Save Pricing</button>
                                 </div>
                             </div>
                             {% endif %}
@@ -15874,7 +15874,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                         <div><label>Solenoid:</label> $<input type="number" id="price-solenoid-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
                                         <div><label>1 Stat Decoder:</label> $<input type="number" id="price-stat_decoder_1-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
                                     </div>
-                                    <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="margin-top: 10px; padding: 6px 12px; font-size: 12px;">Save Pricing</button>
+                                    <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="margin-top: 12px; padding: 10px 24px; font-size: 14px; font-weight: 600; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer;">Save Pricing</button>
                                 </div>
                             </div>
                             {% endif %}
@@ -17099,6 +17099,12 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 stat_decoder_1: parseFloat(document.getElementById(`price-stat_decoder_1-${communityId}`).value) || 1.0
             };
 
+            const saveBtn = document.querySelector(`.pricing-section button[onclick="savePricing(${communityId})"]`);
+            if (saveBtn) {
+                saveBtn.disabled = true;
+                saveBtn.textContent = 'Saving...';
+            }
+
             fetch('/community_save_pricing', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -17107,12 +17113,38 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
-                        alert('Pricing saved successfully!');
+                        if (saveBtn) {
+                            saveBtn.textContent = 'Saved!';
+                            saveBtn.style.background = '#28a745';
+                            saveBtn.style.color = 'white';
+                            setTimeout(() => {
+                                saveBtn.textContent = 'Save Pricing';
+                                saveBtn.style.background = '';
+                                saveBtn.style.color = '';
+                                saveBtn.disabled = false;
+                            }, 2000);
+                        }
+                        // Show a green confirmation banner
+                        const banner = document.createElement('div');
+                        banner.textContent = 'Pricing saved successfully!';
+                        banner.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#28a745;color:white;padding:12px 24px;border-radius:8px;font-weight:600;font-size:14px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
+                        document.body.appendChild(banner);
+                        setTimeout(() => banner.remove(), 3000);
                     } else {
+                        if (saveBtn) {
+                            saveBtn.textContent = 'Save Pricing';
+                            saveBtn.disabled = false;
+                        }
                         alert('Error: ' + data.error);
                     }
                 })
-                .catch(error => alert('Error: ' + error));
+                .catch(error => {
+                    if (saveBtn) {
+                        saveBtn.textContent = 'Save Pricing';
+                        saveBtn.disabled = false;
+                    }
+                    alert('Error: ' + error);
+                });
         }
 
         // Load pricing when community section expands
