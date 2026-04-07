@@ -17147,9 +17147,17 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 });
         }
 
-        // Load pricing when community section expands
+        // Load saved pricing for all communities on page load
         document.addEventListener('DOMContentLoaded', function() {
-            // Pricing will be initialized with defaults from the form
+            document.querySelectorAll('.pricing-section').forEach(section => {
+                const btn = section.querySelector('button[onclick*="savePricing"]');
+                if (btn) {
+                    const match = btn.getAttribute('onclick').match(/savePricing\((\d+)\)/);
+                    if (match) {
+                        loadPricing(parseInt(match[1]));
+                    }
+                }
+            });
         });
     </script>
 
