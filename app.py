@@ -1770,6 +1770,46 @@ def detect_packing_slip(text):
     return False
 
 
+def detect_statement(text):
+    """
+    Detect if a document is a monthly/account statement rather than an invoice.
+    Returns True if the document appears to be a statement (not an invoice to be matched).
+    """
+    if not text:
+        return False
+    text_upper = text.upper()
+
+    # Strong single-keyword indicators — these alone are sufficient
+    strong_indicators = [
+        'STATEMENT OF ACCOUNT',
+        'ACCOUNT STATEMENT',
+        'MONTHLY STATEMENT',
+        'BILLING STATEMENT',
+        'REMITTANCE STATEMENT',
+        'STATEMENT PERIOD',
+        'STATEMENT DATE',
+    ]
+    for indicator in strong_indicators:
+        if indicator in text_upper:
+            return True
+
+    # Weaker indicators — require at least two to be present
+    weak_indicators = [
+        'PREVIOUS BALANCE',
+        'BALANCE FORWARD',
+        'PAYMENTS RECEIVED',
+        'CURRENT CHARGES',
+        'ACCOUNT SUMMARY',
+        'ACCOUNT BALANCE',
+        'BALANCE DUE THIS PERIOD',
+    ]
+    weak_hits = sum(1 for w in weak_indicators if w in text_upper)
+    if weak_hits >= 2:
+        return True
+
+    return False
+
+
 def match_packing_slip_to_po(text, po_map):
     """
     Try to match a packing slip to an approved PO.
@@ -2916,6 +2956,10 @@ def match_invoice_to_po():
 
         if not invoice_text:
             return jsonify({'success': False, 'error': 'Could not extract text from file'})
+
+        # Reject account/monthly statements — they are not invoices
+        if detect_statement(invoice_text):
+            return jsonify({'success': False, 'error': 'This file appears to be an account statement, not an invoice. Please upload individual invoices for matching.'})
 
         # Get all POs from database
         conn = sqlite3.connect(DB_PATH)
@@ -4815,6 +4859,16 @@ def process_bulk_pdf(pdf_path, timestamp):
                 if not text.strip() and OCR_SUPPORT:
                     print(f"  📷 No embedded text, trying OCR...")
                     text = extract_text_with_ocr(pdf_path, page_num)
+
+                # Check if this is a statement BEFORE trying invoice matching
+                if detect_statement(text):
+                    print(f"  🗒 STATEMENT detected on page {page_num} — skipping invoice matching")
+                    results['unmatched'].append({
+                        'page': page_num,
+                        'text_preview': f"[STATEMENT] {text[:150]}",
+                        'filename': None
+                    })
+                    continue  # Skip — statements are not invoices
 
                 # Check if this is a packing slip BEFORE trying invoice matching
                 if detect_packing_slip(text):
