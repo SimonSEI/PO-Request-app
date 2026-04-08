@@ -15942,33 +15942,19 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
         <!-- Review Submissions Tab -->
         <div id="submissions" class="tab-content">
-            <div class="filters">
-            <div class="form-group">
-                <label for="community">Select Community *</label>
-                <select id="community">
-                    <option value="">-- Choose a community --</option>
-                    {% for community in communities %}
-                    <option value="{{ community.name }}">{{ community.name }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-
-            <div style="display: flex; gap: 15px; flex-wrap: wrap;">
-                <div class="form-group">
-                    <label for="workYear">Select Year *</label>
-                    <select id="workYear">
-                        <option value="">-- Choose a year --</option>
-                        <option value="2024">2024</option>
-                        <option value="2025">2025</option>
-                        <option value="2026">2026</option>
-                        <option value="2027">2027</option>
+            <div class="filters" style="align-items: flex-end;">
+                <div class="form-group" style="flex: 2; min-width: 220px;">
+                    <label for="community">Select Community *</label>
+                    <select id="community" onchange="searchSubmissions()">
+                        <option value="">-- Choose a community --</option>
+                        {% for community in communities %}
+                        <option value="{{ community.name }}">{{ community.name }}</option>
+                        {% endfor %}
                     </select>
                 </div>
-
-                <div class="form-group">
-                    <label for="workMonth">Select Month *</label>
-                    <select id="workMonth">
-                        <option value="">-- Choose a month --</option>
+                <div class="form-group" style="min-width: 150px;">
+                    <label for="workMonth">Month</label>
+                    <select id="workMonth" onchange="searchSubmissions()">
                         <option value="01">January</option>
                         <option value="02">February</option>
                         <option value="03">March</option>
@@ -15983,16 +15969,21 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                         <option value="12">December</option>
                     </select>
                 </div>
+                <div class="form-group" style="min-width: 100px;">
+                    <label for="workYear">Year</label>
+                    <select id="workYear" onchange="searchSubmissions()">
+                        <option value="2024">2024</option>
+                        <option value="2025">2025</option>
+                        <option value="2026">2026</option>
+                        <option value="2027">2027</option>
+                    </select>
+                </div>
+                <div style="padding-bottom: 2px;">
+                    <button class="btn-export" id="exportExcelBtn" onclick="exportExcel()" style="display: none; background: #2e7d32; white-space: nowrap;">Export to Excel</button>
+                </div>
             </div>
 
-            <button class="btn-search" onclick="searchSubmissions()" style="margin-top: 10px;">Search</button>
-            <div style="display: flex; gap: 10px; margin-top: 10px;">
-                <button class="btn-export" id="exportExcelBtn" onclick="exportExcel()" style="display: none; background: #2e7d32;">Export to Excel</button>
-            </div>
-        </div>
-
-        <div class="results" id="results"></div>
-            </div>
+            <div class="results" id="results"></div>
         </div>
     </div>
 
@@ -17230,7 +17221,6 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             const workMonth = document.getElementById('workMonth').value;
 
             if (!community || !workYear || !workMonth) {
-                alert('Please select community, year, and month');
                 return;
             }
 
@@ -17290,29 +17280,21 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             // Add total cost summary at the top
             if (data.has_pricing) {
                 html += '<div style="background: #e8f5e9; border: 2px solid #4caf50; border-radius: 6px; padding: 16px; margin-bottom: 20px;">';
-
-                // For Verona Walk HOA, show separated costs
-                if (data.community === 'Verona Walk HOA') {
-                    html += '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 12px;">';
-                    html += '<div>';
-                    html += '<div style="font-size: 12px; color: #666; margin-bottom: 4px;">Common Area</div>';
-                    html += '<div style="font-size: 24px; font-weight: bold; color: #2e7d32;">$' + data.common_area_cost.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '</div>';
-                    html += '</div>';
-                    html += '<div>';
-                    html += '<div style="font-size: 12px; color: #666; margin-bottom: 4px;">All Clocks</div>';
-                    html += '<div style="font-size: 24px; font-weight: bold; color: #2e7d32;">$' + data.clocks_cost.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '</div>';
-                    html += '</div>';
-                    html += '</div>';
-                    html += '<div style="border-top: 1px solid #ccc; padding-top: 12px; margin-top: 12px;">';
-                    html += '<div style="font-size: 12px; color: #666; margin-bottom: 4px;">Total Cost</div>';
-                    html += '<div style="font-size: 28px; font-weight: bold; color: #2e7d32;">$' + data.total_cost.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '</div>';
-                    html += '</div>';
-                } else {
-                    html += '<div style="font-size: 14px; color: #666; margin-bottom: 5px;">Total Cost for All Parts</div>';
-                    html += '<div style="font-size: 32px; font-weight: bold; color: #2e7d32;">$' + data.total_cost.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '</div>';
-                }
-
-                html += '<div style="font-size: 12px; color: #666; margin-top: 5px;">' + data.submissions.length + ' submission(s) found</div>';
+                html += '<div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 12px;">';
+                html += '<div style="background: white; border-radius: 6px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">';
+                html += '<div style="font-size: 12px; color: #666; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px;">Residential / Addresses</div>';
+                html += '<div style="font-size: 24px; font-weight: bold; color: #2e7d32;">$' + (data.residential_cost || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '</div>';
+                html += '</div>';
+                html += '<div style="background: white; border-radius: 6px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">';
+                html += '<div style="font-size: 12px; color: #666; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px;">Common Area</div>';
+                html += '<div style="font-size: 24px; font-weight: bold; color: #2e7d32;">$' + (data.common_area_cost || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '</div>';
+                html += '</div>';
+                html += '<div style="background: #1565c0; border-radius: 6px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">';
+                html += '<div style="font-size: 12px; color: rgba(255,255,255,0.8); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px;">Total Cost</div>';
+                html += '<div style="font-size: 24px; font-weight: bold; color: white;">$' + data.total_cost.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '</div>';
+                html += '</div>';
+                html += '</div>';
+                html += '<div style="font-size: 12px; color: #666;">' + data.submissions.length + ' submission(s) found</div>';
                 html += '</div>';
             } else {
                 html += '<div class="alert alert-info">' + data.submissions.length + ' submission(s) found - Pricing not configured</div>';
@@ -17372,7 +17354,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     const group = clockGroups[key];
                     const gid = 'rg-' + key;
                     html += '<div class="clock-container">';
-                    html += '<div class="clock-header" onclick="toggleResultGroup(\\'' + gid + '\\')">';
+                    html += '<div class="clock-header" data-gid="' + gid + '" onclick="toggleResultGroup(this.dataset.gid)">';
                     html += '<span class="clock-title">' + group.label + ' <span style="font-size: 12px; font-weight: normal; color: #888;">(' + group.items.length + ' item' + (group.items.length !== 1 ? 's' : '') + ')</span></span>';
                     html += '<span class="clock-toggle" id="toggle-' + gid + '">&#9660;</span>';
                     html += '</div>';
@@ -17406,7 +17388,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 data.submissions.forEach(submission => {
                     const gid = 'rs-' + submission.id;
                     html += '<div class="clock-container">';
-                    html += '<div class="clock-header" onclick="toggleResultGroup(\\'' + gid + '\\')">';
+                    html += '<div class="clock-header" data-gid="' + gid + '" onclick="toggleResultGroup(this.dataset.gid)">';
                     html += '<span class="clock-title">' + submission.tech_username + ' <span style="font-size: 12px; font-weight: normal; color: #888;">Submitted: ' + submission.submitted_at + '</span></span>';
                     html += '<div style="display:flex;align-items:center;gap:10px;">';
                     html += '<button type="button" style="padding:4px 10px;background:#dc3545;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;" onclick="event.stopPropagation();deleteSubmission(' + submission.id + ',' + JSON.stringify(submission.tech_username) + ')">Delete</button>';
@@ -18868,12 +18850,12 @@ def community_billing_office_data():
                 )
                 total_cost += item_cost
 
-                # For Verona Walk HOA, separate common area and clocks costs
-                if community == 'Verona Walk HOA':
-                    if item_row[0] and item_row[0].startswith('Common Area'):
-                        common_area_cost += item_cost
-                    else:
-                        clocks_cost += item_cost
+                # Separate common area and residential costs for all communities
+                zone = (item_row[0] or '').lower()
+                if 'common area' in zone:
+                    common_area_cost += item_cost
+                else:
+                    clocks_cost += item_cost
 
         submissions.append({
             'id': submission_id,
@@ -18891,13 +18873,10 @@ def community_billing_office_data():
         'work_month': work_month,
         'submissions': submissions,
         'total_cost': round(total_cost, 2),
+        'residential_cost': round(clocks_cost, 2),
+        'common_area_cost': round(common_area_cost, 2),
         'has_pricing': pricing is not None
     }
-
-    # For Verona Walk HOA, include separated costs
-    if community == 'Verona Walk HOA':
-        response['common_area_cost'] = round(common_area_cost, 2)
-        response['clocks_cost'] = round(clocks_cost, 2)
 
     return jsonify(response)
 
