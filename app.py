@@ -15759,9 +15759,13 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             {% endwith %}
 
             {% if all_communities %}
-                <h3 style="margin-bottom: 15px; color: #333;">Communities ({{ all_communities|length }})</h3>
+                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 15px; flex-wrap: wrap;">
+                    <h3 style="margin: 0; color: #333;">Communities (<span id="community-count">{{ all_communities|length }}</span>)</h3>
+                    <input type="text" id="community-search" placeholder="Search communities..." oninput="filterCommunities()"
+                           style="flex: 1; min-width: 200px; max-width: 340px; padding: 7px 12px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px;">
+                </div>
                 {% for community in all_communities %}
-                    <div class="community-card">
+                    <div class="community-card" data-name="{{ community.name|lower }}">
                         <div style="width: 100%;">
                             <div style="display: flex; justify-content: space-between; align-items: flex-start;">
                                 <div class="community-info">
@@ -15946,6 +15950,19 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
     </div>
 
     <script>
+        function filterCommunities() {
+            const q = document.getElementById('community-search').value.toLowerCase();
+            const cards = document.querySelectorAll('.community-card[data-name]');
+            let visible = 0;
+            cards.forEach(card => {
+                const match = card.dataset.name.includes(q);
+                card.style.display = match ? '' : 'none';
+                if (match) visible++;
+            });
+            const countEl = document.getElementById('community-count');
+            if (countEl) countEl.textContent = q ? visible : cards.length;
+        }
+
         function switchTab(tabName) {
             // Hide all tabs
             document.querySelectorAll('.tab-content').forEach(tab => {
