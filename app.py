@@ -14207,6 +14207,8 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
     </div>
 
     <script>
+        const existingSubmissions = {{ submissions | tojson }};
+
         function submitForm() {
             const community = document.getElementById('community').value;
             const workDate = document.getElementById('workDate').value;
@@ -14214,6 +14216,16 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
 
             if (!community || !workDate) {
                 errorDiv.textContent = 'Please fill in all fields';
+                errorDiv.style.display = 'block';
+                return;
+            }
+
+            // Block if a finalized submission already exists for this community+date
+            const alreadyFinalized = existingSubmissions.find(
+                s => s.community === community && s.work_date === workDate && s.status === 'submitted'
+            );
+            if (alreadyFinalized) {
+                errorDiv.textContent = `A finalized submission for "${community}" on ${workDate} already exists. Select it from the list above to view it, or choose a different date.`;
                 errorDiv.style.display = 'block';
                 return;
             }
@@ -18204,12 +18216,17 @@ def community_billing_spreadsheet():
     c = conn.cursor()
 
     # Get or create submission
-    c.execute("""SELECT id FROM community_billing_submissions
+    c.execute("""SELECT id, status FROM community_billing_submissions
                  WHERE community_name = ? AND tech_username = ? AND work_date = ?""",
              (community, session.get('username'), work_date))
 
     submission = c.fetchone()
     if submission:
+        # If this is a POST (new submission request) and the record is already finalized,
+        # reject it so the tech cannot accidentally land on a read-only form.
+        if request.method == 'POST' and submission[1] == 'submitted':
+            conn.close()
+            return jsonify({'success': False, 'error': f'A finalized submission for {community} on {work_date} already exists.'})
         submission_id = submission[0]
     else:
         c.execute("""INSERT INTO community_billing_submissions
