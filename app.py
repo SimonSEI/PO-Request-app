@@ -1770,6 +1770,46 @@ def detect_packing_slip(text):
     return False
 
 
+def detect_statement(text):
+    """
+    Detect if a document is a monthly/account statement rather than an invoice.
+    Returns True if the document appears to be a statement (not an invoice to be matched).
+    """
+    if not text:
+        return False
+    text_upper = text.upper()
+
+    # Strong single-keyword indicators — these alone are sufficient
+    strong_indicators = [
+        'STATEMENT OF ACCOUNT',
+        'ACCOUNT STATEMENT',
+        'MONTHLY STATEMENT',
+        'BILLING STATEMENT',
+        'REMITTANCE STATEMENT',
+        'STATEMENT PERIOD',
+        'STATEMENT DATE',
+    ]
+    for indicator in strong_indicators:
+        if indicator in text_upper:
+            return True
+
+    # Weaker indicators — require at least two to be present
+    weak_indicators = [
+        'PREVIOUS BALANCE',
+        'BALANCE FORWARD',
+        'PAYMENTS RECEIVED',
+        'CURRENT CHARGES',
+        'ACCOUNT SUMMARY',
+        'ACCOUNT BALANCE',
+        'BALANCE DUE THIS PERIOD',
+    ]
+    weak_hits = sum(1 for w in weak_indicators if w in text_upper)
+    if weak_hits >= 2:
+        return True
+
+    return False
+
+
 def match_packing_slip_to_po(text, po_map):
     """
     Try to match a packing slip to an approved PO.
@@ -2916,6 +2956,10 @@ def match_invoice_to_po():
 
         if not invoice_text:
             return jsonify({'success': False, 'error': 'Could not extract text from file'})
+
+        # Reject account/monthly statements — they are not invoices
+        if detect_statement(invoice_text):
+            return jsonify({'success': False, 'error': 'This file appears to be an account statement, not an invoice. Please upload individual invoices for matching.'})
 
         # Get all POs from database
         conn = sqlite3.connect(DB_PATH)
@@ -4816,6 +4860,16 @@ def process_bulk_pdf(pdf_path, timestamp):
                     print(f"  📷 No embedded text, trying OCR...")
                     text = extract_text_with_ocr(pdf_path, page_num)
 
+                # Check if this is a statement BEFORE trying invoice matching
+                if detect_statement(text):
+                    print(f"  🗒 STATEMENT detected on page {page_num} — skipping invoice matching")
+                    results['unmatched'].append({
+                        'page': page_num,
+                        'text_preview': f"[STATEMENT] {text[:150]}",
+                        'filename': None
+                    })
+                    continue  # Skip — statements are not invoices
+
                 # Check if this is a packing slip BEFORE trying invoice matching
                 if detect_packing_slip(text):
                     print(f"  📦 PACKING SLIP detected on page {page_num}")
@@ -5041,16 +5095,6 @@ def process_bulk_pdf(pdf_path, timestamp):
                           invoice_data.get('match_method', 'Unknown'), 'matched', new_job_name, manual_review_flag, po_id))
                 job_name = new_job_name  # Update job_name for results
 
-                # Also insert into invoices table
-                try:
-                    c.execute("""INSERT INTO invoices (po_id, invoice_number, invoice_cost, invoice_filename,
-                                                       invoice_date, invoice_upload_date, created_at)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                             (po_id, inv_num, float(invoice_data['cost']), filename,
-                              'N/A', datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                              datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
-                except Exception as inv_err:
-                    print(f"    ⚠ Could not insert into invoices table: {inv_err}")
             else:
                 # Normal PO - no job name change
                 c.execute("""UPDATE po_requests
@@ -5063,14 +5107,21 @@ def process_bulk_pdf(pdf_path, timestamp):
                           float(invoice_data['cost']),
                           invoice_data.get('match_method', 'Unknown'), 'matched', po_id))
 
-            # Also insert into invoices table so it shows in the invoices count/modal
+            # Insert into invoices table so it shows in the invoices count/modal
+            # Check for duplicates first to prevent the same invoice being added multiple times
             try:
-                c.execute("""INSERT INTO invoices (po_id, invoice_number, invoice_cost, invoice_filename,
-                                                   invoice_date, invoice_upload_date, created_at)
-                             VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                         (po_id, inv_num, float(invoice_data['cost']), filename,
-                          'N/A', datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                          datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                existing = c.execute("""SELECT id FROM invoices
+                                        WHERE po_id=? AND invoice_number=? AND invoice_filename=?""",
+                                     (po_id, inv_num, filename)).fetchone()
+                if not existing:
+                    c.execute("""INSERT INTO invoices (po_id, invoice_number, invoice_cost, invoice_filename,
+                                                       invoice_date, invoice_upload_date, created_at)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                             (po_id, inv_num, float(invoice_data['cost']), filename,
+                              'N/A', datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                              datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                else:
+                    print(f"    ℹ Invoice {inv_num} already exists for PO {po_id}, skipping duplicate insert")
             except Exception as inv_err:
                 print(f"    ⚠ Could not insert into invoices table: {inv_err}")
 
@@ -14570,7 +14621,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         <div id="message"></div>
 
         {% if is_verona_walk %}
-        <!-- Verona Walk: Clock dropdown + two-column layout -->
+        <!-- Verona Walk: Clock dropdown + zones list -->
         <div id="veronaWalkLayout">
             <div class="vw-clock-selector">
                 <select id="vwClockSelect" onchange="vwSelectClock(this.value)">
@@ -14580,18 +14631,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     {% endfor %}
                 </select>
             </div>
-            <div id="vwClockContent" style="display:none;">
-                <div class="vw-columns">
-                    <div class="vw-column">
-                        <div class="vw-column-header addresses">Addresses</div>
-                        <div class="vw-column-body" id="vwAddressesCol"></div>
-                    </div>
-                    <div class="vw-column">
-                        <div class="vw-column-header common-area">Common Area</div>
-                        <div class="vw-column-body" id="vwCommonAreaCol"></div>
-                    </div>
-                </div>
-            </div>
+            <div id="vwClockContent" style="display:none;"></div>
         </div>
         {% endif %}
 
@@ -14733,11 +14773,14 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             content.style.display = 'block';
             clockNum = parseInt(clockNum);
             const items = vwParseRows();
-            const addresses = items.filter(i => i.clockNum === clockNum && !i.isCA);
-            const commonArea = items.filter(i => i.clockNum === clockNum && i.isCA);
-
-            document.getElementById('vwAddressesCol').innerHTML = vwRenderCards(addresses);
-            document.getElementById('vwCommonAreaCol').innerHTML = vwRenderCards(commonArea);
+            // Combine all zones for this clock and sort by zone number
+            const allZones = items.filter(i => i.clockNum === clockNum);
+            allZones.sort(function(a, b) {
+                var numA = parseInt((a.addressText.match(/^ZONE\s+(\d+)/i) || [0,0])[1]) || 0;
+                var numB = parseInt((b.addressText.match(/^ZONE\s+(\d+)/i) || [0,0])[1]) || 0;
+                return numA - numB;
+            });
+            content.innerHTML = vwRenderCards(allZones);
         }
 
         function vwRenderCards(items) {
@@ -15538,6 +15581,26 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             font-size: 11px;
             margin-right: 4px;
         }
+        .btn-move-address {
+            background: #6f42c1;
+            color: white;
+            padding: 3px 6px;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 11px;
+            margin-right: 4px;
+        }
+        .btn-move-address:hover {
+            background: #5a32a3;
+        }
+        .btn-mass-move {
+            background: #6f42c1;
+            color: white;
+        }
+        .btn-mass-move:hover {
+            background: #5a32a3;
+        }
         .btn-insert-address:hover {
             background: #138496;
         }
@@ -15564,6 +15627,82 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             display: flex;
             gap: 6px;
             align-items: center;
+        }
+        .mass-delete-bar {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 8px;
+            padding: 6px 8px;
+            background: #fff3f3;
+            border: 1px solid #f5c6cb;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        .mass-delete-bar button {
+            padding: 3px 10px;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .btn-mass-delete {
+            background: #dc3545;
+            color: white;
+        }
+        .btn-mass-delete:hover {
+            background: #c82333;
+        }
+        .btn-select-all {
+            background: #6c757d;
+            color: white;
+        }
+        .btn-select-all:hover {
+            background: #5a6268;
+        }
+        .address-checkbox {
+            margin-right: 8px;
+            cursor: pointer;
+            width: 16px;
+            height: 16px;
+        }
+        .smart-paste-form {
+            background: #f0f7ff;
+            border: 1px dashed #007bff;
+            border-radius: 4px;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        .smart-paste-form textarea {
+            width: 100%;
+            padding: 6px 8px;
+            border: 1px solid #b8daff;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: inherit;
+            resize: vertical;
+            min-height: 32px;
+            max-height: 200px;
+            margin-bottom: 6px;
+        }
+        .smart-paste-form .form-row {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+        .btn-smart-paste {
+            padding: 6px 12px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .btn-smart-paste:hover {
+            background: #0069d9;
         }
         .btn-delete-address {
             background: #dc3545;
@@ -15743,7 +15882,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                         <div><label>Solenoid:</label> $<input type="number" id="price-solenoid-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
                                         <div><label>1 Stat Decoder:</label> $<input type="number" id="price-stat_decoder_1-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
                                     </div>
-                                    <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="margin-top: 10px; padding: 6px 12px; font-size: 12px;">Save Pricing</button>
+                                    <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="margin-top: 12px; padding: 10px 24px; font-size: 14px; font-weight: 600; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer;">Save Pricing</button>
                                 </div>
                             </div>
                             {% endif %}
@@ -15787,7 +15926,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                         <div><label>Solenoid:</label> $<input type="number" id="price-solenoid-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
                                         <div><label>1 Stat Decoder:</label> $<input type="number" id="price-stat_decoder_1-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
                                     </div>
-                                    <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="margin-top: 10px; padding: 6px 12px; font-size: 12px;">Save Pricing</button>
+                                    <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="margin-top: 12px; padding: 10px 24px; font-size: 14px; font-weight: 600; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer;">Save Pricing</button>
                                 </div>
                             </div>
                             {% endif %}
@@ -15935,11 +16074,23 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     const regularAddresses = clock.addresses.filter(a => !a.is_common_area);
                     const commonAreaAddresses = clock.common_area_addresses || [];
 
-                    function renderAddressList(addrs) {
-                        return addrs.map(addr => `
+                    function renderAddressList(addrs, listId) {
+                        if (addrs.length === 0) return '';
+                        const isCA = listId.startsWith('ca-');
+                        const moveLabel = isCA ? 'Move to Addresses' : 'Move to Common Area';
+                        const moveBulkLabel = isCA ? 'Move Selected to Addresses' : 'Move Selected to Common Area';
+                        let html = `<div class="mass-delete-bar" id="mass-bar-${listId}" style="display:none;">
+                            <button type="button" class="btn-select-all" onclick="toggleSelectAll('${listId}')">Select All</button>
+                            <span id="mass-count-${listId}">0 selected</span>
+                            <button type="button" class="btn-mass-move" onclick="massMoveAddresses(${communityId}, '${listId}')">${moveBulkLabel}</button>
+                            <button type="button" class="btn-mass-delete" onclick="massDeleteAddresses(${communityId}, '${listId}')">Delete Selected</button>
+                        </div>`;
+                        html += addrs.map(addr => `
                             <div class="address-item" id="address-item-${addr.id}">
+                                <input type="checkbox" class="address-checkbox" data-list="${listId}" data-id="${addr.id}" onclick="handleCheckboxClick(event, this, '${listId}')">
                                 <span class="address-text" id="address-text-${addr.id}">${addr.address}</span>
                                 <div style="white-space:nowrap;">
+                                    <button type="button" class="btn-move-address" onclick="moveAddress(${communityId}, ${addr.id}, ${isCA ? 0 : 1})">${moveLabel}</button>
                                     <button type="button" class="btn-insert-address" onclick="showInsertForm(${communityId}, ${addr.id})">Insert</button>
                                     <button type="button" class="btn-edit-address" onclick="editClockAddress(${communityId}, ${addr.id})">Edit</button>
                                     <button type="button" class="btn-delete-address" onclick="deleteClockAddress(${communityId}, ${addr.id})">Delete</button>
@@ -15947,6 +16098,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                             </div>
                             <div id="insert-form-${addr.id}" style="display:none;"></div>
                         `).join('');
+                        return html;
                     }
 
                     html += `
@@ -15956,13 +16108,20 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 <span class="clock-toggle${isOpen ? ' expanded' : ''}" id="toggle-${communityId}-${clock.clock_number}">▼</span>
                             </div>
                             <div class="clock-addresses${isOpen ? ' visible' : ''}" id="addresses-${communityId}-${clock.clock_number}">
+                                <div class="smart-paste-form">
+                                    <textarea id="smart-paste-${communityId}-${clock.clock_number}" placeholder="Smart Paste: paste all addresses here — lines with COMMON AREA go to Common Area tab, the rest go to Addresses" rows="1"></textarea>
+                                    <div class="form-row">
+                                        <button type="button" class="btn-smart-paste" onclick="smartPasteAddresses(${communityId}, ${clock.clock_number})">Smart Paste</button>
+                                        <span class="add-address-hint">Auto-sorts: lines containing "COMMON AREA" go to Common Area, rest go to Addresses</span>
+                                    </div>
+                                </div>
                                 <div class="clock-subtabs">
                                     <div class="clock-subtab${activeTab === 'addr' ? ' active' : ''}" id="subtab-addr-${communityId}-${clock.clock_number}" onclick="switchClockSubtab(${communityId}, ${clock.clock_number}, 'addr')">Addresses</div>
                                     <div class="clock-subtab${activeTab === 'ca' ? ' active' : ''}" id="subtab-ca-${communityId}-${clock.clock_number}" onclick="switchClockSubtab(${communityId}, ${clock.clock_number}, 'ca')">Common Area</div>
                                 </div>
                                 <div class="clock-subtab-content${activeTab === 'addr' ? ' active' : ''}" id="subtab-content-addr-${communityId}-${clock.clock_number}">
                                     <div id="address-list-${communityId}-${clock.clock_number}">
-                                        ${renderAddressList(regularAddresses)}
+                                        ${renderAddressList(regularAddresses, 'addr-' + communityId + '-' + clock.clock_number)}
                                     </div>
                                     <div class="add-address-form">
                                         <textarea id="addr-input-${communityId}-${clock.clock_number}" placeholder="Enter address (paste multiple lines from Excel)" rows="1"></textarea>
@@ -15974,7 +16133,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 </div>
                                 <div class="clock-subtab-content${activeTab === 'ca' ? ' active' : ''}" id="subtab-content-ca-${communityId}-${clock.clock_number}">
                                     <div id="ca-list-${communityId}-${clock.clock_number}">
-                                        ${renderAddressList(commonAreaAddresses)}
+                                        ${renderAddressList(commonAreaAddresses, 'ca-' + communityId + '-' + clock.clock_number)}
                                     </div>
                                     <div class="add-address-form">
                                         <textarea id="ca-input-${communityId}-${clock.clock_number}" placeholder="Enter common area address (paste multiple lines from Excel)" rows="1"></textarea>
@@ -15991,7 +16150,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 container.innerHTML = html;
 
                 // Auto-expand textareas when content is pasted
-                container.querySelectorAll('.add-address-form textarea').forEach(ta => {
+                container.querySelectorAll('.add-address-form textarea, .smart-paste-form textarea').forEach(ta => {
                     ta.addEventListener('input', function() {
                         const lines = this.value.split(_nl).length;
                         this.rows = Math.max(1, Math.min(lines, 8));
@@ -16038,8 +16197,8 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             const textarea = document.getElementById(inputId);
             const raw = textarea.value;
 
-            // Split by newlines, trim each, remove blanks
-            const addresses = raw.split(_nl).map(l => l.trim()).filter(l => l.length > 0);
+            // Split by newlines, format each, remove blanks
+            const addresses = raw.split(_nl).map(l => formatPastedLine(l)).filter(l => l !== null && l.length > 0);
 
             if (addresses.length === 0) {
                 alert('Please enter at least one address');
@@ -16079,6 +16238,217 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             });
         }
 
+        var _lastChecked = {};
+        function handleCheckboxClick(e, cb, listId) {
+            const checkboxes = Array.from(document.querySelectorAll(`.address-checkbox[data-list="${listId}"]`));
+            if (e.shiftKey && _lastChecked[listId]) {
+                const start = checkboxes.indexOf(_lastChecked[listId]);
+                const end = checkboxes.indexOf(cb);
+                const lo = Math.min(start, end);
+                const hi = Math.max(start, end);
+                for (let i = lo; i <= hi; i++) {
+                    checkboxes[i].checked = cb.checked;
+                }
+            }
+            _lastChecked[listId] = cb;
+            updateMassDeleteBar(listId);
+        }
+
+        function updateMassDeleteBar(listId) {
+            const checkboxes = document.querySelectorAll(`.address-checkbox[data-list="${listId}"]`);
+            const checked = document.querySelectorAll(`.address-checkbox[data-list="${listId}"]:checked`);
+            const bar = document.getElementById(`mass-bar-${listId}`);
+            if (bar) {
+                bar.style.display = checked.length > 0 ? 'flex' : 'none';
+                const countEl = document.getElementById(`mass-count-${listId}`);
+                if (countEl) countEl.textContent = checked.length + ' selected';
+            }
+        }
+
+        function toggleSelectAll(listId) {
+            const checkboxes = document.querySelectorAll(`.address-checkbox[data-list="${listId}"]`);
+            const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+            checkboxes.forEach(cb => cb.checked = !allChecked);
+            updateMassDeleteBar(listId);
+        }
+
+        function massDeleteAddresses(communityId, listId) {
+            const checked = document.querySelectorAll(`.address-checkbox[data-list="${listId}"]:checked`);
+            const ids = Array.from(checked).map(cb => parseInt(cb.dataset.id));
+            if (ids.length === 0) return;
+
+            if (!confirm('Delete ' + ids.length + ' selected address(es)? This cannot be undone.')) return;
+
+            fetch('/verona_walk_bulk_delete_addresses', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ address_ids: ids })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    loadClockAddresses(communityId, true);
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            })
+            .catch(err => alert('Network error - please try again'));
+        }
+
+        function moveAddress(communityId, addressId, newIsCommonArea) {
+            fetch('/verona_walk_move_addresses', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ address_ids: [addressId], is_common_area: newIsCommonArea })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    loadClockAddresses(communityId, true);
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            })
+            .catch(err => alert('Network error - please try again'));
+        }
+
+        function massMoveAddresses(communityId, listId) {
+            const checked = document.querySelectorAll(`.address-checkbox[data-list="${listId}"]:checked`);
+            const ids = Array.from(checked).map(cb => parseInt(cb.dataset.id));
+            if (ids.length === 0) return;
+
+            const isCA = listId.startsWith('ca-');
+            const target = isCA ? 'Addresses' : 'Common Area';
+            if (!confirm('Move ' + ids.length + ' selected address(es) to ' + target + '?')) return;
+
+            fetch('/verona_walk_move_addresses', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ address_ids: ids, is_common_area: isCA ? 0 : 1 })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    loadClockAddresses(communityId, true);
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            })
+            .catch(err => alert('Network error - please try again'));
+        }
+
+        function formatPastedLine(line) {
+            // Strip leading whitespace
+            line = line.trim();
+            // If already starts with ZONE, keep as-is
+            if (line.toUpperCase().startsWith('ZONE')) return line;
+            // Try to detect: number (tab or spaces) description
+            // Excel pastes as: "3\tHOUSE 7525 GARIBALDI" or "3  HOUSE 7525"
+            var match = line.match(/^(\d+)[\t\s]+[\\-\\s]*(.+)$/);
+            if (match) {
+                var zoneNum = match[1];
+                var desc = match[2].replace(/^-\s*/, '').trim();
+                return 'ZONE ' + zoneNum + ' - ' + desc;
+            }
+            // If just a number, skip it (empty serial row)
+            if (/^\d+$/.test(line)) return null;
+            // Otherwise return as-is
+            return line;
+        }
+
+        function isDirectAddress(line) {
+            var upper = line.toUpperCase();
+            // Explicitly says COMMON AREA -> not a direct address
+            if (upper.indexOf('COMMON AREA') !== -1) return false;
+            // Has HOUSE keyword -> direct address
+            if (upper.indexOf('HOUSE') !== -1) return true;
+            // Has BETWEEN or BTW -> direct address (references houses)
+            if (upper.indexOf('BETWEEN') !== -1 || upper.indexOf(' BTW ') !== -1) return true;
+            // Has house number pairs with & (e.g. "7533 & 7529", "7549 &7543")
+            if (/\d{3,5}\s*&\s*\d{3,5}/.test(line)) return true;
+            // Has "REAR OF" or "REAR" with a house number
+            if (/REAR\b.*\d{3,5}/i.test(line)) return true;
+            // Has "SPR BTW" pattern
+            if (upper.indexOf('SPR BTW') !== -1) return true;
+            // No direct address indicators found -> common area
+            return false;
+        }
+
+        function smartPasteAddresses(communityId, clockNumber) {
+            const textarea = document.getElementById(`smart-paste-${communityId}-${clockNumber}`);
+            const rawLines = textarea.value.split(_nl).map(l => l.trim()).filter(l => l.length > 0);
+            if (rawLines.length === 0) {
+                alert('Please paste addresses first');
+                return;
+            }
+
+            const regular = [];
+            const commonArea = [];
+            rawLines.forEach(raw => {
+                const line = formatPastedLine(raw);
+                if (!line) return;
+                if (isDirectAddress(line)) {
+                    regular.push(line);
+                } else {
+                    commonArea.push(line);
+                }
+            });
+
+            const btn = textarea.closest('.smart-paste-form').querySelector('.btn-smart-paste');
+            btn.disabled = true;
+            btn.textContent = 'Sorting & saving...';
+
+            let promises = [];
+            if (regular.length > 0) {
+                promises.push(
+                    fetch('/verona_walk_bulk_add_addresses', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            community_id: communityId,
+                            clock_number: clockNumber,
+                            addresses: regular,
+                            is_common_area: 0
+                        })
+                    }).then(r => r.json())
+                );
+            }
+            if (commonArea.length > 0) {
+                promises.push(
+                    fetch('/verona_walk_bulk_add_addresses', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            community_id: communityId,
+                            clock_number: clockNumber,
+                            addresses: commonArea,
+                            is_common_area: 1
+                        })
+                    }).then(r => r.json())
+                );
+            }
+
+            Promise.all(promises)
+            .then(results => {
+                const failed = results.find(r => !r.success);
+                if (failed) {
+                    alert('Error: ' + failed.error);
+                } else {
+                    textarea.value = '';
+                    textarea.rows = 1;
+                    alert(regular.length + ' address(es) added to Addresses, ' + commonArea.length + ' added to Common Area');
+                    loadClockAddresses(communityId, true);
+                }
+                btn.disabled = false;
+                btn.textContent = 'Smart Paste';
+            })
+            .catch(err => {
+                alert('Network error - please try again');
+                btn.disabled = false;
+                btn.textContent = 'Smart Paste';
+            });
+        }
+
         function showInsertForm(communityId, afterId) {
             const container = document.getElementById(`insert-form-${afterId}`);
             if (container.style.display === 'block') {
@@ -16109,7 +16479,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
         function insertClockAddresses(communityId, afterId) {
             const textarea = document.getElementById(`insert-input-${afterId}`);
-            const addresses = textarea.value.split(_nl).map(l => l.trim()).filter(l => l.length > 0);
+            const addresses = textarea.value.split(_nl).map(l => formatPastedLine(l)).filter(l => l !== null && l.length > 0);
 
             if (addresses.length === 0) {
                 alert('Please enter at least one address');
@@ -16772,6 +17142,12 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 stat_decoder_1: parseFloat(document.getElementById(`price-stat_decoder_1-${communityId}`).value) || 1.0
             };
 
+            const saveBtn = document.querySelector(`.pricing-section button[onclick="savePricing(${communityId})"]`);
+            if (saveBtn) {
+                saveBtn.disabled = true;
+                saveBtn.textContent = 'Saving...';
+            }
+
             fetch('/community_save_pricing', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -16780,17 +17156,51 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
-                        alert('Pricing saved successfully!');
+                        if (saveBtn) {
+                            saveBtn.textContent = 'Saved!';
+                            saveBtn.style.background = '#28a745';
+                            saveBtn.style.color = 'white';
+                            setTimeout(() => {
+                                saveBtn.textContent = 'Save Pricing';
+                                saveBtn.style.background = '';
+                                saveBtn.style.color = '';
+                                saveBtn.disabled = false;
+                            }, 2000);
+                        }
+                        // Show a green confirmation banner
+                        const banner = document.createElement('div');
+                        banner.textContent = 'Pricing saved successfully!';
+                        banner.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#28a745;color:white;padding:12px 24px;border-radius:8px;font-weight:600;font-size:14px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
+                        document.body.appendChild(banner);
+                        setTimeout(() => banner.remove(), 3000);
                     } else {
+                        if (saveBtn) {
+                            saveBtn.textContent = 'Save Pricing';
+                            saveBtn.disabled = false;
+                        }
                         alert('Error: ' + data.error);
                     }
                 })
-                .catch(error => alert('Error: ' + error));
+                .catch(error => {
+                    if (saveBtn) {
+                        saveBtn.textContent = 'Save Pricing';
+                        saveBtn.disabled = false;
+                    }
+                    alert('Error: ' + error);
+                });
         }
 
-        // Load pricing when community section expands
+        // Load saved pricing for all communities on page load
         document.addEventListener('DOMContentLoaded', function() {
-            // Pricing will be initialized with defaults from the form
+            document.querySelectorAll('.pricing-section').forEach(section => {
+                const btn = section.querySelector('button[onclick*="savePricing"]');
+                if (btn) {
+                    const match = btn.getAttribute('onclick').match(/savePricing\((\d+)\)/);
+                    if (match) {
+                        loadPricing(parseInt(match[1]));
+                    }
+                }
+            });
         });
     </script>
 
@@ -19158,6 +19568,60 @@ def verona_walk_insert_address():
 
         conn.commit()
         return jsonify({'success': True, 'message': f'{added} address(es) inserted'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+@app.route('/verona_walk_move_addresses', methods=['POST'])
+def verona_walk_move_addresses():
+    """Move addresses between Addresses and Common Area"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    address_ids = data.get('address_ids', [])
+    is_common_area = data.get('is_common_area')
+
+    if not address_ids or is_common_area is None:
+        return jsonify({'success': False, 'error': 'Missing required fields'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    try:
+        placeholders = ','.join(['?' for _ in address_ids])
+        c.execute(f"UPDATE verona_walk_clock_addresses SET is_common_area = ? WHERE id IN ({placeholders})",
+                 [is_common_area] + address_ids)
+        moved = c.rowcount
+        conn.commit()
+        return jsonify({'success': True, 'message': f'{moved} address(es) moved'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+@app.route('/verona_walk_bulk_delete_addresses', methods=['POST'])
+def verona_walk_bulk_delete_addresses():
+    """Bulk delete addresses by IDs"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    address_ids = data.get('address_ids', [])
+
+    if not address_ids:
+        return jsonify({'success': False, 'error': 'No addresses selected'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    try:
+        placeholders = ','.join(['?' for _ in address_ids])
+        c.execute(f"DELETE FROM verona_walk_clock_addresses WHERE id IN ({placeholders})", address_ids)
+        deleted = c.rowcount
+        conn.commit()
+        return jsonify({'success': True, 'message': f'{deleted} address(es) deleted'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
     finally:
