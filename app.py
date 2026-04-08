@@ -1271,7 +1271,7 @@ def init_db():
                   status TEXT DEFAULT 'draft',
                   created_at TEXT,
                   submitted_at TEXT,
-                  UNIQUE(community_name, tech_username, work_date))''')
+                  )''')
 
     # Community Maintenance Line Items table - stores equipment data
     c.execute('''CREATE TABLE IF NOT EXISTS community_billing_line_items
@@ -1296,6 +1296,24 @@ def init_db():
         c.execute("SELECT notes FROM community_billing_line_items LIMIT 1")
     except sqlite3.OperationalError:
         c.execute("ALTER TABLE community_billing_line_items ADD COLUMN notes TEXT")
+
+    # Migrate: Drop UNIQUE constraint on community_billing_submissions so techs
+    # can submit multiple entries for the same community+date.
+    c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='community_billing_submissions'")
+    tbl_sql = c.fetchone()
+    if tbl_sql and 'UNIQUE' in (tbl_sql[0] or ''):
+        c.execute("""CREATE TABLE community_billing_submissions_new
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      community_name TEXT NOT NULL,
+                      tech_username TEXT NOT NULL,
+                      work_date TEXT NOT NULL,
+                      status TEXT DEFAULT 'draft',
+                      created_at TEXT,
+                      submitted_at TEXT)""")
+        c.execute("""INSERT INTO community_billing_submissions_new
+                     SELECT * FROM community_billing_submissions""")
+        c.execute("DROP TABLE community_billing_submissions")
+        c.execute("ALTER TABLE community_billing_submissions_new RENAME TO community_billing_submissions")
 
     # Sales App Tables
     # Sales pricing table - stores parts and labor costs
@@ -14161,6 +14179,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
                     <form method="get" action="/community_billing_spreadsheet" style="margin: 0;">
                         <input type="hidden" name="community" value="{{ submission.community }}">
                         <input type="hidden" name="work_date" value="{{ submission.work_date }}">
+                        <input type="hidden" name="submission_id" value="{{ submission.id }}">
                         <button type="submit" style="width: 100%; text-align: left; background: white; border: 1px solid #e0e0e0; border-radius: {% if submission.status == 'draft' %}8px 8px 0 0{% else %}8px{% endif %}; padding: 16px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: all 0.3s; min-height: 70px;">
                             <div>
                                 <div style="font-weight: 700; color: #333; font-size: 17px;">{{ submission.community }}</div>
@@ -14207,8 +14226,6 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
     </div>
 
     <script>
-        const existingSubmissions = {{ submissions | tojson }};
-
         function submitForm() {
             const community = document.getElementById('community').value;
             const workDate = document.getElementById('workDate').value;
@@ -14220,17 +14237,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
                 return;
             }
 
-            // Block if a finalized submission already exists for this community+date
-            const alreadyFinalized = existingSubmissions.find(
-                s => s.community === community && s.work_date === workDate && s.status === 'submitted'
-            );
-            if (alreadyFinalized) {
-                errorDiv.textContent = `A finalized submission for "${community}" on ${workDate} already exists. Select it from the list above to view it, or choose a different date.`;
-                errorDiv.style.display = 'block';
-                return;
-            }
-
-            // Send to backend to create/load spreadsheet
+            // Send to backend to create a new submission
             fetch('/community_billing_spreadsheet', {
                 method: 'POST',
                 headers: {
@@ -14241,14 +14248,14 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
                     work_date: workDate
                 })
             })
-            .then(response => {
-                if (response.ok) {
-                    // Redirect to spreadsheet view instead of injecting HTML
+            .then(response => response.json().then(data => ({ok: response.ok, data})))
+            .then(({ok, data}) => {
+                if (ok && data.submission_id) {
                     const encodedCommunity = encodeURIComponent(community);
                     const encodedDate = encodeURIComponent(workDate);
-                    window.location.href = `/community_billing_spreadsheet?community=${encodedCommunity}&work_date=${encodedDate}`;
+                    window.location.href = `/community_billing_spreadsheet?community=${encodedCommunity}&work_date=${encodedDate}&submission_id=${data.submission_id}`;
                 } else {
-                    throw new Error('Failed to load spreadsheet');
+                    throw new Error(data.error || 'Failed to create submission');
                 }
             })
             .catch(error => {
@@ -14294,11 +14301,23 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             .catch(e => alert('Error: ' + e));
         }
 
-        // Set today's date as default
+        // Set today's date as default and keep it current if the page stays open
         const workDateInput = document.getElementById('workDate');
         if (workDateInput) {
-            const today = new Date().toISOString().split('T')[0];
-            workDateInput.value = today;
+            let lastAutoDate = new Date().toISOString().split('T')[0];
+            workDateInput.value = lastAutoDate;
+
+            // Check every 30s if the day has rolled over; update only if
+            // the user hasn't manually picked a different date.
+            setInterval(() => {
+                const now = new Date().toISOString().split('T')[0];
+                if (now !== lastAutoDate) {
+                    if (workDateInput.value === lastAutoDate) {
+                        workDateInput.value = now;
+                    }
+                    lastAutoDate = now;
+                }
+            }, 30000);
         }
     </script>
 </body>
@@ -18216,25 +18235,38 @@ def community_billing_spreadsheet():
     c = conn.cursor()
 
     # Get or create submission
-    c.execute("""SELECT id, status FROM community_billing_submissions
-                 WHERE community_name = ? AND tech_username = ? AND work_date = ?""",
-             (community, session.get('username'), work_date))
-
-    submission = c.fetchone()
-    if submission:
-        # If this is a POST (new submission request) and the record is already finalized,
-        # reject it so the tech cannot accidentally land on a read-only form.
-        if request.method == 'POST' and submission[1] == 'submitted':
-            conn.close()
-            return jsonify({'success': False, 'error': f'A finalized submission for {community} on {work_date} already exists.'})
-        submission_id = submission[0]
-    else:
+    if request.method == 'POST':
+        # POST = tech clicked "Next" to start a new submission — always create a fresh draft
         c.execute("""INSERT INTO community_billing_submissions
                      (community_name, tech_username, work_date, created_at)
                      VALUES (?, ?, ?, ?)""",
                  (community, session.get('username'), work_date, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
         submission_id = c.lastrowid
         conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'submission_id': submission_id})
+    else:
+        # GET = loading an existing submission (from list or direct URL)
+        submission_id_param = request.args.get('submission_id')
+        if submission_id_param:
+            submission_id = int(submission_id_param)
+        else:
+            # Fallback: find the most recent draft for this combo, or create one
+            c.execute("""SELECT id FROM community_billing_submissions
+                         WHERE community_name = ? AND tech_username = ? AND work_date = ?
+                         AND status = 'draft'
+                         ORDER BY id DESC LIMIT 1""",
+                     (community, session.get('username'), work_date))
+            submission = c.fetchone()
+            if submission:
+                submission_id = submission[0]
+            else:
+                c.execute("""INSERT INTO community_billing_submissions
+                             (community_name, tech_username, work_date, created_at)
+                             VALUES (?, ?, ?, ?)""",
+                         (community, session.get('username'), work_date, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                submission_id = c.lastrowid
+                conn.commit()
 
     # Get all line items for this submission
     c.execute("""SELECT id, zone_and_address, nozzle, pop_up_6_inch, pop_up_12_inch,
