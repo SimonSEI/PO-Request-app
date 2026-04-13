@@ -1270,7 +1270,7 @@ def init_db():
                   work_date TEXT NOT NULL,
                   status TEXT DEFAULT 'draft',
                   created_at TEXT,
-                  submitted_at TEXT,
+                  submitted_at TEXT
                   )''')
 
     # Community Maintenance Line Items table - stores equipment data
