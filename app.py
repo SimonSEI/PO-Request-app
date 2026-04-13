@@ -15974,7 +15974,11 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                             </label>
                                         </div>
                                         <div style="font-size: 11px; color: #666; margin-top: 6px;">
-                                            Upload .xlsx with sheets named "CLOCK 1", "CLOCK 2", etc. First non-empty cell of each row is used as the address.
+                                            Upload .xlsx with sheets named "CLOCK 1", "CLOCK 2", etc.
+                                            <strong>Col A</strong> = Zone number &nbsp;|&nbsp;
+                                            <strong>Col B</strong> = Serial (ignored) &nbsp;|&nbsp;
+                                            <strong>Col C</strong> = Description/Address.
+                                            Rows where Col A is not a number are skipped automatically.
                                         </div>
                                         <div id="comm-clock-preview-{{ community.id }}" style="display:none; margin-top: 10px;"></div>
                                     </div>
@@ -20549,9 +20553,13 @@ def community_clocks():
 def community_clock_import_excel():
     """Parse an Excel file for a standard community clock import.
 
-    Expected Excel format:
+    Expected Excel format (same as Verona Walk HOA):
     - Sheets named 'CLOCK N' (e.g., 'CLOCK 1', 'CLOCK 2')
-    - Each non-empty row contributes one address (first non-empty cell used)
+    - Column A = Zone number (integer) — rows where this is not a valid
+      integer are treated as headers / noise and skipped automatically
+    - Column B = Serial number (ignored)
+    - Column C = Description / address text
+    - Formatted entries: "ZONE {n} - {description}"
     - use_common_area=1 enables keyword-based common area detection
     """
     if 'username' not in session or session.get('role') != 'office':
@@ -20602,22 +20610,31 @@ def community_clock_import_excel():
         addresses = []
         common_area = []
 
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            text = None
-            for cell_val in row:
-                if cell_val is not None:
-                    candidate = str(cell_val).strip()
-                    if candidate:
-                        text = candidate
-                        break
-            if not text:
+        for row in ws.iter_rows(min_row=1, values_only=False):
+            # Column A must be a valid integer zone number — this naturally
+            # filters out blank rows, header rows, and all other noise.
+            zone_cell = row[0].value if len(row) > 0 else None
+            desc_cell = row[2].value if len(row) > 2 else None
+
+            if zone_cell is None or desc_cell is None:
                 continue
 
-            if use_common_area and is_common_area_entry(text):
-                common_area.append(text)
+            try:
+                zone_num = int(zone_cell)
+            except (ValueError, TypeError):
+                continue  # header text, totals, blank — skip
+
+            description = str(desc_cell).strip()
+            if not description:
+                continue
+
+            formatted = f"ZONE {zone_num} - {description}"
+
+            if use_common_area and is_common_area_entry(description):
+                common_area.append(formatted)
                 total_common_area += 1
             else:
-                addresses.append(text)
+                addresses.append(formatted)
                 total_addresses += 1
 
         if addresses or common_area:
