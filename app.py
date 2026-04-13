@@ -15960,9 +15960,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                         <span style="font-size: 12px; color: #888;">Set to 0 to hide clock management.</span>
                                     </div>
 
-                                    <!-- Excel import (hidden when num_clocks = 0) -->
+                                    <!-- Excel import -->
                                     <div id="comm-clock-import-section-{{ community.id }}"
-                                         style="{{ 'display:none;' if community.num_clocks == 0 else '' }}margin-bottom: 14px; padding: 12px; background: #f0f7ff; border: 1px solid #b8daff; border-radius: 6px;">
+                                         style="margin-bottom: 14px; padding: 12px; background: #f0f7ff; border: 1px solid #b8daff; border-radius: 6px;">
                                         <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
                                             <strong style="font-size: 13px;">Import from Excel:</strong>
                                             <input type="file" id="comm-clock-import-{{ community.id }}" accept=".xlsx,.xls" style="font-size: 12px;">
@@ -15983,9 +15983,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                         <div id="comm-clock-preview-{{ community.id }}" style="display:none; margin-top: 10px;"></div>
                                     </div>
 
-                                    <!-- Clock addresses display (hidden when num_clocks = 0) -->
-                                    <div id="comm-clocks-{{ community.id }}" {{ 'style="display:none;"' if community.num_clocks == 0 else '' }}>
-                                        <p style="color: #666; font-size: 13px;">Loading...</p>
+                                    <!-- Clock addresses display -->
+                                    <div id="comm-clocks-{{ community.id }}">
+                                        <p style="color: #666; font-size: 13px;">Expand this section to load clocks.</p>
                                     </div>
                                 </div>
                             </div>
@@ -16134,12 +16134,11 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             list.classList.toggle('visible');
             arrow.classList.toggle('expanded');
 
+            // Always load on first expand — don't rely on the input value being
+            // correct, since num_clocks in the DB is the source of truth.
             if (list.classList.contains('visible') && !list.dataset.loaded) {
                 list.dataset.loaded = 'true';
-                const numClocks = parseInt(document.getElementById(`comm-clock-num-${communityId}`).value) || 0;
-                if (numClocks > 0) {
-                    loadCommunityClockAddresses(communityId);
-                }
+                loadCommunityClockAddresses(communityId);
             }
         }
 
@@ -16167,7 +16166,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             if (!container) return;
 
             if (clocks.length === 0) {
-                container.innerHTML = '<p style="color:#999;font-size:13px;">No clock addresses yet. Use the import above or add manually below each clock.</p>';
+                container.innerHTML = '<p style="color:#999;font-size:13px;">No clocks configured yet. Enter the number of clocks above and click <strong>Save</strong>.</p>';
                 return;
             }
 
@@ -16183,10 +16182,12 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 html += `<div onclick="toggleCommClockBody(event,${communityId},${clock.clock_number})"
                               style="cursor:pointer;padding:9px 12px;background:#f8f9fa;display:flex;justify-content:space-between;align-items:center;border-radius:6px;">
                             <strong style="font-size:13px;">${clock.clock_label}</strong>
-                            <span id="comm-clock-hdr-${communityId}-${clock.clock_number}" style="font-size:12px;color:#666;">${totalCount} entr${totalCount === 1 ? 'y' : 'ies'} ▼</span>
+                            <span id="comm-clock-hdr-${communityId}-${clock.clock_number}" style="font-size:12px;color:#666;">${totalCount} entr${totalCount === 1 ? 'y' : 'ies'} ${bodyOpen ? '▲' : '▼'}</span>
                          </div>`;
-                // Clock body (collapsed by default)
-                html += `<div id="comm-clock-body-${communityId}-${clock.clock_number}" style="display:none;padding:10px 12px;">`;
+                // Auto-expand when empty so the add form is immediately visible;
+                // collapse when already has addresses (to keep the list compact).
+                const bodyOpen = totalCount === 0;
+                html += `<div id="comm-clock-body-${communityId}-${clock.clock_number}" style="display:${bodyOpen ? 'block' : 'none'};padding:10px 12px;">`;
 
                 // Addresses list
                 if (regularAddresses.length > 0) {
@@ -16258,13 +16259,8 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 const importSection = document.getElementById(`comm-clock-import-section-${communityId}`);
                 const displaySection = document.getElementById(`comm-clocks-${communityId}`);
                 if (data.success) {
-                    if (numClocks > 0) {
-                        if (importSection) importSection.style.display = '';
-                        if (displaySection) { displaySection.style.display = ''; loadCommunityClockAddresses(communityId); }
-                    } else {
-                        if (importSection) importSection.style.display = 'none';
-                        if (displaySection) displaySection.style.display = 'none';
-                    }
+                    // Always reload — displayCommunityClocks handles the 0-clock case
+                    loadCommunityClockAddresses(communityId);
                     if (msgEl) { msgEl.textContent = 'Saved!'; msgEl.style.color = '#28a745'; setTimeout(() => { msgEl.textContent = ''; }, 2000); }
                 } else {
                     if (msgEl) { msgEl.textContent = 'Error: ' + data.error; msgEl.style.color = '#dc3545'; }
