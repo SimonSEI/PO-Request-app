@@ -15902,7 +15902,11 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                             <strong style="font-size: 13px;">Import from Excel:</strong>
                                             <input type="file" id="excel-import-houses-{{ community.id }}" accept=".xlsx,.xls" style="font-size: 12px;">
                                             <button type="button" class="btn-save" onclick="previewHouseImport({{ community.id }})" style="padding: 5px 12px; font-size: 12px;">Preview Import</button>
-                                            <span style="font-size: 11px; color: #666;">Upload .xlsx with house numbers in any column</span>
+                                            <span style="font-size: 11px; color: #666;">Upload .xlsx with CLOCK sheets (e.g., CLOCK 1, CLOCK 2…) — entries formatted as <em>ZONE N - Address</em></span>
+                                        </div>
+                                        <div style="margin-top: 8px; display: flex; align-items: center; gap: 6px;">
+                                            <input type="checkbox" id="use-common-area-houses-{{ community.id }}" style="cursor:pointer;">
+                                            <label for="use-common-area-houses-{{ community.id }}" style="font-size: 12px; color: #555; cursor:pointer;">Separate Common Area entries (Rotors, Sidewalk, Lake Bank, etc.)</label>
                                         </div>
                                         <div id="import-preview-houses-{{ community.id }}" style="display:none; margin-top: 10px;"></div>
                                     </div>
@@ -17341,6 +17345,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         function previewHouseImport(communityId) {
             const fileInput = document.getElementById(`excel-import-houses-${communityId}`);
             const previewDiv = document.getElementById(`import-preview-houses-${communityId}`);
+            const useCommonArea = document.getElementById(`use-common-area-houses-${communityId}`).checked;
 
             if (!fileInput.files || !fileInput.files[0]) {
                 alert('Please select an Excel file first');
@@ -17350,78 +17355,115 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             const formData = new FormData();
             formData.append('file', fileInput.files[0]);
             formData.append('community_id', communityId);
-            formData.append('preview', '1');
+            formData.append('use_common_area', useCommonArea ? '1' : '0');
 
             previewDiv.style.display = 'block';
             previewDiv.innerHTML = '<p style="color:#666;">Parsing Excel file...</p>';
 
-            fetch('/community_import_house_numbers_excel', {
-                method: 'POST',
-                body: formData
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (!data.success) {
-                    previewDiv.innerHTML = `<p style="color:#dc3545;">Error: ${data.error}</p>`;
-                    return;
-                }
-
-                // Store entries for review, flag duplicates
-                let entryId = 0;
-                const dupeSet = new Set(data.duplicate_list || []);
-                const entries = data.house_numbers.map(h => ({
-                    id: entryId++,
-                    text: h,
-                    included: true,
-                    duplicate: dupeSet.has(h)
-                }));
-                _houseImportData[communityId] = entries;
-
-                renderHouseImportPreview(communityId);
-            })
-            .catch(err => {
-                previewDiv.innerHTML = `<p style="color:#dc3545;">Network error: ${err}</p>`;
-            });
+            fetch('/community_import_house_numbers_excel', {method: 'POST', body: formData})
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.success) {
+                        previewDiv.innerHTML = `<p style="color:#dc3545;">Error: ${data.error}</p>`;
+                        return;
+                    }
+                    let entryId = 0;
+                    const entries = [];
+                    Object.keys(data.clocks).sort((a,b) => parseInt(a)-parseInt(b)).forEach(clockNum => {
+                        const clock = data.clocks[clockNum];
+                        (clock.addresses || []).forEach(addr => {
+                            entries.push({id: entryId++, clock: parseInt(clockNum), text: addr, type: 'address', included: true});
+                        });
+                        (clock.common_area || []).forEach(addr => {
+                            entries.push({id: entryId++, clock: parseInt(clockNum), text: addr, type: 'common_area', included: true});
+                        });
+                    });
+                    _houseImportData[communityId] = entries;
+                    renderHouseImportPreview(communityId);
+                })
+                .catch(err => { previewDiv.innerHTML = `<p style="color:#dc3545;">Network error: ${err}</p>`; });
         }
 
         function renderHouseImportPreview(communityId) {
             const previewDiv = document.getElementById(`import-preview-houses-${communityId}`);
             const entries = _houseImportData[communityId] || [];
 
-            const included = entries.filter(e => e.included);
-            const excluded = entries.filter(e => !e.included);
+            const byClock = {};
+            let totalAddr = 0, totalCA = 0, totalExcluded = 0;
+            entries.forEach(e => {
+                if (!byClock[e.clock]) byClock[e.clock] = [];
+                byClock[e.clock].push(e);
+                if (!e.included) { totalExcluded++; return; }
+                if (e.type === 'address') totalAddr++; else totalCA++;
+            });
+            const totalIncluded = totalAddr + totalCA;
 
             let html = `<div style="background:#fff;border:1px solid #ddd;border-radius:6px;padding:12px;">`;
-            html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:6px;">`;
-            html += `<p style="font-weight:600;margin:0;">Found ${entries.length} house numbers — <span style="color:#28a745;">${included.length} to import</span>`;
-            if (excluded.length > 0) html += ` <span style="color:#999;">(${excluded.length} excluded)</span>`;
+            html += `<p style="font-weight:600;margin:0 0 6px 0;">Will import <span style="color:#28a745;">${totalAddr} address${totalAddr !== 1 ? 'es' : ''}</span>`;
+            if (totalCA > 0) html += ` + <span style="color:#007bff;">${totalCA} common area</span>`;
+            html += ` = ${totalIncluded} entries`;
+            if (totalExcluded > 0) html += ` <span style="color:#999;">(${totalExcluded} excluded)</span>`;
             html += `</p>`;
-            html += `</div>`;
+            html += `<p style="font-size:11px;color:#666;margin:0 0 10px 0;">Click a clock header to expand. Use <strong>Exclude</strong> to skip entries. Use <strong>Switch</strong> to toggle Address / Common Area.</p>`;
 
-            html += `<div style="max-height:350px;overflow-y:auto;border:1px solid #e9ecef;border-radius:4px;padding:6px;">`;
-            entries.forEach(entry => {
-                const textStyle = entry.included ? 'color:#333;' : 'text-decoration:line-through;color:#999;';
-                html += `<div style="display:flex;align-items:center;gap:8px;padding:3px 4px;border-bottom:1px solid #f0f0f0;font-size:12px;${entry.included ? '' : 'opacity:0.5;'}">`;
-                html += `<span style="flex:1;${textStyle}">${entry.text}</span>`;
-                if (entry.duplicate) {
-                    html += `<span style="flex:0 0 auto;font-size:10px;padding:1px 5px;background:#ffc107;color:#333;border-radius:3px;white-space:nowrap;">Already exists</span>`;
-                }
-                if (entry.included) {
-                    html += `<button type="button" onclick="toggleHouseImportEntry(${communityId}, ${entry.id})" style="flex:0 0 auto;font-size:10px;padding:2px 6px;background:#dc3545;color:#fff;border:none;border-radius:3px;cursor:pointer;">Exclude</button>`;
-                } else {
-                    html += `<button type="button" onclick="toggleHouseImportEntry(${communityId}, ${entry.id})" style="flex:0 0 auto;font-size:10px;padding:2px 6px;background:#28a745;color:#fff;border:none;border-radius:3px;cursor:pointer;">Include</button>`;
-                }
-                html += `</div>`;
+            Object.keys(byClock).sort((a,b) => parseInt(a)-parseInt(b)).forEach(clockNum => {
+                const clockEntries = byClock[clockNum];
+                const cAddr  = clockEntries.filter(e => e.type === 'address'     && e.included).length;
+                const cCA    = clockEntries.filter(e => e.type === 'common_area' && e.included).length;
+                const cExcl  = clockEntries.filter(e => !e.included).length;
+                const label = parseInt(clockNum) === 0 ? 'Other Entries' : `Clock ${clockNum}`;
+                html += `<div style="border:1px solid #e9ecef;border-radius:4px;margin-bottom:6px;">
+                            <div onclick="toggleHouseImportClock(this)" style="cursor:pointer;padding:8px 10px;background:#f8f9fa;display:flex;justify-content:space-between;align-items:center;border-radius:4px;">
+                                <strong style="font-size:13px;">${label}</strong>
+                                <span style="font-size:11px;color:#666;">${cAddr} addr${cCA > 0 ? ', '+cCA+' common' : ''}${cExcl > 0 ? ', '+cExcl+' excluded' : ''} ▼</span>
+                            </div>
+                            <div style="display:none;padding:6px 10px;max-height:300px;overflow-y:auto;">`;
+
+                clockEntries.forEach(entry => {
+                    const isCA = entry.type === 'common_area';
+                    const excl = !entry.included;
+                    const badge = isCA
+                        ? `<span style="background:#007bff;color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;white-space:nowrap;">Common Area</span>`
+                        : `<span style="background:#28a745;color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;white-space:nowrap;">Address</span>`;
+                    html += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid #f0f0f0;font-size:12px;${excl ? 'opacity:0.5;' : ''}">
+                                ${badge}
+                                <span style="flex:1;${excl ? 'text-decoration:line-through;color:#999;' : ''}">${entry.text}</span>
+                                <button type="button" onclick="toggleHouseImportEntryType(${communityId},${entry.id})"
+                                        style="font-size:10px;padding:2px 6px;background:#ffc107;color:#333;border:1px solid #dda600;border-radius:3px;cursor:pointer;white-space:nowrap;flex:0 0 auto;">Switch</button>
+                                <button type="button" onclick="toggleHouseImportEntry(${communityId},${entry.id})"
+                                        style="font-size:10px;padding:2px 6px;background:${excl ? '#28a745' : '#dc3545'};color:#fff;border:none;border-radius:3px;cursor:pointer;white-space:nowrap;flex:0 0 auto;">${excl ? 'Include' : 'Exclude'}</button>
+                             </div>`;
+                });
+
+                html += `</div></div>`;
             });
-            html += `</div>`;
-            html += `</div>`;
 
-            html += `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">`;
-            html += `<button type="button" onclick="confirmHouseImport(${communityId})" style="padding:8px 20px;font-size:13px;background:#28a745;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Confirm Import (${included.length} house numbers)</button>`;
-            html += `<button type="button" onclick="document.getElementById('import-preview-houses-${communityId}').style.display='none'; delete _houseImportData[${communityId}];" style="padding:8px 20px;font-size:13px;background:#6c757d;color:#fff;border:none;border-radius:4px;cursor:pointer;">Cancel</button>`;
-            html += `</div>`;
+            html += `</div>
+                     <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+                        <button type="button" onclick="confirmHouseImport(${communityId})"
+                                style="padding:8px 20px;font-size:13px;background:#28a745;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Confirm Import (${totalIncluded} entries)</button>
+                        <button type="button" onclick="document.getElementById('import-preview-houses-${communityId}').style.display='none';delete _houseImportData[${communityId}];"
+                                style="padding:8px 20px;font-size:13px;background:#6c757d;color:#fff;border:none;border-radius:4px;cursor:pointer;">Cancel</button>
+                     </div>`;
 
             previewDiv.innerHTML = html;
+        }
+
+        function toggleHouseImportClock(headerEl) {
+            const content = headerEl.nextElementSibling;
+            const isOpen = content.style.display !== 'none';
+            content.style.display = isOpen ? 'none' : 'block';
+            const span = headerEl.querySelector('span');
+            if (span) span.innerHTML = span.innerHTML.replace(isOpen ? '▲' : '▼', isOpen ? '▼' : '▲');
+        }
+
+        function toggleHouseImportEntryType(communityId, entryId) {
+            const entries = _houseImportData[communityId];
+            if (!entries) return;
+            const entry = entries.find(e => e.id === entryId);
+            if (!entry) return;
+            entry.type = entry.type === 'address' ? 'common_area' : 'address';
+            renderHouseImportPreview(communityId);
         }
 
         function toggleHouseImportEntry(communityId, entryId) {
@@ -17448,7 +17490,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 return;
             }
 
-            if (!confirm(`This will import ${included.length} house numbers. Existing house numbers will NOT be removed. Continue?`)) {
+            if (!confirm(`This will import ${included.length} addresses. Existing addresses will NOT be removed. Continue?`)) {
                 return;
             }
 
@@ -19763,8 +19805,11 @@ def community_delete_house_number():
 def community_import_house_numbers_excel():
     """Parse an Excel file to extract house numbers for a standard community.
 
-    Reads all sheets and collects unique non-empty text values from all cells.
-    Returns a preview list for user review before confirming.
+    Reads CLOCK sheets (named 'CLOCK N') from the uploaded Excel file,
+    auto-detects the Zone and Description/Station columns from the header row,
+    and formats each entry as "ZONE {n} - {description}".
+    Non-CLOCK sheets are also parsed and grouped as clock 0 ("Other Entries").
+    Returns data grouped by clock for the preview/review UI.
     """
     if 'username' not in session or session.get('role') != 'office':
         return jsonify({'success': False, 'error': 'Access denied'})
@@ -19780,58 +19825,104 @@ def community_import_house_numbers_excel():
 
     file = request.files.get('file')
     if not file or not file.filename.endswith(('.xlsx', '.xls')):
-        return jsonify({'success': False, 'error': 'Please upload a valid Excel file (.xlsx)'})
+        return jsonify({'success': False, 'error': 'Please upload a valid Excel file (.xlsx or .xls)'})
+
+    use_common_area = request.form.get('use_common_area') == '1'
 
     try:
         wb = load_workbook(file, data_only=True)
     except Exception as e:
         return jsonify({'success': False, 'error': f'Could not read Excel file: {str(e)}'})
 
-    # Collect all non-empty values across all sheets
-    house_numbers = []
-    seen = set()
+    COMMON_AREA_KEYWORDS = ['ROTORS', 'SIDEWALK', 'LAKE BANK', 'COMMON AREA', 'CUL D SAC', 'CUL DE SAC', 'PUMP']
+
+    def is_common_area_entry(text):
+        t = text.upper().strip()
+        if t.startswith('ROTORS'):
+            return True
+        for kw in COMMON_AREA_KEYWORDS[1:]:
+            if kw in t:
+                return True
+        return False
+
+    results = {}
+    total_addresses = 0
+    total_common_area = 0
 
     for sheet_name in wb.sheetnames:
+        match = re.match(r'CLOCK\s*(\d+)', sheet_name.strip(), re.IGNORECASE)
+        clock_number = int(match.group(1)) if match else 0
+
         ws = wb[sheet_name]
-        for row in ws.iter_rows(values_only=True):
-            for cell_value in row:
-                if cell_value is None:
-                    continue
-                val = str(cell_value).strip()
-                if not val:
-                    continue
-                # Skip obvious header/label rows
-                val_upper = val.upper()
-                if val_upper in ('HOUSE NUMBER', 'HOUSE #', 'ADDRESS', 'HOUSE', 'NUMBER', '#',
-                                 'ZONE', 'SERIAL NUMBER', 'DESCRIPTION', 'ID', 'NOTES'):
-                    continue
-                if val not in seen:
-                    seen.add(val)
-                    house_numbers.append(val)
+        addresses = []
+        common_area = []
 
-    if not house_numbers:
-        return jsonify({'success': False, 'error': 'No house numbers found in the Excel file.'})
+        # Auto-detect header row: find a row with a 'zone' cell and a
+        # 'station'/'address'/'name'/'description' cell in different columns.
+        zone_col = None
+        station_col = None
+        data_start_row = 0
 
-    # Get existing house numbers for this community to flag duplicates
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT house_number FROM community_house_numbers WHERE community_id = ?", (community_id,))
-    existing = set(row[0] for row in c.fetchall())
-    conn.close()
+        all_rows = list(ws.iter_rows(min_row=1, values_only=False))
+        for row_idx, row in enumerate(all_rows):
+            row_vals = [str(c.value).lower().strip() if c.value is not None else '' for c in row]
+            z_col = next((i for i, v in enumerate(row_vals) if 'zone' in v), None)
+            s_col = next((i for i, v in enumerate(row_vals)
+                          if any(kw in v for kw in ('station', 'address', 'name', 'description', 'desc'))), None)
+            if z_col is not None and s_col is not None and z_col != s_col:
+                zone_col = z_col
+                station_col = s_col
+                data_start_row = row_idx + 1
+                break
 
-    # Mark which ones already exist
-    results = []
-    for h in house_numbers:
-        results.append(h)
+        # Fallback: Col A = Zone, Col B = Station
+        if zone_col is None:
+            zone_col = 0
+            station_col = 1
+            data_start_row = 0
 
-    duplicates = [h for h in house_numbers if h in existing]
+        for row in all_rows[data_start_row:]:
+            zone_cell    = row[zone_col].value    if len(row) > zone_col    else None
+            station_cell = row[station_col].value if len(row) > station_col else None
 
+            if zone_cell is None or station_cell is None:
+                continue
+
+            try:
+                zone_num = int(zone_cell)
+            except (ValueError, TypeError):
+                continue  # skip header rows, totals, blank rows, etc.
+
+            station = str(station_cell).strip()
+            if not station:
+                continue
+
+            formatted = f"ZONE {zone_num} - {station}"
+
+            if use_common_area and is_common_area_entry(station):
+                common_area.append(formatted)
+                total_common_area += 1
+            else:
+                addresses.append(formatted)
+                total_addresses += 1
+
+        if addresses or common_area:
+            if clock_number in results:
+                results[clock_number]['addresses'].extend(addresses)
+                results[clock_number]['common_area'].extend(common_area)
+            else:
+                results[clock_number] = {'addresses': addresses, 'common_area': common_area}
+
+    if not results:
+        return jsonify({'success': False, 'error': 'No valid address data found. Check that sheets have Zone and Station/Address columns.'})
+
+    preview_data = {str(k): results[k] for k in sorted(results.keys())}
     return jsonify({
         'success': True,
-        'house_numbers': results,
-        'total': len(results),
-        'duplicates': len(duplicates),
-        'duplicate_list': duplicates
+        'clocks': preview_data,
+        'total_addresses': total_addresses,
+        'total_common_area': total_common_area,
+        'total': total_addresses + total_common_area
     })
 
 
