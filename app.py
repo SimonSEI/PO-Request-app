@@ -1043,6 +1043,12 @@ def init_db():
               AND a2.id <= verona_walk_clock_addresses.id
         )""")
 
+    # Migration: add num_clocks to communities table
+    c.execute("PRAGMA table_info(communities)")
+    comm_cols = [col[1] for col in c.fetchall()]
+    if 'num_clocks' not in comm_cols:
+        c.execute("ALTER TABLE communities ADD COLUMN num_clocks INTEGER DEFAULT 0")
+
     # Community nozzle prices table - stores pricing for each nozzle type per community
     c.execute('''CREATE TABLE IF NOT EXISTS community_nozzle_prices
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -15824,6 +15830,10 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                             <label for="community_name">Community Name</label>
                             <input type="text" id="community_name" name="community_name" placeholder="Enter community name" required>
                         </div>
+                        <div class="form-group" style="flex: 0 0 auto; min-width: 110px;">
+                            <label for="num_clocks" title="Number of irrigation clocks in this community (0 if none)">Clocks (optional)</label>
+                            <input type="number" id="num_clocks" name="num_clocks" placeholder="0" min="0" style="width: 80px; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;">
+                        </div>
                         <input type="hidden" name="action" value="add">
                         <button type="submit" class="btn-search">Add Community</button>
                     </div>
@@ -15924,6 +15934,55 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                         <div><label>1 Stat Decoder:</label> $<input type="number" id="price-stat_decoder_1-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
                                     </div>
                                     <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="margin-top: 12px; padding: 10px 24px; font-size: 14px; font-weight: 600; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer;">Save Pricing</button>
+                                </div>
+                            </div>
+                            {% endif %}
+
+                            <!-- Clock Addresses Section (Standard Communities) -->
+                            {% if community.active and community.name != 'Verona Walk HOA' %}
+                            <div class="houses-section" style="margin-top: 10px;">
+                                <div class="houses-header" onclick="toggleCommunityClocksSection(event, {{ community.id }})">
+                                    <h4>🕐 Clock Addresses</h4>
+                                    <span class="expand-arrow" id="comm-clock-arrow-{{ community.id }}">▼</span>
+                                </div>
+                                <div class="houses-list" id="comm-clocks-list-{{ community.id }}">
+
+                                    <!-- Clock count setting -->
+                                    <div style="margin-bottom: 14px; padding: 10px 12px; background: #f8f9fa; border-radius: 6px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                                        <label style="margin: 0; font-weight: 600; font-size: 13px;">Number of Clocks:</label>
+                                        <input type="number" id="comm-clock-num-{{ community.id }}" min="0" max="999"
+                                               value="{{ community.num_clocks }}"
+                                               style="width: 72px; padding: 5px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px;"
+                                               onkeypress="if(event.key==='Enter') updateCommunityClockCount({{ community.id }})">
+                                        <button type="button" onclick="updateCommunityClockCount({{ community.id }})"
+                                                style="padding: 5px 14px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600;">Save</button>
+                                        <span id="comm-clock-count-msg-{{ community.id }}" style="font-size: 12px;"></span>
+                                        <span style="font-size: 12px; color: #888;">Set to 0 to hide clock management.</span>
+                                    </div>
+
+                                    <!-- Excel import (hidden when num_clocks = 0) -->
+                                    <div id="comm-clock-import-section-{{ community.id }}"
+                                         style="{{ 'display:none;' if community.num_clocks == 0 else '' }}margin-bottom: 14px; padding: 12px; background: #f0f7ff; border: 1px solid #b8daff; border-radius: 6px;">
+                                        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                                            <strong style="font-size: 13px;">Import from Excel:</strong>
+                                            <input type="file" id="comm-clock-import-{{ community.id }}" accept=".xlsx,.xls" style="font-size: 12px;">
+                                            <button type="button" onclick="previewCommunityClockImport({{ community.id }})"
+                                                    style="padding: 5px 12px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">Preview Import</button>
+                                            <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; font-weight: normal; margin: 0; cursor: pointer;">
+                                                <input type="checkbox" id="use-common-area-{{ community.id }}">
+                                                Separate Common Area entries
+                                            </label>
+                                        </div>
+                                        <div style="font-size: 11px; color: #666; margin-top: 6px;">
+                                            Upload .xlsx with sheets named "CLOCK 1", "CLOCK 2", etc. First non-empty cell of each row is used as the address.
+                                        </div>
+                                        <div id="comm-clock-preview-{{ community.id }}" style="display:none; margin-top: 10px;"></div>
+                                    </div>
+
+                                    <!-- Clock addresses display (hidden when num_clocks = 0) -->
+                                    <div id="comm-clocks-{{ community.id }}" {{ 'style="display:none;"' if community.num_clocks == 0 else '' }}>
+                                        <p style="color: #666; font-size: 13px;">Loading...</p>
+                                    </div>
                                 </div>
                             </div>
                             {% endif %}
@@ -16060,6 +16119,380 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             if (countEl) countEl.textContent = term ? visible : cards.length;
         }
 
+        // ---------------------------------------------------------------
+        // Standard Community Clock Management
+        // ---------------------------------------------------------------
+
+        function toggleCommunityClocksSection(event, communityId) {
+            event.preventDefault();
+            const list = document.getElementById(`comm-clocks-list-${communityId}`);
+            const arrow = document.getElementById(`comm-clock-arrow-${communityId}`);
+            list.classList.toggle('visible');
+            arrow.classList.toggle('expanded');
+
+            if (list.classList.contains('visible') && !list.dataset.loaded) {
+                list.dataset.loaded = 'true';
+                const numClocks = parseInt(document.getElementById(`comm-clock-num-${communityId}`).value) || 0;
+                if (numClocks > 0) {
+                    loadCommunityClockAddresses(communityId);
+                }
+            }
+        }
+
+        function loadCommunityClockAddresses(communityId) {
+            const container = document.getElementById(`comm-clocks-${communityId}`);
+            if (!container) return;
+            container.innerHTML = '<p style="color:#666;font-size:13px;">Loading...</p>';
+
+            fetch(`/community_clocks?community_id=${communityId}`)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        displayCommunityClocks(communityId, data.clocks);
+                    } else {
+                        container.innerHTML = `<p style="color:#dc3545;font-size:13px;">Error: ${data.error}</p>`;
+                    }
+                })
+                .catch(() => {
+                    container.innerHTML = '<p style="color:#dc3545;font-size:13px;">Error loading clocks.</p>';
+                });
+        }
+
+        function displayCommunityClocks(communityId, clocks) {
+            const container = document.getElementById(`comm-clocks-${communityId}`);
+            if (!container) return;
+
+            if (clocks.length === 0) {
+                container.innerHTML = '<p style="color:#999;font-size:13px;">No clock addresses yet. Use the import above or add manually below each clock.</p>';
+                return;
+            }
+
+            let html = '';
+            clocks.forEach(clock => {
+                const regularAddresses = clock.addresses || [];
+                const commonAreaAddresses = clock.common_area_addresses || [];
+                const totalCount = regularAddresses.length + commonAreaAddresses.length;
+                const hasCommonArea = commonAreaAddresses.length > 0;
+
+                html += `<div style="border:1px solid #e9ecef;border-radius:6px;margin-bottom:8px;">`;
+                // Clock header
+                html += `<div onclick="toggleCommClockBody(event,${communityId},${clock.clock_number})"
+                              style="cursor:pointer;padding:9px 12px;background:#f8f9fa;display:flex;justify-content:space-between;align-items:center;border-radius:6px;">
+                            <strong style="font-size:13px;">${clock.clock_label}</strong>
+                            <span id="comm-clock-hdr-${communityId}-${clock.clock_number}" style="font-size:12px;color:#666;">${totalCount} entr${totalCount === 1 ? 'y' : 'ies'} ▼</span>
+                         </div>`;
+                // Clock body (collapsed by default)
+                html += `<div id="comm-clock-body-${communityId}-${clock.clock_number}" style="display:none;padding:10px 12px;">`;
+
+                // Addresses list
+                if (regularAddresses.length > 0) {
+                    if (hasCommonArea) {
+                        html += `<div style="font-size:12px;font-weight:600;color:#28a745;margin-bottom:4px;">Addresses (${regularAddresses.length})</div>`;
+                    }
+                    regularAddresses.forEach(addr => {
+                        html += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid #f0f0f0;font-size:12px;">
+                                    <span style="flex:1;">${addr.address}</span>
+                                    <button type="button" onclick="deleteCommunityClockAddress(${addr.id},${communityId})"
+                                            style="font-size:11px;padding:2px 8px;background:#dc3545;color:#fff;border:none;border-radius:3px;cursor:pointer;flex:0 0 auto;">Delete</button>
+                                 </div>`;
+                    });
+                }
+
+                // Common area list
+                if (hasCommonArea) {
+                    html += `<div style="font-size:12px;font-weight:600;color:#007bff;margin-top:8px;margin-bottom:4px;">Common Area (${commonAreaAddresses.length})</div>`;
+                    commonAreaAddresses.forEach(addr => {
+                        html += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid #f0f0f0;font-size:12px;">
+                                    <span style="flex:1;">${addr.address}</span>
+                                    <button type="button" onclick="deleteCommunityClockAddress(${addr.id},${communityId})"
+                                            style="font-size:11px;padding:2px 8px;background:#dc3545;color:#fff;border:none;border-radius:3px;cursor:pointer;flex:0 0 auto;">Delete</button>
+                                 </div>`;
+                    });
+                }
+
+                if (totalCount === 0) {
+                    html += `<p style="color:#999;font-size:12px;margin:0 0 6px 0;">No addresses yet.</p>`;
+                }
+
+                // Add address textarea
+                html += `<div style="margin-top:10px;display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;">
+                            <textarea id="comm-addr-input-${communityId}-${clock.clock_number}"
+                                      placeholder="Enter address(es) — one per line"
+                                      rows="1"
+                                      style="flex:1;min-width:180px;padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px;font-family:inherit;resize:vertical;"></textarea>
+                            <button type="button" onclick="bulkAddCommunityClockAddresses(${communityId},${clock.clock_number})"
+                                    style="padding:6px 14px;background:#28a745;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;flex:0 0 auto;">Add Address(es)</button>
+                         </div>`;
+
+                html += `</div></div>`;
+            });
+
+            container.innerHTML = html;
+        }
+
+        function toggleCommClockBody(event, communityId, clockNumber) {
+            event.stopPropagation();
+            const body = document.getElementById(`comm-clock-body-${communityId}-${clockNumber}`);
+            const hdr  = document.getElementById(`comm-clock-hdr-${communityId}-${clockNumber}`);
+            const isOpen = body.style.display !== 'none';
+            body.style.display = isOpen ? 'none' : 'block';
+            if (hdr) hdr.innerHTML = hdr.innerHTML.replace(isOpen ? '▲' : '▼', isOpen ? '▼' : '▲');
+        }
+
+        function updateCommunityClockCount(communityId) {
+            const input = document.getElementById(`comm-clock-num-${communityId}`);
+            const numClocks = parseInt(input.value) || 0;
+            const msgEl = document.getElementById(`comm-clock-count-msg-${communityId}`);
+
+            fetch('/community_update_clock_count', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({community_id: communityId, num_clocks: numClocks})
+            })
+            .then(r => r.json())
+            .then(data => {
+                const importSection = document.getElementById(`comm-clock-import-section-${communityId}`);
+                const displaySection = document.getElementById(`comm-clocks-${communityId}`);
+                if (data.success) {
+                    if (numClocks > 0) {
+                        if (importSection) importSection.style.display = '';
+                        if (displaySection) { displaySection.style.display = ''; loadCommunityClockAddresses(communityId); }
+                    } else {
+                        if (importSection) importSection.style.display = 'none';
+                        if (displaySection) displaySection.style.display = 'none';
+                    }
+                    if (msgEl) { msgEl.textContent = 'Saved!'; msgEl.style.color = '#28a745'; setTimeout(() => { msgEl.textContent = ''; }, 2000); }
+                } else {
+                    if (msgEl) { msgEl.textContent = 'Error: ' + data.error; msgEl.style.color = '#dc3545'; }
+                }
+            })
+            .catch(() => { if (msgEl) { msgEl.textContent = 'Network error'; msgEl.style.color = '#dc3545'; } });
+        }
+
+        function previewCommunityClockImport(communityId) {
+            const fileInput = document.getElementById(`comm-clock-import-${communityId}`);
+            const previewDiv = document.getElementById(`comm-clock-preview-${communityId}`);
+            const useCommonArea = document.getElementById(`use-common-area-${communityId}`).checked;
+
+            if (!fileInput.files || !fileInput.files[0]) {
+                alert('Please select an Excel file first');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('community_id', communityId);
+            formData.append('use_common_area', useCommonArea ? '1' : '0');
+
+            previewDiv.style.display = 'block';
+            previewDiv.innerHTML = '<p style="color:#666;">Parsing Excel file...</p>';
+
+            fetch('/community_clock_import_excel', {method: 'POST', body: formData})
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.success) {
+                        previewDiv.innerHTML = `<p style="color:#dc3545;">Error: ${data.error}</p>`;
+                        return;
+                    }
+                    let entryId = 0;
+                    const entries = [];
+                    Object.keys(data.clocks).sort((a,b) => parseInt(a)-parseInt(b)).forEach(clockNum => {
+                        const clock = data.clocks[clockNum];
+                        (clock.addresses || []).forEach(addr => {
+                            entries.push({id: entryId++, clock: parseInt(clockNum), text: addr, type: 'address', included: true});
+                        });
+                        (clock.common_area || []).forEach(addr => {
+                            entries.push({id: entryId++, clock: parseInt(clockNum), text: addr, type: 'common_area', included: true});
+                        });
+                    });
+                    _importPreviewData['comm-' + communityId] = entries;
+                    renderCommunityClockImportPreview(communityId);
+                })
+                .catch(err => { previewDiv.innerHTML = `<p style="color:#dc3545;">Network error: ${err}</p>`; });
+        }
+
+        function renderCommunityClockImportPreview(communityId) {
+            const previewDiv = document.getElementById(`comm-clock-preview-${communityId}`);
+            const entries = _importPreviewData['comm-' + communityId] || [];
+
+            const byClock = {};
+            let totalAddr = 0, totalCA = 0, totalExcluded = 0;
+            entries.forEach(e => {
+                if (!byClock[e.clock]) byClock[e.clock] = [];
+                byClock[e.clock].push(e);
+                if (!e.included) { totalExcluded++; return; }
+                if (e.type === 'address') totalAddr++; else totalCA++;
+            });
+            const totalIncluded = totalAddr + totalCA;
+
+            let html = `<div style="background:#fff;border:1px solid #ddd;border-radius:6px;padding:12px;">`;
+            html += `<p style="font-weight:600;margin:0 0 6px 0;">Will import <span style="color:#28a745;">${totalAddr} address${totalAddr !== 1 ? 'es' : ''}</span>`;
+            if (totalCA > 0) html += ` + <span style="color:#007bff;">${totalCA} common area</span>`;
+            html += ` = ${totalIncluded} entries`;
+            if (totalExcluded > 0) html += ` <span style="color:#999;">(${totalExcluded} excluded)</span>`;
+            html += `</p>`;
+            html += `<p style="font-size:11px;color:#666;margin:0 0 10px 0;">Click a clock header to expand. Use <strong>Exclude</strong> to skip entries. Use <strong>Switch</strong> to toggle Address / Common Area.</p>`;
+
+            Object.keys(byClock).sort((a,b) => parseInt(a)-parseInt(b)).forEach(clockNum => {
+                const clockEntries = byClock[clockNum];
+                const cAddr  = clockEntries.filter(e => e.type === 'address'     && e.included).length;
+                const cCA    = clockEntries.filter(e => e.type === 'common_area' && e.included).length;
+                const cExcl  = clockEntries.filter(e => !e.included).length;
+                html += `<div style="border:1px solid #e9ecef;border-radius:4px;margin-bottom:6px;">
+                            <div onclick="toggleImportClock(this)" style="cursor:pointer;padding:8px 10px;background:#f8f9fa;display:flex;justify-content:space-between;align-items:center;border-radius:4px;">
+                                <strong style="font-size:13px;">Clock ${clockNum}</strong>
+                                <span style="font-size:11px;color:#666;">${cAddr} addr${cCA > 0 ? ', '+cCA+' common' : ''}${cExcl > 0 ? ', '+cExcl+' excluded' : ''} ▼</span>
+                            </div>
+                            <div style="display:none;padding:6px 10px;max-height:300px;overflow-y:auto;">`;
+
+                clockEntries.forEach(entry => {
+                    const isCA = entry.type === 'common_area';
+                    const excl = !entry.included;
+                    const badge = isCA
+                        ? `<span style="background:#007bff;color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;white-space:nowrap;">Common Area</span>`
+                        : `<span style="background:#28a745;color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;white-space:nowrap;">Address</span>`;
+                    html += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid #f0f0f0;font-size:12px;${excl ? 'opacity:0.5;' : ''}">
+                                ${badge}
+                                <span style="flex:1;${excl ? 'text-decoration:line-through;color:#999;' : ''}">${entry.text}</span>
+                                <button type="button" onclick="toggleCommImportEntryType('comm-${communityId}',${entry.id})"
+                                        style="font-size:10px;padding:2px 6px;background:#ffc107;color:#333;border:1px solid #dda600;border-radius:3px;cursor:pointer;white-space:nowrap;flex:0 0 auto;">Switch</button>
+                                <button type="button" onclick="toggleCommImportEntryInclude('comm-${communityId}',${entry.id})"
+                                        style="font-size:10px;padding:2px 6px;background:${excl ? '#28a745' : '#dc3545'};color:#fff;border:none;border-radius:3px;cursor:pointer;white-space:nowrap;flex:0 0 auto;">${excl ? 'Include' : 'Exclude'}</button>
+                             </div>`;
+                });
+
+                html += `</div></div>`;
+            });
+
+            html += `</div>
+                     <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+                        <button type="button" onclick="confirmCommunityClockImport(${communityId})"
+                                style="padding:8px 20px;font-size:13px;background:#28a745;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Confirm Import (${totalIncluded} entries)</button>
+                        <button type="button" onclick="document.getElementById('comm-clock-preview-${communityId}').style.display='none';delete _importPreviewData['comm-${communityId}'];"
+                                style="padding:8px 20px;font-size:13px;background:#6c757d;color:#fff;border:none;border-radius:4px;cursor:pointer;">Cancel</button>
+                     </div>`;
+
+            previewDiv.innerHTML = html;
+        }
+
+        function toggleCommImportEntryType(key, entryId) {
+            const entries = _importPreviewData[key];
+            if (!entries) return;
+            const entry = entries.find(e => e.id === entryId);
+            if (!entry) return;
+            entry.type = entry.type === 'address' ? 'common_area' : 'address';
+            renderCommunityClockImportPreview(parseInt(key.replace('comm-', '')));
+        }
+
+        function toggleCommImportEntryInclude(key, entryId) {
+            const entries = _importPreviewData[key];
+            if (!entries) return;
+            const entry = entries.find(e => e.id === entryId);
+            if (!entry) return;
+            entry.included = !entry.included;
+            renderCommunityClockImportPreview(parseInt(key.replace('comm-', '')));
+        }
+
+        function confirmCommunityClockImport(communityId) {
+            const previewDiv = document.getElementById(`comm-clock-preview-${communityId}`);
+            const entries = _importPreviewData['comm-' + communityId];
+
+            if (!entries || entries.length === 0) { alert('No import data. Please preview again.'); return; }
+            const included = entries.filter(e => e.included);
+            if (included.length === 0) { alert('All entries excluded. Nothing to import.'); return; }
+            if (!confirm(`Import ${included.length} entries? Existing addresses will NOT be removed.`)) return;
+
+            const clocks = {};
+            included.forEach(e => {
+                if (!clocks[e.clock]) clocks[e.clock] = {addresses: [], common_area: []};
+                if (e.type === 'address') clocks[e.clock].addresses.push(e.text);
+                else clocks[e.clock].common_area.push(e.text);
+            });
+
+            previewDiv.innerHTML = '<p style="color:#666;">Importing... please wait.</p>';
+
+            fetch('/community_clock_import_confirmed', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({community_id: communityId, clocks: clocks})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    previewDiv.innerHTML = `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                        <p style="color:#28a745;font-weight:600;margin:0;">${data.message}</p>
+                        <button type="button" onclick="undoCommImport(${communityId},${JSON.stringify(data.inserted_ids)})"
+                                style="padding:5px 14px;font-size:12px;background:#dc3545;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Undo Import</button>
+                    </div>`;
+                    document.getElementById(`comm-clock-import-${communityId}`).value = '';
+                    delete _importPreviewData['comm-' + communityId];
+                    loadCommunityClockAddresses(communityId);
+                } else {
+                    previewDiv.innerHTML = `<p style="color:#dc3545;">Import failed: ${data.error}</p>`;
+                }
+            })
+            .catch(err => { previewDiv.innerHTML = `<p style="color:#dc3545;">Network error: ${err}</p>`; });
+        }
+
+        function undoCommImport(communityId, insertedIds) {
+            if (!confirm(`Undo this import? This will remove ${insertedIds.length} entries.`)) return;
+            const previewDiv = document.getElementById(`comm-clock-preview-${communityId}`);
+            previewDiv.innerHTML = '<p style="color:#666;">Undoing...</p>';
+
+            fetch('/undo_import', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({import_type: 'clock_addresses', inserted_ids: insertedIds})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    previewDiv.innerHTML = `<p style="color:#28a745;font-weight:600;">${data.message}</p>`;
+                    loadCommunityClockAddresses(communityId);
+                    setTimeout(() => { previewDiv.style.display = 'none'; }, 3000);
+                } else {
+                    previewDiv.innerHTML = `<p style="color:#dc3545;">Undo failed: ${data.error}</p>`;
+                }
+            })
+            .catch(() => { previewDiv.innerHTML = '<p style="color:#dc3545;">Network error.</p>'; });
+        }
+
+        function bulkAddCommunityClockAddresses(communityId, clockNumber) {
+            const textarea = document.getElementById(`comm-addr-input-${communityId}-${clockNumber}`);
+            const lines = textarea.value.split(_nl).map(l => l.trim()).filter(l => l);
+
+            if (lines.length === 0) { alert('Please enter at least one address.'); return; }
+
+            fetch('/community_bulk_add_clock_addresses', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({community_id: communityId, clock_number: clockNumber, addresses: lines, is_common_area: 0})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) { textarea.value = ''; loadCommunityClockAddresses(communityId); }
+                else { alert('Error: ' + data.error); }
+            })
+            .catch(() => alert('Network error — please try again.'));
+        }
+
+        function deleteCommunityClockAddress(addressId, communityId) {
+            if (!confirm('Delete this address?')) return;
+
+            fetch('/community_bulk_delete_clock_addresses', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({address_ids: [addressId]})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) { loadCommunityClockAddresses(communityId); }
+                else { alert('Error: ' + data.error); }
+            })
+            .catch(() => alert('Network error — please try again.'));
+        }
+
+        // ---------------------------------------------------------------
         // Helper to split text by newlines (avoids regex escape issues in templates)
         var _nl = new RegExp(String.fromCharCode(13) + '?' + String.fromCharCode(10));
         function splitLines(text) {
@@ -18781,12 +19214,16 @@ def community_billing_office():
 
         if action == 'add':
             community_name = request.form.get('community_name', '').strip()
+            try:
+                num_clocks = max(0, int(request.form.get('num_clocks', 0) or 0))
+            except (ValueError, TypeError):
+                num_clocks = 0
             if not community_name:
                 flash('Community name is required', 'error')
             else:
                 try:
-                    c.execute("INSERT INTO communities (name, created_by, created_at) VALUES (?, ?, ?)",
-                             (community_name, session.get('username'), datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                    c.execute("INSERT INTO communities (name, created_by, created_at, num_clocks) VALUES (?, ?, ?, ?)",
+                             (community_name, session.get('username'), datetime.now().strftime('%Y-%m-%d %H:%M:%S'), num_clocks))
                     conn.commit()
                     flash(f'Community "{community_name}" added successfully', 'success')
                 except sqlite3.IntegrityError:
@@ -18820,8 +19257,8 @@ def community_billing_office():
     communities = [{'id': row[0], 'name': row[1], 'created_at': row[2], 'active': True} for row in c.fetchall()]
 
     # Get all communities including inactive ones
-    c.execute("SELECT id, name, created_at, active FROM communities ORDER BY name")
-    all_communities = [{'id': row[0], 'name': row[1], 'created_at': row[2], 'active': row[3]} for row in c.fetchall()]
+    c.execute("SELECT id, name, created_at, active, COALESCE(num_clocks, 0) FROM communities ORDER BY name")
+    all_communities = [{'id': row[0], 'name': row[1], 'created_at': row[2], 'active': row[3], 'num_clocks': row[4]} for row in c.fetchall()]
 
     conn.close()
 
@@ -20050,6 +20487,340 @@ def verona_walk_import_confirmed():
             'inserted_ids': inserted_ids,
             'import_type': 'clock_addresses'
         })
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+
+@app.route('/community_clocks', methods=['GET'])
+def community_clocks():
+    """Get clock addresses for any standard community (uses num_clocks from DB)."""
+    if 'username' not in session or session.get('role') not in ['office', 'technician']:
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    community_id = request.args.get('community_id')
+    if not community_id:
+        return jsonify({'success': False, 'error': 'Missing community_id'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    c.execute("SELECT COALESCE(num_clocks, 0) FROM communities WHERE id = ?", (community_id,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({'success': False, 'error': 'Community not found'})
+
+    num_clocks = row[0]
+
+    # Build clock stubs
+    clocks_by_num = {}
+    for i in range(1, num_clocks + 1):
+        clocks_by_num[i] = {'clock_number': i, 'clock_label': f'Clock {i}', 'addresses': [], 'common_area_addresses': []}
+
+    # Fetch all stored addresses
+    c.execute("""SELECT id, clock_number, address, COALESCE(is_common_area, 0)
+                 FROM verona_walk_clock_addresses
+                 WHERE community_id = ?
+                 ORDER BY clock_number, is_common_area, sort_order, id""", (community_id,))
+
+    for addr_id, clock_num, address, is_ca in c.fetchall():
+        if clock_num not in clocks_by_num:
+            clocks_by_num[clock_num] = {
+                'clock_number': clock_num,
+                'clock_label': f'Clock {clock_num}',
+                'addresses': [],
+                'common_area_addresses': []
+            }
+        entry = {'id': addr_id, 'address': address, 'is_common_area': bool(is_ca)}
+        if is_ca:
+            clocks_by_num[clock_num]['common_area_addresses'].append(entry)
+        else:
+            clocks_by_num[clock_num]['addresses'].append(entry)
+
+    clocks = sorted(clocks_by_num.values(), key=lambda x: x['clock_number'])
+    conn.close()
+    return jsonify({'success': True, 'clocks': clocks, 'num_clocks': num_clocks})
+
+
+@app.route('/community_clock_import_excel', methods=['POST'])
+def community_clock_import_excel():
+    """Parse an Excel file for a standard community clock import.
+
+    Expected Excel format:
+    - Sheets named 'CLOCK N' (e.g., 'CLOCK 1', 'CLOCK 2')
+    - Each non-empty row contributes one address (first non-empty cell used)
+    - use_common_area=1 enables keyword-based common area detection
+    """
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return jsonify({'success': False, 'error': 'openpyxl not installed'})
+
+    community_id = request.form.get('community_id')
+    use_common_area = request.form.get('use_common_area') == '1'
+
+    if not community_id:
+        return jsonify({'success': False, 'error': 'Missing community_id'})
+
+    file = request.files.get('file')
+    if not file or not file.filename.endswith(('.xlsx', '.xls')):
+        return jsonify({'success': False, 'error': 'Please upload a valid Excel file (.xlsx or .xls)'})
+
+    try:
+        wb = load_workbook(file, data_only=True)
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Could not read Excel file: {str(e)}'})
+
+    COMMON_AREA_KEYWORDS = ['ROTORS', 'SIDEWALK', 'LAKE BANK', 'COMMON AREA', 'CUL D SAC', 'CUL DE SAC']
+
+    def is_common_area_entry(text):
+        t = text.upper().strip()
+        if t.startswith('ROTORS'):
+            return True
+        for kw in COMMON_AREA_KEYWORDS[1:]:
+            if kw in t:
+                return True
+        return False
+
+    results = {}
+    total_addresses = 0
+    total_common_area = 0
+
+    for sheet_name in wb.sheetnames:
+        match = re.match(r'CLOCK\s*(\d+)', sheet_name.strip(), re.IGNORECASE)
+        if not match:
+            continue
+
+        clock_number = int(match.group(1))
+        ws = wb[sheet_name]
+        addresses = []
+        common_area = []
+
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            text = None
+            for cell_val in row:
+                if cell_val is not None:
+                    candidate = str(cell_val).strip()
+                    if candidate:
+                        text = candidate
+                        break
+            if not text:
+                continue
+
+            if use_common_area and is_common_area_entry(text):
+                common_area.append(text)
+                total_common_area += 1
+            else:
+                addresses.append(text)
+                total_addresses += 1
+
+        if addresses or common_area:
+            results[clock_number] = {'addresses': addresses, 'common_area': common_area}
+
+    if not results:
+        return jsonify({'success': False, 'error': 'No valid CLOCK sheets found. Sheets must be named "CLOCK 1", "CLOCK 2", etc.'})
+
+    preview_data = {str(k): results[k] for k in sorted(results.keys())}
+    return jsonify({
+        'success': True,
+        'clocks': preview_data,
+        'total_addresses': total_addresses,
+        'total_common_area': total_common_area,
+        'total': total_addresses + total_common_area
+    })
+
+
+@app.route('/community_clock_import_confirmed', methods=['POST'])
+def community_clock_import_confirmed():
+    """Insert reviewed clock address data for a standard community."""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    community_id = data.get('community_id')
+    clocks = data.get('clocks', {})
+
+    if not community_id or not clocks:
+        return jsonify({'success': False, 'error': 'Missing required fields'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        # Look up community name for draft sync
+        c.execute("SELECT name FROM communities WHERE id = ?", (community_id,))
+        comm_row = c.fetchone()
+        community_name = comm_row[0] if comm_row else None
+
+        imported_count = 0
+        clock_count = 0
+        inserted_ids = []
+
+        for clock_number_str, clock_data in clocks.items():
+            clock_number = int(clock_number_str)
+            addresses = clock_data.get('addresses', [])
+            common_area = clock_data.get('common_area', [])
+
+            if not addresses and not common_area:
+                continue
+            clock_count += 1
+
+            if addresses:
+                c.execute("""SELECT COALESCE(MAX(sort_order), 0) FROM verona_walk_clock_addresses
+                             WHERE community_id = ? AND clock_number = ? AND is_common_area = 0""",
+                         (community_id, clock_number))
+                next_order = c.fetchone()[0] + 1
+                for address in addresses:
+                    address = str(address).strip()
+                    if address:
+                        c.execute("""INSERT INTO verona_walk_clock_addresses
+                                     (community_id, clock_number, address, created_at, is_common_area, sort_order)
+                                     VALUES (?, ?, ?, ?, 0, ?)""",
+                                 (community_id, clock_number, address,
+                                  datetime.now().strftime('%Y-%m-%d %H:%M:%S'), next_order))
+                        inserted_ids.append(c.lastrowid)
+                        next_order += 1
+                        imported_count += 1
+
+            if common_area:
+                c.execute("""SELECT COALESCE(MAX(sort_order), 0) FROM verona_walk_clock_addresses
+                             WHERE community_id = ? AND clock_number = ? AND is_common_area = 1""",
+                         (community_id, clock_number))
+                next_order = c.fetchone()[0] + 1
+                for address in common_area:
+                    address = str(address).strip()
+                    if address:
+                        c.execute("""INSERT INTO verona_walk_clock_addresses
+                                     (community_id, clock_number, address, created_at, is_common_area, sort_order)
+                                     VALUES (?, ?, ?, ?, 1, ?)""",
+                                 (community_id, clock_number, address,
+                                  datetime.now().strftime('%Y-%m-%d %H:%M:%S'), next_order))
+                        inserted_ids.append(c.lastrowid)
+                        next_order += 1
+                        imported_count += 1
+
+        if imported_count > 0 and community_name:
+            sync_community_drafts(c, community_name, community_id)
+
+        conn.commit()
+        total_addr = sum(len(v.get('addresses', [])) for v in clocks.values())
+        total_ca = sum(len(v.get('common_area', [])) for v in clocks.values())
+        return jsonify({
+            'success': True,
+            'message': f'Successfully imported {imported_count} entries across {clock_count} clocks ({total_addr} addresses, {total_ca} common area)',
+            'imported': imported_count,
+            'inserted_ids': inserted_ids,
+            'import_type': 'clock_addresses'
+        })
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+
+@app.route('/community_bulk_add_clock_addresses', methods=['POST'])
+def community_bulk_add_clock_addresses():
+    """Bulk add clock addresses for any standard community."""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    community_id = data.get('community_id')
+    clock_number = data.get('clock_number')
+    addresses = data.get('addresses', [])
+    is_common_area = data.get('is_common_area', 0)
+
+    if not community_id or clock_number is None or not addresses:
+        return jsonify({'success': False, 'error': 'Missing required fields'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("""SELECT COALESCE(MAX(sort_order), 0) FROM verona_walk_clock_addresses
+                     WHERE community_id = ? AND clock_number = ? AND is_common_area = ?""",
+                 (community_id, clock_number, is_common_area))
+        next_order = c.fetchone()[0] + 1
+        added = 0
+        for address in addresses:
+            address = str(address).strip()
+            if address:
+                c.execute("""INSERT INTO verona_walk_clock_addresses
+                             (community_id, clock_number, address, created_at, is_common_area, sort_order)
+                             VALUES (?, ?, ?, ?, ?, ?)""",
+                         (community_id, clock_number, address,
+                          datetime.now().strftime('%Y-%m-%d %H:%M:%S'), is_common_area, next_order))
+                next_order += 1
+                added += 1
+
+        if added > 0:
+            c.execute("SELECT name FROM communities WHERE id = ?", (community_id,))
+            comm_row = c.fetchone()
+            if comm_row:
+                sync_community_drafts(c, comm_row[0], community_id)
+
+        conn.commit()
+        return jsonify({'success': True, 'message': f'{added} address(es) added'})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+
+@app.route('/community_bulk_delete_clock_addresses', methods=['POST'])
+def community_bulk_delete_clock_addresses():
+    """Bulk delete clock addresses by ID for any community."""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    address_ids = data.get('address_ids', [])
+
+    if not address_ids:
+        return jsonify({'success': False, 'error': 'Missing address_ids'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        placeholders = ','.join('?' * len(address_ids))
+        c.execute(f"DELETE FROM verona_walk_clock_addresses WHERE id IN ({placeholders})", address_ids)
+        conn.commit()
+        return jsonify({'success': True, 'deleted': c.rowcount})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+
+@app.route('/community_update_clock_count', methods=['POST'])
+def community_update_clock_count():
+    """Update the number of clocks configured for a standard community."""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    community_id = data.get('community_id')
+    try:
+        num_clocks = max(0, int(data.get('num_clocks', 0) or 0))
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'error': 'Invalid clock count'})
+
+    if not community_id:
+        return jsonify({'success': False, 'error': 'Missing community_id'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("UPDATE communities SET num_clocks = ? WHERE id = ?", (num_clocks, community_id))
+        conn.commit()
+        return jsonify({'success': True})
     except Exception as e:
         conn.rollback()
         return jsonify({'success': False, 'error': str(e)})
