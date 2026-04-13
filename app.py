@@ -15841,9 +15841,19 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             {% endwith %}
 
             {% if all_communities %}
-                <h3 style="margin-bottom: 15px; color: #333;">Communities ({{ all_communities|length }})</h3>
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px; flex-wrap: wrap;">
+                    <h3 style="color: #333; white-space: nowrap;">Communities (<span id="community-count">{{ all_communities|length }}</span>)</h3>
+                    <div style="display: flex; align-items: center; gap: 6px; flex: 1; min-width: 200px; max-width: 400px;">
+                        <input type="text" id="community-search" placeholder="Search communities..." oninput="filterCommunities()"
+                               style="flex: 1; padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;">
+                        <button type="button" onclick="document.getElementById('community-search').value=''; filterCommunities();"
+                                style="padding: 8px 12px; background: #6c757d; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; white-space: nowrap;">
+                            Clear
+                        </button>
+                    </div>
+                </div>
                 {% for community in all_communities %}
-                    <div class="community-card">
+                    <div class="community-card" data-community-name="{{ community.name|lower }}">
                         <div style="width: 100%;">
                             <div style="display: flex; justify-content: space-between; align-items: flex-start;">
                                 <div class="community-info">
@@ -16031,6 +16041,23 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             // Show selected tab
             document.getElementById(tabName).classList.add('active');
             event.target.classList.add('active');
+        }
+
+        function filterCommunities() {
+            var term = document.getElementById('community-search').value.toLowerCase().trim();
+            var cards = document.querySelectorAll('#manage .community-card');
+            var visible = 0;
+            cards.forEach(function(card) {
+                var name = card.getAttribute('data-community-name') || '';
+                if (!term || name.indexOf(term) !== -1) {
+                    card.style.display = '';
+                    visible++;
+                } else {
+                    card.style.display = 'none';
+                }
+            });
+            var countEl = document.getElementById('community-count');
+            if (countEl) countEl.textContent = term ? visible : cards.length;
         }
 
         // Helper to split text by newlines (avoids regex escape issues in templates)
