@@ -15947,9 +15947,11 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                             <div class="houses-section" style="margin-top: 10px;">
                                 <div class="houses-header" onclick="toggleCommunityClocksSection(event, {{ community.id }})">
                                     <h4>🕐 Clock Addresses</h4>
-                                    <span class="expand-arrow" id="comm-clock-arrow-{{ community.id }}">▼</span>
+                                    <span class="expand-arrow{% if community.num_clocks > 0 %} expanded{% endif %}" id="comm-clock-arrow-{{ community.id }}">▼</span>
                                 </div>
-                                <div class="houses-list" id="comm-clocks-list-{{ community.id }}">
+                                <div class="houses-list{% if community.num_clocks > 0 %} visible{% endif %}"
+                                     id="comm-clocks-list-{{ community.id }}"
+                                     {% if community.num_clocks > 0 %}data-loaded="true" data-auto-load-clocks="{{ community.id }}"{% endif %}>
 
                                     <!-- Clock count setting -->
                                     <div style="margin-bottom: 14px; padding: 10px 12px; background: #f8f9fa; border-radius: 6px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
@@ -18022,6 +18024,15 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 alert('Error deleting submission: ' + error);
             });
         }
+
+        // On page load, auto-load clock addresses for every community that
+        // already has clocks configured (data-auto-load-clocks attribute is
+        // added server-side when num_clocks > 0).
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelectorAll('[data-auto-load-clocks]').forEach(function(el) {
+                loadCommunityClockAddresses(parseInt(el.dataset.autoLoadClocks));
+            });
+        });
     </script>
 </body>
 </html>
