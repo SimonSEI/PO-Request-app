@@ -15975,10 +15975,10 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                         </div>
                                         <div style="font-size: 11px; color: #666; margin-top: 6px;">
                                             Upload .xlsx with sheets named "CLOCK 1", "CLOCK 2", etc.
-                                            <strong>Col A</strong> = Zone number &nbsp;|&nbsp;
-                                            <strong>Col B</strong> = Serial (ignored) &nbsp;|&nbsp;
+                                            <strong>Col A</strong> = Serial # (ignored) &nbsp;|&nbsp;
+                                            <strong>Col B</strong> = Zone number &nbsp;|&nbsp;
                                             <strong>Col C</strong> = Description/Address.
-                                            Rows where Col A is not a number are skipped automatically.
+                                            Non-data rows (headers, blanks, totals) are skipped automatically.
                                         </div>
                                         <div id="comm-clock-preview-{{ community.id }}" style="display:none; margin-top: 10px;"></div>
                                     </div>
@@ -20553,13 +20553,13 @@ def community_clocks():
 def community_clock_import_excel():
     """Parse an Excel file for a standard community clock import.
 
-    Expected Excel format (same as Verona Walk HOA):
+    Expected Excel format:
     - Sheets named 'CLOCK N' (e.g., 'CLOCK 1', 'CLOCK 2')
-    - Column A = Zone number (integer) — rows where this is not a valid
-      integer are treated as headers / noise and skipped automatically
-    - Column B = Serial number (ignored)
+    - Column A = Serial / equipment number (integer, used only to validate
+      that a row is a data row — headers and noise are skipped automatically)
+    - Column B = Zone number (integer)
     - Column C = Description / address text
-    - Formatted entries: "ZONE {n} - {description}"
+    - Formatted entries: "ZONE {zone} - {description}"
     - use_common_area=1 enables keyword-based common area detection
     """
     if 'username' not in session or session.get('role') != 'office':
@@ -20611,18 +20611,26 @@ def community_clock_import_excel():
         common_area = []
 
         for row in ws.iter_rows(min_row=1, values_only=False):
-            # Column A must be a valid integer zone number — this naturally
-            # filters out blank rows, header rows, and all other noise.
-            zone_cell = row[0].value if len(row) > 0 else None
-            desc_cell = row[2].value if len(row) > 2 else None
+            # Layout: Col A = serial/equipment number, Col B = zone number,
+            # Col C = description/address text.
+            # Both Col A and Col B must be valid integers — this filters out
+            # header rows, blank rows, totals, and all other noise naturally.
+            serial_cell = row[0].value if len(row) > 0 else None
+            zone_cell   = row[1].value if len(row) > 1 else None
+            desc_cell   = row[2].value if len(row) > 2 else None
 
-            if zone_cell is None or desc_cell is None:
+            if serial_cell is None or zone_cell is None or desc_cell is None:
+                continue
+
+            try:
+                int(serial_cell)          # must be numeric (filters text headers)
+            except (ValueError, TypeError):
                 continue
 
             try:
                 zone_num = int(zone_cell)
             except (ValueError, TypeError):
-                continue  # header text, totals, blank — skip
+                continue
 
             description = str(desc_cell).strip()
             if not description:
