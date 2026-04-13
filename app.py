@@ -20606,12 +20606,33 @@ def community_clock_import_excel():
         addresses = []
         common_area = []
 
-        for row in ws.iter_rows(min_row=1, values_only=False):
-            # Col A = Zone #  (integer — filters blank rows and the header row automatically)
-            # Col B = Station Name / address text
-            # Col C+ = Decoder, NOZZLE, Cascade, etc. (all ignored)
-            zone_cell    = row[0].value if len(row) > 0 else None
-            station_cell = row[1].value if len(row) > 1 else None
+        # Auto-detect header row and column positions by scanning for
+        # cells containing "zone" and "station" keywords.
+        zone_col = None
+        station_col = None
+        data_start_row = None
+
+        all_rows = list(ws.iter_rows(min_row=1, values_only=False))
+        for row_idx, row in enumerate(all_rows):
+            row_vals = [str(c.value).lower().strip() if c.value is not None else '' for c in row]
+            z_col = next((i for i, v in enumerate(row_vals) if 'zone' in v), None)
+            s_col = next((i for i, v in enumerate(row_vals)
+                          if 'station' in v or 'address' in v or 'name' in v), None)
+            if z_col is not None and s_col is not None and z_col != s_col:
+                zone_col = z_col
+                station_col = s_col
+                data_start_row = row_idx + 1  # data begins after header
+                break
+
+        # Fallback: assume Col A = Zone, Col B = Station if no header found
+        if zone_col is None:
+            zone_col = 0
+            station_col = 1
+            data_start_row = 0
+
+        for row in all_rows[data_start_row:]:
+            zone_cell    = row[zone_col].value    if len(row) > zone_col    else None
+            station_cell = row[station_col].value if len(row) > station_col else None
 
             if zone_cell is None or station_cell is None:
                 continue
@@ -20619,7 +20640,7 @@ def community_clock_import_excel():
             try:
                 zone_num = int(zone_cell)
             except (ValueError, TypeError):
-                continue  # skips header row ("Zone #"), blank rows, totals, etc.
+                continue  # skip any non-integer rows (totals, notes, etc.)
 
             station = str(station_cell).strip()
             if not station:
