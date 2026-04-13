@@ -16180,6 +16180,8 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 const commonAreaAddresses = clock.common_area_addresses || [];
                 const totalCount = regularAddresses.length + commonAreaAddresses.length;
                 const hasCommonArea = commonAreaAddresses.length > 0;
+                // Declare bodyOpen before first use to avoid Temporal Dead Zone ReferenceError
+                const bodyOpen = totalCount === 0;
 
                 html += `<div style="border:1px solid #e9ecef;border-radius:6px;margin-bottom:8px;">`;
                 // Clock header
@@ -16188,9 +16190,6 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                             <strong style="font-size:13px;">${clock.clock_label}</strong>
                             <span id="comm-clock-hdr-${communityId}-${clock.clock_number}" style="font-size:12px;color:#666;">${totalCount} entr${totalCount === 1 ? 'y' : 'ies'} ${bodyOpen ? '▲' : '▼'}</span>
                          </div>`;
-                // Auto-expand when empty so the add form is immediately visible;
-                // collapse when already has addresses (to keep the list compact).
-                const bodyOpen = totalCount === 0;
                 html += `<div id="comm-clock-body-${communityId}-${clock.clock_number}" style="display:${bodyOpen ? 'block' : 'none'};padding:10px 12px;">`;
 
                 // Addresses list
