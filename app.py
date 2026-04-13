@@ -15974,11 +15974,11 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                             </label>
                                         </div>
                                         <div style="font-size: 11px; color: #666; margin-top: 6px;">
-                                            Upload .xlsx with sheets named "CLOCK 1", "CLOCK 2", etc.
-                                            <strong>Col A</strong> = Serial # (ignored) &nbsp;|&nbsp;
-                                            <strong>Col B</strong> = Zone number &nbsp;|&nbsp;
-                                            <strong>Col C</strong> = Description/Address.
-                                            Non-data rows (headers, blanks, totals) are skipped automatically.
+                                            Sheets named "CLOCK 1", "CLOCK 2", etc. &nbsp;|&nbsp;
+                                            <strong>Col A</strong> = Zone # &nbsp;|&nbsp;
+                                            <strong>Col B</strong> = Station Name/Address &nbsp;|&nbsp;
+                                            Col C+ (Decoder, NOZZLE, etc.) ignored.
+                                            Header &amp; blank rows skipped automatically.
                                         </div>
                                         <div id="comm-clock-preview-{{ community.id }}" style="display:none; margin-top: 10px;"></div>
                                     </div>
@@ -20551,11 +20551,11 @@ def community_clock_import_excel():
 
     Expected Excel format:
     - Sheets named 'CLOCK N' (e.g., 'CLOCK 1', 'CLOCK 2')
-    - Column A = Serial / equipment number (integer, used only to validate
-      that a row is a data row — headers and noise are skipped automatically)
-    - Column B = Zone number (integer)
-    - Column C = Description / address text
-    - Formatted entries: "ZONE {zone} - {description}"
+    - Column A = Zone # (integer) — blank rows and the header row are
+      skipped automatically because they fail the integer check
+    - Column B = Station Name / address text
+    - Column C+ = Decoder, NOZZLE, Cascade, etc. (all ignored)
+    - Formatted entries: "ZONE {zone} - {station name}"
     - use_common_area=1 enables keyword-based common area detection
     """
     if 'username' not in session or session.get('role') != 'office':
@@ -20607,34 +20607,27 @@ def community_clock_import_excel():
         common_area = []
 
         for row in ws.iter_rows(min_row=1, values_only=False):
-            # Layout: Col A = serial/equipment number, Col B = zone number,
-            # Col C = description/address text.
-            # Both Col A and Col B must be valid integers — this filters out
-            # header rows, blank rows, totals, and all other noise naturally.
-            serial_cell = row[0].value if len(row) > 0 else None
-            zone_cell   = row[1].value if len(row) > 1 else None
-            desc_cell   = row[2].value if len(row) > 2 else None
+            # Col A = Zone #  (integer — filters blank rows and the header row automatically)
+            # Col B = Station Name / address text
+            # Col C+ = Decoder, NOZZLE, Cascade, etc. (all ignored)
+            zone_cell    = row[0].value if len(row) > 0 else None
+            station_cell = row[1].value if len(row) > 1 else None
 
-            if serial_cell is None or zone_cell is None or desc_cell is None:
-                continue
-
-            try:
-                int(serial_cell)          # must be numeric (filters text headers)
-            except (ValueError, TypeError):
+            if zone_cell is None or station_cell is None:
                 continue
 
             try:
                 zone_num = int(zone_cell)
             except (ValueError, TypeError):
+                continue  # skips header row ("Zone #"), blank rows, totals, etc.
+
+            station = str(station_cell).strip()
+            if not station:
                 continue
 
-            description = str(desc_cell).strip()
-            if not description:
-                continue
+            formatted = f"ZONE {zone_num} - {station}"
 
-            formatted = f"ZONE {zone_num} - {description}"
-
-            if use_common_area and is_common_area_entry(description):
+            if use_common_area and is_common_area_entry(station):
                 common_area.append(formatted)
                 total_common_area += 1
             else:
