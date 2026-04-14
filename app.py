@@ -15942,56 +15942,54 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                             </div>
                             {% endif %}
 
-                            <!-- Clock Addresses Section (Standard Communities) -->
+                            <!-- Clock Addresses (Standard Communities) — always visible, no dropdown -->
                             {% if community.active and community.name != 'Verona Walk HOA' %}
-                            <div class="houses-section" style="margin-top: 10px;">
-                                <div class="houses-header" onclick="toggleCommunityClocksSection(event, {{ community.id }})">
-                                    <h4>🕐 Clock Addresses</h4>
-                                    <span class="expand-arrow{% if community.num_clocks > 0 %} expanded{% endif %}" id="comm-clock-arrow-{{ community.id }}">▼</span>
-                                </div>
-                                <div class="houses-list{% if community.num_clocks > 0 %} visible{% endif %}"
-                                     id="comm-clocks-list-{{ community.id }}"
-                                     {% if community.num_clocks > 0 %}data-loaded="true" data-auto-load-clocks="{{ community.id }}"{% endif %}>
+                            <div style="margin-top: 14px; border-top: 2px solid #e9ecef; padding-top: 14px;"
+                                 {% if community.num_clocks > 0 %}data-auto-load-clocks="{{ community.id }}"{% endif %}>
 
-                                    <!-- Clock count setting -->
-                                    <div style="margin-bottom: 14px; padding: 10px 12px; background: #f8f9fa; border-radius: 6px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                                        <label style="margin: 0; font-weight: 600; font-size: 13px;">Number of Clocks:</label>
-                                        <input type="number" id="comm-clock-num-{{ community.id }}" min="0" max="999"
+                                <!-- Section header + clock count adjuster -->
+                                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 12px;">
+                                    <h4 style="margin: 0; font-size: 14px; color: #333;">🕐 Clock Addresses</h4>
+                                    <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                                        <label style="margin: 0; font-size: 12px; color: #666;">Clocks:</label>
+                                        <input type="number" id="comm-clock-num-{{ community.id }}" min="1" max="999"
                                                value="{{ community.num_clocks }}"
-                                               style="width: 72px; padding: 5px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px;"
+                                               style="width: 60px; padding: 4px 6px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px;"
                                                onkeypress="if(event.key==='Enter') updateCommunityClockCount({{ community.id }})">
                                         <button type="button" onclick="updateCommunityClockCount({{ community.id }})"
-                                                style="padding: 5px 14px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600;">Save</button>
+                                                style="padding: 4px 12px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">Update</button>
                                         <span id="comm-clock-count-msg-{{ community.id }}" style="font-size: 12px;"></span>
                                     </div>
+                                </div>
 
-                                    <!-- Excel import -->
-                                    <div id="comm-clock-import-section-{{ community.id }}"
-                                         style="margin-bottom: 14px; padding: 12px; background: #f0f7ff; border: 1px solid #b8daff; border-radius: 6px;">
-                                        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                                            <strong style="font-size: 13px;">Import from Excel:</strong>
-                                            <input type="file" id="comm-clock-import-{{ community.id }}" accept=".xlsx,.xls" style="font-size: 12px;">
-                                            <button type="button" onclick="previewCommunityClockImport({{ community.id }})"
-                                                    style="padding: 5px 12px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">Preview Import</button>
-                                            <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; font-weight: normal; margin: 0; cursor: pointer;">
-                                                <input type="checkbox" id="use-common-area-{{ community.id }}">
-                                                Separate Common Area entries
-                                            </label>
-                                        </div>
-                                        <div style="font-size: 11px; color: #666; margin-top: 6px;">
-                                            Sheets named "CLOCK 1", "CLOCK 2", etc. &nbsp;|&nbsp;
-                                            <strong>Col A</strong> = Zone # &nbsp;|&nbsp;
-                                            <strong>Col B</strong> = Station Name/Address &nbsp;|&nbsp;
-                                            Col C+ (Decoder, NOZZLE, etc.) ignored.
-                                            Header &amp; blank rows skipped automatically.
-                                        </div>
-                                        <div id="comm-clock-preview-{{ community.id }}" style="display:none; margin-top: 10px;"></div>
+                                <!-- Excel import -->
+                                <div id="comm-clock-import-section-{{ community.id }}"
+                                     style="margin-bottom: 14px; padding: 12px; background: #f0f7ff; border: 1px solid #b8daff; border-radius: 6px;">
+                                    <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                                        <strong style="font-size: 13px;">Import from Excel:</strong>
+                                        <input type="file" id="comm-clock-import-{{ community.id }}" accept=".xlsx,.xls" style="font-size: 12px;">
+                                        <button type="button" onclick="previewCommunityClockImport({{ community.id }})"
+                                                style="padding: 5px 12px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">Preview Import</button>
+                                        <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; font-weight: normal; margin: 0; cursor: pointer;">
+                                            <input type="checkbox" id="use-common-area-{{ community.id }}">
+                                            Separate Common Area entries
+                                        </label>
                                     </div>
+                                    <div style="font-size: 11px; color: #666; margin-top: 6px;">
+                                        Sheets named "CLOCK 1", "CLOCK 2", etc. &nbsp;|&nbsp;
+                                        Auto-detects Zone and Station/Address columns &nbsp;|&nbsp;
+                                        Other columns ignored.
+                                    </div>
+                                    <div id="comm-clock-preview-{{ community.id }}" style="display:none; margin-top: 10px;"></div>
+                                </div>
 
-                                    <!-- Clock addresses display -->
-                                    <div id="comm-clocks-{{ community.id }}">
-                                        <p style="color: #666; font-size: 13px;">Expand this section to load clocks.</p>
-                                    </div>
+                                <!-- Clock cards — rendered by JS, always visible -->
+                                <div id="comm-clocks-{{ community.id }}">
+                                    {% if community.num_clocks > 0 %}
+                                    <p style="color: #888; font-size: 13px;">Loading clocks…</p>
+                                    {% else %}
+                                    <p style="color: #999; font-size: 13px;">No clocks configured.</p>
+                                    {% endif %}
                                 </div>
                             </div>
                             {% endif %}
@@ -16181,17 +16179,14 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 const commonAreaAddresses = clock.common_area_addresses || [];
                 const totalCount = regularAddresses.length + commonAreaAddresses.length;
                 const hasCommonArea = commonAreaAddresses.length > 0;
-                // Declare bodyOpen before first use to avoid Temporal Dead Zone ReferenceError
-                const bodyOpen = totalCount === 0;
 
-                html += `<div style="border:1px solid #e9ecef;border-radius:6px;margin-bottom:8px;">`;
-                // Clock header
-                html += `<div onclick="toggleCommClockBody(event,${communityId},${clock.clock_number})"
-                              style="cursor:pointer;padding:9px 12px;background:#f8f9fa;display:flex;justify-content:space-between;align-items:center;border-radius:6px;">
+                // Each clock section is always expanded — no dropdown/toggle
+                html += `<div style="border:1px solid #e9ecef;border-radius:6px;margin-bottom:10px;">`;
+                html += `<div style="padding:9px 12px;background:#f8f9fa;display:flex;justify-content:space-between;align-items:center;border-radius:6px 6px 0 0;border-bottom:1px solid #e9ecef;">
                             <strong style="font-size:13px;">${clock.clock_label}</strong>
-                            <span id="comm-clock-hdr-${communityId}-${clock.clock_number}" style="font-size:12px;color:#666;">${totalCount} entr${totalCount === 1 ? 'y' : 'ies'} ${bodyOpen ? '▲' : '▼'}</span>
+                            <span style="font-size:12px;color:#888;">${totalCount} entr${totalCount === 1 ? 'y' : 'ies'}</span>
                          </div>`;
-                html += `<div id="comm-clock-body-${communityId}-${clock.clock_number}" style="display:${bodyOpen ? 'block' : 'none'};padding:10px 12px;">`;
+                html += `<div style="padding:10px 12px;">`;
 
                 // Addresses list
                 if (regularAddresses.length > 0) {
