@@ -16145,8 +16145,8 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 // Merge into one flat list — no common area separation
                 const allAddresses = [...regularAddresses, ...commonAreaAddresses];
                 const totalCount = allAddresses.length;
-                // Open if it was already open, or if it has no addresses yet
-                const isOpen = openClocks.includes(clock.clock_number) || totalCount === 0;
+                // Only open if it was already open before re-render
+                const isOpen = openClocks.includes(clock.clock_number);
 
                 // Use the same clock-container / clock-header / clock-addresses CSS as Verona Walk
                 html += `
