@@ -16454,8 +16454,18 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         // Verona Walk HOA clock management functions
         function toggleClockSection(event, communityId) {
             event.preventDefault();
-            const list = document.getElementById(`houses-list-${communityId}`);
-            const arrow = document.getElementById(`arrow-${communityId}`);
+            let list = document.getElementById(`houses-list-${communityId}`);
+            let arrow = document.getElementById(`arrow-${communityId}`);
+
+            // Fallback to DOM traversal if IDs don't resolve
+            if (!list || !arrow) {
+                const header = event.target.closest('.houses-header');
+                if (!header) return;
+                const section = header.closest('.houses-section');
+                if (!section) return;
+                list = list || section.querySelector('.houses-list');
+                arrow = arrow || header.querySelector('.expand-arrow');
+            }
             if (!list || !arrow) return;
 
             list.classList.toggle('visible');
@@ -16518,7 +16528,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     const regularAddresses = clock.addresses.filter(a => !a.is_common_area);
                     const commonAreaAddresses = clock.common_area_addresses || [];
 
-                    function renderAddressList(addrs, listId) {
+                    const renderAddressList = (addrs, listId) => {
                         if (addrs.length === 0) return '';
                         const isCA = listId.startsWith('ca-');
                         const moveLabel = isCA ? 'Move to Addresses' : 'Move to Common Area';
@@ -17480,6 +17490,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             event.preventDefault();
             const list = document.getElementById(`houses-list-${communityId}`);
             const arrow = document.getElementById(`arrow-${communityId}`);
+            if (!list || !arrow) return;
 
             list.classList.toggle('visible');
             arrow.classList.toggle('expanded');
