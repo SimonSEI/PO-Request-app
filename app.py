@@ -16127,62 +16127,73 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             if (!container) return;
 
             if (clocks.length === 0) {
-                container.innerHTML = '<p style="color:#999;font-size:13px;">No clocks configured yet. Enter the number of clocks above and click <strong>Save</strong>.</p>';
+                container.innerHTML = '<p style="color:#999;font-size:13px;">No clocks configured yet. Set the clock count above and click <strong>Update</strong>.</p>';
                 return;
             }
+
+            // Remember which clocks were open before re-render
+            const openClocks = [];
+            clocks.forEach(clock => {
+                const el = document.getElementById(`addresses-${communityId}-${clock.clock_number}`);
+                if (el && el.classList.contains('visible')) openClocks.push(clock.clock_number);
+            });
 
             let html = '';
             clocks.forEach(clock => {
                 const regularAddresses = clock.addresses || [];
                 const commonAreaAddresses = clock.common_area_addresses || [];
-                // Merge all addresses into one flat list — no common area separation
+                // Merge into one flat list — no common area separation
                 const allAddresses = [...regularAddresses, ...commonAreaAddresses];
                 const totalCount = allAddresses.length;
+                // Open if it was already open, or if it has no addresses yet
+                const isOpen = openClocks.includes(clock.clock_number) || totalCount === 0;
 
-                // Each clock section is always expanded — no dropdown/toggle
-                html += `<div style="border:1px solid #e9ecef;border-radius:6px;margin-bottom:10px;">`;
-                html += `<div style="padding:9px 12px;background:#f8f9fa;display:flex;justify-content:space-between;align-items:center;border-radius:6px 6px 0 0;border-bottom:1px solid #e9ecef;">
-                            <strong style="font-size:13px;">${clock.clock_label}</strong>
-                            <span style="font-size:12px;color:#888;">${totalCount} entr${totalCount === 1 ? 'y' : 'ies'}</span>
-                         </div>`;
-                html += `<div style="padding:10px 12px;">`;
+                // Use the same clock-container / clock-header / clock-addresses CSS as Verona Walk
+                html += `
+                    <div class="clock-container">
+                        <div class="clock-header" onclick="toggleClockAddresses(event, ${communityId}, ${clock.clock_number})">
+                            <span class="clock-title">${clock.clock_label}</span>
+                            <span class="clock-toggle${isOpen ? ' expanded' : ''}" id="toggle-${communityId}-${clock.clock_number}">▼</span>
+                        </div>
+                        <div class="clock-addresses${isOpen ? ' visible' : ''}" id="addresses-${communityId}-${clock.clock_number}">`;
 
                 // Flat address list
                 allAddresses.forEach(addr => {
-                    html += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid #f0f0f0;font-size:12px;">
-                                <span style="flex:1;">${addr.address}</span>
-                                <button type="button" onclick="deleteCommunityClockAddress(${addr.id},${communityId})"
-                                        style="font-size:11px;padding:2px 8px;background:#dc3545;color:#fff;border:none;border-radius:3px;cursor:pointer;flex:0 0 auto;">Delete</button>
+                    html += `<div class="address-item" style="display:flex;align-items:center;gap:6px;">
+                                <span class="address-text" style="flex:1;">${addr.address}</span>
+                                <button type="button" class="btn-delete-address" onclick="deleteCommunityClockAddress(${addr.id},${communityId})">Delete</button>
                              </div>`;
                 });
 
                 if (totalCount === 0) {
-                    html += `<p style="color:#999;font-size:12px;margin:0 0 6px 0;">No addresses yet.</p>`;
+                    html += `<p style="color:#999;font-size:12px;margin:4px 0 8px;">No addresses yet.</p>`;
                 }
 
                 // Add address textarea
-                html += `<div style="margin-top:10px;display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;">
+                html += `<div class="add-address-form">
                             <textarea id="comm-addr-input-${communityId}-${clock.clock_number}"
                                       placeholder="Enter address(es) — one per line"
-                                      rows="1"
-                                      style="flex:1;min-width:180px;padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px;font-family:inherit;resize:vertical;"></textarea>
-                            <button type="button" onclick="bulkAddCommunityClockAddresses(${communityId},${clock.clock_number})"
-                                    style="padding:6px 14px;background:#28a745;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;flex:0 0 auto;">Add Address(es)</button>
+                                      rows="1"></textarea>
+                            <div class="form-row">
+                                <button type="button" class="btn-add-address" onclick="bulkAddCommunityClockAddresses(${communityId},${clock.clock_number})">Add Address(es)</button>
+                                <span class="add-address-hint">Paste from Excel — each line becomes a separate address</span>
+                            </div>
                          </div>`;
 
                 html += `</div></div>`;
             });
 
             container.innerHTML = html;
-        }
 
-        function toggleCommClockBody(event, communityId, clockNumber) {
-            event.stopPropagation();
-            const body = document.getElementById(`comm-clock-body-${communityId}-${clockNumber}`);
-            const hdr  = document.getElementById(`comm-clock-hdr-${communityId}-${clockNumber}`);
-            const isOpen = body.style.display !== 'none';
-            body.style.display = isOpen ? 'none' : 'block';
-            if (hdr) hdr.innerHTML = hdr.innerHTML.replace(isOpen ? '▲' : '▼', isOpen ? '▼' : '▲');
+            // Auto-expand textareas on input/paste (same as Verona Walk)
+            container.querySelectorAll('.add-address-form textarea').forEach(ta => {
+                ta.addEventListener('input', function() {
+                    this.rows = Math.max(1, Math.min(this.value.split('\n').length, 8));
+                });
+                ta.addEventListener('paste', function() {
+                    setTimeout(() => { this.rows = Math.max(1, Math.min(this.value.split('\n').length, 8)); }, 0);
+                });
+            });
         }
 
         function updateCommunityClockCount(communityId) {
