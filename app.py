@@ -16188,10 +16188,10 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             // Auto-expand textareas on input/paste (same as Verona Walk)
             container.querySelectorAll('.add-address-form textarea').forEach(ta => {
                 ta.addEventListener('input', function() {
-                    this.rows = Math.max(1, Math.min(this.value.split('\n').length, 8));
+                    this.rows = Math.max(1, Math.min(this.value.split(_nl).length, 8));
                 });
                 ta.addEventListener('paste', function() {
-                    setTimeout(() => { this.rows = Math.max(1, Math.min(this.value.split('\n').length, 8)); }, 0);
+                    setTimeout(() => { this.rows = Math.max(1, Math.min(this.value.split(_nl).length, 8)); }, 0);
                 });
             });
         }
@@ -16821,7 +16821,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             // Has house number pairs with & (e.g. "7533 & 7529", "7549 &7543")
             if (/\d{3,5}\s*&\s*\d{3,5}/.test(line)) return true;
             // Has "REAR OF" or "REAR" with a house number
-            if (/REAR\b.*\d{3,5}/i.test(line)) return true;
+            if (/REAR\\b.*\\d{3,5}/i.test(line)) return true;
             // Has "SPR BTW" pattern
             if (upper.indexOf('SPR BTW') !== -1) return true;
             // No direct address indicators found -> common area
