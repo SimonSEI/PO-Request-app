@@ -16091,6 +16091,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             event.preventDefault();
             const list = document.getElementById(`comm-clocks-list-${communityId}`);
             const arrow = document.getElementById(`comm-clock-arrow-${communityId}`);
+            if (!list || !arrow) return;
             list.classList.toggle('visible');
             arrow.classList.toggle('expanded');
 
@@ -16455,6 +16456,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             event.preventDefault();
             const list = document.getElementById(`houses-list-${communityId}`);
             const arrow = document.getElementById(`arrow-${communityId}`);
+            if (!list || !arrow) return;
 
             list.classList.toggle('visible');
             arrow.classList.toggle('expanded');
