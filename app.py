@@ -15889,8 +15889,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
                             <!-- Clock Addresses + Pricing (Standard Communities) — always visible, no House Numbers section -->
                             {% if community.active and community.name != 'Verona Walk HOA' %}
-                            <div style="margin-top: 14px; border-top: 1px solid #eee; padding-top: 14px;"
-                                 {% if community.num_clocks > 0 %}data-auto-load-clocks="{{ community.id }}"{% endif %}>
+                            <div style="margin-top: 14px; border-top: 1px solid #eee; padding-top: 14px;">
 
                                 <!-- Header row with clock-count adjuster -->
                                 <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 12px;">
@@ -16621,7 +16620,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             event.preventDefault();
             const addresses = document.getElementById(`addresses-${communityId}-${clockNumber}`);
             const toggle = document.getElementById(`toggle-${communityId}-${clockNumber}`);
-
+            if (!addresses || !toggle) return;
             addresses.classList.toggle('visible');
             toggle.classList.toggle('expanded');
         }
@@ -17972,14 +17971,17 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             });
         }
 
-        // On page load, auto-load clock addresses for every community that
-        // already has clocks configured (data-auto-load-clocks attribute is
-        // added server-side when num_clocks > 0).
-        document.addEventListener('DOMContentLoaded', function() {
-            document.querySelectorAll('[data-auto-load-clocks]').forEach(function(el) {
-                loadCommunityClockAddresses(parseInt(el.dataset.autoLoadClocks));
-            });
-        });
+    </script>
+
+    <!-- Auto-load clock addresses for every standard community that has clocks configured.
+         This runs after both script blocks so all functions are already defined, and after
+         the DOM so all #comm-clocks-{id} elements already exist. -->
+    <script>
+        {% for community in all_communities %}
+        {% if community.active and community.name != 'Verona Walk HOA' and community.num_clocks > 0 %}
+        loadCommunityClockAddresses({{ community.id }});
+        {% endif %}
+        {% endfor %}
     </script>
 </body>
 </html>
