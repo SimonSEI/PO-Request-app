@@ -15887,67 +15887,12 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 {% endif %}
                             </div>
 
-                            <!-- House Numbers Section (Standard Communities) -->
+                            <!-- Clock Addresses + Pricing (Standard Communities) — always visible, no House Numbers section -->
                             {% if community.active and community.name != 'Verona Walk HOA' %}
-                            <div class="houses-section">
-                                <div class="houses-header" onclick="toggleHousesSection(event, {{ community.id }})">
-                                    <h4>🏠 House Numbers</h4>
-                                    <span class="expand-arrow" id="arrow-{{ community.id }}">▼</span>
-                                </div>
-
-                                <div class="houses-list" id="houses-list-{{ community.id }}">
-                                    <!-- Excel Import Section -->
-                                    <div style="margin-bottom: 15px; padding: 12px; background: #f0f7ff; border: 1px solid #b8daff; border-radius: 6px;">
-                                        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                                            <strong style="font-size: 13px;">Import from Excel:</strong>
-                                            <input type="file" id="excel-import-houses-{{ community.id }}" accept=".xlsx,.xls" style="font-size: 12px;">
-                                            <button type="button" class="btn-save" onclick="previewHouseImport({{ community.id }})" style="padding: 5px 12px; font-size: 12px;">Preview Import</button>
-                                            <span style="font-size: 11px; color: #666;">Upload .xlsx with CLOCK sheets (e.g., CLOCK 1, CLOCK 2…) — entries formatted as <em>ZONE N - Address</em></span>
-                                        </div>
-                                        <div style="margin-top: 8px; display: flex; align-items: center; gap: 6px;">
-                                            <input type="checkbox" id="use-common-area-houses-{{ community.id }}" style="cursor:pointer;">
-                                            <label for="use-common-area-houses-{{ community.id }}" style="font-size: 12px; color: #555; cursor:pointer;">Separate Common Area entries (Rotors, Sidewalk, Lake Bank, etc.)</label>
-                                        </div>
-                                        <div id="import-preview-houses-{{ community.id }}" style="display:none; margin-top: 10px;"></div>
-                                    </div>
-
-                                    <div id="houses-{{ community.id }}" style="min-height: 30px;">
-                                        <p style="color: #666; font-size: 13px;">Loading...</p>
-                                    </div>
-                                </div>
-
-                                <div class="add-house-form">
-                                    <input type="text" id="house-input-{{ community.id }}"
-                                           placeholder="Enter house number (e.g., 123, 456A)"
-                                           onkeypress="if(event.key==='Enter') addHouseNumber({{ community.id }}, event)">
-                                    <button type="button" class="btn-add-house" onclick="addHouseNumber({{ community.id }})">Add House</button>
-                                </div>
-
-                                <!-- Pricing Section -->
-                                <div class="pricing-section" style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px;">
-                                    <h4>💰 Nozzle Pricing</h4>
-                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px;">
-                                        <div><label>Nozzle:</label> $<input type="number" id="price-nozzle-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>6" Pop Up:</label> $<input type="number" id="price-pop_up_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>12" Pop Up:</label> $<input type="number" id="price-pop_up_12_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>6" Rotor:</label> $<input type="number" id="price-rotor_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>NEW 6" Pop Up:</label> $<input type="number" id="price-new_pop_up_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>NEW 12" Pop Up:</label> $<input type="number" id="price-new_pop_up_12_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>Riser:</label> $<input type="number" id="price-riser-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>Solenoid:</label> $<input type="number" id="price-solenoid-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>1 Stat Decoder:</label> $<input type="number" id="price-stat_decoder_1-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                    </div>
-                                    <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="margin-top: 12px; padding: 10px 24px; font-size: 14px; font-weight: 600; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer;">Save Pricing</button>
-                                </div>
-                            </div>
-                            {% endif %}
-
-                            <!-- Clock Addresses (Standard Communities) — always visible, no dropdown -->
-                            {% if community.active and community.name != 'Verona Walk HOA' %}
-                            <div style="margin-top: 14px; border-top: 2px solid #e9ecef; padding-top: 14px;"
+                            <div style="margin-top: 14px; border-top: 1px solid #eee; padding-top: 14px;"
                                  {% if community.num_clocks > 0 %}data-auto-load-clocks="{{ community.id }}"{% endif %}>
 
-                                <!-- Section header + clock count adjuster -->
+                                <!-- Header row with clock-count adjuster -->
                                 <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 12px;">
                                     <h4 style="margin: 0; font-size: 14px; color: #333;">🕐 Clock Addresses</h4>
                                     <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
@@ -15962,7 +15907,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                     </div>
                                 </div>
 
-                                <!-- Excel import -->
+                                <!-- Excel import (no common area checkbox — all addresses go under their clock) -->
                                 <div id="comm-clock-import-section-{{ community.id }}"
                                      style="margin-bottom: 14px; padding: 12px; background: #f0f7ff; border: 1px solid #b8daff; border-radius: 6px;">
                                     <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
@@ -15970,26 +15915,39 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                         <input type="file" id="comm-clock-import-{{ community.id }}" accept=".xlsx,.xls" style="font-size: 12px;">
                                         <button type="button" onclick="previewCommunityClockImport({{ community.id }})"
                                                 style="padding: 5px 12px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">Preview Import</button>
-                                        <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; font-weight: normal; margin: 0; cursor: pointer;">
-                                            <input type="checkbox" id="use-common-area-{{ community.id }}">
-                                            Separate Common Area entries
-                                        </label>
                                     </div>
                                     <div style="font-size: 11px; color: #666; margin-top: 6px;">
                                         Sheets named "CLOCK 1", "CLOCK 2", etc. &nbsp;|&nbsp;
-                                        Auto-detects Zone and Station/Address columns &nbsp;|&nbsp;
+                                        Auto-detects Zone and Address columns &nbsp;|&nbsp;
                                         Other columns ignored.
                                     </div>
                                     <div id="comm-clock-preview-{{ community.id }}" style="display:none; margin-top: 10px;"></div>
                                 </div>
 
-                                <!-- Clock cards — rendered by JS, always visible -->
+                                <!-- Clock cards — rendered by loadCommunityClockAddresses() on page load -->
                                 <div id="comm-clocks-{{ community.id }}">
                                     {% if community.num_clocks > 0 %}
                                     <p style="color: #888; font-size: 13px;">Loading clocks…</p>
                                     {% else %}
                                     <p style="color: #999; font-size: 13px;">No clocks configured.</p>
                                     {% endif %}
+                                </div>
+
+                                <!-- Nozzle Pricing -->
+                                <div class="pricing-section" style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px;">
+                                    <h4>💰 Nozzle Pricing</h4>
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px;">
+                                        <div><label>Nozzle:</label> $<input type="number" id="price-nozzle-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>6" Pop Up:</label> $<input type="number" id="price-pop_up_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>12" Pop Up:</label> $<input type="number" id="price-pop_up_12_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>6" Rotor:</label> $<input type="number" id="price-rotor_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>NEW 6" Pop Up:</label> $<input type="number" id="price-new_pop_up_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>NEW 12" Pop Up:</label> $<input type="number" id="price-new_pop_up_12_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>Riser:</label> $<input type="number" id="price-riser-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>Solenoid:</label> $<input type="number" id="price-solenoid-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        <div><label>1 Stat Decoder:</label> $<input type="number" id="price-stat_decoder_1-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                    </div>
+                                    <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="margin-top: 12px; padding: 10px 24px; font-size: 14px; font-weight: 600; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer;">Save Pricing</button>
                                 </div>
                             </div>
                             {% endif %}
@@ -16177,8 +16135,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             clocks.forEach(clock => {
                 const regularAddresses = clock.addresses || [];
                 const commonAreaAddresses = clock.common_area_addresses || [];
-                const totalCount = regularAddresses.length + commonAreaAddresses.length;
-                const hasCommonArea = commonAreaAddresses.length > 0;
+                // Merge all addresses into one flat list — no common area separation
+                const allAddresses = [...regularAddresses, ...commonAreaAddresses];
+                const totalCount = allAddresses.length;
 
                 // Each clock section is always expanded — no dropdown/toggle
                 html += `<div style="border:1px solid #e9ecef;border-radius:6px;margin-bottom:10px;">`;
@@ -16188,31 +16147,14 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                          </div>`;
                 html += `<div style="padding:10px 12px;">`;
 
-                // Addresses list
-                if (regularAddresses.length > 0) {
-                    if (hasCommonArea) {
-                        html += `<div style="font-size:12px;font-weight:600;color:#28a745;margin-bottom:4px;">Addresses (${regularAddresses.length})</div>`;
-                    }
-                    regularAddresses.forEach(addr => {
-                        html += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid #f0f0f0;font-size:12px;">
-                                    <span style="flex:1;">${addr.address}</span>
-                                    <button type="button" onclick="deleteCommunityClockAddress(${addr.id},${communityId})"
-                                            style="font-size:11px;padding:2px 8px;background:#dc3545;color:#fff;border:none;border-radius:3px;cursor:pointer;flex:0 0 auto;">Delete</button>
-                                 </div>`;
-                    });
-                }
-
-                // Common area list
-                if (hasCommonArea) {
-                    html += `<div style="font-size:12px;font-weight:600;color:#007bff;margin-top:8px;margin-bottom:4px;">Common Area (${commonAreaAddresses.length})</div>`;
-                    commonAreaAddresses.forEach(addr => {
-                        html += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid #f0f0f0;font-size:12px;">
-                                    <span style="flex:1;">${addr.address}</span>
-                                    <button type="button" onclick="deleteCommunityClockAddress(${addr.id},${communityId})"
-                                            style="font-size:11px;padding:2px 8px;background:#dc3545;color:#fff;border:none;border-radius:3px;cursor:pointer;flex:0 0 auto;">Delete</button>
-                                 </div>`;
-                    });
-                }
+                // Flat address list
+                allAddresses.forEach(addr => {
+                    html += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid #f0f0f0;font-size:12px;">
+                                <span style="flex:1;">${addr.address}</span>
+                                <button type="button" onclick="deleteCommunityClockAddress(${addr.id},${communityId})"
+                                        style="font-size:11px;padding:2px 8px;background:#dc3545;color:#fff;border:none;border-radius:3px;cursor:pointer;flex:0 0 auto;">Delete</button>
+                             </div>`;
+                });
 
                 if (totalCount === 0) {
                     html += `<p style="color:#999;font-size:12px;margin:0 0 6px 0;">No addresses yet.</p>`;
@@ -16271,7 +16213,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         function previewCommunityClockImport(communityId) {
             const fileInput = document.getElementById(`comm-clock-import-${communityId}`);
             const previewDiv = document.getElementById(`comm-clock-preview-${communityId}`);
-            const useCommonArea = document.getElementById(`use-common-area-${communityId}`).checked;
+            const useCommonArea = false; // standard communities don't separate common area
 
             if (!fileInput.files || !fileInput.files[0]) {
                 alert('Please select an Excel file first');
