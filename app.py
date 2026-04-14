@@ -15830,9 +15830,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                             <label for="community_name">Community Name</label>
                             <input type="text" id="community_name" name="community_name" placeholder="Enter community name" required>
                         </div>
-                        <div class="form-group" style="flex: 0 0 auto; min-width: 110px;">
-                            <label for="num_clocks" title="Number of irrigation clocks in this community (0 if none)">Clocks (optional)</label>
-                            <input type="number" id="num_clocks" name="num_clocks" placeholder="0" min="0" style="width: 80px; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;">
+                        <div class="form-group" style="flex: 0 0 auto; min-width: 130px;">
+                            <label for="num_clocks">Number of Clocks</label>
+                            <input type="number" id="num_clocks" name="num_clocks" placeholder="e.g. 4" min="1" required style="width: 90px; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;">
                         </div>
                         <input type="hidden" name="action" value="add">
                         <button type="submit" class="btn-search">Add Community</button>
@@ -15963,7 +15963,6 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                         <button type="button" onclick="updateCommunityClockCount({{ community.id }})"
                                                 style="padding: 5px 14px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600;">Save</button>
                                         <span id="comm-clock-count-msg-{{ community.id }}" style="font-size: 12px;"></span>
-                                        <span style="font-size: 12px; color: #888;">Set to 0 to hide clock management.</span>
                                     </div>
 
                                     <!-- Excel import -->
@@ -19267,11 +19266,13 @@ def community_billing_office():
         if action == 'add':
             community_name = request.form.get('community_name', '').strip()
             try:
-                num_clocks = max(0, int(request.form.get('num_clocks', 0) or 0))
+                num_clocks = int(request.form.get('num_clocks', 0) or 0)
             except (ValueError, TypeError):
                 num_clocks = 0
             if not community_name:
                 flash('Community name is required', 'error')
+            elif num_clocks < 1:
+                flash('Number of clocks is required (must be at least 1)', 'error')
             else:
                 try:
                     c.execute("INSERT INTO communities (name, created_by, created_at, num_clocks) VALUES (?, ?, ?, ?)",
