@@ -19755,6 +19755,8 @@ def community_import_house_numbers_excel():
         zone_col = None
         station_col = None
         data_start_row = 0
+        single_col_mode = False
+        SINGLE_COL_RE = re.compile(r'^(\d+)\s*-\s*(.+)$')
 
         all_rows = list(ws.iter_rows(min_row=1, values_only=False))
         for row_idx, row in enumerate(all_rows):
@@ -19768,27 +19770,46 @@ def community_import_house_numbers_excel():
                 data_start_row = row_idx + 1
                 break
 
-        # Fallback: Col A = Zone, Col B = Station
+        # Fallback: check for single-column format "{zone} -{description}", then Col A/B
         if zone_col is None:
-            zone_col = 0
-            station_col = 1
-            data_start_row = 0
+            for test_row in all_rows:
+                if test_row and test_row[0].value is not None:
+                    if SINGLE_COL_RE.match(str(test_row[0].value).strip()):
+                        single_col_mode = True
+                        data_start_row = 0
+                        break
+            if not single_col_mode:
+                zone_col = 0
+                station_col = 1
+                data_start_row = 0
 
         for row in all_rows[data_start_row:]:
-            zone_cell    = row[zone_col].value    if len(row) > zone_col    else None
-            station_cell = row[station_col].value if len(row) > station_col else None
+            if single_col_mode:
+                cell_val = row[0].value if len(row) > 0 else None
+                if cell_val is None:
+                    continue
+                m = SINGLE_COL_RE.match(str(cell_val).strip())
+                if not m:
+                    continue
+                zone_num = int(m.group(1))
+                station = m.group(2).strip()
+                if not station:
+                    continue
+            else:
+                zone_cell    = row[zone_col].value    if len(row) > zone_col    else None
+                station_cell = row[station_col].value if len(row) > station_col else None
 
-            if zone_cell is None or station_cell is None:
-                continue
+                if zone_cell is None or station_cell is None:
+                    continue
 
-            try:
-                zone_num = int(float(zone_cell))
-            except (ValueError, TypeError):
-                continue  # skip header rows, totals, blank rows, etc.
+                try:
+                    zone_num = int(float(zone_cell))
+                except (ValueError, TypeError):
+                    continue  # skip header rows, totals, blank rows, etc.
 
-            station = str(station_cell).strip()
-            if not station:
-                continue
+                station = str(station_cell).strip()
+                if not station:
+                    continue
 
             formatted = f"ZONE {zone_num} - {station}"
 
@@ -19807,7 +19828,7 @@ def community_import_house_numbers_excel():
                 results[clock_number] = {'addresses': addresses, 'common_area': common_area}
 
     if not results:
-        return jsonify({'success': False, 'error': 'No valid address data found. Check that sheets have Zone and Station/Address columns.'})
+        return jsonify({'success': False, 'error': 'No valid address data found. Check that sheets have Zone and Station/Address columns, or use single-column format "1 -DESCRIPTION".'})
 
     preview_data = {str(k): results[k] for k in sorted(results.keys())}
     return jsonify({
@@ -20601,6 +20622,8 @@ def community_clock_import_excel():
         zone_col = None
         station_col = None
         data_start_row = None
+        single_col_mode = False
+        SINGLE_COL_RE = re.compile(r'^(\d+)\s*-\s*(.+)$')
 
         all_rows = list(ws.iter_rows(min_row=1, values_only=False))
         for row_idx, row in enumerate(all_rows):
@@ -20614,27 +20637,46 @@ def community_clock_import_excel():
                 data_start_row = row_idx + 1  # data begins after header
                 break
 
-        # Fallback: assume Col A = Zone, Col B = Station if no header found
+        # Fallback: check for single-column format "{zone} -{description}", then Col A/B
         if zone_col is None:
-            zone_col = 0
-            station_col = 1
-            data_start_row = 0
+            for test_row in all_rows:
+                if test_row and test_row[0].value is not None:
+                    if SINGLE_COL_RE.match(str(test_row[0].value).strip()):
+                        single_col_mode = True
+                        data_start_row = 0
+                        break
+            if not single_col_mode:
+                zone_col = 0
+                station_col = 1
+                data_start_row = 0
 
         for row in all_rows[data_start_row:]:
-            zone_cell    = row[zone_col].value    if len(row) > zone_col    else None
-            station_cell = row[station_col].value if len(row) > station_col else None
+            if single_col_mode:
+                cell_val = row[0].value if len(row) > 0 else None
+                if cell_val is None:
+                    continue
+                m = SINGLE_COL_RE.match(str(cell_val).strip())
+                if not m:
+                    continue
+                zone_num = int(m.group(1))
+                station = m.group(2).strip()
+                if not station:
+                    continue
+            else:
+                zone_cell    = row[zone_col].value    if len(row) > zone_col    else None
+                station_cell = row[station_col].value if len(row) > station_col else None
 
-            if zone_cell is None or station_cell is None:
-                continue
+                if zone_cell is None or station_cell is None:
+                    continue
 
-            try:
-                zone_num = int(float(zone_cell))
-            except (ValueError, TypeError):
-                continue  # skip any non-integer rows (totals, notes, etc.)
+                try:
+                    zone_num = int(float(zone_cell))
+                except (ValueError, TypeError):
+                    continue  # skip any non-integer rows (totals, notes, etc.)
 
-            station = str(station_cell).strip()
-            if not station:
-                continue
+                station = str(station_cell).strip()
+                if not station:
+                    continue
 
             formatted = f"ZONE {zone_num} - {station}"
 
@@ -20651,7 +20693,7 @@ def community_clock_import_excel():
     if not results:
         if clock_sheets_found == 0:
             return jsonify({'success': False, 'error': 'No CLOCK sheets found. Sheets must be named "CLOCK 1", "CLOCK 2", etc.'})
-        return jsonify({'success': False, 'error': f'Found {clock_sheets_found} CLOCK sheet(s) but could not read any data. Check that Column A contains zone numbers and Column B contains address text.'})
+        return jsonify({'success': False, 'error': f'Found {clock_sheets_found} CLOCK sheet(s) but could not read any data. Check that Column A contains zone numbers and Column B contains address text, or use single-column format "1 -DESCRIPTION".'})
 
     preview_data = {str(k): results[k] for k in sorted(results.keys())}
     return jsonify({
