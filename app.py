@@ -2804,7 +2804,6 @@ def submit_request():
     tech_type = session.get('tech_type', 'install')
 
     tech_name = request.form['tech_name']
-    custom_po_number = request.form.get('custom_po_number', '').strip()
     job_name = request.form['job_name'].strip()
     description = request.form.get('description', '').strip()
     client_name = request.form.get('client_name', '').strip()  # Optional - for Service POs
@@ -2846,82 +2845,40 @@ def submit_request():
     job_name = valid_job[0]
     job_code = valid_job[1] if len(valid_job) > 1 else None
 
-    # HANDLE CUSTOM PO NUMBER
-    if custom_po_number:
-        try:
-            po_id = int(custom_po_number)
-    
-            # Check how many times this number has been used
-            c.execute("SELECT COUNT(*) FROM po_requests WHERE id=?", (po_id,))
-            count = c.fetchone()[0]
-            
-            if count > 0:
-                # Add a suffix to track duplicates
-                suffix = chr(65 + count)  # A, B, C, etc.
-                flash(f'⚠️ PO #{po_id:04d} already exists. Creating as #{po_id:04d}-{suffix}')
-            
-            # Insert with EXPLICIT ID - set to awaiting_invoice
-            now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            c.execute("""INSERT INTO po_requests
-                         (id, tech_username, tech_name, job_name,
-                          description, status, request_date, client_name, po_type)
-                         VALUES (?, ?, ?, ?, ?, 'awaiting_invoice', ?, ?, ?)""",
-                     (po_id, session['username'], tech_name, job_name,
-                      description, now_str, client_name if client_name else None, tech_type))
+    # AUTO-INCREMENT PO NUMBER - with tech type prefix
+    conn.close()  # Close existing connection
 
-            conn.commit()
-            conn.close()
+    # Get next PO number with correct prefix and job code
+    next_id, formatted_po, prefix, job_code_ret = get_next_po_number_with_prefix(tech_type, job_code)
 
-            po_display = format_po_display(po_id, job_name, client_name, job_code)
-            # Display client name (first 11 letters) instead of job name
-            client_display = (client_name[:11] if client_name else job_name)
-            flash(f'PO#{po_display}|{client_display}')
-            return redirect(url_for('tech_dashboard'))
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
 
-        except ValueError:
-            conn.close()
-            flash('❌ ERROR: Invalid PO number format')
-            return redirect(url_for('tech_dashboard'))
-        except Exception as e:
-            conn.close()
-            flash(f'❌ ERROR creating custom PO: {str(e)}')
-            return redirect(url_for('tech_dashboard'))
+    # Create PO with awaiting_invoice status and po_type
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    c.execute("""INSERT INTO po_requests
+                 (tech_username, tech_name, job_name,
+                  description, status, request_date, client_name, po_type)
+                 VALUES (?, ?, ?, ?, 'awaiting_invoice', ?, ?, ?)""",
+             (session['username'], tech_name, job_name,
+              description, now_str, client_name if client_name else None, tech_type))
 
-    # AUTO-INCREMENT PO NUMBER (normal flow) - with tech type prefix
-    else:
-        conn.close()  # Close existing connection
+    new_id = c.lastrowid
+    conn.commit()
+    conn.close()
 
-        # Get next PO number with correct prefix and job code
-        next_id, formatted_po, prefix, job_code_ret = get_next_po_number_with_prefix(tech_type, job_code)
+    # Format display to include job code or client name
+    po_display = formatted_po
+    if tech_type == 'service' and client_name:
+        po_display = f"{formatted_po} {client_name[:11]}"
+    elif job_code and job_code not in ['S', 'I']:
+        # Add job code for install jobs (e.g., I-1 Herons)
+        po_display = f"{formatted_po} {job_code}"
 
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-
-        # Create PO with awaiting_invoice status and po_type
-        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        c.execute("""INSERT INTO po_requests
-                     (tech_username, tech_name, job_name,
-                      description, status, request_date, client_name, po_type)
-                     VALUES (?, ?, ?, ?, 'awaiting_invoice', ?, ?, ?)""",
-                 (session['username'], tech_name, job_name,
-                  description, now_str, client_name if client_name else None, tech_type))
-
-        new_id = c.lastrowid
-        conn.commit()
-        conn.close()
-
-        # Format display to include job code or client name
-        po_display = formatted_po
-        if tech_type == 'service' and client_name:
-            po_display = f"{formatted_po} {client_name[:11]}"
-        elif job_code and job_code not in ['S', 'I']:
-            # Add job code for install jobs (e.g., I-1 Herons)
-            po_display = f"{formatted_po} {job_code}"
-
-        # Display client name (first 11 letters) instead of job name
-        client_display = (client_name[:11] if client_name else job_name)
-        flash(f'PO#{po_display}|{client_display}')
-        return redirect(url_for('tech_dashboard'))
+    # Display client name (first 11 letters) instead of job name
+    client_display = (client_name[:11] if client_name else job_name)
+    flash(f'PO#{po_display}|{client_display}')
+    return redirect(url_for('tech_dashboard'))
 
 
 
@@ -8376,20 +8333,6 @@ TECH_DASHBOARD_TEMPLATE = '''
                 <input type="hidden" name="job_name" value="{{ active_job_name }}">
             {% endif %}
 
-            <div class="form-group">
-                <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
-                    <input type="checkbox" id="use-custom-po" style="width: auto; margin: 0; cursor: pointer;"
-                           onclick="var f=document.getElementById('custom-po-field'); var i=document.getElementById('custom_po_number'); if(this.checked){f.style.display='block';i.required=true;}else{f.style.display='none';i.required=false;i.value='';}">
-                    <span data-i18n="use_custom_po">Use Custom PO Number</span>
-                </label>
-            </div>
-
-            <div class="form-group" id="custom-po-field" style="display: none;">
-                <label data-i18n="custom_po_number_label">Custom PO Number</label>
-                <input type="number" id="custom_po_number" name="custom_po_number" placeholder="e.g., 9810" min="1" data-i18n-placeholder="custom_po_placeholder">
-                <small style="color: #666;" data-i18n="custom_po_hint">Enter specific PO number (must be 9000 or higher)</small>
-            </div>
-
             {% if tech_type == 'service' %}
             <div class="form-group">
                 <label><span data-i18n="client_name_label">Client Name</span> <span style="color: red;">*</span></label>
@@ -8423,10 +8366,6 @@ TECH_DASHBOARD_TEMPLATE = '''
             po_prefix_label: 'PO Prefix:',
             job_project_name: 'Job/Project Name',
             select_job: '-- Select a Job --',
-            use_custom_po: 'Use Custom PO Number',
-            custom_po_number_label: 'Custom PO Number',
-            custom_po_placeholder: 'e.g., 9810',
-            custom_po_hint: 'Enter specific PO number (must be 9000 or higher)',
             client_name_label: 'Client Name',
             client_name_placeholder: "e.g., Somerville, Heron's Glen, Reserve",
             client_name_hint: "📍 Enter the client/location name for this service (e.g., Somerville, Heron's Glen, etc.)",
@@ -8468,10 +8407,6 @@ TECH_DASHBOARD_TEMPLATE = '''
             po_prefix_label: 'Prefijo PO:',
             job_project_name: 'Nombre del Trabajo/Proyecto',
             select_job: '-- Seleccionar un Trabajo --',
-            use_custom_po: 'Usar Número de PO Personalizado',
-            custom_po_number_label: 'Número de PO Personalizado',
-            custom_po_placeholder: 'ej., 9810',
-            custom_po_hint: 'Ingrese número de PO específico (debe ser 9000 o mayor)',
             client_name_label: 'Nombre del Cliente',
             client_name_placeholder: 'ej., Somerville, Heron\'s Glen, Reserve',
             client_name_hint: '📍 Ingrese el nombre del cliente/ubicación para este servicio (ej., Somerville, Heron\'s Glen, etc.)',
@@ -8572,22 +8507,6 @@ TECH_DASHBOARD_TEMPLATE = '''
     document.addEventListener('DOMContentLoaded', function() {
         // Apply saved language on load
         applyLanguage(currentLang);
-
-        const customPoCheckbox = document.getElementById('use-custom-po');
-        if (customPoCheckbox) {
-            const customPoField = document.getElementById('custom-po-field');
-            const customPoInput = document.getElementById('custom_po_number');
-            customPoCheckbox.addEventListener('change', function() {
-                if (this.checked) {
-                    customPoField.style.display = 'block';
-                    customPoInput.required = true;
-                } else {
-                    customPoField.style.display = 'none';
-                    customPoInput.required = false;
-                    customPoInput.value = '';
-                }
-            });
-        }
 
         // Add event listener for combined search filter
         const searchFilter = document.getElementById('poSearchFilter');
