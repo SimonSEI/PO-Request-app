@@ -19827,6 +19827,85 @@ def _detect_zone_station_layout(all_rows):
                 }
 
     # ------------------------------------------------------------------
+    # Strategy 1.5: Embedded zone numbers ("STATION # 1", "STATON #2", …)
+    # Handles sheets where the zone number is inside cell text rather than
+    # being a standalone integer (so Strategy 1 finds nothing).
+    # ------------------------------------------------------------------
+    EMBED_RE = re.compile(r'(?i)(?:stations?|staton|sta\.?)\s*#\s*(\d+)')
+    for ci in range(min(max_cols, 3)):
+        embedded_nums = []
+        first_match_row = None
+        for ri, row in enumerate(all_rows[:200]):
+            if len(row) <= ci or row[ci].value is None:
+                continue
+            m = EMBED_RE.search(str(row[ci].value))
+            if m:
+                n = int(m.group(1))
+                embedded_nums.append(n)
+                if first_match_row is None:
+                    first_match_row = ri
+        if len(embedded_nums) < 2:
+            continue
+        sorted_u = sorted(set(embedded_nums))
+        min_v, max_v = sorted_u[0], sorted_u[-1]
+        if min_v > 10:
+            continue
+        expected = set(range(min_v, max_v + 1))
+        coverage = len(set(sorted_u) & expected) / max(len(expected), 1)
+        if coverage < 0.6:
+            continue
+        # Embedded zone column confirmed at ci; score other cols for addresses
+        col_all_embed = [[] for _ in range(max_cols)]
+        for row in all_rows[:200]:
+            for cj, cell in enumerate(row):
+                if cell.value is not None:
+                    col_all_embed[cj].append(cell.value)
+        addr_cols = []
+        for cj in range(max_cols):
+            if cj == ci:
+                continue
+            vals = col_all_embed[cj]
+            if len(vals) < 2:
+                continue
+            n_v = len(vals)
+            time_count = sum(
+                1 for v in vals
+                if (isinstance(v, float) and 0 < v < 1)
+                or (isinstance(v, str) and re.match(r'^\d{1,2}:\d{2}', v.strip()))
+            )
+            large_num_count = sum(1 for v in vals if _is_large_int(v))
+            text_count = sum(
+                1 for v in vals
+                if isinstance(v, str) and sum(c.isalpha() for c in v) > 2
+            )
+            single_char_count = sum(
+                1 for v in vals if isinstance(v, str) and len(v.strip()) == 1
+            )
+            unique_ratio      = len({str(v) for v in vals}) / n_v
+            time_ratio        = time_count       / n_v
+            large_num_ratio   = large_num_count  / n_v
+            text_ratio        = text_count       / n_v
+            single_char_ratio = single_char_count / n_v
+            if time_ratio > 0.4:
+                continue
+            if single_char_ratio > 0.7:
+                continue
+            if unique_ratio < 0.08 and large_num_ratio < 0.3:
+                continue
+            if large_num_ratio > 0.3 or (text_ratio > 0.3 and unique_ratio >= 0.08):
+                addr_cols.append(cj)
+        if addr_cols:
+            return {
+                'zone_col':        ci,
+                'station_col':     addr_cols[0],
+                'data_start_row':  first_match_row if first_match_row is not None else 0,
+                'single_col_mode': False,
+                'extra_cols':      addr_cols[1:],
+                'zone_embedded':   True,
+                'zone_embedded_re': EMBED_RE,
+            }
+
+    # ------------------------------------------------------------------
     # Strategy 2: Header keyword scan (fallback for labelled sheets)
     # ------------------------------------------------------------------
     ZONE_KW = {
@@ -19971,15 +20050,17 @@ def community_import_house_numbers_excel():
         addresses = []
         common_area = []
 
-        all_rows        = list(ws.iter_rows(min_row=1, values_only=False))
-        layout          = _detect_zone_station_layout(all_rows)
-        zone_col        = layout['zone_col']
-        station_col     = layout['station_col']
-        data_start_row  = layout['data_start_row']
-        single_col_mode = layout['single_col_mode']
-        extra_cols      = layout.get('extra_cols', [])
-        SINGLE_COL_RE   = re.compile(r'^(\d+)\s*[-\u2013\u2014]\s*(.+)$')
-        SKIP_VALUES     = {'nonexistent', 'n/a', 'na', 'none', 'tbd', '-'}
+        all_rows         = list(ws.iter_rows(min_row=1, values_only=False))
+        layout           = _detect_zone_station_layout(all_rows)
+        zone_col         = layout['zone_col']
+        station_col      = layout['station_col']
+        data_start_row   = layout['data_start_row']
+        single_col_mode  = layout['single_col_mode']
+        extra_cols       = layout.get('extra_cols', [])
+        zone_embedded    = layout.get('zone_embedded', False)
+        zone_embedded_re = layout.get('zone_embedded_re', None)
+        SINGLE_COL_RE    = re.compile(r'^(\d+)\s*[-\u2013\u2014]\s*(.+)$')
+        SKIP_VALUES      = {'nonexistent', 'n/a', 'na', 'none', 'tbd', '-'}
 
         for row in all_rows[data_start_row:]:
             if single_col_mode:
@@ -20000,10 +20081,16 @@ def community_import_house_numbers_excel():
                 if zone_cell is None or station_cell is None:
                     continue
 
-                try:
-                    zone_num = int(float(zone_cell))
-                except (ValueError, TypeError):
-                    continue  # skip header rows, totals, blank rows, etc.
+                if zone_embedded:
+                    m = zone_embedded_re.search(str(zone_cell))
+                    if not m:
+                        continue
+                    zone_num = int(m.group(1))
+                else:
+                    try:
+                        zone_num = int(float(zone_cell))
+                    except (ValueError, TypeError):
+                        continue  # skip header rows, totals, blank rows, etc.
 
                 station = str(station_cell).strip()
                 if not station or station.lower() in SKIP_VALUES:
@@ -20836,15 +20923,17 @@ def community_clock_import_excel():
         addresses = []
         common_area = []
 
-        all_rows        = list(ws.iter_rows(min_row=1, values_only=False))
-        layout          = _detect_zone_station_layout(all_rows)
-        zone_col        = layout['zone_col']
-        station_col     = layout['station_col']
-        data_start_row  = layout['data_start_row']
-        single_col_mode = layout['single_col_mode']
-        extra_cols      = layout.get('extra_cols', [])
-        SINGLE_COL_RE   = re.compile(r'^(\d+)\s*[-\u2013\u2014]\s*(.+)$')
-        SKIP_VALUES     = {'nonexistent', 'n/a', 'na', 'none', 'tbd', '-'}
+        all_rows         = list(ws.iter_rows(min_row=1, values_only=False))
+        layout           = _detect_zone_station_layout(all_rows)
+        zone_col         = layout['zone_col']
+        station_col      = layout['station_col']
+        data_start_row   = layout['data_start_row']
+        single_col_mode  = layout['single_col_mode']
+        extra_cols       = layout.get('extra_cols', [])
+        zone_embedded    = layout.get('zone_embedded', False)
+        zone_embedded_re = layout.get('zone_embedded_re', None)
+        SINGLE_COL_RE    = re.compile(r'^(\d+)\s*[-\u2013\u2014]\s*(.+)$')
+        SKIP_VALUES      = {'nonexistent', 'n/a', 'na', 'none', 'tbd', '-'}
 
         for row in all_rows[data_start_row:]:
             if single_col_mode:
@@ -20865,10 +20954,16 @@ def community_clock_import_excel():
                 if zone_cell is None or station_cell is None:
                     continue
 
-                try:
-                    zone_num = int(float(zone_cell))
-                except (ValueError, TypeError):
-                    continue  # skip any non-integer rows (totals, notes, etc.)
+                if zone_embedded:
+                    m = zone_embedded_re.search(str(zone_cell))
+                    if not m:
+                        continue
+                    zone_num = int(m.group(1))
+                else:
+                    try:
+                        zone_num = int(float(zone_cell))
+                    except (ValueError, TypeError):
+                        continue  # skip any non-integer rows (totals, notes, etc.)
 
                 station = str(station_cell).strip()
                 if not station or station.lower() in SKIP_VALUES:
