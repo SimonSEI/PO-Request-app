@@ -19716,16 +19716,21 @@ def _detect_zone_station_layout(all_rows):
 
     ZONE_KW = {
         'zone', 'z#', 'zn', 'zn#', 'zone#', 'zone #', 'zone no', 'zone no.',
-        'zone number', 'zone num', 'sta', 'sta#', 'sta no', 'sta no.',
-        'station no', 'station#', 'stn', 'stn#', 'clk', 'clk#',
+        'zone number', 'zone num', 'sta', 'sta#', 'sta #', 'sta no', 'sta no.',
+        'station no', 'station#', 'station #', 'station number', 'station num',
+        'stn', 'stn#', 'clk', 'clk#',
     }
     ADDR_KW = {
         'station', 'address', 'name', 'description', 'desc', 'location',
         'street', 'lot', 'unit', 'house', 'addr', 'property', 'site',
-        'label', 'text', 'detail',
+        'label', 'detail',
     }
 
     # --- Strategy 1: header keyword scan (first 15 rows) ---
+    # Exact match wins outright.  Word-level match wins only when the
+    # OTHER keyword set does NOT also match — this prevents "Zone Description"
+    # (matches both 'zone' ∈ ZONE_KW and 'description' ∈ ADDR_KW) from
+    # being mistaken for the zone-number column.
     for row_idx, row in enumerate(all_rows[:15]):
         row_vals = [
             str(c.value).lower().strip() if c.value is not None else ''
@@ -19735,19 +19740,38 @@ def _detect_zone_station_layout(all_rows):
         for i, v in enumerate(row_vals):
             if not v:
                 continue
-            # Use word-split intersection so 'sta' in ZONE_KW does NOT
-            # match the full word "station" (which belongs to ADDR_KW).
-            v_words = set(v.split())
-            if z_col is None and (v in ZONE_KW or bool(v_words & ZONE_KW)):
-                z_col = i
-            elif s_col is None and (v in ADDR_KW or bool(v_words & ADDR_KW)):
-                s_col = i
+            v_words       = set(v.split())
+            is_zone_exact = v in ZONE_KW
+            is_addr_exact = v in ADDR_KW
+            is_zone_word  = bool(v_words & ZONE_KW)
+            is_addr_word  = bool(v_words & ADDR_KW)
+
+            if z_col is None:
+                if is_zone_exact or (is_zone_word and not is_addr_word):
+                    z_col = i
+            elif s_col is None:
+                if is_addr_exact or (is_addr_word and not is_zone_word):
+                    s_col = i
+
         if z_col is not None and s_col is not None and z_col != s_col:
+            # Detect secondary address columns so they can be concatenated
+            # (e.g. a "House Number" primary col + "Street" extra col).
+            extra_cols = []
+            for j, v2 in enumerate(row_vals):
+                if j in (z_col, s_col) or not v2:
+                    continue
+                v2_words    = set(v2.split())
+                is_a2_exact = v2 in ADDR_KW
+                is_a2_word  = bool(v2_words & ADDR_KW)
+                is_z2_word  = bool(v2_words & ZONE_KW)
+                if is_a2_exact or (is_a2_word and not is_z2_word):
+                    extra_cols.append(j)
             return {
                 'zone_col': z_col,
                 'station_col': s_col,
                 'data_start_row': row_idx + 1,
                 'single_col_mode': False,
+                'extra_cols': extra_cols,
             }
 
     # --- Strategy 2: numeric-density heuristic ---
@@ -19812,6 +19836,7 @@ def _detect_zone_station_layout(all_rows):
                     'station_col': best_addr_col,
                     'data_start_row': data_start,
                     'single_col_mode': False,
+                    'extra_cols': [],
                 }
 
     # --- Strategy 3: single-column "N – description" ---
@@ -19824,6 +19849,7 @@ def _detect_zone_station_layout(all_rows):
                         'station_col': None,
                         'data_start_row': 0,
                         'single_col_mode': True,
+                        'extra_cols': [],
                     }
 
     # --- Strategy 4: default ---
@@ -19832,6 +19858,7 @@ def _detect_zone_station_layout(all_rows):
         'station_col': 1,
         'data_start_row': 0,
         'single_col_mode': False,
+        'extra_cols': [],
     }
 
 
@@ -19901,7 +19928,9 @@ def community_import_house_numbers_excel():
         station_col     = layout['station_col']
         data_start_row  = layout['data_start_row']
         single_col_mode = layout['single_col_mode']
+        extra_cols      = layout.get('extra_cols', [])
         SINGLE_COL_RE   = re.compile(r'^(\d+)\s*[-\u2013\u2014]\s*(.+)$')
+        SKIP_VALUES     = {'nonexistent', 'n/a', 'na', 'none', 'tbd', '-'}
 
         for row in all_rows[data_start_row:]:
             if single_col_mode:
@@ -19928,8 +19957,15 @@ def community_import_house_numbers_excel():
                     continue  # skip header rows, totals, blank rows, etc.
 
                 station = str(station_cell).strip()
-                if not station:
+                if not station or station.lower() in SKIP_VALUES:
                     continue
+
+                # Concatenate extra address columns (e.g. Street after House Number)
+                for ec in extra_cols:
+                    if len(row) > ec and row[ec].value is not None:
+                        extra_str = str(row[ec].value).strip()
+                        if extra_str and extra_str.lower() not in SKIP_VALUES:
+                            station = f"{station} {extra_str}"
 
             formatted = f"ZONE {zone_num} - {station}"
 
@@ -20757,7 +20793,9 @@ def community_clock_import_excel():
         station_col     = layout['station_col']
         data_start_row  = layout['data_start_row']
         single_col_mode = layout['single_col_mode']
+        extra_cols      = layout.get('extra_cols', [])
         SINGLE_COL_RE   = re.compile(r'^(\d+)\s*[-\u2013\u2014]\s*(.+)$')
+        SKIP_VALUES     = {'nonexistent', 'n/a', 'na', 'none', 'tbd', '-'}
 
         for row in all_rows[data_start_row:]:
             if single_col_mode:
@@ -20784,8 +20822,15 @@ def community_clock_import_excel():
                     continue  # skip any non-integer rows (totals, notes, etc.)
 
                 station = str(station_cell).strip()
-                if not station:
+                if not station or station.lower() in SKIP_VALUES:
                     continue
+
+                # Concatenate extra address columns (e.g. Street after House Number)
+                for ec in extra_cols:
+                    if len(row) > ec and row[ec].value is not None:
+                        extra_str = str(row[ec].value).strip()
+                        if extra_str and extra_str.lower() not in SKIP_VALUES:
+                            station = f"{station} {extra_str}"
 
             formatted = f"ZONE {zone_num} - {station}"
 
