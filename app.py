@@ -19691,6 +19691,142 @@ def community_delete_house_number():
         conn.close()
 
 # ============================================================================
+# SHARED HELPER: ZONE / ADDRESS COLUMN DETECTION
+# ============================================================================
+
+def _detect_zone_station_layout(all_rows):
+    """Detect which columns hold zone numbers and station/address text.
+
+    Tries four strategies in order:
+      1. Header keyword scan – find a row whose cells contain recognisable
+         zone and station/address labels (first 15 rows, expanded vocabulary).
+      2. Numeric-density heuristic – the column with the highest ratio of
+         integers 1-999 is treated as the zone column; the column with the
+         most alpha-text cells (excluding the zone column) is the address col.
+      3. Single-column "N – description" pattern in the first few columns.
+      4. Default: column 0 = zone, column 1 = station.
+
+    Returns a dict:
+        zone_col        int (0-based) or None when single_col_mode is True
+        station_col     int (0-based) or None when single_col_mode is True
+        data_start_row  int row index into all_rows where data begins
+        single_col_mode bool – parse each row as "N - description" text
+    """
+    SINGLE_COL_RE = re.compile(r'^(\d+)\s*[-\u2013\u2014]\s*(.+)$')
+
+    ZONE_KW = {
+        'zone', 'z#', 'zn', 'zn#', 'zone#', 'zone #', 'zone no', 'zone no.',
+        'zone number', 'zone num', 'sta', 'sta#', 'sta no', 'sta no.',
+        'station no', 'station#', 'stn', 'stn#', 'clk', 'clk#',
+    }
+    ADDR_KW = {
+        'station', 'address', 'name', 'description', 'desc', 'location',
+        'street', 'lot', 'unit', 'house', 'addr', 'property', 'site',
+        'label', 'text', 'detail',
+    }
+
+    # --- Strategy 1: header keyword scan (first 15 rows) ---
+    for row_idx, row in enumerate(all_rows[:15]):
+        row_vals = [
+            str(c.value).lower().strip() if c.value is not None else ''
+            for c in row
+        ]
+        z_col = s_col = None
+        for i, v in enumerate(row_vals):
+            if not v:
+                continue
+            if z_col is None and (v in ZONE_KW or any(kw in v for kw in ZONE_KW)):
+                z_col = i
+            elif s_col is None and any(kw in v for kw in ADDR_KW):
+                s_col = i
+        if z_col is not None and s_col is not None and z_col != s_col:
+            return {
+                'zone_col': z_col,
+                'station_col': s_col,
+                'data_start_row': row_idx + 1,
+                'single_col_mode': False,
+            }
+
+    # --- Strategy 2: numeric-density heuristic ---
+    max_cols = max((len(r) for r in all_rows), default=0)
+    if max_cols >= 2:
+        col_int   = [0] * max_cols  # count of integers 1-999
+        col_alpha = [0] * max_cols  # count of cells with >=1 letter
+        col_total = [0] * max_cols  # count of non-empty cells
+
+        for row in all_rows[:150]:
+            for ci, cell in enumerate(row):
+                v = cell.value
+                if v is None:
+                    continue
+                col_total[ci] += 1
+                try:
+                    n = int(float(v))
+                    if 1 <= n <= 999:
+                        col_int[ci] += 1
+                except (ValueError, TypeError):
+                    pass
+                if isinstance(v, str) and any(ch.isalpha() for ch in v):
+                    col_alpha[ci] += 1
+
+        best_zone_col, best_zone_score = None, 0.0
+        for ci in range(max_cols):
+            if col_total[ci] < 3:
+                continue
+            score = col_int[ci] / col_total[ci]
+            if score > best_zone_score:
+                best_zone_score, best_zone_col = score, ci
+
+        if best_zone_col is not None and best_zone_score >= 0.6:
+            best_addr_col, best_addr_count = None, -1
+            for ci in range(max_cols):
+                if ci == best_zone_col or col_total[ci] < 3:
+                    continue
+                if col_alpha[ci] > best_addr_count:
+                    best_addr_count, best_addr_col = col_alpha[ci], ci
+
+            if best_addr_col is None and max_cols > 1:
+                best_addr_col = (best_zone_col + 1) % max_cols
+
+            if best_addr_col is not None:
+                data_start = 0
+                for row_idx, row in enumerate(all_rows):
+                    if len(row) > best_zone_col:
+                        try:
+                            int(float(row[best_zone_col].value))
+                            data_start = row_idx
+                            break
+                        except (ValueError, TypeError):
+                            pass
+                return {
+                    'zone_col': best_zone_col,
+                    'station_col': best_addr_col,
+                    'data_start_row': data_start,
+                    'single_col_mode': False,
+                }
+
+    # --- Strategy 3: single-column "N – description" ---
+    for row in all_rows:
+        for ci in range(min(3, len(row))):
+            if row[ci].value is not None:
+                if SINGLE_COL_RE.match(str(row[ci].value).strip()):
+                    return {
+                        'zone_col': None,
+                        'station_col': None,
+                        'data_start_row': 0,
+                        'single_col_mode': True,
+                    }
+
+    # --- Strategy 4: default ---
+    return {
+        'zone_col': 0,
+        'station_col': 1,
+        'data_start_row': 0,
+        'single_col_mode': False,
+    }
+
+
+# ============================================================================
 # COMMUNITY HOUSE NUMBER EXCEL IMPORT
 # ============================================================================
 
@@ -19750,38 +19886,13 @@ def community_import_house_numbers_excel():
         addresses = []
         common_area = []
 
-        # Auto-detect header row: find a row with a 'zone' cell and a
-        # 'station'/'address'/'name'/'description' cell in different columns.
-        zone_col = None
-        station_col = None
-        data_start_row = 0
-        single_col_mode = False
-        SINGLE_COL_RE = re.compile(r'^(\d+)\s*-\s*(.+)$')
-
-        all_rows = list(ws.iter_rows(min_row=1, values_only=False))
-        for row_idx, row in enumerate(all_rows):
-            row_vals = [str(c.value).lower().strip() if c.value is not None else '' for c in row]
-            z_col = next((i for i, v in enumerate(row_vals) if 'zone' in v), None)
-            s_col = next((i for i, v in enumerate(row_vals)
-                          if any(kw in v for kw in ('station', 'address', 'name', 'description', 'desc'))), None)
-            if z_col is not None and s_col is not None and z_col != s_col:
-                zone_col = z_col
-                station_col = s_col
-                data_start_row = row_idx + 1
-                break
-
-        # Fallback: check for single-column format "{zone} -{description}", then Col A/B
-        if zone_col is None:
-            for test_row in all_rows:
-                if test_row and test_row[0].value is not None:
-                    if SINGLE_COL_RE.match(str(test_row[0].value).strip()):
-                        single_col_mode = True
-                        data_start_row = 0
-                        break
-            if not single_col_mode:
-                zone_col = 0
-                station_col = 1
-                data_start_row = 0
+        all_rows        = list(ws.iter_rows(min_row=1, values_only=False))
+        layout          = _detect_zone_station_layout(all_rows)
+        zone_col        = layout['zone_col']
+        station_col     = layout['station_col']
+        data_start_row  = layout['data_start_row']
+        single_col_mode = layout['single_col_mode']
+        SINGLE_COL_RE   = re.compile(r'^(\d+)\s*[-\u2013\u2014]\s*(.+)$')
 
         for row in all_rows[data_start_row:]:
             if single_col_mode:
@@ -20604,51 +20715,40 @@ def community_clock_import_excel():
     results = {}
     total_addresses = 0
     total_common_area = 0
-    clock_sheets_found = 0
 
-    for sheet_name in wb.sheetnames:
-        match = re.match(r'CLOCK\s*(\d+)', sheet_name.strip(), re.IGNORECASE)
-        if not match:
-            continue
+    # Prefer sheets named "CLOCK N"; if none exist, use every sheet.
+    _CLOCK_RE    = re.compile(r'CLOCK\s*(\d+)', re.IGNORECASE)
+    _NUM_IN_NAME = re.compile(r'(\d+)')
 
-        clock_sheets_found += 1
-        clock_number = int(match.group(1))
+    def _clock_num(name, fallback):
+        m = _CLOCK_RE.match(name.strip())
+        if m:
+            return int(m.group(1))
+        m = _NUM_IN_NAME.search(name)
+        return int(m.group(1)) if m else fallback
+
+    clock_sheet_pairs = [
+        (int(_CLOCK_RE.match(n.strip()).group(1)), n)
+        for n in wb.sheetnames if _CLOCK_RE.match(n.strip())
+    ]
+    if not clock_sheet_pairs:
+        clock_sheet_pairs = [
+            (_clock_num(n, idx), n)
+            for idx, n in enumerate(wb.sheetnames, start=1)
+        ]
+
+    for clock_number, sheet_name in clock_sheet_pairs:
         ws = wb[sheet_name]
         addresses = []
         common_area = []
 
-        # Auto-detect header row and column positions by scanning for
-        # cells containing "zone" and "station" keywords.
-        zone_col = None
-        station_col = None
-        data_start_row = None
-        single_col_mode = False
-        SINGLE_COL_RE = re.compile(r'^(\d+)\s*-\s*(.+)$')
-
-        all_rows = list(ws.iter_rows(min_row=1, values_only=False))
-        for row_idx, row in enumerate(all_rows):
-            row_vals = [str(c.value).lower().strip() if c.value is not None else '' for c in row]
-            z_col = next((i for i, v in enumerate(row_vals) if 'zone' in v), None)
-            s_col = next((i for i, v in enumerate(row_vals)
-                          if 'station' in v or 'address' in v or 'name' in v), None)
-            if z_col is not None and s_col is not None and z_col != s_col:
-                zone_col = z_col
-                station_col = s_col
-                data_start_row = row_idx + 1  # data begins after header
-                break
-
-        # Fallback: check for single-column format "{zone} -{description}", then Col A/B
-        if zone_col is None:
-            for test_row in all_rows:
-                if test_row and test_row[0].value is not None:
-                    if SINGLE_COL_RE.match(str(test_row[0].value).strip()):
-                        single_col_mode = True
-                        data_start_row = 0
-                        break
-            if not single_col_mode:
-                zone_col = 0
-                station_col = 1
-                data_start_row = 0
+        all_rows        = list(ws.iter_rows(min_row=1, values_only=False))
+        layout          = _detect_zone_station_layout(all_rows)
+        zone_col        = layout['zone_col']
+        station_col     = layout['station_col']
+        data_start_row  = layout['data_start_row']
+        single_col_mode = layout['single_col_mode']
+        SINGLE_COL_RE   = re.compile(r'^(\d+)\s*[-\u2013\u2014]\s*(.+)$')
 
         for row in all_rows[data_start_row:]:
             if single_col_mode:
@@ -20691,9 +20791,7 @@ def community_clock_import_excel():
             results[clock_number] = {'addresses': addresses, 'common_area': common_area}
 
     if not results:
-        if clock_sheets_found == 0:
-            return jsonify({'success': False, 'error': 'No CLOCK sheets found. Sheets must be named "CLOCK 1", "CLOCK 2", etc.'})
-        return jsonify({'success': False, 'error': f'Found {clock_sheets_found} CLOCK sheet(s) but could not read any data. Check that Column A contains zone numbers and Column B contains address text, or use single-column format "1 -DESCRIPTION".'})
+        return jsonify({'success': False, 'error': 'No valid zone/address data found. Make sure the file has a column of zone numbers (1–999) and a column of address/station text.'})
 
     preview_data = {str(k): results[k] for k in sorted(results.keys())}
     return jsonify({
