@@ -19735,9 +19735,12 @@ def _detect_zone_station_layout(all_rows):
         for i, v in enumerate(row_vals):
             if not v:
                 continue
-            if z_col is None and (v in ZONE_KW or any(kw in v for kw in ZONE_KW)):
+            # Use word-split intersection so 'sta' in ZONE_KW does NOT
+            # match the full word "station" (which belongs to ADDR_KW).
+            v_words = set(v.split())
+            if z_col is None and (v in ZONE_KW or bool(v_words & ZONE_KW)):
                 z_col = i
-            elif s_col is None and any(kw in v for kw in ADDR_KW):
+            elif s_col is None and (v in ADDR_KW or bool(v_words & ADDR_KW)):
                 s_col = i
         if z_col is not None and s_col is not None and z_col != s_col:
             return {
@@ -19778,6 +19781,9 @@ def _detect_zone_station_layout(all_rows):
                 best_zone_score, best_zone_col = score, ci
 
         if best_zone_col is not None and best_zone_score >= 0.6:
+            # Prefer the column with the most alpha-text cells (addresses
+            # are descriptive text).  Fall back to the first populated
+            # column after the zone column for pure-numeric address cols.
             best_addr_col, best_addr_count = None, -1
             for ci in range(max_cols):
                 if ci == best_zone_col or col_total[ci] < 3:
@@ -19785,8 +19791,11 @@ def _detect_zone_station_layout(all_rows):
                 if col_alpha[ci] > best_addr_count:
                     best_addr_count, best_addr_col = col_alpha[ci], ci
 
-            if best_addr_col is None and max_cols > 1:
-                best_addr_col = (best_zone_col + 1) % max_cols
+            if best_addr_col is None or best_addr_count == 0:
+                for ci in range(best_zone_col + 1, max_cols):
+                    if col_total[ci] >= 3:
+                        best_addr_col = ci
+                        break
 
             if best_addr_col is not None:
                 data_start = 0
