@@ -19782,7 +19782,7 @@ def community_import_house_numbers_excel():
                 continue
 
             try:
-                zone_num = int(zone_cell)
+                zone_num = int(float(zone_cell))
             except (ValueError, TypeError):
                 continue  # skip header rows, totals, blank rows, etc.
 
@@ -20267,6 +20267,7 @@ def verona_walk_import_excel():
     results = {}  # {clock_number: {'addresses': [...], 'common_area': [...]}}
     total_addresses = 0
     total_common_area = 0
+    clock_sheets_found = 0
 
     for sheet_name in wb.sheetnames:
         # Parse clock number from sheet name (e.g., "CLOCK 18" → 18)
@@ -20274,6 +20275,7 @@ def verona_walk_import_excel():
         if not match:
             continue
 
+        clock_sheets_found += 1
         clock_number = int(match.group(1))
         ws = wb[sheet_name]
 
@@ -20289,7 +20291,7 @@ def verona_walk_import_excel():
 
             # Build the formatted entry: "ZONE {zone} - {description}"
             try:
-                zone_num = int(zone_cell)
+                zone_num = int(float(zone_cell))
             except (ValueError, TypeError):
                 continue
 
@@ -20315,7 +20317,9 @@ def verona_walk_import_excel():
             }
 
     if not results:
-        return jsonify({'success': False, 'error': 'No valid CLOCK sheets found in Excel file. Sheets should be named "CLOCK 1", "CLOCK 2", etc.'})
+        if clock_sheets_found == 0:
+            return jsonify({'success': False, 'error': 'No CLOCK sheets found in Excel file. Sheets should be named "CLOCK 1", "CLOCK 2", etc.'})
+        return jsonify({'success': False, 'error': f'Found {clock_sheets_found} CLOCK sheet(s) but could not read any data. Check that Column A has zone numbers, Column B has serial numbers, and Column C has descriptions.'})
 
     # Preview mode - return parsed data for review
     if preview_only:
@@ -20579,12 +20583,14 @@ def community_clock_import_excel():
     results = {}
     total_addresses = 0
     total_common_area = 0
+    clock_sheets_found = 0
 
     for sheet_name in wb.sheetnames:
         match = re.match(r'CLOCK\s*(\d+)', sheet_name.strip(), re.IGNORECASE)
         if not match:
             continue
 
+        clock_sheets_found += 1
         clock_number = int(match.group(1))
         ws = wb[sheet_name]
         addresses = []
@@ -20622,7 +20628,7 @@ def community_clock_import_excel():
                 continue
 
             try:
-                zone_num = int(zone_cell)
+                zone_num = int(float(zone_cell))
             except (ValueError, TypeError):
                 continue  # skip any non-integer rows (totals, notes, etc.)
 
@@ -20643,7 +20649,9 @@ def community_clock_import_excel():
             results[clock_number] = {'addresses': addresses, 'common_area': common_area}
 
     if not results:
-        return jsonify({'success': False, 'error': 'No valid CLOCK sheets found. Sheets must be named "CLOCK 1", "CLOCK 2", etc.'})
+        if clock_sheets_found == 0:
+            return jsonify({'success': False, 'error': 'No CLOCK sheets found. Sheets must be named "CLOCK 1", "CLOCK 2", etc.'})
+        return jsonify({'success': False, 'error': f'Found {clock_sheets_found} CLOCK sheet(s) but could not read any data. Check that Column A contains zone numbers and Column B contains address text.'})
 
     preview_data = {str(k): results[k] for k in sorted(results.keys())}
     return jsonify({
