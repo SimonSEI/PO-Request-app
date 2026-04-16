@@ -19750,27 +19750,62 @@ def community_import_house_numbers_excel():
         addresses = []
         common_area = []
 
-        # Auto-detect header row: find a row with a 'zone' cell and a
-        # 'station'/'address'/'name'/'description' cell in different columns.
-        zone_col = None
-        station_col = None
+        # Detect column layout from the header row.
+        # Handles: multi-column (Station #, Description, House Number, Street...),
+        # two-column (Zone | Station/Address), single-column ("1 -DESCRIPTION"),
+        # and no-header fallback (Col A / Col B).
+        SINGLE_COL_RE = re.compile(r'^(\d+)\s*-\s*(.+)$')
+        _SKIP_HDR = ('time', 'program', 'clock', 'start', 'end', 'watering', 'day',
+                     'serial', 'decoder', 'nozzle', 'cascade')
+        zone_col = None   # column index for the integer zone/station number
+        addr_cols = []    # ordered column indices to join as the address string
         data_start_row = 0
         single_col_mode = False
-        SINGLE_COL_RE = re.compile(r'^(\d+)\s*-\s*(.+)$')
 
         all_rows = list(ws.iter_rows(min_row=1, values_only=False))
         for row_idx, row in enumerate(all_rows):
-            row_vals = [str(c.value).lower().strip() if c.value is not None else '' for c in row]
-            z_col = next((i for i, v in enumerate(row_vals) if 'zone' in v), None)
-            s_col = next((i for i, v in enumerate(row_vals)
-                          if any(kw in v for kw in ('station', 'address', 'name', 'description', 'desc'))), None)
-            if z_col is not None and s_col is not None and z_col != s_col:
+            hdrs = [str(c.value).lower().strip() if c.value is not None else '' for c in row]
+            if sum(1 for h in hdrs if h) < 2:
+                continue
+
+            # 1. Find the zone NUMBER column (station #, zone #, #, then station/zone without 'desc')
+            z_col = None
+            for i, h in enumerate(hdrs):
+                if h in ('station #', 'station#', 'zone #', 'zone#', '#', 'no', 'no.'):
+                    z_col = i; break
+            if z_col is None:
+                for i, h in enumerate(hdrs):
+                    if '#' in h and ('station' in h or 'zone' in h):
+                        z_col = i; break
+            if z_col is None:
+                for i, h in enumerate(hdrs):
+                    if ('station' in h or 'zone' in h) and 'desc' not in h and 'description' not in h:
+                        z_col = i; break
+            if z_col is None:
+                continue
+
+            # 2. Collect address columns: skip noise columns, keep descriptive ones
+            a_cols = []
+            for i, h in enumerate(hdrs):
+                if i == z_col or not h:
+                    continue
+                if any(skip in h for skip in _SKIP_HDR):
+                    continue
+                if any(kw in h for kw in ('description', 'desc', 'house', 'street',
+                                           'address', 'name', 'station', 'zone', 'type')):
+                    a_cols.append(i)
+            if not a_cols:  # no named address cols — take the first non-zone non-skip col
+                a_cols = [i for i in range(len(hdrs))
+                          if i != z_col and hdrs[i]
+                          and not any(s in hdrs[i] for s in _SKIP_HDR)][:1]
+
+            if a_cols:
                 zone_col = z_col
-                station_col = s_col
+                addr_cols = a_cols
                 data_start_row = row_idx + 1
                 break
 
-        # Fallback: check for single-column format "{zone} -{description}", then Col A/B
+        # Fallback: check for single-column "{zone} -{description}", then Col A/B
         if zone_col is None:
             for test_row in all_rows:
                 if test_row and test_row[0].value is not None:
@@ -19780,7 +19815,7 @@ def community_import_house_numbers_excel():
                         break
             if not single_col_mode:
                 zone_col = 0
-                station_col = 1
+                addr_cols = [1]
                 data_start_row = 0
 
         for row in all_rows[data_start_row:]:
@@ -19796,18 +19831,22 @@ def community_import_house_numbers_excel():
                 if not station:
                     continue
             else:
-                zone_cell    = row[zone_col].value    if len(row) > zone_col    else None
-                station_cell = row[station_col].value if len(row) > station_col else None
-
-                if zone_cell is None or station_cell is None:
+                zone_cell = row[zone_col].value if len(row) > zone_col else None
+                if zone_cell is None:
                     continue
-
                 try:
                     zone_num = int(float(zone_cell))
                 except (ValueError, TypeError):
                     continue  # skip header rows, totals, blank rows, etc.
 
-                station = str(station_cell).strip()
+                parts = []
+                for col_idx in addr_cols:
+                    val = row[col_idx].value if len(row) > col_idx else None
+                    if val is not None:
+                        s = str(val).strip()
+                        if s:
+                            parts.append(s)
+                station = ' '.join(parts)
                 if not station:
                     continue
 
@@ -20617,27 +20656,62 @@ def community_clock_import_excel():
         addresses = []
         common_area = []
 
-        # Auto-detect header row and column positions by scanning for
-        # cells containing "zone" and "station" keywords.
-        zone_col = None
-        station_col = None
+        # Detect column layout from the header row.
+        # Handles: multi-column (Station #, Description, House Number, Street...),
+        # two-column (Zone | Station/Address), single-column ("1 -DESCRIPTION"),
+        # and no-header fallback (Col A / Col B).
+        SINGLE_COL_RE = re.compile(r'^(\d+)\s*-\s*(.+)$')
+        _SKIP_HDR = ('time', 'program', 'clock', 'start', 'end', 'watering', 'day',
+                     'serial', 'decoder', 'nozzle', 'cascade')
+        zone_col = None   # column index for the integer zone/station number
+        addr_cols = []    # ordered column indices to join as the address string
         data_start_row = None
         single_col_mode = False
-        SINGLE_COL_RE = re.compile(r'^(\d+)\s*-\s*(.+)$')
 
         all_rows = list(ws.iter_rows(min_row=1, values_only=False))
         for row_idx, row in enumerate(all_rows):
-            row_vals = [str(c.value).lower().strip() if c.value is not None else '' for c in row]
-            z_col = next((i for i, v in enumerate(row_vals) if 'zone' in v), None)
-            s_col = next((i for i, v in enumerate(row_vals)
-                          if 'station' in v or 'address' in v or 'name' in v), None)
-            if z_col is not None and s_col is not None and z_col != s_col:
+            hdrs = [str(c.value).lower().strip() if c.value is not None else '' for c in row]
+            if sum(1 for h in hdrs if h) < 2:
+                continue
+
+            # 1. Find the zone NUMBER column (station #, zone #, #, then station/zone without 'desc')
+            z_col = None
+            for i, h in enumerate(hdrs):
+                if h in ('station #', 'station#', 'zone #', 'zone#', '#', 'no', 'no.'):
+                    z_col = i; break
+            if z_col is None:
+                for i, h in enumerate(hdrs):
+                    if '#' in h and ('station' in h or 'zone' in h):
+                        z_col = i; break
+            if z_col is None:
+                for i, h in enumerate(hdrs):
+                    if ('station' in h or 'zone' in h) and 'desc' not in h and 'description' not in h:
+                        z_col = i; break
+            if z_col is None:
+                continue
+
+            # 2. Collect address columns: skip noise columns, keep descriptive ones
+            a_cols = []
+            for i, h in enumerate(hdrs):
+                if i == z_col or not h:
+                    continue
+                if any(skip in h for skip in _SKIP_HDR):
+                    continue
+                if any(kw in h for kw in ('description', 'desc', 'house', 'street',
+                                           'address', 'name', 'station', 'zone', 'type')):
+                    a_cols.append(i)
+            if not a_cols:  # no named address cols — take the first non-zone non-skip col
+                a_cols = [i for i in range(len(hdrs))
+                          if i != z_col and hdrs[i]
+                          and not any(s in hdrs[i] for s in _SKIP_HDR)][:1]
+
+            if a_cols:
                 zone_col = z_col
-                station_col = s_col
-                data_start_row = row_idx + 1  # data begins after header
+                addr_cols = a_cols
+                data_start_row = row_idx + 1
                 break
 
-        # Fallback: check for single-column format "{zone} -{description}", then Col A/B
+        # Fallback: check for single-column "{zone} -{description}", then Col A/B
         if zone_col is None:
             for test_row in all_rows:
                 if test_row and test_row[0].value is not None:
@@ -20647,7 +20721,7 @@ def community_clock_import_excel():
                         break
             if not single_col_mode:
                 zone_col = 0
-                station_col = 1
+                addr_cols = [1]
                 data_start_row = 0
 
         for row in all_rows[data_start_row:]:
@@ -20663,18 +20737,22 @@ def community_clock_import_excel():
                 if not station:
                     continue
             else:
-                zone_cell    = row[zone_col].value    if len(row) > zone_col    else None
-                station_cell = row[station_col].value if len(row) > station_col else None
-
-                if zone_cell is None or station_cell is None:
+                zone_cell = row[zone_col].value if len(row) > zone_col else None
+                if zone_cell is None:
                     continue
-
                 try:
                     zone_num = int(float(zone_cell))
                 except (ValueError, TypeError):
-                    continue  # skip any non-integer rows (totals, notes, etc.)
+                    continue  # skip non-integer rows (headers, totals, notes)
 
-                station = str(station_cell).strip()
+                parts = []
+                for col_idx in addr_cols:
+                    val = row[col_idx].value if len(row) > col_idx else None
+                    if val is not None:
+                        s = str(val).strip()
+                        if s:
+                            parts.append(s)
+                station = ' '.join(parts)
                 if not station:
                     continue
 
