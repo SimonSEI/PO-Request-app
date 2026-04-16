@@ -19695,25 +19695,140 @@ def community_delete_house_number():
 # ============================================================================
 
 def _detect_zone_station_layout(all_rows):
-    """Detect which columns hold zone numbers and station/address text.
+    """Detect zone-number and address/station columns from worksheet rows.
 
-    Tries four strategies in order:
-      1. Header keyword scan – find a row whose cells contain recognisable
-         zone and station/address labels (first 15 rows, expanded vocabulary).
-      2. Numeric-density heuristic – the column with the highest ratio of
-         integers 1-999 is treated as the zone column; the column with the
-         most alpha-text cells (excluding the zone column) is the address col.
-      3. Single-column "N – description" pattern in the first few columns.
-      4. Default: column 0 = zone, column 1 = station.
+    Strategies tried in order:
+
+    1. Sequential-integer scan (format-agnostic, most reliable)
+       Zone columns *always* contain sequential integers starting near 1
+       (1, 2, 3 …).  No column labels needed.  Address columns are then
+       identified by content: varied values, not times, not single-char
+       repetitions, and either large house numbers (>999) or meaningful text.
+
+    2. Header keyword scan
+       Fallback when the sheet has labelled headers but sequential detection
+       failed (e.g. zones starting above 10, very short lists).
+
+    3. Single-column  "N – description"  pattern.
+
+    4. Hard default: column 0 = zone, column 1 = station.
 
     Returns a dict:
-        zone_col        int (0-based) or None when single_col_mode is True
-        station_col     int (0-based) or None when single_col_mode is True
-        data_start_row  int row index into all_rows where data begins
-        single_col_mode bool – parse each row as "N - description" text
+        zone_col        int (0-based) or None in single_col_mode
+        station_col     int (0-based) or None in single_col_mode
+        data_start_row  int row index where data rows begin
+        single_col_mode bool
+        extra_cols      list[int] – additional address columns to concatenate
     """
     SINGLE_COL_RE = re.compile(r'^(\d+)\s*[-\u2013\u2014]\s*(.+)$')
+    max_cols = max((len(r) for r in all_rows), default=0)
 
+    # ------------------------------------------------------------------
+    # Strategy 1: Sequential integers → zone col; content scoring → addr cols
+    # ------------------------------------------------------------------
+    if max_cols >= 2:
+        col_int_vals  = [[] for _ in range(max_cols)]  # integers 1-999 per col
+        col_all_vals  = [[] for _ in range(max_cols)]  # every non-None value
+
+        for row in all_rows[:200]:
+            for ci, cell in enumerate(row):
+                v = cell.value
+                if v is None:
+                    continue
+                col_all_vals[ci].append(v)
+                try:
+                    n = int(float(v))
+                    if 1 <= n <= 999:
+                        col_int_vals[ci].append(n)
+                except (ValueError, TypeError):
+                    pass
+
+        # Score each column: high score = sequential integers starting near 1
+        zone_col        = None
+        best_zone_score = 0.0
+        for ci in range(max_cols):
+            ints = col_int_vals[ci]
+            if len(ints) < 2:
+                continue
+            sorted_u = sorted(set(ints))
+            min_v, max_v = sorted_u[0], sorted_u[-1]
+            if min_v > 10:           # zone sequences start near 1
+                continue
+            expected  = set(range(min_v, max_v + 1))
+            coverage  = len(set(sorted_u) & expected) / max(len(expected), 1)
+            score     = coverage * (1.0 if min_v == 1 else 0.8)
+            if score > best_zone_score:
+                best_zone_score, zone_col = score, ci
+
+        if zone_col is not None and best_zone_score >= 0.6:
+            # data_start_row = first row where zone_col holds its minimum integer
+            min_zone   = min(col_int_vals[zone_col])
+            data_start = 0
+            for ri, row in enumerate(all_rows):
+                if len(row) > zone_col and row[zone_col].value is not None:
+                    try:
+                        if int(float(row[zone_col].value)) == min_zone:
+                            data_start = ri
+                            break
+                    except (ValueError, TypeError):
+                        pass
+
+            # Score every other column for "address-ness"
+            addr_cols = []
+            for ci in range(max_cols):
+                if ci == zone_col:
+                    continue
+                vals = col_all_vals[ci]
+                if len(vals) < 2:
+                    continue
+                n = len(vals)
+
+                time_count = sum(
+                    1 for v in vals
+                    if (isinstance(v, float) and 0 < v < 1)
+                    or (isinstance(v, str) and re.match(r'^\d{1,2}:\d{2}', v.strip()))
+                )
+                large_num_count = sum(
+                    1 for v in vals
+                    if _is_large_int(v)
+                )
+                text_count = sum(
+                    1 for v in vals
+                    if isinstance(v, str) and sum(c.isalpha() for c in v) > 2
+                )
+                single_char_count = sum(
+                    1 for v in vals
+                    if isinstance(v, str) and len(v.strip()) == 1
+                )
+                unique_ratio     = len({str(v) for v in vals}) / n
+                time_ratio       = time_count        / n
+                large_num_ratio  = large_num_count   / n
+                text_ratio       = text_count        / n
+                single_char_ratio = single_char_count / n
+
+                if time_ratio > 0.4:           # time columns (start/end time)
+                    continue
+                if single_char_ratio > 0.7:    # single-char cols (A/B/C, clock)
+                    continue
+                # Low-variety categorical columns (SPRAYS / T/TH/SUN / PROGRAM)
+                if unique_ratio < 0.08 and large_num_ratio < 0.3:
+                    continue
+                # Include: house-number column OR varied text column
+                if large_num_ratio > 0.3 or (text_ratio > 0.3 and unique_ratio >= 0.08):
+                    addr_cols.append(ci)
+
+            if addr_cols:
+                return {
+                    'zone_col':       zone_col,
+                    'station_col':    addr_cols[0],
+                    'data_start_row': data_start,
+                    'single_col_mode': False,
+                    'extra_cols':     addr_cols[1:],
+                }
+
+    # ------------------------------------------------------------------
+    # Strategy 2: Header keyword scan (fallback for labelled sheets)
+    # ------------------------------------------------------------------
     ZONE_KW = {
         'zone', 'z#', 'zn', 'zn#', 'zone#', 'zone #', 'zone no', 'zone no.',
         'zone number', 'zone num', 'sta', 'sta#', 'sta #', 'sta no', 'sta no.',
@@ -19725,12 +19840,6 @@ def _detect_zone_station_layout(all_rows):
         'street', 'lot', 'unit', 'house', 'addr', 'property', 'site',
         'label', 'detail',
     }
-
-    # --- Strategy 1: header keyword scan (first 15 rows) ---
-    # Exact match wins outright.  Word-level match wins only when the
-    # OTHER keyword set does NOT also match — this prevents "Zone Description"
-    # (matches both 'zone' ∈ ZONE_KW and 'description' ∈ ADDR_KW) from
-    # being mistaken for the zone-number column.
     for row_idx, row in enumerate(all_rows[:15]):
         row_vals = [
             str(c.value).lower().strip() if c.value is not None else ''
@@ -19745,120 +19854,63 @@ def _detect_zone_station_layout(all_rows):
             is_addr_exact = v in ADDR_KW
             is_zone_word  = bool(v_words & ZONE_KW)
             is_addr_word  = bool(v_words & ADDR_KW)
-
             if z_col is None:
                 if is_zone_exact or (is_zone_word and not is_addr_word):
                     z_col = i
             elif s_col is None:
                 if is_addr_exact or (is_addr_word and not is_zone_word):
                     s_col = i
-
         if z_col is not None and s_col is not None and z_col != s_col:
-            # Detect secondary address columns so they can be concatenated
-            # (e.g. a "House Number" primary col + "Street" extra col).
             extra_cols = []
             for j, v2 in enumerate(row_vals):
                 if j in (z_col, s_col) or not v2:
                     continue
-                v2_words    = set(v2.split())
-                is_a2_exact = v2 in ADDR_KW
-                is_a2_word  = bool(v2_words & ADDR_KW)
-                is_z2_word  = bool(v2_words & ZONE_KW)
-                if is_a2_exact or (is_a2_word and not is_z2_word):
+                v2_words = set(v2.split())
+                if (v2 in ADDR_KW) or (bool(v2_words & ADDR_KW) and not bool(v2_words & ZONE_KW)):
                     extra_cols.append(j)
             return {
-                'zone_col': z_col,
-                'station_col': s_col,
+                'zone_col':       z_col,
+                'station_col':    s_col,
                 'data_start_row': row_idx + 1,
                 'single_col_mode': False,
-                'extra_cols': extra_cols,
+                'extra_cols':     extra_cols,
             }
 
-    # --- Strategy 2: numeric-density heuristic ---
-    max_cols = max((len(r) for r in all_rows), default=0)
-    if max_cols >= 2:
-        col_int   = [0] * max_cols  # count of integers 1-999
-        col_alpha = [0] * max_cols  # count of cells with >=1 letter
-        col_total = [0] * max_cols  # count of non-empty cells
-
-        for row in all_rows[:150]:
-            for ci, cell in enumerate(row):
-                v = cell.value
-                if v is None:
-                    continue
-                col_total[ci] += 1
-                try:
-                    n = int(float(v))
-                    if 1 <= n <= 999:
-                        col_int[ci] += 1
-                except (ValueError, TypeError):
-                    pass
-                if isinstance(v, str) and any(ch.isalpha() for ch in v):
-                    col_alpha[ci] += 1
-
-        best_zone_col, best_zone_score = None, 0.0
-        for ci in range(max_cols):
-            if col_total[ci] < 3:
-                continue
-            score = col_int[ci] / col_total[ci]
-            if score > best_zone_score:
-                best_zone_score, best_zone_col = score, ci
-
-        if best_zone_col is not None and best_zone_score >= 0.6:
-            # Prefer the column with the most alpha-text cells (addresses
-            # are descriptive text).  Fall back to the first populated
-            # column after the zone column for pure-numeric address cols.
-            best_addr_col, best_addr_count = None, -1
-            for ci in range(max_cols):
-                if ci == best_zone_col or col_total[ci] < 3:
-                    continue
-                if col_alpha[ci] > best_addr_count:
-                    best_addr_count, best_addr_col = col_alpha[ci], ci
-
-            if best_addr_col is None or best_addr_count == 0:
-                for ci in range(best_zone_col + 1, max_cols):
-                    if col_total[ci] >= 3:
-                        best_addr_col = ci
-                        break
-
-            if best_addr_col is not None:
-                data_start = 0
-                for row_idx, row in enumerate(all_rows):
-                    if len(row) > best_zone_col:
-                        try:
-                            int(float(row[best_zone_col].value))
-                            data_start = row_idx
-                            break
-                        except (ValueError, TypeError):
-                            pass
-                return {
-                    'zone_col': best_zone_col,
-                    'station_col': best_addr_col,
-                    'data_start_row': data_start,
-                    'single_col_mode': False,
-                    'extra_cols': [],
-                }
-
-    # --- Strategy 3: single-column "N – description" ---
+    # ------------------------------------------------------------------
+    # Strategy 3: single-column "N – description"
+    # ------------------------------------------------------------------
     for row in all_rows:
         for ci in range(min(3, len(row))):
             if row[ci].value is not None:
                 if SINGLE_COL_RE.match(str(row[ci].value).strip()):
                     return {
-                        'zone_col': None,
-                        'station_col': None,
+                        'zone_col':       None,
+                        'station_col':    None,
                         'data_start_row': 0,
                         'single_col_mode': True,
-                        'extra_cols': [],
+                        'extra_cols':     [],
                     }
 
-    # --- Strategy 4: default ---
+    # ------------------------------------------------------------------
+    # Strategy 4: default
+    # ------------------------------------------------------------------
     return {
-        'zone_col': 0,
-        'station_col': 1,
+        'zone_col':       0,
+        'station_col':    1,
         'data_start_row': 0,
         'single_col_mode': False,
-        'extra_cols': [],
+        'extra_cols':     [],
+    }
+
+
+def _is_large_int(v):
+    """Return True if v converts to an integer > 999 (house-number range)."""
+    try:
+        return int(float(v)) > 999
+    except (ValueError, TypeError):
+        return False
+
+
     }
 
 
