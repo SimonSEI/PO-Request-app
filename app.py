@@ -19994,12 +19994,9 @@ def community_import_house_numbers_excel():
                 if not station:
                     continue
             else:
-                zone_cell    = row[zone_col].value    if len(row) > zone_col    else None
-                station_cell = row[station_col].value if len(row) > station_col else None
-
-                if zone_cell is None or station_cell is None:
+                zone_cell = row[zone_col].value if len(row) > zone_col else None
+                if zone_cell is None:
                     continue
-
                 try:
                     zone_num = int(float(zone_cell))
                 except (ValueError, TypeError):
@@ -20859,16 +20856,13 @@ def community_clock_import_excel():
                 if not station:
                     continue
             else:
-                zone_cell    = row[zone_col].value    if len(row) > zone_col    else None
-                station_cell = row[station_col].value if len(row) > station_col else None
-
-                if zone_cell is None or station_cell is None:
+                zone_cell = row[zone_col].value if len(row) > zone_col else None
+                if zone_cell is None:
                     continue
-
                 try:
                     zone_num = int(float(zone_cell))
                 except (ValueError, TypeError):
-                    continue  # skip any non-integer rows (totals, notes, etc.)
+                    continue  # skip non-integer rows (headers, totals, notes)
 
                 station = str(station_cell).strip()
                 if not station or station.lower() in SKIP_VALUES:
