@@ -19736,12 +19736,9 @@ def _detect_zone_station_layout(all_rows):
                 if v is None:
                     continue
                 col_all_vals[ci].append(v)
-                try:
-                    n = int(float(v))
-                    if 1 <= n <= 999:
-                        col_int_vals[ci].append(n)
-                except (ValueError, TypeError):
-                    pass
+                n = _extract_zone_num(v)
+                if n is not None:
+                    col_int_vals[ci].append(n)
 
         # Score each column: high score = sequential integers starting near 1
         zone_col        = None
@@ -19766,12 +19763,9 @@ def _detect_zone_station_layout(all_rows):
             data_start = 0
             for ri, row in enumerate(all_rows):
                 if len(row) > zone_col and row[zone_col].value is not None:
-                    try:
-                        if int(float(row[zone_col].value)) == min_zone:
-                            data_start = ri
-                            break
-                    except (ValueError, TypeError):
-                        pass
+                    if _extract_zone_num(row[zone_col].value) == min_zone:
+                        data_start = ri
+                        break
 
             # Score every other column for "address-ness"
             addr_cols = []
@@ -19911,6 +19905,32 @@ def _is_large_int(v):
         return False
 
 
+# Matches trailing integer in "STATION # 1", "STATION #20", "ZONE 5", etc.
+_EMBEDDED_INT_RE = re.compile(r'#\s*(\d+)\s*$|(?<!\d)(\d+)\s*$')
+
+
+def _extract_zone_num(v):
+    """Extract an integer zone number (1-999) from v.
+
+    Handles plain numbers as well as text like 'STATION # 1' or 'ZONE 5'.
+    Returns None if no zone number can be found.
+    """
+    try:
+        n = int(float(v))
+        return n if 1 <= n <= 999 else None
+    except (ValueError, TypeError):
+        pass
+    if isinstance(v, str):
+        m = _EMBEDDED_INT_RE.search(v.strip())
+        if m:
+            try:
+                n = int(m.group(1) or m.group(2))
+                return n if 1 <= n <= 999 else None
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
 # ============================================================================
 # COMMUNITY HOUSE NUMBER EXCEL IMPORT
 # ============================================================================
@@ -19995,11 +20015,8 @@ def community_import_house_numbers_excel():
                     continue
             else:
                 zone_cell = row[zone_col].value if len(row) > zone_col else None
-                if zone_cell is None:
-                    continue
-                try:
-                    zone_num = int(float(zone_cell))
-                except (ValueError, TypeError):
+                zone_num = _extract_zone_num(zone_cell) if zone_cell is not None else None
+                if zone_num is None:
                     continue  # skip header rows, totals, blank rows, etc.
 
                 station = str(station_cell).strip()
@@ -20859,9 +20876,8 @@ def community_clock_import_excel():
                 zone_cell = row[zone_col].value if len(row) > zone_col else None
                 if zone_cell is None:
                     continue
-                try:
-                    zone_num = int(float(zone_cell))
-                except (ValueError, TypeError):
+                zone_num = _extract_zone_num(zone_cell) if zone_cell is not None else None
+                if zone_num is None:
                     continue  # skip non-integer rows (headers, totals, notes)
 
                 station = str(station_cell).strip()
