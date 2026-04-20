@@ -20880,7 +20880,8 @@ def community_clock_import_excel():
                 if zone_num is None:
                     continue  # skip non-integer rows (headers, totals, notes)
 
-                station = str(station_cell).strip()
+                station_cell = row[station_col].value if len(row) > station_col else None
+                station = str(station_cell).strip() if station_cell is not None else ''
                 if not station or station.lower() in SKIP_VALUES:
                     continue
 
