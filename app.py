@@ -16078,10 +16078,15 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
                 // Flat address list
                 allAddresses.forEach(addr => {
-                    html += `<div class="address-item" style="display:flex;align-items:center;gap:6px;">
-                                <span class="address-text" style="flex:1;">${addr.address}</span>
-                                <button type="button" class="btn-delete-address" onclick="deleteCommunityClockAddress(${addr.id},${communityId})">Delete</button>
-                             </div>`;
+                    html += `<div class="address-item" id="address-item-${addr.id}" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                                <span class="address-text" id="address-text-${addr.id}" style="flex:1;">${addr.address}</span>
+                                <div style="display:flex;gap:4px;flex-shrink:0;">
+                                    <button type="button" class="btn-insert-address" onclick="showCommunityInsertForm(${communityId},${addr.id})">Insert</button>
+                                    <button type="button" class="btn-edit-address" onclick="editCommunityClockAddress(${communityId},${addr.id})">Edit</button>
+                                    <button type="button" class="btn-delete-address" onclick="deleteCommunityClockAddress(${addr.id},${communityId})">Delete</button>
+                                </div>
+                             </div>
+                             <div id="insert-form-${addr.id}" style="display:none;"></div>`;
                 });
 
                 if (totalCount === 0) {
@@ -16359,6 +16364,109 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             .then(data => {
                 if (data.success) { loadCommunityClockAddresses(communityId); }
                 else { alert('Error: ' + data.error); }
+            })
+            .catch(() => alert('Network error — please try again.'));
+        }
+
+        function showCommunityInsertForm(communityId, afterId) {
+            const container = document.getElementById(`insert-form-${afterId}`);
+            if (container.style.display === 'block') {
+                container.style.display = 'none';
+                container.innerHTML = '';
+                return;
+            }
+            container.style.display = 'block';
+            container.innerHTML = `
+                <div class="insert-form">
+                    <textarea id="comm-insert-input-${afterId}" placeholder="Enter address(es) to insert below (paste multiple lines)" rows="1"></textarea>
+                    <div class="form-row">
+                        <button type="button" class="btn-add-address" onclick="insertCommunityClockAddresses(${communityId}, ${afterId})" style="font-size:11px;padding:4px 10px;">Insert Below</button>
+                        <button type="button" class="btn-delete-address" onclick="document.getElementById('insert-form-${afterId}').style.display='none'" style="background:#6c757d;font-size:11px;padding:4px 10px;">Cancel</button>
+                        <span class="add-address-hint">Each line becomes a separate address</span>
+                    </div>
+                </div>
+            `;
+            const ta = document.getElementById(`comm-insert-input-${afterId}`);
+            ta.focus();
+            ta.addEventListener('input', function() {
+                this.rows = Math.max(1, Math.min(this.value.split(_nl).length, 8));
+            });
+            ta.addEventListener('paste', function() {
+                setTimeout(() => { this.rows = Math.max(1, Math.min(this.value.split(_nl).length, 8)); }, 0);
+            });
+        }
+
+        function insertCommunityClockAddresses(communityId, afterId) {
+            const textarea = document.getElementById(`comm-insert-input-${afterId}`);
+            const addresses = textarea.value.split(_nl).map(l => l.trim()).filter(l => l.length > 0);
+
+            if (addresses.length === 0) {
+                alert('Please enter at least one address');
+                return;
+            }
+
+            const btn = textarea.closest('.insert-form').querySelector('.btn-add-address');
+            btn.disabled = true;
+            btn.textContent = 'Inserting...';
+
+            fetch('/community_insert_clock_address', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({after_id: afterId, addresses: addresses})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    loadCommunityClockAddresses(communityId);
+                } else {
+                    alert('Error: ' + data.error);
+                    btn.disabled = false;
+                    btn.textContent = 'Insert Below';
+                }
+            })
+            .catch(() => {
+                alert('Network error — please try again.');
+                btn.disabled = false;
+                btn.textContent = 'Insert Below';
+            });
+        }
+
+        function editCommunityClockAddress(communityId, addressId) {
+            const textSpan = document.getElementById(`address-text-${addressId}`);
+            const currentText = textSpan.textContent;
+            const item = document.getElementById(`address-item-${addressId}`);
+
+            item.innerHTML = `
+                <input type="text" value="${currentText.replace(/"/g, '&quot;')}" id="comm-edit-input-${addressId}" style="flex:1;padding:4px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px;margin-right:6px;">
+                <div style="display:flex;gap:4px;flex-shrink:0;">
+                    <button type="button" class="btn-add-address" onclick="saveCommunityClockAddress(${communityId}, ${addressId})" style="padding:3px 8px;font-size:11px;">Save</button>
+                    <button type="button" class="btn-delete-address" onclick="loadCommunityClockAddresses(${communityId})" style="background:#6c757d;">Cancel</button>
+                </div>
+            `;
+            document.getElementById(`comm-edit-input-${addressId}`).focus();
+        }
+
+        function saveCommunityClockAddress(communityId, addressId) {
+            const input = document.getElementById(`comm-edit-input-${addressId}`);
+            const newAddress = input.value.trim();
+
+            if (!newAddress) {
+                alert('Please enter an address');
+                return;
+            }
+
+            fetch('/community_edit_clock_address', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({address_id: addressId, address: newAddress})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    loadCommunityClockAddresses(communityId);
+                } else {
+                    alert('Error: ' + data.error);
+                }
             })
             .catch(() => alert('Network error — please try again.'));
         }
@@ -20731,6 +20839,83 @@ def verona_walk_import_confirmed():
         })
     except Exception as e:
         conn.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+
+@app.route('/community_insert_clock_address', methods=['POST'])
+def community_insert_clock_address():
+    """Insert address(es) after a specific address for any community."""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    after_id = data.get('after_id')
+    addresses = data.get('addresses', [])
+
+    if not after_id or not addresses:
+        return jsonify({'success': False, 'error': 'Missing required fields'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("""SELECT community_id, clock_number, is_common_area, sort_order
+                     FROM verona_walk_clock_addresses WHERE id = ?""", (after_id,))
+        ref = c.fetchone()
+        if not ref:
+            return jsonify({'success': False, 'error': 'Reference address not found'})
+
+        community_id, clock_number, is_common_area, ref_order = ref
+        count = len([a for a in addresses if a.strip()])
+
+        c.execute("""UPDATE verona_walk_clock_addresses
+                     SET sort_order = sort_order + ?
+                     WHERE community_id = ? AND clock_number = ? AND is_common_area = ?
+                       AND sort_order > ?""",
+                 (count, community_id, clock_number, is_common_area, ref_order))
+
+        added = 0
+        for address in addresses:
+            address = address.strip()
+            if address:
+                added += 1
+                c.execute("""INSERT INTO verona_walk_clock_addresses
+                             (community_id, clock_number, address, created_at, is_common_area, sort_order)
+                             VALUES (?, ?, ?, ?, ?, ?)""",
+                         (community_id, clock_number, address,
+                          datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                          is_common_area, ref_order + added))
+
+        conn.commit()
+        return jsonify({'success': True, 'message': f'{added} address(es) inserted'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+
+@app.route('/community_edit_clock_address', methods=['POST'])
+def community_edit_clock_address():
+    """Edit an existing clock address for any community."""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    address_id = data.get('address_id')
+    address = data.get('address', '').strip()
+
+    if not address_id or not address:
+        return jsonify({'success': False, 'error': 'Missing address_id or address'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("UPDATE verona_walk_clock_addresses SET address = ? WHERE id = ?",
+                  (address, address_id))
+        conn.commit()
+        return jsonify({'success': True, 'message': 'Address updated successfully'})
+    except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
     finally:
         conn.close()
