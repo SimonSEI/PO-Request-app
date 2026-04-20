@@ -19807,6 +19807,11 @@ def _detect_zone_station_layout(all_rows):
                 # Low-variety categorical columns (SPRAYS / T/TH/SUN / PROGRAM)
                 if unique_ratio < 0.08 and large_num_ratio < 0.3:
                     continue
+                # Reject columns where one value dominates (e.g. "SPRAY 20 MINS" × 22 rows)
+                val_strs = [str(v).upper().strip() for v in vals]
+                most_common_freq = max(val_strs.count(s) for s in set(val_strs)) / n
+                if most_common_freq > 0.5 and large_num_ratio < 0.3:
+                    continue
                 # Include: house-number column OR varied text column
                 if large_num_ratio > 0.3 or (text_ratio > 0.3 and unique_ratio >= 0.08):
                     addr_cols.append(ci)
