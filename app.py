@@ -19736,6 +19736,9 @@ def _detect_zone_station_layout(all_rows):
                 if v is None:
                     continue
                 col_all_vals[ci].append(v)
+                # Skip long strings (sheet titles, notes) from zone counting
+                if isinstance(v, str) and len(v.split()) > 4:
+                    continue
                 n = _extract_zone_num(v)
                 if n is not None:
                     col_int_vals[ci].append(n)
@@ -19763,7 +19766,11 @@ def _detect_zone_station_layout(all_rows):
             data_start = 0
             for ri, row in enumerate(all_rows):
                 if len(row) > zone_col and row[zone_col].value is not None:
-                    if _extract_zone_num(row[zone_col].value) == min_zone:
+                    v = row[zone_col].value
+                    # Skip title-like rows (e.g. "SPANISH WELLS CLOCK # 4")
+                    if isinstance(v, str) and len(v.split()) > 4:
+                        continue
+                    if _extract_zone_num(v) == min_zone:
                         data_start = ri
                         break
 
@@ -19910,8 +19917,10 @@ def _is_large_int(v):
         return False
 
 
-# Matches trailing integer in "STATION # 1", "STATION #20", "ZONE 5", etc.
-_EMBEDDED_INT_RE = re.compile(r'#\s*(\d+)\s*$|(?<!\d)(\d+)\s*$')
+# Matches trailing integer in "STATION # 1", "STATION #20", "STATION # 1 SP", "ZONE 5", etc.
+# The first branch allows one optional short word after the number (e.g. "SP", "S", "A")
+# so that suffixes like "STATION # 1 SP" are handled correctly.
+_EMBEDDED_INT_RE = re.compile(r'#\s*(\d+)(?:\s+\w{1,5})?$|(?<!\d)(\d+)\s*$')
 
 
 def _extract_zone_num(v):
