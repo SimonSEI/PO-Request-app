@@ -1211,6 +1211,12 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # Column already exists
 
+    # Add store_name column to po_requests if it doesn't exist
+    try:
+        c.execute("ALTER TABLE po_requests ADD COLUMN store_name TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     # Migration: Fix any existing jobs with NULL active field to active=1
     try:
         c.execute("UPDATE jobs SET active=1 WHERE active IS NULL")
@@ -2628,6 +2634,7 @@ def tech_dashboard():
     client_name_idx = columns.get('client_name')
     po_type_idx = columns.get('po_type', 17)
     jobber_invoice_idx = columns.get('jobber_invoice_number')
+    store_name_idx = columns.get('store_name')
 
     return render_template_string(TECH_DASHBOARD_TEMPLATE,
                                 username=session['username'],
@@ -2642,7 +2649,8 @@ def tech_dashboard():
                                 inv_upload_idx=inv_upload_idx,
                                 client_name_idx=client_name_idx,
                                 po_type_idx=po_type_idx,
-                                jobber_invoice_idx=jobber_invoice_idx)
+                                jobber_invoice_idx=jobber_invoice_idx,
+                                store_name_idx=store_name_idx)
 
 @app.route('/office_dashboard')
 def office_dashboard():
@@ -2685,7 +2693,7 @@ def office_dashboard():
             job_name = job[1]
             # Get active POs for this job (for display on card)
             c.execute("""
-                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date, client_name
+                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date, client_name, store_name
                 FROM po_requests
                 WHERE job_name=? AND status IN ('approved', 'awaiting_invoice', 'matched')
                 ORDER BY id DESC
@@ -2694,7 +2702,7 @@ def office_dashboard():
 
             # Get ALL POs for this job (for complete history)
             c.execute("""
-                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date, description, client_name
+                SELECT id, po_type, tech_username, status, estimated_cost, invoice_cost, request_date, description, client_name, store_name
                 FROM po_requests
                 WHERE job_name=?
                 ORDER BY id DESC
@@ -2807,6 +2815,7 @@ def submit_request():
     job_name = request.form['job_name'].strip()
     description = request.form.get('description', '').strip()
     client_name = request.form.get('client_name', '').strip()  # Optional - for Service POs
+    store_name = request.form.get('store_name', '').strip()
 
     if not description:
         flash('❌ ERROR: Description is required. Please enter a description for this PO.')
@@ -2858,10 +2867,11 @@ def submit_request():
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     c.execute("""INSERT INTO po_requests
                  (tech_username, tech_name, job_name,
-                  description, status, request_date, client_name, po_type)
-                 VALUES (?, ?, ?, ?, 'awaiting_invoice', ?, ?, ?)""",
+                  description, status, request_date, client_name, po_type, store_name)
+                 VALUES (?, ?, ?, ?, 'awaiting_invoice', ?, ?, ?, ?)""",
              (session['username'], tech_name, job_name,
-              description, now_str, client_name if client_name else None, tech_type))
+              description, now_str, client_name if client_name else None, tech_type,
+              store_name if store_name else None))
 
     new_id = c.lastrowid
     conn.commit()
@@ -8344,6 +8354,11 @@ TECH_DASHBOARD_TEMPLATE = '''
             {% endif %}
 
             <div class="form-group">
+                <label><span data-i18n="store_name_label">Store Name</span> <span style="color: red;">*</span></label>
+                <input type="text" name="store_name" required placeholder="e.g., Home Depot, Lowe's, Grainger" data-i18n-placeholder="store_name_placeholder">
+            </div>
+
+            <div class="form-group">
                 <label data-i18n="description_label">Description / Items Needed</label>
                 <textarea name="description" required placeholder="List what you need to purchase..." data-i18n-placeholder="description_placeholder"></textarea>
             </div>
@@ -8369,6 +8384,8 @@ TECH_DASHBOARD_TEMPLATE = '''
             client_name_label: 'Client Name',
             client_name_placeholder: "e.g., Somerville, Heron's Glen, Reserve",
             client_name_hint: "📍 Enter the client/location name for this service (e.g., Somerville, Heron's Glen, etc.)",
+            store_name_label: 'Store Name',
+            store_name_placeholder: "e.g., Home Depot, Lowe's, Grainger",
             description_label: 'Description / Items Needed',
             description_placeholder: 'List what you need to purchase...',
             submit_request: 'Submit Request',
@@ -8410,6 +8427,8 @@ TECH_DASHBOARD_TEMPLATE = '''
             client_name_label: 'Nombre del Cliente',
             client_name_placeholder: 'ej., Somerville, Heron\'s Glen, Reserve',
             client_name_hint: '📍 Ingrese el nombre del cliente/ubicación para este servicio (ej., Somerville, Heron\'s Glen, etc.)',
+            store_name_label: 'Nombre de la Tienda',
+            store_name_placeholder: 'ej., Home Depot, Lowe\'s, Grainger',
             description_label: 'Descripción / Artículos Necesarios',
             description_placeholder: 'Enumere lo que necesita comprar...',
             submit_request: 'Enviar Solicitud',
@@ -8613,6 +8632,9 @@ TECH_DASHBOARD_TEMPLATE = '''
                     </div>
                     {% if client_name_idx is not none and req|length > client_name_idx and req[client_name_idx] %}
                         <p style="margin-left: 0; color: #666; font-size: 14px;">📍 <span data-i18n="client_label">Client:</span> <strong>{{ req[client_name_idx] }}</strong></p>
+                    {% endif %}
+                    {% if store_name_idx is not none and req|length > store_name_idx and req[store_name_idx] %}
+                        <p style="margin-left: 0; color: #555; font-size: 14px;">🏪 <span data-i18n="store_name_label">Store Name:</span> <strong>{{ req[store_name_idx] }}</strong></p>
                     {% endif %}
                     <p><strong data-i18n="description_field">Description:</strong> {{ req[6] }}</p>
                     <p><strong data-i18n="submitted_field">Submitted:</strong> {{ req[8] }}</p>
@@ -9269,7 +9291,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 return;
             }
 
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Tech</th><th>Description</th><th>Status</th><th>Invoices</th><th>Client</th><th>Date</th></tr></thead><tbody>';
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Tech</th><th>Description</th><th>Status</th><th>Invoices</th><th>Client</th><th>Store</th><th>Date</th></tr></thead><tbody>';
             let found = 0;
 
             for (const [jobId, pos] of Object.entries(jobAllPOs)) {
@@ -9287,6 +9309,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                         const estimated = po[4] || 0;
                         const date = po[6] ? po[6].substring(0, 10) : 'N/A';
                         const clientName = po[8] || 'N/A';
+                        const storeName = po[9] || '-';
                         const invoiceCount = (poInvoices[po[0]] || []).length;
                         const invoiceDisplay = invoiceCount > 0
                             ? `<button onclick="showInvoicesModal(${po[0]}, '${poDisplay.replace(/'/g, "\\'")}', event)" style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold; border: none; cursor: pointer;">${invoiceCount}</button>`
@@ -9299,6 +9322,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                             <td><span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span></td>
                             <td>${invoiceDisplay}</td>
                             <td>${escapeHtml(clientName)}</td>
+                            <td>${escapeHtml(storeName)}</td>
                             <td>${date}</td>
                         </tr>`;
                         found++;
@@ -9390,7 +9414,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         function renderServicePOs() {
             const resultsDiv = document.getElementById('service-po-results');
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Tech</th><th>Client</th><th>Status</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Tech</th><th>Client</th><th>Store</th><th>Status</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
             let totalPOs = 0;
 
             // Get all service POs from serviceJobs and jobAllPOs
@@ -9402,6 +9426,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                 pos.forEach(po => {
                     const poId = po[0];
                     const clientName = po[8] || 'N/A';
+                    const storeName = po[9] || '-';
                     const poDisplay = `S-${poId} ${clientName}`;
                     const techName = getTechName(po[2]);
                     const status = po[3];
@@ -9419,6 +9444,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                             <td><strong>${escapeHtml(poDisplay)}</strong></td>
                             <td>${escapeHtml(techName)}</td>
                             <td>${escapeHtml(clientName)}</td>
+                            <td>${escapeHtml(storeName)}</td>
                             <td><span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span></td>
                             <td>${formatCurrency(invoiced)}</td>
                             <td>${invoiceDisplay}</td>
@@ -9539,8 +9565,10 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     const invoiced_po = po[5] || 0;
 
                     const clientName = po[7] || 'N/A';
+                    const storeName = po[8] || null;
                     const poItemId = `po-item-${jobId}-${poNum}`;
                     const clientDisplay = dept === 'service' ? `<br><small style="color: #666; font-style: italic;">Client: ${escapeHtml(clientName)}</small>` : '';
+                    const storeDisplay = storeName ? `<br><small style="color: #555;">🏪 Store: ${escapeHtml(storeName)}</small>` : '';
 
                     // Get invoices for this PO
                     const invoices = poInvoices[poNum] || [];
@@ -9575,6 +9603,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                                     <span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span>
                                     <br><small>Est: ${formatCurrency(estimated)} | Inv: ${formatCurrency(invoiced_po)}</small>
                                     ${clientDisplay}
+                                    ${storeDisplay}
                                 </div>
                                 <div>
                                     <button class="invoice-dropdown-toggle collapsed" onclick="toggleInvoices(${poNum}, event)" title="Toggle invoices for this PO"></button>
