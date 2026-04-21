@@ -18654,9 +18654,15 @@ def sync_community_drafts(c, community_name, community_id):
     row = c.fetchone()
     num_clocks = row[0] if row else 0
 
+    if num_clocks == 0:
+        c.execute("SELECT COUNT(*) FROM verona_walk_clock_addresses WHERE community_id = ?", (community_id,))
+        uses_clocks = c.fetchone()[0] > 0
+    else:
+        uses_clocks = True
+
     # Build expected labels from current addresses
     expected_labels = []
-    if num_clocks > 0:
+    if uses_clocks:
         c.execute("""SELECT clock_number, address, COALESCE(is_common_area, 0)
                      FROM verona_walk_clock_addresses
                      WHERE community_id = ?
@@ -18836,7 +18842,13 @@ def community_billing_spreadsheet():
             community_id = community_row[0]
             comm_num_clocks = community_row[1]
 
-            if comm_num_clocks > 0:
+            if comm_num_clocks == 0:
+                c.execute("SELECT COUNT(*) FROM verona_walk_clock_addresses WHERE community_id = ?", (community_id,))
+                comm_uses_clocks = c.fetchone()[0] > 0
+            else:
+                comm_uses_clocks = True
+
+            if comm_uses_clocks:
                 # Clock-based community: get all clock addresses
                 c.execute("""SELECT clock_number, address, COALESCE(is_common_area, 0) FROM verona_walk_clock_addresses
                              WHERE community_id = ?
@@ -18901,6 +18913,12 @@ def community_billing_spreadsheet():
     community_row = c.fetchone()
     community_id = community_row[0] if community_row else None
     num_clocks = community_row[1] if community_row else 0
+
+    # If num_clocks is not configured, check for existing clock addresses (e.g. Verona Walk HOA)
+    if community_id and num_clocks == 0:
+        c.execute("SELECT MAX(clock_number) FROM verona_walk_clock_addresses WHERE community_id = ?", (community_id,))
+        max_clock = c.fetchone()[0] or 0
+        num_clocks = max_clock
 
     # Sync draft line items with current community addresses on every page load.
     # This catches any address changes the office made since the draft was created.
@@ -20291,6 +20309,11 @@ def verona_walk_clocks():
     c.execute("SELECT COALESCE(num_clocks, 0) FROM communities WHERE id = ?", (community_id,))
     clocks_row = c.fetchone()
     num_clocks = clocks_row[0] if clocks_row else 0
+
+    if num_clocks == 0:
+        c.execute("SELECT MAX(clock_number) FROM verona_walk_clock_addresses WHERE community_id = ?", (community_id,))
+        max_row = c.fetchone()
+        num_clocks = max_row[0] if max_row and max_row[0] else 0
 
     # Build the clock structure with addresses
     clocks = []
