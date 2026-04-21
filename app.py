@@ -14606,12 +14606,12 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         <div id="message"></div>
 
         {% if is_verona_walk %}
-        <!-- Verona Walk: Clock dropdown + zones list -->
+        <!-- Clock-based community: Clock dropdown + zones list -->
         <div id="veronaWalkLayout">
             <div class="vw-clock-selector">
                 <select id="vwClockSelect" onchange="vwSelectClock(this.value)">
                     <option value="">-- Select a Clock --</option>
-                    {% for i in range(1, 19) %}
+                    {% for i in range(1, num_clocks + 1) %}
                     <option value="{{ i }}">Clock {{ i }}</option>
                     {% endfor %}
                 </select>
@@ -17849,8 +17849,8 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 html += '<div class="alert alert-info">' + data.submissions.length + ' submission(s) found - Pricing not configured</div>';
             }
 
-            if (data.community === 'Verona Walk HOA') {
-                // --- Verona Walk HOA: group line items by clock across all submissions ---
+            if (data.num_clocks > 0) {
+                // --- Clock-based community: group line items by clock across all submissions ---
 
                 // Show submissions list with delete buttons
                 html += '<div style="margin-bottom: 16px;">';
@@ -18650,9 +18650,13 @@ def sync_community_drafts(c, community_name, community_id):
     if not draft_ids:
         return
 
+    c.execute("SELECT COALESCE(num_clocks, 0) FROM communities WHERE id = ?", (community_id,))
+    row = c.fetchone()
+    num_clocks = row[0] if row else 0
+
     # Build expected labels from current addresses
     expected_labels = []
-    if community_name == 'Verona Walk HOA':
+    if num_clocks > 0:
         c.execute("""SELECT clock_number, address, COALESCE(is_common_area, 0)
                      FROM verona_walk_clock_addresses
                      WHERE community_id = ?
@@ -18826,14 +18830,14 @@ def community_billing_spreadsheet():
     # If no line items yet, populate from house numbers or clock addresses added by office user
     if not line_items:
         # Get community ID first
-        c.execute("SELECT id FROM communities WHERE name = ? AND active = 1", (community,))
+        c.execute("SELECT id, COALESCE(num_clocks, 0) FROM communities WHERE name = ? AND active = 1", (community,))
         community_row = c.fetchone()
         if community_row:
             community_id = community_row[0]
+            comm_num_clocks = community_row[1]
 
-            # Check if this is Verona Walk HOA
-            if community == 'Verona Walk HOA':
-                # Get all clock addresses for this community
+            if comm_num_clocks > 0:
+                # Clock-based community: get all clock addresses
                 c.execute("""SELECT clock_number, address, COALESCE(is_common_area, 0) FROM verona_walk_clock_addresses
                              WHERE community_id = ?
                              ORDER BY clock_number, id""", (community_id,))
@@ -18892,10 +18896,11 @@ def community_billing_spreadsheet():
     submission_info = c.fetchone()
     status = submission_info[0] if submission_info else 'draft'
 
-    # Get community ID for loading house numbers (must be active)
-    c.execute("SELECT id FROM communities WHERE name = ? AND active = 1", (community,))
+    # Get community ID and num_clocks (must be active)
+    c.execute("SELECT id, COALESCE(num_clocks, 0) FROM communities WHERE name = ? AND active = 1", (community,))
     community_row = c.fetchone()
     community_id = community_row[0] if community_row else None
+    num_clocks = community_row[1] if community_row else 0
 
     # Sync draft line items with current community addresses on every page load.
     # This catches any address changes the office made since the draft was created.
@@ -18929,7 +18934,7 @@ def community_billing_spreadsheet():
 
     conn.close()
 
-    is_verona_walk = (community == 'Verona Walk HOA')
+    is_verona_walk = (num_clocks > 0)
 
     return render_template_string(COMMUNITY_BILLING_SPREADSHEET_TEMPLATE,
                                  submission_id=submission_id,
@@ -18938,6 +18943,7 @@ def community_billing_spreadsheet():
                                  work_date=work_date,
                                  line_items=line_items,
                                  status=status,
+                                 num_clocks=num_clocks,
                                  is_verona_walk=is_verona_walk)
 
 @app.route('/community_billing_save_item', methods=['POST'])
@@ -19355,10 +19361,11 @@ def community_billing_office_data():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
-    # Get community ID to fetch pricing
-    c.execute("SELECT id FROM communities WHERE name = ? AND active = 1", (community,))
+    # Get community ID and num_clocks to fetch pricing
+    c.execute("SELECT id, COALESCE(num_clocks, 0) FROM communities WHERE name = ? AND active = 1", (community,))
     community_row = c.fetchone()
     community_id = community_row[0] if community_row else None
+    comm_num_clocks = community_row[1] if community_row else 0
 
     # Get pricing for this community
     pricing = None
@@ -19460,7 +19467,8 @@ def community_billing_office_data():
         'total_cost': round(total_cost, 2),
         'residential_cost': round(clocks_cost, 2),
         'common_area_cost': round(common_area_cost, 2),
-        'has_pricing': pricing is not None
+        'has_pricing': pricing is not None,
+        'num_clocks': comm_num_clocks
     }
 
     return jsonify(response)
@@ -20280,11 +20288,14 @@ def verona_walk_clocks():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
+    c.execute("SELECT COALESCE(num_clocks, 0) FROM communities WHERE id = ?", (community_id,))
+    clocks_row = c.fetchone()
+    num_clocks = clocks_row[0] if clocks_row else 0
+
     # Build the clock structure with addresses
     clocks = []
 
-    # Clock 1-18
-    for i in range(1, 19):
+    for i in range(1, num_clocks + 1):
         clocks.append({
             'clock_number': i,
             'clock_label': f'Clock {i}',
