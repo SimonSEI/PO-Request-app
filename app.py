@@ -7427,12 +7427,28 @@ LOGIN_TEMPLATE = '''
             border-radius: 5px;
             margin-bottom: 20px;
         }
+        .lang-toggle-btn {
+            background: rgba(255,255,255,0.15);
+            color: white;
+            padding: 6px 14px;
+            border: 2px solid rgba(255,255,255,0.7);
+            border-radius: 5px;
+            font-size: 13px;
+            font-weight: bold;
+            cursor: pointer;
+            position: fixed;
+            top: 16px;
+            right: 20px;
+        }
+        .lang-toggle-btn:hover { background: rgba(255,255,255,0.3); }
+        .lang-toggle-btn.es-active { background: rgba(200,16,46,0.7); border-color: white; }
     </style>
 </head>
 <body>
+    <button class="lang-toggle-btn" id="langToggleBtn" onclick="toggleLanguage()">🇪🇸 Español</button>
     <div class="container">
-        <h1>🌱 Irrigation PO System</h1>
-        <p class="subtitle">Purchase Order Request System</p>
+        <h1 data-i18n="title">🌱 Irrigation PO System</h1>
+        <p class="subtitle" data-i18n="subtitle">Purchase Order Request System</p>
         {% with messages = get_flashed_messages() %}
             {% if messages %}
                 {% for message in messages %}
@@ -7442,22 +7458,69 @@ LOGIN_TEMPLATE = '''
         {% endwith %}
         <form method="POST">
             <div class="form-group">
-                <label>Username</label>
+                <label data-i18n="username_label">Username</label>
                 <input type="text" name="username" required autofocus>
             </div>
             <div class="form-group">
-                <label>Password</label>
+                <label data-i18n="password_label">Password</label>
                 <input type="password" name="password" required>
             </div>
-            <button type="submit">Login</button>
+            <button type="submit" data-i18n="login_btn">Login</button>
         </form>
     <div style="text-align: center; margin-top: 20px; color: #666;">
-            Office Manager? <a href="{{ url_for('register') }}" style="color: #667eea; text-decoration: none; font-weight: bold;">Create Account</a>
+            <span data-i18n="office_manager_q">Office Manager?</span> <a href="{{ url_for('register') }}" style="color: #667eea; text-decoration: none; font-weight: bold;" data-i18n="create_account">Create Account</a>
         </div>
         <div style="text-align: center; margin-top: 15px;">
-            <a href="{{ url_for('forgot_password') }}" style="color: #667eea; text-decoration: none; font-size: 14px;">Forgot your password?</a>
+            <a href="{{ url_for('forgot_password') }}" style="color: #667eea; text-decoration: none; font-size: 14px;" data-i18n="forgot_password">Forgot your password?</a>
         </div>
     </div>
+    <script>
+        const TRANSLATIONS = {
+            en: {
+                title: '🌱 Irrigation PO System',
+                subtitle: 'Purchase Order Request System',
+                username_label: 'Username',
+                password_label: 'Password',
+                login_btn: 'Login',
+                office_manager_q: 'Office Manager?',
+                create_account: 'Create Account',
+                forgot_password: 'Forgot your password?',
+            },
+            es: {
+                title: '🌱 Sistema de PO de Irrigación',
+                subtitle: 'Sistema de Solicitudes de Órdenes de Compra',
+                username_label: 'Usuario',
+                password_label: 'Contraseña',
+                login_btn: 'Iniciar Sesión',
+                office_manager_q: '¿Gerente de Oficina?',
+                create_account: 'Crear Cuenta',
+                forgot_password: '¿Olvidó su contraseña?',
+            }
+        };
+
+        let currentLang = localStorage.getItem('techDashLang') || 'en';
+
+        function applyLanguage(lang) {
+            const tr = TRANSLATIONS[lang];
+            document.querySelectorAll('[data-i18n]').forEach(el => {
+                const key = el.getAttribute('data-i18n');
+                if (tr[key] !== undefined) el.textContent = tr[key];
+            });
+            const btn = document.getElementById('langToggleBtn');
+            if (btn) {
+                btn.textContent = lang === 'es' ? '🇺🇸 English' : '🇪🇸 Español';
+                lang === 'es' ? btn.classList.add('es-active') : btn.classList.remove('es-active');
+            }
+        }
+
+        function toggleLanguage() {
+            currentLang = currentLang === 'en' ? 'es' : 'en';
+            localStorage.setItem('techDashLang', currentLang);
+            applyLanguage(currentLang);
+        }
+
+        applyLanguage(currentLang);
+    </script>
 </body>
 </html>
 '''
@@ -7723,9 +7786,7 @@ DASHBOARD_MENU_TEMPLATE = '''
         applyLanguage(currentLang);
     }
 
-    document.addEventListener('DOMContentLoaded', function() {
-        applyLanguage(currentLang);
-    });
+    applyLanguage(currentLang);
 </script>
 </body>
 </html>
@@ -8523,11 +8584,9 @@ TECH_DASHBOARD_TEMPLATE = '''
     }
 
     // ── Form setup and PO search functionality ──────────────────────────────
-    document.addEventListener('DOMContentLoaded', function() {
-        // Apply saved language on load
-        applyLanguage(currentLang);
+    applyLanguage(currentLang);
 
-        // Add event listener for combined search filter
+    document.addEventListener('DOMContentLoaded', function() {
         const searchFilter = document.getElementById('poSearchFilter');
         if (searchFilter) {
             searchFilter.addEventListener('keyup', filterPOs);
@@ -14681,19 +14740,32 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             border-radius: 3px;
             font-size: 16px;
         }
+        .lang-toggle-btn {
+            padding: 10px 16px;
+            background: #667eea;
+            color: white;
+            border: 2px solid #5568d3;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.3s ease;
+        }
+        .lang-toggle-btn:hover { background: #5568d3; }
+        .lang-toggle-btn.es-active { background: #c8102e; border-color: #c8102e; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>Community Maintenance Entry
+            <h1 data-i18n="page_title">Community Maintenance Entry
                 <span class="status {% if status == 'submitted' %}submitted{% else %}draft{% endif %}">
-                    {{ status|upper }}
+                    {% if status == 'submitted' %}<span data-i18n="status_submitted">SUBMITTED</span>{% else %}<span data-i18n="status_draft">DRAFT</span>{% endif %}
                 </span>
             </h1>
             <div class="info">
-                <strong>Community:</strong> {{ community|escape }}<br>
-                <strong>Work Date:</strong> {{ work_date|escape }}
+                <strong data-i18n="community_label">Community:</strong> {{ community|escape }}<br>
+                <strong data-i18n="work_date_label">Work Date:</strong> {{ work_date|escape }}
             </div>
         </div>
 
@@ -14704,7 +14776,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         <div id="veronaWalkLayout">
             <div class="vw-clock-selector">
                 <select id="vwClockSelect" onchange="vwSelectClock(this.value)">
-                    <option value="">-- Select a Clock --</option>
+                    <option value="" data-i18n="select_clock">-- Select a Clock --</option>
                     {% for i in range(1, num_clocks + 1) %}
                     <option value="{{ i }}">Clock {{ i }}</option>
                     {% endfor %}
@@ -14718,17 +14790,17 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             <table>
                 <thead>
                     <tr>
-                        <th>Zone & Address</th>
-                        <th>Nozzle</th>
-                        <th>6" Pop Up</th>
-                        <th>12" Pop Up</th>
-                        <th>6" Rotor</th>
-                        <th>NEW 6" Pop Up</th>
-                        <th>NEW 12" Pop Up</th>
-                        <th>Riser</th>
-                        <th>Solenoid</th>
-                        <th>1 Stat Decoder</th>
-                        <th>Notes</th>
+                        <th data-i18n="col_zone_address">Zone & Address</th>
+                        <th data-i18n="col_nozzle">Nozzle</th>
+                        <th data-i18n="col_popup_6">6" Pop Up</th>
+                        <th data-i18n="col_popup_12">12" Pop Up</th>
+                        <th data-i18n="col_rotor_6">6" Rotor</th>
+                        <th data-i18n="col_new_popup_6">NEW 6" Pop Up</th>
+                        <th data-i18n="col_new_popup_12">NEW 12" Pop Up</th>
+                        <th data-i18n="col_riser">Riser</th>
+                        <th data-i18n="col_solenoid">Solenoid</th>
+                        <th data-i18n="col_stat_decoder">1 Stat Decoder</th>
+                        <th data-i18n="col_notes">Notes</th>
                     </tr>
                 </thead>
                 <tbody id="tableBody">
@@ -14744,7 +14816,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         <td><input type="number" class="riser" value="{{ item.riser if item.riser and item.riser != 0 else '' }}" min="0"></td>
                         <td><input type="number" class="solenoid" value="{{ item.solenoid if item.solenoid and item.solenoid != 0 else '' }}" min="0"></td>
                         <td><input type="number" class="stat_decoder_1" value="{{ item.stat_decoder_1 if item.stat_decoder_1 and item.stat_decoder_1 != 0 else '' }}" min="0"></td>
-                        <td><input type="text" class="notes" value="{{ item.notes or '' }}" placeholder="Add notes..."></td>
+                        <td><input type="text" class="notes" value="{{ item.notes or '' }}" placeholder="Add notes..." data-i18n-placeholder="notes_placeholder"></td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -14753,19 +14825,20 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
         <!-- Cost Breakdown Section -->
         <div id="costBreakdown" style="background: #f9f9f9; border: 1px solid #ddd; border-radius: 6px; padding: 15px; margin-top: 20px; display: none;">
-            <h3 style="margin-top: 0; color: #333;">💰 Cost Breakdown</h3>
+            <h3 style="margin-top: 0; color: #333;" data-i18n="cost_breakdown">💰 Cost Breakdown</h3>
             <div id="costDetails" style="font-size: 14px; line-height: 1.8;"></div>
             <div style="border-top: 1px solid #ddd; margin-top: 10px; padding-top: 10px; font-weight: bold; font-size: 15px; color: #28a745;">
-                Total Cost: $<span id="totalCost">0.00</span>
+                <span data-i18n="total_cost_label">Total Cost: $</span><span id="totalCost">0.00</span>
             </div>
         </div>
 
         <div class="controls">
-            <a href="/community_billing_tech" class="btn btn-secondary" style="padding: 10px 20px; text-decoration: none; border-radius: 6px; color: white; background: #6c757d; border: none; cursor: pointer; font-weight: 600; display: inline-block;">← Back to Home</a>
-            <button class="btn-secondary" id="saveBtn" type="button" style="padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">Save</button>
+            <a href="/community_billing_tech" class="btn btn-secondary" style="padding: 10px 20px; text-decoration: none; border-radius: 6px; color: white; background: #6c757d; border: none; cursor: pointer; font-weight: 600; display: inline-block;" data-i18n="back_home_btn">← Back to Home</a>
+            <button class="btn-secondary" id="saveBtn" type="button" style="padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;" data-i18n="save_btn">Save</button>
             <button class="btn-success" id="submitBtn" type="button" {% if status == 'submitted' %}disabled{% endif %} style="padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
-                {% if status == 'submitted' %}✓ Finalized{% else %}Submit & Finalize{% endif %}
+                {% if status == 'submitted' %}<span data-i18n="btn_finalized">✓ Finalized</span>{% else %}<span data-i18n="btn_submit_finalize">Submit & Finalize</span>{% endif %}
             </button>
+            <button class="lang-toggle-btn" id="langToggleBtn" onclick="toggleLanguage()">🇪🇸 Español</button>
         </div>
     </div>
 
@@ -14781,6 +14854,120 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
     </script>
 
     <script>
+        // ── Translation ────────────────────────────────────────────────────────
+        const TRANSLATIONS = {
+            en: {
+                page_title: 'Community Maintenance Entry',
+                status_submitted: 'SUBMITTED',
+                status_draft: 'DRAFT',
+                community_label: 'Community:',
+                work_date_label: 'Work Date:',
+                select_clock: '-- Select a Clock --',
+                col_zone_address: 'Zone & Address',
+                col_nozzle: 'Nozzle',
+                col_popup_6: '6" Pop Up',
+                col_popup_12: '12" Pop Up',
+                col_rotor_6: '6" Rotor',
+                col_new_popup_6: 'NEW 6" Pop Up',
+                col_new_popup_12: 'NEW 12" Pop Up',
+                col_riser: 'Riser',
+                col_solenoid: 'Solenoid',
+                col_stat_decoder: '1 Stat Decoder',
+                col_notes: 'Notes',
+                notes_placeholder: 'Add notes...',
+                cost_breakdown: '💰 Cost Breakdown',
+                total_cost_label: 'Total Cost: $',
+                back_home_btn: '← Back to Home',
+                save_btn: 'Save',
+                btn_finalized: '✓ Finalized',
+                btn_submit_finalize: 'Submit & Finalize',
+                no_data_to_save: 'No data to save',
+                save_failed: 'Save failed: ',
+                save_error: 'Save error: ',
+                use_save_btn: 'Use the Save button to save all changes',
+                confirm_delete_row: 'Delete this row?',
+                row_deleted: 'Row deleted!',
+                error_prefix: 'Error: ',
+                no_addresses: 'No addresses',
+                error_loading_pricing: 'Error loading pricing',
+                error_calculating: 'Error calculating cost: ',
+                confirm_submit: "Submit form? You won't be able to edit it afterwards.",
+                submitted_msg: 'Submitted! Redirecting...',
+                saved_msg: '✓ Saved! Reloading...',
+            },
+            es: {
+                page_title: 'Entrada de Mantenimiento Comunitario',
+                status_submitted: 'ENVIADO',
+                status_draft: 'BORRADOR',
+                community_label: 'Comunidad:',
+                work_date_label: 'Fecha de Trabajo:',
+                select_clock: '-- Seleccionar un Reloj --',
+                col_zone_address: 'Zona y Dirección',
+                col_nozzle: 'Boquilla',
+                col_popup_6: '6" Pop Up',
+                col_popup_12: '12" Pop Up',
+                col_rotor_6: '6" Rotor',
+                col_new_popup_6: 'NUEVO 6" Pop Up',
+                col_new_popup_12: 'NUEVO 12" Pop Up',
+                col_riser: 'Elevador',
+                col_solenoid: 'Solenoide',
+                col_stat_decoder: '1 Decoder Stat',
+                col_notes: 'Notas',
+                notes_placeholder: 'Agregar notas...',
+                cost_breakdown: '💰 Desglose de Costos',
+                total_cost_label: 'Costo Total: $',
+                back_home_btn: '← Volver al Inicio',
+                save_btn: 'Guardar',
+                btn_finalized: '✓ Finalizado',
+                btn_submit_finalize: 'Enviar y Finalizar',
+                no_data_to_save: 'No hay datos para guardar',
+                save_failed: 'Error al guardar: ',
+                save_error: 'Error al guardar: ',
+                use_save_btn: 'Use el botón Guardar para guardar todos los cambios',
+                confirm_delete_row: '¿Eliminar esta fila?',
+                row_deleted: '¡Fila eliminada!',
+                error_prefix: 'Error: ',
+                no_addresses: 'Sin direcciones',
+                error_loading_pricing: 'Error al cargar precios',
+                error_calculating: 'Error al calcular costo: ',
+                confirm_submit: '¿Enviar formulario? No podrá editarlo después.',
+                submitted_msg: '¡Enviado! Redireccionando...',
+                saved_msg: '✓ ¡Guardado! Recargando...',
+            }
+        };
+
+        let currentLang = localStorage.getItem('techDashLang') || 'en';
+
+        function applyLanguage(lang) {
+            const tr = TRANSLATIONS[lang];
+            document.querySelectorAll('[data-i18n]').forEach(el => {
+                const key = el.getAttribute('data-i18n');
+                if (tr[key] !== undefined) el.textContent = tr[key];
+            });
+            document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+                const key = el.getAttribute('data-i18n-placeholder');
+                if (tr[key] !== undefined) el.placeholder = tr[key];
+            });
+            const btn = document.getElementById('langToggleBtn');
+            if (btn) {
+                btn.textContent = lang === 'es' ? '🇺🇸 English' : '🇪🇸 Español';
+                lang === 'es' ? btn.classList.add('es-active') : btn.classList.remove('es-active');
+            }
+        }
+
+        function toggleLanguage() {
+            currentLang = currentLang === 'en' ? 'es' : 'en';
+            localStorage.setItem('techDashLang', currentLang);
+            applyLanguage(currentLang);
+        }
+
+        function t(key) {
+            return (TRANSLATIONS[currentLang] || TRANSLATIONS.en)[key] || key;
+        }
+
+        applyLanguage(currentLang);
+        // ── End Translation ────────────────────────────────────────────────────
+
         let submissionId, status, community, workDate, communityId, isVeronaWalk;
 
         // Parse data from JSON
@@ -14864,7 +15051,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
 
         function vwRenderCards(items) {
             if (items.length === 0) {
-                return '<div class="vw-empty">No addresses</div>';
+                return '<div class="vw-empty">' + t('no_addresses') + '</div>';
             }
             return items.map(item => {
                 const isDisabled = status === 'submitted' ? 'disabled' : '';
@@ -14969,7 +15156,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             console.log('Found rows:', rows.length);
 
             if (rows.length === 0) {
-                alert('No data to save');
+                alert(t('no_data_to_save'));
                 return;
             }
 
@@ -15016,26 +15203,26 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             .then(result => {
                 console.log('Response:', result);
                 if (result.success) {
-                    showMessage('✓ Saved! Reloading...', 'success');
+                    showMessage(t('saved_msg'), 'success');
                     setTimeout(() => window.location.reload(), 1000);
                 } else {
-                    alert('Save failed: ' + (result.error || 'Unknown error'));
+                    alert(t('save_failed') + (result.error || 'Unknown error'));
                 }
             })
             .catch(error => {
                 console.error('Error:', error);
-                alert('Save error: ' + error.message);
+                alert(t('save_error') + error.message);
             });
         }
 
         function saveItem(itemId) {
             // Individual row saving is no longer supported
             // Use the Save button to save the entire draft
-            showMessage('Use the Save button to save all changes', 'info');
+            showMessage(t('use_save_btn'), 'info');
         }
 
         function deleteItem(itemId) {
-            if (!confirm('Delete this row?')) return;
+            if (!confirm(t('confirm_delete_row'))) return;
 
             try {
                 fetch('/community_billing_delete_item', {
@@ -15048,12 +15235,12 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     if (result.success) {
                         const row = document.querySelector(`[data-item-id="${CSS.escape(String(itemId))}"]`);
                         if (row) row.remove();
-                        showMessage('Row deleted!', 'success');
+                        showMessage(t('row_deleted'), 'success');
                     } else {
-                        alert('Error: ' + result.error);
+                        alert(t('error_prefix') + result.error);
                     }
                 })
-                .catch(e => alert('Error: ' + e));
+                .catch(e => alert(t('error_prefix') + e));
             } catch (e) {
                 console.error('Error deleting item:', e);
             }
@@ -15074,7 +15261,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 .then(r => r.json())
                 .then(pricingData => {
                     if (!pricingData.success) {
-                        alert('Error loading pricing');
+                        alert(t('error_loading_pricing'));
                         return;
                     }
 
@@ -15122,7 +15309,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     document.getElementById('totalCost').textContent = totalCost.toFixed(2);
                     document.getElementById('costBreakdown').style.display = 'block';
                 })
-                .catch(e => alert('Error calculating cost: ' + e));
+                .catch(e => alert(t('error_calculating') + e));
         }
 
         function submitForm() {
@@ -15134,7 +15321,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 calculateCost();
 
                 setTimeout(() => {
-                    if (!confirm("Submit form? You won't be able to edit it afterwards.")) return;
+                    if (!confirm(t('confirm_submit'))) return;
 
                     fetch('/community_billing_submit', {
                         method: 'POST',
@@ -15144,13 +15331,13 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     .then(r => r.json())
                     .then(result => {
                         if (result.success) {
-                            showMessage('Submitted! Redirecting...', 'success');
+                            showMessage(t('submitted_msg'), 'success');
                             setTimeout(() => window.location.href = '/community_billing_tech', 2000);
                         } else {
-                            alert('Error: ' + result.error);
+                            alert(t('error_prefix') + result.error);
                         }
                     })
-                    .catch(e => alert('Error: ' + e));
+                    .catch(e => alert(t('error_prefix') + e));
                 }, 500);
             }, 500);
         }
