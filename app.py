@@ -19030,7 +19030,8 @@ def community_billing_tech():
     c.execute("""SELECT id, community_name, work_date, status, submitted_at, created_at
                  FROM community_billing_submissions
                  WHERE tech_username = ?
-                 ORDER BY COALESCE(submitted_at, created_at) DESC""", (username,))
+                 ORDER BY COALESCE(submitted_at, created_at) DESC
+                 LIMIT 3""", (username,))
 
     submissions = []
     for row in c.fetchall():
