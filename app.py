@@ -14774,6 +14774,12 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         {% if is_verona_walk %}
         <!-- Clock-based community: Clock dropdown + zones list -->
         <div id="veronaWalkLayout">
+            {% if status == 'submitted' %}
+            <div id="vwReadOnlyBanner" style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; padding: 12px 16px; margin-bottom: 12px; color: #856404; font-size: 14px;">
+                <strong data-i18n="readonly_notice_title">⚠ This submission is finalized.</strong>
+                <span data-i18n="readonly_notice_body"> Fields are read-only. Contact your administrator if changes are needed.</span>
+            </div>
+            {% endif %}
             <div class="vw-clock-selector">
                 <select id="vwClockSelect" onchange="vwSelectClock(this.value)">
                     <option value="" data-i18n="select_clock">-- Select a Clock --</option>
@@ -14889,6 +14895,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 row_deleted: 'Row deleted!',
                 error_prefix: 'Error: ',
                 no_addresses: 'No addresses',
+                readonly_notice_title: '⚠ This submission is finalized.',
+                readonly_notice_body: ' Fields are read-only. Contact your administrator if changes are needed.',
                 error_loading_pricing: 'Error loading pricing',
                 error_calculating: 'Error calculating cost: ',
                 confirm_submit: "Submit form? You won't be able to edit it afterwards.",
@@ -14928,6 +14936,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 row_deleted: '¡Fila eliminada!',
                 error_prefix: 'Error: ',
                 no_addresses: 'Sin direcciones',
+                readonly_notice_title: '⚠ Este envío está finalizado.',
+                readonly_notice_body: ' Los campos son de solo lectura. Contacte a su administrador si necesita cambios.',
                 error_loading_pricing: 'Error al cargar precios',
                 error_calculating: 'Error al calcular costo: ',
                 confirm_submit: '¿Enviar formulario? No podrá editarlo después.',
@@ -15030,6 +15040,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             return items;
         }
 
+        let vwRowsCache = null;
+
         function vwSelectClock(clockNum) {
             const content = document.getElementById('vwClockContent');
             if (!clockNum) {
@@ -15038,7 +15050,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             }
             content.style.display = 'block';
             clockNum = parseInt(clockNum);
-            const items = vwParseRows();
+            if (!vwRowsCache) vwRowsCache = vwParseRows();
+            const items = vwRowsCache;
             // Combine all zones for this clock and sort by zone number
             const allZones = items.filter(i => i.clockNum === clockNum);
             allZones.sort(function(a, b) {
@@ -15086,6 +15099,11 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             if (!row) return;
             const input = row.querySelector('.' + fieldKey);
             if (input) input.value = value;
+            // Keep cache in sync so switching clocks preserves unsaved changes
+            if (vwRowsCache) {
+                const cached = vwRowsCache.find(i => i.itemId === itemId);
+                if (cached) cached.vals[fieldKey] = value;
+            }
         }
 
         function setupAutoSave() {
