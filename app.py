@@ -14278,7 +14278,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
                 failed_create: 'Failed to create submission',
                 error_prefix: 'Error:',
                 draft_deleted: 'Draft deleted successfully. Refreshing page...',
-                confirm_delete_1: 'Delete draft for {community}?\n\nThis action CANNOT be undone.',
+                confirm_delete_1: 'Delete draft for {community}?\\n\\nThis action CANNOT be undone.',
                 confirm_delete_2: 'Are you absolutely sure? This will permanently delete all data for this draft.',
             },
             es: {
@@ -14300,7 +14300,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
                 failed_create: 'Error al crear el envío',
                 error_prefix: 'Error:',
                 draft_deleted: 'Borrador eliminado con éxito. Actualizando página...',
-                confirm_delete_1: '¿Eliminar borrador de {community}?\n\nEsta acción NO se puede deshacer.',
+                confirm_delete_1: '¿Eliminar borrador de {community}?\\n\\nEsta acción NO se puede deshacer.',
                 confirm_delete_2: '¿Está absolutamente seguro? Esto eliminará permanentemente todos los datos de este borrador.',
             }
         };
