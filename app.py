@@ -18110,6 +18110,13 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             if (toggle) toggle.classList.toggle('expanded');
         }
 
+        function hasData(item) {
+            return (item.nozzle || 0) + (item.pop_up_6_inch || 0) + (item.pop_up_12_inch || 0) +
+                   (item.rotor_6_inch || 0) + (item.new_pop_up_6_inch || 0) + (item.new_pop_up_12_inch || 0) +
+                   (item.riser || 0) + (item.solenoid || 0) + (item.stat_decoder_1 || 0) > 0 ||
+                   !!(item.notes && item.notes.trim());
+        }
+
         function displayResults(data) {
             const resultsDiv = document.getElementById('results');
             const exportExcelBtn = document.getElementById('exportExcelBtn');
@@ -18191,7 +18198,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                             key = 'other';
                             if (!clockGroups[key]) clockGroups[key] = { label: 'Other', sortKey: 99999, items: [] };
                         }
-                        clockGroups[key].items.push(enriched);
+                        if (hasData(enriched)) clockGroups[key].items.push(enriched);
                     });
                 });
 
@@ -18200,6 +18207,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
                 sortedKeys.forEach(key => {
                     const group = clockGroups[key];
+                    if (group.items.length === 0) return;
                     const gid = 'rg-' + key;
                     html += '<div class="clock-container">';
                     html += '<div class="clock-header" data-gid="' + gid + '" onclick="toggleResultGroup(this.dataset.gid)">';
@@ -18244,11 +18252,12 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     html += '</div>';
                     html += '</div>';
                     html += '<div class="clock-addresses" id="' + gid + '">';
-                    if (submission.line_items.length > 0) {
+                    const filledItems = submission.line_items.filter(hasData);
+                    if (filledItems.length > 0) {
                         html += '<table class="spreadsheet-table">';
                         html += '<thead><tr><th>Zone &amp; Address</th><th>Nozzle</th><th>6&quot; Pop Up</th><th>12&quot; Pop Up</th><th>6&quot; Rotor</th><th>NEW 6&quot; Pop Up</th><th>NEW 12&quot; Pop Up</th><th>Riser</th><th>Solenoid</th><th>1 Stat Decoder</th><th>Notes</th></tr></thead>';
                         html += '<tbody>';
-                        submission.line_items.forEach(item => {
+                        filledItems.forEach(item => {
                             html += '<tr>';
                             html += '<td>' + (item.zone_and_address || '') + '</td>';
                             html += '<td>' + item.nozzle + '</td>';
