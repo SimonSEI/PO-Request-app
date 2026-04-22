@@ -14352,6 +14352,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
 
             fetch('/community_billing_spreadsheet', {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: {
                     'Content-Type': 'application/json'
                 },
@@ -14360,8 +14361,16 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
                     work_date: workDate
                 })
             })
-            .then(response => response.json().then(data => ({ok: response.ok, data})))
-            .then(({ok, data}) => {
+            .then(response => {
+                if (response.status === 401) {
+                    window.location.href = '/login';
+                    return;
+                }
+                return response.json().then(data => ({ok: response.ok, data}));
+            })
+            .then(result => {
+                if (!result) return;
+                const {ok, data} = result;
                 if (ok && data.submission_id) {
                     const encodedCommunity = encodeURIComponent(community);
                     const encodedDate = encodeURIComponent(workDate);
@@ -19065,7 +19074,7 @@ def community_billing_spreadsheet():
     """Tech side - view and edit spreadsheet"""
     if 'username' not in session or session.get('role') != 'technician':
         if request.method == 'POST':
-            return jsonify({'success': False, 'error': 'Access denied'})
+            return jsonify({'success': False, 'error': 'Access denied', 'redirect': '/login'}), 401
         return redirect(url_for('login'))
 
     # Handle both POST (JSON) and GET (query params)
