@@ -14628,6 +14628,11 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             color: #155724;
             border: 1px solid #c3e6cb;
         }
+        .alert-danger {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
         /* Verona Walk tech layout */
         .vw-clock-selector {
             margin-bottom: 15px;
@@ -14841,6 +14846,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         <div class="controls">
             <a href="/community_billing_tech" class="btn btn-secondary" style="padding: 10px 20px; text-decoration: none; border-radius: 6px; color: white; background: #6c757d; border: none; cursor: pointer; font-weight: 600; display: inline-block;" data-i18n="back_home_btn">← Back to Home</a>
             <button class="btn-secondary" id="saveBtn" type="button" style="padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;" data-i18n="save_btn">Save</button>
+            <span id="unsavedDot" style="display:none; color:#e67e22; font-size:13px; font-weight:600; align-self:center;" data-i18n="unsaved_indicator">● Unsaved</span>
             <button class="btn-success" id="submitBtn" type="button" {% if status == 'submitted' %}disabled{% endif %} style="padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
                 {% if status == 'submitted' %}<span data-i18n="btn_finalized">✓ Finalized</span>{% else %}<span data-i18n="btn_submit_finalize">Submit & Finalize</span>{% endif %}
             </button>
@@ -14901,7 +14907,9 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 error_calculating: 'Error calculating cost: ',
                 confirm_submit: "Submit form? You won't be able to edit it afterwards.",
                 submitted_msg: 'Submitted! Redirecting...',
-                saved_msg: '✓ Saved! Reloading...',
+                saved_msg: '✓ Saved!',
+                unsaved_indicator: '● Unsaved',
+                save_network_error: 'Save failed — check your connection and try again.',
             },
             es: {
                 page_title: 'Entrada de Mantenimiento Comunitario',
@@ -14942,7 +14950,9 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 error_calculating: 'Error al calcular costo: ',
                 confirm_submit: '¿Enviar formulario? No podrá editarlo después.',
                 submitted_msg: '¡Enviado! Redireccionando...',
-                saved_msg: '✓ ¡Guardado! Recargando...',
+                saved_msg: '✓ ¡Guardado!',
+                unsaved_indicator: '● Sin guardar',
+                save_network_error: 'Error al guardar — verifique su conexión e intente de nuevo.',
             }
         };
 
@@ -15093,6 +15103,27 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             }).join('');
         }
 
+        let hasUnsavedChanges = false;
+
+        function markUnsaved() {
+            hasUnsavedChanges = true;
+            const dot = document.getElementById('unsavedDot');
+            if (dot) dot.style.display = 'inline';
+        }
+
+        function markSaved() {
+            hasUnsavedChanges = false;
+            const dot = document.getElementById('unsavedDot');
+            if (dot) dot.style.display = 'none';
+        }
+
+        window.addEventListener('beforeunload', function(e) {
+            if (hasUnsavedChanges) {
+                e.preventDefault();
+                e.returnValue = '';
+            }
+        });
+
         function vwUpdateField(itemId, fieldKey, value) {
             // Sync back to the hidden table row so autosave picks it up
             const row = document.querySelector(`[data-item-id="${itemId}"]`);
@@ -15104,6 +15135,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 const cached = vwRowsCache.find(i => i.itemId === itemId);
                 if (cached) cached.vals[fieldKey] = value;
             }
+            markUnsaved();
         }
 
         function setupAutoSave() {
@@ -15209,6 +15241,9 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             const payload = { submission_id: submissionId, line_items: lineItems };
             console.log('Payload:', JSON.stringify(payload, null, 2));
 
+            const saveBtn = document.getElementById('saveBtn');
+            if (saveBtn) saveBtn.disabled = true;
+
             fetch('/community_billing_save_draft', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -15220,16 +15255,18 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             })
             .then(result => {
                 console.log('Response:', result);
+                if (saveBtn) saveBtn.disabled = false;
                 if (result.success) {
+                    markSaved();
                     showMessage(t('saved_msg'), 'success');
-                    setTimeout(() => window.location.reload(), 1000);
                 } else {
-                    alert(t('save_failed') + (result.error || 'Unknown error'));
+                    showMessage(t('save_failed') + (result.error || 'Unknown error'), 'error');
                 }
             })
             .catch(error => {
-                console.error('Error:', error);
-                alert(t('save_error') + error.message);
+                console.error('Save error:', error);
+                if (saveBtn) saveBtn.disabled = false;
+                showMessage(t('save_network_error'), 'error');
             });
         }
 
@@ -15349,6 +15386,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     .then(r => r.json())
                     .then(result => {
                         if (result.success) {
+                            markSaved();
                             showMessage(t('submitted_msg'), 'success');
                             setTimeout(() => window.location.href = '/community_billing_tech', 2000);
                         } else {
@@ -15367,10 +15405,12 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         function showMessage(message, type) {
             const msgDiv = document.getElementById('message');
             if (!msgDiv) return;
-            msgDiv.className = 'alert alert-' + type;
+            const cssType = type === 'error' ? 'danger' : type;
+            msgDiv.className = 'alert alert-' + cssType;
             msgDiv.textContent = message;
             msgDiv.style.display = 'block';
-            setTimeout(() => msgDiv.style.display = 'none', 3000);
+            const delay = type === 'error' ? 6000 : 3000;
+            setTimeout(() => msgDiv.style.display = 'none', delay);
         }
 
     </script>
