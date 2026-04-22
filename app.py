@@ -14114,19 +14114,38 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             display: none;
             font-size: 15px;
         }
+        .lang-toggle-btn {
+            background: rgba(255,255,255,0.15);
+            color: white;
+            padding: 8px 16px;
+            border: 2px solid rgba(255,255,255,0.7);
+            border-radius: 5px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.3s ease;
+        }
+        .lang-toggle-btn:hover { background: rgba(255,255,255,0.3); }
+        .lang-toggle-btn.es-active { background: rgba(200,16,46,0.7); border-color: white; }
+        .top-right {
+            position: fixed; top: 16px; right: 20px;
+        }
     </style>
 </head>
 <body>
+    <div class="top-right">
+        <button class="lang-toggle-btn" id="langToggleBtn" onclick="toggleLanguage()">🇪🇸 Español</button>
+    </div>
     <div class="container">
-        <h1>Community Maintenance Entry</h1>
-        <p class="subtitle">Welcome, <span class="username">{{ username }}</span></p>
+        <h1 data-i18n="page_title">Community Maintenance Entry</h1>
+        <p class="subtitle"><span data-i18n="welcome">Welcome,</span> <span class="username">{{ username }}</span></p>
 
         <div class="error" id="error"></div>
 
         <!-- Past Submissions and Drafts Section -->
         {% if submissions %}
         <div style="background: #f5f7fa; border-radius: 10px; padding: 16px; margin-bottom: 25px; border: 1px solid #ddd;">
-            <h2 style="margin-top: 0; margin-bottom: 14px; color: #333; font-size: 20px;">📋 Your Submissions & Drafts</h2>
+            <h2 style="margin-top: 0; margin-bottom: 14px; color: #333; font-size: 20px;" data-i18n="submissions_heading">📋 Your Submissions & Drafts</h2>
             <div style="display: grid; grid-template-columns: 1fr; gap: 14px;">
                 {% for submission in submissions %}
                 <div style="display: flex; flex-direction: column; gap: 0;">
@@ -14137,18 +14156,18 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
                         <button type="submit" style="width: 100%; text-align: left; background: white; border: 1px solid #e0e0e0; border-radius: {% if submission.status == 'draft' %}8px 8px 0 0{% else %}8px{% endif %}; padding: 16px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: all 0.3s; min-height: 70px;">
                             <div>
                                 <div style="font-weight: 700; color: #333; font-size: 17px;">{{ submission.community }}</div>
-                                <div style="font-size: 15px; color: #666; margin-top: 4px;">Date: {{ submission.work_date }}</div>
+                                <div style="font-size: 15px; color: #666; margin-top: 4px;"><span data-i18n="date_label">Date:</span> {{ submission.work_date }}</div>
                                 {% if submission.status == 'submitted' %}
-                                    <div style="font-size: 14px; color: #28a745; font-weight: 600; margin-top: 4px;">✓ Finalized</div>
+                                    <div style="font-size: 14px; color: #28a745; font-weight: 600; margin-top: 4px;" data-i18n="status_finalized">✓ Finalized</div>
                                 {% else %}
-                                    <div style="font-size: 14px; color: #ff9800; font-weight: 600; margin-top: 4px;">● Draft</div>
+                                    <div style="font-size: 14px; color: #ff9800; font-weight: 600; margin-top: 4px;" data-i18n="status_draft">● Draft</div>
                                 {% endif %}
                             </div>
-                            <div style="color: #667eea; font-weight: 700; font-size: 16px;">{% if submission.status == 'submitted' %}View →{% else %}Edit →{% endif %}</div>
+                            <div style="color: #667eea; font-weight: 700; font-size: 16px;">{% if submission.status == 'submitted' %}<span data-i18n="view_btn">View →</span>{% else %}<span data-i18n="edit_btn">Edit →</span>{% endif %}</div>
                         </button>
                     </form>
                     {% if submission.status == 'draft' %}
-                    <button type="button" onclick="event.stopPropagation(); deleteDraft({{ submission.id }}, '{{ submission.community }}')" style="background: #fff5f5; border: 1px solid #e0e0e0; border-top: none; border-radius: 0 0 8px 8px; padding: 10px 16px; cursor: pointer; color: #dc3545; font-size: 14px; font-weight: 600; transition: all 0.3s; text-align: center; width: 100%;">🗑 Delete This Draft</button>
+                    <button type="button" onclick="event.stopPropagation(); deleteDraft({{ submission.id }}, '{{ submission.community }}')" style="background: #fff5f5; border: 1px solid #e0e0e0; border-top: none; border-radius: 0 0 8px 8px; padding: 10px 16px; cursor: pointer; color: #dc3545; font-size: 14px; font-weight: 600; transition: all 0.3s; text-align: center; width: 100%;" data-i18n="delete_draft_btn">🗑 Delete This Draft</button>
                     {% endif %}
                 </div>
                 {% endfor %}
@@ -14158,9 +14177,9 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
 
         <form id="communityForm">
             <div class="form-group">
-                <label for="community">Select Community *</label>
+                <label for="community" data-i18n="select_community_label">Select Community *</label>
                 <select id="community" name="community" required>
-                    <option value="">-- Choose a community --</option>
+                    <option value="" data-i18n="choose_community">-- Choose a community --</option>
                     {% for community in communities %}
                     <option value="{{ community }}">{{ community }}</option>
                     {% endfor %}
@@ -14168,30 +14187,112 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             </div>
 
             <div class="form-group">
-                <label for="workDate">Select Date *</label>
+                <label for="workDate" data-i18n="select_date_label">Select Date *</label>
                 <input type="date" id="workDate" name="workDate" required>
             </div>
 
             <div class="button-group">
-                <button type="button" class="btn-back" onclick="window.location.href='/dashboard'">Back</button>
-                <button type="button" class="btn-next" onclick="submitForm()">Next →</button>
+                <button type="button" class="btn-back" onclick="window.location.href='/dashboard'" data-i18n="back_btn">Back</button>
+                <button type="button" class="btn-next" onclick="submitForm()" data-i18n="next_btn">Next →</button>
             </div>
         </form>
     </div>
 
     <script>
+        const TRANSLATIONS = {
+            en: {
+                page_title: 'Community Maintenance Entry',
+                welcome: 'Welcome,',
+                submissions_heading: '📋 Your Submissions & Drafts',
+                date_label: 'Date:',
+                status_finalized: '✓ Finalized',
+                status_draft: '● Draft',
+                view_btn: 'View →',
+                edit_btn: 'Edit →',
+                delete_draft_btn: '🗑 Delete This Draft',
+                select_community_label: 'Select Community *',
+                choose_community: '-- Choose a community --',
+                select_date_label: 'Select Date *',
+                back_btn: 'Back',
+                next_btn: 'Next →',
+                fill_all_fields: 'Please fill in all fields',
+                failed_create: 'Failed to create submission',
+                error_prefix: 'Error:',
+                draft_deleted: 'Draft deleted successfully. Refreshing page...',
+                confirm_delete_1: 'Delete draft for {community}?\n\nThis action CANNOT be undone.',
+                confirm_delete_2: 'Are you absolutely sure? This will permanently delete all data for this draft.',
+            },
+            es: {
+                page_title: 'Entrada de Mantenimiento Comunitario',
+                welcome: 'Bienvenido,',
+                submissions_heading: '📋 Sus Envíos y Borradores',
+                date_label: 'Fecha:',
+                status_finalized: '✓ Finalizado',
+                status_draft: '● Borrador',
+                view_btn: 'Ver →',
+                edit_btn: 'Editar →',
+                delete_draft_btn: '🗑 Eliminar Este Borrador',
+                select_community_label: 'Seleccionar Comunidad *',
+                choose_community: '-- Elegir una comunidad --',
+                select_date_label: 'Seleccionar Fecha *',
+                back_btn: 'Atrás',
+                next_btn: 'Siguiente →',
+                fill_all_fields: 'Por favor complete todos los campos',
+                failed_create: 'Error al crear el envío',
+                error_prefix: 'Error:',
+                draft_deleted: 'Borrador eliminado con éxito. Actualizando página...',
+                confirm_delete_1: '¿Eliminar borrador de {community}?\n\nEsta acción NO se puede deshacer.',
+                confirm_delete_2: '¿Está absolutamente seguro? Esto eliminará permanentemente todos los datos de este borrador.',
+            }
+        };
+
+        let currentLang = localStorage.getItem('techDashLang') || 'en';
+
+        function applyLanguage(lang) {
+            const t = TRANSLATIONS[lang];
+            document.querySelectorAll('[data-i18n]').forEach(el => {
+                const key = el.getAttribute('data-i18n');
+                if (t[key] !== undefined) el.textContent = t[key];
+            });
+            const btn = document.getElementById('langToggleBtn');
+            if (btn) {
+                if (lang === 'es') {
+                    btn.textContent = '🇺🇸 English';
+                    btn.classList.add('es-active');
+                } else {
+                    btn.textContent = '🇪🇸 Español';
+                    btn.classList.remove('es-active');
+                }
+            }
+        }
+
+        function toggleLanguage() {
+            currentLang = currentLang === 'en' ? 'es' : 'en';
+            localStorage.setItem('techDashLang', currentLang);
+            applyLanguage(currentLang);
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            applyLanguage(currentLang);
+        });
+
+        function t(key, vars) {
+            const str = (TRANSLATIONS[currentLang] || TRANSLATIONS.en)[key] || key;
+            if (!vars) return str;
+            return str.replace(/\{(\w+)\}/g, (_, k) => vars[k] !== undefined ? vars[k] : '{' + k + '}');
+        }
+
         function submitForm() {
             const community = document.getElementById('community').value;
             const workDate = document.getElementById('workDate').value;
             const errorDiv = document.getElementById('error');
 
             if (!community || !workDate) {
-                errorDiv.textContent = 'Please fill in all fields';
+                errorDiv.textContent = t('fill_all_fields');
                 errorDiv.style.display = 'block';
                 return;
             }
 
-            // Send to backend to create a new submission
             fetch('/community_billing_spreadsheet', {
                 method: 'POST',
                 headers: {
@@ -14209,35 +14310,30 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
                     const encodedDate = encodeURIComponent(workDate);
                     window.location.href = `/community_billing_spreadsheet?community=${encodedCommunity}&work_date=${encodedDate}&submission_id=${data.submission_id}`;
                 } else {
-                    throw new Error(data.error || 'Failed to create submission');
+                    throw new Error(data.error || t('failed_create'));
                 }
             })
             .catch(error => {
-                errorDiv.textContent = 'Error: ' + error;
+                errorDiv.textContent = t('error_prefix') + ' ' + error;
                 errorDiv.style.display = 'block';
             });
         }
 
-        // Open an existing submission/draft
         function openSubmission(submissionId, community, workDate) {
             const encodedCommunity = encodeURIComponent(community);
             const encodedDate = encodeURIComponent(workDate);
             window.location.href = `/community_billing_spreadsheet?community=${encodedCommunity}&work_date=${encodedDate}`;
         }
 
-        // Delete a draft with double confirmation
         function deleteDraft(submissionId, community) {
-            // First confirmation
-            if (!confirm(`Delete draft for ${community}?\n\nThis action CANNOT be undone.`)) {
+            if (!confirm(t('confirm_delete_1', {community}))) {
                 return;
             }
 
-            // Second confirmation
-            if (!confirm('Are you absolutely sure? This will permanently delete all data for this draft.')) {
+            if (!confirm(t('confirm_delete_2'))) {
                 return;
             }
 
-            // Delete the submission
             fetch('/community_billing_delete_draft', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -14246,13 +14342,13 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             .then(r => r.json())
             .then(result => {
                 if (result.success) {
-                    alert('Draft deleted successfully. Refreshing page...');
+                    alert(t('draft_deleted'));
                     window.location.reload();
                 } else {
-                    alert('Error: ' + result.error);
+                    alert(t('error_prefix') + ' ' + result.error);
                 }
             })
-            .catch(e => alert('Error: ' + e));
+            .catch(e => alert(t('error_prefix') + ' ' + e));
         }
 
         // Set today's date as default and keep it current if the page stays open
