@@ -14272,9 +14272,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             applyLanguage(currentLang);
         }
 
-        document.addEventListener('DOMContentLoaded', function() {
-            applyLanguage(currentLang);
-        });
+        applyLanguage(currentLang);
 
         function t(key, vars) {
             const str = (TRANSLATIONS[currentLang] || TRANSLATIONS.en)[key] || key;
