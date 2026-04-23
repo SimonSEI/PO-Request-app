@@ -2471,7 +2471,7 @@ def manage_office_admins():
 def add_office_admin():
     """Add a new office administrator account"""
     if 'username' not in session or session['role'] != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     try:
         data = request.get_json()
@@ -2512,7 +2512,7 @@ def add_office_admin():
 def delete_office_admin():
     """Delete an office administrator account"""
     if 'username' not in session or session['role'] != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     try:
         data = request.get_json()
@@ -2554,7 +2554,7 @@ def delete_office_admin():
 def edit_office_admin_password():
     """Edit an office administrator's password"""
     if 'username' not in session or session['role'] != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     try:
         data = request.get_json()
@@ -16545,8 +16545,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({community_id: communityId, num_clocks: numClocks})
             })
-            .then(r => r.json())
+            .then(handleFetchAuth)
             .then(data => {
+                if (!data) return;
                 const importSection = document.getElementById(`comm-clock-import-section-${communityId}`);
                 const displaySection = document.getElementById(`comm-clocks-${communityId}`);
                 if (data.success) {
@@ -16579,8 +16580,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             previewDiv.innerHTML = '<p style="color:#666;">Parsing Excel file...</p>';
 
             fetch('/community_clock_import_excel', {method: 'POST', body: formData})
-                .then(r => r.json())
+                .then(handleFetchAuth)
                 .then(data => {
+                    if (!data) return;
                     if (!data.success) {
                         previewDiv.innerHTML = `<p style="color:#dc3545;">Error: ${data.error}</p>`;
                         return;
@@ -16707,8 +16709,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({community_id: communityId, clocks: clocks})
             })
-            .then(r => r.json())
+            .then(handleFetchAuth)
             .then(data => {
+                if (!data) return;
                 if (data.success) {
                     previewDiv.innerHTML = `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
                         <p style="color:#28a745;font-weight:600;margin:0;">${data.message}</p>
@@ -16735,8 +16738,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({import_type: 'clock_addresses', inserted_ids: insertedIds})
             })
-            .then(r => r.json())
+            .then(handleFetchAuth)
             .then(data => {
+                if (!data) return;
                 if (data.success) {
                     previewDiv.innerHTML = `<p style="color:#28a745;font-weight:600;">${data.message}</p>`;
                     loadCommunityClockAddresses(communityId);
@@ -16759,8 +16763,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({community_id: communityId, clock_number: clockNumber, addresses: lines, is_common_area: 0})
             })
-            .then(r => r.json())
+            .then(handleFetchAuth)
             .then(data => {
+                if (!data) return;
                 if (data.success) { textarea.value = ''; loadCommunityClockAddresses(communityId); }
                 else { alert('Error: ' + data.error); }
             })
@@ -16775,8 +16780,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({address_ids: [addressId]})
             })
-            .then(r => r.json())
+            .then(handleFetchAuth)
             .then(data => {
+                if (!data) return;
                 if (data.success) { loadCommunityClockAddresses(communityId); }
                 else { alert('Error: ' + data.error); }
             })
@@ -16829,8 +16835,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({after_id: afterId, addresses: addresses})
             })
-            .then(r => r.json())
+            .then(handleFetchAuth)
             .then(data => {
+                if (!data) return;
                 if (data.success) {
                     loadCommunityClockAddresses(communityId);
                 } else {
@@ -16875,8 +16882,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({address_id: addressId, address: newAddress})
             })
-            .then(r => r.json())
+            .then(handleFetchAuth)
             .then(data => {
+                if (!data) return;
                 if (data.success) {
                     loadCommunityClockAddresses(communityId);
                 } else {
@@ -16887,6 +16895,16 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         }
 
         // ---------------------------------------------------------------
+        // When a zone-management API call comes back 401 it means the session
+        // expired.  Redirect to login rather than showing "Error: Access denied".
+        function handleFetchAuth(response) {
+            if (response.status === 401) {
+                window.location.href = '/login';
+                return null;
+            }
+            return response.json();
+        }
+
         // Helper to split text by newlines (avoids regex escape issues in templates)
         var _nl = new RegExp(String.fromCharCode(13) + '?' + String.fromCharCode(10));
         function splitLines(text) {
@@ -17115,8 +17133,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     is_common_area: isCommonArea ? 1 : 0
                 })
             })
-            .then(r => r.json())
+            .then(handleFetchAuth)
             .then(data => {
+                if (!data) return;
                 if (data.success) {
                     textarea.value = '';
                     textarea.rows = 1;
@@ -17180,8 +17199,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({ address_ids: ids })
             })
-            .then(r => r.json())
+            .then(handleFetchAuth)
             .then(data => {
+                if (!data) return;
                 if (data.success) {
                     loadClockAddresses(communityId, true);
                 } else {
@@ -17197,8 +17217,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({ address_ids: [addressId], is_common_area: newIsCommonArea })
             })
-            .then(r => r.json())
+            .then(handleFetchAuth)
             .then(data => {
+                if (!data) return;
                 if (data.success) {
                     loadClockAddresses(communityId, true);
                 } else {
@@ -17222,8 +17243,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({ address_ids: ids, is_common_area: isCA ? 0 : 1 })
             })
-            .then(r => r.json())
+            .then(handleFetchAuth)
             .then(data => {
+                if (!data) return;
                 if (data.success) {
                     loadClockAddresses(communityId, true);
                 } else {
@@ -17306,7 +17328,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                             addresses: regular,
                             is_common_area: 0
                         })
-                    }).then(r => r.json())
+                    }).then(handleFetchAuth)
                 );
             }
             if (commonArea.length > 0) {
@@ -17320,12 +17342,13 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                             addresses: commonArea,
                             is_common_area: 1
                         })
-                    }).then(r => r.json())
+                    }).then(handleFetchAuth)
                 );
             }
 
             Promise.all(promises)
             .then(results => {
+                if (results.some(r => r === null)) return; // redirecting to login
                 const failed = results.find(r => !r.success);
                 if (failed) {
                     alert('Error: ' + failed.error);
@@ -17394,8 +17417,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     addresses: addresses
                 })
             })
-            .then(r => r.json())
+            .then(handleFetchAuth)
             .then(data => {
+                if (!data) return;
                 if (data.success) {
                     loadClockAddresses(communityId, true);
                 } else {
@@ -17421,8 +17445,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     address_id: addressId
                 })
             })
-            .then(r => r.json())
+            .then(handleFetchAuth)
             .then(data => {
+                if (!data) return;
                 if (data.success) {
                     loadClockAddresses(communityId, true);
                 } else {
@@ -17468,8 +17493,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     address: newAddress
                 })
             })
-            .then(r => r.json())
+            .then(handleFetchAuth)
             .then(data => {
+                if (!data) return;
                 if (data.success) {
                     loadClockAddresses(communityId, true);
                 } else {
@@ -17506,8 +17532,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 method: 'POST',
                 body: formData
             })
-            .then(r => r.json())
+            .then(handleFetchAuth)
             .then(data => {
+                if (!data) return;
                 if (!data.success) {
                     previewDiv.innerHTML = `<p style="color:#dc3545;">Error: ${data.error}</p>`;
                     return;
@@ -17681,8 +17708,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     clocks: clocks
                 })
             })
-            .then(r => r.json())
+            .then(handleFetchAuth)
             .then(data => {
+                if (!data) return;
                 if (data.success) {
                     let undoHtml = `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">`;
                     undoHtml += `<p style="color:#28a745;font-weight:600;margin:0;">${data.message}</p>`;
@@ -17721,8 +17749,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     inserted_ids: insertedIds
                 })
             })
-            .then(r => r.json())
+            .then(handleFetchAuth)
             .then(data => {
+                if (!data) return;
                 if (data.success) {
                     previewDiv.innerHTML = `<p style="color:#28a745;font-weight:600;">${data.message}</p>`;
                     if (refreshType === 'house') {
@@ -17762,8 +17791,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             previewDiv.innerHTML = '<p style="color:#666;">Parsing Excel file...</p>';
 
             fetch('/community_import_house_numbers_excel', {method: 'POST', body: formData})
-                .then(r => r.json())
+                .then(handleFetchAuth)
                 .then(data => {
+                    if (!data) return;
                     if (!data.success) {
                         previewDiv.innerHTML = `<p style="color:#dc3545;">Error: ${data.error}</p>`;
                         return;
@@ -17905,8 +17935,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     house_numbers: included
                 })
             })
-            .then(r => r.json())
+            .then(handleFetchAuth)
             .then(data => {
+                if (!data) return;
                 if (data.success) {
                     let undoHtml = `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">`;
                     undoHtml += `<p style="color:#28a745;font-weight:600;margin:0;">${data.message}</p>`;
@@ -18747,7 +18778,7 @@ def settings_page():
 def toggle_claude_setting():
     """Toggle Claude AI matching on/off"""
     if 'user' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     try:
         data = request.get_json()
@@ -18949,7 +18980,7 @@ def sales_manage_pricing():
 def sales_update_price():
     """Update a pricing item"""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     try:
         data = request.get_json()
@@ -18976,7 +19007,7 @@ def sales_update_price():
 def sales_add_price():
     """Add a new pricing item"""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     try:
         data = request.get_json()
@@ -19008,7 +19039,7 @@ def sales_add_price():
 def sales_delete_price():
     """Delete a pricing item"""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     try:
         data = request.get_json()
@@ -19366,7 +19397,7 @@ def community_billing_spreadsheet():
 def community_billing_save_item():
     """Save or update a line item"""
     if 'username' not in session or session.get('role') != 'technician':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     submission_id = data.get('submission_id')
@@ -19429,7 +19460,7 @@ def community_billing_save_item():
 def community_billing_save_draft():
     """Save entire draft - all line items at once"""
     if 'username' not in session or session.get('role') != 'technician':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     try:
         data = request.get_json()
@@ -19546,7 +19577,7 @@ def community_billing_save_draft():
 def community_billing_delete_item():
     """Delete a line item"""
     if 'username' not in session or session.get('role') != 'technician':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     item_id = data.get('item_id')
@@ -19569,7 +19600,7 @@ def community_billing_delete_item():
 def community_billing_submit():
     """Submit the spreadsheet for office review"""
     if 'username' not in session or session.get('role') != 'technician':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     submission_id = data.get('submission_id')
@@ -19593,7 +19624,7 @@ def community_billing_submit():
 def community_billing_delete_draft():
     """Delete a draft submission"""
     if 'username' not in session or session.get('role') != 'technician':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     submission_id = data.get('submission_id')
@@ -19765,7 +19796,7 @@ def community_billing_office():
 def community_billing_office_data():
     """Get submissions for a specific community and date"""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     community = data.get('community')
@@ -19893,7 +19924,7 @@ def community_billing_office_data():
 def community_billing_export_excel():
     """Export submissions to Excel"""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     try:
         from openpyxl import Workbook
@@ -20125,7 +20156,7 @@ def community_billing_export_excel():
 def community_billing_delete_submission():
     """Delete a submission and all its related line items"""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     try:
         data = request.get_json()
@@ -20159,7 +20190,7 @@ def community_house_numbers():
     """Get house numbers for a community"""
     # Allow both office and tech users
     if 'username' not in session or session.get('role') not in ['office', 'technician']:
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     community_id = request.args.get('community_id')
     if not community_id:
@@ -20182,7 +20213,7 @@ def community_house_numbers():
 def community_add_house_number():
     """Add a new house number to a community"""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     community_id = data.get('community_id')
@@ -20219,7 +20250,7 @@ def community_add_house_number():
 def community_delete_house_number():
     """Delete a house number"""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     house_number_id = data.get('house_number_id')
@@ -20521,7 +20552,7 @@ def community_import_house_numbers_excel():
     Returns data grouped by clock for the preview/review UI.
     """
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     try:
         from openpyxl import load_workbook
@@ -20638,7 +20669,7 @@ def community_import_house_numbers_excel():
 def community_import_house_numbers_confirmed():
     """Import the user-reviewed house numbers into a standard community."""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     community_id = data.get('community_id')
@@ -20695,7 +20726,7 @@ def community_import_house_numbers_confirmed():
 def verona_walk_clocks():
     """Get clock addresses for Verona Walk HOA"""
     if 'username' not in session or session.get('role') not in ['office', 'technician']:
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     community_id = request.args.get('community_id')
     if not community_id:
@@ -20753,7 +20784,7 @@ def verona_walk_clocks():
 def verona_walk_add_address():
     """Add an address to a clock in Verona Walk HOA"""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     community_id = data.get('community_id')
@@ -20792,7 +20823,7 @@ def verona_walk_add_address():
 def verona_walk_bulk_add_addresses():
     """Bulk add addresses to a clock (supports paste from Excel)"""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     community_id = data.get('community_id')
@@ -20839,7 +20870,7 @@ def verona_walk_bulk_add_addresses():
 def verona_walk_insert_address():
     """Insert address(es) after a specific address to maintain order"""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     after_id = data.get('after_id')
@@ -20897,7 +20928,7 @@ def verona_walk_insert_address():
 def verona_walk_move_addresses():
     """Move addresses between Addresses and Common Area"""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     address_ids = data.get('address_ids', [])
@@ -20925,7 +20956,7 @@ def verona_walk_move_addresses():
 def verona_walk_bulk_delete_addresses():
     """Bulk delete addresses by IDs"""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     address_ids = data.get('address_ids', [])
@@ -20951,7 +20982,7 @@ def verona_walk_bulk_delete_addresses():
 def verona_walk_delete_address():
     """Delete an address from a clock"""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     address_id = data.get('address_id')
@@ -20984,7 +21015,7 @@ def verona_walk_delete_address():
 def verona_walk_edit_address():
     """Edit an existing address"""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     address_id = data.get('address_id')
@@ -21050,7 +21081,7 @@ def verona_walk_import_excel():
     - All other entries (typically 'SPRAYS' with address numbers) → Addresses
     """
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     try:
         from openpyxl import load_workbook
@@ -21222,7 +21253,7 @@ def verona_walk_import_confirmed():
     rather than re-parsing the Excel file.
     """
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     community_id = data.get('community_id')
@@ -21309,7 +21340,7 @@ def verona_walk_import_confirmed():
 def community_insert_clock_address():
     """Insert address(es) after a specific address for any community."""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     after_id = data.get('after_id')
@@ -21360,7 +21391,7 @@ def community_insert_clock_address():
 def community_edit_clock_address():
     """Edit an existing clock address for any community."""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     address_id = data.get('address_id')
@@ -21386,7 +21417,7 @@ def community_edit_clock_address():
 def community_clocks():
     """Get clock addresses for any standard community (uses num_clocks from DB)."""
     if 'username' not in session or session.get('role') not in ['office', 'technician']:
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     community_id = request.args.get('community_id')
     if not community_id:
@@ -21447,7 +21478,7 @@ def community_clock_import_excel():
     - use_common_area=1 enables keyword-based common area detection
     """
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     try:
         from openpyxl import load_workbook
@@ -21581,7 +21612,7 @@ def community_clock_import_excel():
 def community_clock_import_confirmed():
     """Insert reviewed clock address data for a standard community."""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     community_id = data.get('community_id')
@@ -21669,7 +21700,7 @@ def community_clock_import_confirmed():
 def community_bulk_add_clock_addresses():
     """Bulk add clock addresses for any standard community."""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     community_id = data.get('community_id')
@@ -21718,7 +21749,7 @@ def community_bulk_add_clock_addresses():
 def community_bulk_delete_clock_addresses():
     """Bulk delete clock addresses by ID for any community."""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     address_ids = data.get('address_ids', [])
@@ -21744,7 +21775,7 @@ def community_bulk_delete_clock_addresses():
 def community_update_clock_count():
     """Update the number of clocks configured for a standard community."""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     community_id = data.get('community_id')
@@ -21773,7 +21804,7 @@ def community_update_clock_count():
 def undo_import():
     """Undo a recent import by deleting the inserted records by their IDs."""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     import_type = data.get('import_type')
@@ -21836,7 +21867,7 @@ def undo_import():
 def community_get_pricing():
     """Get pricing for a community"""
     if 'username' not in session or session.get('role') not in ['office', 'technician']:
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     community_id = request.args.get('community_id')
     if not community_id:
@@ -21889,7 +21920,7 @@ def community_get_pricing():
 def community_save_pricing():
     """Save pricing for a community"""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'})
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
     community_id = data.get('community_id')
