@@ -1309,6 +1309,12 @@ def init_db():
     except sqlite3.OperationalError:
         c.execute("ALTER TABLE community_billing_line_items ADD COLUMN notes TEXT")
 
+    # Migrate: Add preferred_language to users for persistent per-account language setting
+    try:
+        c.execute("SELECT preferred_language FROM users LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE users ADD COLUMN preferred_language TEXT DEFAULT 'en'")
+
     # Migrate: Drop UNIQUE constraint on community_billing_submissions so techs
     # can submit multiple entries for the same community+date.
     c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='community_billing_submissions'")
@@ -2393,6 +2399,10 @@ def login():
             session['email'] = user[4] if len(user) > 4 else None
             session['full_name'] = user[5] if len(user) > 5 else actual_username
             session['tech_type'] = user[8] if len(user) > 8 else None
+            # Load saved language preference (column index 9 after preferred_language migration)
+            c.execute("SELECT preferred_language FROM users WHERE username=?", (actual_username,))
+            lang_row = c.fetchone()
+            session['user_lang'] = (lang_row[0] or 'en') if lang_row else 'en'
 
             log_activity(actual_username, 'LOGIN', 'session', None, 'User logged in')
 
@@ -2418,7 +2428,8 @@ def dashboard():
     return render_template_string(DASHBOARD_MENU_TEMPLATE,
                                  username=username,
                                  role=role,
-                                 full_name=full_name)
+                                 full_name=full_name,
+                                 user_lang=session.get('user_lang', 'en'))
 
 @app.route('/office_admin')
 def office_admin():
@@ -2650,7 +2661,8 @@ def tech_dashboard():
                                 client_name_idx=client_name_idx,
                                 po_type_idx=po_type_idx,
                                 jobber_invoice_idx=jobber_invoice_idx,
-                                store_name_idx=store_name_idx)
+                                store_name_idx=store_name_idx,
+                                user_lang=session.get('user_lang', 'en'))
 
 @app.route('/office_dashboard')
 def office_dashboard():
@@ -3667,6 +3679,24 @@ def view_invoice(filename):
     except Exception as e:
         flash(f'Error viewing invoice: {str(e)}')
         return redirect(url_for('office_dashboard'))
+
+@app.route('/set_user_language', methods=['POST'])
+def set_user_language():
+    """Persist the user's language preference to their account."""
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'})
+    data = request.get_json() or {}
+    lang = data.get('lang', 'en')
+    if lang not in ('en', 'es'):
+        return jsonify({'success': False, 'error': 'Invalid language'})
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE users SET preferred_language=? WHERE username=?",
+              (lang, session['username']))
+    conn.commit()
+    conn.close()
+    session['user_lang'] = lang
+    return jsonify({'success': True})
 
 @app.route('/logout')
 def logout():
@@ -7760,7 +7790,8 @@ DASHBOARD_MENU_TEMPLATE = '''
         }
     };
 
-    let currentLang = localStorage.getItem('techDashLang') || 'en';
+    let currentLang = {{ user_lang|tojson }};
+    localStorage.setItem('techDashLang', currentLang);
 
     function applyLanguage(lang) {
         const t = TRANSLATIONS[lang];
@@ -7784,6 +7815,7 @@ DASHBOARD_MENU_TEMPLATE = '''
         currentLang = currentLang === 'en' ? 'es' : 'en';
         localStorage.setItem('techDashLang', currentLang);
         applyLanguage(currentLang);
+        fetch('/set_user_language', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({lang:currentLang})}).catch(function(){});
     }
 
     applyLanguage(currentLang);
@@ -8519,7 +8551,8 @@ TECH_DASHBOARD_TEMPLATE = '''
         }
     };
 
-    let currentLang = localStorage.getItem('techDashLang') || 'en';
+    let currentLang = {{ user_lang|tojson }};
+    localStorage.setItem('techDashLang', currentLang);
 
     function applyLanguage(lang) {
         const t = TRANSLATIONS[lang];
@@ -8581,6 +8614,7 @@ TECH_DASHBOARD_TEMPLATE = '''
         currentLang = currentLang === 'en' ? 'es' : 'en';
         localStorage.setItem('techDashLang', currentLang);
         applyLanguage(currentLang);
+        fetch('/set_user_language', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({lang:currentLang})}).catch(function(){});
     }
 
     // ── Form setup and PO search functionality ──────────────────────────────
@@ -14305,7 +14339,8 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             }
         };
 
-        let currentLang = localStorage.getItem('techDashLang') || 'en';
+        let currentLang = {{ user_lang|tojson }};
+        localStorage.setItem('techDashLang', currentLang);
 
         function applyLanguage(lang) {
             const t = TRANSLATIONS[lang];
@@ -14329,6 +14364,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             currentLang = currentLang === 'en' ? 'es' : 'en';
             localStorage.setItem('techDashLang', currentLang);
             applyLanguage(currentLang);
+            fetch('/set_user_language', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({lang:currentLang})}).catch(function(){});
         }
 
         applyLanguage(currentLang);
@@ -14956,7 +14992,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             }
         };
 
-        let currentLang = localStorage.getItem('techDashLang') || 'en';
+        let currentLang = {{ user_lang|tojson }};
+        localStorage.setItem('techDashLang', currentLang);
 
         function applyLanguage(lang) {
             const tr = TRANSLATIONS[lang];
@@ -14979,6 +15016,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             currentLang = currentLang === 'en' ? 'es' : 'en';
             localStorage.setItem('techDashLang', currentLang);
             applyLanguage(currentLang);
+            fetch('/set_user_language', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({lang:currentLang})}).catch(function(){});
         }
 
         function t(key) {
@@ -19088,7 +19126,8 @@ def community_billing_tech():
     return render_template_string(COMMUNITY_BILLING_TECH_TEMPLATE,
                                  username=username,
                                  communities=communities,
-                                 submissions=submissions)
+                                 submissions=submissions,
+                                 user_lang=session.get('user_lang', 'en'))
 
 @app.route('/community_billing_spreadsheet', methods=['POST', 'GET'])
 def community_billing_spreadsheet():
@@ -19301,7 +19340,8 @@ def community_billing_spreadsheet():
                                  line_items=line_items,
                                  status=status,
                                  num_clocks=num_clocks,
-                                 is_verona_walk=is_verona_walk)
+                                 is_verona_walk=is_verona_walk,
+                                 user_lang=session.get('user_lang', 'en'))
 
 @app.route('/community_billing_save_item', methods=['POST'])
 def community_billing_save_item():
