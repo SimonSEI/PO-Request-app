@@ -14827,7 +14827,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             {% if status == 'submitted' %}
             <div id="vwReadOnlyBanner" style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; padding: 12px 16px; margin-bottom: 12px; color: #856404; font-size: 14px;">
                 <strong data-i18n="readonly_notice_title">⚠ This submission is finalized.</strong>
-                <span data-i18n="readonly_notice_body"> Fields are read-only. Contact your administrator if changes are needed.</span>
+                <span data-i18n="readonly_notice_body"> Fields are read-only. Use the Reopen for Editing button to make changes.</span>
             </div>
             {% endif %}
             <div class="vw-clock-selector">
@@ -14839,6 +14839,13 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 </select>
             </div>
             <div id="vwClockContent" style="display:none;"></div>
+        </div>
+        {% endif %}
+
+        {% if not is_verona_walk and status == 'submitted' %}
+        <div id="readOnlyBanner" style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; padding: 12px 16px; margin-bottom: 12px; color: #856404; font-size: 14px;">
+            <strong data-i18n="readonly_notice_title">⚠ This submission is finalized.</strong>
+            <span data-i18n="readonly_notice_body"> Fields are read-only. Use the Reopen for Editing button to make changes.</span>
         </div>
         {% endif %}
 
@@ -14895,6 +14902,9 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             <button class="btn-success" id="submitBtn" type="button" {% if status == 'submitted' %}disabled{% endif %} style="padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
                 {% if status == 'submitted' %}<span data-i18n="btn_finalized">✓ Finalized</span>{% else %}<span data-i18n="btn_submit_finalize">Submit & Finalize</span>{% endif %}
             </button>
+            {% if status == 'submitted' %}
+            <button id="reopenBtn" type="button" style="padding: 10px 20px; background: #fd7e14; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;" data-i18n="btn_reopen">↩ Reopen for Editing</button>
+            {% endif %}
             <button class="lang-toggle-btn" id="langToggleBtn" onclick="toggleLanguage()">🇪🇸 Español</button>
         </div>
     </div>
@@ -14947,7 +14957,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 error_prefix: 'Error: ',
                 no_addresses: 'No addresses',
                 readonly_notice_title: '⚠ This submission is finalized.',
-                readonly_notice_body: ' Fields are read-only. Contact your administrator if changes are needed.',
+                readonly_notice_body: ' Fields are read-only. Use the Reopen for Editing button to make changes.',
                 error_loading_pricing: 'Error loading pricing',
                 error_calculating: 'Error calculating cost: ',
                 confirm_submit: "Submit form? You won't be able to edit it afterwards.",
@@ -14955,6 +14965,9 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 saved_msg: '✓ Saved!',
                 unsaved_indicator: '● Unsaved',
                 save_network_error: 'Save failed — check your connection and try again.',
+                btn_reopen: '↩ Reopen for Editing',
+                confirm_reopen: 'Reopen this submission for editing?',
+                reopened_msg: 'Reopened! Redirecting...',
             },
             es: {
                 page_title: 'Entrada de Mantenimiento Comunitario',
@@ -14990,7 +15003,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 error_prefix: 'Error: ',
                 no_addresses: 'Sin direcciones',
                 readonly_notice_title: '⚠ Este envío está finalizado.',
-                readonly_notice_body: ' Los campos son de solo lectura. Contacte a su administrador si necesita cambios.',
+                readonly_notice_body: ' Los campos son de solo lectura. Use el botón Reabrir para editar para hacer cambios.',
                 error_loading_pricing: 'Error al cargar precios',
                 error_calculating: 'Error al calcular costo: ',
                 confirm_submit: '¿Enviar formulario? No podrá editarlo después.',
@@ -14998,6 +15011,9 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 saved_msg: '✓ ¡Guardado!',
                 unsaved_indicator: '● Sin guardar',
                 save_network_error: 'Error al guardar — verifique su conexión e intente de nuevo.',
+                btn_reopen: '↩ Reabrir para Editar',
+                confirm_reopen: '¿Reabrir este envío para editar?',
+                reopened_msg: '¡Reabierto! Redireccionando...',
             }
         };
 
@@ -15445,6 +15461,26 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             }, 500);
         }
 
+        function reopenSubmission() {
+            if (!confirm(t('confirm_reopen'))) return;
+
+            fetch('/community_billing_reopen', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ submission_id: submissionId })
+            })
+            .then(r => r.json())
+            .then(result => {
+                if (result.success) {
+                    showMessage(t('reopened_msg'), 'success');
+                    setTimeout(() => window.location.reload(), 1500);
+                } else {
+                    alert(t('error_prefix') + result.error);
+                }
+            })
+            .catch(e => alert(t('error_prefix') + e));
+        }
+
         function goBack() {
             window.location.href = '/community_billing_tech';
         }
@@ -15488,6 +15524,16 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             console.log('✓ Submit button ready');
         } else {
             console.error('❌ Submit button not found!');
+        }
+
+        var reopenBtn = document.getElementById('reopenBtn');
+        if (reopenBtn) {
+            reopenBtn.onclick = function() {
+                console.log('Reopen clicked');
+                reopenSubmission();
+                return false;
+            };
+            console.log('✓ Reopen button ready');
         }
 
         console.log('Button setup complete');
@@ -19582,6 +19628,43 @@ def community_billing_submit():
                      SET status = 'submitted', submitted_at = ?
                      WHERE id = ?""",
                  (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), submission_id))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/community_billing_reopen', methods=['POST'])
+def community_billing_reopen():
+    """Reopen a finalized submission for editing"""
+    if 'username' not in session or session.get('role') != 'technician':
+        return jsonify({'success': False, 'error': 'Access denied'})
+
+    data = request.get_json()
+    submission_id = data.get('submission_id')
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    try:
+        c.execute("""SELECT status FROM community_billing_submissions
+                     WHERE id = ? AND tech_username = ?""",
+                 (submission_id, session.get('username')))
+        result = c.fetchone()
+
+        if not result:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Submission not found'})
+
+        if result[0] != 'submitted':
+            conn.close()
+            return jsonify({'success': False, 'error': 'Submission is not finalized'})
+
+        c.execute("""UPDATE community_billing_submissions
+                     SET status = 'draft', submitted_at = NULL
+                     WHERE id = ? AND tech_username = ?""",
+                 (submission_id, session.get('username')))
         conn.commit()
         conn.close()
         return jsonify({'success': True})
