@@ -14201,32 +14201,39 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
 
         <div class="error" id="error"></div>
 
-        <!-- Past Submissions and Drafts Section -->
+        <!-- This Month's Submissions Section -->
         {% if submissions %}
         <div style="background: #f5f7fa; border-radius: 10px; padding: 16px; margin-bottom: 25px; border: 1px solid #ddd;">
-            <h2 style="margin-top: 0; margin-bottom: 14px; color: #333; font-size: 20px;" data-i18n="submissions_heading">📋 Your Submissions & Drafts</h2>
-            <div style="display: grid; grid-template-columns: 1fr; gap: 14px;">
+            <h2 style="margin-top: 0; margin-bottom: 14px; color: #333; font-size: 20px;" data-i18n="submissions_heading">📋 This Month's Submissions</h2>
+            <div style="max-height: 380px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-right: 4px;">
                 {% for submission in submissions %}
                 <div style="display: flex; flex-direction: column; gap: 0;">
                     <form method="get" action="/community_billing_spreadsheet" style="margin: 0;">
                         <input type="hidden" name="community" value="{{ submission.community }}">
                         <input type="hidden" name="work_date" value="{{ submission.work_date }}">
                         <input type="hidden" name="submission_id" value="{{ submission.id }}">
-                        <button type="submit" style="width: 100%; text-align: left; background: white; border: 1px solid #e0e0e0; border-radius: {% if submission.status == 'draft' %}8px 8px 0 0{% else %}8px{% endif %}; padding: 16px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: all 0.3s; min-height: 70px;">
-                            <div>
-                                <div style="font-weight: 700; color: #333; font-size: 17px;">{{ submission.community }}</div>
-                                <div style="font-size: 15px; color: #666; margin-top: 4px;"><span data-i18n="date_label">Date:</span> {{ submission.work_date }}</div>
-                                {% if submission.status == 'submitted' %}
-                                    <div style="font-size: 14px; color: #28a745; font-weight: 600; margin-top: 4px;" data-i18n="status_finalized">✓ Finalized</div>
+                        <button type="submit" style="width: 100%; text-align: left; background: white; border: 1px solid #e0e0e0; border-radius: {% if submission.status == 'draft' %}8px 8px 0 0{% else %}8px{% endif %}; padding: 14px 16px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: background 0.2s; gap: 10px;">
+                            <div style="flex: 1; min-width: 0;">
+                                <div style="font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 3px;">{{ submission.community }}</div>
+                                {% if submission.clocks_label %}
+                                <div style="font-size: 19px; font-weight: 800; color: #333; line-height: 1.2; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ submission.clocks_label }}</div>
                                 {% else %}
-                                    <div style="font-size: 14px; color: #ff9800; font-weight: 600; margin-top: 4px;" data-i18n="status_draft">● Draft</div>
+                                <div style="font-size: 19px; font-weight: 800; color: #333; line-height: 1.2; margin-bottom: 4px;">{{ submission.community }}</div>
                                 {% endif %}
+                                <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                                    <span style="font-size: 12px; color: #666;"><span data-i18n="date_label">Date:</span> {{ submission.work_date }}</span>
+                                    {% if submission.status == 'submitted' %}
+                                        <span style="font-size: 12px; color: #28a745; font-weight: 600;" data-i18n="status_finalized">✓ Finalized</span>
+                                    {% else %}
+                                        <span style="font-size: 12px; color: #ff9800; font-weight: 600;" data-i18n="status_draft">● Draft</span>
+                                    {% endif %}
+                                </div>
                             </div>
-                            <div style="color: #667eea; font-weight: 700; font-size: 16px;">{% if submission.status == 'submitted' %}<span data-i18n="view_btn">View →</span>{% else %}<span data-i18n="edit_btn">Edit →</span>{% endif %}</div>
+                            <div style="color: #667eea; font-weight: 700; font-size: 15px; flex-shrink: 0;">{% if submission.status == 'submitted' %}<span data-i18n="view_btn">View →</span>{% else %}<span data-i18n="edit_btn">Edit →</span>{% endif %}</div>
                         </button>
                     </form>
                     {% if submission.status == 'draft' %}
-                    <button type="button" onclick="event.stopPropagation(); deleteDraft({{ submission.id }}, '{{ submission.community }}')" style="background: #fff5f5; border: 1px solid #e0e0e0; border-top: none; border-radius: 0 0 8px 8px; padding: 10px 16px; cursor: pointer; color: #dc3545; font-size: 14px; font-weight: 600; transition: all 0.3s; text-align: center; width: 100%;" data-i18n="delete_draft_btn">🗑 Delete This Draft</button>
+                    <button type="button" onclick="event.stopPropagation(); deleteDraft({{ submission.id }}, '{{ submission.community }}')" style="background: #fff5f5; border: 1px solid #e0e0e0; border-top: none; border-radius: 0 0 8px 8px; padding: 8px 16px; cursor: pointer; color: #dc3545; font-size: 13px; font-weight: 600; transition: all 0.2s; text-align: center; width: 100%;" data-i18n="delete_draft_btn">🗑 Delete This Draft</button>
                     {% endif %}
                 </div>
                 {% endfor %}
@@ -14262,7 +14269,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             en: {
                 page_title: 'Community Maintenance Entry',
                 welcome: 'Welcome,',
-                submissions_heading: '📋 Your Submissions & Drafts',
+                submissions_heading: "📋 This Month's Submissions",
                 date_label: 'Date:',
                 status_finalized: '✓ Finalized',
                 status_draft: '● Draft',
@@ -14284,7 +14291,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             es: {
                 page_title: 'Entrada de Mantenimiento Comunitario',
                 welcome: 'Bienvenido,',
-                submissions_heading: '📋 Sus Envíos y Borradores',
+                submissions_heading: '📋 Envíos de Este Mes',
                 date_label: 'Fecha:',
                 status_finalized: '✓ Finalizado',
                 status_draft: '● Borrador',
@@ -19043,23 +19050,40 @@ def community_billing_tech():
     c.execute("SELECT name FROM communities WHERE active = 1 ORDER BY name")
     communities = [row[0] for row in c.fetchall()]
 
-    # Get tech's past submissions and drafts
+    # Get tech's submissions for the current month
     username = session.get('username')
+    current_month = datetime.now().strftime('%Y-%m')
     c.execute("""SELECT id, community_name, work_date, status, submitted_at, created_at
                  FROM community_billing_submissions
-                 WHERE tech_username = ?
-                 ORDER BY COALESCE(submitted_at, created_at) DESC
-                 LIMIT 3""", (username,))
+                 WHERE tech_username = ? AND work_date LIKE ?
+                 ORDER BY work_date DESC, COALESCE(submitted_at, created_at) DESC""",
+             (username, current_month + '%'))
 
     submissions = []
     for row in c.fetchall():
+        submission_id = row[0]
+
+        # Find which clocks are covered by this submission
+        c.execute("""SELECT DISTINCT zone_and_address
+                     FROM community_billing_line_items
+                     WHERE submission_id = ?""", (submission_id,))
+        clock_nums = set()
+        for (zone,) in c.fetchall():
+            if zone:
+                m = re.match(r'^Clock\s+(\d+)', zone, re.IGNORECASE)
+                if m:
+                    clock_nums.add(int(m.group(1)))
+
+        clocks_label = ', '.join(f'Clock {n}' for n in sorted(clock_nums)) if clock_nums else ''
+
         submissions.append({
-            'id': row[0],
+            'id': submission_id,
             'community': row[1],
             'work_date': (row[2] or '').strip(),
             'status': row[3],
             'submitted_at': row[4],
-            'created_at': row[5]
+            'created_at': row[5],
+            'clocks_label': clocks_label
         })
 
     conn.close()
