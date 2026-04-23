@@ -1309,6 +1309,12 @@ def init_db():
     except sqlite3.OperationalError:
         c.execute("ALTER TABLE community_billing_line_items ADD COLUMN notes TEXT")
 
+    # Migrate: Add preferred_language to users for persistent per-account language setting
+    try:
+        c.execute("SELECT preferred_language FROM users LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE users ADD COLUMN preferred_language TEXT DEFAULT 'en'")
+
     # Migrate: Drop UNIQUE constraint on community_billing_submissions so techs
     # can submit multiple entries for the same community+date.
     c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='community_billing_submissions'")
@@ -2393,6 +2399,10 @@ def login():
             session['email'] = user[4] if len(user) > 4 else None
             session['full_name'] = user[5] if len(user) > 5 else actual_username
             session['tech_type'] = user[8] if len(user) > 8 else None
+            # Load saved language preference (column index 9 after preferred_language migration)
+            c.execute("SELECT preferred_language FROM users WHERE username=?", (actual_username,))
+            lang_row = c.fetchone()
+            session['user_lang'] = (lang_row[0] or 'en') if lang_row else 'en'
 
             log_activity(actual_username, 'LOGIN', 'session', None, 'User logged in')
 
@@ -2418,7 +2428,8 @@ def dashboard():
     return render_template_string(DASHBOARD_MENU_TEMPLATE,
                                  username=username,
                                  role=role,
-                                 full_name=full_name)
+                                 full_name=full_name,
+                                 user_lang=session.get('user_lang', 'en'))
 
 @app.route('/office_admin')
 def office_admin():
@@ -2650,7 +2661,8 @@ def tech_dashboard():
                                 client_name_idx=client_name_idx,
                                 po_type_idx=po_type_idx,
                                 jobber_invoice_idx=jobber_invoice_idx,
-                                store_name_idx=store_name_idx)
+                                store_name_idx=store_name_idx,
+                                user_lang=session.get('user_lang', 'en'))
 
 @app.route('/office_dashboard')
 def office_dashboard():
@@ -3667,6 +3679,24 @@ def view_invoice(filename):
     except Exception as e:
         flash(f'Error viewing invoice: {str(e)}')
         return redirect(url_for('office_dashboard'))
+
+@app.route('/set_user_language', methods=['POST'])
+def set_user_language():
+    """Persist the user's language preference to their account."""
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'})
+    data = request.get_json() or {}
+    lang = data.get('lang', 'en')
+    if lang not in ('en', 'es'):
+        return jsonify({'success': False, 'error': 'Invalid language'})
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE users SET preferred_language=? WHERE username=?",
+              (lang, session['username']))
+    conn.commit()
+    conn.close()
+    session['user_lang'] = lang
+    return jsonify({'success': True})
 
 @app.route('/logout')
 def logout():
@@ -7760,7 +7790,8 @@ DASHBOARD_MENU_TEMPLATE = '''
         }
     };
 
-    let currentLang = localStorage.getItem('techDashLang') || 'en';
+    let currentLang = {{ user_lang|tojson }};
+    localStorage.setItem('techDashLang', currentLang);
 
     function applyLanguage(lang) {
         const t = TRANSLATIONS[lang];
@@ -7784,6 +7815,7 @@ DASHBOARD_MENU_TEMPLATE = '''
         currentLang = currentLang === 'en' ? 'es' : 'en';
         localStorage.setItem('techDashLang', currentLang);
         applyLanguage(currentLang);
+        fetch('/set_user_language', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({lang:currentLang})}).catch(function(){});
     }
 
     applyLanguage(currentLang);
@@ -8519,7 +8551,8 @@ TECH_DASHBOARD_TEMPLATE = '''
         }
     };
 
-    let currentLang = localStorage.getItem('techDashLang') || 'en';
+    let currentLang = {{ user_lang|tojson }};
+    localStorage.setItem('techDashLang', currentLang);
 
     function applyLanguage(lang) {
         const t = TRANSLATIONS[lang];
@@ -8581,6 +8614,7 @@ TECH_DASHBOARD_TEMPLATE = '''
         currentLang = currentLang === 'en' ? 'es' : 'en';
         localStorage.setItem('techDashLang', currentLang);
         applyLanguage(currentLang);
+        fetch('/set_user_language', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({lang:currentLang})}).catch(function(){});
     }
 
     // ── Form setup and PO search functionality ──────────────────────────────
@@ -14305,7 +14339,8 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             }
         };
 
-        let currentLang = localStorage.getItem('techDashLang') || 'en';
+        let currentLang = {{ user_lang|tojson }};
+        localStorage.setItem('techDashLang', currentLang);
 
         function applyLanguage(lang) {
             const t = TRANSLATIONS[lang];
@@ -14329,6 +14364,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             currentLang = currentLang === 'en' ? 'es' : 'en';
             localStorage.setItem('techDashLang', currentLang);
             applyLanguage(currentLang);
+            fetch('/set_user_language', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({lang:currentLang})}).catch(function(){});
         }
 
         applyLanguage(currentLang);
@@ -14637,6 +14673,11 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             color: #155724;
             border: 1px solid #c3e6cb;
         }
+        .alert-danger {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
         /* Verona Walk tech layout */
         .vw-clock-selector {
             margin-bottom: 15px;
@@ -14850,6 +14891,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         <div class="controls">
             <a href="/community_billing_tech" class="btn btn-secondary" style="padding: 10px 20px; text-decoration: none; border-radius: 6px; color: white; background: #6c757d; border: none; cursor: pointer; font-weight: 600; display: inline-block;" data-i18n="back_home_btn">← Back to Home</a>
             <button class="btn-secondary" id="saveBtn" type="button" style="padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;" data-i18n="save_btn">Save</button>
+            <span id="unsavedDot" style="display:none; color:#e67e22; font-size:13px; font-weight:600; align-self:center;" data-i18n="unsaved_indicator">● Unsaved</span>
             <button class="btn-success" id="submitBtn" type="button" {% if status == 'submitted' %}disabled{% endif %} style="padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
                 {% if status == 'submitted' %}<span data-i18n="btn_finalized">✓ Finalized</span>{% else %}<span data-i18n="btn_submit_finalize">Submit & Finalize</span>{% endif %}
             </button>
@@ -14910,7 +14952,9 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 error_calculating: 'Error calculating cost: ',
                 confirm_submit: "Submit form? You won't be able to edit it afterwards.",
                 submitted_msg: 'Submitted! Redirecting...',
-                saved_msg: '✓ Saved! Reloading...',
+                saved_msg: '✓ Saved!',
+                unsaved_indicator: '● Unsaved',
+                save_network_error: 'Save failed — check your connection and try again.',
             },
             es: {
                 page_title: 'Entrada de Mantenimiento Comunitario',
@@ -14951,11 +14995,14 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 error_calculating: 'Error al calcular costo: ',
                 confirm_submit: '¿Enviar formulario? No podrá editarlo después.',
                 submitted_msg: '¡Enviado! Redireccionando...',
-                saved_msg: '✓ ¡Guardado! Recargando...',
+                saved_msg: '✓ ¡Guardado!',
+                unsaved_indicator: '● Sin guardar',
+                save_network_error: 'Error al guardar — verifique su conexión e intente de nuevo.',
             }
         };
 
-        let currentLang = localStorage.getItem('techDashLang') || 'en';
+        let currentLang = {{ user_lang|tojson }};
+        localStorage.setItem('techDashLang', currentLang);
 
         function applyLanguage(lang) {
             const tr = TRANSLATIONS[lang];
@@ -14978,6 +15025,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             currentLang = currentLang === 'en' ? 'es' : 'en';
             localStorage.setItem('techDashLang', currentLang);
             applyLanguage(currentLang);
+            fetch('/set_user_language', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({lang:currentLang})}).catch(function(){});
         }
 
         function t(key) {
@@ -15102,6 +15150,27 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             }).join('');
         }
 
+        let hasUnsavedChanges = false;
+
+        function markUnsaved() {
+            hasUnsavedChanges = true;
+            const dot = document.getElementById('unsavedDot');
+            if (dot) dot.style.display = 'inline';
+        }
+
+        function markSaved() {
+            hasUnsavedChanges = false;
+            const dot = document.getElementById('unsavedDot');
+            if (dot) dot.style.display = 'none';
+        }
+
+        window.addEventListener('beforeunload', function(e) {
+            if (hasUnsavedChanges) {
+                e.preventDefault();
+                e.returnValue = '';
+            }
+        });
+
         function vwUpdateField(itemId, fieldKey, value) {
             // Sync back to the hidden table row so autosave picks it up
             const row = document.querySelector(`[data-item-id="${itemId}"]`);
@@ -15113,6 +15182,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 const cached = vwRowsCache.find(i => i.itemId === itemId);
                 if (cached) cached.vals[fieldKey] = value;
             }
+            markUnsaved();
         }
 
         function setupAutoSave() {
@@ -15218,6 +15288,9 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             const payload = { submission_id: submissionId, line_items: lineItems };
             console.log('Payload:', JSON.stringify(payload, null, 2));
 
+            const saveBtn = document.getElementById('saveBtn');
+            if (saveBtn) saveBtn.disabled = true;
+
             fetch('/community_billing_save_draft', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -15229,16 +15302,18 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             })
             .then(result => {
                 console.log('Response:', result);
+                if (saveBtn) saveBtn.disabled = false;
                 if (result.success) {
+                    markSaved();
                     showMessage(t('saved_msg'), 'success');
-                    setTimeout(() => window.location.reload(), 1000);
                 } else {
-                    alert(t('save_failed') + (result.error || 'Unknown error'));
+                    showMessage(t('save_failed') + (result.error || 'Unknown error'), 'error');
                 }
             })
             .catch(error => {
-                console.error('Error:', error);
-                alert(t('save_error') + error.message);
+                console.error('Save error:', error);
+                if (saveBtn) saveBtn.disabled = false;
+                showMessage(t('save_network_error'), 'error');
             });
         }
 
@@ -15358,6 +15433,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     .then(r => r.json())
                     .then(result => {
                         if (result.success) {
+                            markSaved();
                             showMessage(t('submitted_msg'), 'success');
                             setTimeout(() => window.location.href = '/community_billing_tech', 2000);
                         } else {
@@ -15376,10 +15452,12 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         function showMessage(message, type) {
             const msgDiv = document.getElementById('message');
             if (!msgDiv) return;
-            msgDiv.className = 'alert alert-' + type;
+            const cssType = type === 'error' ? 'danger' : type;
+            msgDiv.className = 'alert alert-' + cssType;
             msgDiv.textContent = message;
             msgDiv.style.display = 'block';
-            setTimeout(() => msgDiv.style.display = 'none', 3000);
+            const delay = type === 'error' ? 6000 : 3000;
+            setTimeout(() => msgDiv.style.display = 'none', delay);
         }
 
     </script>
@@ -19067,7 +19145,8 @@ def community_billing_tech():
     return render_template_string(COMMUNITY_BILLING_TECH_TEMPLATE,
                                  username=username,
                                  communities=communities,
-                                 submissions=submissions)
+                                 submissions=submissions,
+                                 user_lang=session.get('user_lang', 'en'))
 
 @app.route('/community_billing_spreadsheet', methods=['POST', 'GET'])
 def community_billing_spreadsheet():
@@ -19280,7 +19359,8 @@ def community_billing_spreadsheet():
                                  line_items=line_items,
                                  status=status,
                                  num_clocks=num_clocks,
-                                 is_verona_walk=is_verona_walk)
+                                 is_verona_walk=is_verona_walk,
+                                 user_lang=session.get('user_lang', 'en'))
 
 @app.route('/community_billing_save_item', methods=['POST'])
 def community_billing_save_item():
