@@ -19218,10 +19218,17 @@ def community_billing_tech():
     for row in c.fetchall():
         submission_id = row[0]
 
-        # Find which clocks are covered by this submission
+        # Find which clocks have actual data entered by the tech
         c.execute("""SELECT DISTINCT zone_and_address
                      FROM community_billing_line_items
-                     WHERE submission_id = ?""", (submission_id,))
+                     WHERE submission_id = ?
+                       AND (COALESCE(nozzle,0) + COALESCE(pop_up_6_inch,0) +
+                            COALESCE(pop_up_12_inch,0) + COALESCE(rotor_6_inch,0) +
+                            COALESCE(new_pop_up_6_inch,0) + COALESCE(new_pop_up_12_inch,0) +
+                            COALESCE(riser,0) + COALESCE(solenoid,0) +
+                            COALESCE(stat_decoder_1,0) > 0
+                            OR (notes IS NOT NULL AND TRIM(notes) != ''))""",
+                 (submission_id,))
         clock_nums = set()
         for (zone,) in c.fetchall():
             if zone:
