@@ -16495,13 +16495,21 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         function loadCommunityClockAddresses(communityId) {
             const container = document.getElementById(`comm-clocks-${communityId}`);
             if (!container) return;
+
+            // Capture which clock tabs are open BEFORE wiping the DOM
+            const openClocksBefore = new Set();
+            container.querySelectorAll('.clock-addresses.visible').forEach(el => {
+                const m = el.id.match(/^addresses-\d+-(\d+)$/);
+                if (m) openClocksBefore.add(parseInt(m[1]));
+            });
+
             container.innerHTML = '<p style="color:#666;font-size:13px;">Loading...</p>';
 
             fetch(`/community_clocks?community_id=${communityId}`)
                 .then(r => r.json())
                 .then(data => {
                     if (data.success) {
-                        displayCommunityClocks(communityId, data.clocks);
+                        displayCommunityClocks(communityId, data.clocks, openClocksBefore);
                     } else {
                         container.innerHTML = `<p style="color:#dc3545;font-size:13px;">Error: ${data.error}</p>`;
                     }
@@ -16511,7 +16519,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 });
         }
 
-        function displayCommunityClocks(communityId, clocks) {
+        function displayCommunityClocks(communityId, clocks, openClocksOverride) {
             const container = document.getElementById(`comm-clocks-${communityId}`);
             if (!container) return;
 
@@ -16520,12 +16528,15 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 return;
             }
 
-            // Remember which clocks were open before re-render
-            const openClocks = [];
-            clocks.forEach(clock => {
-                const el = document.getElementById(`addresses-${communityId}-${clock.clock_number}`);
-                if (el && el.classList.contains('visible')) openClocks.push(clock.clock_number);
-            });
+            // Use pre-captured open state (passed from loadCommunityClockAddresses before DOM wipe),
+            // or fall back to reading current DOM if called directly.
+            const openClocks = openClocksOverride instanceof Set ? openClocksOverride : new Set();
+            if (!openClocksOverride) {
+                clocks.forEach(clock => {
+                    const el = document.getElementById(`addresses-${communityId}-${clock.clock_number}`);
+                    if (el && el.classList.contains('visible')) openClocks.add(clock.clock_number);
+                });
+            }
 
             let html = '';
             clocks.forEach(clock => {
@@ -16535,7 +16546,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 const allAddresses = [...regularAddresses, ...commonAreaAddresses];
                 const totalCount = allAddresses.length;
                 // Only open if it was already open before re-render
-                const isOpen = openClocks.includes(clock.clock_number);
+                const isOpen = openClocks.has(clock.clock_number);
 
                 // Use the same clock-container / clock-header / clock-addresses CSS as Verona Walk
                 html += `
