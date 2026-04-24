@@ -18178,10 +18178,13 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 html += '<div style="margin-bottom: 16px;">';
                 html += '<div style="font-size: 13px; font-weight: 600; color: #333; margin-bottom: 8px;">Submissions:</div>';
                 data.submissions.forEach(submission => {
-                    html += '<div style="display: flex; justify-content: space-between; align-items: center; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px; padding: 8px 12px; margin-bottom: 6px;">';
+                    html += '<div style="display: flex; justify-content: space-between; align-items: center; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 6px; padding: 10px 12px; margin-bottom: 6px;">';
                     html += '<div>';
-                    html += '<span style="font-weight: 600; color: #333;">' + submission.tech_username + '</span>';
-                    html += '<span style="color: #666; font-size: 12px; margin-left: 10px;">Submitted: ' + submission.submitted_at + '</span>';
+                    html += '<div style="font-weight: 700; color: #333; font-size: 14px;">' + submission.tech_username + '</div>';
+                    if (submission.clocks_label) {
+                        html += '<div style="font-size: 17px; font-weight: 800; color: #1a237e; line-height: 1.2; margin: 2px 0;">' + submission.clocks_label + '</div>';
+                    }
+                    html += '<div style="color: #666; font-size: 11px; margin-top: 2px;">Submitted: ' + submission.submitted_at + '</div>';
                     html += '</div>';
                     html += '<button type="button" style="padding: 4px 10px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;" onclick="deleteSubmission(' + submission.id + ', ' + JSON.stringify(submission.tech_username) + ')">Delete</button>';
                     html += '</div>';
@@ -18261,7 +18264,13 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     const gid = 'rs-' + submission.id;
                     html += '<div class="clock-container">';
                     html += '<div class="clock-header" data-gid="' + gid + '" onclick="toggleResultGroup(this.dataset.gid)">';
-                    html += '<span class="clock-title">' + submission.tech_username + ' <span style="font-size: 12px; font-weight: normal; color: #888;">Submitted: ' + submission.submitted_at + '</span></span>';
+                    const clocksHtml = submission.clocks_label
+                        ? '<span style="font-size:16px;font-weight:800;color:#1a237e;margin-left:8px;">' + submission.clocks_label + '</span>'
+                        : '';
+                    html += '<span class="clock-title" style="display:flex;flex-direction:column;gap:1px;">'
+                        + '<span style="font-weight:700;font-size:14px;color:#333;">' + submission.tech_username + clocksHtml + '</span>'
+                        + '<span style="font-size:11px;font-weight:normal;color:#888;">Submitted: ' + submission.submitted_at + '</span>'
+                        + '</span>';
                     html += '<div style="display:flex;align-items:center;gap:10px;">';
                     html += '<button type="button" style="padding:4px 10px;background:#dc3545;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;" onclick="event.stopPropagation();deleteSubmission(' + submission.id + ',' + JSON.stringify(submission.tech_username) + ')">Delete</button>';
                     html += '<span class="clock-toggle" id="toggle-' + gid + '">&#9660;</span>';
@@ -19816,12 +19825,30 @@ def community_billing_office_data():
                 else:
                     clocks_cost += item_cost
 
+        # Derive which clocks have data entered (reuse already-fetched line_items)
+        clock_nums = set()
+        for item in line_items:
+            total_vals = (
+                (item['nozzle'] or 0) + (item['pop_up_6_inch'] or 0) +
+                (item['pop_up_12_inch'] or 0) + (item['rotor_6_inch'] or 0) +
+                (item['new_pop_up_6_inch'] or 0) + (item['new_pop_up_12_inch'] or 0) +
+                (item['riser'] or 0) + (item['solenoid'] or 0) +
+                (item['stat_decoder_1'] or 0)
+            )
+            has_notes = bool(item.get('notes') and str(item['notes']).strip())
+            if total_vals > 0 or has_notes:
+                m = re.match(r'^Clock\s+(\d+)', item['zone_and_address'] or '', re.IGNORECASE)
+                if m:
+                    clock_nums.add(int(m.group(1)))
+        clocks_label = ', '.join(f'Clock {n}' for n in sorted(clock_nums)) if clock_nums else ''
+
         submissions.append({
             'id': submission_id,
             'tech_username': row[1],
             'status': row[2],
             'submitted_at': row[3],
-            'line_items': line_items
+            'line_items': line_items,
+            'clocks_label': clocks_label
         })
 
     conn.close()
