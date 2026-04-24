@@ -3189,6 +3189,13 @@ def upload_invoice(po_id):
                 manual_review_flag = f"Service PO (ID {po_id}) needs manual review - invoice year could not be extracted. Please assign to appropriate Service job."
                 print(f"⚠ Service PO flagged for manual review - unable to extract invoice year")
 
+            # Check for duplicate invoice number on this PO before inserting
+            existing = c.execute("""SELECT id FROM invoices WHERE po_id=? AND invoice_number=?""",
+                                 (po_id, invoice_number)).fetchone()
+            if existing:
+                conn.close()
+                return jsonify({'success': False, 'error': f'Invoice {invoice_number} has already been matched to this PO'})
+
             # Insert into invoices table
             c.execute("""INSERT INTO invoices (po_id, invoice_filename, invoice_number, invoice_cost,
                                               invoice_date, invoice_upload_date, jobber_invoice_number, created_at)
@@ -3203,6 +3210,13 @@ def upload_invoice(po_id):
                          WHERE id=?""",
                      (new_job_name, 'matched', manual_review_flag, po_id))
         else:
+            # Check for duplicate invoice number on this PO before inserting
+            existing = c.execute("""SELECT id FROM invoices WHERE po_id=? AND invoice_number=?""",
+                                 (po_id, invoice_number)).fetchone()
+            if existing:
+                conn.close()
+                return jsonify({'success': False, 'error': f'Invoice {invoice_number} has already been matched to this PO'})
+
             # Normal update - insert invoice and update PO status
             c.execute("""INSERT INTO invoices (po_id, invoice_filename, invoice_number, invoice_cost,
                                               invoice_date, invoice_upload_date, jobber_invoice_number, created_at)
@@ -3515,6 +3529,13 @@ def match_notification_to_po():
         invoice_number = notification[0]
         invoice_cost = notification[1]
         invoice_filename = notification[2]
+
+        # Check for duplicate invoice number on this PO before inserting
+        existing = c.execute("""SELECT id FROM invoices WHERE po_id=? AND invoice_number=?""",
+                             (po_id, invoice_number)).fetchone()
+        if existing:
+            conn.close()
+            return jsonify({'success': False, 'error': f'Invoice {invoice_number} has already been matched to this PO'})
 
         # Create invoice record
         c.execute("""INSERT INTO invoices (po_id, invoice_number, invoice_cost, invoice_filename, invoice_date, invoice_upload_date, created_at)
