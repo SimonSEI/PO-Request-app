@@ -15154,6 +15154,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         <div class="vw-field">
                             <label>${f.label}</label>
                             <input type="number" min="0" value="${item.vals[f.key]}" ${isDisabled}
+                                   onwheel="this.blur()"
                                    oninput="vwUpdateField('${item.itemId}', '${f.key}', this.value)">
                         </div>`;
                 });
@@ -16286,6 +16287,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                         <input type="number" id="comm-clock-num-{{ community.id }}" min="1" max="999"
                                                value="{{ community.num_clocks }}"
                                                style="width: 60px; padding: 4px 6px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px;"
+                                               onwheel="this.blur()"
                                                onkeypress="if(event.key==='Enter') updateCommunityClockCount({{ community.id }})">
                                         <button type="button" onclick="updateCommunityClockCount({{ community.id }})"
                                                 style="padding: 4px 12px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">Update</button>
@@ -16590,8 +16592,13 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
         function updateCommunityClockCount(communityId) {
             const input = document.getElementById(`comm-clock-num-${communityId}`);
-            const numClocks = parseInt(input.value) || 0;
+            const numClocks = parseInt(input.value);
             const msgEl = document.getElementById(`comm-clock-count-msg-${communityId}`);
+
+            if (isNaN(numClocks) || numClocks < 1) {
+                if (msgEl) { msgEl.textContent = 'Enter a number 1–999'; msgEl.style.color = '#dc3545'; setTimeout(() => { msgEl.textContent = ''; }, 3000); }
+                return;
+            }
 
             fetch('/community_update_clock_count', {
                 method: 'POST',
