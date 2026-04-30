@@ -103,6 +103,7 @@ print(f"✓ Using data directory: {DATA_DIR}")
 
 app.config['UPLOAD_FOLDER'] = os.path.join(DATA_DIR, 'invoice_uploads')
 app.config['BULK_UPLOAD_FOLDER'] = os.path.join(DATA_DIR, 'bulk_uploads')
+app.config['COMMUNITY_PHOTO_FOLDER'] = os.path.join(DATA_DIR, 'community_billing_photos')
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB for bulk uploads
 
 try:
@@ -115,6 +116,9 @@ try:
     if not os.path.exists(app.config['BULK_UPLOAD_FOLDER']):
         os.makedirs(app.config['BULK_UPLOAD_FOLDER'], mode=0o755)
         print(f"✓ Created folder: {app.config['BULK_UPLOAD_FOLDER']}")
+    if not os.path.exists(app.config['COMMUNITY_PHOTO_FOLDER']):
+        os.makedirs(app.config['COMMUNITY_PHOTO_FOLDER'], mode=0o755)
+        print(f"✓ Created folder: {app.config['COMMUNITY_PHOTO_FOLDER']}")
 except Exception as e:
     print(f"✗ ERROR with folder: {e}")
 
@@ -1300,6 +1304,7 @@ def init_db():
                   solenoid INTEGER DEFAULT NULL,
                   stat_decoder_1 INTEGER DEFAULT NULL,
                   notes TEXT,
+                  photos TEXT,
                   created_at TEXT,
                   FOREIGN KEY (submission_id) REFERENCES community_billing_submissions(id) ON DELETE CASCADE)''')
 
@@ -1308,6 +1313,12 @@ def init_db():
         c.execute("SELECT notes FROM community_billing_line_items LIMIT 1")
     except sqlite3.OperationalError:
         c.execute("ALTER TABLE community_billing_line_items ADD COLUMN notes TEXT")
+
+    # Migrate: Add photos column if it doesn't exist
+    try:
+        c.execute("SELECT photos FROM community_billing_line_items LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE community_billing_line_items ADD COLUMN photos TEXT")
 
     # Migrate: Add preferred_language to users for persistent per-account language setting
     try:
@@ -14818,6 +14829,56 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             border-radius: 3px;
             font-size: 16px;
         }
+        .photo-upload-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            margin-top: 5px;
+            padding: 4px 10px;
+            background: #e8f0fe;
+            border: 1px solid #4a90e2;
+            border-radius: 4px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #1a56b0;
+            cursor: pointer;
+            user-select: none;
+        }
+        .photo-upload-label:hover { background: #d0e4ff; }
+        .photo-thumbs-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            margin-top: 4px;
+        }
+        .photo-thumb-wrap {
+            position: relative;
+            display: inline-block;
+        }
+        .photo-thumb-img {
+            width: 56px;
+            height: 56px;
+            object-fit: cover;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+            display: block;
+        }
+        .photo-thumb-remove {
+            position: absolute;
+            top: -5px;
+            right: -5px;
+            background: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 16px;
+            height: 16px;
+            font-size: 10px;
+            cursor: pointer;
+            line-height: 14px;
+            padding: 0;
+            text-align: center;
+        }
         .lang-toggle-btn {
             padding: 10px 16px;
             background: #667eea;
@@ -14907,7 +14968,15 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         <td><input type="number" class="riser" value="{{ item.riser if item.riser and item.riser != 0 else '' }}" min="0"></td>
                         <td><input type="number" class="solenoid" value="{{ item.solenoid if item.solenoid and item.solenoid != 0 else '' }}" min="0"></td>
                         <td><input type="number" class="stat_decoder_1" value="{{ item.stat_decoder_1 if item.stat_decoder_1 and item.stat_decoder_1 != 0 else '' }}" min="0"></td>
-                        <td><input type="text" class="notes" value="{{ item.notes or '' }}" placeholder="Add notes..." data-i18n-placeholder="notes_placeholder"></td>
+                        <td>
+                            <input type="text" class="notes" value="{{ item.notes or '' }}" placeholder="Add notes..." data-i18n-placeholder="notes_placeholder">
+                            <input type="hidden" class="photos" value="{{ item.photos or '[]' }}">
+                            <div class="photo-thumbs-row" id="ptrow-{{ item.id }}"></div>
+                            <label class="photo-upload-label" title="Attach photo">
+                                📷
+                                <input type="file" accept="image/*" capture="environment" style="display:none" onchange="handlePhotoUpload(this, '{{ item.id }}')">
+                            </label>
+                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -15136,6 +15205,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     vals[f.key] = row.querySelector('.' + f.key)?.value || '';
                 });
                 vals.notes = row.querySelector('.notes')?.value || '';
+                try { vals.photos = JSON.parse(row.querySelector('.photos')?.value || '[]'); } catch(e) { vals.photos = []; }
                 items.push({itemId, clockNum, isCA, addressText, zone, vals});
             });
             return items;
@@ -15180,6 +15250,15 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         </div>`;
                 });
                 fieldsHtml += '</div>';
+                const vwPhotos = item.vals.photos || [];
+                const vwThumbsHtml = vwPhotos.map(fn =>
+                    `<div class="photo-thumb-wrap" style="position:relative;display:inline-block;margin:3px;">
+                        <a href="/community_billing_photo/${fn}" target="_blank">
+                            <img src="/community_billing_photo/${fn}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;border:1px solid #ccc;">
+                        </a>
+                        ${isDisabled ? '' : `<button type="button" onclick="vwRemovePhoto('${item.itemId}','${fn}')" style="position:absolute;top:-5px;right:-5px;background:#dc3545;color:white;border:none;border-radius:50%;width:16px;height:16px;font-size:10px;cursor:pointer;line-height:14px;padding:0;text-align:center;">&times;</button>`}
+                    </div>`
+                ).join('');
                 fieldsHtml += `
                     <div class="vw-notes-field">
                         <div class="vw-field">
@@ -15187,6 +15266,11 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                             <input type="text" value="${(item.vals.notes || '').replace(/"/g, '&quot;')}" placeholder="Add notes..." ${isDisabled}
                                    oninput="vwUpdateField('${item.itemId}', 'notes', this.value)">
                         </div>
+                        ${isDisabled ? '' : `<label class="photo-upload-label" title="Attach photo" style="margin-top:6px;">
+                            📷 Add Photo
+                            <input type="file" accept="image/*" capture="environment" style="display:none" onchange="vwHandlePhotoUpload(this, '${item.itemId}')">
+                        </label>`}
+                        <div class="photo-thumbs-row" id="vw-ptrow-${item.itemId}">${vwThumbsHtml}</div>
                     </div>`;
                 return `<div class="vw-address-card">
                     <div class="vw-address-name">${item.addressText}</div>
@@ -15230,6 +15314,140 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             markUnsaved();
         }
 
+        // ── Photo upload helpers ───────────────────────────────────────────────
+
+        function _uploadPhotoFile(file, onSuccess, onError) {
+            const fd = new FormData();
+            fd.append('photo', file);
+            fetch('/community_billing_upload_photo', {method: 'POST', body: fd})
+                .then(r => r.json())
+                .then(result => {
+                    if (result.success) onSuccess(result.filename);
+                    else onError(result.error || 'Upload failed');
+                })
+                .catch(e => onError(e.message || 'Network error'));
+        }
+
+        function _readPhotos(row) {
+            try { return JSON.parse(row.querySelector('.photos')?.value || '[]'); } catch(e) { return []; }
+        }
+
+        function _writePhotos(row, arr) {
+            const inp = row.querySelector('.photos');
+            if (inp) inp.value = JSON.stringify(arr);
+        }
+
+        function _renderThumbsInRow(rowId, filenames, onRemove) {
+            const container = document.getElementById('ptrow-' + rowId);
+            if (!container) return;
+            container.innerHTML = filenames.map(fn =>
+                `<div class="photo-thumb-wrap">
+                    <a href="/community_billing_photo/${fn}" target="_blank">
+                        <img src="/community_billing_photo/${fn}" class="photo-thumb-img">
+                    </a>
+                    <button type="button" class="photo-thumb-remove" onclick="removePhotoFromRow('${rowId}', '${fn}')">&times;</button>
+                </div>`
+            ).join('');
+        }
+
+        function handlePhotoUpload(input, rowId) {
+            const file = input.files[0];
+            if (!file) return;
+            input.value = '';
+            const row = document.querySelector(`[data-item-id="${rowId}"]`);
+            if (!row) return;
+            _uploadPhotoFile(file, function(filename) {
+                const photos = _readPhotos(row);
+                photos.push(filename);
+                _writePhotos(row, photos);
+                _renderThumbsInRow(rowId, photos, removePhotoFromRow);
+                markUnsaved();
+            }, function(err) {
+                alert('Photo upload failed: ' + err);
+            });
+        }
+
+        function removePhotoFromRow(rowId, filename) {
+            const row = document.querySelector(`[data-item-id="${rowId}"]`);
+            if (!row) return;
+            const photos = _readPhotos(row).filter(f => f !== filename);
+            _writePhotos(row, photos);
+            _renderThumbsInRow(rowId, photos, removePhotoFromRow);
+            markUnsaved();
+        }
+
+        function vwHandlePhotoUpload(input, itemId) {
+            const file = input.files[0];
+            if (!file) return;
+            input.value = '';
+            _uploadPhotoFile(file, function(filename) {
+                const row = document.querySelector(`[data-item-id="${itemId}"]`);
+                if (row) {
+                    const photos = _readPhotos(row);
+                    photos.push(filename);
+                    _writePhotos(row, photos);
+                    // Sync to cache
+                    if (vwRowsCache) {
+                        const cached = vwRowsCache.find(i => i.itemId === itemId);
+                        if (cached) cached.vals.photos = photos;
+                    }
+                }
+                // Re-render VW card thumbnails
+                const thumbRow = document.getElementById('vw-ptrow-' + itemId);
+                if (thumbRow) {
+                    const currentPhotos = _readPhotos(document.querySelector(`[data-item-id="${itemId}"]`) || {querySelector: () => null});
+                    const allPhotos = (currentPhotos.length ? currentPhotos : [filename]);
+                    thumbRow.innerHTML = allPhotos.map(fn =>
+                        `<div class="photo-thumb-wrap" style="position:relative;display:inline-block;margin:3px;">
+                            <a href="/community_billing_photo/${fn}" target="_blank">
+                                <img src="/community_billing_photo/${fn}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;border:1px solid #ccc;">
+                            </a>
+                            <button type="button" onclick="vwRemovePhoto('${itemId}','${fn}')" style="position:absolute;top:-5px;right:-5px;background:#dc3545;color:white;border:none;border-radius:50%;width:16px;height:16px;font-size:10px;cursor:pointer;line-height:14px;padding:0;text-align:center;">&times;</button>
+                        </div>`
+                    ).join('');
+                }
+                markUnsaved();
+            }, function(err) {
+                alert('Photo upload failed: ' + err);
+            });
+        }
+
+        function vwRemovePhoto(itemId, filename) {
+            const row = document.querySelector(`[data-item-id="${itemId}"]`);
+            if (row) {
+                const photos = _readPhotos(row).filter(f => f !== filename);
+                _writePhotos(row, photos);
+                if (vwRowsCache) {
+                    const cached = vwRowsCache.find(i => i.itemId === itemId);
+                    if (cached) cached.vals.photos = photos;
+                }
+                // Re-render thumbnails
+                const thumbRow = document.getElementById('vw-ptrow-' + itemId);
+                if (thumbRow) {
+                    thumbRow.innerHTML = photos.map(fn =>
+                        `<div class="photo-thumb-wrap" style="position:relative;display:inline-block;margin:3px;">
+                            <a href="/community_billing_photo/${fn}" target="_blank">
+                                <img src="/community_billing_photo/${fn}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;border:1px solid #ccc;">
+                            </a>
+                            <button type="button" onclick="vwRemovePhoto('${itemId}','${fn}')" style="position:absolute;top:-5px;right:-5px;background:#dc3545;color:white;border:none;border-radius:50%;width:16px;height:16px;font-size:10px;cursor:pointer;line-height:14px;padding:0;text-align:center;">&times;</button>
+                        </div>`
+                    ).join('');
+                }
+            }
+            markUnsaved();
+        }
+
+        // Initialize photo thumbnails for standard (non-VW) table on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelectorAll('[data-item-id]').forEach(row => {
+                const itemId = row.dataset.itemId;
+                const photos = _readPhotos(row);
+                if (photos.length > 0) _renderThumbsInRow(itemId, photos, removePhotoFromRow);
+            });
+        });
+
+        // ── End Photo helpers ──────────────────────────────────────────────────
+
         function setupAutoSave() {
             // Autosave every 5 minutes (300000 ms)
             setInterval(function() {
@@ -15251,6 +15469,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     const itemId = row.dataset.itemId;
                     if (!itemId) return;
 
+                    let _photos = [];
+                    try { _photos = JSON.parse(row.querySelector('.photos')?.value || '[]'); } catch(e) {}
                     lineItems.push({
                         id: itemId,
                         zone_and_address: (row.querySelector('.zone')?.textContent || '').trim(),
@@ -15263,7 +15483,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         riser: row.querySelector('.riser')?.value || '',
                         solenoid: row.querySelector('.solenoid')?.value || '',
                         stat_decoder_1: row.querySelector('.stat_decoder_1')?.value || '',
-                        notes: row.querySelector('.notes')?.value || ''
+                        notes: row.querySelector('.notes')?.value || '',
+                        photos: _photos
                     });
                 });
 
@@ -15311,6 +15532,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 }
 
                 const nozzle = row.querySelector('.nozzle')?.value;
+                let _rowPhotos = [];
+                try { _rowPhotos = JSON.parse(row.querySelector('.photos')?.value || '[]'); } catch(e) {}
                 const item = {
                     id: itemId,
                     zone_and_address: (row.querySelector('.zone')?.textContent || '').trim(),
@@ -15323,7 +15546,8 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     riser: row.querySelector('.riser')?.value || '',
                     solenoid: row.querySelector('.solenoid')?.value || '',
                     stat_decoder_1: row.querySelector('.stat_decoder_1')?.value || '',
-                    notes: row.querySelector('.notes')?.value || ''
+                    notes: row.querySelector('.notes')?.value || '',
+                    photos: _rowPhotos
                 };
                 lineItems.push(item);
                 console.log('Row ' + idx + ':', item);
@@ -18324,7 +18548,27 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             return (item.nozzle || 0) + (item.pop_up_6_inch || 0) + (item.pop_up_12_inch || 0) +
                    (item.rotor_6_inch || 0) + (item.new_pop_up_6_inch || 0) + (item.new_pop_up_12_inch || 0) +
                    (item.riser || 0) + (item.solenoid || 0) + (item.stat_decoder_1 || 0) > 0 ||
-                   !!(item.notes && item.notes.trim());
+                   !!(item.notes && item.notes.trim()) ||
+                   (Array.isArray(item.photos) && item.photos.length > 0);
+        }
+
+        function renderNotesCell(item) {
+            const hasNotes = !!(item.notes && item.notes.trim());
+            const photos = Array.isArray(item.photos) ? item.photos : [];
+            const hasPhotos = photos.length > 0;
+            if (!hasNotes && !hasPhotos) return '<td></td>';
+            let inner = '';
+            if (hasNotes) inner += '<div style="margin-bottom:' + (hasPhotos ? '6px' : '0') + '"><span style="margin-right:4px;">&#9888;</span>' + item.notes + '</div>';
+            if (hasPhotos) {
+                inner += '<div style="display:flex;flex-wrap:wrap;gap:4px;">';
+                photos.forEach(fn => {
+                    inner += '<a href="/community_billing_photo/' + fn + '" target="_blank">'
+                           + '<img src="/community_billing_photo/' + fn + '" style="width:60px;height:60px;object-fit:cover;border-radius:4px;border:1px solid #ccc;">'
+                           + '</a>';
+                });
+                inner += '</div>';
+            }
+            return '<td style="background:#fff3cd;border-left:3px solid #ffc107;font-weight:600;color:#4a3800;padding:6px 8px;vertical-align:top;">' + inner + '</td>';
         }
 
         function displayResults(data) {
@@ -18422,20 +18666,19 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     const group = clockGroups[key];
                     if (group.items.length === 0) return;
                     const gid = 'rg-' + key;
-                    const groupHasNotes = group.items.some(item => item.notes && item.notes.trim());
+                    const groupHasNotes = group.items.some(item => (item.notes && item.notes.trim()) || (Array.isArray(item.photos) && item.photos.length > 0));
                     html += '<div class="clock-container">';
                     html += '<div class="clock-header" data-gid="' + gid + '" onclick="toggleResultGroup(this.dataset.gid)">';
                     html += '<span class="clock-title">' + group.label + ' <span style="font-size: 12px; font-weight: normal; color: #888;">(' + group.items.length + ' item' + (group.items.length !== 1 ? 's' : '') + ')</span>'
-                        + (groupHasNotes ? ' <span title="This clock has notes" style="display:inline-flex;align-items:center;gap:3px;background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:700;color:#856404;vertical-align:middle;">&#9888; Notes</span>' : '')
+                        + (groupHasNotes ? ' <span title="This clock has notes or photos" style="display:inline-flex;align-items:center;gap:3px;background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:700;color:#856404;vertical-align:middle;">&#9888; Notes</span>' : '')
                         + '</span>';
                     html += '<span class="clock-toggle" id="toggle-' + gid + '">&#9660;</span>';
                     html += '</div>';
                     html += '<div class="clock-addresses" id="' + gid + '">';
                     html += '<table class="spreadsheet-table">';
-                    html += '<thead><tr><th>Zone &amp; Address</th><th>Technician</th><th>Nozzle</th><th>6&quot; Pop Up</th><th>12&quot; Pop Up</th><th>6&quot; Rotor</th><th>NEW 6&quot; Pop Up</th><th>NEW 12&quot; Pop Up</th><th>Riser</th><th>Solenoid</th><th>1 Stat Decoder</th><th>Notes</th></tr></thead>';
+                    html += '<thead><tr><th>Zone &amp; Address</th><th>Technician</th><th>Nozzle</th><th>6&quot; Pop Up</th><th>12&quot; Pop Up</th><th>6&quot; Rotor</th><th>NEW 6&quot; Pop Up</th><th>NEW 12&quot; Pop Up</th><th>Riser</th><th>Solenoid</th><th>1 Stat Decoder</th><th>Notes &amp; Photos</th></tr></thead>';
                     html += '<tbody>';
                     group.items.forEach(item => {
-                        const itemHasNotes = !!(item.notes && item.notes.trim());
                         html += '<tr>';
                         html += '<td>' + (item.zone_and_address || '') + '</td>';
                         html += '<td style="white-space:nowrap;font-size:12px;color:#555;">' + item.tech_username + '</td>';
@@ -18448,9 +18691,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                         html += '<td>' + item.riser + '</td>';
                         html += '<td>' + item.solenoid + '</td>';
                         html += '<td>' + item.stat_decoder_1 + '</td>';
-                        html += itemHasNotes
-                            ? '<td style="background:#fff3cd;border-left:3px solid #ffc107;font-weight:600;color:#4a3800;padding:6px 8px;"><span style="margin-right:4px;">&#9888;</span>' + item.notes + '</td>'
-                            : '<td></td>';
+                        html += renderNotesCell(item);
                         html += '</tr>';
                     });
                     html += '</tbody></table>';
@@ -18463,14 +18704,14 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 data.submissions.forEach(submission => {
                     const gid = 'rs-' + submission.id;
                     const filledItems = submission.line_items.filter(hasData);
-                    const submissionHasNotes = filledItems.some(item => item.notes && item.notes.trim());
+                    const submissionHasNotes = filledItems.some(item => (item.notes && item.notes.trim()) || (Array.isArray(item.photos) && item.photos.length > 0));
                     html += '<div class="clock-container">';
                     html += '<div class="clock-header" data-gid="' + gid + '" onclick="toggleResultGroup(this.dataset.gid)">';
                     const clocksHtml = submission.clocks_label
                         ? '<span style="font-size:16px;font-weight:800;color:#1a237e;margin-left:8px;">' + submission.clocks_label + '</span>'
                         : '';
                     const notesIndicatorHtml = submissionHasNotes
-                        ? ' <span title="This submission has notes" style="display:inline-flex;align-items:center;gap:3px;background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:700;color:#856404;vertical-align:middle;margin-left:6px;">&#9888; Notes</span>'
+                        ? ' <span title="This submission has notes or photos" style="display:inline-flex;align-items:center;gap:3px;background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:700;color:#856404;vertical-align:middle;margin-left:6px;">&#9888; Notes</span>'
                         : '';
                     html += '<span class="clock-title" style="display:flex;flex-direction:column;gap:1px;">'
                         + '<span style="font-weight:700;font-size:14px;color:#333;">' + submission.tech_username + clocksHtml + notesIndicatorHtml + '</span>'
@@ -18484,10 +18725,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     html += '<div class="clock-addresses" id="' + gid + '">';
                     if (filledItems.length > 0) {
                         html += '<table class="spreadsheet-table">';
-                        html += '<thead><tr><th>Zone &amp; Address</th><th>Nozzle</th><th>6&quot; Pop Up</th><th>12&quot; Pop Up</th><th>6&quot; Rotor</th><th>NEW 6&quot; Pop Up</th><th>NEW 12&quot; Pop Up</th><th>Riser</th><th>Solenoid</th><th>1 Stat Decoder</th><th>Notes</th></tr></thead>';
+                        html += '<thead><tr><th>Zone &amp; Address</th><th>Nozzle</th><th>6&quot; Pop Up</th><th>12&quot; Pop Up</th><th>6&quot; Rotor</th><th>NEW 6&quot; Pop Up</th><th>NEW 12&quot; Pop Up</th><th>Riser</th><th>Solenoid</th><th>1 Stat Decoder</th><th>Notes &amp; Photos</th></tr></thead>';
                         html += '<tbody>';
                         filledItems.forEach(item => {
-                            const itemHasNotes = !!(item.notes && item.notes.trim());
                             html += '<tr>';
                             html += '<td>' + (item.zone_and_address || '') + '</td>';
                             html += '<td>' + item.nozzle + '</td>';
@@ -18499,9 +18739,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                             html += '<td>' + item.riser + '</td>';
                             html += '<td>' + item.solenoid + '</td>';
                             html += '<td>' + item.stat_decoder_1 + '</td>';
-                            html += itemHasNotes
-                                ? '<td style="background:#fff3cd;border-left:3px solid #ffc107;font-weight:600;color:#4a3800;padding:6px 8px;"><span style="margin-right:4px;">&#9888;</span>' + item.notes + '</td>'
-                                : '<td></td>';
+                            html += renderNotesCell(item);
                             html += '</tr>';
                         });
                         html += '</tbody></table>';
@@ -19546,12 +19784,18 @@ def community_billing_save_item():
     c = conn.cursor()
 
     try:
+        photos_val = data.get('photos')
+        if isinstance(photos_val, list):
+            import json as _json
+            photos_val = _json.dumps(photos_val)
+        photos_val = photos_val or '[]'
+
         if item_id:
             # Update existing item
             c.execute("""UPDATE community_billing_line_items
                          SET zone_and_address = ?, nozzle = ?, pop_up_6_inch = ?,
                              pop_up_12_inch = ?, rotor_6_inch = ?, new_pop_up_6_inch = ?,
-                             new_pop_up_12_inch = ?, riser = ?, solenoid = ?, stat_decoder_1 = ?, notes = ?
+                             new_pop_up_12_inch = ?, riser = ?, solenoid = ?, stat_decoder_1 = ?, notes = ?, photos = ?
                          WHERE id = ? AND submission_id = ?""",
                      (zone_and_address,
                       int(data.get('nozzle') or 0),
@@ -19564,14 +19808,15 @@ def community_billing_save_item():
                       int(data.get('solenoid') or 0),
                       int(data.get('stat_decoder_1') or 0),
                       data.get('notes') or '',
+                      photos_val,
                       item_id, submission_id))
         else:
             # Create new item
             c.execute("""INSERT INTO community_billing_line_items
                          (submission_id, zone_and_address, nozzle, pop_up_6_inch,
                           pop_up_12_inch, rotor_6_inch, new_pop_up_6_inch,
-                          new_pop_up_12_inch, riser, solenoid, stat_decoder_1, notes, created_at)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                          new_pop_up_12_inch, riser, solenoid, stat_decoder_1, notes, photos, created_at)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                      (submission_id, zone_and_address,
                       int(data.get('nozzle') or 0),
                       int(data.get('pop_up_6_inch') or 0),
@@ -19583,6 +19828,7 @@ def community_billing_save_item():
                       int(data.get('solenoid') or 0),
                       int(data.get('stat_decoder_1') or 0),
                       data.get('notes') or '',
+                      photos_val,
                       datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
 
         conn.commit()
@@ -19663,6 +19909,12 @@ def community_billing_save_draft():
             solenoid = safe_int(item.get('solenoid'))
             stat_decoder_1 = safe_int(item.get('stat_decoder_1'))
             notes = (item.get('notes') or '').strip()
+            photos_raw = item.get('photos')
+            if isinstance(photos_raw, list):
+                import json as _json
+                photos_str = _json.dumps(photos_raw)
+            else:
+                photos_str = photos_raw or '[]'
 
             print(f"Item {idx} (ID={item_id}): nozzle={nozzle}, pop_up_6={pop_up_6_inch}, pop_up_12={pop_up_12_inch}")
 
@@ -19672,11 +19924,11 @@ def community_billing_save_draft():
                 c.execute("""UPDATE community_billing_line_items
                              SET zone_and_address = ?, nozzle = ?, pop_up_6_inch = ?,
                                  pop_up_12_inch = ?, rotor_6_inch = ?, new_pop_up_6_inch = ?,
-                                 new_pop_up_12_inch = ?, riser = ?, solenoid = ?, stat_decoder_1 = ?, notes = ?
+                                 new_pop_up_12_inch = ?, riser = ?, solenoid = ?, stat_decoder_1 = ?, notes = ?, photos = ?
                              WHERE id = ? AND submission_id = ?""",
                          (zone_and_address, nozzle, pop_up_6_inch, pop_up_12_inch,
                           rotor_6_inch, new_pop_up_6_inch, new_pop_up_12_inch,
-                          riser, solenoid, stat_decoder_1, notes, item_id, submission_id))
+                          riser, solenoid, stat_decoder_1, notes, photos_str, item_id, submission_id))
                 updated_count += 1
             else:
                 # Insert new item
@@ -19684,11 +19936,11 @@ def community_billing_save_draft():
                 c.execute("""INSERT INTO community_billing_line_items
                              (submission_id, zone_and_address, nozzle, pop_up_6_inch,
                               pop_up_12_inch, rotor_6_inch, new_pop_up_6_inch,
-                              new_pop_up_12_inch, riser, solenoid, stat_decoder_1, notes, created_at)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                              new_pop_up_12_inch, riser, solenoid, stat_decoder_1, notes, photos, created_at)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                          (submission_id, zone_and_address, nozzle, pop_up_6_inch,
                           pop_up_12_inch, rotor_6_inch, new_pop_up_6_inch,
-                          new_pop_up_12_inch, riser, solenoid, stat_decoder_1, notes,
+                          new_pop_up_12_inch, riser, solenoid, stat_decoder_1, notes, photos_str,
                           datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
                 inserted_count += 1
 
@@ -19710,6 +19962,42 @@ def community_billing_save_draft():
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': f'Error: {str(e)}'})
+
+@app.route('/community_billing_upload_photo', methods=['POST'])
+def community_billing_upload_photo():
+    """Upload a photo attached to a community billing line item"""
+    if 'username' not in session or session.get('role') != 'technician':
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
+
+    if 'photo' not in request.files:
+        return jsonify({'success': False, 'error': 'No photo provided'})
+
+    photo = request.files['photo']
+    if not photo or photo.filename == '':
+        return jsonify({'success': False, 'error': 'Empty file'})
+
+    allowed_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif'}
+    ext = os.path.splitext(photo.filename or '')[1].lower()
+    if ext not in allowed_extensions:
+        return jsonify({'success': False, 'error': 'Invalid file type'})
+
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    safe_user = ''.join(c for c in session.get('username', 'user') if c.isalnum() or c in ('_', '-'))
+    filename = f"cbp_{safe_user}_{timestamp}{ext}"
+    save_path = os.path.join(app.config['COMMUNITY_PHOTO_FOLDER'], filename)
+    photo.save(save_path)
+
+    return jsonify({'success': True, 'filename': filename})
+
+@app.route('/community_billing_photo/<filename>')
+def community_billing_photo(filename):
+    """Serve a community billing photo"""
+    if 'username' not in session:
+        return 'Unauthorized', 401
+    # Sanitize: only allow safe filenames (no path traversal)
+    if '..' in filename or '/' in filename or '\\' in filename:
+        return 'Invalid filename', 400
+    return send_from_directory(app.config['COMMUNITY_PHOTO_FOLDER'], filename)
 
 @app.route('/community_billing_delete_item', methods=['POST'])
 def community_billing_delete_item():
@@ -20028,13 +20316,18 @@ def community_billing_office_data():
         # Get line items for this submission
         c.execute("""SELECT zone_and_address, nozzle, pop_up_6_inch, pop_up_12_inch,
                             rotor_6_inch, new_pop_up_6_inch, new_pop_up_12_inch,
-                            riser, solenoid, stat_decoder_1, notes
+                            riser, solenoid, stat_decoder_1, notes, COALESCE(photos, '[]')
                      FROM community_billing_line_items
                      WHERE submission_id = ?
                      ORDER BY id""", (submission_id,))
 
         line_items = []
         for item_row in c.fetchall():
+            import json as _json
+            try:
+                photos_list = _json.loads(item_row[11] or '[]')
+            except Exception:
+                photos_list = []
             line_items.append({
                 'zone_and_address': item_row[0],
                 'nozzle': item_row[1],
@@ -20046,7 +20339,8 @@ def community_billing_office_data():
                 'riser': item_row[7],
                 'solenoid': item_row[8],
                 'stat_decoder_1': item_row[9],
-                'notes': item_row[10]
+                'notes': item_row[10],
+                'photos': photos_list
             })
 
             # Calculate cost for this item if pricing is available
