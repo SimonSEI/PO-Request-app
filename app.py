@@ -17079,9 +17079,13 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
         function bulkAddCommunityClockAddresses(communityId, clockNumber) {
             const textarea = document.getElementById(`comm-addr-input-${communityId}-${clockNumber}`);
-            const lines = textarea.value.split(_nl).map(l => l.trim()).filter(l => l);
+            const rawLines = textarea.value.split(_nl).map(l => l.trim()).filter(l => l);
 
-            if (lines.length === 0) { alert('Please enter at least one address.'); return; }
+            if (rawLines.length === 0) { alert('Please enter at least one address.'); return; }
+
+            // Count existing addresses in this clock for auto zone numbering
+            const existingCount = document.querySelectorAll(`.address-checkbox[data-list="comm-${communityId}-${clockNumber}"]`).length;
+            const lines = applyZoneFormat(rawLines, existingCount + 1);
 
             fetch('/community_bulk_add_clock_addresses', {
                 method: 'POST',
@@ -17095,6 +17099,20 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 else { alert('Error: ' + data.error); }
             })
             .catch(() => alert('Network error — please try again.'));
+        }
+
+        // Format address lines as "ZONE N - description" to match Verona Walk style.
+        // Lines that already begin with "N -" or "N–" are normalised (ZONE prepended).
+        // Lines that already begin with "ZONE N -" are left unchanged.
+        // All other lines get an auto-assigned zone number starting from startZone.
+        function applyZoneFormat(lines, startZone) {
+            let auto = startZone;
+            return lines.map(line => {
+                if (/^ZONE\s+\d+\s*[-–]/i.test(line)) return line;   // already formatted
+                const m = line.match(/^(\d+)\s*[-–]\s*([\s\S]+)/);
+                if (m) return `ZONE ${m[1]} - ${m[2].trim()}`;             // has leading number
+                return `ZONE ${auto++} - ${line}`;                         // plain description
+            });
         }
 
         function deleteCommunityClockAddress(addressId, communityId) {
@@ -17164,12 +17182,17 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
         function insertCommunityClockAddresses(communityId, afterId) {
             const textarea = document.getElementById(`comm-insert-input-${afterId}`);
-            const addresses = textarea.value.split(_nl).map(l => l.trim()).filter(l => l.length > 0);
+            const rawAddresses = textarea.value.split(_nl).map(l => l.trim()).filter(l => l.length > 0);
 
-            if (addresses.length === 0) {
+            if (rawAddresses.length === 0) {
                 alert('Please enter at least one address');
                 return;
             }
+
+            // Count all addresses in the same clock for auto zone numbering fallback
+            const clockContainer = document.getElementById(`address-item-${afterId}`)?.closest('.clock-addresses');
+            const existingCount = clockContainer ? clockContainer.querySelectorAll('.address-checkbox').length : 0;
+            const addresses = applyZoneFormat(rawAddresses, existingCount + 1);
 
             const btn = textarea.closest('.insert-form').querySelector('.btn-add-address');
             btn.disabled = true;
