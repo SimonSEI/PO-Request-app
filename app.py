@@ -18422,9 +18422,12 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     const group = clockGroups[key];
                     if (group.items.length === 0) return;
                     const gid = 'rg-' + key;
+                    const groupHasNotes = group.items.some(item => item.notes && item.notes.trim());
                     html += '<div class="clock-container">';
                     html += '<div class="clock-header" data-gid="' + gid + '" onclick="toggleResultGroup(this.dataset.gid)">';
-                    html += '<span class="clock-title">' + group.label + ' <span style="font-size: 12px; font-weight: normal; color: #888;">(' + group.items.length + ' item' + (group.items.length !== 1 ? 's' : '') + ')</span></span>';
+                    html += '<span class="clock-title">' + group.label + ' <span style="font-size: 12px; font-weight: normal; color: #888;">(' + group.items.length + ' item' + (group.items.length !== 1 ? 's' : '') + ')</span>'
+                        + (groupHasNotes ? ' <span title="This clock has notes" style="display:inline-flex;align-items:center;gap:3px;background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:700;color:#856404;vertical-align:middle;">&#9888; Notes</span>' : '')
+                        + '</span>';
                     html += '<span class="clock-toggle" id="toggle-' + gid + '">&#9660;</span>';
                     html += '</div>';
                     html += '<div class="clock-addresses" id="' + gid + '">';
@@ -18432,6 +18435,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     html += '<thead><tr><th>Zone &amp; Address</th><th>Technician</th><th>Nozzle</th><th>6&quot; Pop Up</th><th>12&quot; Pop Up</th><th>6&quot; Rotor</th><th>NEW 6&quot; Pop Up</th><th>NEW 12&quot; Pop Up</th><th>Riser</th><th>Solenoid</th><th>1 Stat Decoder</th><th>Notes</th></tr></thead>';
                     html += '<tbody>';
                     group.items.forEach(item => {
+                        const itemHasNotes = !!(item.notes && item.notes.trim());
                         html += '<tr>';
                         html += '<td>' + (item.zone_and_address || '') + '</td>';
                         html += '<td style="white-space:nowrap;font-size:12px;color:#555;">' + item.tech_username + '</td>';
@@ -18444,7 +18448,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                         html += '<td>' + item.riser + '</td>';
                         html += '<td>' + item.solenoid + '</td>';
                         html += '<td>' + item.stat_decoder_1 + '</td>';
-                        html += '<td>' + (item.notes || '') + '</td>';
+                        html += itemHasNotes
+                            ? '<td style="background:#fff3cd;border-left:3px solid #ffc107;font-weight:600;color:#4a3800;padding:6px 8px;"><span style="margin-right:4px;">&#9888;</span>' + item.notes + '</td>'
+                            : '<td></td>';
                         html += '</tr>';
                     });
                     html += '</tbody></table>';
@@ -18456,13 +18462,18 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 // --- Other communities: each submission is a collapsible dropdown ---
                 data.submissions.forEach(submission => {
                     const gid = 'rs-' + submission.id;
+                    const filledItems = submission.line_items.filter(hasData);
+                    const submissionHasNotes = filledItems.some(item => item.notes && item.notes.trim());
                     html += '<div class="clock-container">';
                     html += '<div class="clock-header" data-gid="' + gid + '" onclick="toggleResultGroup(this.dataset.gid)">';
                     const clocksHtml = submission.clocks_label
                         ? '<span style="font-size:16px;font-weight:800;color:#1a237e;margin-left:8px;">' + submission.clocks_label + '</span>'
                         : '';
+                    const notesIndicatorHtml = submissionHasNotes
+                        ? ' <span title="This submission has notes" style="display:inline-flex;align-items:center;gap:3px;background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:700;color:#856404;vertical-align:middle;margin-left:6px;">&#9888; Notes</span>'
+                        : '';
                     html += '<span class="clock-title" style="display:flex;flex-direction:column;gap:1px;">'
-                        + '<span style="font-weight:700;font-size:14px;color:#333;">' + submission.tech_username + clocksHtml + '</span>'
+                        + '<span style="font-weight:700;font-size:14px;color:#333;">' + submission.tech_username + clocksHtml + notesIndicatorHtml + '</span>'
                         + '<span style="font-size:11px;font-weight:normal;color:#888;">Submitted: ' + submission.submitted_at + '</span>'
                         + '</span>';
                     html += '<div style="display:flex;align-items:center;gap:10px;">';
@@ -18471,12 +18482,12 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     html += '</div>';
                     html += '</div>';
                     html += '<div class="clock-addresses" id="' + gid + '">';
-                    const filledItems = submission.line_items.filter(hasData);
                     if (filledItems.length > 0) {
                         html += '<table class="spreadsheet-table">';
                         html += '<thead><tr><th>Zone &amp; Address</th><th>Nozzle</th><th>6&quot; Pop Up</th><th>12&quot; Pop Up</th><th>6&quot; Rotor</th><th>NEW 6&quot; Pop Up</th><th>NEW 12&quot; Pop Up</th><th>Riser</th><th>Solenoid</th><th>1 Stat Decoder</th><th>Notes</th></tr></thead>';
                         html += '<tbody>';
                         filledItems.forEach(item => {
+                            const itemHasNotes = !!(item.notes && item.notes.trim());
                             html += '<tr>';
                             html += '<td>' + (item.zone_and_address || '') + '</td>';
                             html += '<td>' + item.nozzle + '</td>';
@@ -18488,7 +18499,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                             html += '<td>' + item.riser + '</td>';
                             html += '<td>' + item.solenoid + '</td>';
                             html += '<td>' + item.stat_decoder_1 + '</td>';
-                            html += '<td>' + (item.notes || '') + '</td>';
+                            html += itemHasNotes
+                                ? '<td style="background:#fff3cd;border-left:3px solid #ffc107;font-weight:600;color:#4a3800;padding:6px 8px;"><span style="margin-right:4px;">&#9888;</span>' + item.notes + '</td>'
+                                : '<td></td>';
                             html += '</tr>';
                         });
                         html += '</tbody></table>';
