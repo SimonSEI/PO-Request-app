@@ -16792,6 +16792,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 const totalCount = allAddresses.length;
                 // Only open if it was already open before re-render
                 const isOpen = openClocks.has(clock.clock_number);
+                const listId = `comm-${communityId}-${clock.clock_number}`;
 
                 // Use the same clock-container / clock-header / clock-addresses CSS as Verona Walk
                 html += `
@@ -16802,9 +16803,17 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                         </div>
                         <div class="clock-addresses${isOpen ? ' visible' : ''}" id="addresses-${communityId}-${clock.clock_number}">`;
 
-                // Flat address list
+                // Mass-select action bar (hidden until at least one checkbox is checked)
+                html += `<div class="mass-delete-bar" id="mass-bar-${listId}" style="display:none;">
+                            <button type="button" class="btn-select-all" onclick="toggleSelectAll('${listId}')">Select All</button>
+                            <span id="mass-count-${listId}">0 selected</span>
+                            <button type="button" class="btn-mass-delete" onclick="commMassDeleteAddresses(${communityId},'${listId}')">Delete Selected</button>
+                         </div>`;
+
+                // Flat address list with checkboxes
                 allAddresses.forEach(addr => {
                     html += `<div class="address-item" id="address-item-${addr.id}" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                                <input type="checkbox" class="address-checkbox" data-list="${listId}" data-id="${addr.id}" onclick="handleCheckboxClick(event,this,'${listId}')">
                                 <span class="address-text" id="address-text-${addr.id}" style="flex:1;">${addr.address}</span>
                                 <div style="display:flex;gap:4px;flex-shrink:0;">
                                     <button type="button" class="btn-insert-address" onclick="showCommunityInsertForm(${communityId},${addr.id})">Insert</button>
@@ -17095,6 +17104,26 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({address_ids: [addressId]})
+            })
+            .then(handleFetchAuth)
+            .then(data => {
+                if (!data) return;
+                if (data.success) { loadCommunityClockAddresses(communityId); }
+                else { alert('Error: ' + data.error); }
+            })
+            .catch(() => alert('Network error — please try again.'));
+        }
+
+        function commMassDeleteAddresses(communityId, listId) {
+            const checked = document.querySelectorAll(`.address-checkbox[data-list="${listId}"]:checked`);
+            const ids = Array.from(checked).map(cb => parseInt(cb.dataset.id));
+            if (ids.length === 0) return;
+            if (!confirm('Delete ' + ids.length + ' selected address(es)? This cannot be undone.')) return;
+
+            fetch('/community_bulk_delete_clock_addresses', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({address_ids: ids})
             })
             .then(handleFetchAuth)
             .then(data => {
