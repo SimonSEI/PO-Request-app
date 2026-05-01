@@ -19363,24 +19363,31 @@ def job_costing():
             if jid not in proposals:
                 proposals[jid] = row
 
-        # Get invoice totals per job (through POs)
-        c.execute("""SELECT pr.job_id,
-                            COALESCE(SUM(i.invoice_cost), 0) as total_invoiced,
-                            COUNT(DISTINCT i.id) as invoice_count
-                     FROM po_requests pr
+        # Build a job_name -> job_id map for linking POs to jobs
+        job_name_to_id = {row[1]: row[0] for row in install_jobs}
+
+        # Get invoice totals per job via job_name match
+        c.execute("""SELECT j.id,
+                            COALESCE(SUM(i.invoice_cost), 0),
+                            COUNT(DISTINCT i.id)
+                     FROM jobs j
+                     JOIN po_requests pr ON pr.job_name = j.job_name AND pr.po_type = 'install'
                      JOIN invoices i ON i.po_id = pr.id
-                     WHERE pr.po_type = 'install'
-                     GROUP BY pr.job_id""")
+                     WHERE COALESCE(j.department, 'install') = 'install'
+                     GROUP BY j.id""")
         invoice_totals = {row[0]: {'total': row[1], 'count': row[2]} for row in c.fetchall()}
 
-        # Get all install POs with their invoices (for job detail view)
-        c.execute("""SELECT pr.id, pr.job_id, pr.tech_username, pr.status,
-                            pr.estimated_amount, pr.invoiced_amount,
-                            pr.submitted_at, pr.description, pr.client_name,
-                            pr.store_name, pr.po_type
+        # Get all install POs (for job detail view), keyed by job_id
+        c.execute("""SELECT pr.id, j.id, pr.tech_username, pr.status,
+                            COALESCE(pr.estimated_cost, 0),
+                            COALESCE(pr.invoice_cost, 0),
+                            pr.request_date,
+                            COALESCE(pr.client_name, ''),
+                            COALESCE(pr.store_name, '')
                      FROM po_requests pr
+                     JOIN jobs j ON j.job_name = pr.job_name
                      WHERE pr.po_type = 'install'
-                     ORDER BY pr.submitted_at DESC""")
+                     ORDER BY pr.request_date DESC""")
         all_pos_raw = c.fetchall()
         job_pos = {}
         for po in all_pos_raw:
@@ -19391,11 +19398,12 @@ def job_costing():
 
         # Get invoices per PO
         c.execute("""SELECT i.po_id, i.id, i.invoice_number, i.invoice_cost,
-                            i.filename, i.uploaded_at, i.jobber_invoice_number
+                            i.invoice_filename, COALESCE(i.created_at, i.invoice_upload_date),
+                            i.jobber_invoice_number
                      FROM invoices i
                      JOIN po_requests pr ON pr.id = i.po_id
                      WHERE pr.po_type = 'install'
-                     ORDER BY i.uploaded_at DESC""")
+                     ORDER BY i.created_at DESC""")
         po_invoices = {}
         for inv in c.fetchall():
             pid = inv[0]
@@ -19409,8 +19417,9 @@ def job_costing():
                      FROM install_schedules GROUP BY job_id""")
         days_per_job = {row[0]: {'days': row[1], 'hours': row[2]} for row in c.fetchall()}
 
-        # Unmatched invoices (notifications) for install jobs
-        c.execute("""SELECT COUNT(*) FROM invoice_notifications WHERE dismissed = 0""")
+        # Unmatched invoices (notifications)
+        c.execute("""SELECT COUNT(*) FROM invoice_notifications
+                     WHERE status != 'dismissed' AND status != 'matched'""")
         unmatched_count = c.fetchone()[0]
 
         conn.close()
