@@ -19464,7 +19464,7 @@ def job_costing_import_proposal():
             file.save(tmp.name)
             tmp_path = tmp.name
 
-        # Extract text from PDF
+        # Extract text — PDF via pdfplumber, images via OCR
         raw_text = ''
         try:
             if suffix == '.pdf' and PDF_AVAILABLE:
@@ -19474,8 +19474,18 @@ def job_costing_import_proposal():
                         t = page.extract_text()
                         if t:
                             raw_text += t + '\n'
+                # If pdfplumber got nothing (scanned PDF), fall back to OCR
+                if not raw_text.strip() and OCR_SUPPORT:
+                    raw_text = extract_text_with_ocr(tmp_path, 0) or ''
+            elif suffix in ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff', '.tif'):
+                if OCR_SUPPORT:
+                    raw_text = extract_text_with_ocr(tmp_path, 0) or ''
+                else:
+                    raw_text = ''
+                if not raw_text.strip():
+                    raw_text = '[OCR not available — install pytesseract and Pillow]'
             else:
-                raw_text = f'[Non-PDF file: {file.filename}]'
+                raw_text = f'[Unsupported file type: {suffix}]'
         except Exception as e:
             raw_text = f'[Text extraction failed: {str(e)}]'
         finally:
@@ -23055,10 +23065,12 @@ JOB_COSTING_TEMPLATE = '''
     </div>
     <div class="upload-area" id="proposal-drop" onclick="document.getElementById('proposal-file-input').click()">
         <div style="font-size:36px;margin-bottom:8px;">📁</div>
-        <p><strong>Click to select PDF</strong></p>
+        <p><strong>Click to select file</strong></p>
+        <p style="color:#999;font-size:12px;margin-top:4px;">PDF, PNG, JPG, JPEG screenshot — any format works</p>
         <p id="proposal-file-name" style="color:#888;font-size:13px;margin-top:6px;">No file selected</p>
     </div>
-    <input type="file" id="proposal-file-input" accept=".pdf" style="display:none"
+    <input type="file" id="proposal-file-input" accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.tiff"
+           style="display:none"
            onchange="document.getElementById('proposal-file-name').textContent=this.files[0]?this.files[0].name:'No file selected'">
     <div id="proposal-result" style="margin-top:12px;display:none;"></div>
     <div style="display:flex;gap:10px;margin-top:14px;">
