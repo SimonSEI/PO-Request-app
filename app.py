@@ -1344,72 +1344,43 @@ def init_db():
         c.execute("DROP TABLE community_billing_submissions")
         c.execute("ALTER TABLE community_billing_submissions_new RENAME TO community_billing_submissions")
 
-    # Sales App Tables
-    # Sales pricing table - stores parts and labor costs
-    c.execute('''CREATE TABLE IF NOT EXISTS sales_pricing
+    # Job Costing App Tables
+    # Stores imported proposal data (from PDF) for each install job
+    c.execute('''CREATE TABLE IF NOT EXISTS job_proposals
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  category TEXT NOT NULL,
-                  item_name TEXT NOT NULL,
-                  unit_cost REAL NOT NULL,
-                  description TEXT,
+                  job_id INTEGER NOT NULL,
+                  proposal_number TEXT,
+                  customer_name TEXT,
+                  project_location TEXT,
+                  estimate_date TEXT,
+                  bid_amount REAL DEFAULT 0,
+                  materials_budget REAL DEFAULT 0,
+                  labor_budget REAL DEFAULT 0,
+                  travel_budget REAL DEFAULT 0,
+                  hotel_cash_budget REAL DEFAULT 0,
+                  subs_budget REAL DEFAULT 0,
+                  rental_budget REAL DEFAULT 0,
+                  permit_budget REAL DEFAULT 0,
+                  asbuilt_budget REAL DEFAULT 0,
+                  days_allotted INTEGER DEFAULT 0,
+                  raw_text TEXT,
+                  filename TEXT,
+                  imported_by TEXT,
+                  imported_at TEXT,
+                  FOREIGN KEY(job_id) REFERENCES jobs(id))''')
+
+    # Install Scheduling App Tables
+    # Tracks days crews are on each install job
+    c.execute('''CREATE TABLE IF NOT EXISTS install_schedules
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  job_id INTEGER NOT NULL,
+                  schedule_date TEXT NOT NULL,
+                  crew_members TEXT,
+                  notes TEXT,
+                  hours_worked REAL DEFAULT 0,
+                  created_by TEXT,
                   created_at TEXT,
-                  updated_at TEXT,
-                  UNIQUE(category, item_name))''')
-
-    # Sales training data - stores uploaded proposal PDFs for training
-    c.execute('''CREATE TABLE IF NOT EXISTS sales_training_data
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  filename TEXT NOT NULL,
-                  file_path TEXT NOT NULL,
-                  job_type TEXT,
-                  client_name TEXT,
-                  uploaded_by TEXT NOT NULL,
-                  uploaded_at TEXT,
-                  file_size INTEGER,
-                  processed INTEGER DEFAULT 0)''')
-
-    # Sales proposals - generated proposals
-    c.execute('''CREATE TABLE IF NOT EXISTS sales_proposals
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  proposal_name TEXT NOT NULL,
-                  client_name TEXT NOT NULL,
-                  job_type TEXT NOT NULL,
-                  job_details TEXT,
-                  proposal_content TEXT,
-                  total_cost REAL,
-                  created_by TEXT NOT NULL,
-                  created_at TEXT,
-                  updated_at TEXT)''')
-
-    # Sales plans - generated plan annotations
-    c.execute('''CREATE TABLE IF NOT EXISTS sales_plans
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  plan_name TEXT NOT NULL,
-                  original_pdf_filename TEXT NOT NULL,
-                  original_pdf_path TEXT NOT NULL,
-                  annotated_image_path TEXT,
-                  annotations TEXT,
-                  created_by TEXT NOT NULL,
-                  created_at TEXT,
-                  updated_at TEXT)''')
-
-    # Add default sales pricing categories if empty
-    c.execute("SELECT COUNT(*) FROM sales_pricing")
-    if c.fetchone()[0] == 0:
-        default_pricing = [
-            ('Mainline Pipe', 'PVC 1-inch', 2.50, '1-inch PVC irrigation mainline'),
-            ('Mainline Pipe', 'PVC 1.5-inch', 3.75, '1.5-inch PVC irrigation mainline'),
-            ('Mainline Pipe', 'PVC 2-inch', 5.00, '2-inch PVC irrigation mainline'),
-            ('Tabs/Outlets', 'Tab Assembly', 8.00, 'Standard tab outlet assembly'),
-            ('Clocks', 'Controller/Clock', 150.00, 'Irrigation system controller/clock'),
-            ('Labor', 'Installation - Hourly', 75.00, 'Standard labor rate per hour'),
-            ('Labor', 'Design - Hourly', 85.00, 'Design work rate per hour'),
-        ]
-        for category, item_name, cost, desc in default_pricing:
-            c.execute("""INSERT INTO sales_pricing (category, item_name, unit_cost, description, created_at, updated_at)
-                         VALUES (?, ?, ?, ?, ?, ?)""",
-                     (category, item_name, cost, desc, datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                      datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                  FOREIGN KEY(job_id) REFERENCES jobs(id))''')
 
     # Add default jobs if empty
     c.execute("SELECT COUNT(*) FROM jobs")
@@ -7755,14 +7726,26 @@ DASHBOARD_MENU_TEMPLATE = '''
         </a>
         {% endif %}
 
-        <!-- Sales App (Office only) -->
+        <!-- Job Costing App (Office only) -->
         {% if role == 'office' %}
-        <a href="{{ url_for('sales') }}" style="text-decoration: none;">
+        <a href="{{ url_for('job_costing') }}" style="text-decoration: none;">
             <div class="app-card">
-                <div class="app-icon">📊</div>
-                <h2 data-i18n="sales_title">Sales</h2>
-                <p data-i18n="sales_desc">Manage sales orders and track sales activities</p>
-                <button class="app-button" data-i18n="sales_btn">Open Sales App</button>
+                <div class="app-icon">💰</div>
+                <h2 data-i18n="jc_title">Job Costing</h2>
+                <p data-i18n="jc_desc">Track install job costs, match invoices, and compare estimate vs actual</p>
+                <button class="app-button" data-i18n="jc_btn">Open Job Costing</button>
+            </div>
+        </a>
+        {% endif %}
+
+        <!-- Install Scheduling App (Office only) -->
+        {% if role == 'office' %}
+        <a href="{{ url_for('install_scheduling') }}" style="text-decoration: none;">
+            <div class="app-card">
+                <div class="app-icon">📅</div>
+                <h2 data-i18n="is_title">Install Scheduling</h2>
+                <p data-i18n="is_desc">Schedule install crews, track days on job, and manage job timelines</p>
+                <button class="app-button" data-i18n="is_btn">Open Scheduling</button>
             </div>
         </a>
         {% endif %}
@@ -7794,9 +7777,12 @@ DASHBOARD_MENU_TEMPLATE = '''
             admin_title: 'Office Administrator',
             admin_desc: 'Manage technician accounts, passwords, and system settings',
             admin_btn: 'Open Admin Panel',
-            sales_title: 'Sales',
-            sales_desc: 'Manage sales orders and track sales activities',
-            sales_btn: 'Open Sales App',
+            jc_title: 'Job Costing',
+            jc_desc: 'Track install job costs, match invoices, and compare estimate vs actual',
+            jc_btn: 'Open Job Costing',
+            is_title: 'Install Scheduling',
+            is_desc: 'Schedule install crews, track days on job, and manage job timelines',
+            is_btn: 'Open Scheduling',
             cm_title: 'Community Maintenance',
             cm_desc: 'Enter and review equipment installation data by community',
             cm_btn: 'Access Community Maintenance',
@@ -7812,9 +7798,12 @@ DASHBOARD_MENU_TEMPLATE = '''
             admin_title: 'Administrador de Oficina',
             admin_desc: 'Gestionar cuentas de técnicos, contraseñas y configuraciones del sistema',
             admin_btn: 'Abrir Panel de Admin',
-            sales_title: 'Ventas',
-            sales_desc: 'Gestionar órdenes de ventas y rastrear actividades de ventas',
-            sales_btn: 'Abrir App de Ventas',
+            jc_title: 'Costo de Trabajo',
+            jc_desc: 'Rastrear costos de instalación, facturas y comparar estimado vs real',
+            jc_btn: 'Abrir Costo de Trabajo',
+            is_title: 'Programación de Instalación',
+            is_desc: 'Programar cuadrillas, rastrear días de trabajo y gestionar cronogramas',
+            is_btn: 'Abrir Programación',
             cm_title: 'Mantenimiento Comunitario',
             cm_desc: 'Ingresar y revisar datos de instalación de equipos por comunidad',
             cm_btn: 'Acceder a Mantenimiento Comunitario',
@@ -9020,7 +9009,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
     <div class="tabs-container">
         <button class="tab-btn service active" id="service-btn" onclick="switchTab('service', event)">📱 Service Department</button>
-        <button class="tab-btn install" id="install-btn" onclick="switchTab('install', event)">🔧 Install Department</button>
+        <a href="{{ url_for('job_costing') }}" style="display:inline-block; background:#1a5276; color:white; padding:10px 18px; border-radius:5px; text-decoration:none; font-weight:bold; font-size:14px; margin-right:4px;">💰 Job Costing (Install)</a>
         <button class="tab-btn" id="all-pos-btn" style="color: #9b59b6;" onclick="switchTab('all-pos', event)">📋 View All POs</button>
         <button class="tab-btn" id="notifications-btn" style="color: #ff6b6b;" onclick="switchTab('notifications', event)">🔔 Notifications <span id="notification-badge" style="background: #ff6b6b; color: white; border-radius: 50%; padding: 2px 8px; margin-left: 5px; font-size: 12px; display: none;">0</span></button>
     </div>
@@ -9494,8 +9483,8 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             })
             .then(response => {
                 console.log('Response status:', response.status);
-                // Always redirect to install tab after submission
-                window.location.href = '/office_dashboard?tab=install';
+                // Redirect to Job Costing after install job submission
+                window.location.href = '/job_costing';
             })
             .catch(error => {
                 console.error('Error:', error);
@@ -19326,32 +19315,16 @@ def debug_matching():
         'recent_api_logs': api_logs
     })
 
+# (Sales App removed - replaced by Job Costing App)
+
+
 # ============================================================================
-# SALES APP ROUTES
+# JOB COSTING APP ROUTES
 # ============================================================================
 
-@app.route('/sales')
-def sales():
-    """Sales App Dashboard - Office administrators only"""
-    if 'username' not in session:
-        return redirect(url_for('login'))
-
-    if session.get('role') != 'office':
-        flash('Access denied. Sales app is only available for office administrators.', 'error')
-        return redirect(url_for('dashboard'))
-
-    username = session.get('username')
-    role = session.get('role')
-    full_name = session.get('full_name', username)
-
-    return render_template_string(SALES_DASHBOARD_TEMPLATE,
-                                 username=username,
-                                 role=role,
-                                 full_name=full_name)
-
-@app.route('/sales/manage_pricing')
-def sales_manage_pricing():
-    """Manage pricing for parts and labor"""
+@app.route('/job_costing')
+def job_costing():
+    """Job Costing App - Office administrators only"""
     if 'username' not in session or session.get('role') != 'office':
         return redirect(url_for('login'))
 
@@ -19359,107 +19332,426 @@ def sales_manage_pricing():
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
 
-        # Get all pricing items grouped by category
-        c.execute("""SELECT category, item_name, unit_cost, description, id
-                     FROM sales_pricing
-                     ORDER BY category, item_name""")
-        pricing_items = c.fetchall()
+        # Get all install jobs
+        c.execute("""SELECT id, job_name, year, created_date, active,
+                            COALESCE(invoiced_amount, 0),
+                            COALESCE(estimated_amount, 0),
+                            COALESCE(po_count, 0),
+                            COALESCE(active_po_count, 0),
+                            COALESCE(budget, 0), notes, job_code, department
+                     FROM jobs WHERE department='install'
+                     ORDER BY active DESC, year DESC, job_name ASC""")
+        install_jobs = c.fetchall()
 
-        # Get unique categories
-        c.execute("SELECT DISTINCT category FROM sales_pricing ORDER BY category")
-        categories = [row[0] for row in c.fetchall()]
+        # Get proposals for each job
+        c.execute("""SELECT job_id, proposal_number, bid_amount, materials_budget,
+                            labor_budget, travel_budget, hotel_cash_budget,
+                            subs_budget, rental_budget, permit_budget,
+                            asbuilt_budget, days_allotted, filename, imported_at
+                     FROM job_proposals ORDER BY imported_at DESC""")
+        proposals_raw = c.fetchall()
+        proposals = {}
+        for row in proposals_raw:
+            jid = row[0]
+            if jid not in proposals:
+                proposals[jid] = row
+
+        # Get invoice totals per job (through POs)
+        c.execute("""SELECT pr.job_id,
+                            COALESCE(SUM(i.invoice_cost), 0) as total_invoiced,
+                            COUNT(DISTINCT i.id) as invoice_count
+                     FROM po_requests pr
+                     JOIN invoices i ON i.po_id = pr.id
+                     WHERE pr.po_type = 'install'
+                     GROUP BY pr.job_id""")
+        invoice_totals = {row[0]: {'total': row[1], 'count': row[2]} for row in c.fetchall()}
+
+        # Get all install POs with their invoices (for job detail view)
+        c.execute("""SELECT pr.id, pr.job_id, pr.tech_username, pr.status,
+                            pr.estimated_amount, pr.invoiced_amount,
+                            pr.submitted_at, pr.description, pr.client_name,
+                            pr.store_name, pr.po_type
+                     FROM po_requests pr
+                     WHERE pr.po_type = 'install'
+                     ORDER BY pr.submitted_at DESC""")
+        all_pos_raw = c.fetchall()
+        job_pos = {}
+        for po in all_pos_raw:
+            jid = po[1]
+            if jid not in job_pos:
+                job_pos[jid] = []
+            job_pos[jid].append(po)
+
+        # Get invoices per PO
+        c.execute("""SELECT i.po_id, i.id, i.invoice_number, i.invoice_cost,
+                            i.filename, i.uploaded_at, i.jobber_invoice_number
+                     FROM invoices i
+                     JOIN po_requests pr ON pr.id = i.po_id
+                     WHERE pr.po_type = 'install'
+                     ORDER BY i.uploaded_at DESC""")
+        po_invoices = {}
+        for inv in c.fetchall():
+            pid = inv[0]
+            if pid not in po_invoices:
+                po_invoices[pid] = []
+            po_invoices[pid].append(inv)
+
+        # Get days on job per install job
+        c.execute("""SELECT job_id, COUNT(*) as day_count,
+                            COALESCE(SUM(hours_worked), 0) as total_hours
+                     FROM install_schedules GROUP BY job_id""")
+        days_per_job = {row[0]: {'days': row[1], 'hours': row[2]} for row in c.fetchall()}
+
+        # Unmatched invoices (notifications) for install jobs
+        c.execute("""SELECT COUNT(*) FROM invoice_notifications WHERE dismissed = 0""")
+        unmatched_count = c.fetchone()[0]
 
         conn.close()
 
-        return render_template_string(SALES_PRICING_TEMPLATE,
+        return render_template_string(JOB_COSTING_TEMPLATE,
                                      username=session['username'],
                                      full_name=session.get('full_name', session['username']),
-                                     pricing_items=pricing_items,
-                                     categories=categories)
+                                     install_jobs=install_jobs,
+                                     proposals=proposals,
+                                     invoice_totals=invoice_totals,
+                                     job_pos=job_pos,
+                                     po_invoices=po_invoices,
+                                     days_per_job=days_per_job,
+                                     unmatched_count=unmatched_count)
     except Exception as e:
-        flash(f'Error loading pricing: {str(e)}', 'error')
-        return redirect(url_for('sales'))
+        import traceback
+        return f"<h2>Error loading Job Costing</h2><p>{str(e)}</p><pre>{traceback.format_exc()}</pre><p><a href='/dashboard'>Back</a></p>"
 
-@app.route('/sales/api/update_price', methods=['POST'])
-def sales_update_price():
-    """Update a pricing item"""
+
+@app.route('/job_costing/import_proposal', methods=['POST'])
+def job_costing_import_proposal():
+    """Import a PDF proposal to extract budget/estimate data for a job"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
+
+    try:
+        job_id = request.form.get('job_id')
+        if not job_id:
+            return jsonify({'success': False, 'error': 'No job selected'})
+
+        if 'proposal_file' not in request.files:
+            return jsonify({'success': False, 'error': 'No file uploaded'})
+
+        file = request.files['proposal_file']
+        if not file.filename:
+            return jsonify({'success': False, 'error': 'Empty filename'})
+
+        # Save file temporarily for processing
+        import tempfile
+        suffix = os.path.splitext(file.filename)[1].lower()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            file.save(tmp.name)
+            tmp_path = tmp.name
+
+        # Extract text from PDF
+        raw_text = ''
+        try:
+            if suffix == '.pdf' and PDF_AVAILABLE:
+                import pdfplumber
+                with pdfplumber.open(tmp_path) as pdf:
+                    for page in pdf.pages:
+                        t = page.extract_text()
+                        if t:
+                            raw_text += t + '\n'
+            else:
+                raw_text = f'[Non-PDF file: {file.filename}]'
+        except Exception as e:
+            raw_text = f'[Text extraction failed: {str(e)}]'
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+        # Parse common proposal fields from extracted text using regex
+        import re
+
+        def find_amount(patterns, text):
+            for pat in patterns:
+                m = re.search(pat, text, re.IGNORECASE)
+                if m:
+                    try:
+                        return float(m.group(1).replace(',', ''))
+                    except Exception:
+                        pass
+            return 0.0
+
+        def find_int(patterns, text):
+            for pat in patterns:
+                m = re.search(pat, text, re.IGNORECASE)
+                if m:
+                    try:
+                        return int(m.group(1).replace(',', ''))
+                    except Exception:
+                        pass
+            return 0
+
+        bid_amount = find_amount([
+            r'Bid\s*Amount[\s:$]*([0-9,]+\.?[0-9]*)',
+            r'Total\s*Bid[\s:$]*([0-9,]+\.?[0-9]*)',
+            r'Contract\s*(Amount|Price)[\s:$]*([0-9,]+\.?[0-9]*)',
+            r'Grand\s*Total[\s:$]*([0-9,]+\.?[0-9]*)',
+        ], raw_text)
+
+        materials_budget = find_amount([
+            r'Material[s]?\s*(Budget|Cost|Amount)?[\s:$]*([0-9,]+\.?[0-9]*)',
+            r'\$\s*Material[s]?[\s:]*([0-9,]+\.?[0-9]*)',
+        ], raw_text)
+
+        labor_budget = find_amount([
+            r'Labor\s*(Budget|Cost|Amount)?[\s:$]*([0-9,]+\.?[0-9]*)',
+            r'Crew\s*Labor[\s:$]*([0-9,]+\.?[0-9]*)',
+        ], raw_text)
+
+        travel_budget = find_amount([
+            r'Travel\s*(Time|Cost|Budget)?[\s:$]*([0-9,]+\.?[0-9]*)',
+        ], raw_text)
+
+        hotel_budget = find_amount([
+            r'Hotel[/\s]*(Cash|Budget|Cost)?[\s:$]*([0-9,]+\.?[0-9]*)',
+        ], raw_text)
+
+        days_allotted = find_int([
+            r'(?:Time\s*Allot(?:ted)?|Days\s*Allot(?:ted)?|Approx\.?\s*#?\s*of\s*Days)[\s:]*([0-9]+)',
+        ], raw_text)
+
+        permit_budget = find_amount([
+            r'Permit[s]?\s*(Budget|Cost|Amount|&\s*NTO)?[\s:$]*([0-9,]+\.?[0-9]*)',
+        ], raw_text)
+
+        proposal_number = ''
+        m = re.search(r'Estimate\s*(Number|#|No\.?)[\s:]*([A-Z0-9\-]+)', raw_text, re.IGNORECASE)
+        if m:
+            proposal_number = m.group(2)
+
+        customer_name = ''
+        m = re.search(r'Customer[\s\w]*:\s*([^\n]+)', raw_text, re.IGNORECASE)
+        if m:
+            customer_name = m.group(1).strip()[:100]
+
+        # Save to DB
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Check if proposal exists for this job, update or insert
+        c.execute("SELECT id FROM job_proposals WHERE job_id = ?", (job_id,))
+        existing = c.fetchone()
+
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        if existing:
+            c.execute("""UPDATE job_proposals SET
+                         proposal_number=?, customer_name=?, bid_amount=?,
+                         materials_budget=?, labor_budget=?, travel_budget=?,
+                         hotel_cash_budget=?, permit_budget=?, days_allotted=?,
+                         raw_text=?, filename=?, imported_by=?, imported_at=?
+                         WHERE job_id=?""",
+                      (proposal_number, customer_name, bid_amount,
+                       materials_budget, labor_budget, travel_budget,
+                       hotel_budget, permit_budget, days_allotted,
+                       raw_text[:5000], file.filename, session['username'], now,
+                       job_id))
+        else:
+            c.execute("""INSERT INTO job_proposals
+                         (job_id, proposal_number, customer_name, bid_amount,
+                          materials_budget, labor_budget, travel_budget,
+                          hotel_cash_budget, permit_budget, days_allotted,
+                          raw_text, filename, imported_by, imported_at)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      (job_id, proposal_number, customer_name, bid_amount,
+                       materials_budget, labor_budget, travel_budget,
+                       hotel_budget, permit_budget, days_allotted,
+                       raw_text[:5000], file.filename, session['username'], now))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'message': 'Proposal imported successfully',
+            'data': {
+                'bid_amount': bid_amount,
+                'materials_budget': materials_budget,
+                'labor_budget': labor_budget,
+                'travel_budget': travel_budget,
+                'hotel_cash_budget': hotel_budget,
+                'permit_budget': permit_budget,
+                'days_allotted': days_allotted,
+                'proposal_number': proposal_number,
+                'customer_name': customer_name,
+            }
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({'success': False, 'error': str(e), 'trace': traceback.format_exc()})
+
+
+@app.route('/job_costing/api/update_proposal', methods=['POST'])
+def job_costing_update_proposal():
+    """Manually update proposal/budget fields for a job"""
     if 'username' not in session or session.get('role') != 'office':
         return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     try:
         data = request.get_json()
-        item_id = data.get('id')
-        unit_cost = float(data.get('unit_cost'))
-        description = data.get('description', '')
+        job_id = data.get('job_id')
 
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
 
-        c.execute("""UPDATE sales_pricing
-                     SET unit_cost = ?, description = ?, updated_at = ?
-                     WHERE id = ?""",
-                 (unit_cost, description, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), item_id))
+        c.execute("SELECT id FROM job_proposals WHERE job_id = ?", (job_id,))
+        existing = c.fetchone()
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        fields = ['bid_amount', 'materials_budget', 'labor_budget', 'travel_budget',
+                  'hotel_cash_budget', 'subs_budget', 'rental_budget', 'permit_budget',
+                  'asbuilt_budget', 'days_allotted', 'proposal_number', 'customer_name']
+
+        if existing:
+            set_clauses = ', '.join([f"{f}=?" for f in fields] + ['imported_at=?'])
+            values = [data.get(f, 0) for f in fields] + [now, job_id]
+            c.execute(f"UPDATE job_proposals SET {set_clauses} WHERE job_id=?", values)
+        else:
+            cols = ', '.join(fields + ['imported_by', 'imported_at', 'job_id'])
+            placeholders = ', '.join(['?'] * (len(fields) + 3))
+            values = [data.get(f, 0) for f in fields] + [session['username'], now, job_id]
+            c.execute(f"INSERT INTO job_proposals ({cols}) VALUES ({placeholders})", values)
 
         conn.commit()
         conn.close()
-
-        return jsonify({'success': True, 'message': 'Price updated successfully'})
+        return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
-@app.route('/sales/api/add_price', methods=['POST'])
-def sales_add_price():
-    """Add a new pricing item"""
+
+# ============================================================================
+# INSTALL SCHEDULING APP ROUTES
+# ============================================================================
+
+@app.route('/install_scheduling')
+def install_scheduling():
+    """Install Scheduling App - Office administrators only"""
+    if 'username' not in session or session.get('role') != 'office':
+        return redirect(url_for('login'))
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        c.execute("""SELECT id, job_name, year, active, job_code
+                     FROM jobs WHERE department='install'
+                     ORDER BY active DESC, year DESC, job_name ASC""")
+        install_jobs = c.fetchall()
+
+        c.execute("""SELECT s.id, s.job_id, s.schedule_date, s.crew_members,
+                            s.notes, s.hours_worked, s.created_by, j.job_name, j.job_code
+                     FROM install_schedules s
+                     JOIN jobs j ON j.id = s.job_id
+                     ORDER BY s.schedule_date DESC""")
+        schedules = c.fetchall()
+
+        # Days per job summary
+        c.execute("""SELECT job_id, COUNT(*) as day_count,
+                            COALESCE(SUM(hours_worked), 0) as total_hours
+                     FROM install_schedules GROUP BY job_id""")
+        days_summary = {row[0]: {'days': row[1], 'hours': row[2]} for row in c.fetchall()}
+
+        conn.close()
+
+        return render_template_string(INSTALL_SCHEDULING_TEMPLATE,
+                                     username=session['username'],
+                                     full_name=session.get('full_name', session['username']),
+                                     install_jobs=install_jobs,
+                                     schedules=schedules,
+                                     days_summary=days_summary)
+    except Exception as e:
+        import traceback
+        return f"<h2>Error loading Install Scheduling</h2><p>{str(e)}</p><pre>{traceback.format_exc()}</pre><p><a href='/dashboard'>Back</a></p>"
+
+
+@app.route('/install_scheduling/add_entry', methods=['POST'])
+def install_scheduling_add_entry():
+    """Add a schedule entry (day on job)"""
     if 'username' not in session or session.get('role') != 'office':
         return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     try:
         data = request.get_json()
-        category = data.get('category', '').strip()
-        item_name = data.get('item_name', '').strip()
-        unit_cost = float(data.get('unit_cost'))
-        description = data.get('description', '')
+        job_id = data.get('job_id')
+        schedule_date = data.get('schedule_date')
+        crew_members = data.get('crew_members', '')
+        notes = data.get('notes', '')
+        hours_worked = float(data.get('hours_worked', 0) or 0)
 
-        if not category or not item_name:
-            return jsonify({'success': False, 'error': 'Category and item name are required'})
+        if not job_id or not schedule_date:
+            return jsonify({'success': False, 'error': 'Job and date are required'})
 
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-
-        c.execute("""INSERT INTO sales_pricing (category, item_name, unit_cost, description, created_at, updated_at)
-                     VALUES (?, ?, ?, ?, ?, ?)""",
-                 (category, item_name, unit_cost, description,
-                  datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                  datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
-
+        c.execute("""INSERT INTO install_schedules
+                     (job_id, schedule_date, crew_members, notes, hours_worked, created_by, created_at)
+                     VALUES (?,?,?,?,?,?,?)""",
+                  (job_id, schedule_date, crew_members, notes, hours_worked,
+                   session['username'], datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        new_id = c.lastrowid
         conn.commit()
         conn.close()
-
-        return jsonify({'success': True, 'message': 'Price added successfully'})
+        return jsonify({'success': True, 'id': new_id})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
-@app.route('/sales/api/delete_price', methods=['POST'])
-def sales_delete_price():
-    """Delete a pricing item"""
+
+@app.route('/install_scheduling/delete_entry', methods=['POST'])
+def install_scheduling_delete_entry():
+    """Delete a schedule entry"""
     if 'username' not in session or session.get('role') != 'office':
         return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     try:
         data = request.get_json()
-        item_id = data.get('id')
-
+        entry_id = data.get('id')
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-
-        c.execute("DELETE FROM sales_pricing WHERE id = ?", (item_id,))
-
+        c.execute("DELETE FROM install_schedules WHERE id = ?", (entry_id,))
         conn.commit()
         conn.close()
-
-        return jsonify({'success': True, 'message': 'Price deleted successfully'})
+        return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/install_scheduling/get_entries', methods=['GET'])
+def install_scheduling_get_entries():
+    """Get schedule entries, optionally filtered by job"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
+
+    job_id = request.args.get('job_id')
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    if job_id:
+        c.execute("""SELECT s.id, s.job_id, s.schedule_date, s.crew_members,
+                            s.notes, s.hours_worked, s.created_by, j.job_name
+                     FROM install_schedules s JOIN jobs j ON j.id=s.job_id
+                     WHERE s.job_id=? ORDER BY s.schedule_date DESC""", (job_id,))
+    else:
+        c.execute("""SELECT s.id, s.job_id, s.schedule_date, s.crew_members,
+                            s.notes, s.hours_worked, s.created_by, j.job_name
+                     FROM install_schedules s JOIN jobs j ON j.id=s.job_id
+                     ORDER BY s.schedule_date DESC""")
+
+    rows = c.fetchall()
+    conn.close()
+    entries = [{'id': r[0], 'job_id': r[1], 'date': r[2], 'crew': r[3],
+                'notes': r[4], 'hours': r[5], 'created_by': r[6], 'job_name': r[7]}
+               for r in rows]
+    return jsonify({'success': True, 'entries': entries})
+
 
 # ============================================================================
 # COMMUNITY BILLING ROUTES
@@ -22518,510 +22810,11 @@ def community_save_pricing():
         return jsonify({'success': False, 'error': str(e)})
 
 # ============================================================================
-# SALES APP TEMPLATE
+# JOB COSTING + INSTALL SCHEDULING TEMPLATES (Sales App removed)
 # ============================================================================
 
-SALES_DASHBOARD_TEMPLATE = '''
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Sales App - Dashboard</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: Arial, sans-serif;
-            background: #f5f5f5;
-            padding: 20px;
-        }
-        .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 20px;
-            border-radius: 10px;
-            margin-bottom: 30px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 15px;
-        }
-        .header h1 {
-            font-size: 28px;
-        }
-        .back-btn {
-            display: inline-block;
-            background: rgba(255,255,255,0.2);
-            color: white;
-            padding: 8px 15px;
-            border-radius: 5px;
-            text-decoration: none;
-            font-size: 14px;
-        }
-        .back-btn:hover {
-            background: rgba(255,255,255,0.3);
-        }
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-        .cards-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-        .card {
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            padding: 30px;
-            text-align: center;
-            cursor: pointer;
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
-            text-decoration: none;
-            color: inherit;
-        }
-        .card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 5px 20px rgba(0,0,0,0.15);
-        }
-        .card-icon {
-            font-size: 60px;
-            margin-bottom: 15px;
-        }
-        .card h2 {
-            color: #333;
-            margin-bottom: 10px;
-            font-size: 20px;
-        }
-        .card p {
-            color: #666;
-            font-size: 14px;
-            line-height: 1.6;
-            margin-bottom: 20px;
-        }
-        .card-btn {
-            display: inline-block;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 10px 20px;
-            border: none;
-            border-radius: 5px;
-            text-decoration: none;
-            font-size: 14px;
-            font-weight: bold;
-            cursor: pointer;
-        }
-        .card-btn:hover {
-            opacity: 0.9;
-        }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>📊 Sales App Dashboard</h1>
-        <a href="{{ url_for('dashboard') }}" class="back-btn">Back to Dashboard</a>
-    </div>
+# (Sales App removed - replaced by Job Costing and Install Scheduling apps below)
 
-    <div class="container">
-        <div class="cards-grid">
-            <!-- Create New Job / Proposal -->
-            <a href="javascript:void(0)" onclick="alert('Coming Soon - Create New Job feature')" style="text-decoration: none;">
-                <div class="card">
-                    <div class="card-icon">📝</div>
-                    <h2>Create New Job</h2>
-                    <p>Generate a new proposal for a client. AI will ask questions to create a customized proposal.</p>
-                    <button class="card-btn">Create Job</button>
-                </div>
-            </a>
-
-            <!-- Create New Plan -->
-            <a href="javascript:void(0)" onclick="alert('Coming Soon - Create New Plan feature')" style="text-decoration: none;">
-                <div class="card">
-                    <div class="card-icon">🗺️</div>
-                    <h2>Create New Plan</h2>
-                    <p>Upload a PDF site plan and let AI automatically annotate irrigation system placement.</p>
-                    <button class="card-btn">Create Plan</button>
-                </div>
-            </a>
-
-            <!-- Manage Pricing -->
-            <a href="{{ url_for('sales_manage_pricing') }}" style="text-decoration: none;">
-                <div class="card">
-                    <div class="card-icon">💰</div>
-                    <h2>Manage Pricing</h2>
-                    <p>Edit prices for parts, materials, and labor rates used in proposals.</p>
-                    <button class="card-btn">Edit Pricing</button>
-                </div>
-            </a>
-        </div>
-    </div>
-</body>
-</html>
-'''
-
-SALES_PRICING_TEMPLATE = '''
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Manage Pricing - Sales App</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: Arial, sans-serif;
-            background: #f5f5f5;
-            padding: 20px;
-        }
-        .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 20px;
-            border-radius: 10px;
-            margin-bottom: 30px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 15px;
-        }
-        .header h1 {
-            font-size: 28px;
-        }
-        .back-btn {
-            display: inline-block;
-            background: rgba(255,255,255,0.2);
-            color: white;
-            padding: 8px 15px;
-            border-radius: 5px;
-            text-decoration: none;
-            font-size: 14px;
-        }
-        .back-btn:hover {
-            background: rgba(255,255,255,0.3);
-        }
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            background: white;
-            padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        .section {
-            margin-bottom: 40px;
-        }
-        .section-title {
-            font-size: 20px;
-            color: #333;
-            margin-bottom: 20px;
-            padding-bottom: 10px;
-            border-bottom: 2px solid #667eea;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 20px;
-        }
-        table thead {
-            background: #f8f9fa;
-        }
-        table th {
-            padding: 12px;
-            text-align: left;
-            font-weight: bold;
-            color: #333;
-            border-bottom: 2px solid #ddd;
-        }
-        table td {
-            padding: 12px;
-            border-bottom: 1px solid #ddd;
-        }
-        table tr:hover {
-            background: #f8f9fa;
-        }
-        .edit-input {
-            width: 100%;
-            padding: 8px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 14px;
-        }
-        .btn {
-            display: inline-block;
-            padding: 8px 15px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-            margin-right: 5px;
-        }
-        .btn-primary {
-            background: #667eea;
-            color: white;
-        }
-        .btn-primary:hover {
-            background: #5a67d8;
-        }
-        .btn-danger {
-            background: #e74c3c;
-            color: white;
-        }
-        .btn-danger:hover {
-            background: #c0392b;
-        }
-        .btn-success {
-            background: #27ae60;
-            color: white;
-        }
-        .btn-success:hover {
-            background: #229954;
-        }
-        .add-form {
-            background: #f8f9fa;
-            padding: 20px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }
-        .form-group {
-            margin-bottom: 15px;
-        }
-        .form-group label {
-            display: block;
-            margin-bottom: 5px;
-            color: #333;
-            font-weight: bold;
-        }
-        .form-group input,
-        .form-group select {
-            width: 100%;
-            padding: 10px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 14px;
-            box-sizing: border-box;
-        }
-        .form-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 15px;
-        }
-        .message {
-            padding: 15px;
-            border-radius: 4px;
-            margin-bottom: 20px;
-        }
-        .message.success {
-            background: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
-        }
-        .message.error {
-            background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
-        }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>💰 Manage Pricing</h1>
-        <a href="{{ url_for('sales') }}" class="back-btn">Back to Sales Dashboard</a>
-    </div>
-
-    <div class="container">
-        <div id="message"></div>
-
-        <!-- Add New Pricing Item -->
-        <div class="section">
-            <h2 class="section-title">Add New Pricing Item</h2>
-            <div class="add-form">
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>Category</label>
-                        <select id="newCategory">
-                            <option value="">Select or type new</option>
-                            {% for category in categories %}
-                            <option value="{{ category }}">{{ category }}</option>
-                            {% endfor %}
-                            <option value="other">+ Add New Category</option>
-                        </select>
-                        <input type="text" id="newCategoryCustom" placeholder="New category name" style="display:none; margin-top: 5px;">
-                    </div>
-                    <div class="form-group">
-                        <label>Item Name</label>
-                        <input type="text" id="newItemName" placeholder="e.g. PVC 1-inch">
-                    </div>
-                    <div class="form-group">
-                        <label>Unit Cost ($)</label>
-                        <input type="number" id="newUnitCost" placeholder="0.00" step="0.01" min="0">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>Description</label>
-                    <input type="text" id="newDescription" placeholder="Brief description of the item">
-                </div>
-                <button class="btn btn-success" onclick="addNewPrice()">Add Item</button>
-            </div>
-        </div>
-
-        <!-- Current Pricing Items -->
-        <div class="section">
-            <h2 class="section-title">Current Pricing</h2>
-            {% if pricing_items %}
-                {% set current_category = '' %}
-                {% for item in pricing_items %}
-                    {% if item[0] != current_category %}
-                        {% if current_category != '' %}</table>{% endif %}
-                        {% set current_category = item[0] %}
-                        <h3 style="margin-top: 20px; color: #667eea;">{{ current_category }}</h3>
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>Item Name</th>
-                                    <th>Unit Cost</th>
-                                    <th>Description</th>
-                                    <th>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                    {% endif %}
-                    <tr>
-                        <td>{{ item[1] }}</td>
-                        <td><input type="number" class="edit-input" id="cost-{{ item[4] }}" value="{{ item[2] }}" step="0.01" min="0"></td>
-                        <td><input type="text" class="edit-input" id="desc-{{ item[4] }}" value="{{ item[3] or '' }}"></td>
-                        <td>
-                            <button class="btn btn-primary" onclick="updatePrice({{ item[4] }})">Save</button>
-                            <button class="btn btn-danger" onclick="deletePrice({{ item[4] }})">Delete</button>
-                        </td>
-                    </tr>
-                {% endfor %}
-                        </tbody>
-                    </table>
-            {% else %}
-                <p style="color: #999;">No pricing items found. Add one above to get started.</p>
-            {% endif %}
-        </div>
-    </div>
-
-    <script>
-        const categorySelect = document.getElementById('newCategory');
-        const categoryCustom = document.getElementById('newCategoryCustom');
-
-        categorySelect.addEventListener('change', function() {
-            if (this.value === 'other') {
-                categoryCustom.style.display = 'block';
-            } else {
-                categoryCustom.style.display = 'none';
-            }
-        });
-
-        function showMessage(message, type) {
-            const messageDiv = document.getElementById('message');
-            messageDiv.innerHTML = `<div class="message ${type}">${message}</div>`;
-            setTimeout(() => {
-                messageDiv.innerHTML = '';
-            }, 5000);
-        }
-
-        function updatePrice(itemId) {
-            const cost = document.getElementById(`cost-${itemId}`).value;
-            const desc = document.getElementById(`desc-${itemId}`).value;
-
-            fetch('{{ url_for("sales_update_price") }}', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    id: itemId,
-                    unit_cost: cost,
-                    description: desc
-                })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    showMessage('Price updated successfully!', 'success');
-                } else {
-                    showMessage('Error: ' + data.error, 'error');
-                }
-            })
-            .catch(error => {
-                showMessage('Error: ' + error, 'error');
-            });
-        }
-
-        function deletePrice(itemId) {
-            if (confirm('Are you sure you want to delete this pricing item?')) {
-                fetch('{{ url_for("sales_delete_price") }}', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ id: itemId })
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        location.reload();
-                    } else {
-                        showMessage('Error: ' + data.error, 'error');
-                    }
-                })
-                .catch(error => {
-                    showMessage('Error: ' + error, 'error');
-                });
-            }
-        }
-
-        function addNewPrice() {
-            const categorySelect = document.getElementById('newCategory');
-            let category = categorySelect.value;
-
-            if (category === 'other') {
-                category = document.getElementById('newCategoryCustom').value;
-            }
-
-            const itemName = document.getElementById('newItemName').value;
-            const unitCost = document.getElementById('newUnitCost').value;
-            const description = document.getElementById('newDescription').value;
-
-            if (!category || !itemName || !unitCost) {
-                showMessage('Please fill in all required fields', 'error');
-                return;
-            }
-
-            fetch('{{ url_for("sales_add_price") }}', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    category: category,
-                    item_name: itemName,
-                    unit_cost: unitCost,
-                    description: description
-                })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    showMessage('Pricing item added successfully!', 'success');
-                    setTimeout(() => location.reload(), 1500);
-                } else {
-                    showMessage('Error: ' + data.error, 'error');
-                }
-            })
-            .catch(error => {
-                showMessage('Error: ' + error, 'error');
-            });
-        }
-    </script>
-</body>
-</html>
-'''
 
 # ============================================================================
 # END DEBUG ROUTES
@@ -23032,6 +22825,919 @@ ADMIN_DASHBOARD_TEMPLATE = ADMIN_DASHBOARD_TEMPLATE if 'ADMIN_DASHBOARD_TEMPLATE
 ADMIN_USERS_TEMPLATE = ADMIN_USERS_TEMPLATE if 'ADMIN_USERS_TEMPLATE' in dir() else ''
 ADMIN_EDIT_USER_TEMPLATE = ADMIN_EDIT_USER_TEMPLATE if 'ADMIN_EDIT_USER_TEMPLATE' in dir() else ''
 ADMIN_CREATE_USER_TEMPLATE = ADMIN_CREATE_USER_TEMPLATE if 'ADMIN_CREATE_USER_TEMPLATE' in dir() else ''
+
+
+JOB_COSTING_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Job Costing - Install</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: Arial, sans-serif; background: #f0f2f5; }
+        .header {
+            background: linear-gradient(135deg, #1a5276 0%, #2980b9 100%);
+            color: white; padding: 16px 24px;
+            display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
+        }
+        .header h1 { font-size: 24px; }
+        .header-nav { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+        .header-nav a, .header-nav button {
+            background: rgba(255,255,255,0.2); color: white;
+            padding: 8px 16px; border-radius: 5px; text-decoration: none;
+            border: none; cursor: pointer; font-size: 13px; font-weight: bold;
+        }
+        .header-nav a:hover, .header-nav button:hover { background: rgba(255,255,255,0.35); }
+        .page-body { max-width: 1300px; margin: 0 auto; padding: 20px; }
+        .section-card {
+            background: white; border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            margin-bottom: 24px; overflow: hidden;
+        }
+        .section-header {
+            background: #eaf4fb; padding: 14px 20px;
+            border-bottom: 1px solid #d0e9f7;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .section-header h2 { font-size: 17px; color: #1a5276; }
+        .section-body { padding: 20px; }
+        .jobs-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(580px, 1fr)); gap: 20px; }
+        .job-card {
+            background: white; border-radius: 10px; border: 1px solid #dde;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.06); overflow: hidden;
+        }
+        .job-card.inactive { opacity: 0.65; }
+        .job-card-header {
+            background: linear-gradient(90deg, #1a5276, #2980b9);
+            color: white; padding: 12px 16px;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .job-card-header h3 { font-size: 16px; }
+        .job-card-header .badge {
+            font-size: 11px; padding: 3px 8px; border-radius: 12px;
+            background: rgba(255,255,255,0.25);
+        }
+        .job-card-body { padding: 16px; }
+        .cost-grid {
+            display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px;
+        }
+        .cost-cell { text-align: center; }
+        .cost-cell .label { font-size: 11px; color: #888; text-transform: uppercase; }
+        .cost-cell .value { font-size: 16px; font-weight: bold; color: #1a5276; margin-top: 2px; }
+        .cost-cell .value.over { color: #c0392b; }
+        .cost-cell .value.good { color: #1e8449; }
+        .progress-bar-wrap { background: #eee; border-radius: 4px; height: 8px; margin: 6px 0 2px; overflow: hidden; }
+        .progress-bar-fill { height: 100%; border-radius: 4px; background: #2980b9; transition: width 0.3s; }
+        .progress-bar-fill.warn { background: #e67e22; }
+        .progress-bar-fill.over { background: #c0392b; }
+        .breakdown-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }
+        .breakdown-table th { background: #f7f9fb; text-align: left; padding: 7px 10px; border-bottom: 2px solid #dde; color: #555; }
+        .breakdown-table td { padding: 6px 10px; border-bottom: 1px solid #f0f0f0; }
+        .breakdown-table tr:hover td { background: #fafbfc; }
+        .breakdown-table .total-row td { font-weight: bold; background: #eaf4fb; }
+        .btn { padding: 7px 14px; border-radius: 5px; border: none; cursor: pointer; font-size: 13px; font-weight: bold; }
+        .btn-blue { background: #2980b9; color: white; }
+        .btn-green { background: #1e8449; color: white; }
+        .btn-gray { background: #6c757d; color: white; }
+        .btn-red { background: #c0392b; color: white; }
+        .btn:hover { opacity: 0.88; }
+        .actions-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+        .po-list { margin-top: 12px; }
+        .po-item { background: #f8f9fa; border-radius: 5px; padding: 8px 12px; margin-bottom: 6px; font-size: 13px; }
+        .po-item .po-top { display: flex; justify-content: space-between; align-items: center; }
+        .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; }
+        .tag-matched { background: #d5f5e3; color: #1e8449; }
+        .tag-awaiting { background: #fef9e7; color: #d68910; }
+        .stats-bar {
+            display: flex; gap: 16px; background: #eaf4fb;
+            padding: 12px 20px; border-bottom: 1px solid #d0e9f7; flex-wrap: wrap;
+        }
+        .stat-item { text-align: center; }
+        .stat-item .n { font-size: 22px; font-weight: bold; color: #1a5276; }
+        .stat-item .l { font-size: 11px; color: #888; text-transform: uppercase; }
+        .modal-overlay {
+            display: none; position: fixed; inset: 0;
+            background: rgba(0,0,0,0.5); z-index: 1000;
+            align-items: center; justify-content: center;
+        }
+        .modal-overlay.open { display: flex; }
+        .modal-box {
+            background: white; border-radius: 10px; padding: 24px;
+            width: 90%; max-width: 560px; max-height: 90vh; overflow-y: auto;
+        }
+        .modal-box h2 { margin-bottom: 16px; color: #1a5276; }
+        .form-group { margin-bottom: 12px; }
+        .form-group label { display: block; font-size: 13px; color: #555; margin-bottom: 4px; }
+        .form-group input, .form-group select, .form-group textarea {
+            width: 100%; padding: 8px 10px; border: 1px solid #ccc;
+            border-radius: 5px; font-size: 14px;
+        }
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .unmatched-badge {
+            background: #e74c3c; color: white;
+            padding: 3px 8px; border-radius: 10px; font-size: 12px; font-weight: bold;
+        }
+        .days-info { display: flex; gap: 16px; font-size: 13px; color: #555; margin-top: 6px; }
+        .days-info span { background: #eaf4fb; padding: 3px 10px; border-radius: 10px; }
+        .upload-area {
+            border: 2px dashed #aac; border-radius: 8px; padding: 28px;
+            text-align: center; cursor: pointer; color: #666; transition: background 0.2s;
+        }
+        .upload-area:hover { background: #f0f6ff; }
+        @media (max-width: 700px) {
+            .jobs-grid { grid-template-columns: 1fr; }
+            .cost-grid { grid-template-columns: repeat(2, 1fr); }
+            .form-row { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+<div class="header">
+    <h1>💰 Job Costing — Install</h1>
+    <div class="header-nav">
+        <button onclick="document.getElementById('add-job-modal').classList.add('open')">➕ New Job</button>
+        <a href="{{ url_for('install_scheduling') }}">📅 Scheduling</a>
+        <a href="{{ url_for('office_dashboard') }}?tab=service">📋 Service POs</a>
+        <a href="{{ url_for('dashboard') }}">← Dashboard</a>
+    </div>
+</div>
+
+<!-- Stats bar -->
+<div class="stats-bar">
+    <div class="stat-item"><div class="n" id="stat-jobs">0</div><div class="l">Jobs</div></div>
+    <div class="stat-item"><div class="n" id="stat-active">0</div><div class="l">Active</div></div>
+    <div class="stat-item"><div class="n" id="stat-bid">$0</div><div class="l">Total Bid</div></div>
+    <div class="stat-item"><div class="n" id="stat-invoiced">$0</div><div class="l">Total Invoiced</div></div>
+    <div class="stat-item"><div class="n" id="stat-days">0</div><div class="l">Total Days</div></div>
+    {% if unmatched_count > 0 %}
+    <div class="stat-item">
+        <a href="{{ url_for('office_dashboard') }}?tab=notifications" style="text-decoration:none;">
+            <div class="n"><span class="unmatched-badge">{{ unmatched_count }}</span></div>
+            <div class="l">Unmatched Invoices</div>
+        </a>
+    </div>
+    {% endif %}
+</div>
+
+<div class="page-body">
+
+<!-- Year filter -->
+<div style="margin-bottom:16px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+    <label style="font-weight:bold;">Filter Year:</label>
+    <select id="year-filter" onchange="renderJobs()" style="padding:7px 12px; border-radius:5px; border:1px solid #ccc;">
+        <option value="">All Years</option>
+    </select>
+    <label style="margin-left:10px;">
+        <input type="checkbox" id="show-inactive" onchange="renderJobs()"> Show Inactive
+    </label>
+</div>
+
+<div class="jobs-grid" id="jobs-grid"></div>
+<p id="no-jobs-msg" style="display:none;text-align:center;color:#999;padding:40px;">No install jobs found.</p>
+</div>
+
+<!-- ADD JOB MODAL -->
+<div class="modal-overlay" id="add-job-modal" onclick="if(event.target===this)this.classList.remove('open')">
+<div class="modal-box">
+    <h2>➕ Add New Install Job</h2>
+    <div class="form-row">
+        <div class="form-group">
+            <label>Job Name *</label>
+            <input type="text" id="new-job-name" placeholder="e.g., Creciente Condos">
+        </div>
+        <div class="form-group">
+            <label>Job Code (PO prefix)</label>
+            <input type="text" id="new-job-code" placeholder="e.g., 63463">
+        </div>
+    </div>
+    <div class="form-row">
+        <div class="form-group">
+            <label>Year *</label>
+            <input type="number" id="new-job-year" value="2026">
+        </div>
+        <div class="form-group">
+            <label>Materials Budget ($)</label>
+            <input type="number" id="new-job-budget" placeholder="0" step="0.01" min="0">
+        </div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:8px;">
+        <button class="btn btn-blue" onclick="submitNewJob()">✓ Create Job</button>
+        <button class="btn btn-gray" onclick="document.getElementById('add-job-modal').classList.remove('open')">Cancel</button>
+    </div>
+</div>
+</div>
+
+<!-- IMPORT PROPOSAL MODAL -->
+<div class="modal-overlay" id="proposal-modal" onclick="if(event.target===this)this.classList.remove('open')">
+<div class="modal-box">
+    <h2>📄 Import Proposal PDF</h2>
+    <p style="font-size:13px;color:#666;margin-bottom:14px;">Upload an Estimate Worksheet PDF to extract bid amounts, material budget, labor, days allotted, etc.</p>
+    <div class="form-group">
+        <label>Job</label>
+        <select id="proposal-job-select" style="width:100%"></select>
+    </div>
+    <div class="upload-area" id="proposal-drop" onclick="document.getElementById('proposal-file-input').click()">
+        <div style="font-size:36px;margin-bottom:8px;">📁</div>
+        <p><strong>Click to select PDF</strong></p>
+        <p id="proposal-file-name" style="color:#888;font-size:13px;margin-top:6px;">No file selected</p>
+    </div>
+    <input type="file" id="proposal-file-input" accept=".pdf" style="display:none"
+           onchange="document.getElementById('proposal-file-name').textContent=this.files[0]?this.files[0].name:'No file selected'">
+    <div id="proposal-result" style="margin-top:12px;display:none;"></div>
+    <div style="display:flex;gap:10px;margin-top:14px;">
+        <button class="btn btn-blue" onclick="uploadProposal()">📤 Import</button>
+        <button class="btn btn-gray" onclick="document.getElementById('proposal-modal').classList.remove('open')">Cancel</button>
+    </div>
+</div>
+</div>
+
+<!-- MANUAL BUDGET MODAL -->
+<div class="modal-overlay" id="budget-modal" onclick="if(event.target===this)this.classList.remove('open')">
+<div class="modal-box">
+    <h2>✏️ Edit Job Budget</h2>
+    <input type="hidden" id="budget-job-id">
+    <div class="form-row">
+        <div class="form-group"><label>Proposal / Estimate #</label><input type="text" id="bgt-proposal-num"></div>
+        <div class="form-group"><label>Customer Name</label><input type="text" id="bgt-customer"></div>
+    </div>
+    <div class="form-row">
+        <div class="form-group"><label>Bid Amount ($)</label><input type="number" id="bgt-bid" step="0.01"></div>
+        <div class="form-group"><label>Days Allotted</label><input type="number" id="bgt-days" step="1"></div>
+    </div>
+    <div class="form-row">
+        <div class="form-group"><label>Materials Budget ($)</label><input type="number" id="bgt-materials" step="0.01"></div>
+        <div class="form-group"><label>Labor Budget ($)</label><input type="number" id="bgt-labor" step="0.01"></div>
+    </div>
+    <div class="form-row">
+        <div class="form-group"><label>Travel Time ($)</label><input type="number" id="bgt-travel" step="0.01"></div>
+        <div class="form-group"><label>Hotel / Cash ($)</label><input type="number" id="bgt-hotel" step="0.01"></div>
+    </div>
+    <div class="form-row">
+        <div class="form-group"><label>Subs ($)</label><input type="number" id="bgt-subs" step="0.01"></div>
+        <div class="form-group"><label>Rental ($)</label><input type="number" id="bgt-rental" step="0.01"></div>
+    </div>
+    <div class="form-row">
+        <div class="form-group"><label>Permit ($)</label><input type="number" id="bgt-permit" step="0.01"></div>
+        <div class="form-group"><label>Asbuilt ($)</label><input type="number" id="bgt-asbuilt" step="0.01"></div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:8px;">
+        <button class="btn btn-green" onclick="saveBudget()">💾 Save</button>
+        <button class="btn btn-gray" onclick="document.getElementById('budget-modal').classList.remove('open')">Cancel</button>
+    </div>
+</div>
+</div>
+
+<!-- JOB DETAIL MODAL -->
+<div class="modal-overlay" id="detail-modal" onclick="if(event.target===this)this.classList.remove('open')">
+<div class="modal-box" style="max-width:800px;">
+    <h2 id="detail-modal-title">Job Detail</h2>
+    <div id="detail-modal-body"></div>
+    <div style="margin-top:16px;">
+        <button class="btn btn-gray" onclick="document.getElementById('detail-modal').classList.remove('open')">Close</button>
+    </div>
+</div>
+</div>
+
+<script>
+const installJobs = {{ install_jobs | tojson }};
+const proposalsData = {{ proposals | tojson }};
+const invoiceTotals = {{ invoice_totals | tojson }};
+const jobPOs = {{ job_pos | tojson }};
+const poInvoices = {{ po_invoices | tojson }};
+const daysPerJob = {{ days_per_job | tojson }};
+
+function fmt(n) {
+    if (!n) return '$0.00';
+    return '$' + parseFloat(n).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function esc(s) {
+    if (!s) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Populate year filter
+const years = [...new Set(installJobs.map(j => j[2]))].sort((a,b) => b-a);
+const yf = document.getElementById('year-filter');
+years.forEach(y => { const o = document.createElement('option'); o.value=y; o.textContent=y; yf.appendChild(o); });
+if (years.length > 0) yf.value = years[0];
+
+// Populate proposal job select
+const pjs = document.getElementById('proposal-job-select');
+installJobs.forEach(j => {
+    const o = document.createElement('option');
+    o.value = j[0];
+    o.textContent = j[1] + (j[11] ? ' ['+j[11]+']' : '') + ' (' + j[2] + ')';
+    pjs.appendChild(o);
+});
+
+function renderJobs() {
+    const grid = document.getElementById('jobs-grid');
+    const noMsg = document.getElementById('no-jobs-msg');
+    const yearFilter = document.getElementById('year-filter').value;
+    const showInactive = document.getElementById('show-inactive').checked;
+
+    let filtered = installJobs.filter(j => {
+        if (yearFilter && String(j[2]) !== yearFilter) return false;
+        if (!showInactive && !j[4]) return false;
+        return true;
+    });
+
+    // Update stats
+    let totalBid = 0, totalInvoiced = 0, totalDays = 0, activeCount = 0;
+    filtered.forEach(j => {
+        const p = proposalsData[j[0]];
+        if (p) totalBid += p[2] || 0;
+        const inv = invoiceTotals[j[0]];
+        if (inv) totalInvoiced += inv.total || 0;
+        const d = daysPerJob[j[0]];
+        if (d) totalDays += d.days || 0;
+        if (j[4]) activeCount++;
+    });
+    document.getElementById('stat-jobs').textContent = filtered.length;
+    document.getElementById('stat-active').textContent = activeCount;
+    document.getElementById('stat-bid').textContent = fmt(totalBid);
+    document.getElementById('stat-invoiced').textContent = fmt(totalInvoiced);
+    document.getElementById('stat-days').textContent = totalDays;
+
+    if (filtered.length === 0) {
+        grid.innerHTML = '';
+        noMsg.style.display = 'block';
+        return;
+    }
+    noMsg.style.display = 'none';
+    grid.innerHTML = filtered.map(renderJobCard).join('');
+}
+
+function renderJobCard(job) {
+    const jobId = job[0];
+    const jobName = job[1];
+    const year = job[2];
+    const isActive = job[4];
+    const jobCode = job[11];
+
+    const proposal = proposalsData[jobId];
+    const bidAmt = proposal ? (proposal[2] || 0) : 0;
+    const matBudget = proposal ? (proposal[3] || 0) : (job[9] || 0);
+    const laborBudget = proposal ? (proposal[4] || 0) : 0;
+    const travelBudget = proposal ? (proposal[5] || 0) : 0;
+    const hotelBudget = proposal ? (proposal[6] || 0) : 0;
+    const subsBudget = proposal ? (proposal[7] || 0) : 0;
+    const rentalBudget = proposal ? (proposal[8] || 0) : 0;
+    const permitBudget = proposal ? (proposal[9] || 0) : 0;
+    const daysAllotted = proposal ? (proposal[11] || 0) : 0;
+
+    const invData = invoiceTotals[jobId] || {total: 0, count: 0};
+    const totalInvoiced = invData.total;
+    const invoiceCount = invData.count;
+
+    const dayData = daysPerJob[jobId] || {days: 0, hours: 0};
+    const daysUsed = dayData.days;
+
+    const pct = bidAmt > 0 ? Math.min((totalInvoiced / bidAmt) * 100, 100) : 0;
+    const fillClass = pct >= 90 ? 'over' : pct >= 70 ? 'warn' : '';
+    const valClass = totalInvoiced > bidAmt && bidAmt > 0 ? 'over' : bidAmt > 0 && totalInvoiced < bidAmt * 0.5 ? 'good' : '';
+
+    const netProfit = bidAmt - totalInvoiced;
+
+    const poList = jobPOs[jobId] || [];
+
+    return `
+    <div class="job-card ${!isActive ? 'inactive' : ''}" id="jc-${jobId}">
+        <div class="job-card-header">
+            <h3>${esc(jobName)} ${jobCode ? '<small style="opacity:0.8">['+esc(jobCode)+']</small>' : ''}</h3>
+            <div style="display:flex;gap:6px;align-items:center;">
+                <span class="badge">${year}</span>
+                <span class="badge" style="${isActive ? 'background:rgba(46,204,113,0.4)' : 'background:rgba(0,0,0,0.25)'}">
+                    ${isActive ? 'Active' : 'Closed'}
+                </span>
+            </div>
+        </div>
+        <div class="job-card-body">
+            <div class="cost-grid">
+                <div class="cost-cell">
+                    <div class="label">Bid Amount</div>
+                    <div class="value">${fmt(bidAmt)}</div>
+                </div>
+                <div class="cost-cell">
+                    <div class="label">Total Invoiced</div>
+                    <div class="value ${valClass}">${fmt(totalInvoiced)}</div>
+                </div>
+                <div class="cost-cell">
+                    <div class="label">Net Profit</div>
+                    <div class="value ${netProfit < 0 ? 'over' : 'good'}">${fmt(netProfit)}</div>
+                </div>
+                <div class="cost-cell">
+                    <div class="label">Days</div>
+                    <div class="value">${daysUsed}${daysAllotted > 0 ? ' / '+daysAllotted : ''}</div>
+                </div>
+            </div>
+
+            ${bidAmt > 0 ? `
+            <div class="progress-bar-wrap">
+                <div class="progress-bar-fill ${fillClass}" style="width:${pct}%"></div>
+            </div>
+            <small style="color:#888">${pct.toFixed(1)}% of bid used (${invoiceCount} invoice${invoiceCount!==1?'s':''})</small>
+            ` : `<small style="color:#aaa;">No proposal imported yet — <a href="#" onclick="openProposalModal(${jobId});return false;">Import PDF</a> or <a href="#" onclick="openBudgetModal(${jobId});return false;">enter manually</a></small>`}
+
+            ${(matBudget+laborBudget+travelBudget+hotelBudget+subsBudget+rentalBudget+permitBudget) > 0 ? `
+            <table class="breakdown-table" style="margin-top:12px;">
+                <thead><tr><th>Category</th><th>Budget</th></tr></thead>
+                <tbody>
+                    ${matBudget > 0 ? `<tr><td>Materials</td><td>${fmt(matBudget)}</td></tr>` : ''}
+                    ${laborBudget > 0 ? `<tr><td>Crew Labor</td><td>${fmt(laborBudget)}</td></tr>` : ''}
+                    ${travelBudget > 0 ? `<tr><td>Travel Time</td><td>${fmt(travelBudget)}</td></tr>` : ''}
+                    ${hotelBudget > 0 ? `<tr><td>Hotel / Cash</td><td>${fmt(hotelBudget)}</td></tr>` : ''}
+                    ${subsBudget > 0 ? `<tr><td>Subs</td><td>${fmt(subsBudget)}</td></tr>` : ''}
+                    ${rentalBudget > 0 ? `<tr><td>Rental</td><td>${fmt(rentalBudget)}</td></tr>` : ''}
+                    ${permitBudget > 0 ? `<tr><td>Permit</td><td>${fmt(permitBudget)}</td></tr>` : ''}
+                </tbody>
+            </table>
+            ` : ''}
+
+            <div class="actions-row">
+                <button class="btn btn-blue" onclick="showJobDetail(${jobId})">📋 View POs (${poList.length})</button>
+                <button class="btn btn-green" onclick="openProposalModal(${jobId})">📄 Import Proposal</button>
+                <button class="btn btn-gray" onclick="openBudgetModal(${jobId})">✏️ Edit Budget</button>
+                <a href="{{ url_for('install_scheduling') }}?job=${jobId}" class="btn btn-gray" style="text-decoration:none;">📅 Days (${daysUsed})</a>
+            </div>
+        </div>
+    </div>`;
+}
+
+function showJobDetail(jobId) {
+    const job = installJobs.find(j => j[0] === jobId);
+    if (!job) return;
+    const modal = document.getElementById('detail-modal');
+    document.getElementById('detail-modal-title').textContent = '📋 ' + job[1];
+    const poList = jobPOs[jobId] || [];
+    let html = '';
+    if (poList.length === 0) {
+        html = '<p style="color:#999;text-align:center;padding:20px;">No POs for this job yet.</p>';
+    } else {
+        html = '<div class="po-list">';
+        poList.forEach(po => {
+            const poId = po[0];
+            const status = po[3];
+            const est = po[4] || 0;
+            const inv = po[5] || 0;
+            const date = po[6] ? po[6].substring(0,10) : '';
+            const jobCode = job[11];
+            const poDisplay = jobCode ? jobCode+'-'+poId : 'I-'+poId;
+            const invoices = poInvoices[poId] || [];
+            const tagClass = status === 'matched' ? 'tag-matched' : 'tag-awaiting';
+            html += `<div class="po-item">
+                <div class="po-top">
+                    <strong>PO #${esc(poDisplay)}</strong>
+                    <span class="tag ${tagClass}">${status}</span>
+                </div>
+                <div style="font-size:12px;color:#666;margin-top:4px;">Est: ${fmt(est)} | Invoiced: ${fmt(inv)} | Date: ${esc(date)}</div>`;
+            if (invoices.length > 0) {
+                html += '<div style="margin-top:6px;">';
+                invoices.forEach(inv => {
+                    html += `<div style="font-size:12px;background:#f0f8f0;border-radius:4px;padding:4px 8px;margin-top:3px;">
+                        📄 Invoice #${esc(inv[2]||'N/A')} — ${fmt(inv[3])} — ${inv[5]?inv[5].substring(0,10):'N/A'}
+                    </div>`;
+                });
+                html += '</div>';
+            }
+            html += '</div>';
+        });
+        html += '</div>';
+    }
+    document.getElementById('detail-modal-body').innerHTML = html;
+    modal.classList.add('open');
+}
+
+function openProposalModal(jobId) {
+    if (jobId) document.getElementById('proposal-job-select').value = jobId;
+    document.getElementById('proposal-result').style.display = 'none';
+    document.getElementById('proposal-result').innerHTML = '';
+    document.getElementById('proposal-file-name').textContent = 'No file selected';
+    document.getElementById('proposal-file-input').value = '';
+    document.getElementById('proposal-modal').classList.add('open');
+}
+
+function uploadProposal() {
+    const jobId = document.getElementById('proposal-job-select').value;
+    const fileInput = document.getElementById('proposal-file-input');
+    if (!jobId) { alert('Please select a job'); return; }
+    if (!fileInput.files[0]) { alert('Please select a PDF file'); return; }
+
+    const form = new FormData();
+    form.append('job_id', jobId);
+    form.append('proposal_file', fileInput.files[0]);
+
+    const resDiv = document.getElementById('proposal-result');
+    resDiv.innerHTML = '<p style="color:#2980b9;">⏳ Importing...</p>';
+    resDiv.style.display = 'block';
+
+    fetch('/job_costing/import_proposal', { method: 'POST', body: form })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            const d = data.data;
+            resDiv.innerHTML = `<div style="background:#d5f5e3;border-radius:6px;padding:12px;font-size:13px;">
+                <strong>✅ Imported!</strong><br>
+                Bid Amount: ${fmt(d.bid_amount)}<br>
+                Materials: ${fmt(d.materials_budget)} | Labor: ${fmt(d.labor_budget)}<br>
+                Travel: ${fmt(d.travel_budget)} | Hotel/Cash: ${fmt(d.hotel_cash_budget)}<br>
+                Permit: ${fmt(d.permit_budget)} | Days Allotted: ${d.days_allotted}<br>
+                ${d.proposal_number ? 'Proposal #: '+esc(d.proposal_number)+'<br>' : ''}
+                <button class="btn btn-blue" style="margin-top:8px;" onclick="location.reload()">🔄 Refresh</button>
+            </div>`;
+        } else {
+            resDiv.innerHTML = `<div style="background:#fde;border-radius:6px;padding:12px;font-size:13px;color:#c0392b;">
+                ❌ ${esc(data.error)}
+            </div>`;
+        }
+    })
+    .catch(e => {
+        resDiv.innerHTML = `<div style="background:#fde;border-radius:6px;padding:12px;color:#c0392b;">Error: ${esc(e.message)}</div>`;
+    });
+}
+
+function openBudgetModal(jobId) {
+    document.getElementById('budget-job-id').value = jobId;
+    const p = proposalsData[jobId] || {};
+    document.getElementById('bgt-proposal-num').value = p[1] || '';
+    document.getElementById('bgt-customer').value = p[2] !== undefined ? (proposalsData[jobId]?.[1] || '') : '';
+
+    // proposalsData row: [job_id, proposal_number, bid_amount, materials, labor, travel, hotel, subs, rental, permit, asbuilt, days, filename, imported_at]
+    const row = proposalsData[jobId];
+    document.getElementById('bgt-bid').value = row ? (row[2] || 0) : 0;
+    document.getElementById('bgt-materials').value = row ? (row[3] || 0) : 0;
+    document.getElementById('bgt-labor').value = row ? (row[4] || 0) : 0;
+    document.getElementById('bgt-travel').value = row ? (row[5] || 0) : 0;
+    document.getElementById('bgt-hotel').value = row ? (row[6] || 0) : 0;
+    document.getElementById('bgt-subs').value = row ? (row[7] || 0) : 0;
+    document.getElementById('bgt-rental').value = row ? (row[8] || 0) : 0;
+    document.getElementById('bgt-permit').value = row ? (row[9] || 0) : 0;
+    document.getElementById('bgt-asbuilt').value = row ? (row[10] || 0) : 0;
+    document.getElementById('bgt-days').value = row ? (row[11] || 0) : 0;
+    document.getElementById('bgt-proposal-num').value = row ? (row[1] || '') : '';
+    document.getElementById('budget-modal').classList.add('open');
+}
+
+function saveBudget() {
+    const jobId = document.getElementById('budget-job-id').value;
+    const payload = {
+        job_id: jobId,
+        proposal_number: document.getElementById('bgt-proposal-num').value,
+        customer_name: document.getElementById('bgt-customer').value,
+        bid_amount: parseFloat(document.getElementById('bgt-bid').value || 0),
+        materials_budget: parseFloat(document.getElementById('bgt-materials').value || 0),
+        labor_budget: parseFloat(document.getElementById('bgt-labor').value || 0),
+        travel_budget: parseFloat(document.getElementById('bgt-travel').value || 0),
+        hotel_cash_budget: parseFloat(document.getElementById('bgt-hotel').value || 0),
+        subs_budget: parseFloat(document.getElementById('bgt-subs').value || 0),
+        rental_budget: parseFloat(document.getElementById('bgt-rental').value || 0),
+        permit_budget: parseFloat(document.getElementById('bgt-permit').value || 0),
+        asbuilt_budget: parseFloat(document.getElementById('bgt-asbuilt').value || 0),
+        days_allotted: parseInt(document.getElementById('bgt-days').value || 0),
+    };
+    fetch('/job_costing/api/update_proposal', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) { location.reload(); }
+        else { alert('Error: ' + data.error); }
+    });
+}
+
+function submitNewJob() {
+    const name = document.getElementById('new-job-name').value.trim();
+    const code = document.getElementById('new-job-code').value.trim();
+    const year = document.getElementById('new-job-year').value.trim();
+    const budget = document.getElementById('new-job-budget').value.trim();
+    if (!name || !year) { alert('Job Name and Year are required'); return; }
+    const fd = new FormData();
+    fd.append('job_name', name); fd.append('job_code', code);
+    fd.append('year', year); fd.append('budget', budget||'0');
+    fd.append('department', 'install');
+    fetch('/add_job', {method:'POST', body:fd, redirect:'follow'})
+    .then(() => { window.location.href = '/job_costing'; })
+    .catch(e => alert('Error: ' + e.message));
+}
+
+renderJobs();
+</script>
+</body>
+</html>
+'''
+
+
+INSTALL_SCHEDULING_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Install Scheduling</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: Arial, sans-serif; background: #f0f2f5; }
+        .header {
+            background: linear-gradient(135deg, #145a32 0%, #1e8449 100%);
+            color: white; padding: 16px 24px;
+            display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
+        }
+        .header h1 { font-size: 24px; }
+        .header-nav { display: flex; gap: 10px; flex-wrap: wrap; }
+        .header-nav a, .header-nav button {
+            background: rgba(255,255,255,0.2); color: white;
+            padding: 8px 16px; border-radius: 5px; text-decoration: none;
+            border: none; cursor: pointer; font-size: 13px; font-weight: bold;
+        }
+        .header-nav a:hover, .header-nav button:hover { background: rgba(255,255,255,0.35); }
+        .page-body { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        .panel {
+            background: white; border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 24px;
+        }
+        .panel-header {
+            background: #eafaf1; padding: 14px 20px;
+            border-bottom: 1px solid #d0f0de;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .panel-header h2 { font-size: 17px; color: #145a32; }
+        .panel-body { padding: 20px; }
+        .btn { padding: 8px 16px; border-radius: 5px; border: none; cursor: pointer; font-size: 13px; font-weight: bold; }
+        .btn-green { background: #1e8449; color: white; }
+        .btn-blue { background: #2980b9; color: white; }
+        .btn-gray { background: #6c757d; color: white; }
+        .btn-red { background: #c0392b; color: white; }
+        .btn:hover { opacity: 0.88; }
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .form-group { margin-bottom: 12px; }
+        .form-group label { display: block; font-size: 13px; color: #555; margin-bottom: 4px; }
+        .form-group input, .form-group select, .form-group textarea {
+            width: 100%; padding: 8px 10px; border: 1px solid #ccc;
+            border-radius: 5px; font-size: 14px;
+        }
+        .schedule-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .schedule-table th {
+            background: #eafaf1; text-align: left; padding: 9px 12px;
+            border-bottom: 2px solid #c8e6c9; color: #145a32;
+        }
+        .schedule-table td { padding: 8px 12px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+        .schedule-table tr:hover td { background: #f9fdf9; }
+        .job-summary-grid {
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px;
+        }
+        .job-summary-card {
+            background: #f9fdf9; border-radius: 8px; border: 1px solid #d0f0de;
+            padding: 14px 16px;
+        }
+        .job-summary-card h3 { font-size: 14px; color: #145a32; margin-bottom: 8px; }
+        .days-badge {
+            display: inline-block; background: #1e8449; color: white;
+            padding: 4px 12px; border-radius: 14px; font-size: 13px; font-weight: bold;
+        }
+        .modal-overlay {
+            display: none; position: fixed; inset: 0;
+            background: rgba(0,0,0,0.5); z-index: 1000;
+            align-items: center; justify-content: center;
+        }
+        .modal-overlay.open { display: flex; }
+        .modal-box {
+            background: white; border-radius: 10px; padding: 24px;
+            width: 90%; max-width: 500px; max-height: 90vh; overflow-y: auto;
+        }
+        .modal-box h2 { margin-bottom: 16px; color: #145a32; }
+        .filter-bar { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+        .filter-bar select, .filter-bar input {
+            padding: 7px 12px; border: 1px solid #ccc; border-radius: 5px; font-size: 14px;
+        }
+        @media (max-width: 600px) {
+            .form-row { grid-template-columns: 1fr; }
+            .job-summary-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+<div class="header">
+    <h1>📅 Install Scheduling</h1>
+    <div class="header-nav">
+        <button onclick="document.getElementById('add-entry-modal').classList.add('open')">➕ Log Day</button>
+        <a href="{{ url_for('job_costing') }}">💰 Job Costing</a>
+        <a href="{{ url_for('dashboard') }}">← Dashboard</a>
+    </div>
+</div>
+
+<div class="page-body">
+
+<!-- Job Days Summary -->
+<div class="panel">
+    <div class="panel-header">
+        <h2>📊 Days Per Job Summary</h2>
+    </div>
+    <div class="panel-body">
+        <div class="job-summary-grid" id="job-summary-grid">
+            {% for job in install_jobs %}
+            {% set jdays = days_summary.get(job[0], {'days': 0, 'hours': 0}) %}
+            <div class="job-summary-card">
+                <h3>{{ job[1] }}{% if job[4] %} <span style="color:#1e8449;font-size:11px;">● Active</span>{% endif %}</h3>
+                {% if job[4] %}
+                <div style="font-size:12px;color:#888;margin-bottom:8px;">Code: {{ job[4] or '—' }} | {{ job[2] }}</div>
+                {% else %}
+                <div style="font-size:12px;color:#888;margin-bottom:8px;">{{ job[2] }}</div>
+                {% endif %}
+                <span class="days-badge">{{ jdays.days }} day{% if jdays.days != 1 %}s{% endif %}</span>
+                {% if jdays.hours > 0 %}
+                <span style="font-size:12px;color:#555;margin-left:8px;">{{ "%.1f"|format(jdays.hours) }} hrs</span>
+                {% endif %}
+                <div style="margin-top:10px;">
+                    <button class="btn btn-green" style="font-size:12px;padding:5px 10px;"
+                            onclick="openAddModal({{ job[0] }}, '{{ job[1]|replace("'", "\\'") }}')">+ Log Day</button>
+                    <button class="btn btn-blue" style="font-size:12px;padding:5px 10px;margin-left:6px;"
+                            onclick="filterByJob({{ job[0] }})">View Days</button>
+                </div>
+            </div>
+            {% else %}
+            <p style="color:#999;grid-column:1/-1;text-align:center;padding:30px;">No install jobs found. <a href="{{ url_for('job_costing') }}">Add jobs in Job Costing</a>.</p>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+<!-- Schedule Entries Log -->
+<div class="panel">
+    <div class="panel-header">
+        <h2>📋 Schedule Log</h2>
+        <button class="btn btn-green" onclick="document.getElementById('add-entry-modal').classList.add('open')">➕ Log Day</button>
+    </div>
+    <div class="panel-body">
+        <div class="filter-bar">
+            <select id="job-filter" onchange="applyFilter()">
+                <option value="">All Jobs</option>
+                {% for job in install_jobs %}
+                <option value="{{ job[0] }}">{{ job[1] }} ({{ job[2] }})</option>
+                {% endfor %}
+            </select>
+            <input type="month" id="month-filter" onchange="applyFilter()">
+            <button class="btn btn-gray" onclick="clearFilter()">Clear</button>
+        </div>
+        <div id="schedule-table-wrap">
+            <table class="schedule-table">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Job</th>
+                        <th>Crew Members</th>
+                        <th>Hours</th>
+                        <th>Notes</th>
+                        <th>Logged By</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="schedule-tbody">
+                {% for entry in schedules %}
+                <tr data-job="{{ entry[1] }}" data-month="{{ entry[2][:7] if entry[2] else '' }}">
+                    <td>{{ entry[2] or '—' }}</td>
+                    <td>{{ entry[7] }}{% if entry[8] %} <small style="color:#888;">[{{ entry[8] }}]</small>{% endif %}</td>
+                    <td>{{ entry[3] or '—' }}</td>
+                    <td>{{ entry[5] or 0 }}</td>
+                    <td>{{ entry[4] or '—' }}</td>
+                    <td>{{ entry[6] or '—' }}</td>
+                    <td>
+                        <button class="btn btn-red" style="font-size:11px;padding:3px 8px;"
+                                onclick="deleteEntry({{ entry[0] }}, this)">🗑️ Delete</button>
+                    </td>
+                </tr>
+                {% else %}
+                <tr id="no-entries-row"><td colspan="7" style="text-align:center;color:#999;padding:30px;">No schedule entries yet. Click "Log Day" to add one.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+</div>
+
+<!-- ADD ENTRY MODAL -->
+<div class="modal-overlay" id="add-entry-modal" onclick="if(event.target===this)this.classList.remove('open')">
+<div class="modal-box">
+    <h2>➕ Log Day on Job</h2>
+    <div class="form-group">
+        <label>Job *</label>
+        <select id="entry-job-id" style="width:100%">
+            <option value="">-- Select Job --</option>
+            {% for job in install_jobs %}
+            <option value="{{ job[0] }}">{{ job[1] }} ({{ job[2] }})</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="form-row">
+        <div class="form-group">
+            <label>Date *</label>
+            <input type="date" id="entry-date">
+        </div>
+        <div class="form-group">
+            <label>Hours Worked</label>
+            <input type="number" id="entry-hours" step="0.5" min="0" placeholder="e.g. 8">
+        </div>
+    </div>
+    <div class="form-group">
+        <label>Crew Members</label>
+        <input type="text" id="entry-crew" placeholder="e.g. John, Maria, Carlos">
+    </div>
+    <div class="form-group">
+        <label>Notes</label>
+        <textarea id="entry-notes" rows="3" placeholder="What was accomplished today?"></textarea>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:8px;">
+        <button class="btn btn-green" onclick="saveEntry()">💾 Save</button>
+        <button class="btn btn-gray" onclick="document.getElementById('add-entry-modal').classList.remove('open')">Cancel</button>
+    </div>
+</div>
+</div>
+
+<script>
+// Set today's date as default
+document.getElementById('entry-date').value = new Date().toISOString().split('T')[0];
+
+function openAddModal(jobId, jobName) {
+    document.getElementById('entry-job-id').value = jobId;
+    document.getElementById('add-entry-modal').classList.add('open');
+}
+
+function filterByJob(jobId) {
+    document.getElementById('job-filter').value = jobId;
+    applyFilter();
+    document.getElementById('schedule-table-wrap').scrollIntoView({behavior:'smooth'});
+}
+
+function applyFilter() {
+    const jobFilter = document.getElementById('job-filter').value;
+    const monthFilter = document.getElementById('month-filter').value;
+    document.querySelectorAll('#schedule-tbody tr[data-job]').forEach(row => {
+        let show = true;
+        if (jobFilter && row.dataset.job !== jobFilter) show = false;
+        if (monthFilter && row.dataset.month !== monthFilter) show = false;
+        row.style.display = show ? '' : 'none';
+    });
+}
+
+function clearFilter() {
+    document.getElementById('job-filter').value = '';
+    document.getElementById('month-filter').value = '';
+    applyFilter();
+}
+
+function saveEntry() {
+    const jobId = document.getElementById('entry-job-id').value;
+    const date = document.getElementById('entry-date').value;
+    const hours = document.getElementById('entry-hours').value;
+    const crew = document.getElementById('entry-crew').value;
+    const notes = document.getElementById('entry-notes').value;
+
+    if (!jobId || !date) { alert('Please select a job and date'); return; }
+
+    fetch('/install_scheduling/add_entry', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({job_id: jobId, schedule_date: date,
+                              hours_worked: hours, crew_members: crew, notes: notes})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) { location.reload(); }
+        else { alert('Error: ' + data.error); }
+    });
+}
+
+function deleteEntry(entryId, btn) {
+    if (!confirm('Delete this schedule entry?')) return;
+    fetch('/install_scheduling/delete_entry', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({id: entryId})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            const row = btn.closest('tr');
+            row.remove();
+        } else { alert('Error: ' + data.error); }
+    });
+}
+
+// Pre-set job filter from URL param
+const urlParams = new URLSearchParams(window.location.search);
+const jobParam = urlParams.get('job');
+if (jobParam) {
+    document.getElementById('job-filter').value = jobParam;
+    applyFilter();
+}
+</script>
+</body>
+</html>
+'''
+
 
 init_db()
 print("✓ Database initialized on startup")
