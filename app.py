@@ -19029,15 +19029,22 @@ def job_costing():
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
 
-        # Get all install jobs
-        c.execute("""SELECT id, job_name, year, created_date, active,
-                            COALESCE(invoiced_amount, 0),
-                            COALESCE(estimated_amount, 0),
-                            COALESCE(po_count, 0),
-                            COALESCE(active_po_count, 0),
-                            COALESCE(budget, 0), notes, job_code, department
-                     FROM jobs WHERE department='install'
-                     ORDER BY active DESC, year DESC, job_name ASC""")
+        # Get all install jobs with computed invoice/PO totals
+        c.execute("""SELECT
+                        j.id, j.job_name, j.year, j.created_date, j.active,
+                        COALESCE(SUM(CASE WHEN p.invoice_cost IS NOT NULL THEN CAST(p.invoice_cost AS REAL) ELSE 0 END), 0),
+                        COALESCE(SUM(p.estimated_cost), 0),
+                        COUNT(p.id),
+                        COUNT(CASE WHEN p.status IN ('approved','awaiting_invoice','matched') THEN 1 END),
+                        COALESCE(j.budget, 0),
+                        '' as notes,
+                        COALESCE(j.job_code, ''),
+                        COALESCE(j.department, 'install')
+                     FROM jobs j
+                     LEFT JOIN po_requests p ON j.job_name = p.job_name AND p.po_type = 'install'
+                     WHERE COALESCE(j.department, 'install') = 'install'
+                     GROUP BY j.id, j.job_name, j.year, j.created_date, j.active, j.budget, j.job_code, j.department
+                     ORDER BY j.active DESC, j.year DESC, j.job_name ASC""")
         install_jobs = c.fetchall()
 
         # Get proposals for each job
@@ -19340,7 +19347,7 @@ def install_scheduling():
         c = conn.cursor()
 
         c.execute("""SELECT id, job_name, year, active, job_code
-                     FROM jobs WHERE department='install'
+                     FROM jobs WHERE COALESCE(department, 'install') = 'install'
                      ORDER BY active DESC, year DESC, job_name ASC""")
         install_jobs = c.fetchall()
 
