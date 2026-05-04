@@ -17106,9 +17106,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     const rest = zoneMatch[2].replace(/^[-–]\s*/, '').trim();
                     return rest ? `ZONE ${num} - ${rest}` : `ZONE ${num}`;
                 }
-                const m = line.match(/^(\d+)\s*[-–]\s*([\s\S]+)/);
-                if (m) return `ZONE ${m[1]} - ${m[2].trim()}`;             // has leading number
-                return `ZONE ${auto++} - ${line}`;                         // plain description
+                const m = stripped.match(/^(\d+)\s*[-–.]\s*([\s\S]+)/);
+                if (m) return `ZONE ${m[1]} - ${m[2].trim()}`;             // has leading number/period
+                return `ZONE ${auto++} - ${stripped || line}`;             // plain description
             });
         }
 
