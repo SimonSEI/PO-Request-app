@@ -17098,7 +17098,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         function applyZoneFormat(lines, startZone) {
             let auto = startZone;
             return lines.map(line => {
-                const zoneMatch = line.match(/^ZONE\s*#?\s*(\d+)\s*([\s\S]*)/i);
+                // Strip leading dash/hyphen + whitespace (e.g. "- Zone#3-" → "Zone#3-")
+                const stripped = line.replace(/^[-–]\s*/, '');
+                const zoneMatch = stripped.match(/^ZONE\s*#?\s*(\d+)\s*([\s\S]*)/i);
                 if (zoneMatch) {
                     const num = zoneMatch[1];
                     const rest = zoneMatch[2].replace(/^[-–]\s*/, '').trim();
