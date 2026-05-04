@@ -16457,6 +16457,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         <div class="tabs">
             <button class="tab-button active" onclick="switchTab('manage')">🏘️ Manage Communities</button>
             <button class="tab-button" onclick="switchTab('submissions')">📋 Review Submissions</button>
+            <button class="tab-button" onclick="switchTab('recent')">🕐 Recent Submissions</button>
         </div>
 
         <!-- Manage Communities Tab -->
@@ -16686,6 +16687,13 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
             <div class="results" id="results"></div>
         </div>
+
+        <!-- Recent Submissions Tab -->
+        <div id="recent" class="tab-content">
+            <div id="recent-submissions-list" style="margin-top: 10px;">
+                <p style="color: #999; font-size: 14px;">Click this tab to load recent submissions.</p>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -16701,6 +16709,8 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             // Show selected tab
             document.getElementById(tabName).classList.add('active');
             event.target.classList.add('active');
+
+            if (tabName === 'recent') loadRecentSubmissions();
         }
 
         function filterCommunities() {
@@ -19107,6 +19117,40 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             resultsDiv.innerHTML = html;
         }
 
+        function loadRecentSubmissions() {
+            const container = document.getElementById('recent-submissions-list');
+            if (!container || container.dataset.loaded) return;
+            container.dataset.loaded = 'true';
+            container.innerHTML = '<p style="color:#666;font-size:14px;">Loading...</p>';
+            fetch('/community_recent_submissions')
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.success) { container.innerHTML = `<p style="color:#dc3545;">${data.error}</p>`; return; }
+                    if (data.submissions.length === 0) { container.innerHTML = '<p style="color:#999;">No submissions found.</p>'; return; }
+                    let html = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">';
+                    html += '<thead><tr>';
+                    for (const h of ['Community', 'Technician', 'Work Date', 'Status', 'Submitted At']) {
+                        html += `<th style="text-align:left;padding:9px 12px;border-bottom:2px solid #dee2e6;font-size:12px;color:#555;white-space:nowrap;background:#f8f9fa;">${h}</th>`;
+                    }
+                    html += '</tr></thead><tbody>';
+                    data.submissions.forEach((s, i) => {
+                        const bg = i % 2 === 0 ? '#fff' : '#f8f9fa';
+                        const statusColor = s.status === 'submitted' ? '#28a745' : '#6c757d';
+                        html += `<tr style="background:${bg};">
+                            <td style="padding:8px 12px;border-bottom:1px solid #eee;font-weight:600;">${s.community_name}</td>
+                            <td style="padding:8px 12px;border-bottom:1px solid #eee;">${s.tech_username}</td>
+                            <td style="padding:8px 12px;border-bottom:1px solid #eee;">${s.work_date || ''}</td>
+                            <td style="padding:8px 12px;border-bottom:1px solid #eee;color:${statusColor};font-weight:600;">${s.status}</td>
+                            <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#666;">${s.submitted_at}</td>
+                        </tr>`;
+                    });
+                    html += '</tbody></table></div>';
+                    html += `<p style="font-size:12px;color:#999;margin-top:8px;">Showing ${data.submissions.length} most recent submission(s)</p>`;
+                    container.innerHTML = html;
+                })
+                .catch(() => { container.innerHTML = '<p style="color:#dc3545;">Error loading submissions.</p>'; });
+        }
+
         function exportExcel() {
             const community = document.getElementById('community').value;
             const workYear = document.getElementById('workYear').value;
@@ -19118,27 +19162,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             }
 
             const workMonthStr = workYear + '-' + workMonth;
-
-            fetch('/community_billing_export_excel', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    community: community,
-                    work_month: workMonthStr
-                })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    // The download should start automatically
-                    window.location.href = data.download_url;
-                } else {
-                    alert('Error exporting Excel: ' + data.error);
-                }
-            })
-            .catch(error => {
-                alert('Error: ' + error);
-            });
+            window.location.href = `/community_billing_export_excel?community=${encodeURIComponent(community)}&work_month=${encodeURIComponent(workMonthStr)}`;
         }
 
         function deleteSubmission(submissionId, techUsername) {
@@ -21109,21 +21133,20 @@ def community_billing_office_data():
 
     return jsonify(response)
 
-@app.route('/community_billing_export_excel', methods=['POST'])
+@app.route('/community_billing_export_excel', methods=['GET'])
 def community_billing_export_excel():
     """Export submissions to Excel"""
     if 'username' not in session or session.get('role') != 'office':
-        return jsonify({'success': False, 'error': 'Access denied'}), 401
+        return 'Access denied', 401
 
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     except ImportError:
-        return jsonify({'success': False, 'error': 'openpyxl not installed'})
+        return 'openpyxl not installed', 500
 
-    data = request.get_json()
-    community = data.get('community')
-    work_month = data.get('work_month')
+    community = request.args.get('community', '')
+    work_month = request.args.get('work_month', '')
 
     # Get submissions data
     conn = sqlite3.connect(DB_PATH)
@@ -21329,17 +21352,38 @@ def community_billing_export_excel():
         for col in ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K']:
             ws.column_dimensions[col].width = 15
 
-        # Save file
-        excel_filename = f"community_billing_{community.replace(' ', '_')}_{work_month}.xlsx"
-        excel_path = os.path.join(app.config['UPLOAD_FOLDER'], excel_filename)
-        wb.save(excel_path)
+        import io
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        filename = f"community_billing_{community.replace(' ', '_')}_{work_month}.xlsx"
+        return send_file(buf, as_attachment=True, download_name=filename,
+                         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    except Exception as e:
+        return str(e), 500
 
-        return jsonify({
-            'success': True,
-            'download_url': f'/download_file/{excel_filename}'
-        })
+@app.route('/community_recent_submissions', methods=['GET'])
+def community_recent_submissions():
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("""SELECT community_name, tech_username, work_date, submitted_at, status
+                     FROM community_billing_submissions
+                     ORDER BY submitted_at DESC
+                     LIMIT 100""")
+        submissions = [
+            {'community_name': r[0], 'tech_username': r[1], 'work_date': r[2],
+             'submitted_at': r[3], 'status': r[4]}
+            for r in c.fetchall()
+        ]
+        return jsonify({'success': True, 'submissions': submissions})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
 
 @app.route('/community_billing_delete_submission', methods=['POST'])
 def community_billing_delete_submission():
