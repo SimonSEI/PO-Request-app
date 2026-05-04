@@ -1053,6 +1053,23 @@ def init_db():
     if 'num_clocks' not in comm_cols:
         c.execute("ALTER TABLE communities ADD COLUMN num_clocks INTEGER DEFAULT 0")
 
+    # Custom tabs tables
+    c.execute('''CREATE TABLE IF NOT EXISTS community_custom_tabs
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  community_id INTEGER NOT NULL,
+                  tab_label TEXT NOT NULL,
+                  tab_order INTEGER NOT NULL DEFAULT 0,
+                  FOREIGN KEY (community_id) REFERENCES communities(id) ON DELETE CASCADE)''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS community_custom_tab_addresses
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  tab_id INTEGER NOT NULL,
+                  community_id INTEGER NOT NULL,
+                  address TEXT NOT NULL,
+                  sort_order INTEGER NOT NULL DEFAULT 0,
+                  created_at TEXT NOT NULL,
+                  FOREIGN KEY (tab_id) REFERENCES community_custom_tabs(id) ON DELETE CASCADE)''')
+
     # Community nozzle prices table - stores pricing for each nozzle type per community
     c.execute('''CREATE TABLE IF NOT EXISTS community_nozzle_prices
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -16555,6 +16572,18 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                     {% endif %}
                                 </div>
 
+                                <!-- Custom Tabs -->
+                                <div style="margin-top: 16px; border-top: 1px solid #eee; padding-top: 14px;">
+                                    <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 10px;">
+                                        <h4 style="margin: 0; font-size: 14px; color: #333;">📋 Custom Tabs</h4>
+                                        <button type="button" onclick="addCustomTabGroup({{ community.id }})"
+                                                style="padding: 4px 12px; background: #6f42c1; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">+ Add Custom Tab</button>
+                                    </div>
+                                    <div id="comm-custom-tabs-list-{{ community.id }}">
+                                        <p style="color: #999; font-size: 13px;">No custom tabs yet.</p>
+                                    </div>
+                                </div>
+
                                 <!-- Nozzle Pricing -->
                                 <div class="pricing-section" style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px;">
                                     <h4>💰 Nozzle Pricing</h4>
@@ -16873,6 +16902,257 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 }
             })
             .catch(() => { if (msgEl) { msgEl.textContent = 'Network error'; msgEl.style.color = '#dc3545'; } });
+        }
+
+        // ---------------------------------------------------------------
+        // Custom Tab Management
+        // ---------------------------------------------------------------
+
+        function addCustomTabGroup(communityId) {
+            const tabName = prompt('What do you want to name this tab?');
+            if (!tabName || !tabName.trim()) return;
+            const countStr = prompt(`How many "${tabName.trim()}" tabs do you need?`);
+            if (!countStr) return;
+            const count = parseInt(countStr);
+            if (isNaN(count) || count < 1) { alert('Please enter a valid number (1 or more).'); return; }
+            fetch('/community_add_custom_tab_group', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({community_id: communityId, tab_name: tabName.trim(), count: count})
+            })
+            .then(handleFetchAuth)
+            .then(data => {
+                if (!data) return;
+                if (data.success) loadCommunityCustomTabs(communityId);
+                else alert('Error: ' + data.error);
+            })
+            .catch(() => alert('Network error — please try again.'));
+        }
+
+        function loadCommunityCustomTabs(communityId) {
+            const container = document.getElementById(`comm-custom-tabs-list-${communityId}`);
+            if (!container) return;
+            container.innerHTML = '<p style="color:#666;font-size:13px;">Loading...</p>';
+            fetch(`/community_custom_tabs_data?community_id=${communityId}`)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) displayCommunityCustomTabs(communityId, data.tabs);
+                    else container.innerHTML = `<p style="color:#dc3545;font-size:13px;">Error: ${data.error}</p>`;
+                })
+                .catch(() => { container.innerHTML = '<p style="color:#dc3545;font-size:13px;">Error loading custom tabs.</p>'; });
+        }
+
+        function displayCommunityCustomTabs(communityId, tabs) {
+            const container = document.getElementById(`comm-custom-tabs-list-${communityId}`);
+            if (!container) return;
+            if (!tabs || tabs.length === 0) {
+                container.innerHTML = '<p style="color:#999;font-size:13px;">No custom tabs yet. Click &quot;+ Add Custom Tab&quot; to create one.</p>';
+                return;
+            }
+            const openTabs = new Set();
+            container.querySelectorAll('.clock-addresses.visible').forEach(el => {
+                const m = el.id.match(/^cust-addresses-(\d+)$/);
+                if (m) openTabs.add(parseInt(m[1]));
+            });
+            let html = '';
+            tabs.forEach(tab => {
+                const addresses = tab.addresses || [];
+                const isOpen = openTabs.has(tab.id);
+                const listId = `cust-${communityId}-${tab.id}`;
+                html += `
+                    <div class="clock-container">
+                        <div class="clock-header" onclick="toggleCustomTab(event,${tab.id})">
+                            <span class="clock-title">${tab.tab_label}</span>
+                            <div style="display:flex;align-items:center;gap:6px;">
+                                <button type="button" onclick="event.stopPropagation();deleteCustomTab(${communityId},${tab.id})"
+                                        style="padding:2px 8px;background:#dc3545;color:white;border:none;border-radius:3px;cursor:pointer;font-size:11px;">Delete Tab</button>
+                                <span class="clock-toggle${isOpen ? ' expanded' : ''}" id="cust-toggle-${tab.id}">▼</span>
+                            </div>
+                        </div>
+                        <div class="clock-addresses${isOpen ? ' visible' : ''}" id="cust-addresses-${tab.id}">`;
+                html += `<div class="mass-delete-bar" id="mass-bar-${listId}" style="display:none;">
+                            <button type="button" class="btn-select-all" onclick="toggleSelectAll('${listId}')">Select All</button>
+                            <span id="mass-count-${listId}">0 selected</span>
+                            <button type="button" class="btn-mass-delete" onclick="customTabMassDeleteAddresses(${communityId},'${listId}')">Delete Selected</button>
+                         </div>`;
+                addresses.forEach(addr => {
+                    html += `<div class="address-item" id="cust-addr-item-${addr.id}" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                                <input type="checkbox" class="address-checkbox" data-list="${listId}" data-id="${addr.id}" onclick="handleCheckboxClick(event,this,'${listId}')">
+                                <span class="address-text" id="cust-addr-text-${addr.id}" style="flex:1;">${addr.address}</span>
+                                <div style="display:flex;gap:4px;flex-shrink:0;">
+                                    <button type="button" class="btn-insert-address" onclick="showCustomTabInsertForm(${communityId},${tab.id},${addr.id})">Insert</button>
+                                    <button type="button" class="btn-edit-address" onclick="editCustomTabAddress(${communityId},${tab.id},${addr.id})">Edit</button>
+                                    <button type="button" class="btn-delete-address" onclick="deleteCustomTabAddress(${addr.id},${communityId})">Delete</button>
+                                </div>
+                             </div>
+                             <div id="cust-insert-form-${addr.id}" style="display:none;"></div>`;
+                });
+                if (addresses.length === 0) html += `<p style="color:#999;font-size:12px;margin:4px 0 8px;">No addresses yet.</p>`;
+                html += `<div class="add-address-form">
+                            <textarea id="cust-addr-input-${tab.id}" placeholder="Enter address(es) — one per line" rows="1"></textarea>
+                            <div class="form-row">
+                                <button type="button" class="btn-add-address" onclick="bulkAddCustomTabAddresses(${communityId},${tab.id})">Add Address(es)</button>
+                                <span class="add-address-hint">Each line becomes a separate address</span>
+                            </div>
+                         </div></div></div>`;
+            });
+            container.innerHTML = html;
+            container.querySelectorAll('.add-address-form textarea').forEach(ta => {
+                ta.addEventListener('input', function() { this.rows = Math.max(1, Math.min(this.value.split(_nl).length, 8)); });
+                ta.addEventListener('paste', function() { setTimeout(() => { this.rows = Math.max(1, Math.min(this.value.split(_nl).length, 8)); }, 0); });
+            });
+        }
+
+        function toggleCustomTab(event, tabId) {
+            event.preventDefault();
+            const content = document.getElementById(`cust-addresses-${tabId}`);
+            const toggle = document.getElementById(`cust-toggle-${tabId}`);
+            if (!content) return;
+            content.classList.toggle('visible');
+            if (toggle) toggle.classList.toggle('expanded');
+        }
+
+        function bulkAddCustomTabAddresses(communityId, tabId) {
+            const textarea = document.getElementById(`cust-addr-input-${tabId}`);
+            const rawLines = textarea.value.split(_nl).map(l => l.trim()).filter(l => l && !/^insert\s*edit\s*delete$/i.test(l));
+            if (rawLines.length === 0) { alert('Please enter at least one address.'); return; }
+            const existingCount = document.querySelectorAll(`.address-checkbox[data-list="cust-${communityId}-${tabId}"]`).length;
+            const addresses = applyZoneFormat(rawLines, existingCount + 1);
+            fetch('/community_custom_tab_bulk_add_addresses', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({tab_id: tabId, community_id: communityId, addresses: addresses})
+            })
+            .then(handleFetchAuth)
+            .then(data => {
+                if (!data) return;
+                if (data.success) { textarea.value = ''; loadCommunityCustomTabs(communityId); }
+                else alert('Error: ' + data.error);
+            })
+            .catch(() => alert('Network error — please try again.'));
+        }
+
+        function deleteCustomTabAddress(addressId, communityId) {
+            fetch('/community_custom_tab_delete_addresses', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({address_ids: [addressId]})
+            })
+            .then(handleFetchAuth)
+            .then(data => {
+                if (!data) return;
+                if (data.success) loadCommunityCustomTabs(communityId);
+                else alert('Error: ' + data.error);
+            })
+            .catch(() => alert('Network error — please try again.'));
+        }
+
+        function customTabMassDeleteAddresses(communityId, listId) {
+            const checked = document.querySelectorAll(`.address-checkbox[data-list="${listId}"]:checked`);
+            const ids = Array.from(checked).map(cb => parseInt(cb.dataset.id));
+            if (ids.length === 0) return;
+            if (!confirm(`Delete ${ids.length} selected address(es)? This cannot be undone.`)) return;
+            fetch('/community_custom_tab_delete_addresses', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({address_ids: ids})
+            })
+            .then(handleFetchAuth)
+            .then(data => {
+                if (!data) return;
+                if (data.success) loadCommunityCustomTabs(communityId);
+                else alert('Error: ' + data.error);
+            })
+            .catch(() => alert('Network error — please try again.'));
+        }
+
+        function editCustomTabAddress(communityId, tabId, addressId) {
+            const textSpan = document.getElementById(`cust-addr-text-${addressId}`);
+            const item = document.getElementById(`cust-addr-item-${addressId}`);
+            const currentText = textSpan.textContent;
+            item.innerHTML = `
+                <input type="text" value="${currentText.replace(/"/g, '&quot;')}" id="cust-edit-input-${addressId}"
+                       style="flex:1;padding:4px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px;margin-right:6px;">
+                <div style="display:flex;gap:4px;flex-shrink:0;">
+                    <button type="button" class="btn-add-address" onclick="saveCustomTabAddressEdit(${communityId},${addressId})" style="font-size:11px;padding:4px 10px;">Save</button>
+                    <button type="button" class="btn-delete-address" onclick="loadCommunityCustomTabs(${communityId})" style="background:#6c757d;font-size:11px;padding:4px 10px;">Cancel</button>
+                </div>`;
+            document.getElementById(`cust-edit-input-${addressId}`).focus();
+        }
+
+        function saveCustomTabAddressEdit(communityId, addressId) {
+            const input = document.getElementById(`cust-edit-input-${addressId}`);
+            const newAddress = input.value.trim();
+            if (!newAddress) { alert('Address cannot be empty.'); return; }
+            fetch('/community_custom_tab_edit_address', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({address_id: addressId, address: newAddress})
+            })
+            .then(handleFetchAuth)
+            .then(data => {
+                if (!data) return;
+                if (data.success) loadCommunityCustomTabs(communityId);
+                else alert('Error: ' + data.error);
+            })
+            .catch(() => alert('Network error — please try again.'));
+        }
+
+        function showCustomTabInsertForm(communityId, tabId, afterId) {
+            const container = document.getElementById(`cust-insert-form-${afterId}`);
+            if (container.style.display === 'block') { container.style.display = 'none'; container.innerHTML = ''; return; }
+            container.style.display = 'block';
+            container.innerHTML = `
+                <div class="insert-form">
+                    <textarea id="cust-insert-input-${afterId}" placeholder="Enter address(es) to insert below (paste multiple lines)" rows="1"></textarea>
+                    <div class="form-row">
+                        <button type="button" class="btn-add-address" onclick="insertCustomTabAddresses(${communityId},${tabId},${afterId})" style="font-size:11px;padding:4px 10px;">Insert Below</button>
+                        <button type="button" class="btn-delete-address" onclick="document.getElementById('cust-insert-form-${afterId}').style.display='none'" style="background:#6c757d;font-size:11px;padding:4px 10px;">Cancel</button>
+                        <span class="add-address-hint">Each line becomes a separate address</span>
+                    </div>
+                </div>`;
+            const ta = document.getElementById(`cust-insert-input-${afterId}`);
+            ta.focus();
+            ta.addEventListener('input', function() { this.rows = Math.max(1, Math.min(this.value.split(_nl).length, 8)); });
+            ta.addEventListener('paste', function() { setTimeout(() => { this.rows = Math.max(1, Math.min(this.value.split(_nl).length, 8)); }, 0); });
+        }
+
+        function insertCustomTabAddresses(communityId, tabId, afterId) {
+            const textarea = document.getElementById(`cust-insert-input-${afterId}`);
+            const rawAddresses = textarea.value.split(_nl).map(l => l.trim()).filter(l => l.length > 0 && !/^insert\s*edit\s*delete$/i.test(l));
+            if (rawAddresses.length === 0) { alert('Please enter at least one address'); return; }
+            const addresses = applyZoneFormat(rawAddresses, 1);
+            const btn = textarea.closest('.insert-form').querySelector('.btn-add-address');
+            btn.disabled = true;
+            btn.textContent = 'Inserting...';
+            fetch('/community_custom_tab_insert_address', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({after_id: afterId, tab_id: tabId, addresses: addresses})
+            })
+            .then(handleFetchAuth)
+            .then(data => {
+                if (!data) return;
+                if (data.success) loadCommunityCustomTabs(communityId);
+                else { alert('Error: ' + data.error); btn.disabled = false; btn.textContent = 'Insert Below'; }
+            })
+            .catch(() => { alert('Network error — please try again.'); btn.disabled = false; btn.textContent = 'Insert Below'; });
+        }
+
+        function deleteCustomTab(communityId, tabId) {
+            if (!confirm('Delete this entire tab and all its addresses? This cannot be undone.')) return;
+            fetch('/community_delete_custom_tab', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({tab_id: tabId, community_id: communityId})
+            })
+            .then(handleFetchAuth)
+            .then(data => {
+                if (!data) return;
+                if (data.success) loadCommunityCustomTabs(communityId);
+                else alert('Error: ' + data.error);
+            })
+            .catch(() => alert('Network error — please try again.'));
         }
 
         function previewCommunityClockImport(communityId) {
@@ -18877,6 +19157,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         {% if community.active and community.name != 'Verona Walk HOA' and community.num_clocks > 0 %}
         loadCommunityClockAddresses({{ community.id }});
         {% endif %}
+        {% if community.active and community.name != 'Verona Walk HOA' %}
+        loadCommunityCustomTabs({{ community.id }});
+        {% endif %}
         {% endfor %}
     </script>
 </body>
@@ -20540,6 +20823,7 @@ def manage_communities():
                     c.execute("DELETE FROM verona_walk_clock_addresses WHERE community_id = ?", (community_id,))
                     c.execute("DELETE FROM community_house_numbers WHERE community_id = ?", (community_id,))
                     c.execute("DELETE FROM community_nozzle_prices WHERE community_id = ?", (community_id,))
+                    c.execute("DELETE FROM community_custom_tabs WHERE community_id = ?", (community_id,))
                     c.execute("DELETE FROM communities WHERE id = ?", (community_id,))
                     conn.commit()
                     flash(f'Community "{community_name}" deleted permanently', 'success')
@@ -20612,6 +20896,7 @@ def community_billing_office():
                     c.execute("DELETE FROM verona_walk_clock_addresses WHERE community_id = ?", (community_id,))
                     c.execute("DELETE FROM community_house_numbers WHERE community_id = ?", (community_id,))
                     c.execute("DELETE FROM community_nozzle_prices WHERE community_id = ?", (community_id,))
+                    c.execute("DELETE FROM community_custom_tabs WHERE community_id = ?", (community_id,))
                     c.execute("DELETE FROM communities WHERE id = ?", (community_id,))
                     conn.commit()
                     flash(f'Community "{community_name}" deleted permanently', 'success')
@@ -22656,6 +22941,195 @@ def community_update_clock_count():
     c = conn.cursor()
     try:
         c.execute("UPDATE communities SET num_clocks = ? WHERE id = ?", (num_clocks, community_id))
+        conn.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+
+@app.route('/community_custom_tabs_data', methods=['GET'])
+def community_custom_tabs_data():
+    if 'username' not in session or session.get('role') not in ['office', 'technician']:
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
+    community_id = request.args.get('community_id')
+    if not community_id:
+        return jsonify({'success': False, 'error': 'Missing community_id'})
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("SELECT id, tab_label, tab_order FROM community_custom_tabs WHERE community_id = ? ORDER BY tab_order, id", (community_id,))
+        tab_rows = c.fetchall()
+        tabs = []
+        for tab_id, tab_label, tab_order in tab_rows:
+            c.execute("SELECT id, address FROM community_custom_tab_addresses WHERE tab_id = ? ORDER BY sort_order, id", (tab_id,))
+            addresses = [{'id': r[0], 'address': r[1]} for r in c.fetchall()]
+            tabs.append({'id': tab_id, 'tab_label': tab_label, 'tab_order': tab_order, 'addresses': addresses})
+        return jsonify({'success': True, 'tabs': tabs})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+
+@app.route('/community_add_custom_tab_group', methods=['POST'])
+def community_add_custom_tab_group():
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
+    data = request.get_json()
+    community_id = data.get('community_id')
+    tab_name = (data.get('tab_name') or '').strip()
+    try:
+        count = max(1, int(data.get('count', 1) or 1))
+    except (ValueError, TypeError):
+        count = 1
+    if not community_id or not tab_name:
+        return jsonify({'success': False, 'error': 'Missing required fields'})
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("SELECT COALESCE(MAX(tab_order), 0) FROM community_custom_tabs WHERE community_id = ?", (community_id,))
+        next_order = c.fetchone()[0] + 1
+        for i in range(1, count + 1):
+            label = f"{tab_name} {i}" if count > 1 else tab_name
+            c.execute("INSERT INTO community_custom_tabs (community_id, tab_label, tab_order) VALUES (?, ?, ?)",
+                     (community_id, label, next_order))
+            next_order += 1
+        conn.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+
+@app.route('/community_custom_tab_bulk_add_addresses', methods=['POST'])
+def community_custom_tab_bulk_add_addresses():
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
+    data = request.get_json()
+    tab_id = data.get('tab_id')
+    community_id = data.get('community_id')
+    addresses = data.get('addresses', [])
+    if not tab_id or not addresses:
+        return jsonify({'success': False, 'error': 'Missing required fields'})
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("SELECT COALESCE(MAX(sort_order), 0) FROM community_custom_tab_addresses WHERE tab_id = ?", (tab_id,))
+        next_order = c.fetchone()[0] + 1
+        added = 0
+        for address in addresses:
+            address = str(address).strip()
+            if address:
+                c.execute("INSERT INTO community_custom_tab_addresses (tab_id, community_id, address, sort_order, created_at) VALUES (?, ?, ?, ?, ?)",
+                         (tab_id, community_id, address, next_order, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                next_order += 1
+                added += 1
+        conn.commit()
+        return jsonify({'success': True, 'message': f'{added} address(es) added'})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+
+@app.route('/community_custom_tab_delete_addresses', methods=['POST'])
+def community_custom_tab_delete_addresses():
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
+    data = request.get_json()
+    address_ids = data.get('address_ids', [])
+    if not address_ids:
+        return jsonify({'success': False, 'error': 'Missing address_ids'})
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        placeholders = ','.join('?' * len(address_ids))
+        c.execute(f"DELETE FROM community_custom_tab_addresses WHERE id IN ({placeholders})", address_ids)
+        conn.commit()
+        return jsonify({'success': True, 'deleted': c.rowcount})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+
+@app.route('/community_custom_tab_edit_address', methods=['POST'])
+def community_custom_tab_edit_address():
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
+    data = request.get_json()
+    address_id = data.get('address_id')
+    address = (data.get('address') or '').strip()
+    if not address_id or not address:
+        return jsonify({'success': False, 'error': 'Missing address_id or address'})
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("UPDATE community_custom_tab_addresses SET address = ? WHERE id = ?", (address, address_id))
+        conn.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+
+@app.route('/community_custom_tab_insert_address', methods=['POST'])
+def community_custom_tab_insert_address():
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
+    data = request.get_json()
+    after_id = data.get('after_id')
+    tab_id = data.get('tab_id')
+    addresses = data.get('addresses', [])
+    if not after_id or not tab_id or not addresses:
+        return jsonify({'success': False, 'error': 'Missing required fields'})
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("SELECT community_id, sort_order FROM community_custom_tab_addresses WHERE id = ?", (after_id,))
+        ref = c.fetchone()
+        if not ref:
+            return jsonify({'success': False, 'error': 'Reference address not found'})
+        community_id, ref_order = ref
+        count = len([a for a in addresses if a.strip()])
+        c.execute("UPDATE community_custom_tab_addresses SET sort_order = sort_order + ? WHERE tab_id = ? AND sort_order > ?",
+                 (count, tab_id, ref_order))
+        added = 0
+        for address in addresses:
+            address = address.strip()
+            if address:
+                added += 1
+                c.execute("INSERT INTO community_custom_tab_addresses (tab_id, community_id, address, sort_order, created_at) VALUES (?, ?, ?, ?, ?)",
+                         (tab_id, community_id, address, ref_order + added, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        conn.commit()
+        return jsonify({'success': True, 'message': f'{added} address(es) inserted'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+
+@app.route('/community_delete_custom_tab', methods=['POST'])
+def community_delete_custom_tab():
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
+    data = request.get_json()
+    tab_id = data.get('tab_id')
+    if not tab_id:
+        return jsonify({'success': False, 'error': 'Missing tab_id'})
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("DELETE FROM community_custom_tab_addresses WHERE tab_id = ?", (tab_id,))
+        c.execute("DELETE FROM community_custom_tabs WHERE id = ?", (tab_id,))
         conn.commit()
         return jsonify({'success': True})
     except Exception as e:
