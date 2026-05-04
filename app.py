@@ -16965,28 +16965,36 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         function loadCommunityCustomTabs(communityId) {
             const container = document.getElementById(`comm-custom-tabs-list-${communityId}`);
             if (!container) return;
+            // Capture open tabs BEFORE wiping the DOM
+            const openTabsBefore = new Set();
+            container.querySelectorAll('.clock-addresses.visible').forEach(el => {
+                const m = el.id.match(/^cust-addresses-(\d+)$/);
+                if (m) openTabsBefore.add(parseInt(m[1]));
+            });
             container.innerHTML = '<p style="color:#666;font-size:13px;">Loading...</p>';
             fetch(`/community_custom_tabs_data?community_id=${communityId}`)
                 .then(r => r.json())
                 .then(data => {
-                    if (data.success) displayCommunityCustomTabs(communityId, data.tabs);
+                    if (data.success) displayCommunityCustomTabs(communityId, data.tabs, openTabsBefore);
                     else container.innerHTML = `<p style="color:#dc3545;font-size:13px;">Error: ${data.error}</p>`;
                 })
                 .catch(() => { container.innerHTML = '<p style="color:#dc3545;font-size:13px;">Error loading custom tabs.</p>'; });
         }
 
-        function displayCommunityCustomTabs(communityId, tabs) {
+        function displayCommunityCustomTabs(communityId, tabs, openTabsOverride) {
             const container = document.getElementById(`comm-custom-tabs-list-${communityId}`);
             if (!container) return;
             if (!tabs || tabs.length === 0) {
                 container.innerHTML = '<p style="color:#999;font-size:13px;">No custom tabs yet. Click &quot;+ Add Custom Tab&quot; to create one.</p>';
                 return;
             }
-            const openTabs = new Set();
-            container.querySelectorAll('.clock-addresses.visible').forEach(el => {
-                const m = el.id.match(/^cust-addresses-(\d+)$/);
-                if (m) openTabs.add(parseInt(m[1]));
-            });
+            const openTabs = openTabsOverride instanceof Set ? openTabsOverride : new Set();
+            if (!openTabsOverride) {
+                container.querySelectorAll('.clock-addresses.visible').forEach(el => {
+                    const m = el.id.match(/^cust-addresses-(\d+)$/);
+                    if (m) openTabs.add(parseInt(m[1]));
+                });
+            }
             let html = '';
             tabs.forEach(tab => {
                 const addresses = tab.addresses || [];
