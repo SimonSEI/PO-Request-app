@@ -16536,20 +16536,11 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                             {% if community.active and community.name != 'Verona Walk HOA' %}
                             <div style="margin-top: 14px; border-top: 1px solid #eee; padding-top: 14px;">
 
-                                <!-- Header row with clock-count adjuster -->
+                                <!-- Header row -->
                                 <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 12px;">
                                     <h4 style="margin: 0; font-size: 14px; color: #333;">🕐 Clock Addresses</h4>
-                                    <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                                        <label style="margin: 0; font-size: 12px; color: #666;">Clocks:</label>
-                                        <input type="number" id="comm-clock-num-{{ community.id }}" min="1" max="999"
-                                               value="{{ community.num_clocks }}"
-                                               style="width: 60px; padding: 4px 6px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px;"
-                                               onwheel="this.blur()"
-                                               onkeypress="if(event.key==='Enter') updateCommunityClockCount({{ community.id }})">
-                                        <button type="button" onclick="updateCommunityClockCount({{ community.id }})"
-                                                style="padding: 4px 12px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">Update</button>
-                                        <span id="comm-clock-count-msg-{{ community.id }}" style="font-size: 12px;"></span>
-                                    </div>
+                                    <button type="button" onclick="exportZoneLocate({{ community.id }}, '{{ community.name | e }}')"
+                                            style="padding: 4px 12px; background: #17a2b8; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">📥 Export Excel Zone Locate</button>
                                 </div>
 
                                 <!-- Excel import (no common area checkbox — all addresses go under their clock) -->
@@ -16576,18 +16567,6 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                     {% else %}
                                     <p style="color: #999; font-size: 13px;">No clocks configured.</p>
                                     {% endif %}
-                                </div>
-
-                                <!-- Custom Tabs -->
-                                <div style="margin-top: 16px; border-top: 1px solid #eee; padding-top: 14px;">
-                                    <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 10px;">
-                                        <h4 style="margin: 0; font-size: 14px; color: #333;">📋 Custom Tabs</h4>
-                                        <button type="button" onclick="addCustomTabGroup({{ community.id }})"
-                                                style="padding: 4px 12px; background: #6f42c1; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">+ Add Custom Tab</button>
-                                    </div>
-                                    <div id="comm-custom-tabs-list-{{ community.id }}">
-                                        <p style="color: #999; font-size: 13px;">No custom tabs yet.</p>
-                                    </div>
                                 </div>
 
                                 <!-- Nozzle Pricing -->
@@ -16908,6 +16887,10 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 }
             })
             .catch(() => { if (msgEl) { msgEl.textContent = 'Network error'; msgEl.style.color = '#dc3545'; } });
+        }
+
+        function exportZoneLocate(communityId, communityName) {
+            window.location.href = `/community_export_zone_locate/${communityId}`;
         }
 
         // ---------------------------------------------------------------
@@ -23002,6 +22985,77 @@ def community_update_clock_count():
     except Exception as e:
         conn.rollback()
         return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+
+@app.route('/community_export_zone_locate/<int:community_id>', methods=['GET'])
+def community_export_zone_locate(community_id):
+    if 'username' not in session or session.get('role') not in ['office', 'technician']:
+        return 'Access denied', 401
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+    except ImportError:
+        return 'openpyxl not installed', 500
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("SELECT name, COALESCE(num_clocks, 0) FROM communities WHERE id = ?", (community_id,))
+        row = c.fetchone()
+        if not row:
+            return 'Community not found', 404
+        comm_name, num_clocks = row
+
+        # Fetch all addresses grouped by clock
+        c.execute("""SELECT clock_number, address
+                     FROM verona_walk_clock_addresses
+                     WHERE community_id = ?
+                     ORDER BY clock_number, sort_order, id""", (community_id,))
+        clocks = {}
+        for clock_num, address in c.fetchall():
+            clocks.setdefault(clock_num, []).append(address)
+
+        wb = Workbook()
+        wb.remove(wb.active)  # remove default sheet
+
+        header_font = Font(bold=True, color='FFFFFF')
+        header_fill = PatternFill(fill_type='solid', fgColor='17A2B8')
+        header_align = Alignment(horizontal='center', vertical='center')
+
+        for i in range(1, num_clocks + 1):
+            ws = wb.create_sheet(title=f'Clock {i}')
+            ws.column_dimensions['A'].width = 60
+
+            # Header
+            ws['A1'] = f'Clock {i} — Zone Locate'
+            ws['A1'].font = Font(bold=True, color='FFFFFF', size=12)
+            ws['A1'].fill = header_fill
+            ws['A1'].alignment = header_align
+
+            addresses = clocks.get(i, [])
+            if addresses:
+                for row_idx, addr in enumerate(addresses, start=2):
+                    cell = ws.cell(row=row_idx, column=1, value=addr)
+                    cell.alignment = Alignment(wrap_text=True)
+                    if row_idx % 2 == 0:
+                        cell.fill = PatternFill(fill_type='solid', fgColor='F0FAFB')
+            else:
+                ws['A2'] = 'No zones configured'
+                ws['A2'].font = Font(italic=True, color='999999')
+
+        import io
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+
+        safe_name = comm_name.replace('/', '-').replace('\\', '-')
+        filename = f'{safe_name} Zone Locate.xlsx'
+
+        from flask import send_file
+        return send_file(buf, as_attachment=True, download_name=filename,
+                         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     finally:
         conn.close()
 
