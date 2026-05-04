@@ -19117,38 +19117,84 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             resultsDiv.innerHTML = html;
         }
 
+        let _recentData = null;
+        let _recentSortCol = 'submitted_at';
+        let _recentSortDir = 'desc';
+
+        const _recentCols = [
+            {key: 'community_name', label: 'Community'},
+            {key: 'tech_username',  label: 'Technician'},
+            {key: 'work_date',      label: 'Work Date'},
+            {key: 'status',         label: 'Status'},
+            {key: 'created_at',     label: 'Created At'},
+            {key: 'submitted_at',   label: 'Submitted At'},
+        ];
+
         function loadRecentSubmissions() {
             const container = document.getElementById('recent-submissions-list');
-            if (!container || container.dataset.loaded) return;
-            container.dataset.loaded = 'true';
+            if (!container) return;
+            if (_recentData) { renderRecentTable(); return; }
             container.innerHTML = '<p style="color:#666;font-size:14px;">Loading...</p>';
             fetch('/community_recent_submissions')
                 .then(r => r.json())
                 .then(data => {
                     if (!data.success) { container.innerHTML = `<p style="color:#dc3545;">${data.error}</p>`; return; }
-                    if (data.submissions.length === 0) { container.innerHTML = '<p style="color:#999;">No submissions found.</p>'; return; }
-                    let html = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">';
-                    html += '<thead><tr>';
-                    for (const h of ['Community', 'Technician', 'Work Date', 'Status', 'Submitted At']) {
-                        html += `<th style="text-align:left;padding:9px 12px;border-bottom:2px solid #dee2e6;font-size:12px;color:#555;white-space:nowrap;background:#f8f9fa;">${h}</th>`;
-                    }
-                    html += '</tr></thead><tbody>';
-                    data.submissions.forEach((s, i) => {
-                        const bg = i % 2 === 0 ? '#fff' : '#f8f9fa';
-                        const statusColor = s.status === 'submitted' ? '#28a745' : '#6c757d';
-                        html += `<tr style="background:${bg};">
-                            <td style="padding:8px 12px;border-bottom:1px solid #eee;font-weight:600;">${s.community_name}</td>
-                            <td style="padding:8px 12px;border-bottom:1px solid #eee;">${s.tech_username}</td>
-                            <td style="padding:8px 12px;border-bottom:1px solid #eee;">${s.work_date || ''}</td>
-                            <td style="padding:8px 12px;border-bottom:1px solid #eee;color:${statusColor};font-weight:600;">${s.status}</td>
-                            <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#666;">${s.submitted_at}</td>
-                        </tr>`;
-                    });
-                    html += '</tbody></table></div>';
-                    html += `<p style="font-size:12px;color:#999;margin-top:8px;">Showing ${data.submissions.length} most recent submission(s)</p>`;
-                    container.innerHTML = html;
+                    _recentData = data.submissions;
+                    renderRecentTable();
                 })
                 .catch(() => { container.innerHTML = '<p style="color:#dc3545;">Error loading submissions.</p>'; });
+        }
+
+        function sortRecentBy(col) {
+            if (_recentSortCol === col) {
+                _recentSortDir = _recentSortDir === 'asc' ? 'desc' : 'asc';
+            } else {
+                _recentSortCol = col;
+                _recentSortDir = 'asc';
+            }
+            renderRecentTable();
+        }
+
+        function renderRecentTable() {
+            const container = document.getElementById('recent-submissions-list');
+            if (!container || !_recentData) return;
+            if (_recentData.length === 0) { container.innerHTML = '<p style="color:#999;">No submissions found.</p>'; return; }
+
+            const sorted = [..._recentData].sort((a, b) => {
+                const av = (a[_recentSortCol] || '').toString();
+                const bv = (b[_recentSortCol] || '').toString();
+                const cmp = av.localeCompare(bv);
+                return _recentSortDir === 'asc' ? cmp : -cmp;
+            });
+
+            let html = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">';
+            html += '<thead><tr>';
+            _recentCols.forEach(col => {
+                const isActive = _recentSortCol === col.key;
+                const arrow = isActive ? ((_recentSortDir === 'asc') ? ' ▲' : ' ▼') : ' ⇅';
+                const arrowColor = isActive ? '#007bff' : '#ccc';
+                html += `<th onclick="sortRecentBy('${col.key}')"
+                             style="text-align:left;padding:9px 12px;border-bottom:2px solid #dee2e6;font-size:12px;
+                                    color:#555;white-space:nowrap;background:#f8f9fa;cursor:pointer;user-select:none;">
+                             ${col.label}<span style="color:${arrowColor};font-size:10px;">${arrow}</span>
+                         </th>`;
+            });
+            html += '</tr></thead><tbody>';
+            sorted.forEach((s, i) => {
+                const bg = i % 2 === 0 ? '#fff' : '#f8f9fa';
+                const statusColor = s.status === 'submitted' ? '#28a745' : '#6c757d';
+                html += `<tr style="background:${bg};">
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;font-weight:600;">${s.community_name}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;">${s.tech_username}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;">${s.work_date || ''}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;color:${statusColor};font-weight:600;">${s.status}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#666;">${s.created_at || ''}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#666;">${s.submitted_at || ''}</td>
+                </tr>`;
+            });
+            html += '</tbody></table></div>';
+            html += `<p style="font-size:12px;color:#999;margin-top:8px;">Showing ${sorted.length} submission(s)</p>`;
+            container.innerHTML = html;
         }
 
         function exportExcel() {
@@ -21369,13 +21415,13 @@ def community_recent_submissions():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
-        c.execute("""SELECT community_name, tech_username, work_date, submitted_at, status
+        c.execute("""SELECT community_name, tech_username, work_date, submitted_at, status, created_at
                      FROM community_billing_submissions
                      ORDER BY submitted_at DESC
                      LIMIT 100""")
         submissions = [
             {'community_name': r[0], 'tech_username': r[1], 'work_date': r[2],
-             'submitted_at': r[3], 'status': r[4]}
+             'submitted_at': r[3] or '', 'status': r[4], 'created_at': r[5] or ''}
             for r in c.fetchall()
         ]
         return jsonify({'success': True, 'submissions': submissions})
