@@ -16471,7 +16471,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                         </div>
                         <div class="form-group" style="flex: 0 0 auto; min-width: 130px;">
                             <label for="num_clocks">Number of Clocks</label>
-                            <input type="number" id="num_clocks" name="num_clocks" placeholder="e.g. 4" min="1" required style="width: 90px; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;">
+                            <input type="number" id="num_clocks" name="num_clocks" placeholder="Optional" min="0" style="width: 90px; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;">
                         </div>
                         <div class="form-group" style="flex: 0 0 auto;">
                             <label style="display:block; margin-bottom: 6px;">Custom Tabs</label>
@@ -20901,8 +20901,6 @@ def community_billing_office():
                 num_clocks = 0
             if not community_name:
                 flash('Community name is required', 'error')
-            elif num_clocks < 1:
-                flash('Number of clocks is required (must be at least 1)', 'error')
             else:
                 try:
                     c.execute("INSERT INTO communities (name, created_by, created_at, num_clocks) VALUES (?, ?, ?, ?)",
