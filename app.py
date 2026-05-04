@@ -14989,13 +14989,18 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             </table>
         </div>
 
-        <!-- Cost Breakdown Section -->
+        <!-- Cost Breakdown Section (used at submit time) -->
         <div id="costBreakdown" style="background: #f9f9f9; border: 1px solid #ddd; border-radius: 6px; padding: 15px; margin-top: 20px; display: none;">
             <h3 style="margin-top: 0; color: #333;" data-i18n="cost_breakdown">💰 Cost Breakdown</h3>
             <div id="costDetails" style="font-size: 14px; line-height: 1.8;"></div>
             <div style="border-top: 1px solid #ddd; margin-top: 10px; padding-top: 10px; font-weight: bold; font-size: 15px; color: #28a745;">
                 <span data-i18n="total_cost_label">Total Cost: $</span><span id="totalCost">0.00</span>
             </div>
+        </div>
+
+        <!-- Live running invoice total -->
+        <div id="liveInvoiceBar" style="display:none; background:#e8f5e9; border:1px solid #c3e6cb; border-radius:6px; padding:12px 20px; margin-top:16px; font-size:16px; font-weight:700; color:#2e7d32; text-align:right;">
+            💰 Current Invoice Total: $<span id="liveInvoiceTotal">0.00</span>
         </div>
 
         <div class="controls">
@@ -15237,6 +15242,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 return numA - numB;
             });
             content.innerHTML = vwRenderCards(allZones);
+            liveCalcTotal();
         }
 
         function vwRenderCards(items) {
@@ -15318,6 +15324,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 if (cached) cached.vals[fieldKey] = value;
             }
             markUnsaved();
+            liveCalcTotal();
         }
 
         // ── Photo upload helpers ───────────────────────────────────────────────
@@ -15450,6 +15457,18 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 const photos = _readPhotos(row);
                 if (photos.length > 0) _renderThumbsInRow(itemId, photos, removePhotoFromRow);
             });
+            // Wire live invoice total for standard (non-VW) table
+            if (!isVeronaWalk) {
+                const qtyClasses = ['nozzle','pop_up_6_inch','pop_up_12_inch','rotor_6_inch',
+                                    'new_pop_up_6_inch','new_pop_up_12_inch','riser','solenoid','stat_decoder_1'];
+                qtyClasses.forEach(cls => {
+                    document.querySelectorAll('.' + cls).forEach(inp => {
+                        inp.addEventListener('input', liveCalcTotal);
+                    });
+                });
+                // Show initial total if any values are already filled in
+                liveCalcTotal();
+            }
         });
 
         // ── End Photo helpers ──────────────────────────────────────────────────
@@ -15687,6 +15706,44 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                     document.getElementById('costBreakdown').style.display = 'block';
                 })
                 .catch(e => alert(t('error_calculating') + e));
+        }
+
+        // ── Live invoice bar ──────────────────────────────────────────────────────
+        let _pricingCache = null;
+        let _pricingFetching = false;
+
+        function liveCalcTotal() {
+            if (!communityId) return;
+            const doCalc = pricing => {
+                const rows = document.querySelectorAll('[data-item-id]');
+                let total = 0;
+                rows.forEach(row => {
+                    const g = cls => parseInt(row.querySelector('.' + cls)?.value) || 0;
+                    total += g('nozzle')           * (pricing.nozzle           || 0)
+                           + g('pop_up_6_inch')    * (pricing.pop_up_6_inch    || 0)
+                           + g('pop_up_12_inch')   * (pricing.pop_up_12_inch   || 0)
+                           + g('rotor_6_inch')     * (pricing.rotor_6_inch     || 0)
+                           + g('new_pop_up_6_inch')* (pricing.new_pop_up_6_inch|| 0)
+                           + g('new_pop_up_12_inch')*(pricing.new_pop_up_12_inch||0)
+                           + g('riser')            * (pricing.riser            || 0)
+                           + g('solenoid')         * (pricing.solenoid         || 0)
+                           + g('stat_decoder_1')   * (pricing.stat_decoder_1   || 0);
+                });
+                const bar = document.getElementById('liveInvoiceBar');
+                const el  = document.getElementById('liveInvoiceTotal');
+                if (bar) bar.style.display = 'block';
+                if (el)  el.textContent = total.toFixed(2);
+            };
+            if (_pricingCache) { doCalc(_pricingCache); return; }
+            if (_pricingFetching) return;
+            _pricingFetching = true;
+            fetch(`/community_get_pricing?community_id=${communityId}`)
+                .then(r => r.json())
+                .then(d => {
+                    _pricingFetching = false;
+                    if (d.success) { _pricingCache = d.pricing; doCalc(d.pricing); }
+                })
+                .catch(() => { _pricingFetching = false; });
         }
 
         function submitForm() {
