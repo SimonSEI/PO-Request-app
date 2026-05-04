@@ -17068,7 +17068,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
         function bulkAddCommunityClockAddresses(communityId, clockNumber) {
             const textarea = document.getElementById(`comm-addr-input-${communityId}-${clockNumber}`);
-            const rawLines = textarea.value.split(_nl).map(l => l.trim()).filter(l => l);
+            const rawLines = textarea.value.split(_nl).map(l => l.trim()).filter(l => l && !/^insert\s*edit\s*delete$/i.test(l));
 
             if (rawLines.length === 0) { alert('Please enter at least one address.'); return; }
 
@@ -17179,7 +17179,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
         function insertCommunityClockAddresses(communityId, afterId) {
             const textarea = document.getElementById(`comm-insert-input-${afterId}`);
-            const rawAddresses = textarea.value.split(_nl).map(l => l.trim()).filter(l => l.length > 0);
+            const rawAddresses = textarea.value.split(_nl).map(l => l.trim()).filter(l => l.length > 0 && !/^insert\s*edit\s*delete$/i.test(l));
 
             if (rawAddresses.length === 0) {
                 alert('Please enter at least one address');
