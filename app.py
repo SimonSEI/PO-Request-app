@@ -16473,9 +16473,15 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                             <label for="num_clocks">Number of Clocks</label>
                             <input type="number" id="num_clocks" name="num_clocks" placeholder="e.g. 4" min="1" required style="width: 90px; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;">
                         </div>
+                        <div class="form-group" style="flex: 0 0 auto;">
+                            <label style="display:block; margin-bottom: 6px;">Custom Tabs</label>
+                            <button type="button" onclick="addCustomTabToForm()"
+                                    style="padding: 10px 14px; background: #6f42c1; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; white-space: nowrap; font-weight: 600;">+ Add Custom Tab</button>
+                        </div>
                         <input type="hidden" name="action" value="add">
                         <button type="submit" class="btn-search">Add Community</button>
                     </div>
+                    <div id="new-comm-custom-tabs" style="display:none; flex-wrap: wrap; gap: 6px; margin-top: 8px; padding: 0 2px;"></div>
                 </form>
             </div>
 
@@ -16907,6 +16913,33 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         // ---------------------------------------------------------------
         // Custom Tab Management
         // ---------------------------------------------------------------
+
+        // Used by the "Add New Community" form to queue custom tabs before submission
+        let _ctgCounter = 0;
+        function addCustomTabToForm() {
+            const tabName = prompt('What do you want to name this tab?');
+            if (!tabName || !tabName.trim()) return;
+            const countStr = prompt(`How many "${tabName.trim()}" tabs do you need?`);
+            if (!countStr) return;
+            const count = parseInt(countStr);
+            if (isNaN(count) || count < 1) { alert('Please enter a valid number (1 or more).'); return; }
+            const name = tabName.trim();
+            const uid = 'ctg-' + (++_ctgCounter);
+            const form = document.querySelector('.add-community-form form');
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'custom_tab_group';
+            input.value = name + ':' + count;
+            input.id = uid + '-input';
+            form.appendChild(input);
+            const list = document.getElementById('new-comm-custom-tabs');
+            list.style.display = 'flex';
+            const chip = document.createElement('span');
+            chip.id = uid;
+            chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:#e9d8fd;color:#6f42c1;border-radius:12px;font-size:12px;font-weight:600;';
+            chip.innerHTML = `${name} &times;${count} <button type="button" style="background:none;border:none;cursor:pointer;color:#6f42c1;font-size:15px;padding:0 0 1px;line-height:1;" onclick="document.getElementById('${uid}').remove();document.getElementById('${uid}-input').remove();">&#xD7;</button>`;
+            list.appendChild(chip);
+        }
 
         function addCustomTabGroup(communityId) {
             const tabName = prompt('What do you want to name this tab?');
@@ -20874,6 +20907,23 @@ def community_billing_office():
                 try:
                     c.execute("INSERT INTO communities (name, created_by, created_at, num_clocks) VALUES (?, ?, ?, ?)",
                              (community_name, session.get('username'), datetime.now().strftime('%Y-%m-%d %H:%M:%S'), num_clocks))
+                    comm_id = c.lastrowid
+                    # Create any custom tab groups submitted with the form
+                    custom_tab_groups = request.form.getlist('custom_tab_group')
+                    next_order = 1
+                    for group in custom_tab_groups:
+                        parts = group.rsplit(':', 1)
+                        if len(parts) == 2:
+                            tab_name = parts[0].strip()
+                            try:
+                                count = max(1, int(parts[1]))
+                            except ValueError:
+                                count = 1
+                            for i in range(1, count + 1):
+                                label = f"{tab_name} {i}" if count > 1 else tab_name
+                                c.execute("INSERT INTO community_custom_tabs (community_id, tab_label, tab_order) VALUES (?, ?, ?)",
+                                         (comm_id, label, next_order))
+                                next_order += 1
                     conn.commit()
                     flash(f'Community "{community_name}" added successfully', 'success')
                 except sqlite3.IntegrityError:
