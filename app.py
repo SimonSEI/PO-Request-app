@@ -22995,9 +22995,29 @@ def community_export_zone_locate(community_id):
         return 'Access denied', 401
     try:
         from openpyxl import Workbook
-        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     except ImportError:
         return 'openpyxl not installed', 500
+
+    import re, io
+
+    def parse_zone_address(text):
+        """Return (zone, equip_type, location) from 'ZONE N - description'."""
+        m = re.match(r'^ZONE\s*#?\s*(\d+)\s*[-–]\s*(.*)', text, re.I)
+        if not m:
+            return (text, '', '')
+        zone_num = m.group(1)
+        desc = re.sub(r'^D#\S+\s*', '', m.group(2)).strip()  # strip leading D# part-number
+        # Two-word equipment types
+        two_word = ['MP Rotors', 'MP Rotor', 'MP Sprays', 'MP Spray', 'Drip Line', 'Drip line']
+        for t in two_word:
+            if desc.upper().startswith(t.upper()):
+                return (zone_num, t, desc[len(t):].strip())
+        # Single first word as type
+        parts = desc.split(None, 1)
+        if parts:
+            return (zone_num, parts[0], parts[1] if len(parts) > 1 else '')
+        return (zone_num, '', '')
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -23008,7 +23028,6 @@ def community_export_zone_locate(community_id):
             return 'Community not found', 404
         comm_name, num_clocks = row
 
-        # Fetch all addresses grouped by clock
         c.execute("""SELECT clock_number, address
                      FROM verona_walk_clock_addresses
                      WHERE community_id = ?
@@ -23018,43 +23037,52 @@ def community_export_zone_locate(community_id):
             clocks.setdefault(clock_num, []).append(address)
 
         wb = Workbook()
-        wb.remove(wb.active)  # remove default sheet
+        wb.remove(wb.active)
 
-        header_font = Font(bold=True, color='FFFFFF')
-        header_fill = PatternFill(fill_type='solid', fgColor='17A2B8')
-        header_align = Alignment(horizontal='center', vertical='center')
+        hdr_font  = Font(bold=True, size=11)
+        hdr_fill  = PatternFill(fill_type='solid', fgColor='F2F2F2')
+        hdr_align = Alignment(horizontal='left', vertical='center')
+        thin      = Side(style='thin', color='CCCCCC')
+        hdr_border = Border(bottom=Side(style='medium', color='000000'))
+        alt_fill  = PatternFill(fill_type='solid', fgColor='F7FBFF')
+        wrap      = Alignment(wrap_text=True, vertical='top')
 
         for i in range(1, num_clocks + 1):
             ws = wb.create_sheet(title=f'Clock {i}')
-            ws.column_dimensions['A'].width = 60
+            ws.column_dimensions['A'].width = 10   # Zone
+            ws.column_dimensions['B'].width = 22   # Type
+            ws.column_dimensions['C'].width = 45   # Location
 
-            # Header
-            ws['A1'] = f'Clock {i} — Zone Locate'
-            ws['A1'].font = Font(bold=True, color='FFFFFF', size=12)
-            ws['A1'].fill = header_fill
-            ws['A1'].alignment = header_align
+            # Column headers
+            for col, label in enumerate(['Zone', 'Type', 'Location'], start=1):
+                cell = ws.cell(row=1, column=col, value=label)
+                cell.font = hdr_font
+                cell.fill = hdr_fill
+                cell.alignment = hdr_align
+                cell.border = hdr_border
 
             addresses = clocks.get(i, [])
             if addresses:
                 for row_idx, addr in enumerate(addresses, start=2):
-                    cell = ws.cell(row=row_idx, column=1, value=addr)
-                    cell.alignment = Alignment(wrap_text=True)
-                    if row_idx % 2 == 0:
-                        cell.fill = PatternFill(fill_type='solid', fgColor='F0FAFB')
+                    zone, equip_type, location = parse_zone_address(addr)
+                    row_fill = alt_fill if row_idx % 2 == 0 else None
+                    for col, val in enumerate([zone, equip_type, location], start=1):
+                        cell = ws.cell(row=row_idx, column=col, value=val)
+                        cell.alignment = wrap
+                        cell.border = Border(bottom=Side(style='thin', color='EEEEEE'))
+                        if row_fill:
+                            cell.fill = row_fill
             else:
-                ws['A2'] = 'No zones configured'
-                ws['A2'].font = Font(italic=True, color='999999')
+                ws.cell(row=2, column=1, value='No zones configured').font = Font(italic=True, color='999999')
 
-        import io
         buf = io.BytesIO()
         wb.save(buf)
         buf.seek(0)
 
         safe_name = comm_name.replace('/', '-').replace('\\', '-')
-        filename = f'{safe_name} Zone Locate.xlsx'
-
         from flask import send_file
-        return send_file(buf, as_attachment=True, download_name=filename,
+        return send_file(buf, as_attachment=True,
+                         download_name=f'{safe_name} Zone Locate.xlsx',
                          mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     finally:
         conn.close()
