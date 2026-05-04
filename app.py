@@ -17091,13 +17091,19 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         }
 
         // Format address lines as "ZONE N - description" to match Verona Walk style.
-        // Lines that already begin with "N -" or "N–" are normalised (ZONE prepended).
-        // Lines that already begin with "ZONE N -" are left unchanged.
+        // Lines that already begin with "ZONE N -" are normalised (uppercase, dash).
+        // Lines that begin with "ZONE N" (no dash) have their zone number preserved.
+        // Lines that begin with "N -" or "N–" are normalised (ZONE prepended).
         // All other lines get an auto-assigned zone number starting from startZone.
         function applyZoneFormat(lines, startZone) {
             let auto = startZone;
             return lines.map(line => {
-                if (/^ZONE\s+\d+\s*[-–]/i.test(line)) return line;   // already formatted
+                const zoneMatch = line.match(/^ZONE\s+(\d+)\s*([\s\S]*)/i);
+                if (zoneMatch) {
+                    const num = zoneMatch[1];
+                    const rest = zoneMatch[2].replace(/^[-–]\s*/, '').trim();
+                    return rest ? `ZONE ${num} - ${rest}` : `ZONE ${num}`;
+                }
                 const m = line.match(/^(\d+)\s*[-–]\s*([\s\S]+)/);
                 if (m) return `ZONE ${m[1]} - ${m[2].trim()}`;             // has leading number
                 return `ZONE ${auto++} - ${line}`;                         // plain description
