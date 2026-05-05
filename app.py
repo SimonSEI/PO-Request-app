@@ -16529,7 +16529,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         <div class="tabs">
             <button class="tab-button active" onclick="switchTab('manage')">🏘️ Manage Communities</button>
             <button class="tab-button" onclick="switchTab('submissions')">📋 Review Submissions</button>
-            <button class="tab-button" onclick="switchTab('recent')">🕐 Recent Submissions</button>
+            <button class="tab-button" onclick="switchTab('recent')">🕐 Recent Technician Activity</button>
         </div>
 
         <!-- Manage Communities Tab -->
@@ -19224,7 +19224,6 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         function loadRecentSubmissions() {
             const container = document.getElementById('recent-submissions-list');
             if (!container) return;
-            if (_recentData) { renderRecentTable(); return; }
             container.innerHTML = '<p style="color:#666;font-size:14px;">Loading...</p>';
             fetch('/community_recent_submissions')
                 .then(r => r.json())
