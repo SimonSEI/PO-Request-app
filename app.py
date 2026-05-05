@@ -1369,7 +1369,7 @@ def init_db():
     if 'deleted_at' not in sub_cols:
         c.execute("ALTER TABLE community_billing_submissions ADD COLUMN deleted_at TEXT")
 
-    # Purge soft-deleted submissions older than 60 days
+    # Purge soft-deleted entries older than 60 days
     purge_cutoff = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d %H:%M:%S')
     c.execute("""DELETE FROM community_billing_line_items WHERE submission_id IN (
                      SELECT id FROM community_billing_submissions
@@ -16538,7 +16538,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             <button class="tab-button active" onclick="switchTab('manage')">🏘️ Manage Communities</button>
             <button class="tab-button" onclick="switchTab('submissions')">📋 Review Submissions</button>
             <button class="tab-button" onclick="switchTab('recent')">🕐 Recent Technician Activity</button>
-            <button class="tab-button" onclick="switchTab('trash')">🗑️ Deleted Submissions</button>
+            <button class="tab-button" onclick="switchTab('trash')">🗑️ Deleted Entries</button>
         </div>
 
         <!-- Manage Communities Tab -->
@@ -16783,13 +16783,13 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             </div>
         </div>
 
-        <!-- Deleted Submissions Tab -->
+        <!-- Deleted Entries Tab -->
         <div id="trash" class="tab-content">
             <div style="margin-bottom:12px;">
-                <p style="color:#666;font-size:13px;margin:0;">Deleted submissions are kept for <strong>60 days</strong> and can be restored to draft at any time.</p>
+                <p style="color:#666;font-size:13px;margin:0;">Deleted entries are kept for <strong>60 days</strong> and can be restored to draft at any time.</p>
             </div>
             <div id="trash-list" style="margin-top:10px;">
-                <p style="color:#999;font-size:14px;">Click this tab to load deleted submissions.</p>
+                <p style="color:#999;font-size:14px;">Click this tab to load deleted entries.</p>
             </div>
         </div>
     </div>
@@ -16812,7 +16812,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             if (tabName === 'trash')  loadTrashSubmissions();
         }
 
-        // ── Deleted Submissions (Trash) ───────────────────────────────────────
+        // ── Deleted Entries (Trash) ───────────────────────────────────────
         function loadTrashSubmissions() {
             const container = document.getElementById('trash-list');
             if (!container) return;
@@ -16823,14 +16823,14 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     if (!data.success) { container.innerHTML = `<p style="color:#dc3545;">${data.error}</p>`; return; }
                     renderTrashTable(data.submissions);
                 })
-                .catch(() => { container.innerHTML = '<p style="color:#dc3545;">Error loading deleted submissions.</p>'; });
+                .catch(() => { container.innerHTML = '<p style="color:#dc3545;">Error loading deleted entries.</p>'; });
         }
 
         function renderTrashTable(submissions) {
             const container = document.getElementById('trash-list');
             if (!container) return;
             if (submissions.length === 0) {
-                container.innerHTML = '<p style="color:#999;font-size:14px;">No deleted submissions found.</p>';
+                container.innerHTML = '<p style="color:#999;font-size:14px;">No deleted entries found.</p>';
                 return;
             }
             let html = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">';
@@ -21057,8 +21057,11 @@ def community_billing_delete_draft():
             conn.close()
             return jsonify({'success': False, 'error': 'Cannot delete submitted submissions'})
 
-        # Delete the submission and its line items (CASCADE handles line items)
-        c.execute("DELETE FROM community_billing_submissions WHERE id = ?", (submission_id,))
+        # Soft-delete so it appears in Deleted Entries for 60 days
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        c.execute("""UPDATE community_billing_submissions
+                     SET status = 'deleted', deleted_at = ?, updated_at = ?
+                     WHERE id = ?""", (now, now, submission_id))
 
         conn.commit()
         conn.close()
@@ -21672,7 +21675,7 @@ def community_billing_delete_submission():
 
 @app.route('/community_deleted_submissions', methods=['GET'])
 def community_deleted_submissions():
-    """Return deleted submissions still within the 60-day retention window."""
+    """Return deleted entries still within the 60-day retention window."""
     if 'username' not in session or session.get('role') != 'office':
         return jsonify({'success': False, 'error': 'Access denied'}), 401
     conn = sqlite3.connect(DB_PATH)
