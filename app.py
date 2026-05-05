@@ -25312,7 +25312,6 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
 
   <div class="section-hdr">
     <h2>Installation Jobs</h2>
-    <a href="/manage_jobs" class="btn btn-secondary btn-sm">⚙️ Manage Jobs</a>
   </div>
 
   {% if jobs %}
@@ -25350,7 +25349,6 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
       <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
         <a href="/installation/job/{{ j.id }}" class="btn btn-primary btn-sm">Open →</a>
         <a href="/installation/job/{{ j.id }}?tab=change-orders" class="btn btn-secondary btn-sm">COs</a>
-        <a href="/installation/schedule?job={{ j.id }}" class="btn btn-secondary btn-sm">📅</a>
         <a href="/installation/job/{{ j.id }}?tab=site-plans" class="btn btn-secondary btn-sm">🗺</a>
       </div>
     </div>
