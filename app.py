@@ -16538,6 +16538,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             <button class="tab-button active" onclick="switchTab('manage')">🏘️ Manage Communities</button>
             <button class="tab-button" onclick="switchTab('submissions')">📋 Review Submissions</button>
             <button class="tab-button" onclick="switchTab('recent')">🕐 Recent Technician Activity</button>
+            <button class="tab-button" onclick="switchTab('drafts')">📝 Active Drafts</button>
             <button class="tab-button" onclick="switchTab('trash')">🗑️ Deleted Entries</button>
         </div>
 
@@ -16783,6 +16784,13 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             </div>
         </div>
 
+        <!-- Active Drafts Tab -->
+        <div id="drafts" class="tab-content">
+            <div id="drafts-list" style="margin-top:10px;">
+                <p style="color:#999;font-size:14px;">Click this tab to load active drafts.</p>
+            </div>
+        </div>
+
         <!-- Deleted Entries Tab -->
         <div id="trash" class="tab-content">
             <div style="margin-bottom:12px;">
@@ -16809,7 +16817,50 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             event.target.classList.add('active');
 
             if (tabName === 'recent') loadRecentSubmissions();
+            if (tabName === 'drafts') loadActiveDrafts();
             if (tabName === 'trash')  loadTrashSubmissions();
+        }
+
+        // ── Active Drafts ─────────────────────────────────────────────────────
+        function loadActiveDrafts() {
+            const container = document.getElementById('drafts-list');
+            if (!container) return;
+            container.innerHTML = '<p style="color:#666;font-size:14px;">Loading...</p>';
+            fetch('/community_active_drafts')
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.success) { container.innerHTML = `<p style="color:#dc3545;">${data.error}</p>`; return; }
+                    renderDraftsTable(data.drafts);
+                })
+                .catch(() => { container.innerHTML = '<p style="color:#dc3545;">Error loading drafts.</p>'; });
+        }
+
+        function renderDraftsTable(drafts) {
+            const container = document.getElementById('drafts-list');
+            if (!container) return;
+            if (drafts.length === 0) {
+                container.innerHTML = '<p style="color:#999;font-size:14px;">No active drafts found.</p>';
+                return;
+            }
+            let html = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">';
+            html += '<thead><tr>';
+            ['Community','Technician','Work Date','Created At','Last Modified'].forEach(h => {
+                html += `<th style="text-align:left;padding:9px 12px;border-bottom:2px solid #dee2e6;font-size:12px;color:#555;white-space:nowrap;background:#f8f9fa;">${h}</th>`;
+            });
+            html += '</tr></thead><tbody>';
+            drafts.forEach((d, i) => {
+                const bg = i % 2 === 0 ? '#fff' : '#f8f9fa';
+                html += `<tr style="background:${bg};">
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;font-weight:600;">${d.community_name}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;">${d.tech_name}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#666;">${d.work_date || ''}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#666;">${d.created_at || ''}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#666;">${d.last_modified || ''}</td>
+                </tr>`;
+            });
+            html += '</tbody></table></div>';
+            html += `<p style="font-size:12px;color:#999;margin-top:8px;">${drafts.length} active draft(s)</p>`;
+            container.innerHTML = html;
         }
 
         // ── Deleted Entries (Trash) ───────────────────────────────────────
@@ -21671,6 +21722,34 @@ def community_billing_delete_submission():
         return jsonify({'success': True, 'message': 'Submission deleted successfully'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/community_active_drafts', methods=['GET'])
+def community_active_drafts():
+    """Return all submissions currently in draft status."""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("""SELECT s.community_name, s.tech_username,
+                            COALESCE(u.full_name, s.tech_username) as tech_name,
+                            s.work_date, s.created_at,
+                            COALESCE(s.updated_at, s.created_at, '') as last_modified
+                     FROM community_billing_submissions s
+                     LEFT JOIN users u ON u.username = s.tech_username
+                     WHERE s.status = 'draft'
+                     ORDER BY s.community_name, COALESCE(s.updated_at, s.created_at) DESC""")
+        drafts = [
+            {'community_name': r[0], 'tech_username': r[1], 'tech_name': r[2],
+             'work_date': r[3] or '', 'created_at': r[4] or '', 'last_modified': r[5] or ''}
+            for r in c.fetchall()
+        ]
+        return jsonify({'success': True, 'drafts': drafts})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
 
 
 @app.route('/community_deleted_submissions', methods=['GET'])
