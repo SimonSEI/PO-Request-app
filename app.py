@@ -21303,18 +21303,37 @@ def community_billing_export_excel():
                  ORDER BY li.zone_and_address""",
              (community, work_month + '%'))
 
-    # Aggregate totals per zone
+    # Aggregate totals per zone from submissions
     PART_KEYS = ['nozzle','pop_up_6_inch','pop_up_12_inch','rotor_6_inch',
                  'new_pop_up_6_inch','new_pop_up_12_inch','riser','solenoid','stat_decoder_1']
-    zone_totals = {}  # zone_and_address -> {key: total}
-    zone_order  = []  # preserve first-seen order
+    zone_totals = {}
     for row in c.fetchall():
         zone = row[0] or ''
         if zone not in zone_totals:
             zone_totals[zone] = {k: 0 for k in PART_KEYS}
-            zone_order.append(zone)
         for i, key in enumerate(PART_KEYS):
             zone_totals[zone][key] += row[i + 1] or 0
+
+    # Build the master zone list from the community's saved addresses so every
+    # zone appears in the export even if no submission was made for it this month.
+    if is_clock_community and community_id:
+        c.execute("""SELECT clock_number, address, COALESCE(is_common_area, 0)
+                     FROM verona_walk_clock_addresses
+                     WHERE community_id = ?
+                     ORDER BY clock_number, COALESCE(sort_order, 0), id""",
+                 (community_id,))
+        all_addr_rows = c.fetchall()
+        zone_order = []
+        for clock_num, address, is_ca in all_addr_rows:
+            label = (f"Clock {clock_num} Common Area - {address}"
+                     if is_ca else f"Clock {clock_num} - {address}")
+            if label not in zone_totals:
+                zone_totals[label] = {k: 0 for k in PART_KEYS}
+            if label not in zone_order:
+                zone_order.append(label)
+    else:
+        # Standard community: use submission order (all zones already captured above)
+        zone_order = list(zone_totals.keys())
 
     conn.close()
 
