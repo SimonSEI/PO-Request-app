@@ -16053,6 +16053,10 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             margin-bottom: 20px;
             border-bottom: 2px solid #ddd;
         }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
         .tab-button {
             padding: 12px 20px;
             background: none;
@@ -16822,6 +16826,45 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         }
 
         // ── Active Drafts ─────────────────────────────────────────────────────
+        let _draftsRefreshTimer = null;
+
+        function renderDraftsTable(drafts) {
+            const container = document.getElementById('drafts-list');
+            if (!container) return;
+            if (drafts.length === 0) {
+                container.innerHTML = '<p style="color:#999;font-size:14px;">No active drafts.</p>';
+                return;
+            }
+            let html = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">';
+            html += '<thead><tr>';
+            ['Status','Community','Technician','Clocks with Data','Work Date','Last Modified'].forEach(h => {
+                html += `<th style="text-align:left;padding:9px 12px;border-bottom:2px solid #dee2e6;font-size:12px;color:#555;white-space:nowrap;background:#f8f9fa;">${h}</th>`;
+            });
+            html += '</tr></thead><tbody>';
+            drafts.forEach((d, i) => {
+                const bg = d.is_active ? '#f0fff4' : (i % 2 === 0 ? '#fff' : '#f8f9fa');
+                const statusBadge = d.is_active
+                    ? `<span style="display:inline-flex;align-items:center;gap:5px;background:#28a745;color:white;font-size:11px;font-weight:700;padding:3px 9px;border-radius:12px;">
+                           <span style="width:7px;height:7px;background:white;border-radius:50%;display:inline-block;animation:pulse 1.2s infinite;"></span> Active
+                       </span>`
+                    : `<span style="color:#999;font-size:12px;">${d.minutes_ago !== null ? d.minutes_ago + 'm ago' : 'In progress'}</span>`;
+                const clocksCell = d.clocks_label
+                    ? `<span style="font-size:12px;color:#007bff;font-weight:600;">${d.clocks_label}</span>`
+                    : `<span style="color:#ccc;font-size:12px;">—</span>`;
+                html += `<tr style="background:${bg};">
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;">${statusBadge}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;font-weight:600;">${d.community_name}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;">${d.tech_name}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;">${clocksCell}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#666;">${d.work_date || ''}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#666;">${d.last_modified || ''}</td>
+                </tr>`;
+            });
+            html += '</tbody></table></div>';
+            html += `<p style="font-size:12px;color:#999;margin-top:8px;">${drafts.length} active draft(s) — auto-refreshes every 30s</p>`;
+            container.innerHTML = html;
+        }
+
         function loadActiveDrafts() {
             const container = document.getElementById('drafts-list');
             if (!container) return;
@@ -16831,36 +16874,13 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 .then(data => {
                     if (!data.success) { container.innerHTML = `<p style="color:#dc3545;">${data.error}</p>`; return; }
                     renderDraftsTable(data.drafts);
+                    // Auto-refresh while tab is visible
+                    clearTimeout(_draftsRefreshTimer);
+                    _draftsRefreshTimer = setTimeout(() => {
+                        if (document.getElementById('drafts').classList.contains('active')) loadActiveDrafts();
+                    }, 30000);
                 })
                 .catch(() => { container.innerHTML = '<p style="color:#dc3545;">Error loading drafts.</p>'; });
-        }
-
-        function renderDraftsTable(drafts) {
-            const container = document.getElementById('drafts-list');
-            if (!container) return;
-            if (drafts.length === 0) {
-                container.innerHTML = '<p style="color:#999;font-size:14px;">No active drafts found.</p>';
-                return;
-            }
-            let html = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">';
-            html += '<thead><tr>';
-            ['Community','Technician','Work Date','Created At','Last Modified'].forEach(h => {
-                html += `<th style="text-align:left;padding:9px 12px;border-bottom:2px solid #dee2e6;font-size:12px;color:#555;white-space:nowrap;background:#f8f9fa;">${h}</th>`;
-            });
-            html += '</tr></thead><tbody>';
-            drafts.forEach((d, i) => {
-                const bg = i % 2 === 0 ? '#fff' : '#f8f9fa';
-                html += `<tr style="background:${bg};">
-                    <td style="padding:8px 12px;border-bottom:1px solid #eee;font-weight:600;">${d.community_name}</td>
-                    <td style="padding:8px 12px;border-bottom:1px solid #eee;">${d.tech_name}</td>
-                    <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#666;">${d.work_date || ''}</td>
-                    <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#666;">${d.created_at || ''}</td>
-                    <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#666;">${d.last_modified || ''}</td>
-                </tr>`;
-            });
-            html += '</tbody></table></div>';
-            html += `<p style="font-size:12px;color:#999;margin-top:8px;">${drafts.length} active draft(s)</p>`;
-            container.innerHTML = html;
         }
 
         // ── Deleted Entries (Trash) ───────────────────────────────────────
@@ -21726,25 +21746,66 @@ def community_billing_delete_submission():
 
 @app.route('/community_active_drafts', methods=['GET'])
 def community_active_drafts():
-    """Return all submissions currently in draft status."""
+    """Return all submissions currently in draft status with clock and activity info."""
     if 'username' not in session or session.get('role') != 'office':
         return jsonify({'success': False, 'error': 'Access denied'}), 401
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
-        c.execute("""SELECT s.community_name, s.tech_username,
+        c.execute("""SELECT s.id, s.community_name, s.tech_username,
                             COALESCE(u.full_name, s.tech_username) as tech_name,
                             s.work_date, s.created_at,
                             COALESCE(s.updated_at, s.created_at, '') as last_modified
                      FROM community_billing_submissions s
                      LEFT JOIN users u ON u.username = s.tech_username
                      WHERE s.status = 'draft'
-                     ORDER BY s.community_name, COALESCE(s.updated_at, s.created_at) DESC""")
-        drafts = [
-            {'community_name': r[0], 'tech_username': r[1], 'tech_name': r[2],
-             'work_date': r[3] or '', 'created_at': r[4] or '', 'last_modified': r[5] or ''}
-            for r in c.fetchall()
-        ]
+                     ORDER BY COALESCE(s.updated_at, s.created_at) DESC""")
+        rows = c.fetchall()
+        now = datetime.now()
+        drafts = []
+        for r in rows:
+            submission_id = r[0]
+            last_modified_str = r[6]
+
+            # Determine if actively working (updated within last 15 minutes)
+            is_active = False
+            minutes_ago = None
+            try:
+                lm = datetime.strptime(last_modified_str[:19], '%Y-%m-%d %H:%M:%S')
+                diff = (now - lm).total_seconds()
+                minutes_ago = int(diff / 60)
+                is_active = diff <= 900  # 15 minutes
+            except Exception:
+                pass
+
+            # Find which clocks have any data entered
+            c.execute("""SELECT DISTINCT zone_and_address
+                         FROM community_billing_line_items
+                         WHERE submission_id = ?
+                           AND (COALESCE(nozzle,0) + COALESCE(pop_up_6_inch,0) +
+                                COALESCE(pop_up_12_inch,0) + COALESCE(rotor_6_inch,0) +
+                                COALESCE(new_pop_up_6_inch,0) + COALESCE(new_pop_up_12_inch,0) +
+                                COALESCE(riser,0) + COALESCE(solenoid,0) +
+                                COALESCE(stat_decoder_1,0) > 0
+                                OR (notes IS NOT NULL AND TRIM(notes) != ''))""",
+                     (submission_id,))
+            clock_nums = set()
+            for (zone,) in c.fetchall():
+                if zone:
+                    m = re.match(r'^Clock\s+(\d+)', zone, re.IGNORECASE)
+                    if m:
+                        clock_nums.add(int(m.group(1)))
+            clocks_label = ', '.join(f'Clock {n}' for n in sorted(clock_nums)) if clock_nums else ''
+
+            drafts.append({
+                'id': submission_id,
+                'community_name': r[1], 'tech_username': r[2], 'tech_name': r[3],
+                'work_date': r[4] or '', 'created_at': r[5] or '',
+                'last_modified': last_modified_str or '',
+                'clocks_label': clocks_label,
+                'is_active': is_active,
+                'minutes_ago': minutes_ago
+            })
         return jsonify({'success': True, 'drafts': drafts})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
