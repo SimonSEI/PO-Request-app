@@ -21057,8 +21057,11 @@ def community_billing_delete_draft():
             conn.close()
             return jsonify({'success': False, 'error': 'Cannot delete submitted submissions'})
 
-        # Delete the submission and its line items (CASCADE handles line items)
-        c.execute("DELETE FROM community_billing_submissions WHERE id = ?", (submission_id,))
+        # Soft-delete so it appears in Deleted Entries for 60 days
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        c.execute("""UPDATE community_billing_submissions
+                     SET status = 'deleted', deleted_at = ?, updated_at = ?
+                     WHERE id = ?""", (now, now, submission_id))
 
         conn.commit()
         conn.close()
