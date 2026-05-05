@@ -1543,6 +1543,28 @@ def init_db():
         except Exception:
             pass
 
+    # Crew-centric schedule tables
+    c.execute('''CREATE TABLE IF NOT EXISTS installation_crews
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  name TEXT NOT NULL,
+                  crew_size INTEGER DEFAULT 1,
+                  truck_number TEXT DEFAULT '',
+                  active INTEGER DEFAULT 1,
+                  sort_order INTEGER DEFAULT 0,
+                  created_at TEXT)''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS installation_crew_days
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  crew_id INTEGER NOT NULL,
+                  assignment_date TEXT NOT NULL,
+                  job_id INTEGER,
+                  proposal_id INTEGER,
+                  notes TEXT DEFAULT '',
+                  created_by TEXT,
+                  created_at TEXT,
+                  FOREIGN KEY(crew_id) REFERENCES installation_crews(id),
+                  FOREIGN KEY(job_id) REFERENCES jobs(id))''')
+
     # Add default jobs if empty
     c.execute("SELECT COUNT(*) FROM jobs")
     if c.fetchone()[0] == 0:
@@ -25931,1068 +25953,612 @@ function submitRFI(){const title=document.getElementById('rfi-title').value.trim
 
 # ── Weekly Schedule ──────────────────────────────────────────────────────────
 
-INSTALLATION_SCHEDULE_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
+INSTALLATION_SCHEDULE_TEMPLATE = _INST_CSS + r"""<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Installation Schedule</title>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Weekly Schedule</title>
 <style>
-.week-nav{display:flex;align-items:center;gap:10px;margin-bottom:18px;flex-wrap:wrap}
-.week-nav h2{font-size:18px;font-weight:700;color:#1a3c5e;flex:1}
-.week-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:18px}
-.day-col{min-height:200px;background:white;border-radius:10px;box-shadow:0 1px 6px rgba(0,0,0,.07);overflow:hidden}
-.day-header{background:#1a3c5e;color:white;padding:10px 12px;font-size:13px;font-weight:700;text-align:center}
-.day-header.today-hdr{background:#059669}
-.day-body{padding:8px;min-height:160px}
-.day-body.drag-over{background:#f0f4ff;outline:2px dashed #1a3c5e}
-.job-block{background:#dbeafe;border-left:3px solid #1a3c5e;border-radius:6px;padding:8px 10px;margin-bottom:6px;cursor:grab;font-size:13px;position:relative;transition:opacity .15s}
-.job-block:active{cursor:grabbing;opacity:.7}
-.job-block .jb-name{font-weight:700;color:#1a3c5e;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.job-block .jb-crew{font-size:11px;color:#4b5563;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.job-block .jb-cost{font-size:11px;color:#059669;font-weight:600;margin-top:2px}
-.job-block .jb-del{position:absolute;top:4px;right:6px;background:none;border:none;cursor:pointer;color:#9ca3af;font-size:14px;line-height:1;padding:0}
-.job-block .jb-del:hover{color:#dc2626}
-.add-day-btn{display:flex;align-items:center;justify-content:center;gap:4px;padding:6px;border:1px dashed #d1d5db;border-radius:6px;font-size:12px;color:#9ca3af;cursor:pointer;background:none;width:100%;transition:all .15s}
-.add-day-btn:hover{border-color:#1a3c5e;color:#1a3c5e;background:#f0f4f8}
-.crew-legend{background:white;border-radius:10px;padding:16px;box-shadow:0 1px 6px rgba(0,0,0,.07);margin-bottom:18px}
-.crew-legend h3{font-size:14px;font-weight:700;color:#1a3c5e;margin-bottom:10px}
-.crew-chips{display:flex;gap:8px;flex-wrap:wrap}
-.crew-chip{padding:5px 12px;border-radius:20px;font-size:12px;font-weight:500;color:white}
-.week-summary{background:white;border-radius:10px;padding:14px 16px;box-shadow:0 1px 6px rgba(0,0,0,.07);display:flex;gap:20px;flex-wrap:wrap;margin-bottom:18px}
-.ws-item{font-size:13px;color:#6b7280}.ws-item strong{color:#1a3c5e;font-size:15px}
-@media(max-width:900px){.week-grid{grid-template-columns:repeat(3,1fr)}}
-@media(max-width:600px){.week-grid{grid-template-columns:1fr 1fr}}
-@media print{
-  .top-bar nav,.btn,.no-print,.modal-overlay,.add-day-btn,.jb-del{display:none!important}
-  .week-grid{grid-template-columns:repeat(5,1fr)!important}
-  .day-col{box-shadow:none!important;border:1px solid #ccc}
-  body{background:white}
-  .page{padding:0}
+/* ── screen styles ── */
+.top-nav{background:#1a3c5e;color:white;padding:10px 20px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;position:sticky;top:0;z-index:200}
+.top-nav h1{font-size:17px;font-weight:700}
+.top-nav nav a{color:rgba(255,255,255,.85);text-decoration:none;padding:5px 11px;border-radius:5px;font-size:13px}
+.top-nav nav a:hover{background:rgba(255,255,255,.15)}
+.week-controls{display:flex;align-items:center;gap:8px;padding:14px 20px;background:white;border-bottom:1px solid #e5e7eb;flex-wrap:wrap}
+.week-controls h2{font-size:16px;font-weight:700;color:#1a3c5e;flex:1}
+.btn{display:inline-flex;align-items:center;gap:4px;padding:6px 13px;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;border:none;text-decoration:none;transition:all .15s}
+.btn-primary{background:#1a3c5e;color:white}.btn-primary:hover{background:#0f2a45}
+.btn-secondary{background:#e5e7eb;color:#374151}.btn-secondary:hover{background:#d1d5db}
+.btn-print{background:#059669;color:white}.btn-print:hover{background:#047857}
+.btn-danger{background:#dc2626;color:white}.btn-danger:hover{background:#b91c1c}
+.btn-sm{padding:4px 9px;font-size:12px}
+.schedule-wrap{overflow-x:auto;padding:16px 20px}
+.schedule-table{border-collapse:collapse;width:100%;min-width:900px;font-family:Arial,'Helvetica Neue',sans-serif}
+.schedule-table th,.schedule-table td{border:2px solid #333;text-align:center;vertical-align:top}
+/* header row */
+.hdr-crew{background:#1a3c5e;color:white;font-weight:700;font-size:13px;padding:10px 8px;width:90px;min-width:80px}
+.hdr-day{background:#00897b;color:white;font-weight:700;font-size:13px;padding:10px 6px;min-width:140px}
+.hdr-day .day-name{font-size:14px;font-weight:800;text-transform:uppercase;letter-spacing:.5px}
+.hdr-day .day-date{font-size:11px;font-weight:600;opacity:.9;margin-top:2px}
+/* crew info cell */
+.crew-cell{background:#111;color:white;font-weight:700;font-size:11px;padding:10px 6px;text-align:center;vertical-align:middle;width:90px}
+.crew-cell .crew-name{font-size:12px;font-weight:800;text-transform:uppercase;color:#fff;margin-bottom:4px;line-height:1.2}
+.crew-cell .crew-meta{font-size:10px;color:#ccc;line-height:1.4}
+/* assignment cell */
+.assign-cell{background:white;padding:0;min-height:100px;position:relative;cursor:pointer;transition:background .15s}
+.assign-cell:hover{background:#f0f9ff}
+.assign-cell.sat-cell{background:#f5f5f5;cursor:default}
+.assign-cell.sat-cell:hover{background:#f5f5f5}
+.cell-inner{padding:8px 6px;min-height:100px;display:flex;flex-direction:column;align-items:center;justify-content:space-between}
+.cell-job{font-weight:800;font-size:12px;text-transform:uppercase;color:#1a1a1a;line-height:1.3;text-align:center;margin-bottom:4px}
+.cell-prop{font-size:11px;font-weight:600;color:#333;text-align:center;margin-bottom:4px}
+.cell-counter{font-size:11px;font-weight:700;color:#1a3c5e;text-align:center;border-top:1px solid #ddd;padding-top:4px;width:100%}
+.cell-counter span.used{color:#1a3c5e}.cell-counter span.remaining{color:#d32f2f}
+.cell-off{font-weight:800;font-size:14px;color:#666;letter-spacing:1px}
+.cell-empty-hint{font-size:11px;color:#bbb;text-align:center;padding:4px}
+.cell-remove{position:absolute;top:3px;right:3px;background:none;border:none;font-size:14px;cursor:pointer;color:#ccc;line-height:1;padding:0}
+.cell-remove:hover{color:#dc2626}
+/* modal */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;align-items:center;justify-content:center;padding:16px}
+.modal-overlay.open{display:flex}
+.modal{background:white;border-radius:12px;padding:26px;width:100%;max-width:480px;position:relative}
+.modal h3{font-size:17px;font-weight:700;color:#1a3c5e;margin-bottom:4px}
+.modal .modal-sub{font-size:13px;color:#6b7280;margin-bottom:18px}
+.modal-close{position:absolute;top:14px;right:16px;background:none;border:none;font-size:22px;cursor:pointer;color:#9ca3af}
+label{font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:3px}
+select,input,textarea{padding:8px 11px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;width:100%;font-family:inherit}
+select:focus,input:focus{outline:none;border-color:#1a3c5e}
+.form-group{margin-bottom:12px}
+/* ── print styles ── */
+@media print {
+  .top-nav,.week-controls,.no-print,.modal-overlay,.cell-remove{display:none!important}
+  .schedule-wrap{padding:0;overflow:visible}
+  body{background:white;margin:0}
+  .schedule-table{min-width:0;width:100%;border-collapse:collapse}
+  .schedule-table th,.schedule-table td{border:2px solid #000!important}
+  .hdr-day{background:#00897b!important;color:white!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .hdr-crew{background:#1a3c5e!important;color:white!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .crew-cell{background:#111!important;color:white!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .sat-cell{background:#f5f5f5!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .assign-cell:hover{background:white!important}
+  @page{size:landscape;margin:.4in}
 }
 </style>
 </head>
 <body>
-<div class="top-bar no-print">
+<div class="top-nav no-print">
   <h1>📅 Weekly Schedule</h1>
   <nav>
     <a href="/installation">← Jobs</a>
-    <a href="/installation/crew">👷 Crew</a>
+    <a href="/installation/crews">👷 Manage Crews</a>
     <a href="/dashboard">Dashboard</a>
   </nav>
 </div>
-<div class="page">
-  <div class="week-nav no-print">
-    <h2>Week of {{ week_start_display }}</h2>
-    <a href="/installation/schedule?week={{ prev_week }}&job={{ filter_job }}" class="btn btn-secondary btn-sm">← Prev</a>
-    <a href="/installation/schedule?week={{ today_week }}&job={{ filter_job }}" class="btn btn-secondary btn-sm">Today</a>
-    <a href="/installation/schedule?week={{ next_week }}&job={{ filter_job }}" class="btn btn-secondary btn-sm">Next →</a>
-    <select onchange="location.href='/installation/schedule?week={{ week_param }}&job='+this.value" style="max-width:220px">
-      <option value="">All Jobs</option>
-      {% for j in all_jobs %}<option value="{{ j[0] }}" {{ 'selected' if filter_job == j[0]|string }}>{{ j[1] }}</option>{% endfor %}
-    </select>
-    <button class="btn btn-print btn-sm" onclick="window.print()">🖨 Print</button>
-    <button class="btn btn-primary btn-sm no-print" onclick="openModal('bulk-assign-modal')">+ Assign Crew</button>
-  </div>
 
-  <!-- Print header (hidden on screen) -->
-  <div style="display:none" class="print-only">
-    <h2 style="font-size:20px;font-weight:800;color:#1a3c5e;margin-bottom:4px">Installation Schedule</h2>
-    <p style="font-size:14px;color:#6b7280;margin-bottom:16px">Week of {{ week_start_display }}</p>
-  </div>
+<div class="week-controls no-print">
+  <h2>Week of {{ week_label }}</h2>
+  <a href="/installation/schedule?week={{ prev_week }}" class="btn btn-secondary btn-sm">← Prev</a>
+  <a href="/installation/schedule" class="btn btn-secondary btn-sm">Today</a>
+  <a href="/installation/schedule?week={{ next_week }}" class="btn btn-secondary btn-sm">Next →</a>
+  <button class="btn btn-print btn-sm" onclick="window.print()">🖨 Print Schedule</button>
+</div>
 
-  {% if crew_members %}
-  <div class="crew-legend no-print">
-    <h3>Active Crew</h3>
-    <div class="crew-chips">
-      {% set colors = ['#1a3c5e','#059669','#7c3aed','#0891b2','#b45309','#dc2626','#374151','#0e7490'] %}
-      {% for cm in crew_members %}
-      <span class="crew-chip" style="background:{{ colors[loop.index0 % colors|length] }}">{{ cm.name }}{% if cm.role != 'crew' %} ({{ cm.role }}){% endif %}</span>
+<div class="schedule-wrap">
+{% if not crews %}
+<div style="text-align:center;padding:60px;color:#9ca3af">
+  <div style="font-size:48px;margin-bottom:12px">👷</div>
+  <p style="font-size:16px">No crews set up yet.</p>
+  <a href="/installation/crews" class="btn btn-primary" style="margin-top:16px;display:inline-flex">Set Up Crews →</a>
+</div>
+{% else %}
+<table class="schedule-table">
+  <thead>
+    <tr>
+      <th class="hdr-crew">CREW</th>
+      {% for day in week_days %}
+      <th class="hdr-day">
+        <div class="day-name">{{ day.name }}</div>
+        <div class="day-date">{{ day.label }}</div>
+      </th>
       {% endfor %}
-    </div>
-  </div>
-  {% endif %}
-
-  <!-- Weekly summary bar -->
-  <div class="week-summary">
-    <div class="ws-item">Total Days: <strong>{{ total_week_days }}</strong></div>
-    <div class="ws-item">Crew Cost: <strong>${{ "{:,.0f}".format(total_week_days * 1850) }}</strong></div>
-    {% for jname, cnt in week_job_counts.items() %}<div class="ws-item">{{ jname }}: <strong>{{ cnt }} day{{ 's' if cnt != 1 }}</strong></div>{% endfor %}
-  </div>
-
-  <!-- 5-day grid -->
-  <div class="week-grid" id="schedule-grid">
+    </tr>
+  </thead>
+  <tbody>
+  {% for crew in crews %}
+  <tr>
+    <td class="crew-cell">
+      <div class="crew-name">{{ crew.name }}</div>
+      <div class="crew-meta">
+        ({{ crew.crew_size }} MEN CREW)<br>
+        TRUCK #{{ crew.truck_number }}
+      </div>
+    </td>
     {% for day in week_days %}
-    <div class="day-col" id="col-{{ day.date_str }}"
-         ondragover="onDragOver(event)" ondrop="onDrop(event,'{{ day.date_str }}')">
-      <div class="day-header {{ 'today-hdr' if day.is_today }}">
-        {{ day.weekday }}<br><span style="font-size:11px;font-weight:400;opacity:.85">{{ day.display }}</span>
-      </div>
-      <div class="day-body" id="body-{{ day.date_str }}">
-        {% for entry in day.entries %}
-        <div class="job-block" draggable="true"
-             id="entry-{{ entry.id }}"
-             ondragstart="onDragStart(event, {{ entry.id }})"
-             style="background:{{ entry.color }}20;border-left-color:{{ entry.color }}">
-          <button class="jb-del no-print" onclick="deleteEntry({{ entry.id }}, this)" title="Remove">×</button>
-          <div class="jb-name" style="color:{{ entry.color }}">{{ entry.job_name }}</div>
-          {% if entry.crew_members %}<div class="jb-crew">👷 {{ entry.crew_members }}</div>{% endif %}
-          <div class="jb-cost">$1,850</div>
-          {% if entry.notes %}<div style="font-size:11px;color:#6b7280;margin-top:2px">{{ entry.notes }}</div>{% endif %}
+    {% set entry = schedule.get(crew.id, {}).get(day.date_str) %}
+    {% if day.is_saturday %}
+    <td class="assign-cell sat-cell"><div class="cell-inner"><span class="cell-off">OFF</span></div></td>
+    {% elif entry %}
+    <td class="assign-cell" onclick="openAssign({{ crew.id }}, '{{ crew.name }}', '{{ day.date_str }}', '{{ day.label }}')">
+      <div class="cell-inner">
+        <button class="cell-remove no-print" onclick="removeEntry(event, {{ entry.id }})">×</button>
+        <div>
+          <div class="cell-job">{{ entry.job_name }}</div>
+          {% if entry.proposal_number %}<div class="cell-prop">PROP# {{ entry.proposal_number }}</div>{% endif %}
         </div>
-        {% endfor %}
-        <button class="add-day-btn no-print" onclick="openAddForDay('{{ day.date_str }}')">+ Add</button>
+        {% if entry.days_allotted %}
+        <div class="cell-counter">
+          {{ entry.days_allotted }}&nbsp;<span class="remaining">{{ entry.days_remaining }}</span>
+        </div>
+        {% endif %}
       </div>
-    </div>
+    </td>
+    {% else %}
+    <td class="assign-cell" onclick="openAssign({{ crew.id }}, '{{ crew.name }}', '{{ day.date_str }}', '{{ day.label }}')">
+      <div class="cell-inner">
+        <span class="cell-empty-hint no-print">+ Tap to assign</span>
+      </div>
+    </td>
+    {% endif %}
     {% endfor %}
-  </div>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
 </div>
 
-<!-- Add/Assign Modal -->
-<div class="modal-overlay no-print" id="add-day-modal">
+<!-- Assign Modal -->
+<div class="modal-overlay no-print" id="assign-modal">
   <div class="modal">
-    <button class="modal-close" onclick="closeModal('add-day-modal')">×</button>
-    <h3>📅 Assign Job to Day</h3>
-    <p style="font-size:13px;color:#6b7280;margin-bottom:14px">Date: <strong id="modal-date-display"></strong> · Cost: <strong>$1,850</strong></p>
-    <input type="hidden" id="modal-date">
-    <div class="form-group" style="margin-bottom:10px"><label>Job *</label>
-      <select id="modal-job">
-        <option value="">— Select Job —</option>
-        {% for j in all_jobs %}<option value="{{ j[0] }}">{{ j[1] }}</option>{% endfor %}
-      </select>
-    </div>
-    <div class="form-group" style="margin-bottom:10px"><label>Crew Members</label>
-      <input id="modal-crew" placeholder="e.g. John, Maria, Tom">
-      {% if crew_members %}
-      <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
-        {% for cm in crew_members %}<span onclick="appendCrew('{{ cm.name }}')" style="background:#e5e7eb;padding:3px 9px;border-radius:12px;font-size:12px;cursor:pointer">{{ cm.name }}</span>{% endfor %}
-      </div>
-      {% endif %}
-    </div>
-    <div class="form-group" style="margin-bottom:18px"><label>Notes</label><textarea id="modal-notes" rows="2"></textarea></div>
-    <button class="btn btn-primary" onclick="saveAddDay()">Save Day ($1,850)</button>
-  </div>
-</div>
-
-<!-- Bulk crew assign (assign one crew to multiple days for a job) -->
-<div class="modal-overlay no-print" id="bulk-assign-modal">
-  <div class="modal">
-    <button class="modal-close" onclick="closeModal('bulk-assign-modal')">×</button>
-    <h3>👷 Assign Crew for the Week</h3>
-    <p style="font-size:13px;color:#6b7280;margin-bottom:14px">Assign a crew to work specific days on a job this week. Each checked day = $1,850.</p>
-    <div class="form-group" style="margin-bottom:10px"><label>Job *</label>
-      <select id="bulk-job">
-        <option value="">— Select Job —</option>
-        {% for j in all_jobs %}<option value="{{ j[0] }}">{{ j[1] }}</option>{% endfor %}
-      </select>
-    </div>
-    <div class="form-group" style="margin-bottom:10px"><label>Crew Members</label>
-      <input id="bulk-crew" placeholder="e.g. John, Maria, Tom">
-      {% if crew_members %}
-      <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">{% for cm in crew_members %}<span onclick="appendBulkCrew('{{ cm.name }}')" style="background:#e5e7eb;padding:3px 9px;border-radius:12px;font-size:12px;cursor:pointer">{{ cm.name }}</span>{% endfor %}</div>
-      {% endif %}
-    </div>
-    <div class="form-group" style="margin-bottom:18px">
-      <label style="margin-bottom:8px">Days to Assign</label>
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
-        {% for day in week_days %}
-        <label style="display:flex;align-items:center;gap:5px;font-weight:400;cursor:pointer;background:#f9fafb;padding:6px 12px;border-radius:6px;border:1px solid #e5e7eb">
-          <input type="checkbox" name="bulk-day" value="{{ day.date_str }}" {% if day.is_today %}checked{% endif %} style="width:auto">
-          {{ day.weekday }} {{ day.display }}
-        </label>
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <h3 id="modal-title">Assign Job</h3>
+    <div class="modal-sub" id="modal-sub"></div>
+    <input type="hidden" id="m-crew-id">
+    <input type="hidden" id="m-date">
+    <div class="form-group">
+      <label>Job</label>
+      <select id="m-job" onchange="loadProposals(this.value)">
+        <option value="">— Select job —</option>
+        {% for j in all_jobs %}
+        <option value="{{ j.id }}">{{ j.job_name }}</option>
         {% endfor %}
-      </div>
+      </select>
     </div>
-    <div id="bulk-cost-display" style="font-size:14px;color:#1a3c5e;font-weight:600;margin-bottom:14px"></div>
-    <button class="btn btn-primary" onclick="saveBulkAssign()">Assign Selected Days</button>
+    <div class="form-group">
+      <label>Proposal</label>
+      <select id="m-proposal">
+        <option value="">— Select job first —</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Notes (optional)</label>
+      <input id="m-notes" placeholder="e.g. Focus on zone 3">
+    </div>
+    <div style="display:flex;gap:8px;margin-top:18px">
+      <button class="btn btn-primary" onclick="saveAssign()" style="flex:1">Save</button>
+      <button class="btn btn-secondary" onclick="closeModal()" style="flex:1">Cancel</button>
+    </div>
   </div>
 </div>
 
 <script>
-function openModal(id){document.getElementById(id).classList.add('open');}
-function closeModal(id){document.getElementById(id).classList.remove('open');}
-document.querySelectorAll('.modal-overlay').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open');}));
-function appendCrew(n){const el=document.getElementById('modal-crew');el.value=el.value?(el.value+', '+n):n;}
-function appendBulkCrew(n){const el=document.getElementById('bulk-crew');el.value=el.value?(el.value+', '+n):n;}
+const ALL_PROPOSALS = {{ proposals_json | safe }};
 
-// Update bulk cost display
-document.querySelectorAll('[name="bulk-day"]').forEach(cb=>cb.addEventListener('change',updateBulkCost));
-function updateBulkCost(){const cnt=document.querySelectorAll('[name="bulk-day"]:checked').length;document.getElementById('bulk-cost-display').textContent=cnt>0?cnt+' day'+(cnt>1?'s':'')+' = $'+(cnt*1850).toLocaleString():'Select days above';}
-updateBulkCost();
+function openAssign(crewId, crewName, date, dateLabel) {
+  document.getElementById('m-crew-id').value = crewId;
+  document.getElementById('m-date').value = date;
+  document.getElementById('modal-title').textContent = crewName;
+  document.getElementById('modal-sub').textContent = dateLabel;
+  document.getElementById('m-job').value = '';
+  document.getElementById('m-proposal').innerHTML = '<option value="">— Select job first —</option>';
+  document.getElementById('m-notes').value = '';
+  document.getElementById('assign-modal').classList.add('open');
+}
+function closeModal() { document.getElementById('assign-modal').classList.remove('open'); }
+document.getElementById('assign-modal').addEventListener('click', e => { if (e.target.id === 'assign-modal') closeModal(); });
 
-function openAddForDay(dateStr){
-  document.getElementById('modal-date').value=dateStr;
-  document.getElementById('modal-date-display').textContent=dateStr;
-  openModal('add-day-modal');
+function loadProposals(jobId) {
+  const sel = document.getElementById('m-proposal');
+  sel.innerHTML = '<option value="">— Select proposal —</option>';
+  if (!jobId) return;
+  const props = ALL_PROPOSALS[jobId] || [];
+  if (!props.length) { sel.innerHTML = '<option value="">No proposals imported</option>'; return; }
+  props.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.textContent = (p.proposal_number || 'Proposal') + ' — $' + (p.bid_amount || 0).toLocaleString() + (p.days_allotted ? ' · ' + p.days_allotted + ' days' : '');
+    sel.appendChild(opt);
+  });
+  if (props.length === 1) sel.value = props[0].id;
 }
 
-function saveAddDay(){
-  const jobId=document.getElementById('modal-job').value;
-  const date=document.getElementById('modal-date').value;
-  if(!jobId||!date){alert('Select a job and date');return;}
-  fetch('/install_scheduling/add_entry',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({job_id:jobId,schedule_date:date,hours_worked:0,
-      crew_members:document.getElementById('modal-crew').value,
-      notes:document.getElementById('modal-notes').value})})
-  .then(r=>r.json()).then(d=>{if(d.success){closeModal('add-day-modal');location.reload();}else alert(d.error);});
+function saveAssign() {
+  const crewId = document.getElementById('m-crew-id').value;
+  const date = document.getElementById('m-date').value;
+  const jobId = document.getElementById('m-job').value;
+  const proposalId = document.getElementById('m-proposal').value;
+  if (!jobId) { alert('Please select a job'); return; }
+  fetch('/installation/api/crew-day/assign', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({crew_id: crewId, date, job_id: jobId, proposal_id: proposalId || null,
+                          notes: document.getElementById('m-notes').value})
+  }).then(r => r.json()).then(d => {
+    if (d.success) location.reload();
+    else alert('Error: ' + d.error);
+  });
 }
 
-function saveBulkAssign(){
-  const jobId=document.getElementById('bulk-job').value;
-  const crew=document.getElementById('bulk-crew').value;
-  const days=[...document.querySelectorAll('[name="bulk-day"]:checked')].map(cb=>cb.value);
-  if(!jobId){alert('Select a job');return;}
-  if(!days.length){alert('Select at least one day');return;}
-  fetch('/installation/api/schedule/bulk-assign',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({job_id:jobId,dates:days,crew_members:crew})})
-  .then(r=>r.json()).then(d=>{if(d.success){closeModal('bulk-assign-modal');location.reload();}else alert(d.error);});
-}
-
-// Drag-and-drop
-let dragId=null;
-function onDragStart(e,id){dragId=id;e.dataTransfer.effectAllowed='move';}
-function onDragOver(e){e.preventDefault();e.currentTarget.classList.add('drag-over');}
-document.querySelectorAll('.day-col').forEach(col=>{col.addEventListener('dragleave',()=>col.querySelectorAll('.day-body').forEach(b=>b.classList.remove('drag-over')));});
-function onDrop(e,targetDate){
-  e.preventDefault();
-  e.currentTarget.querySelectorAll('.day-body').forEach(b=>b.classList.remove('drag-over'));
-  if(!dragId)return;
-  fetch('/installation/api/schedule/move',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({id:dragId,date:targetDate})})
-  .then(r=>r.json()).then(d=>{if(d.success)location.reload();else alert(d.error);});
-  dragId=null;
-}
-
-function deleteEntry(id,btn){
-  if(!confirm('Remove this day from the schedule?'))return;
-  fetch('/install_scheduling/delete_entry',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({id})})
-  .then(r=>r.json()).then(d=>{if(d.success)btn.closest('.job-block').remove();else alert(d.error);});
+function removeEntry(e, entryId) {
+  e.stopPropagation();
+  if (!confirm('Remove this assignment?')) return;
+  fetch('/installation/api/crew-day/remove', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({id: entryId})
+  }).then(r => r.json()).then(d => {
+    if (d.success) location.reload();
+    else alert('Error: ' + d.error);
+  });
 }
 </script>
 </body></html>
-'''
+"""
+
+# ── Crew Management Page ─────────────────────────────────────────────────────
+
+INSTALLATION_CREWS_TEMPLATE = _INST_CSS + """<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Crew Management</title>
+</head>
+<body>
+<div class="top-bar">
+  <h1>👷 Crew Management</h1>
+  <nav>
+    <a href="/installation/schedule">← Schedule</a>
+    <a href="/installation">Jobs</a>
+    <a href="/dashboard">Dashboard</a>
+  </nav>
+</div>
+<div class="page">
+  <div class="card">
+    <div class="card-title">Add New Crew</div>
+    <div class="form-row">
+      <div class="form-group"><label>Foreman / Crew Leader Name</label><input id="c-name" placeholder="e.g. Antelmo Vasquez"></div>
+      <div class="form-group"><label>Crew Size (# of men)</label><input id="c-size" type="number" value="3" min="1"></div>
+      <div class="form-group"><label>Truck #</label><input id="c-truck" placeholder="e.g. 42"></div>
+    </div>
+    <button class="btn btn-primary" onclick="addCrew()">Add Crew</button>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Active Crews</div>
+    <table>
+      <thead><tr><th>Foreman</th><th>Crew Size</th><th>Truck #</th><th>Sort</th><th>Actions</th></tr></thead>
+      <tbody id="crew-list">
+      {% for c in crews %}
+      <tr id="cr-{{ c.id }}">
+        <td style="font-weight:600">{{ c.name }}</td>
+        <td>{{ c.crew_size }} men</td>
+        <td>#{{ c.truck_number }}</td>
+        <td>
+          <button onclick="moveCrew({{ c.id }}, 'up')" class="btn btn-secondary btn-sm">↑</button>
+          <button onclick="moveCrew({{ c.id }}, 'down')" class="btn btn-secondary btn-sm">↓</button>
+        </td>
+        <td>
+          <button onclick="editCrewPrompt({{ c.id }}, '{{ c.name }}', {{ c.crew_size }}, '{{ c.truck_number }}')" class="btn btn-secondary btn-sm">✏️ Edit</button>
+          <button onclick="toggleCrew({{ c.id }}, this)" class="btn btn-danger btn-sm">Deactivate</button>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not crews %}
+      <tr><td colspan="5" style="text-align:center;color:#9ca3af;padding:30px">No crews yet. Add one above.</td></tr>
+      {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if inactive_crews %}
+  <div class="card">
+    <div class="card-title">Inactive Crews</div>
+    <table><thead><tr><th>Foreman</th><th>Crew Size</th><th>Truck</th><th></th></tr></thead>
+    <tbody>
+    {% for c in inactive_crews %}
+    <tr><td>{{ c.name }}</td><td>{{ c.crew_size }}</td><td>#{{ c.truck_number }}</td>
+    <td><button onclick="toggleCrew({{ c.id }}, this, true)" class="btn btn-success btn-sm">Reactivate</button></td></tr>
+    {% endfor %}
+    </tbody></table>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Edit Modal -->
+<div class="modal-overlay" id="edit-modal">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <h3>Edit Crew</h3>
+    <input type="hidden" id="edit-id">
+    <div class="form-group" style="margin-bottom:10px"><label>Name</label><input id="edit-name"></div>
+    <div class="form-row">
+      <div class="form-group"><label>Crew Size</label><input id="edit-size" type="number" min="1"></div>
+      <div class="form-group"><label>Truck #</label><input id="edit-truck"></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button class="btn btn-primary" onclick="saveCrew()" style="flex:1">Save</button>
+      <button class="btn btn-secondary" onclick="closeModal()" style="flex:1">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function closeModal(){document.querySelectorAll('.modal-overlay').forEach(m=>m.classList.remove('open'));}
+document.querySelectorAll('.modal-overlay').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)closeModal();}));
+
+function api(url, data, cb) {
+  fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)})
+    .then(r=>r.json()).then(d=>{ if(d.success) cb(d); else alert('Error: '+d.error); });
+}
+
+function addCrew() {
+  const name = document.getElementById('c-name').value.trim();
+  if (!name) { alert('Name required'); return; }
+  api('/installation/api/crews/add', {
+    name, crew_size: document.getElementById('c-size').value,
+    truck_number: document.getElementById('c-truck').value
+  }, () => location.reload());
+}
+
+function editCrewPrompt(id, name, size, truck) {
+  document.getElementById('edit-id').value = id;
+  document.getElementById('edit-name').value = name;
+  document.getElementById('edit-size').value = size;
+  document.getElementById('edit-truck').value = truck;
+  document.getElementById('edit-modal').classList.add('open');
+}
+function saveCrew() {
+  api('/installation/api/crews/edit', {
+    id: document.getElementById('edit-id').value,
+    name: document.getElementById('edit-name').value,
+    crew_size: document.getElementById('edit-size').value,
+    truck_number: document.getElementById('edit-truck').value
+  }, () => { closeModal(); location.reload(); });
+}
+function toggleCrew(id, btn, reactivate) {
+  if (!reactivate && !confirm('Deactivate this crew?')) return;
+  api('/installation/api/crews/toggle', {id}, () => location.reload());
+}
+function moveCrew(id, dir) {
+  api('/installation/api/crews/move', {id, dir}, () => location.reload());
+}
+</script>
+</body></html>
+"""
 
 
+# ── Weekly Schedule route (complete rewrite) ──────────────────────────────────
 
-# ── Installation Module Routes ─────────────────────────────────────────────
-
-@app.route('/installation')
-def installation():
+@app.route('/installation/schedule')
+def installation_schedule():
     if 'username' not in session:
         return redirect(url_for('login'))
     try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("""SELECT j.id, j.job_name, j.year, j.active,
-                            COALESCE(j.client_name,''), COALESCE(j.project_address,''),
-                            COALESCE(j.inst_status,'planning'), COALESCE(j.contract_value,0),
-                            COALESCE(j.job_code,'')
-                     FROM jobs j WHERE COALESCE(j.department,'install')='install'
-                     ORDER BY j.active DESC, j.year DESC, j.job_name ASC""")
-        raw_jobs = c.fetchall()
+        from datetime import timedelta, date as _date
+        import json as _json
 
-        # days on job per job_id
-        c.execute("SELECT job_id, COUNT(*) FROM install_schedules GROUP BY job_id")
-        days_map = {r[0]: r[1] for r in c.fetchall()}
+        week_param = request.args.get('week', '')
+        today = _date.today()
 
-        # invoice totals per job (via job_name join)
-        c.execute("""SELECT j.id, COALESCE(SUM(i.invoice_cost),0)
-                     FROM jobs j
-                     JOIN po_requests pr ON pr.job_name=j.job_name AND pr.po_type='install'
-                     JOIN invoices i ON i.po_id=pr.id
-                     GROUP BY j.id""")
-        inv_map = {r[0]: r[1] for r in c.fetchall()}
-
-        # change order counts
-        c.execute("SELECT job_id, COUNT(*), SUM(CASE WHEN status='pending_approval' THEN 1 ELSE 0 END) FROM installation_change_orders GROUP BY job_id")
-        co_map = {r[0]: {'total': r[1], 'pending': r[2] or 0} for r in c.fetchall()}
-
-        # site plan counts
-        c.execute("SELECT job_id, COUNT(*) FROM installation_site_plans GROUP BY job_id")
-        plan_map = {r[0]: r[1] for r in c.fetchall()}
-
-        jobs = []
-        total_contract = 0.0
-        total_invoiced = 0.0
-        active_count = 0
-        pending_cos = 0
-        for row in raw_jobs:
-            jid = row[0]
-            inv_total = inv_map.get(jid, 0)
-            co_info = co_map.get(jid, {'total': 0, 'pending': 0})
-            contract = row[7] or 0
-            if row[3]:
-                active_count += 1
-                total_contract += contract
-                total_invoiced += inv_total
-            pending_cos += co_info['pending']
-
-            class _J: pass
-            j = _J()
-            j.id = jid; j.job_name = row[1]; j.year = row[2]; j.active = row[3]
-            j.client_name = row[4]; j.project_address = row[5]
-            j.inst_status = row[6]; j.contract_value = contract
-            j.job_code = row[8]
-            j.days_on_job = days_map.get(jid, 0)
-            j.invoiced_total = inv_total
-            j.total_cos = co_info['total']
-            j.pending_cos = co_info['pending']
-            j.site_plans = plan_map.get(jid, 0)
-            jobs.append(j)
-
-        conn.close()
-        return render_template_string(INSTALLATION_HUB_TEMPLATE,
-            jobs=jobs, active_count=active_count, total_count=len(jobs),
-            pending_cos=pending_cos, total_contract=total_contract,
-            total_invoiced=total_invoiced)
-    except Exception as e:
-        import traceback
-        return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre><a href='/dashboard'>Back</a>"
-
-
-@app.route('/installation/job/<int:job_id>')
-def installation_job(job_id):
-    if 'username' not in session:
-        return redirect(url_for('login'))
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-
-        c.execute("""SELECT id, job_name, year, active, job_code,
-                            COALESCE(client_name,''), COALESCE(client_email,''),
-                            COALESCE(client_contact,''), COALESCE(project_address,''),
-                            COALESCE(start_date,''), COALESCE(end_date,''),
-                            COALESCE(inst_status,'planning'), COALESCE(contract_value,0),
-                            COALESCE(description,''), COALESCE(budget,0)
-                     FROM jobs WHERE id=?""", (job_id,))
-        jrow = c.fetchone()
-        if not jrow:
-            conn.close()
-            return "<h2>Job not found</h2><a href='/installation'>Back</a>"
-
-        class _J: pass
-        job = _J()
-        job.id = jrow[0]; job.job_name = jrow[1]; job.year = jrow[2]
-        job.active = jrow[3]; job.job_code = jrow[4]
-        job.client_name = jrow[5]; job.client_email = jrow[6]
-        job.client_contact = jrow[7]; job.project_address = jrow[8]
-        job.start_date = jrow[9]; job.end_date = jrow[10]
-        job.inst_status = jrow[11]; job.contract_value = jrow[12]
-        job.description = jrow[13]; job.budget = jrow[14]
-
-        # proposal
-        c.execute("""SELECT bid_amount, materials_budget, labor_budget, travel_budget,
-                            hotel_cash_budget, subs_budget, rental_budget, permit_budget,
-                            asbuilt_budget, days_allotted FROM job_proposals WHERE job_id=? LIMIT 1""", (job_id,))
-        pr = c.fetchone()
-        class _P: pass
-        proposal = None
-        if pr:
-            proposal = _P()
-            proposal.bid_amount = pr[0]; proposal.materials_budget = pr[1]
-            proposal.labor_budget = pr[2]; proposal.travel_budget = pr[3]
-            proposal.hotel_cash_budget = pr[4]; proposal.subs_budget = pr[5]
-            proposal.rental_budget = pr[6]; proposal.permit_budget = pr[7]
-            proposal.asbuilt_budget = pr[8]; proposal.days_allotted = pr[9]
-
-        # actuals from expenses
-        c.execute("SELECT category, SUM(amount) FROM installation_expenses WHERE job_id=? GROUP BY category", (job_id,))
-        class _A: pass
-        actuals = _A()
-        actuals.materials=0; actuals.labor=0; actuals.travel=0
-        actuals.hotel=0; actuals.subs=0; actuals.rental=0; actuals.permit=0
-        for row in c.fetchall():
-            cat = row[0].lower()
-            if hasattr(actuals, cat): setattr(actuals, cat, row[1])
-
-        # invoice total
-        c.execute("""SELECT COALESCE(SUM(i.invoice_cost),0)
-                     FROM invoices i JOIN po_requests pr ON pr.id=i.po_id
-                     WHERE pr.job_name=(SELECT job_name FROM jobs WHERE id=?) AND pr.po_type='install'""", (job_id,))
-        total_invoiced = c.fetchone()[0] or 0
-
-        # days on job
-        c.execute("SELECT COUNT(*) FROM install_schedules WHERE job_id=?", (job_id,))
-        days_on_job = c.fetchone()[0]
-
-        # site plans
-        c.execute("SELECT id, filename, original_filename, version, description, file_size, uploaded_by, uploaded_at, is_current FROM installation_site_plans WHERE job_id=? ORDER BY uploaded_at DESC", (job_id,))
-        plan_rows = c.fetchall()
-        class _Plan: pass
-        site_plans = []
-        for p in plan_rows:
-            obj = _Plan()
-            obj.id=p[0]; obj.filename=p[1]; obj.original_filename=p[2]
-            obj.version=p[3]; obj.description=p[4]; obj.file_size=p[5] or 0
-            obj.uploaded_by=p[6]; obj.uploaded_at=p[7] or ''; obj.is_current=p[8]
-            site_plans.append(obj)
-
-        # change orders
-        c.execute("""SELECT id, co_number, title, description, voice_transcript, amount,
-                            status, requires_approval, created_by, created_at,
-                            approved_by, approved_at, client_email, notes
-                     FROM installation_change_orders WHERE job_id=? ORDER BY created_at DESC""", (job_id,))
-        co_rows = c.fetchall()
-        class _CO: pass
-        change_orders = []
-        for co in co_rows:
-            obj = _CO()
-            obj.id=co[0]; obj.co_number=co[1]; obj.title=co[2]
-            obj.description=co[3]; obj.voice_transcript=co[4]; obj.amount=co[5]
-            obj.status=co[6]; obj.requires_approval=co[7]
-            obj.created_by=co[8]; obj.created_at=co[9] or ''
-            obj.approved_by=co[10]; obj.approved_at=co[11] or ''
-            obj.client_email=co[12]; obj.notes=co[13]
-            change_orders.append(obj)
-
-        recent_cos = change_orders[:5]
-
-        # schedule
-        c.execute("SELECT id, schedule_date, crew_members, notes, hours_worked FROM install_schedules WHERE job_id=? ORDER BY schedule_date DESC", (job_id,))
-        sched_rows = c.fetchall()
-        class _S: pass
-        schedule_entries = []
-        for s in sched_rows:
-            obj = _S()
-            obj.id=s[0]; obj.schedule_date=s[1]; obj.crew_members=s[2]
-            obj.notes=s[3]; obj.hours_worked=s[4] or 0
-            schedule_entries.append(obj)
-
-        # daily logs
-        c.execute("""SELECT id, log_date, weather, temp_high, crew_count, crew_members,
-                            hours_worked, work_performed, materials_used, equipment_used,
-                            issues_delays, logged_by FROM installation_daily_logs
-                     WHERE job_id=? ORDER BY log_date DESC""", (job_id,))
-        log_rows = c.fetchall()
-        class _L: pass
-        daily_logs = []
-        for lg in log_rows:
-            obj = _L()
-            obj.id=lg[0]; obj.log_date=lg[1]; obj.weather=lg[2]
-            obj.temp_high=lg[3]; obj.crew_count=lg[4]; obj.crew_members=lg[5]
-            obj.hours_worked=lg[6] or 0; obj.work_performed=lg[7]
-            obj.materials_used=lg[8]; obj.equipment_used=lg[9]
-            obj.issues_delays=lg[10]; obj.logged_by=lg[11]
-            daily_logs.append(obj)
-
-        # expenses
-        c.execute("""SELECT id, expense_date, category, vendor, description, amount,
-                            receipt_filename, logged_by FROM installation_expenses
-                     WHERE job_id=? ORDER BY expense_date DESC""", (job_id,))
-        exp_rows = c.fetchall()
-        class _E: pass
-        expenses = []
-        expense_totals = {}
-        expense_grand_total = 0.0
-        for e in exp_rows:
-            obj = _E()
-            obj.id=e[0]; obj.expense_date=e[1]; obj.category=e[2]
-            obj.vendor=e[3]; obj.description=e[4]; obj.amount=e[5] or 0
-            obj.receipt_filename=e[6]; obj.logged_by=e[7]
-            expenses.append(obj)
-            expense_totals[e[2]] = expense_totals.get(e[2], 0) + (e[5] or 0)
-            expense_grand_total += (e[5] or 0)
-
-        # RFIs
-        c.execute("""SELECT id, rfi_number, title, question, response, status,
-                            priority, assigned_to, due_date, created_by, created_at
-                     FROM installation_rfis WHERE job_id=? ORDER BY created_at DESC""", (job_id,))
-        rfi_rows = c.fetchall()
-        class _R: pass
-        rfis = []
-        for r in rfi_rows:
-            obj = _R()
-            obj.id=r[0]; obj.rfi_number=r[1]; obj.title=r[2]
-            obj.question=r[3]; obj.response=r[4]; obj.status=r[5]
-            obj.priority=r[6]; obj.assigned_to=r[7]; obj.due_date=r[8]
-            obj.created_by=r[9]; obj.created_at=r[10]
-            rfis.append(obj)
-
-        # POs for costing tab
-        c.execute("""SELECT pr.id, j.id, pr.tech_username, pr.status,
-                            COALESCE(pr.estimated_cost,0), COALESCE(pr.invoice_cost,0),
-                            pr.request_date
-                     FROM po_requests pr JOIN jobs j ON j.job_name=pr.job_name
-                     WHERE j.id=? AND pr.po_type='install' ORDER BY pr.request_date DESC""", (job_id,))
-        pos = c.fetchall()
-
-        # Active crew members for schedule modal
-        c.execute("SELECT id, name, role FROM installation_crew_members WHERE active=1 ORDER BY name")
-        cm_rows = c.fetchall()
-        class _CM2: pass
-        crew_members = []
-        for cm in cm_rows:
-            obj = _CM2(); obj.id=cm[0]; obj.name=cm[1]; obj.role=cm[2]
-            crew_members.append(obj)
-
-        conn.close()
-        today = datetime.now().strftime('%Y-%m-%d')
-        return render_template_string(INSTALLATION_JOB_TEMPLATE,
-            job=job, proposal=proposal, actuals=actuals,
-            total_invoiced=total_invoiced, days_on_job=days_on_job,
-            site_plans=site_plans, change_orders=change_orders, recent_cos=recent_cos,
-            schedule_entries=schedule_entries, daily_logs=daily_logs,
-            expenses=expenses, expense_totals=expense_totals,
-            expense_grand_total=expense_grand_total,
-            rfis=rfis, pos=pos, today=today,
-            crew_members=crew_members,
-            role=session.get('role',''), username=session.get('username',''))
-    except Exception as e:
-        import traceback
-        return f"<h2>Error loading job</h2><pre>{traceback.format_exc()}</pre><a href='/installation'>Back</a>"
-
-
-@app.route('/installation/api/job/update', methods=['POST'])
-def installation_job_update():
-    if 'username' not in session:
-        return jsonify({'success': False, 'error': 'Not logged in'}), 401
-    data = request.get_json()
-    job_id = data.get('job_id')
-    if not job_id:
-        return jsonify({'success': False, 'error': 'No job_id'})
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("""UPDATE jobs SET client_name=?, client_email=?, client_contact=?,
-                     inst_status=?, project_address=?, start_date=?, end_date=?,
-                     contract_value=?, description=? WHERE id=?""",
-                  (data.get('client_name',''), data.get('client_email',''),
-                   data.get('client_contact',''), data.get('inst_status','planning'),
-                   data.get('project_address',''), data.get('start_date',''),
-                   data.get('end_date',''), float(data.get('contract_value') or 0),
-                   data.get('description',''), job_id))
-        conn.commit(); conn.close()
-        return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
-
-
-@app.route('/installation/api/site-plans/upload', methods=['POST'])
-def installation_site_plan_upload():
-    if 'username' not in session:
-        return jsonify({'success': False, 'error': 'Not logged in'}), 401
-    try:
-        job_id = request.form.get('job_id')
-        if not job_id or 'plan_file' not in request.files:
-            return jsonify({'success': False, 'error': 'Missing file or job_id'})
-        f = request.files['plan_file']
-        if not f.filename:
-            return jsonify({'success': False, 'error': 'Empty file'})
-        desc = request.form.get('description', '')
-        is_current = int(request.form.get('is_current', 1))
-        ext = os.path.splitext(f.filename)[1].lower()
-        safe_name = f"{job_id}_{int(datetime.now().timestamp())}{ext}"
-        save_path = os.path.join(SITE_PLANS_DIR, safe_name)
-        f.save(save_path)
-        file_size = os.path.getsize(save_path)
-
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        # version number
-        c.execute("SELECT COALESCE(MAX(version),0)+1 FROM installation_site_plans WHERE job_id=?", (job_id,))
-        version = c.fetchone()[0]
-        if is_current:
-            c.execute("UPDATE installation_site_plans SET is_current=0 WHERE job_id=?", (job_id,))
-        c.execute("""INSERT INTO installation_site_plans
-                     (job_id, filename, original_filename, version, description, file_size, uploaded_by, uploaded_at, is_current)
-                     VALUES (?,?,?,?,?,?,?,?,?)""",
-                  (job_id, safe_name, f.filename, version, desc, file_size,
-                   session['username'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), is_current))
-        conn.commit(); conn.close()
-        return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
-
-
-@app.route('/installation/files/site-plan/<filename>')
-def installation_site_plan_file(filename):
-    if 'username' not in session:
-        return redirect(url_for('login'))
-    return send_from_directory(SITE_PLANS_DIR, filename)
-
-
-@app.route('/installation/files/photo/<filename>')
-def installation_photo_file(filename):
-    if 'username' not in session:
-        return redirect(url_for('login'))
-    return send_from_directory(DAILY_LOG_PHOTOS_DIR, filename)
-
-
-@app.route('/installation/files/receipt/<filename>')
-def installation_receipt_file(filename):
-    if 'username' not in session:
-        return redirect(url_for('login'))
-    return send_from_directory(EXPENSE_RECEIPTS_DIR, filename)
-
-
-@app.route('/installation/api/site-plans/mark-current', methods=['POST'])
-def installation_site_plan_mark_current():
-    if 'username' not in session:
-        return jsonify({'success': False, 'error': 'Not logged in'}), 401
-    data = request.get_json()
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("UPDATE installation_site_plans SET is_current=0 WHERE job_id=?", (data['job_id'],))
-        c.execute("UPDATE installation_site_plans SET is_current=1 WHERE id=?", (data['plan_id'],))
-        conn.commit(); conn.close()
-        return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
-
-
-@app.route('/installation/api/site-plans/delete', methods=['POST'])
-def installation_site_plan_delete():
-    if 'username' not in session or session.get('role') not in ['office','admin']:
-        return jsonify({'success': False, 'error': 'Access denied'}), 403
-    data = request.get_json()
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT filename FROM installation_site_plans WHERE id=?", (data['plan_id'],))
-        row = c.fetchone()
-        if row:
-            fp = os.path.join(SITE_PLANS_DIR, row[0])
-            if os.path.exists(fp): os.remove(fp)
-        c.execute("DELETE FROM installation_site_plans WHERE id=?", (data['plan_id'],))
-        conn.commit(); conn.close()
-        return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
-
-
-@app.route('/installation/api/change-orders/create', methods=['POST'])
-def installation_co_create():
-    if 'username' not in session:
-        return jsonify({'success': False, 'error': 'Not logged in'}), 401
-    data = request.get_json()
-    job_id = data.get('job_id')
-    if not job_id:
-        return jsonify({'success': False, 'error': 'No job_id'})
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        # Auto-number
-        c.execute("SELECT COUNT(*)+1 FROM installation_change_orders WHERE job_id=?", (job_id,))
-        co_seq = c.fetchone()[0]
-        co_number = data.get('co_number') or f"CO-{job_id:03d}-{co_seq:03d}"
-        requires_approval = int(data.get('requires_approval', 1))
-        status = 'draft' if requires_approval else 'no_approval_needed'
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        c.execute("""INSERT INTO installation_change_orders
-                     (job_id, co_number, title, description, voice_transcript, amount,
-                      status, requires_approval, created_by, created_at, client_email, notes)
-                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                  (job_id, co_number, data.get('title',''), data.get('description',''),
-                   data.get('voice_transcript',''), float(data.get('amount') or 0),
-                   status, requires_approval, session['username'], now,
-                   data.get('client_email',''), data.get('notes','')))
-        conn.commit(); conn.close()
-        return jsonify({'success': True, 'co_number': co_number})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
-
-
-@app.route('/installation/api/change-orders/update-status', methods=['POST'])
-def installation_co_update_status():
-    if 'username' not in session:
-        return jsonify({'success': False, 'error': 'Not logged in'}), 401
-    data = request.get_json()
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        if data['status'] == 'approved':
-            c.execute("UPDATE installation_change_orders SET status=?, approved_by=?, approved_at=? WHERE id=?",
-                      (data['status'], session['username'], now, data['co_id']))
-        else:
-            c.execute("UPDATE installation_change_orders SET status=? WHERE id=?",
-                      (data['status'], data['co_id']))
-        conn.commit(); conn.close()
-        return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
-
-
-@app.route('/installation/api/change-orders/send-approval', methods=['POST'])
-def installation_co_send_approval():
-    if 'username' not in session:
-        return jsonify({'success': False, 'error': 'Not logged in'}), 401
-    data = request.get_json()
-    co_id = data.get('co_id')
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("""SELECT ico.*, j.job_name, j.client_email
-                     FROM installation_change_orders ico
-                     JOIN jobs j ON j.id=ico.job_id
-                     WHERE ico.id=?""", (co_id,))
-        co = c.fetchone()
-        if not co:
-            conn.close()
-            return jsonify({'success': False, 'error': 'CO not found'})
-        token = str(uuid.uuid4())
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        c.execute("UPDATE installation_change_orders SET approval_token=?, approval_sent_at=?, status='pending_approval' WHERE id=?",
-                  (token, now, co_id))
-        conn.commit()
-        client_email = co[12] or co[-1]  # client_email from CO or from job
-        conn.close()
-
-        # Send email if email is configured
-        approval_url = f"{WEBSITE_URL}/installation/co/approve/{token}"
-        if EMAIL_ENABLED and client_email:
+        if week_param:
             try:
-                import smtplib
-                from email.mime.text import MIMEText
-                from email.mime.multipart import MIMEMultipart
-                msg = MIMEMultipart('alternative')
-                msg['Subject'] = f"Change Order Approval Request — {co[2]}"
-                msg['From'] = EMAIL_ADDRESS
-                msg['To'] = client_email
-                html = f"""
-                <p>You have received a change order for your review and approval.</p>
-                <p><strong>Project:</strong> {co[-2]}</p>
-                <p><strong>CO:</strong> {co[2]} — {co[3]}</p>
-                <p><strong>Amount:</strong> ${co[6]:,.2f}</p>
-                <p><strong>Description:</strong> {co[4] or ''}</p>
-                <p><a href="{approval_url}" style="background:#1a3c5e;color:white;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block;margin-top:12px">Review & Approve Change Order</a></p>
-                """
-                msg.attach(MIMEText(html, 'html'))
-                with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-                    server.starttls()
-                    server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-                    server.sendmail(EMAIL_ADDRESS, client_email, msg.as_string())
-            except Exception:
-                pass
+                week_start = _date.fromisoformat(week_param)
+                week_start -= timedelta(days=week_start.weekday())
+            except ValueError:
+                week_start = today - timedelta(days=today.weekday())
+        else:
+            week_start = today - timedelta(days=today.weekday())
 
-        return jsonify({'success': True, 'email': client_email, 'approval_url': approval_url})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+        prev_week = (week_start - timedelta(days=7)).isoformat()
+        next_week = (week_start + timedelta(days=7)).isoformat()
+        week_label = week_start.strftime('%B %d, %Y')
 
+        # Build 6-day list Mon–Sat
+        DAY_NAMES = ['MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY']
+        class _Day: pass
+        week_days = []
+        for i in range(6):
+            d = week_start + timedelta(days=i)
+            obj = _Day()
+            obj.date_str = d.isoformat()
+            obj.name = DAY_NAMES[i]
+            obj.label = d.strftime('%B %d, %Y').upper()
+            obj.is_saturday = (i == 5)
+            obj.is_today = (d == today)
+            week_days.append(obj)
 
-@app.route('/installation/co/approve/<token>', methods=['GET', 'POST'])
-def installation_co_approve(token):
-    try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("""SELECT ico.id, ico.co_number, ico.title, ico.description,
-                            ico.amount, ico.status, ico.created_at, ico.approved_at,
-                            j.job_name
-                     FROM installation_change_orders ico
-                     JOIN jobs j ON j.id=ico.job_id
-                     WHERE ico.approval_token=?""", (token,))
-        row = c.fetchone()
-        if not row:
-            conn.close()
-            return "<h2>Invalid or expired link.</h2>"
 
-        class _CO: pass
-        co = _CO()
-        co.id=row[0]; co.co_number=row[1]; co.title=row[2]
-        co.description=row[3]; co.amount=row[4]; co.status=row[5]
-        co.created_at=row[6]; co.approved_at=row[7]
-        job_name = row[8]
-        already_actioned = co.status in ('approved', 'rejected')
+        # Active crews in sort order
+        c.execute("SELECT id, name, crew_size, truck_number, sort_order FROM installation_crews WHERE active=1 ORDER BY sort_order, id")
+        crew_rows = c.fetchall()
+        class _Crew: pass
+        crews = []
+        for cr in crew_rows:
+            obj = _Crew()
+            obj.id=cr[0]; obj.name=cr[1]; obj.crew_size=cr[2]
+            obj.truck_number=cr[3] or ''; obj.sort_order=cr[4]
+            crews.append(obj)
 
-        if request.method == 'POST' and not already_actioned:
-            action = request.form.get('action')
-            if action in ('approve', 'reject'):
-                new_status = 'approved' if action == 'approve' else 'rejected'
-                now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                approved_by = 'client' if new_status == 'approved' else None
-                c.execute("UPDATE installation_change_orders SET status=?, approved_by=?, approved_at=? WHERE id=?",
-                          (new_status, approved_by, now, co.id))
-                conn.commit()
-                co.status = new_status
-                co.approved_at = now
-                already_actioned = True
+        # All install jobs (active)
+        c.execute("""SELECT j.id, j.job_name FROM jobs j
+                     WHERE COALESCE(j.department,'install')='install' AND j.active=1
+                     ORDER BY j.job_name""")
+        job_rows = c.fetchall()
+        class _Job: pass
+        all_jobs = []
+        for j in job_rows:
+            obj = _Job(); obj.id=j[0]; obj.job_name=j[1]
+            all_jobs.append(obj)
+
+        # All proposals grouped by job_id
+        c.execute("""SELECT id, job_id, proposal_number, bid_amount, days_allotted
+                     FROM job_proposals ORDER BY imported_at DESC""")
+        prop_rows = c.fetchall()
+        proposals_by_job = {}
+        for p in prop_rows:
+            jid = p[1]
+            if jid not in proposals_by_job:
+                proposals_by_job[jid] = []
+            proposals_by_job[jid].append({
+                'id': p[0], 'proposal_number': p[2] or '',
+                'bid_amount': p[3] or 0, 'days_allotted': p[4] or 0
+            })
+        proposals_json = _json.dumps(proposals_by_job)
+
+        # Crew-day assignments for this week
+        week_start_str = week_start.isoformat()
+        week_end_str = (week_start + timedelta(days=5)).isoformat()
+        c.execute("""SELECT cd.id, cd.crew_id, cd.assignment_date, cd.job_id,
+                            cd.proposal_id, cd.notes, j.job_name,
+                            jp.proposal_number, jp.days_allotted
+                     FROM installation_crew_days cd
+                     JOIN jobs j ON j.id=cd.job_id
+                     LEFT JOIN job_proposals jp ON jp.id=cd.proposal_id
+                     WHERE cd.assignment_date >= ? AND cd.assignment_date <= ?
+                     ORDER BY cd.assignment_date""", (week_start_str, week_end_str))
+        day_rows = c.fetchall()
+
+        # For the day counter: count total days each proposal has been used
+        # across ALL crews up to and including each date
+        # Build: proposal_id -> sorted list of dates used
+        c.execute("""SELECT proposal_id, assignment_date FROM installation_crew_days
+                     WHERE proposal_id IS NOT NULL ORDER BY assignment_date""")
+        all_usage = c.fetchall()
+        proposal_usage = {}  # proposal_id -> set of dates
+        for pid, d in all_usage:
+            if pid not in proposal_usage:
+                proposal_usage[pid] = set()
+            proposal_usage[pid].add(d)
 
         conn.close()
-        return render_template_string(INSTALLATION_CO_APPROVAL_TEMPLATE,
-                                      co=co, job_name=job_name, already_actioned=already_actioned)
+
+        # Build schedule dict: crew_id -> { date_str -> entry }
+        class _Entry: pass
+        schedule = {}
+        for row in day_rows:
+            cid = row[1]
+            dt = row[2]
+            pid = row[4]
+            days_allotted = row[8] or 0
+            # Days remaining: allotted - how many distinct dates used up to and including this date
+            if pid and days_allotted:
+                used_dates = proposal_usage.get(pid, set())
+                days_used_to_date = sum(1 for ud in used_dates if ud <= dt)
+                days_remaining = days_allotted - days_used_to_date
+            else:
+                days_allotted = 0
+                days_remaining = 0
+
+            obj = _Entry()
+            obj.id=row[0]; obj.crew_id=cid; obj.assignment_date=dt
+            obj.job_id=row[3]; obj.proposal_id=pid; obj.notes=row[5]
+            obj.job_name=row[6]; obj.proposal_number=row[7] or ''
+            obj.days_allotted=days_allotted; obj.days_remaining=days_remaining
+
+            if cid not in schedule:
+                schedule[cid] = {}
+            schedule[cid][dt] = obj
+
+        return render_template_string(INSTALLATION_SCHEDULE_TEMPLATE,
+            crews=crews, week_days=week_days, schedule=schedule,
+            all_jobs=all_jobs, proposals_json=proposals_json,
+            week_label=week_label, prev_week=prev_week, next_week=next_week)
     except Exception as e:
         import traceback
-        return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre>"
+        return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre><a href='/installation'>Back</a>"
 
 
-@app.route('/installation/api/schedule/log-week', methods=['POST'])
-def installation_log_week():
+@app.route('/installation/api/crew-day/assign', methods=['POST'])
+def installation_crew_day_assign():
     if 'username' not in session:
         return jsonify({'success': False, 'error': 'Not logged in'}), 401
     data = request.get_json()
-    job_id = data.get('job_id')
-    try:
-        from datetime import timedelta
-        today = datetime.now().date()
-        # last completed Mon–Fri week
-        monday = today - timedelta(days=today.weekday() + 7)
-        days_added = 0
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        for i in range(5):
-            day = monday + timedelta(days=i)
-            day_str = day.strftime('%Y-%m-%d')
-            c.execute("SELECT id FROM install_schedules WHERE job_id=? AND schedule_date=?", (job_id, day_str))
-            if not c.fetchone():
-                c.execute("""INSERT INTO install_schedules (job_id, schedule_date, crew_members, hours_worked, created_by, created_at)
-                             VALUES (?,?,?,?,?,?)""",
-                          (job_id, day_str, '', 8, session['username'], datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
-                days_added += 1
-        conn.commit(); conn.close()
-        return jsonify({'success': True, 'message': f"Added {days_added} day(s) for the week of {monday.strftime('%b %d')}"})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
-
-
-@app.route('/installation/api/daily-logs/add', methods=['POST'])
-def installation_daily_log_add():
-    if 'username' not in session:
-        return jsonify({'success': False, 'error': 'Not logged in'}), 401
-    data = request.get_json()
-    job_id = data.get('job_id')
-    if not job_id:
-        return jsonify({'success': False, 'error': 'No job_id'})
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("""INSERT INTO installation_daily_logs
-                     (job_id, log_date, weather, temp_high, crew_count, crew_members,
-                      hours_worked, work_performed, materials_used, equipment_used,
-                      issues_delays, logged_by, created_at)
-                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                  (job_id, data.get('log_date'), data.get('weather',''),
-                   data.get('temp_high') or None, data.get('crew_count', 0),
-                   data.get('crew_members',''), float(data.get('hours_worked') or 0),
-                   data.get('work_performed',''), data.get('materials_used',''),
-                   data.get('equipment_used',''), data.get('issues_delays',''),
-                   session['username'], datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
-        new_id = c.lastrowid
-        conn.commit(); conn.close()
-        return jsonify({'success': True, 'id': new_id})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
-
-
-@app.route('/installation/api/expenses/add', methods=['POST'])
-def installation_expense_add():
-    if 'username' not in session:
-        return jsonify({'success': False, 'error': 'Not logged in'}), 401
-    try:
-        job_id = request.form.get('job_id')
-        if not job_id:
-            return jsonify({'success': False, 'error': 'No job_id'})
-        receipt_filename = None
-        if 'receipt' in request.files:
-            rf = request.files['receipt']
-            if rf.filename:
-                ext = os.path.splitext(rf.filename)[1].lower()
-                receipt_filename = f"receipt_{job_id}_{int(datetime.now().timestamp())}{ext}"
-                rf.save(os.path.join(EXPENSE_RECEIPTS_DIR, receipt_filename))
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("""INSERT INTO installation_expenses
-                     (job_id, expense_date, category, description, vendor, amount,
-                      receipt_filename, logged_by, created_at)
-                     VALUES (?,?,?,?,?,?,?,?,?)""",
-                  (job_id, request.form.get('expense_date'),
-                   request.form.get('category','other'),
-                   request.form.get('description',''),
-                   request.form.get('vendor',''),
-                   float(request.form.get('amount') or 0),
-                   receipt_filename, session['username'],
-                   datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        # Upsert: remove existing for this crew+date then insert
+        c.execute("DELETE FROM installation_crew_days WHERE crew_id=? AND assignment_date=?",
+                  (data['crew_id'], data['date']))
+        c.execute("""INSERT INTO installation_crew_days
+                     (crew_id, assignment_date, job_id, proposal_id, notes, created_by, created_at)
+                     VALUES (?,?,?,?,?,?,?)""",
+                  (data['crew_id'], data['date'], data['job_id'],
+                   data.get('proposal_id') or None, data.get('notes',''),
+                   session['username'], now))
+        # Also log to install_schedules for job costing
+        c.execute("SELECT job_name FROM jobs WHERE id=?", (data['job_id'],))
+        jrow = c.fetchone()
+        if jrow:
+            c.execute("DELETE FROM install_schedules WHERE job_id=? AND schedule_date=? AND crew_members LIKE '%[crew_day]%'",
+                      (data['job_id'], data['date']))
+            c.execute("INSERT OR IGNORE INTO install_schedules (job_id, schedule_date, crew_members, hours_worked, created_by, created_at) VALUES (?,?,?,0,?,?)",
+                      (data['job_id'], data['date'], '[crew_day]', session['username'], now))
         conn.commit(); conn.close()
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 
-@app.route('/installation/api/expenses/delete', methods=['POST'])
-def installation_expense_delete():
+@app.route('/installation/api/crew-day/remove', methods=['POST'])
+def installation_crew_day_remove():
     if 'username' not in session:
         return jsonify({'success': False, 'error': 'Not logged in'}), 401
     data = request.get_json()
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("SELECT receipt_filename FROM installation_expenses WHERE id=?", (data['id'],))
-        row = c.fetchone()
-        if row and row[0]:
-            fp = os.path.join(EXPENSE_RECEIPTS_DIR, row[0])
-            if os.path.exists(fp): os.remove(fp)
-        c.execute("DELETE FROM installation_expenses WHERE id=?", (data['id'],))
+        c.execute("DELETE FROM installation_crew_days WHERE id=?", (data['id'],))
         conn.commit(); conn.close()
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 
-@app.route('/installation/api/rfis/add', methods=['POST'])
-def installation_rfi_add():
-    if 'username' not in session:
-        return jsonify({'success': False, 'error': 'Not logged in'}), 401
-    data = request.get_json()
-    job_id = data.get('job_id')
-    if not job_id:
-        return jsonify({'success': False, 'error': 'No job_id'})
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*)+1 FROM installation_rfis WHERE job_id=?", (job_id,))
-        seq = c.fetchone()[0]
-        rfi_number = f"RFI-{job_id:03d}-{seq:03d}"
-        c.execute("""INSERT INTO installation_rfis
-                     (job_id, rfi_number, title, question, status, priority,
-                      assigned_to, due_date, created_by, created_at)
-                     VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                  (job_id, rfi_number, data.get('title',''),
-                   data.get('question',''), 'open',
-                   data.get('priority','normal'), data.get('assigned_to',''),
-                   data.get('due_date',''), session['username'],
-                   datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
-        conn.commit(); conn.close()
-        return jsonify({'success': True, 'rfi_number': rfi_number})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+# ── Crew CRUD ────────────────────────────────────────────────────────────────
 
-
-@app.route('/installation/all-change-orders')
-def installation_all_change_orders():
-    if 'username' not in session:
+@app.route('/installation/crews')
+def installation_crews_page():
+    if 'username' not in session or session.get('role') not in ['office','admin']:
         return redirect(url_for('login'))
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("""SELECT ico.id, ico.co_number, ico.title, ico.amount, ico.status,
-                            ico.created_at, ico.approved_at, j.id, j.job_name
-                     FROM installation_change_orders ico
-                     JOIN jobs j ON j.id=ico.job_id
-                     ORDER BY ico.created_at DESC""")
-        rows = c.fetchall()
+        c.execute("SELECT id, name, crew_size, truck_number, sort_order FROM installation_crews WHERE active=1 ORDER BY sort_order, id")
+        crew_rows = c.fetchall()
+        c.execute("SELECT id, name, crew_size, truck_number FROM installation_crews WHERE active=0 ORDER BY name")
+        inactive_rows = c.fetchall()
         conn.close()
-        html = """<!DOCTYPE html><html><head><meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width,initial-scale=1">
-        <title>All Change Orders</title>
-        <style>
-        *{box-sizing:border-box;margin:0;padding:0}
-        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5}
-        .top-bar{background:#1a3c5e;color:white;padding:12px 24px;display:flex;align-items:center;justify-content:space-between}
-        .top-bar h1{font-size:18px;font-weight:700}
-        .top-bar a{color:rgba(255,255,255,.85);text-decoration:none;font-size:14px;margin-left:16px}
-        .content{max-width:1200px;margin:0 auto;padding:24px}
-        .card{background:white;border-radius:10px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.06)}
-        table{width:100%;border-collapse:collapse}
-        th{text-align:left;padding:10px 12px;background:#f9fafb;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;border-bottom:1px solid #e5e7eb}
-        td{padding:10px 12px;border-bottom:1px solid #f3f4f6;font-size:14px}
-        .badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;text-transform:uppercase}
-        .badge-draft{background:#e5e7eb;color:#374151}
-        .badge-pending_approval{background:#fef3c7;color:#92400e}
-        .badge-approved{background:#d1fae5;color:#065f46}
-        .badge-rejected{background:#fee2e2;color:#b91c1c}
-        .badge-no_approval_needed{background:#ede9fe;color:#5b21b6}
-        a.job-link{color:#1a3c5e;text-decoration:none;font-weight:500}
-        a.job-link:hover{text-decoration:underline}
-        </style></head><body>
-        <div class="top-bar"><h1>📝 All Change Orders</h1>
-        <nav><a href="/installation">← Installation</a><a href="/dashboard">Dashboard</a></nav></div>
-        <div class="content"><div class="card">
-        <table><thead><tr><th>CO #</th><th>Job</th><th>Title</th><th>Amount</th><th>Status</th><th>Created</th><th>Approved</th></tr></thead>
-        <tbody>"""
-        for r in rows:
-            status = r[4] or 'draft'
-            badge_cls = f"badge-{status}"
-            html += f"""<tr>
-            <td style="font-weight:600">{r[1]}</td>
-            <td><a class="job-link" href="/installation/job/{r[7]}">{r[8]}</a></td>
-            <td>{r[2] or ''}</td>
-            <td>${r[3]:,.2f}</td>
-            <td><span class="badge {badge_cls}">{status.replace('_',' ')}</span></td>
-            <td style="font-size:12px;color:#9ca3af">{(r[5] or '')[:10]}</td>
-            <td style="font-size:12px;color:#059669">{(r[6] or '')[:10]}</td>
-            </tr>"""
-        html += """</tbody></table></div></div></body></html>"""
-        return html
+
+        class _C: pass
+        def make_crew(row):
+            obj = _C()
+            obj.id=row[0]; obj.name=row[1]; obj.crew_size=row[2]
+            obj.truck_number=row[3] or ''; obj.sort_order=row[4] if len(row)>4 else 0
+            return obj
+
+        crews = [make_crew(r) for r in crew_rows]
+        inactive_crews = [make_crew(r + (0,)) for r in inactive_rows]
+        return render_template_string(INSTALLATION_CREWS_TEMPLATE, crews=crews, inactive_crews=inactive_crews)
     except Exception as e:
         import traceback
         return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre>"
 
 
-@app.route('/installation/crew')
-def installation_crew():
-    if 'username' not in session or session.get('role') not in ['office', 'admin']:
-        return redirect(url_for('login'))
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT id, name, role, phone, active FROM installation_crew_members ORDER BY name")
-        members = c.fetchall()
-        conn.close()
-        html = """<!DOCTYPE html><html><head><meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width,initial-scale=1">
-        <title>Crew Members</title>
-        <style>
-        *{box-sizing:border-box;margin:0;padding:0}
-        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5}
-        .top-bar{background:#1a3c5e;color:white;padding:12px 24px;display:flex;align-items:center;justify-content:space-between}
-        .top-bar h1{font-size:18px;font-weight:700}
-        .top-bar a{color:rgba(255,255,255,.85);text-decoration:none;font-size:14px;margin-left:16px}
-        .content{max-width:900px;margin:0 auto;padding:24px}
-        .card{background:white;border-radius:10px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.06);margin-bottom:20px}
-        .btn{display:inline-flex;align-items:center;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:500;cursor:pointer;border:none;text-decoration:none}
-        .btn-primary{background:#1a3c5e;color:white}
-        .form-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px}
-        input,select{padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;width:100%}
-        label{font-size:13px;font-weight:500;color:#374151;display:block;margin-bottom:4px}
-        table{width:100%;border-collapse:collapse}
-        th{text-align:left;padding:10px 12px;background:#f9fafb;font-size:12px;font-weight:600;color:#6b7280;border-bottom:1px solid #e5e7eb}
-        td{padding:10px 12px;border-bottom:1px solid #f3f4f6;font-size:14px}
-        </style></head><body>
-        <div class="top-bar"><h1>👷 Crew Members</h1>
-        <nav><a href="/installation">← Installation</a></nav></div>
-        <div class="content">
-        <div class="card">
-          <h3 style="font-size:16px;font-weight:600;margin-bottom:16px">Add Crew Member</h3>
-          <div class="form-row">
-            <div><label>Name</label><input id="cm-name" placeholder="Full name"></div>
-            <div><label>Role</label><select id="cm-role"><option value="crew">Crew</option><option value="foreman">Foreman</option><option value="sub">Subcontractor</option><option value="supervisor">Supervisor</option></select></div>
-            <div><label>Phone</label><input id="cm-phone" placeholder="(555) 000-0000"></div>
-          </div>
-          <button class="btn btn-primary" onclick="addMember()">Add Member</button>
-        </div>
-        <div class="card">
-          <table><thead><tr><th>Name</th><th>Role</th><th>Phone</th><th>Active</th><th></th></tr></thead>
-          <tbody id="crew-tbody">"""
-        for m in members:
-            active_badge = '<span style="color:#059669">✓ Active</span>' if m[4] else '<span style="color:#dc2626">Inactive</span>'
-            html += f"<tr><td>{m[1]}</td><td style='text-transform:capitalize'>{m[2]}</td><td>{m[3] or '—'}</td><td>{active_badge}</td><td><button onclick=\"toggleMember({m[0]}, this)\" style='background:#e5e7eb;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px'>{'Deactivate' if m[4] else 'Activate'}</button></td></tr>"
-        html += """</tbody></table>
-        </div></div>
-        <script>
-        function addMember() {
-          const name = document.getElementById('cm-name').value.trim();
-          if (!name) { alert('Name required'); return; }
-          fetch('/installation/api/crew/add', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({name, role: document.getElementById('cm-role').value, phone: document.getElementById('cm-phone').value})
-          }).then(r => r.json()).then(d => { if (d.success) location.reload(); else alert(d.error); });
-        }
-        function toggleMember(id, btn) {
-          fetch('/installation/api/crew/toggle', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({id})
-          }).then(r => r.json()).then(d => { if (d.success) location.reload(); });
-        }
-        </script></body></html>"""
-        return html
-    except Exception as e:
-        import traceback
-        return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre>"
-
-
-@app.route('/installation/api/crew/add', methods=['POST'])
-def installation_crew_add():
+@app.route('/installation/api/crews/add', methods=['POST'])
+def installation_crews_add():
     if 'username' not in session:
         return jsonify({'success': False, 'error': 'Not logged in'}), 401
     data = request.get_json()
@@ -27001,8 +26567,11 @@ def installation_crew_add():
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("INSERT INTO installation_crew_members (name, role, phone, active, created_at) VALUES (?,?,?,1,?)",
-                  (data['name'], data.get('role','crew'), data.get('phone',''),
+        c.execute("SELECT COALESCE(MAX(sort_order),0)+1 FROM installation_crews")
+        sort_order = c.fetchone()[0]
+        c.execute("INSERT INTO installation_crews (name, crew_size, truck_number, active, sort_order, created_at) VALUES (?,?,?,1,?,?)",
+                  (data['name'], int(data.get('crew_size',1) or 1),
+                   data.get('truck_number',''), sort_order,
                    datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
         conn.commit(); conn.close()
         return jsonify({'success': True})
@@ -27010,183 +26579,62 @@ def installation_crew_add():
         return jsonify({'success': False, 'error': str(e)})
 
 
-@app.route('/installation/api/crew/toggle', methods=['POST'])
-def installation_crew_toggle():
+@app.route('/installation/api/crews/edit', methods=['POST'])
+def installation_crews_edit():
     if 'username' not in session:
         return jsonify({'success': False, 'error': 'Not logged in'}), 401
     data = request.get_json()
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("UPDATE installation_crew_members SET active = 1 - active WHERE id=?", (data['id'],))
+        c.execute("UPDATE installation_crews SET name=?, crew_size=?, truck_number=? WHERE id=?",
+                  (data['name'], int(data.get('crew_size',1) or 1),
+                   data.get('truck_number',''), data['id']))
         conn.commit(); conn.close()
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 
-# ── Weekly Schedule route ─────────────────────────────────────────────────
-
-@app.route('/installation/schedule')
-def installation_schedule():
-    if 'username' not in session:
-        return redirect(url_for('login'))
-    try:
-        from datetime import timedelta, date as _date
-
-        week_param = request.args.get('week', '')
-        filter_job = request.args.get('job', '')
-
-        # Determine week start (Monday)
-        today = _date.today()
-        if week_param:
-            try:
-                week_start = _date.fromisoformat(week_param)
-                # snap to Monday
-                week_start -= timedelta(days=week_start.weekday())
-            except ValueError:
-                week_start = today - timedelta(days=today.weekday())
-        else:
-            week_start = today - timedelta(days=today.weekday())
-
-        week_end = week_start + timedelta(days=4)  # Friday
-
-        # Nav params
-        prev_week = (week_start - timedelta(days=7)).isoformat()
-        next_week = (week_start + timedelta(days=7)).isoformat()
-        today_week = (today - timedelta(days=today.weekday())).isoformat()
-
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-
-        # All install jobs
-        c.execute("""SELECT id, job_name FROM jobs
-                     WHERE COALESCE(department,'install')='install' AND active=1
-                     ORDER BY job_name""")
-        all_jobs = c.fetchall()
-
-        # All active crew members
-        c.execute("SELECT id, name, role FROM installation_crew_members WHERE active=1 ORDER BY name")
-        crew_rows = c.fetchall()
-        class _CM: pass
-        crew_members = []
-        for cm in crew_rows:
-            obj = _CM(); obj.id=cm[0]; obj.name=cm[1]; obj.role=cm[2]
-            crew_members.append(obj)
-
-        # Schedule entries for this week
-        week_start_str = week_start.isoformat()
-        week_end_str = week_end.isoformat()
-        q = """SELECT s.id, s.job_id, s.schedule_date, s.crew_members, s.notes, j.job_name
-               FROM install_schedules s JOIN jobs j ON j.id=s.job_id
-               WHERE s.schedule_date >= ? AND s.schedule_date <= ?"""
-        params = [week_start_str, week_end_str]
-        if filter_job:
-            q += " AND s.job_id=?"
-            params.append(filter_job)
-        q += " ORDER BY s.schedule_date, j.job_name"
-        c.execute(q, params)
-        entries_raw = c.fetchall()
-        conn.close()
-
-        # Color palette per job (cycle)
-        palette = ['#1a3c5e','#059669','#7c3aed','#0891b2','#b45309','#dc2626','#374151','#0e7490','#065f46','#4f46e5']
-        job_colors = {}
-        for i, (jid, jname) in enumerate(all_jobs):
-            job_colors[jid] = palette[i % len(palette)]
-
-        # Group entries by date
-        from collections import defaultdict
-        entries_by_date = defaultdict(list)
-        for e in entries_raw:
-            class _E: pass
-            obj = _E()
-            obj.id=e[0]; obj.job_id=e[1]; obj.schedule_date=e[2]
-            obj.crew_members=e[3]; obj.notes=e[4]; obj.job_name=e[5]
-            obj.color = job_colors.get(e[1], '#374151')
-            entries_by_date[e[2]].append(obj)
-
-        # Build 5 day objects (Mon-Fri)
-        DAY_NAMES = ['Mon','Tue','Wed','Thu','Fri']
-        class _Day: pass
-        week_days = []
-        for i in range(5):
-            d = week_start + timedelta(days=i)
-            obj = _Day()
-            obj.date_str = d.isoformat()
-            obj.weekday = DAY_NAMES[i]
-            obj.display = d.strftime('%b %d')
-            obj.is_today = (d == today)
-            obj.entries = entries_by_date.get(d.isoformat(), [])
-            week_days.append(obj)
-
-        # Summary counts per job for this week
-        week_job_counts = {}
-        for e in entries_raw:
-            jname = e[5]
-            week_job_counts[jname] = week_job_counts.get(jname, 0) + 1
-        total_week_days = len(entries_raw)
-
-        week_start_display = f"{week_start.strftime('%B %d')} – {week_end.strftime('%d, %Y')}"
-
-        return render_template_string(INSTALLATION_SCHEDULE_TEMPLATE,
-            week_days=week_days, all_jobs=all_jobs, crew_members=crew_members,
-            week_start_display=week_start_display, week_param=week_start.isoformat(),
-            prev_week=prev_week, next_week=next_week, today_week=today_week,
-            filter_job=filter_job, total_week_days=total_week_days,
-            week_job_counts=week_job_counts)
-    except Exception as e:
-        import traceback
-        return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre><a href='/installation'>Back</a>"
-
-
-@app.route('/installation/api/schedule/move', methods=['POST'])
-def installation_schedule_move():
+@app.route('/installation/api/crews/toggle', methods=['POST'])
+def installation_crews_toggle():
     if 'username' not in session:
         return jsonify({'success': False, 'error': 'Not logged in'}), 401
     data = request.get_json()
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("UPDATE install_schedules SET schedule_date=? WHERE id=?",
-                  (data['date'], data['id']))
+        c.execute("UPDATE installation_crews SET active = 1 - active WHERE id=?", (data['id'],))
         conn.commit(); conn.close()
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 
-@app.route('/installation/api/schedule/bulk-assign', methods=['POST'])
-def installation_schedule_bulk_assign():
+@app.route('/installation/api/crews/move', methods=['POST'])
+def installation_crews_move():
     if 'username' not in session:
         return jsonify({'success': False, 'error': 'Not logged in'}), 401
     data = request.get_json()
-    job_id = data.get('job_id')
-    dates = data.get('dates', [])
-    crew = data.get('crew_members', '')
-    if not job_id or not dates:
-        return jsonify({'success': False, 'error': 'job_id and dates required'})
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        added = 0
-        for d in dates:
-            # Don't duplicate
-            c.execute("SELECT id FROM install_schedules WHERE job_id=? AND schedule_date=?", (job_id, d))
-            if not c.fetchone():
-                c.execute("INSERT INTO install_schedules (job_id, schedule_date, crew_members, hours_worked, created_by, created_at) VALUES (?,?,?,0,?,?)",
-                          (job_id, d, crew, session['username'], now))
-                added += 1
+        c.execute("SELECT id, sort_order FROM installation_crews WHERE active=1 ORDER BY sort_order, id")
+        all_crews = c.fetchall()
+        ids = [r[0] for r in all_crews]
+        idx = ids.index(int(data['id']))
+        if data['dir'] == 'up' and idx > 0:
+            ids[idx], ids[idx-1] = ids[idx-1], ids[idx]
+        elif data['dir'] == 'down' and idx < len(ids)-1:
+            ids[idx], ids[idx+1] = ids[idx+1], ids[idx]
+        for i, cid in enumerate(ids):
+            c.execute("UPDATE installation_crews SET sort_order=? WHERE id=?", (i, cid))
         conn.commit(); conn.close()
-        return jsonify({'success': True, 'added': added})
+        return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 
-# Also pass crew_members to installation_job route (update the existing route)
-# We patch it by overriding the render call — crew_members fetched in route below
-# The existing installation_job route is updated to include crew_members below.
 
 
 # ── Redirect old standalone pages into unified Installation ───────────────
