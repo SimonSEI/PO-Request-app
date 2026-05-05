@@ -16826,6 +16826,18 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         }
 
         // ── Active Drafts ─────────────────────────────────────────────────────
+        function formatTimeAgo(minutes) {
+            if (minutes === null || minutes === undefined) return 'In progress';
+            if (minutes < 1) return 'Just now';
+            if (minutes < 60) return minutes + 'm ago';
+            const hours = Math.floor(minutes / 60);
+            const mins  = minutes % 60;
+            if (hours < 24) return mins > 0 ? `${hours}h ${mins}m ago` : `${hours}h ago`;
+            const days  = Math.floor(hours / 24);
+            const hrs   = hours % 24;
+            return hrs > 0 ? `${days}d ${hrs}h ago` : `${days}d ago`;
+        }
+
         let _draftsRefreshTimer = null;
 
         function renderDraftsTable(drafts) {
@@ -16847,7 +16859,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     ? `<span style="display:inline-flex;align-items:center;gap:5px;background:#28a745;color:white;font-size:11px;font-weight:700;padding:3px 9px;border-radius:12px;">
                            <span style="width:7px;height:7px;background:white;border-radius:50%;display:inline-block;animation:pulse 1.2s infinite;"></span> Active
                        </span>`
-                    : `<span style="color:#999;font-size:12px;">${d.minutes_ago !== null ? d.minutes_ago + 'm ago' : 'In progress'}</span>`;
+                    : `<span style="color:#999;font-size:12px;">${formatTimeAgo(d.minutes_ago)}</span>`;
                 const clocksCell = d.clocks_label
                     ? `<span style="font-size:12px;color:#007bff;font-weight:600;">${d.clocks_label}</span>`
                     : `<span style="color:#ccc;font-size:12px;">—</span>`;
