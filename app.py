@@ -119,8 +119,20 @@ try:
     if not os.path.exists(app.config['COMMUNITY_PHOTO_FOLDER']):
         os.makedirs(app.config['COMMUNITY_PHOTO_FOLDER'], mode=0o755)
         print(f"✓ Created folder: {app.config['COMMUNITY_PHOTO_FOLDER']}")
+    # Installation module upload directories
+    for _subdir in ['installation', 'installation/site_plans', 'installation/photos', 'installation/receipts']:
+        _p = os.path.join(DATA_DIR, _subdir)
+        if not os.path.exists(_p):
+            os.makedirs(_p, mode=0o755)
+            print(f"✓ Created folder: {_p}")
 except Exception as e:
     print(f"✗ ERROR with folder: {e}")
+
+# Installation module directory references
+INSTALLATION_DIR = os.path.join(DATA_DIR, 'installation')
+SITE_PLANS_DIR = os.path.join(INSTALLATION_DIR, 'site_plans')
+DAILY_LOG_PHOTOS_DIR = os.path.join(INSTALLATION_DIR, 'photos')
+EXPENSE_RECEIPTS_DIR = os.path.join(INSTALLATION_DIR, 'receipts')
 
 # Database path - use persistent data directory to prevent data loss
 DB_PATH = os.path.join(DATA_DIR, 'po_requests.db')
@@ -1415,6 +1427,121 @@ def init_db():
                   created_at TEXT,
                   FOREIGN KEY(job_id) REFERENCES jobs(id))''')
 
+    # ── Installation Module Tables ──────────────────────────────────────
+    c.execute('''CREATE TABLE IF NOT EXISTS installation_site_plans
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  job_id INTEGER NOT NULL,
+                  filename TEXT NOT NULL,
+                  original_filename TEXT,
+                  version INTEGER DEFAULT 1,
+                  description TEXT,
+                  file_size INTEGER DEFAULT 0,
+                  uploaded_by TEXT,
+                  uploaded_at TEXT,
+                  is_current INTEGER DEFAULT 1,
+                  FOREIGN KEY(job_id) REFERENCES jobs(id))''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS installation_change_orders
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  job_id INTEGER NOT NULL,
+                  co_number TEXT,
+                  title TEXT,
+                  description TEXT,
+                  voice_transcript TEXT,
+                  amount REAL DEFAULT 0,
+                  status TEXT DEFAULT 'draft',
+                  requires_approval INTEGER DEFAULT 1,
+                  created_by TEXT,
+                  created_at TEXT,
+                  approved_by TEXT,
+                  approved_at TEXT,
+                  approval_token TEXT,
+                  approval_sent_at TEXT,
+                  client_name TEXT,
+                  client_email TEXT,
+                  notes TEXT,
+                  FOREIGN KEY(job_id) REFERENCES jobs(id))''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS installation_daily_logs
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  job_id INTEGER NOT NULL,
+                  log_date TEXT,
+                  weather TEXT,
+                  temp_high INTEGER,
+                  temp_low INTEGER,
+                  crew_count INTEGER DEFAULT 0,
+                  crew_members TEXT,
+                  hours_worked REAL DEFAULT 0,
+                  work_performed TEXT,
+                  materials_used TEXT,
+                  equipment_used TEXT,
+                  issues_delays TEXT,
+                  logged_by TEXT,
+                  created_at TEXT,
+                  FOREIGN KEY(job_id) REFERENCES jobs(id))''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS installation_log_photos
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  log_id INTEGER,
+                  job_id INTEGER,
+                  filename TEXT,
+                  caption TEXT,
+                  uploaded_at TEXT)''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS installation_expenses
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  job_id INTEGER NOT NULL,
+                  expense_date TEXT,
+                  category TEXT DEFAULT 'other',
+                  description TEXT,
+                  vendor TEXT,
+                  amount REAL DEFAULT 0,
+                  receipt_filename TEXT,
+                  logged_by TEXT,
+                  created_at TEXT,
+                  FOREIGN KEY(job_id) REFERENCES jobs(id))''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS installation_crew_members
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  name TEXT NOT NULL,
+                  role TEXT DEFAULT 'crew',
+                  phone TEXT,
+                  active INTEGER DEFAULT 1,
+                  created_at TEXT)''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS installation_rfis
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  job_id INTEGER NOT NULL,
+                  rfi_number TEXT,
+                  title TEXT,
+                  question TEXT,
+                  response TEXT,
+                  status TEXT DEFAULT 'open',
+                  priority TEXT DEFAULT 'normal',
+                  assigned_to TEXT,
+                  due_date TEXT,
+                  created_by TEXT,
+                  created_at TEXT,
+                  answered_at TEXT,
+                  FOREIGN KEY(job_id) REFERENCES jobs(id))''')
+
+    # Extend jobs table with installation-specific fields
+    for _col, _defn in [
+        ("client_name",      "TEXT DEFAULT ''"),
+        ("client_email",     "TEXT DEFAULT ''"),
+        ("client_contact",   "TEXT DEFAULT ''"),
+        ("project_address",  "TEXT DEFAULT ''"),
+        ("start_date",       "TEXT DEFAULT ''"),
+        ("end_date",         "TEXT DEFAULT ''"),
+        ("inst_status",      "TEXT DEFAULT 'planning'"),
+        ("description",      "TEXT DEFAULT ''"),
+        ("contract_value",   "REAL DEFAULT 0"),
+    ]:
+        try:
+            c.execute(f"ALTER TABLE jobs ADD COLUMN {_col} {_defn}")
+        except Exception:
+            pass
+
     # Add default jobs if empty
     c.execute("SELECT COUNT(*) FROM jobs")
     if c.fetchone()[0] == 0:
@@ -2444,6 +2571,7 @@ def dashboard():
                                  username=username,
                                  role=role,
                                  full_name=full_name,
+                                 tech_type=session.get('tech_type', ''),
                                  user_lang=session.get('user_lang', 'en'))
 
 @app.route('/office_admin')
@@ -7759,26 +7887,14 @@ DASHBOARD_MENU_TEMPLATE = '''
         </a>
         {% endif %}
 
-        <!-- Job Costing App (Office only) -->
-        {% if role == 'office' %}
-        <a href="{{ url_for('job_costing') }}" style="text-decoration: none;">
+        <!-- Installation Management App (Office + Install Tech) -->
+        {% if role == 'office' or (role == 'technician' and tech_type == 'install') %}
+        <a href="{{ url_for('installation') }}" style="text-decoration: none;">
             <div class="app-card">
-                <div class="app-icon">💰</div>
-                <h2 data-i18n="jc_title">Job Costing</h2>
-                <p data-i18n="jc_desc">Track install job costs, match invoices, and compare estimate vs actual</p>
-                <button class="app-button" data-i18n="jc_btn">Open Job Costing</button>
-            </div>
-        </a>
-        {% endif %}
-
-        <!-- Install Scheduling App (Office only) -->
-        {% if role == 'office' %}
-        <a href="{{ url_for('install_scheduling') }}" style="text-decoration: none;">
-            <div class="app-card">
-                <div class="app-icon">📅</div>
-                <h2 data-i18n="is_title">Install Scheduling</h2>
-                <p data-i18n="is_desc">Schedule install crews, track days on job, and manage job timelines</p>
-                <button class="app-button" data-i18n="is_btn">Open Scheduling</button>
+                <div class="app-icon">🏗️</div>
+                <h2>Installation</h2>
+                <p>Manage install jobs, site plans, change orders, crew scheduling, daily logs, expenses, and job costing in one place</p>
+                <button class="app-button">Open Installation</button>
             </div>
         </a>
         {% endif %}
@@ -25011,6 +25127,1964 @@ if (jobParam) {
 </body>
 </html>
 '''
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# INSTALLATION MODULE — Unified Installation Management App
+# ══════════════════════════════════════════════════════════════════════════
+
+INSTALLATION_HUB_TEMPLATE = '''<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Installation Management</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5;color:#1a1a2e}
+.top-bar{background:#1a3c5e;color:white;padding:14px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.top-bar h1{font-size:20px;font-weight:700}
+.top-bar nav a{color:rgba(255,255,255,0.85);text-decoration:none;margin-left:18px;font-size:14px;transition:color .2s}
+.top-bar nav a:hover{color:white}
+.content{max-width:1400px;margin:0 auto;padding:24px}
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:28px}
+.stat-card{background:white;border-radius:10px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.stat-label{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+.stat-value{font-size:30px;font-weight:700;color:#1a3c5e}
+.stat-sub{font-size:12px;color:#9ca3af;margin-top:4px}
+.section-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.section-hdr h2{font-size:18px;font-weight:600;color:#1a3c5e}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:500;cursor:pointer;border:none;text-decoration:none;transition:all .2s}
+.btn-primary{background:#1a3c5e;color:white}.btn-primary:hover{background:#0f2a45}
+.btn-secondary{background:#e5e7eb;color:#374151}.btn-secondary:hover{background:#d1d5db}
+.btn-sm{padding:5px 12px;font-size:13px}
+.badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.4px}
+.badge-planning{background:#dbeafe;color:#1d4ed8}
+.badge-active{background:#d1fae5;color:#065f46}
+.badge-on_hold{background:#fef3c7;color:#92400e}
+.badge-complete{background:#f3f4f6;color:#374151}
+.badge-cancelled{background:#fee2e2;color:#b91c1c}
+.badge-co{background:#fef3c7;color:#92400e}
+.jobs-list{display:grid;gap:12px}
+.job-card{background:white;border-radius:10px;padding:20px 24px;box-shadow:0 2px 8px rgba(0,0,0,.06);display:grid;grid-template-columns:1fr auto;gap:16px;align-items:center;transition:box-shadow .2s}
+.job-card:hover{box-shadow:0 4px 16px rgba(0,0,0,.1)}
+.job-name{font-size:16px;font-weight:600;color:#1a3c5e;margin-bottom:6px}
+.job-meta{display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:#6b7280}
+.progress-wrap{display:flex;align-items:center;gap:8px;margin-top:8px}
+.progress-bar{flex:1;max-width:120px;height:6px;background:#e5e7eb;border-radius:3px;overflow:hidden}
+.progress-fill{height:100%;border-radius:3px}
+.fill-ok{background:#059669}.fill-warn{background:#f59e0b}.fill-over{background:#dc2626}
+.job-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.empty-state{text-align:center;padding:60px;color:#9ca3af}
+.empty-icon{font-size:48px;margin-bottom:12px}
+@media(max-width:768px){
+  .stats-row{grid-template-columns:repeat(2,1fr)}
+  .job-card{grid-template-columns:1fr}
+  .job-actions{justify-content:flex-start}
+}
+</style>
+</head>
+<body>
+<div class="top-bar">
+  <h1>🏗️ Installation Management</h1>
+  <nav>
+    <a href="/manage_jobs">⚙️ Manage Jobs</a>
+    <a href="/installation/crew">👷 Crew</a>
+    <a href="/dashboard">← Dashboard</a>
+  </nav>
+</div>
+<div class="content">
+  <div class="stats-row">
+    <div class="stat-card">
+      <div class="stat-label">Active Jobs</div>
+      <div class="stat-value">{{ active_count }}</div>
+      <div class="stat-sub">{{ total_count }} total</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Pending Change Orders</div>
+      <div class="stat-value" style="color:{% if pending_cos > 0 %}#b45309{% else %}#1a3c5e{% endif %}">{{ pending_cos }}</div>
+      <div class="stat-sub">Awaiting approval</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Total Contract Value</div>
+      <div class="stat-value">${{ "{:,.0f}".format(total_contract) }}</div>
+      <div class="stat-sub">Active jobs</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Total Invoiced</div>
+      <div class="stat-value">${{ "{:,.0f}".format(total_invoiced) }}</div>
+      <div class="stat-sub">Across all jobs</div>
+    </div>
+  </div>
+
+  <div class="section-hdr">
+    <h2>Installation Jobs</h2>
+    <div style="display:flex;gap:8px">
+      <a href="/installation/all-change-orders" class="btn btn-secondary btn-sm">📋 All Change Orders</a>
+    </div>
+  </div>
+
+  {% if jobs %}
+  <div class="jobs-list">
+  {% for j in jobs %}
+  <div class="job-card">
+    <div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+        <span class="job-name">{{ j.job_name }}</span>
+        <span class="badge badge-{{ j.inst_status or 'planning' }}">{{ (j.inst_status or 'planning').replace('_',' ') }}</span>
+        {% if j.pending_cos > 0 %}<span class="badge badge-co">{{ j.pending_cos }} CO Pending</span>{% endif %}
+      </div>
+      <div class="job-meta">
+        {% if j.client_name %}<span>👤 {{ j.client_name }}</span>{% endif %}
+        {% if j.project_address %}<span>📍 {{ j.project_address[:45] }}{% if j.project_address|length > 45 %}…{% endif %}</span>{% endif %}
+        <span>📅 {{ j.year }}</span>
+        {% if j.days_on_job %}<span>⏱ {{ j.days_on_job }} day{{ 's' if j.days_on_job != 1 }}</span>{% endif %}
+        {% if j.total_cos %}<span>📝 {{ j.total_cos }} change order{{ 's' if j.total_cos != 1 }}</span>{% endif %}
+        {% if j.site_plans %}<span>🗺 {{ j.site_plans }} plan{{ 's' if j.site_plans != 1 }}</span>{% endif %}
+      </div>
+      {% if j.contract_value > 0 %}
+      <div class="progress-wrap">
+        <span style="font-size:12px;color:#6b7280">${{ "{:,.0f}".format(j.invoiced_total) }} / ${{ "{:,.0f}".format(j.contract_value) }}</span>
+        <div class="progress-bar">
+          {% set pct = [(j.invoiced_total / j.contract_value * 100)|int, 100]|min %}
+          <div class="progress-fill {{ 'fill-over' if pct >= 100 else ('fill-warn' if pct >= 80 else 'fill-ok') }}" style="width:{{ pct }}%"></div>
+        </div>
+        <span style="font-size:12px;color:#6b7280">{{ pct }}%</span>
+      </div>
+      {% endif %}
+    </div>
+    <div class="job-actions">
+      <a href="/installation/job/{{ j.id }}" class="btn btn-primary btn-sm">Open →</a>
+      <a href="/installation/job/{{ j.id }}?tab=change-orders" class="btn btn-secondary btn-sm">COs</a>
+      <a href="/installation/job/{{ j.id }}?tab=schedule" class="btn btn-secondary btn-sm">📅</a>
+      <a href="/installation/job/{{ j.id }}?tab=site-plans" class="btn btn-secondary btn-sm">🗺</a>
+    </div>
+  </div>
+  {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <div class="empty-icon">🏗️</div>
+    <p>No installation jobs found. <a href="/manage_jobs" style="color:#1a3c5e">Create jobs</a> to get started.</p>
+  </div>
+  {% endif %}
+</div>
+</body>
+</html>
+'''
+
+INSTALLATION_JOB_CSS = """
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5;color:#1a1a2e}
+.top-bar{background:#1a3c5e;color:white;padding:12px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.top-bar h1{font-size:18px;font-weight:700}
+.top-bar nav a{color:rgba(255,255,255,.85);text-decoration:none;margin-left:16px;font-size:14px}
+.top-bar nav a:hover{color:white}
+.page{max-width:1300px;margin:0 auto;padding:20px}
+.job-header{background:white;border-radius:10px;padding:20px 24px;margin-bottom:20px;box-shadow:0 2px 8px rgba(0,0,0,.06);display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.job-header-left h2{font-size:22px;font-weight:700;color:#1a3c5e;margin-bottom:4px}
+.job-header-left .meta{font-size:13px;color:#6b7280;display:flex;gap:16px;flex-wrap:wrap;margin-top:6px}
+.job-header-right{display:flex;gap:8px;flex-wrap:wrap}
+.badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.4px}
+.badge-planning{background:#dbeafe;color:#1d4ed8}.badge-active{background:#d1fae5;color:#065f46}
+.badge-on_hold{background:#fef3c7;color:#92400e}.badge-complete{background:#f3f4f6;color:#374151}
+.badge-cancelled{background:#fee2e2;color:#b91c1c}.badge-draft{background:#e5e7eb;color:#374151}
+.badge-pending_approval{background:#fef3c7;color:#92400e}.badge-approved{background:#d1fae5;color:#065f46}
+.badge-rejected{background:#fee2e2;color:#b91c1c}.badge-no_approval_needed{background:#ede9fe;color:#5b21b6}
+.badge-open{background:#dbeafe;color:#1d4ed8}.badge-answered{background:#d1fae5;color:#065f46}
+.badge-closed{background:#f3f4f6;color:#374151}
+.tabs{display:flex;gap:0;background:white;border-radius:10px;margin-bottom:20px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.tab{flex:1;padding:12px 8px;text-align:center;cursor:pointer;font-size:13px;font-weight:500;color:#6b7280;border-bottom:3px solid transparent;transition:all .2s;border:none;background:none}
+.tab:hover{background:#f9fafb;color:#1a3c5e}
+.tab.active{color:#1a3c5e;border-bottom-color:#1a3c5e;background:#f0f4f8;font-weight:600}
+.tab-content{display:none}.tab-content.active{display:block}
+.card{background:white;border-radius:10px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.06);margin-bottom:16px}
+.card-title{font-size:16px;font-weight:600;color:#1a3c5e;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:500;cursor:pointer;border:none;text-decoration:none;transition:all .2s}
+.btn-primary{background:#1a3c5e;color:white}.btn-primary:hover{background:#0f2a45}
+.btn-secondary{background:#e5e7eb;color:#374151}.btn-secondary:hover{background:#d1d5db}
+.btn-success{background:#059669;color:white}.btn-success:hover{background:#047857}
+.btn-danger{background:#dc2626;color:white}.btn-danger:hover{background:#b91c1c}
+.btn-voice{background:#7c3aed;color:white}.btn-voice:hover{background:#6d28d9}
+.btn-sm{padding:5px 12px;font-size:13px}
+.form-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:12px}
+.form-group{display:flex;flex-direction:column;gap:4px}
+label{font-size:13px;font-weight:500;color:#374151}
+input,select,textarea{padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;color:#1a1a2e;width:100%}
+input:focus,select:focus,textarea:focus{outline:none;border-color:#1a3c5e;box-shadow:0 0 0 3px rgba(26,60,94,.1)}
+textarea{resize:vertical;min-height:80px}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;padding:10px 12px;background:#f9fafb;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid #e5e7eb}
+td{padding:10px 12px;border-bottom:1px solid #f3f4f6;font-size:14px;vertical-align:top}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#fafafa}
+.kv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px}
+.kv-item label{font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:3px}
+.kv-item span{font-size:15px;font-weight:500;color:#1a1a2e}
+.budget-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.budget-item{background:#f9fafb;border-radius:8px;padding:14px}
+.budget-item .bi-label{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px}
+.budget-item .bi-budget{font-size:16px;font-weight:600;color:#1a3c5e}
+.budget-item .bi-actual{font-size:13px;color:#6b7280;margin-top:2px}
+.budget-item .bi-bar{height:4px;background:#e5e7eb;border-radius:2px;margin-top:6px;overflow:hidden}
+.budget-item .bi-fill{height:100%;border-radius:2px}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center}
+.modal-overlay.open{display:flex}
+.modal{background:white;border-radius:12px;padding:28px;width:90%;max-width:620px;max-height:90vh;overflow-y:auto;position:relative}
+.modal h3{font-size:18px;font-weight:700;margin-bottom:20px;color:#1a3c5e}
+.modal-close{position:absolute;top:16px;right:20px;background:none;border:none;font-size:24px;cursor:pointer;color:#9ca3af}
+.voice-rec-area{background:#f5f3ff;border:2px dashed #7c3aed;border-radius:10px;padding:20px;text-align:center;margin-bottom:16px}
+.voice-indicator{width:60px;height:60px;border-radius:50%;background:#7c3aed;margin:0 auto 12px;display:flex;align-items:center;justify-content:center;font-size:28px;cursor:pointer;transition:all .2s}
+.voice-indicator.recording{animation:pulse 1s infinite;background:#dc2626}
+@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.1)}}
+.recording-status{font-size:14px;color:#7c3aed;font-weight:500}
+.upload-zone{border:2px dashed #d1d5db;border-radius:10px;padding:40px;text-align:center;cursor:pointer;transition:all .2s;background:#fafafa}
+.upload-zone:hover,.upload-zone.dragover{border-color:#1a3c5e;background:#f0f4f8}
+.upload-zone p{color:#6b7280;font-size:14px;margin-top:8px}
+.plan-card{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-radius:8px;background:#f9fafb;margin-bottom:8px;gap:12px;flex-wrap:wrap}
+.plan-info{flex:1;min-width:0}
+.plan-name{font-weight:500;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.plan-meta{font-size:12px;color:#9ca3af;margin-top:2px}
+.current-tag{background:#d1fae5;color:#065f46;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600}
+.expense-cats{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+.expense-cat-btn{padding:5px 14px;border-radius:20px;border:1px solid #d1d5db;background:white;font-size:13px;cursor:pointer;transition:all .2s}
+.expense-cat-btn.active,.expense-cat-btn:hover{background:#1a3c5e;color:white;border-color:#1a3c5e}
+.totals-bar{display:flex;gap:16px;flex-wrap:wrap;background:#f9fafb;border-radius:8px;padding:14px;margin-bottom:16px}
+.totals-bar .t-item{font-size:13px;color:#6b7280}
+.totals-bar .t-item strong{color:#1a3c5e;font-size:15px}
+.alert{padding:12px 16px;border-radius:8px;font-size:14px;margin-bottom:16px}
+.alert-success{background:#d1fae5;color:#065f46}
+.alert-error{background:#fee2e2;color:#b91c1c}
+.rfi-row{padding:12px;border-radius:8px;background:#f9fafb;margin-bottom:8px;display:flex;gap:12px;align-items:flex-start}
+.rfi-row .rfi-num{font-size:11px;color:#9ca3af;font-weight:600;min-width:50px}
+.rfi-row .rfi-content{flex:1}
+.rfi-title{font-weight:600;font-size:14px;margin-bottom:3px}
+.rfi-q{font-size:13px;color:#4b5563}
+.schedule-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:16px}
+.sched-day{border-radius:6px;padding:6px;text-align:center;font-size:12px;cursor:pointer;transition:all .2s;min-height:50px;position:relative}
+.sched-day:hover{background:#e0e7ff}
+.sched-day.has-entry{background:#dbeafe;font-weight:600}
+.sched-day.today{border:2px solid #1a3c5e}
+.sched-day .day-num{font-weight:600;margin-bottom:2px}
+.sched-day .day-crew{font-size:10px;color:#6b7280;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:768px){
+  .tabs{overflow-x:auto}.tab{white-space:nowrap;flex:none;padding:12px 14px}
+  .kv-grid{grid-template-columns:1fr 1fr}
+  .form-row{grid-template-columns:1fr}
+}
+</style>
+"""
+
+INSTALLATION_JOB_TEMPLATE = INSTALLATION_JOB_CSS + '''<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{ job.job_name }} — Installation</title>
+</head>
+<body>
+<div class="top-bar">
+  <h1>🏗️ {{ job.job_name }}</h1>
+  <nav>
+    <a href="/installation">← All Jobs</a>
+    <a href="/dashboard">Dashboard</a>
+  </nav>
+</div>
+<div class="page">
+
+  <!-- Job header bar -->
+  <div class="job-header">
+    <div class="job-header-left">
+      <h2>{{ job.job_name }}
+        <span class="badge badge-{{ job.inst_status or 'planning' }}" style="font-size:13px;vertical-align:middle">{{ (job.inst_status or 'planning').replace('_',' ') }}</span>
+      </h2>
+      <div class="meta">
+        {% if job.client_name %}<span>👤 {{ job.client_name }}</span>{% endif %}
+        {% if job.project_address %}<span>📍 {{ job.project_address }}</span>{% endif %}
+        {% if job.start_date %}<span>🗓 {{ job.start_date }}{% if job.end_date %} → {{ job.end_date }}{% endif %}</span>{% endif %}
+        {% if job.contract_value %}<span>💰 ${{ "{:,.0f}".format(job.contract_value) }}</span>{% endif %}
+        {% if job.job_code %}<span>🏷 {{ job.job_code }}</span>{% endif %}
+      </div>
+    </div>
+    <div class="job-header-right">
+      <button class="btn btn-secondary btn-sm" onclick="openModal('edit-job-modal')">✏️ Edit Info</button>
+      {% if role == 'office' or role == 'admin' %}<a href="/job_costing" class="btn btn-secondary btn-sm">💰 Legacy Cost</a>{% endif %}
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs" id="main-tabs">
+    <button class="tab" data-tab="overview" onclick="switchTab('overview')">📊 Overview</button>
+    <button class="tab" data-tab="site-plans" onclick="switchTab('site-plans')">🗺 Site Plans</button>
+    <button class="tab" data-tab="change-orders" onclick="switchTab('change-orders')">📝 Change Orders</button>
+    <button class="tab" data-tab="schedule" onclick="switchTab('schedule')">📅 Schedule</button>
+    <button class="tab" data-tab="daily-logs" onclick="switchTab('daily-logs')">📋 Daily Logs</button>
+    <button class="tab" data-tab="expenses" onclick="switchTab('expenses')">💳 Expenses</button>
+    <button class="tab" data-tab="rfis" onclick="switchTab('rfis')">❓ RFIs</button>
+    {% if role == 'office' or role == 'admin' %}<button class="tab" data-tab="costing" onclick="switchTab('costing')">📈 Job Costing</button>{% endif %}
+  </div>
+
+  <!-- ── OVERVIEW ─────────────────────────────────────────── -->
+  <div class="tab-content" id="tab-overview">
+    <div class="card">
+      <div class="card-title">Project Information</div>
+      <div class="kv-grid">
+        <div class="kv-item"><label>Client</label><span>{{ job.client_name or '—' }}</span></div>
+        <div class="kv-item"><label>Client Contact</label><span>{{ job.client_contact or '—' }}</span></div>
+        <div class="kv-item"><label>Client Email</label><span>{{ job.client_email or '—' }}</span></div>
+        <div class="kv-item"><label>Address</label><span>{{ job.project_address or '—' }}</span></div>
+        <div class="kv-item"><label>Start Date</label><span>{{ job.start_date or '—' }}</span></div>
+        <div class="kv-item"><label>End Date</label><span>{{ job.end_date or '—' }}</span></div>
+        <div class="kv-item"><label>Contract Value</label><span>${{ "{:,.2f}".format(job.contract_value or 0) }}</span></div>
+        <div class="kv-item"><label>Days on Job</label><span>{{ days_on_job }}</span></div>
+      </div>
+      {% if job.description %}
+      <div style="margin-top:14px;padding-top:14px;border-top:1px solid #f3f4f6">
+        <label style="font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.5px">Description</label>
+        <p style="margin-top:6px;font-size:14px;color:#374151;line-height:1.6">{{ job.description }}</p>
+      </div>
+      {% endif %}
+    </div>
+
+    {% if proposal %}
+    <div class="card">
+      <div class="card-title">Budget Summary</div>
+      <div class="budget-row">
+        {% set cats = [
+          ('Materials', proposal.materials_budget, actuals.materials),
+          ('Labor', proposal.labor_budget, actuals.labor),
+          ('Travel', proposal.travel_budget, actuals.travel),
+          ('Hotel/Cash', proposal.hotel_cash_budget, actuals.hotel),
+          ('Subs', proposal.subs_budget, actuals.subs),
+          ('Rentals', proposal.rental_budget, actuals.rental),
+          ('Permits', proposal.permit_budget, actuals.permit),
+        ] %}
+        {% for name, budget, actual in cats %}
+        {% if budget > 0 %}
+        <div class="budget-item">
+          <div class="bi-label">{{ name }}</div>
+          <div class="bi-budget">${{ "{:,.0f}".format(budget) }}</div>
+          <div class="bi-actual">Used: ${{ "{:,.0f}".format(actual or 0) }}</div>
+          <div class="bi-bar"><div class="bi-fill {{ 'fill-over' if (actual or 0) >= budget else ('fill-warn' if (actual or 0) >= budget*0.8 else 'fill-ok') }}" style="width:{{ [100, ((actual or 0)/budget*100)|int]|min }}%"></div></div>
+        </div>
+        {% endif %}
+        {% endfor %}
+      </div>
+      <div style="margin-top:14px;display:flex;gap:24px;flex-wrap:wrap;padding-top:12px;border-top:1px solid #f3f4f6">
+        <div><span style="font-size:12px;color:#9ca3af">Bid Amount</span><br><strong style="font-size:18px;color:#1a3c5e">${{ "{:,.0f}".format(proposal.bid_amount or 0) }}</strong></div>
+        <div><span style="font-size:12px;color:#9ca3af">Total Invoiced</span><br><strong style="font-size:18px;color:#059669">${{ "{:,.0f}".format(total_invoiced or 0) }}</strong></div>
+        <div><span style="font-size:12px;color:#9ca3af">Days Allotted</span><br><strong style="font-size:18px;color:#1a3c5e">{{ proposal.days_allotted or 0 }}</strong></div>
+        <div><span style="font-size:12px;color:#9ca3af">Days Used</span><br><strong style="font-size:18px;color:{{ '#dc2626' if days_on_job > (proposal.days_allotted or 0) else '#1a3c5e' }}">{{ days_on_job }}</strong></div>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if recent_cos %}
+    <div class="card">
+      <div class="card-title">Recent Change Orders</div>
+      <table><thead><tr><th>CO #</th><th>Title</th><th>Amount</th><th>Status</th></tr></thead>
+      <tbody>
+      {% for co in recent_cos[:5] %}
+      <tr>
+        <td>{{ co.co_number }}</td>
+        <td>{{ co.title }}</td>
+        <td>${{ "{:,.2f}".format(co.amount or 0) }}</td>
+        <td><span class="badge badge-{{ co.status }}">{{ co.status.replace('_',' ') }}</span></td>
+      </tr>
+      {% endfor %}
+      </tbody></table>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- ── SITE PLANS ─────────────────────────────────────────── -->
+  <div class="tab-content" id="tab-site-plans">
+    <div class="card">
+      <div class="card-title">Site Plans & Drawings
+        <button class="btn btn-primary btn-sm" onclick="openModal('upload-plan-modal')">⬆ Upload Plan</button>
+      </div>
+      {% if site_plans %}
+      {% for p in site_plans %}
+      <div class="plan-card">
+        <div class="plan-info">
+          <div class="plan-name">
+            {{ p.original_filename }}
+            {% if p.is_current %}<span class="current-tag">Current</span>{% endif %}
+          </div>
+          <div class="plan-meta">v{{ p.version }} · {{ p.uploaded_at[:10] if p.uploaded_at else '' }} · {{ p.uploaded_by }} · {{ "%.1f"|format(p.file_size/1024/1024) }} MB{% if p.description %} · {{ p.description }}{% endif %}</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <a href="/installation/files/site-plan/{{ p.filename }}" target="_blank" class="btn btn-secondary btn-sm">⬇ View</a>
+          {% if not p.is_current %}<button class="btn btn-secondary btn-sm" onclick="markCurrent({{ p.id }})">✓ Set Current</button>{% endif %}
+          {% if role in ['office','admin'] %}<button class="btn btn-danger btn-sm" onclick="deletePlan({{ p.id }}, this)">🗑</button>{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+      {% else %}
+      <div style="text-align:center;padding:40px;color:#9ca3af">
+        <div style="font-size:40px;margin-bottom:10px">🗺</div>
+        <p>No site plans uploaded yet.</p>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- ── CHANGE ORDERS ─────────────────────────────────────────── -->
+  <div class="tab-content" id="tab-change-orders">
+    <div class="card">
+      <div class="card-title">Change Orders
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-voice btn-sm" onclick="openModal('voice-co-modal')">🎤 Voice CO</button>
+          <button class="btn btn-primary btn-sm" onclick="openModal('new-co-modal')">+ New CO</button>
+        </div>
+      </div>
+      {% if change_orders %}
+      <table>
+        <thead><tr><th>CO #</th><th>Title</th><th>Amount</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+        <tbody>
+        {% for co in change_orders %}
+        <tr>
+          <td style="font-weight:600">{{ co.co_number }}</td>
+          <td>
+            {{ co.title }}
+            {% if co.voice_transcript %}<span title="Created via voice" style="font-size:11px;color:#7c3aed"> 🎤</span>{% endif %}
+          </td>
+          <td>${{ "{:,.2f}".format(co.amount or 0) }}</td>
+          <td><span class="badge badge-{{ co.status }}">{{ co.status.replace('_',' ') }}</span></td>
+          <td style="font-size:12px;color:#9ca3af">{{ co.created_at[:10] if co.created_at else '' }}</td>
+          <td>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              {% if co.status == 'draft' %}
+                {% if job.client_email or co.client_email %}
+                <button class="btn btn-secondary btn-sm" onclick="sendCoApproval({{ co.id }})">📧 Send</button>
+                {% endif %}
+                <button class="btn btn-success btn-sm" onclick="updateCoStatus({{ co.id }},'no_approval_needed')">✓ No Approval</button>
+              {% endif %}
+              {% if co.status == 'pending_approval' %}
+                <button class="btn btn-success btn-sm" onclick="updateCoStatus({{ co.id }},'approved')">✓ Approve</button>
+                <button class="btn btn-danger btn-sm" onclick="updateCoStatus({{ co.id }},'rejected')">✗ Reject</button>
+              {% endif %}
+              {% if co.status == 'approved' %}<span style="font-size:12px;color:#059669">✓ Approved {{ co.approved_at[:10] if co.approved_at else '' }}</span>{% endif %}
+              {% if co.status == 'rejected' %}<span style="font-size:12px;color:#dc2626">✗ Rejected</span>{% endif %}
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div style="text-align:center;padding:40px;color:#9ca3af">
+        <div style="font-size:40px;margin-bottom:10px">📝</div>
+        <p>No change orders yet. Use voice or manual entry to create one.</p>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- ── SCHEDULE ─────────────────────────────────────────── -->
+  <div class="tab-content" id="tab-schedule">
+    <div class="card">
+      <div class="card-title">Crew Schedule
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-secondary btn-sm" onclick="logPastWeek()">📋 Log Past Week</button>
+          <button class="btn btn-primary btn-sm" onclick="openModal('add-sched-modal')">+ Add Day</button>
+        </div>
+      </div>
+      <div class="totals-bar">
+        <div class="t-item">Days Scheduled: <strong>{{ schedule_entries|length }}</strong></div>
+        <div class="t-item">Total Hours: <strong>{{ "%.1f"|format(schedule_entries|sum(attribute='hours_worked')) }}</strong></div>
+        {% if proposal %}<div class="t-item">Days Allotted: <strong>{{ proposal.days_allotted or '—' }}</strong></div>{% endif %}
+      </div>
+      {% if schedule_entries %}
+      <table>
+        <thead><tr><th>Date</th><th>Crew</th><th>Hours</th><th>Notes</th><th></th></tr></thead>
+        <tbody>
+        {% for s in schedule_entries %}
+        <tr>
+          <td style="font-weight:600;white-space:nowrap">{{ s.schedule_date }}</td>
+          <td style="font-size:13px">{{ s.crew_members or '—' }}</td>
+          <td>{{ s.hours_worked or '—' }}</td>
+          <td style="font-size:13px;color:#6b7280">{{ s.notes or '' }}</td>
+          <td><button class="btn btn-danger btn-sm" onclick="deleteSchedEntry({{ s.id }}, this)">🗑</button></td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div style="text-align:center;padding:40px;color:#9ca3af">No schedule entries yet.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- ── DAILY LOGS ─────────────────────────────────────────── -->
+  <div class="tab-content" id="tab-daily-logs">
+    <div class="card">
+      <div class="card-title">Daily Field Logs
+        <button class="btn btn-primary btn-sm" onclick="openModal('add-log-modal')">+ Add Log</button>
+      </div>
+      {% if daily_logs %}
+      {% for log in daily_logs %}
+      <div style="border:1px solid #e5e7eb;border-radius:8px;padding:14px;margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
+          <div>
+            <strong>{{ log.log_date }}</strong>
+            {% if log.weather %}<span style="font-size:13px;color:#6b7280;margin-left:10px">🌤 {{ log.weather }}{% if log.temp_high %} {{ log.temp_high }}°F{% endif %}</span>{% endif %}
+            {% if log.crew_count %}<span style="font-size:13px;color:#6b7280;margin-left:10px">👷 {{ log.crew_count }} crew</span>{% endif %}
+            {% if log.hours_worked %}<span style="font-size:13px;color:#6b7280;margin-left:10px">⏱ {{ log.hours_worked }}h</span>{% endif %}
+          </div>
+          <span style="font-size:12px;color:#9ca3af">By {{ log.logged_by }}</span>
+        </div>
+        {% if log.work_performed %}<p style="margin-top:8px;font-size:14px;color:#374151">{{ log.work_performed }}</p>{% endif %}
+        {% if log.issues_delays %}<p style="margin-top:4px;font-size:13px;color:#b45309">⚠ {{ log.issues_delays }}</p>{% endif %}
+        {% if log.materials_used %}<p style="margin-top:4px;font-size:13px;color:#374151">Materials: {{ log.materials_used }}</p>{% endif %}
+      </div>
+      {% endfor %}
+      {% else %}
+      <div style="text-align:center;padding:40px;color:#9ca3af">No daily logs yet.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- ── EXPENSES ─────────────────────────────────────────── -->
+  <div class="tab-content" id="tab-expenses">
+    <div class="card">
+      <div class="card-title">Expenses
+        <button class="btn btn-primary btn-sm" onclick="openModal('add-expense-modal')">+ Add Expense</button>
+      </div>
+      {% if expenses %}
+      <div class="totals-bar">
+        {% for cat, total in expense_totals.items() %}
+        <div class="t-item">{{ cat|title }}: <strong>${{ "{:,.0f}".format(total) }}</strong></div>
+        {% endfor %}
+        <div class="t-item" style="font-weight:700">Total: <strong style="color:#1a3c5e">${{ "{:,.2f}".format(expense_grand_total) }}</strong></div>
+      </div>
+      <table>
+        <thead><tr><th>Date</th><th>Category</th><th>Vendor</th><th>Description</th><th>Amount</th><th></th></tr></thead>
+        <tbody>
+        {% for e in expenses %}
+        <tr>
+          <td style="white-space:nowrap">{{ e.expense_date or '' }}</td>
+          <td><span style="text-transform:capitalize">{{ e.category }}</span></td>
+          <td>{{ e.vendor or '—' }}</td>
+          <td style="font-size:13px">{{ e.description or '' }}</td>
+          <td style="font-weight:600">${{ "{:,.2f}".format(e.amount or 0) }}</td>
+          <td>
+            {% if e.receipt_filename %}<a href="/installation/files/receipt/{{ e.receipt_filename }}" target="_blank" class="btn btn-secondary btn-sm">📄</a>{% endif %}
+            <button class="btn btn-danger btn-sm" onclick="deleteExpense({{ e.id }}, this)">🗑</button>
+          </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div style="text-align:center;padding:40px;color:#9ca3af">No expenses logged yet.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- ── RFIs ─────────────────────────────────────────── -->
+  <div class="tab-content" id="tab-rfis">
+    <div class="card">
+      <div class="card-title">RFIs (Requests for Information)
+        <button class="btn btn-primary btn-sm" onclick="openModal('add-rfi-modal')">+ New RFI</button>
+      </div>
+      {% if rfis %}
+      {% for rfi in rfis %}
+      <div class="rfi-row">
+        <div class="rfi-num">{{ rfi.rfi_number }}</div>
+        <div class="rfi-content">
+          <div class="rfi-title">{{ rfi.title }}
+            <span class="badge badge-{{ rfi.status }}" style="margin-left:8px">{{ rfi.status }}</span>
+            <span class="badge badge-{{ rfi.priority }}" style="margin-left:4px">{{ rfi.priority }}</span>
+          </div>
+          <div class="rfi-q">{{ rfi.question }}</div>
+          {% if rfi.response %}<div style="margin-top:6px;font-size:13px;color:#059669">Answer: {{ rfi.response }}</div>{% endif %}
+          {% if rfi.due_date %}<div style="font-size:12px;color:#9ca3af;margin-top:4px">Due: {{ rfi.due_date }}</div>{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+      {% else %}
+      <div style="text-align:center;padding:40px;color:#9ca3af">No RFIs yet.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- ── JOB COSTING ─────────────────────────────────────────── -->
+  <div class="tab-content" id="tab-costing">
+    <div class="card">
+      <div class="card-title">Job Costing — Budget vs Actual
+        <a href="/job_costing" class="btn btn-secondary btn-sm">Full View →</a>
+      </div>
+      {% if pos %}
+      <table>
+        <thead><tr><th>PO #</th><th>Tech</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Date</th></tr></thead>
+        <tbody>
+        {% for po in pos %}
+        <tr>
+          <td style="font-weight:600">#{{ po[0] }}</td>
+          <td>{{ po[2] }}</td>
+          <td>{{ po[3] }}</td>
+          <td>${{ "{:,.2f}".format(po[4] or 0) }}</td>
+          <td>${{ "{:,.2f}".format(po[5] or 0) }}</td>
+          <td style="font-size:12px;color:#9ca3af">{{ po[6][:10] if po[6] else '' }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div style="text-align:center;padding:40px;color:#9ca3af">No POs linked to this job.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- ══ MODALS ══════════════════════════════════════════════ -->
+
+  <!-- Edit Job Info -->
+  <div class="modal-overlay" id="edit-job-modal">
+    <div class="modal">
+      <button class="modal-close" onclick="closeModal('edit-job-modal')">×</button>
+      <h3>✏️ Edit Job Information</h3>
+      <div class="form-row">
+        <div class="form-group"><label>Client Name</label><input id="ej-client" value="{{ job.client_name or '' }}"></div>
+        <div class="form-group"><label>Client Contact</label><input id="ej-contact" value="{{ job.client_contact or '' }}"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Client Email</label><input id="ej-email" type="email" value="{{ job.client_email or '' }}"></div>
+        <div class="form-group"><label>Status</label>
+          <select id="ej-status">
+            {% for s in ['planning','active','on_hold','complete','cancelled'] %}
+            <option value="{{ s }}" {{ 'selected' if (job.inst_status or 'planning') == s }}>{{ s.replace('_',' ')|title }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      <div class="form-group" style="margin-bottom:12px"><label>Project Address</label><input id="ej-address" value="{{ job.project_address or '' }}"></div>
+      <div class="form-row">
+        <div class="form-group"><label>Start Date</label><input id="ej-start" type="date" value="{{ job.start_date or '' }}"></div>
+        <div class="form-group"><label>End Date</label><input id="ej-end" type="date" value="{{ job.end_date or '' }}"></div>
+        <div class="form-group"><label>Contract Value ($)</label><input id="ej-value" type="number" step="0.01" value="{{ job.contract_value or '' }}"></div>
+      </div>
+      <div class="form-group" style="margin-bottom:20px"><label>Description</label><textarea id="ej-desc">{{ job.description or '' }}</textarea></div>
+      <button class="btn btn-primary" onclick="saveJobInfo()">Save Changes</button>
+    </div>
+  </div>
+
+  <!-- Voice Change Order -->
+  <div class="modal-overlay" id="voice-co-modal">
+    <div class="modal">
+      <button class="modal-close" onclick="closeModal('voice-co-modal')">×</button>
+      <h3>🎤 Voice Change Order</h3>
+      <p style="font-size:14px;color:#6b7280;margin-bottom:16px">Press the microphone, describe the change order, then press stop to review and save.</p>
+      <div class="voice-rec-area">
+        <div class="voice-indicator" id="voice-btn" onclick="toggleRecording()">🎤</div>
+        <div class="recording-status" id="voice-status">Tap to start recording</div>
+      </div>
+      <div class="form-group" style="margin-bottom:12px">
+        <label>Transcript (edit as needed)</label>
+        <textarea id="voice-transcript" rows="4" placeholder="Your speech will appear here…"></textarea>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>CO Title</label><input id="voice-co-title" placeholder="Auto-filled or enter manually"></div>
+        <div class="form-group"><label>Amount ($)</label><input id="voice-co-amount" type="number" step="0.01" placeholder="0.00"></div>
+      </div>
+      <div class="form-row" style="margin-bottom:20px">
+        <div class="form-group">
+          <label>Requires Client Approval</label>
+          <select id="voice-co-approval">
+            <option value="1">Yes — send to client</option>
+            <option value="0">No — log only</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Client Email (override)</label><input id="voice-co-email" placeholder="{{ job.client_email or '' }}" value="{{ job.client_email or '' }}"></div>
+      </div>
+      <button class="btn btn-primary" onclick="submitVoiceCO()">💾 Save Change Order</button>
+    </div>
+  </div>
+
+  <!-- New CO (text) -->
+  <div class="modal-overlay" id="new-co-modal">
+    <div class="modal">
+      <button class="modal-close" onclick="closeModal('new-co-modal')">×</button>
+      <h3>📝 New Change Order</h3>
+      <div class="form-row">
+        <div class="form-group"><label>CO Number</label><input id="co-num" placeholder="Auto-generated"></div>
+        <div class="form-group"><label>Amount ($)</label><input id="co-amount" type="number" step="0.01"></div>
+      </div>
+      <div class="form-group" style="margin-bottom:12px"><label>Title</label><input id="co-title" placeholder="Brief description of change"></div>
+      <div class="form-group" style="margin-bottom:12px"><label>Description</label><textarea id="co-desc" rows="4" placeholder="Detailed description of work, materials, or conditions causing the change order…"></textarea></div>
+      <div class="form-row" style="margin-bottom:20px">
+        <div class="form-group">
+          <label>Requires Client Approval</label>
+          <select id="co-approval">
+            <option value="1">Yes — send to client</option>
+            <option value="0">No — log only</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Client Email</label><input id="co-client-email" value="{{ job.client_email or '' }}"></div>
+      </div>
+      <div class="form-group" style="margin-bottom:20px"><label>Notes (internal)</label><input id="co-notes"></div>
+      <button class="btn btn-primary" onclick="submitCO()">Save Change Order</button>
+    </div>
+  </div>
+
+  <!-- Add Schedule -->
+  <div class="modal-overlay" id="add-sched-modal">
+    <div class="modal">
+      <button class="modal-close" onclick="closeModal('add-sched-modal')">×</button>
+      <h3>📅 Log Day on Job</h3>
+      <div class="form-row">
+        <div class="form-group"><label>Date</label><input id="sched-date" type="date" value="{{ today }}"></div>
+        <div class="form-group"><label>Hours Worked</label><input id="sched-hours" type="number" step="0.5" value="8"></div>
+      </div>
+      <div class="form-group" style="margin-bottom:12px"><label>Crew Members</label><input id="sched-crew" placeholder="Names or count, e.g. John, Maria, Tom"></div>
+      <div class="form-group" style="margin-bottom:20px"><label>Notes</label><textarea id="sched-notes" rows="2"></textarea></div>
+      <button class="btn btn-primary" onclick="submitSchedEntry()">Save</button>
+    </div>
+  </div>
+
+  <!-- Add Daily Log -->
+  <div class="modal-overlay" id="add-log-modal">
+    <div class="modal">
+      <button class="modal-close" onclick="closeModal('add-log-modal')">×</button>
+      <h3>📋 Add Daily Log</h3>
+      <div class="form-row">
+        <div class="form-group"><label>Date</label><input id="log-date" type="date" value="{{ today }}"></div>
+        <div class="form-group"><label>Weather</label><input id="log-weather" placeholder="Sunny, Cloudy, Rain…"></div>
+        <div class="form-group"><label>High Temp (°F)</label><input id="log-temp" type="number"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Crew Count</label><input id="log-crew-count" type="number" value="1"></div>
+        <div class="form-group"><label>Hours Worked</label><input id="log-hours" type="number" step="0.5" value="8"></div>
+      </div>
+      <div class="form-group" style="margin-bottom:12px"><label>Crew Members</label><input id="log-crew" placeholder="Names of crew on site"></div>
+      <div class="form-group" style="margin-bottom:12px"><label>Work Performed</label><textarea id="log-work" rows="3" placeholder="Describe work completed today…"></textarea></div>
+      <div class="form-group" style="margin-bottom:12px"><label>Materials Used</label><input id="log-materials" placeholder="Materials and quantities used"></div>
+      <div class="form-group" style="margin-bottom:12px"><label>Equipment Used</label><input id="log-equipment" placeholder="Equipment on site"></div>
+      <div class="form-group" style="margin-bottom:20px"><label>Issues / Delays</label><textarea id="log-issues" rows="2" placeholder="Any issues, delays, or safety concerns…"></textarea></div>
+      <button class="btn btn-primary" onclick="submitDailyLog()">Save Log</button>
+    </div>
+  </div>
+
+  <!-- Add Expense -->
+  <div class="modal-overlay" id="add-expense-modal">
+    <div class="modal">
+      <button class="modal-close" onclick="closeModal('add-expense-modal')">×</button>
+      <h3>💳 Add Expense</h3>
+      <div class="form-row">
+        <div class="form-group"><label>Date</label><input id="exp-date" type="date" value="{{ today }}"></div>
+        <div class="form-group"><label>Category</label>
+          <select id="exp-cat">
+            <option value="materials">Materials</option>
+            <option value="labor">Labor</option>
+            <option value="equipment">Equipment</option>
+            <option value="subcontractor">Subcontractor</option>
+            <option value="travel">Travel</option>
+            <option value="hotel">Hotel</option>
+            <option value="permit">Permit</option>
+            <option value="rental">Rental</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Amount ($)</label><input id="exp-amount" type="number" step="0.01"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Vendor</label><input id="exp-vendor"></div>
+        <div class="form-group"><label>Description</label><input id="exp-desc"></div>
+      </div>
+      <div class="form-group" style="margin-bottom:20px"><label>Receipt (optional)</label><input id="exp-receipt" type="file" accept=".pdf,.jpg,.jpeg,.png"></div>
+      <button class="btn btn-primary" onclick="submitExpense()">Save Expense</button>
+    </div>
+  </div>
+
+  <!-- Upload Site Plan -->
+  <div class="modal-overlay" id="upload-plan-modal">
+    <div class="modal">
+      <button class="modal-close" onclick="closeModal('upload-plan-modal')">×</button>
+      <h3>🗺 Upload Site Plan</h3>
+      <div class="form-group" style="margin-bottom:12px"><label>File (PDF, DWG, image)</label><input id="plan-file" type="file" accept=".pdf,.dwg,.dxf,.jpg,.jpeg,.png,.tif,.tiff"></div>
+      <div class="form-group" style="margin-bottom:12px"><label>Description (optional)</label><input id="plan-desc" placeholder="e.g. Irrigation layout Rev 3"></div>
+      <div class="form-group" style="margin-bottom:20px">
+        <label>Mark as Current Version</label>
+        <select id="plan-current"><option value="1">Yes</option><option value="0">No</option></select>
+      </div>
+      <button class="btn btn-primary" onclick="uploadPlan()">Upload</button>
+    </div>
+  </div>
+
+  <!-- Add RFI -->
+  <div class="modal-overlay" id="add-rfi-modal">
+    <div class="modal">
+      <button class="modal-close" onclick="closeModal('add-rfi-modal')">×</button>
+      <h3>❓ New RFI</h3>
+      <div class="form-row">
+        <div class="form-group"><label>Title</label><input id="rfi-title"></div>
+        <div class="form-group"><label>Priority</label>
+          <select id="rfi-priority"><option value="low">Low</option><option value="normal" selected>Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select>
+        </div>
+        <div class="form-group"><label>Due Date</label><input id="rfi-due" type="date"></div>
+      </div>
+      <div class="form-group" style="margin-bottom:12px"><label>Assigned To</label><input id="rfi-assigned" placeholder="Name or role"></div>
+      <div class="form-group" style="margin-bottom:20px"><label>Question / Details</label><textarea id="rfi-question" rows="4" placeholder="Describe the information needed…"></textarea></div>
+      <button class="btn btn-primary" onclick="submitRFI()">Submit RFI</button>
+    </div>
+  </div>
+
+</div><!-- /page -->
+
+<script>
+const JOB_ID = {{ job.id }};
+
+// ── Tab switching ──
+function switchTab(name) {
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  document.querySelector('[data-tab="' + name + '"]').classList.add('active');
+  history.replaceState(null,'',location.pathname + '?tab=' + name);
+}
+// ── Modal helpers ──
+function openModal(id) { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+document.querySelectorAll('.modal-overlay').forEach(m => m.addEventListener('click', e => { if(e.target === m) m.classList.remove('open'); }));
+
+// ── Init tab from URL ──
+const initTab = new URLSearchParams(location.search).get('tab') || 'overview';
+switchTab(initTab);
+
+// ── Voice recording ──
+let recognition = null;
+let isRecording = false;
+let fullTranscript = '';
+
+function toggleRecording() {
+  if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+    alert('Speech recognition is not supported in this browser. Try Chrome on Android/Desktop.');
+    return;
+  }
+  if (isRecording) { stopRecording(); } else { startRecording(); }
+}
+function startRecording() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  recognition = new SR();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = 'en-US';
+  fullTranscript = '';
+  recognition.onresult = e => {
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) fullTranscript += e.results[i][0].transcript + ' ';
+      else interim = e.results[i][0].transcript;
+    }
+    document.getElementById('voice-transcript').value = fullTranscript + interim;
+  };
+  recognition.onend = () => { if (isRecording) recognition.start(); };
+  recognition.start();
+  isRecording = true;
+  document.getElementById('voice-btn').classList.add('recording');
+  document.getElementById('voice-btn').textContent = '⏹';
+  document.getElementById('voice-status').textContent = '🔴 Recording… speak now';
+}
+function stopRecording() {
+  if (recognition) { recognition.onend = null; recognition.stop(); }
+  isRecording = false;
+  document.getElementById('voice-btn').classList.remove('recording');
+  document.getElementById('voice-btn').textContent = '🎤';
+  document.getElementById('voice-status').textContent = 'Recording stopped. Review and save.';
+  // Auto-fill title from first sentence
+  const txt = document.getElementById('voice-transcript').value.trim();
+  if (txt && !document.getElementById('voice-co-title').value) {
+    const firstSentence = txt.split(/[.!?]/)[0].substring(0, 80);
+    document.getElementById('voice-co-title').value = firstSentence;
+  }
+}
+
+// ── AJAX helpers ──
+function api(url, data, cb, method) {
+  fetch(url, {
+    method: method || 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(data)
+  }).then(r => r.json()).then(d => {
+    if (d.success) cb(d);
+    else alert('Error: ' + (d.error || 'Unknown error'));
+  }).catch(e => alert('Network error: ' + e));
+}
+
+// ── Save job info ──
+function saveJobInfo() {
+  api('/installation/api/job/update', {
+    job_id: JOB_ID,
+    client_name: document.getElementById('ej-client').value,
+    client_contact: document.getElementById('ej-contact').value,
+    client_email: document.getElementById('ej-email').value,
+    inst_status: document.getElementById('ej-status').value,
+    project_address: document.getElementById('ej-address').value,
+    start_date: document.getElementById('ej-start').value,
+    end_date: document.getElementById('ej-end').value,
+    contract_value: document.getElementById('ej-value').value,
+    description: document.getElementById('ej-desc').value,
+  }, () => location.reload());
+}
+
+// ── Submit voice CO ──
+function submitVoiceCO() {
+  const transcript = document.getElementById('voice-transcript').value.trim();
+  if (!transcript && !document.getElementById('voice-co-title').value) { alert('Please record or type a description'); return; }
+  api('/installation/api/change-orders/create', {
+    job_id: JOB_ID,
+    title: document.getElementById('voice-co-title').value || transcript.substring(0,80),
+    description: transcript,
+    voice_transcript: transcript,
+    amount: document.getElementById('voice-co-amount').value || 0,
+    requires_approval: document.getElementById('voice-co-approval').value,
+    client_email: document.getElementById('voice-co-email').value,
+  }, d => {
+    closeModal('voice-co-modal');
+    location.reload();
+  });
+}
+
+// ── Submit text CO ──
+function submitCO() {
+  const title = document.getElementById('co-title').value.trim();
+  if (!title) { alert('Title is required'); return; }
+  api('/installation/api/change-orders/create', {
+    job_id: JOB_ID,
+    co_number: document.getElementById('co-num').value,
+    title: title,
+    description: document.getElementById('co-desc').value,
+    amount: document.getElementById('co-amount').value || 0,
+    requires_approval: document.getElementById('co-approval').value,
+    client_email: document.getElementById('co-client-email').value,
+    notes: document.getElementById('co-notes').value,
+  }, d => { closeModal('new-co-modal'); location.reload(); });
+}
+
+// ── CO status update ──
+function updateCoStatus(coId, status) {
+  const msg = status === 'approved' ? 'Mark this CO as approved?' : status === 'rejected' ? 'Mark this CO as rejected?' : 'Mark as no approval needed?';
+  if (!confirm(msg)) return;
+  api('/installation/api/change-orders/update-status', {co_id: coId, status: status}, () => location.reload());
+}
+
+// ── Send CO for approval ──
+function sendCoApproval(coId) {
+  if (!confirm('Send this change order to the client for approval?')) return;
+  api('/installation/api/change-orders/send-approval', {co_id: coId}, d => {
+    alert('Approval request sent to ' + (d.email || 'client'));
+    location.reload();
+  });
+}
+
+// ── Schedule entry ──
+function submitSchedEntry() {
+  const date = document.getElementById('sched-date').value;
+  if (!date) { alert('Date is required'); return; }
+  api('/install_scheduling/add_entry', {
+    job_id: JOB_ID,
+    schedule_date: date,
+    hours_worked: document.getElementById('sched-hours').value || 0,
+    crew_members: document.getElementById('sched-crew').value,
+    notes: document.getElementById('sched-notes').value,
+  }, () => { closeModal('add-sched-modal'); location.reload(); });
+}
+function deleteSchedEntry(id, btn) {
+  if (!confirm('Delete this entry?')) return;
+  api('/install_scheduling/delete_entry', {id: id}, () => btn.closest('tr').remove());
+}
+
+// ── Log past week ──
+function logPastWeek() {
+  if (!confirm('Auto-log Mon–Fri of the past week for this job?')) return;
+  api('/installation/api/schedule/log-week', {job_id: JOB_ID}, d => {
+    alert(d.message || 'Week logged');
+    location.reload();
+  });
+}
+
+// ── Daily log ──
+function submitDailyLog() {
+  const date = document.getElementById('log-date').value;
+  if (!date) { alert('Date is required'); return; }
+  api('/installation/api/daily-logs/add', {
+    job_id: JOB_ID,
+    log_date: date,
+    weather: document.getElementById('log-weather').value,
+    temp_high: document.getElementById('log-temp').value || null,
+    crew_count: document.getElementById('log-crew-count').value || 0,
+    crew_members: document.getElementById('log-crew').value,
+    hours_worked: document.getElementById('log-hours').value || 0,
+    work_performed: document.getElementById('log-work').value,
+    materials_used: document.getElementById('log-materials').value,
+    equipment_used: document.getElementById('log-equipment').value,
+    issues_delays: document.getElementById('log-issues').value,
+  }, () => { closeModal('add-log-modal'); location.reload(); });
+}
+
+// ── Expense ──
+function submitExpense() {
+  const amount = document.getElementById('exp-amount').value;
+  if (!amount) { alert('Amount is required'); return; }
+  const form = new FormData();
+  form.append('job_id', JOB_ID);
+  form.append('expense_date', document.getElementById('exp-date').value);
+  form.append('category', document.getElementById('exp-cat').value);
+  form.append('amount', amount);
+  form.append('vendor', document.getElementById('exp-vendor').value);
+  form.append('description', document.getElementById('exp-desc').value);
+  const receipt = document.getElementById('exp-receipt').files[0];
+  if (receipt) form.append('receipt', receipt);
+  fetch('/installation/api/expenses/add', {method:'POST', body:form})
+    .then(r => r.json())
+    .then(d => { if (d.success) { closeModal('add-expense-modal'); location.reload(); } else alert('Error: ' + d.error); });
+}
+function deleteExpense(id, btn) {
+  if (!confirm('Delete this expense?')) return;
+  api('/installation/api/expenses/delete', {id: id}, () => btn.closest('tr').remove());
+}
+
+// ── Upload site plan ──
+function uploadPlan() {
+  const fileEl = document.getElementById('plan-file');
+  if (!fileEl.files.length) { alert('Select a file first'); return; }
+  const form = new FormData();
+  form.append('job_id', JOB_ID);
+  form.append('plan_file', fileEl.files[0]);
+  form.append('description', document.getElementById('plan-desc').value);
+  form.append('is_current', document.getElementById('plan-current').value);
+  fetch('/installation/api/site-plans/upload', {method:'POST', body:form})
+    .then(r => r.json())
+    .then(d => { if (d.success) { closeModal('upload-plan-modal'); location.reload(); } else alert('Error: ' + d.error); });
+}
+function markCurrent(planId) {
+  api('/installation/api/site-plans/mark-current', {plan_id: planId, job_id: JOB_ID}, () => location.reload());
+}
+function deletePlan(planId, btn) {
+  if (!confirm('Delete this site plan?')) return;
+  api('/installation/api/site-plans/delete', {plan_id: planId}, () => btn.closest('.plan-card').remove());
+}
+
+// ── RFI ──
+function submitRFI() {
+  const title = document.getElementById('rfi-title').value.trim();
+  if (!title) { alert('Title is required'); return; }
+  api('/installation/api/rfis/add', {
+    job_id: JOB_ID,
+    title: title,
+    priority: document.getElementById('rfi-priority').value,
+    due_date: document.getElementById('rfi-due').value,
+    assigned_to: document.getElementById('rfi-assigned').value,
+    question: document.getElementById('rfi-question').value,
+  }, () => { closeModal('add-rfi-modal'); location.reload(); });
+}
+</script>
+</body>
+</html>
+'''
+
+
+INSTALLATION_CO_APPROVAL_TEMPLATE = '''<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Change Order Approval</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+.card{background:white;border-radius:12px;padding:36px;max-width:560px;width:100%;box-shadow:0 4px 24px rgba(0,0,0,.1)}
+.logo{font-size:28px;font-weight:800;color:#1a3c5e;margin-bottom:4px}
+.sub{font-size:14px;color:#9ca3af;margin-bottom:28px}
+h2{font-size:22px;font-weight:700;color:#1a3c5e;margin-bottom:20px}
+.info-row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f3f4f6;font-size:15px}
+.info-row span:first-child{color:#6b7280}
+.info-row span:last-child{font-weight:500}
+.desc-box{background:#f9fafb;border-radius:8px;padding:16px;margin:20px 0;font-size:14px;color:#374151;line-height:1.6}
+.btn-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:24px}
+.btn{padding:14px;border-radius:8px;font-size:16px;font-weight:600;border:none;cursor:pointer;transition:all .2s}
+.btn-approve{background:#059669;color:white}.btn-approve:hover{background:#047857}
+.btn-reject{background:#dc2626;color:white}.btn-reject:hover{background:#b91c1c}
+.result-box{text-align:center;padding:32px}
+.result-icon{font-size:56px;margin-bottom:12px}
+.result-msg{font-size:18px;font-weight:600;margin-bottom:8px}
+.result-sub{font-size:14px;color:#9ca3af}
+.badge{display:inline-block;padding:4px 14px;border-radius:20px;font-size:12px;font-weight:600;text-transform:uppercase}
+.badge-approved{background:#d1fae5;color:#065f46}
+.badge-rejected{background:#fee2e2;color:#b91c1c}
+.badge-pending{background:#fef3c7;color:#92400e}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">🏗️ Installation</div>
+  <div class="sub">Change Order Approval Request</div>
+
+  {% if already_actioned %}
+  <div class="result-box">
+    <div class="result-icon">{{ '✅' if co.status == 'approved' else '❌' }}</div>
+    <div class="result-msg">This change order has already been {{ co.status }}.</div>
+    {% if co.approved_at %}<div class="result-sub">On {{ co.approved_at[:10] }}</div>{% endif %}
+    <div style="margin-top:20px"><span class="badge badge-{{ co.status }}">{{ co.status }}</span></div>
+  </div>
+  {% else %}
+  <h2>Change Order #{{ co.co_number }}</h2>
+  <div class="info-row"><span>Project</span><span>{{ job_name }}</span></div>
+  <div class="info-row"><span>CO Title</span><span>{{ co.title }}</span></div>
+  <div class="info-row"><span>Amount</span><span style="font-size:18px;font-weight:700;color:#1a3c5e">${{ "{:,.2f}".format(co.amount or 0) }}</span></div>
+  <div class="info-row"><span>Submitted</span><span>{{ co.created_at[:10] if co.created_at else '—' }}</span></div>
+  {% if co.description %}
+  <div class="desc-box">{{ co.description }}</div>
+  {% endif %}
+  <form method="POST">
+    <div class="btn-row">
+      <button type="submit" name="action" value="approve" class="btn btn-approve">✓ Approve</button>
+      <button type="submit" name="action" value="reject" class="btn btn-reject">✗ Reject</button>
+    </div>
+  </form>
+  {% endif %}
+</div>
+</body>
+</html>
+'''
+
+# ── Installation Module Routes ─────────────────────────────────────────────
+
+@app.route('/installation')
+def installation():
+    if 'username' not in session:
+        return redirect(url_for('login'))
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""SELECT j.id, j.job_name, j.year, j.active,
+                            COALESCE(j.client_name,''), COALESCE(j.project_address,''),
+                            COALESCE(j.inst_status,'planning'), COALESCE(j.contract_value,0),
+                            COALESCE(j.job_code,'')
+                     FROM jobs j WHERE COALESCE(j.department,'install')='install'
+                     ORDER BY j.active DESC, j.year DESC, j.job_name ASC""")
+        raw_jobs = c.fetchall()
+
+        # days on job per job_id
+        c.execute("SELECT job_id, COUNT(*) FROM install_schedules GROUP BY job_id")
+        days_map = {r[0]: r[1] for r in c.fetchall()}
+
+        # invoice totals per job (via job_name join)
+        c.execute("""SELECT j.id, COALESCE(SUM(i.invoice_cost),0)
+                     FROM jobs j
+                     JOIN po_requests pr ON pr.job_name=j.job_name AND pr.po_type='install'
+                     JOIN invoices i ON i.po_id=pr.id
+                     GROUP BY j.id""")
+        inv_map = {r[0]: r[1] for r in c.fetchall()}
+
+        # change order counts
+        c.execute("SELECT job_id, COUNT(*), SUM(CASE WHEN status='pending_approval' THEN 1 ELSE 0 END) FROM installation_change_orders GROUP BY job_id")
+        co_map = {r[0]: {'total': r[1], 'pending': r[2] or 0} for r in c.fetchall()}
+
+        # site plan counts
+        c.execute("SELECT job_id, COUNT(*) FROM installation_site_plans GROUP BY job_id")
+        plan_map = {r[0]: r[1] for r in c.fetchall()}
+
+        jobs = []
+        total_contract = 0.0
+        total_invoiced = 0.0
+        active_count = 0
+        pending_cos = 0
+        for row in raw_jobs:
+            jid = row[0]
+            inv_total = inv_map.get(jid, 0)
+            co_info = co_map.get(jid, {'total': 0, 'pending': 0})
+            contract = row[7] or 0
+            if row[3]:
+                active_count += 1
+                total_contract += contract
+                total_invoiced += inv_total
+            pending_cos += co_info['pending']
+
+            class _J: pass
+            j = _J()
+            j.id = jid; j.job_name = row[1]; j.year = row[2]; j.active = row[3]
+            j.client_name = row[4]; j.project_address = row[5]
+            j.inst_status = row[6]; j.contract_value = contract
+            j.job_code = row[8]
+            j.days_on_job = days_map.get(jid, 0)
+            j.invoiced_total = inv_total
+            j.total_cos = co_info['total']
+            j.pending_cos = co_info['pending']
+            j.site_plans = plan_map.get(jid, 0)
+            jobs.append(j)
+
+        conn.close()
+        return render_template_string(INSTALLATION_HUB_TEMPLATE,
+            jobs=jobs, active_count=active_count, total_count=len(jobs),
+            pending_cos=pending_cos, total_contract=total_contract,
+            total_invoiced=total_invoiced)
+    except Exception as e:
+        import traceback
+        return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre><a href='/dashboard'>Back</a>"
+
+
+@app.route('/installation/job/<int:job_id>')
+def installation_job(job_id):
+    if 'username' not in session:
+        return redirect(url_for('login'))
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        c.execute("""SELECT id, job_name, year, active, job_code,
+                            COALESCE(client_name,''), COALESCE(client_email,''),
+                            COALESCE(client_contact,''), COALESCE(project_address,''),
+                            COALESCE(start_date,''), COALESCE(end_date,''),
+                            COALESCE(inst_status,'planning'), COALESCE(contract_value,0),
+                            COALESCE(description,''), COALESCE(budget,0)
+                     FROM jobs WHERE id=?""", (job_id,))
+        jrow = c.fetchone()
+        if not jrow:
+            conn.close()
+            return "<h2>Job not found</h2><a href='/installation'>Back</a>"
+
+        class _J: pass
+        job = _J()
+        job.id = jrow[0]; job.job_name = jrow[1]; job.year = jrow[2]
+        job.active = jrow[3]; job.job_code = jrow[4]
+        job.client_name = jrow[5]; job.client_email = jrow[6]
+        job.client_contact = jrow[7]; job.project_address = jrow[8]
+        job.start_date = jrow[9]; job.end_date = jrow[10]
+        job.inst_status = jrow[11]; job.contract_value = jrow[12]
+        job.description = jrow[13]; job.budget = jrow[14]
+
+        # proposal
+        c.execute("""SELECT bid_amount, materials_budget, labor_budget, travel_budget,
+                            hotel_cash_budget, subs_budget, rental_budget, permit_budget,
+                            asbuilt_budget, days_allotted FROM job_proposals WHERE job_id=? LIMIT 1""", (job_id,))
+        pr = c.fetchone()
+        class _P: pass
+        proposal = None
+        if pr:
+            proposal = _P()
+            proposal.bid_amount = pr[0]; proposal.materials_budget = pr[1]
+            proposal.labor_budget = pr[2]; proposal.travel_budget = pr[3]
+            proposal.hotel_cash_budget = pr[4]; proposal.subs_budget = pr[5]
+            proposal.rental_budget = pr[6]; proposal.permit_budget = pr[7]
+            proposal.asbuilt_budget = pr[8]; proposal.days_allotted = pr[9]
+
+        # actuals from expenses
+        c.execute("SELECT category, SUM(amount) FROM installation_expenses WHERE job_id=? GROUP BY category", (job_id,))
+        class _A: pass
+        actuals = _A()
+        actuals.materials=0; actuals.labor=0; actuals.travel=0
+        actuals.hotel=0; actuals.subs=0; actuals.rental=0; actuals.permit=0
+        for row in c.fetchall():
+            cat = row[0].lower()
+            if hasattr(actuals, cat): setattr(actuals, cat, row[1])
+
+        # invoice total
+        c.execute("""SELECT COALESCE(SUM(i.invoice_cost),0)
+                     FROM invoices i JOIN po_requests pr ON pr.id=i.po_id
+                     WHERE pr.job_name=(SELECT job_name FROM jobs WHERE id=?) AND pr.po_type='install'""", (job_id,))
+        total_invoiced = c.fetchone()[0] or 0
+
+        # days on job
+        c.execute("SELECT COUNT(*) FROM install_schedules WHERE job_id=?", (job_id,))
+        days_on_job = c.fetchone()[0]
+
+        # site plans
+        c.execute("SELECT id, filename, original_filename, version, description, file_size, uploaded_by, uploaded_at, is_current FROM installation_site_plans WHERE job_id=? ORDER BY uploaded_at DESC", (job_id,))
+        plan_rows = c.fetchall()
+        class _Plan: pass
+        site_plans = []
+        for p in plan_rows:
+            obj = _Plan()
+            obj.id=p[0]; obj.filename=p[1]; obj.original_filename=p[2]
+            obj.version=p[3]; obj.description=p[4]; obj.file_size=p[5] or 0
+            obj.uploaded_by=p[6]; obj.uploaded_at=p[7] or ''; obj.is_current=p[8]
+            site_plans.append(obj)
+
+        # change orders
+        c.execute("""SELECT id, co_number, title, description, voice_transcript, amount,
+                            status, requires_approval, created_by, created_at,
+                            approved_by, approved_at, client_email, notes
+                     FROM installation_change_orders WHERE job_id=? ORDER BY created_at DESC""", (job_id,))
+        co_rows = c.fetchall()
+        class _CO: pass
+        change_orders = []
+        for co in co_rows:
+            obj = _CO()
+            obj.id=co[0]; obj.co_number=co[1]; obj.title=co[2]
+            obj.description=co[3]; obj.voice_transcript=co[4]; obj.amount=co[5]
+            obj.status=co[6]; obj.requires_approval=co[7]
+            obj.created_by=co[8]; obj.created_at=co[9] or ''
+            obj.approved_by=co[10]; obj.approved_at=co[11] or ''
+            obj.client_email=co[12]; obj.notes=co[13]
+            change_orders.append(obj)
+
+        recent_cos = change_orders[:5]
+
+        # schedule
+        c.execute("SELECT id, schedule_date, crew_members, notes, hours_worked FROM install_schedules WHERE job_id=? ORDER BY schedule_date DESC", (job_id,))
+        sched_rows = c.fetchall()
+        class _S: pass
+        schedule_entries = []
+        for s in sched_rows:
+            obj = _S()
+            obj.id=s[0]; obj.schedule_date=s[1]; obj.crew_members=s[2]
+            obj.notes=s[3]; obj.hours_worked=s[4] or 0
+            schedule_entries.append(obj)
+
+        # daily logs
+        c.execute("""SELECT id, log_date, weather, temp_high, crew_count, crew_members,
+                            hours_worked, work_performed, materials_used, equipment_used,
+                            issues_delays, logged_by FROM installation_daily_logs
+                     WHERE job_id=? ORDER BY log_date DESC""", (job_id,))
+        log_rows = c.fetchall()
+        class _L: pass
+        daily_logs = []
+        for lg in log_rows:
+            obj = _L()
+            obj.id=lg[0]; obj.log_date=lg[1]; obj.weather=lg[2]
+            obj.temp_high=lg[3]; obj.crew_count=lg[4]; obj.crew_members=lg[5]
+            obj.hours_worked=lg[6] or 0; obj.work_performed=lg[7]
+            obj.materials_used=lg[8]; obj.equipment_used=lg[9]
+            obj.issues_delays=lg[10]; obj.logged_by=lg[11]
+            daily_logs.append(obj)
+
+        # expenses
+        c.execute("""SELECT id, expense_date, category, vendor, description, amount,
+                            receipt_filename, logged_by FROM installation_expenses
+                     WHERE job_id=? ORDER BY expense_date DESC""", (job_id,))
+        exp_rows = c.fetchall()
+        class _E: pass
+        expenses = []
+        expense_totals = {}
+        expense_grand_total = 0.0
+        for e in exp_rows:
+            obj = _E()
+            obj.id=e[0]; obj.expense_date=e[1]; obj.category=e[2]
+            obj.vendor=e[3]; obj.description=e[4]; obj.amount=e[5] or 0
+            obj.receipt_filename=e[6]; obj.logged_by=e[7]
+            expenses.append(obj)
+            expense_totals[e[2]] = expense_totals.get(e[2], 0) + (e[5] or 0)
+            expense_grand_total += (e[5] or 0)
+
+        # RFIs
+        c.execute("""SELECT id, rfi_number, title, question, response, status,
+                            priority, assigned_to, due_date, created_by, created_at
+                     FROM installation_rfis WHERE job_id=? ORDER BY created_at DESC""", (job_id,))
+        rfi_rows = c.fetchall()
+        class _R: pass
+        rfis = []
+        for r in rfi_rows:
+            obj = _R()
+            obj.id=r[0]; obj.rfi_number=r[1]; obj.title=r[2]
+            obj.question=r[3]; obj.response=r[4]; obj.status=r[5]
+            obj.priority=r[6]; obj.assigned_to=r[7]; obj.due_date=r[8]
+            obj.created_by=r[9]; obj.created_at=r[10]
+            rfis.append(obj)
+
+        # POs for costing tab
+        c.execute("""SELECT pr.id, j.id, pr.tech_username, pr.status,
+                            COALESCE(pr.estimated_cost,0), COALESCE(pr.invoice_cost,0),
+                            pr.request_date
+                     FROM po_requests pr JOIN jobs j ON j.job_name=pr.job_name
+                     WHERE j.id=? AND pr.po_type='install' ORDER BY pr.request_date DESC""", (job_id,))
+        pos = c.fetchall()
+
+        conn.close()
+        today = datetime.now().strftime('%Y-%m-%d')
+        return render_template_string(INSTALLATION_JOB_TEMPLATE,
+            job=job, proposal=proposal, actuals=actuals,
+            total_invoiced=total_invoiced, days_on_job=days_on_job,
+            site_plans=site_plans, change_orders=change_orders, recent_cos=recent_cos,
+            schedule_entries=schedule_entries, daily_logs=daily_logs,
+            expenses=expenses, expense_totals=expense_totals,
+            expense_grand_total=expense_grand_total,
+            rfis=rfis, pos=pos, today=today,
+            role=session.get('role',''), username=session.get('username',''))
+    except Exception as e:
+        import traceback
+        return f"<h2>Error loading job</h2><pre>{traceback.format_exc()}</pre><a href='/installation'>Back</a>"
+
+
+@app.route('/installation/api/job/update', methods=['POST'])
+def installation_job_update():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    job_id = data.get('job_id')
+    if not job_id:
+        return jsonify({'success': False, 'error': 'No job_id'})
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""UPDATE jobs SET client_name=?, client_email=?, client_contact=?,
+                     inst_status=?, project_address=?, start_date=?, end_date=?,
+                     contract_value=?, description=? WHERE id=?""",
+                  (data.get('client_name',''), data.get('client_email',''),
+                   data.get('client_contact',''), data.get('inst_status','planning'),
+                   data.get('project_address',''), data.get('start_date',''),
+                   data.get('end_date',''), float(data.get('contract_value') or 0),
+                   data.get('description',''), job_id))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/site-plans/upload', methods=['POST'])
+def installation_site_plan_upload():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    try:
+        job_id = request.form.get('job_id')
+        if not job_id or 'plan_file' not in request.files:
+            return jsonify({'success': False, 'error': 'Missing file or job_id'})
+        f = request.files['plan_file']
+        if not f.filename:
+            return jsonify({'success': False, 'error': 'Empty file'})
+        desc = request.form.get('description', '')
+        is_current = int(request.form.get('is_current', 1))
+        ext = os.path.splitext(f.filename)[1].lower()
+        safe_name = f"{job_id}_{int(datetime.now().timestamp())}{ext}"
+        save_path = os.path.join(SITE_PLANS_DIR, safe_name)
+        f.save(save_path)
+        file_size = os.path.getsize(save_path)
+
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        # version number
+        c.execute("SELECT COALESCE(MAX(version),0)+1 FROM installation_site_plans WHERE job_id=?", (job_id,))
+        version = c.fetchone()[0]
+        if is_current:
+            c.execute("UPDATE installation_site_plans SET is_current=0 WHERE job_id=?", (job_id,))
+        c.execute("""INSERT INTO installation_site_plans
+                     (job_id, filename, original_filename, version, description, file_size, uploaded_by, uploaded_at, is_current)
+                     VALUES (?,?,?,?,?,?,?,?,?)""",
+                  (job_id, safe_name, f.filename, version, desc, file_size,
+                   session['username'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), is_current))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/files/site-plan/<filename>')
+def installation_site_plan_file(filename):
+    if 'username' not in session:
+        return redirect(url_for('login'))
+    return send_from_directory(SITE_PLANS_DIR, filename)
+
+
+@app.route('/installation/files/photo/<filename>')
+def installation_photo_file(filename):
+    if 'username' not in session:
+        return redirect(url_for('login'))
+    return send_from_directory(DAILY_LOG_PHOTOS_DIR, filename)
+
+
+@app.route('/installation/files/receipt/<filename>')
+def installation_receipt_file(filename):
+    if 'username' not in session:
+        return redirect(url_for('login'))
+    return send_from_directory(EXPENSE_RECEIPTS_DIR, filename)
+
+
+@app.route('/installation/api/site-plans/mark-current', methods=['POST'])
+def installation_site_plan_mark_current():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("UPDATE installation_site_plans SET is_current=0 WHERE job_id=?", (data['job_id'],))
+        c.execute("UPDATE installation_site_plans SET is_current=1 WHERE id=?", (data['plan_id'],))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/site-plans/delete', methods=['POST'])
+def installation_site_plan_delete():
+    if 'username' not in session or session.get('role') not in ['office','admin']:
+        return jsonify({'success': False, 'error': 'Access denied'}), 403
+    data = request.get_json()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT filename FROM installation_site_plans WHERE id=?", (data['plan_id'],))
+        row = c.fetchone()
+        if row:
+            fp = os.path.join(SITE_PLANS_DIR, row[0])
+            if os.path.exists(fp): os.remove(fp)
+        c.execute("DELETE FROM installation_site_plans WHERE id=?", (data['plan_id'],))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/change-orders/create', methods=['POST'])
+def installation_co_create():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    job_id = data.get('job_id')
+    if not job_id:
+        return jsonify({'success': False, 'error': 'No job_id'})
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        # Auto-number
+        c.execute("SELECT COUNT(*)+1 FROM installation_change_orders WHERE job_id=?", (job_id,))
+        co_seq = c.fetchone()[0]
+        co_number = data.get('co_number') or f"CO-{job_id:03d}-{co_seq:03d}"
+        requires_approval = int(data.get('requires_approval', 1))
+        status = 'draft' if requires_approval else 'no_approval_needed'
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        c.execute("""INSERT INTO installation_change_orders
+                     (job_id, co_number, title, description, voice_transcript, amount,
+                      status, requires_approval, created_by, created_at, client_email, notes)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  (job_id, co_number, data.get('title',''), data.get('description',''),
+                   data.get('voice_transcript',''), float(data.get('amount') or 0),
+                   status, requires_approval, session['username'], now,
+                   data.get('client_email',''), data.get('notes','')))
+        conn.commit(); conn.close()
+        return jsonify({'success': True, 'co_number': co_number})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/change-orders/update-status', methods=['POST'])
+def installation_co_update_status():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        if data['status'] == 'approved':
+            c.execute("UPDATE installation_change_orders SET status=?, approved_by=?, approved_at=? WHERE id=?",
+                      (data['status'], session['username'], now, data['co_id']))
+        else:
+            c.execute("UPDATE installation_change_orders SET status=? WHERE id=?",
+                      (data['status'], data['co_id']))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/change-orders/send-approval', methods=['POST'])
+def installation_co_send_approval():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    co_id = data.get('co_id')
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""SELECT ico.*, j.job_name, j.client_email
+                     FROM installation_change_orders ico
+                     JOIN jobs j ON j.id=ico.job_id
+                     WHERE ico.id=?""", (co_id,))
+        co = c.fetchone()
+        if not co:
+            conn.close()
+            return jsonify({'success': False, 'error': 'CO not found'})
+        token = str(uuid.uuid4())
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        c.execute("UPDATE installation_change_orders SET approval_token=?, approval_sent_at=?, status='pending_approval' WHERE id=?",
+                  (token, now, co_id))
+        conn.commit()
+        client_email = co[12] or co[-1]  # client_email from CO or from job
+        conn.close()
+
+        # Send email if email is configured
+        approval_url = f"{WEBSITE_URL}/installation/co/approve/{token}"
+        if EMAIL_ENABLED and client_email:
+            try:
+                import smtplib
+                from email.mime.text import MIMEText
+                from email.mime.multipart import MIMEMultipart
+                msg = MIMEMultipart('alternative')
+                msg['Subject'] = f"Change Order Approval Request — {co[2]}"
+                msg['From'] = EMAIL_ADDRESS
+                msg['To'] = client_email
+                html = f"""
+                <p>You have received a change order for your review and approval.</p>
+                <p><strong>Project:</strong> {co[-2]}</p>
+                <p><strong>CO:</strong> {co[2]} — {co[3]}</p>
+                <p><strong>Amount:</strong> ${co[6]:,.2f}</p>
+                <p><strong>Description:</strong> {co[4] or ''}</p>
+                <p><a href="{approval_url}" style="background:#1a3c5e;color:white;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block;margin-top:12px">Review & Approve Change Order</a></p>
+                """
+                msg.attach(MIMEText(html, 'html'))
+                with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+                    server.starttls()
+                    server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+                    server.sendmail(EMAIL_ADDRESS, client_email, msg.as_string())
+            except Exception:
+                pass
+
+        return jsonify({'success': True, 'email': client_email, 'approval_url': approval_url})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/co/approve/<token>', methods=['GET', 'POST'])
+def installation_co_approve(token):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""SELECT ico.id, ico.co_number, ico.title, ico.description,
+                            ico.amount, ico.status, ico.created_at, ico.approved_at,
+                            j.job_name
+                     FROM installation_change_orders ico
+                     JOIN jobs j ON j.id=ico.job_id
+                     WHERE ico.approval_token=?""", (token,))
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return "<h2>Invalid or expired link.</h2>"
+
+        class _CO: pass
+        co = _CO()
+        co.id=row[0]; co.co_number=row[1]; co.title=row[2]
+        co.description=row[3]; co.amount=row[4]; co.status=row[5]
+        co.created_at=row[6]; co.approved_at=row[7]
+        job_name = row[8]
+        already_actioned = co.status in ('approved', 'rejected')
+
+        if request.method == 'POST' and not already_actioned:
+            action = request.form.get('action')
+            if action in ('approve', 'reject'):
+                new_status = 'approved' if action == 'approve' else 'rejected'
+                now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                approved_by = 'client' if new_status == 'approved' else None
+                c.execute("UPDATE installation_change_orders SET status=?, approved_by=?, approved_at=? WHERE id=?",
+                          (new_status, approved_by, now, co.id))
+                conn.commit()
+                co.status = new_status
+                co.approved_at = now
+                already_actioned = True
+
+        conn.close()
+        return render_template_string(INSTALLATION_CO_APPROVAL_TEMPLATE,
+                                      co=co, job_name=job_name, already_actioned=already_actioned)
+    except Exception as e:
+        import traceback
+        return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre>"
+
+
+@app.route('/installation/api/schedule/log-week', methods=['POST'])
+def installation_log_week():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    job_id = data.get('job_id')
+    try:
+        from datetime import timedelta
+        today = datetime.now().date()
+        # last completed Mon–Fri week
+        monday = today - timedelta(days=today.weekday() + 7)
+        days_added = 0
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        for i in range(5):
+            day = monday + timedelta(days=i)
+            day_str = day.strftime('%Y-%m-%d')
+            c.execute("SELECT id FROM install_schedules WHERE job_id=? AND schedule_date=?", (job_id, day_str))
+            if not c.fetchone():
+                c.execute("""INSERT INTO install_schedules (job_id, schedule_date, crew_members, hours_worked, created_by, created_at)
+                             VALUES (?,?,?,?,?,?)""",
+                          (job_id, day_str, '', 8, session['username'], datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                days_added += 1
+        conn.commit(); conn.close()
+        return jsonify({'success': True, 'message': f"Added {days_added} day(s) for the week of {monday.strftime('%b %d')}"})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/daily-logs/add', methods=['POST'])
+def installation_daily_log_add():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    job_id = data.get('job_id')
+    if not job_id:
+        return jsonify({'success': False, 'error': 'No job_id'})
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""INSERT INTO installation_daily_logs
+                     (job_id, log_date, weather, temp_high, crew_count, crew_members,
+                      hours_worked, work_performed, materials_used, equipment_used,
+                      issues_delays, logged_by, created_at)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  (job_id, data.get('log_date'), data.get('weather',''),
+                   data.get('temp_high') or None, data.get('crew_count', 0),
+                   data.get('crew_members',''), float(data.get('hours_worked') or 0),
+                   data.get('work_performed',''), data.get('materials_used',''),
+                   data.get('equipment_used',''), data.get('issues_delays',''),
+                   session['username'], datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        new_id = c.lastrowid
+        conn.commit(); conn.close()
+        return jsonify({'success': True, 'id': new_id})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/expenses/add', methods=['POST'])
+def installation_expense_add():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    try:
+        job_id = request.form.get('job_id')
+        if not job_id:
+            return jsonify({'success': False, 'error': 'No job_id'})
+        receipt_filename = None
+        if 'receipt' in request.files:
+            rf = request.files['receipt']
+            if rf.filename:
+                ext = os.path.splitext(rf.filename)[1].lower()
+                receipt_filename = f"receipt_{job_id}_{int(datetime.now().timestamp())}{ext}"
+                rf.save(os.path.join(EXPENSE_RECEIPTS_DIR, receipt_filename))
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""INSERT INTO installation_expenses
+                     (job_id, expense_date, category, description, vendor, amount,
+                      receipt_filename, logged_by, created_at)
+                     VALUES (?,?,?,?,?,?,?,?,?)""",
+                  (job_id, request.form.get('expense_date'),
+                   request.form.get('category','other'),
+                   request.form.get('description',''),
+                   request.form.get('vendor',''),
+                   float(request.form.get('amount') or 0),
+                   receipt_filename, session['username'],
+                   datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/expenses/delete', methods=['POST'])
+def installation_expense_delete():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT receipt_filename FROM installation_expenses WHERE id=?", (data['id'],))
+        row = c.fetchone()
+        if row and row[0]:
+            fp = os.path.join(EXPENSE_RECEIPTS_DIR, row[0])
+            if os.path.exists(fp): os.remove(fp)
+        c.execute("DELETE FROM installation_expenses WHERE id=?", (data['id'],))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/rfis/add', methods=['POST'])
+def installation_rfi_add():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    job_id = data.get('job_id')
+    if not job_id:
+        return jsonify({'success': False, 'error': 'No job_id'})
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*)+1 FROM installation_rfis WHERE job_id=?", (job_id,))
+        seq = c.fetchone()[0]
+        rfi_number = f"RFI-{job_id:03d}-{seq:03d}"
+        c.execute("""INSERT INTO installation_rfis
+                     (job_id, rfi_number, title, question, status, priority,
+                      assigned_to, due_date, created_by, created_at)
+                     VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                  (job_id, rfi_number, data.get('title',''),
+                   data.get('question',''), 'open',
+                   data.get('priority','normal'), data.get('assigned_to',''),
+                   data.get('due_date',''), session['username'],
+                   datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        conn.commit(); conn.close()
+        return jsonify({'success': True, 'rfi_number': rfi_number})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/all-change-orders')
+def installation_all_change_orders():
+    if 'username' not in session:
+        return redirect(url_for('login'))
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""SELECT ico.id, ico.co_number, ico.title, ico.amount, ico.status,
+                            ico.created_at, ico.approved_at, j.id, j.job_name
+                     FROM installation_change_orders ico
+                     JOIN jobs j ON j.id=ico.job_id
+                     ORDER BY ico.created_at DESC""")
+        rows = c.fetchall()
+        conn.close()
+        html = """<!DOCTYPE html><html><head><meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>All Change Orders</title>
+        <style>
+        *{box-sizing:border-box;margin:0;padding:0}
+        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5}
+        .top-bar{background:#1a3c5e;color:white;padding:12px 24px;display:flex;align-items:center;justify-content:space-between}
+        .top-bar h1{font-size:18px;font-weight:700}
+        .top-bar a{color:rgba(255,255,255,.85);text-decoration:none;font-size:14px;margin-left:16px}
+        .content{max-width:1200px;margin:0 auto;padding:24px}
+        .card{background:white;border-radius:10px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+        table{width:100%;border-collapse:collapse}
+        th{text-align:left;padding:10px 12px;background:#f9fafb;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;border-bottom:1px solid #e5e7eb}
+        td{padding:10px 12px;border-bottom:1px solid #f3f4f6;font-size:14px}
+        .badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;text-transform:uppercase}
+        .badge-draft{background:#e5e7eb;color:#374151}
+        .badge-pending_approval{background:#fef3c7;color:#92400e}
+        .badge-approved{background:#d1fae5;color:#065f46}
+        .badge-rejected{background:#fee2e2;color:#b91c1c}
+        .badge-no_approval_needed{background:#ede9fe;color:#5b21b6}
+        a.job-link{color:#1a3c5e;text-decoration:none;font-weight:500}
+        a.job-link:hover{text-decoration:underline}
+        </style></head><body>
+        <div class="top-bar"><h1>📝 All Change Orders</h1>
+        <nav><a href="/installation">← Installation</a><a href="/dashboard">Dashboard</a></nav></div>
+        <div class="content"><div class="card">
+        <table><thead><tr><th>CO #</th><th>Job</th><th>Title</th><th>Amount</th><th>Status</th><th>Created</th><th>Approved</th></tr></thead>
+        <tbody>"""
+        for r in rows:
+            status = r[4] or 'draft'
+            badge_cls = f"badge-{status}"
+            html += f"""<tr>
+            <td style="font-weight:600">{r[1]}</td>
+            <td><a class="job-link" href="/installation/job/{r[7]}">{r[8]}</a></td>
+            <td>{r[2] or ''}</td>
+            <td>${r[3]:,.2f}</td>
+            <td><span class="badge {badge_cls}">{status.replace('_',' ')}</span></td>
+            <td style="font-size:12px;color:#9ca3af">{(r[5] or '')[:10]}</td>
+            <td style="font-size:12px;color:#059669">{(r[6] or '')[:10]}</td>
+            </tr>"""
+        html += """</tbody></table></div></div></body></html>"""
+        return html
+    except Exception as e:
+        import traceback
+        return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre>"
+
+
+@app.route('/installation/crew')
+def installation_crew():
+    if 'username' not in session or session.get('role') not in ['office', 'admin']:
+        return redirect(url_for('login'))
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT id, name, role, phone, active FROM installation_crew_members ORDER BY name")
+        members = c.fetchall()
+        conn.close()
+        html = """<!DOCTYPE html><html><head><meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>Crew Members</title>
+        <style>
+        *{box-sizing:border-box;margin:0;padding:0}
+        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5}
+        .top-bar{background:#1a3c5e;color:white;padding:12px 24px;display:flex;align-items:center;justify-content:space-between}
+        .top-bar h1{font-size:18px;font-weight:700}
+        .top-bar a{color:rgba(255,255,255,.85);text-decoration:none;font-size:14px;margin-left:16px}
+        .content{max-width:900px;margin:0 auto;padding:24px}
+        .card{background:white;border-radius:10px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.06);margin-bottom:20px}
+        .btn{display:inline-flex;align-items:center;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:500;cursor:pointer;border:none;text-decoration:none}
+        .btn-primary{background:#1a3c5e;color:white}
+        .form-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px}
+        input,select{padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;width:100%}
+        label{font-size:13px;font-weight:500;color:#374151;display:block;margin-bottom:4px}
+        table{width:100%;border-collapse:collapse}
+        th{text-align:left;padding:10px 12px;background:#f9fafb;font-size:12px;font-weight:600;color:#6b7280;border-bottom:1px solid #e5e7eb}
+        td{padding:10px 12px;border-bottom:1px solid #f3f4f6;font-size:14px}
+        </style></head><body>
+        <div class="top-bar"><h1>👷 Crew Members</h1>
+        <nav><a href="/installation">← Installation</a></nav></div>
+        <div class="content">
+        <div class="card">
+          <h3 style="font-size:16px;font-weight:600;margin-bottom:16px">Add Crew Member</h3>
+          <div class="form-row">
+            <div><label>Name</label><input id="cm-name" placeholder="Full name"></div>
+            <div><label>Role</label><select id="cm-role"><option value="crew">Crew</option><option value="foreman">Foreman</option><option value="sub">Subcontractor</option><option value="supervisor">Supervisor</option></select></div>
+            <div><label>Phone</label><input id="cm-phone" placeholder="(555) 000-0000"></div>
+          </div>
+          <button class="btn btn-primary" onclick="addMember()">Add Member</button>
+        </div>
+        <div class="card">
+          <table><thead><tr><th>Name</th><th>Role</th><th>Phone</th><th>Active</th><th></th></tr></thead>
+          <tbody id="crew-tbody">"""
+        for m in members:
+            active_badge = '<span style="color:#059669">✓ Active</span>' if m[4] else '<span style="color:#dc2626">Inactive</span>'
+            html += f"<tr><td>{m[1]}</td><td style='text-transform:capitalize'>{m[2]}</td><td>{m[3] or '—'}</td><td>{active_badge}</td><td><button onclick=\"toggleMember({m[0]}, this)\" style='background:#e5e7eb;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px'>{'Deactivate' if m[4] else 'Activate'}</button></td></tr>"
+        html += """</tbody></table>
+        </div></div>
+        <script>
+        function addMember() {
+          const name = document.getElementById('cm-name').value.trim();
+          if (!name) { alert('Name required'); return; }
+          fetch('/installation/api/crew/add', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name, role: document.getElementById('cm-role').value, phone: document.getElementById('cm-phone').value})
+          }).then(r => r.json()).then(d => { if (d.success) location.reload(); else alert(d.error); });
+        }
+        function toggleMember(id, btn) {
+          fetch('/installation/api/crew/toggle', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({id})
+          }).then(r => r.json()).then(d => { if (d.success) location.reload(); });
+        }
+        </script></body></html>"""
+        return html
+    except Exception as e:
+        import traceback
+        return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre>"
+
+
+@app.route('/installation/api/crew/add', methods=['POST'])
+def installation_crew_add():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    if not data.get('name'):
+        return jsonify({'success': False, 'error': 'Name required'})
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("INSERT INTO installation_crew_members (name, role, phone, active, created_at) VALUES (?,?,?,1,?)",
+                  (data['name'], data.get('role','crew'), data.get('phone',''),
+                   datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/crew/toggle', methods=['POST'])
+def installation_crew_toggle():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("UPDATE installation_crew_members SET active = 1 - active WHERE id=?", (data['id'],))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
 
 
 init_db()
