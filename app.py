@@ -21257,7 +21257,7 @@ def community_billing_office_data():
 
 @app.route('/community_billing_export_excel', methods=['GET'])
 def community_billing_export_excel():
-    """Export submissions to Excel"""
+    """Export submissions to Excel — aggregated by zone across all submissions."""
     if 'username' not in session or session.get('role') != 'office':
         return 'Access denied', 401
 
@@ -21267,194 +21267,177 @@ def community_billing_export_excel():
     except ImportError:
         return 'openpyxl not installed', 500
 
+    import re as _re
     community = request.args.get('community', '')
     work_month = request.args.get('work_month', '')
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
-    # Get community ID and num_clocks
     c.execute("SELECT id, COALESCE(num_clocks, 0) FROM communities WHERE name = ? AND active = 1", (community,))
     community_row = c.fetchone()
     community_id = community_row[0] if community_row else None
     num_clocks = community_row[1] if community_row else 0
     is_clock_community = num_clocks > 0
 
-    # Get pricing
     pricing = None
     if community_id:
         c.execute("""SELECT nozzle, pop_up_6_inch, pop_up_12_inch, rotor_6_inch,
                             new_pop_up_6_inch, new_pop_up_12_inch, riser, solenoid, stat_decoder_1
                      FROM community_nozzle_prices WHERE community_id = ?""", (community_id,))
-        pricing_row = c.fetchone()
-        if pricing_row:
+        pr = c.fetchone()
+        if pr:
             pricing = {
-                'nozzle': pricing_row[0], 'pop_up_6_inch': pricing_row[1],
-                'pop_up_12_inch': pricing_row[2], 'rotor_6_inch': pricing_row[3],
-                'new_pop_up_6_inch': pricing_row[4], 'new_pop_up_12_inch': pricing_row[5],
-                'riser': pricing_row[6], 'solenoid': pricing_row[7], 'stat_decoder_1': pricing_row[8]
+                'nozzle': pr[0], 'pop_up_6_inch': pr[1], 'pop_up_12_inch': pr[2],
+                'rotor_6_inch': pr[3], 'new_pop_up_6_inch': pr[4], 'new_pop_up_12_inch': pr[5],
+                'riser': pr[6], 'solenoid': pr[7], 'stat_decoder_1': pr[8]
             }
 
-    c.execute("""SELECT id, tech_username, submitted_at
-                 FROM community_billing_submissions
-                 WHERE community_name = ? AND work_date LIKE ? AND status = 'submitted'
-                 ORDER BY work_date DESC, submitted_at DESC""",
+    # Pull every line item for all submitted submissions in this month
+    c.execute("""SELECT li.zone_and_address, li.nozzle, li.pop_up_6_inch, li.pop_up_12_inch,
+                        li.rotor_6_inch, li.new_pop_up_6_inch, li.new_pop_up_12_inch,
+                        li.riser, li.solenoid, li.stat_decoder_1
+                 FROM community_billing_line_items li
+                 JOIN community_billing_submissions s ON s.id = li.submission_id
+                 WHERE s.community_name = ? AND s.work_date LIKE ? AND s.status = 'submitted'
+                 ORDER BY li.zone_and_address""",
              (community, work_month + '%'))
 
-    submissions = []
+    # Aggregate totals per zone
+    PART_KEYS = ['nozzle','pop_up_6_inch','pop_up_12_inch','rotor_6_inch',
+                 'new_pop_up_6_inch','new_pop_up_12_inch','riser','solenoid','stat_decoder_1']
+    zone_totals = {}  # zone_and_address -> {key: total}
+    zone_order  = []  # preserve first-seen order
     for row in c.fetchall():
-        submission_id = row[0]
-        c.execute("""SELECT zone_and_address, nozzle, pop_up_6_inch, pop_up_12_inch,
-                            rotor_6_inch, new_pop_up_6_inch, new_pop_up_12_inch,
-                            riser, solenoid, stat_decoder_1
-                     FROM community_billing_line_items
-                     WHERE submission_id = ? ORDER BY id""", (submission_id,))
-        line_items = []
-        for ir in c.fetchall():
-            item = {
-                'zone_and_address': ir[0] or '',
-                'nozzle': ir[1] or 0, 'pop_up_6_inch': ir[2] or 0,
-                'pop_up_12_inch': ir[3] or 0, 'rotor_6_inch': ir[4] or 0,
-                'new_pop_up_6_inch': ir[5] or 0, 'new_pop_up_12_inch': ir[6] or 0,
-                'riser': ir[7] or 0, 'solenoid': ir[8] or 0, 'stat_decoder_1': ir[9] or 0
-            }
-            if pricing:
-                item['cost'] = sum([
-                    item['nozzle'] * pricing['nozzle'],
-                    item['pop_up_6_inch'] * pricing['pop_up_6_inch'],
-                    item['pop_up_12_inch'] * pricing['pop_up_12_inch'],
-                    item['rotor_6_inch'] * pricing['rotor_6_inch'],
-                    item['new_pop_up_6_inch'] * pricing['new_pop_up_6_inch'],
-                    item['new_pop_up_12_inch'] * pricing['new_pop_up_12_inch'],
-                    item['riser'] * pricing['riser'],
-                    item['solenoid'] * pricing['solenoid'],
-                    item['stat_decoder_1'] * pricing['stat_decoder_1'],
-                ])
-            else:
-                item['cost'] = 0
-            line_items.append(item)
-        submissions.append({'tech_username': row[1], 'submitted_at': row[2], 'line_items': line_items})
+        zone = row[0] or ''
+        if zone not in zone_totals:
+            zone_totals[zone] = {k: 0 for k in PART_KEYS}
+            zone_order.append(zone)
+        for i, key in enumerate(PART_KEYS):
+            zone_totals[zone][key] += row[i + 1] or 0
 
     conn.close()
 
-    import re as _re
     CA_PATTERN = _re.compile(r'^Clock\s+\d+\s+Common Area\s*[-–]', _re.I)
 
-    def item_cost_str(item):
-        return item['cost'] if pricing else None
+    def calc_cost(totals):
+        if not pricing:
+            return 0
+        return sum(totals[k] * pricing[k] for k in PART_KEYS)
 
-    def write_sheet(ws, title_text, items_by_sub, pricing, num_cols):
-        """Write a submission table into a worksheet."""
-        header_font = Font(bold=True, color="FFFFFF", size=11)
-        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    def write_sheet(ws, title_text, zones):
+        """Write aggregated zone rows into a worksheet."""
+        header_font  = Font(bold=True, color="FFFFFF", size=11)
+        header_fill  = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
         summary_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
         border = Border(left=Side(style='thin'), right=Side(style='thin'),
                         top=Side(style='thin'), bottom=Side(style='thin'))
-        center = Alignment(horizontal='center', vertical='center')
+        center   = Alignment(horizontal='center', vertical='center', wrap_text=False)
+        left_al  = Alignment(horizontal='left',   vertical='center', wrap_text=False)
         currency_format = '$#,##0.00'
-        col_letters = 'ABCDEFGHIJK'
-
-        ws.merge_cells(f'A1:{col_letters[num_cols-1]}1')
-        ws['A1'].value = title_text
-        ws['A1'].font = Font(bold=True, size=13)
-        ws['A1'].alignment = center
-        ws.row_dimensions[1].height = 22
 
         headers = ['Zone & Address', 'Nozzle', '6" Pop Up', '12" Pop Up', '6" Rotor',
                    'NEW 6" Pop Up', 'NEW 12" Pop Up', 'Riser', 'Solenoid', '1 Stat Decoder']
         if pricing:
-            headers.append('Item Cost')
+            headers.append('Total Cost')
+        num_cols = len(headers)
+        col_letters = list('ABCDEFGHIJK')
 
-        total_cost = 0.0
+        # Title row
+        ws.merge_cells(f'A1:{col_letters[num_cols-1]}1')
+        ws['A1'].value = title_text
+        ws['A1'].font = Font(bold=True, size=13)
+        ws['A1'].alignment = center
+        ws.row_dimensions[1].height = 24
+
+        # Header row
+        for ci, h in enumerate(headers, 1):
+            cell = ws.cell(row=2, column=ci)
+            cell.value = h
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = center
+            cell.border = border
+        ws.row_dimensions[2].height = 20
+
+        grand_total = 0.0
         cur = 3
-        for sub in items_by_sub:
-            if not sub['line_items']:
-                continue
-            ws.merge_cells(f'A{cur}:{col_letters[num_cols-1]}{cur}')
-            tc = ws[f'A{cur}']
-            tc.value = f"Tech: {sub['tech_username']}  (Submitted: {sub['submitted_at']})"
-            tc.font = Font(bold=True, size=10)
-            tc.fill = PatternFill(start_color="D9E8F5", end_color="D9E8F5", fill_type="solid")
-            ws.row_dimensions[cur].height = 16
-            cur += 1
+        col_widths = [len(h) for h in headers]  # track max width per column
 
-            for ci, h in enumerate(headers, 1):
+        for zone in zones:
+            totals = zone_totals[zone]
+            cost   = calc_cost(totals)
+            grand_total += cost
+
+            # Zone & Address column
+            zc = ws.cell(row=cur, column=1)
+            zc.value = zone
+            zc.alignment = left_al
+            zc.border = border
+            col_widths[0] = max(col_widths[0], len(zone))
+
+            # Part columns
+            for ci, key in enumerate(PART_KEYS, 2):
                 cell = ws.cell(row=cur, column=ci)
-                cell.value = h
-                cell.font = header_font
-                cell.fill = header_fill
+                val = totals[key]
+                cell.value = val if val else None
                 cell.alignment = center
                 cell.border = border
-            ws.row_dimensions[cur].height = 18
+                if val:
+                    col_widths[ci - 1] = max(col_widths[ci - 1], len(str(val)))
+
+            # Cost column
+            if pricing:
+                cc = ws.cell(row=cur, column=num_cols)
+                cc.value = cost if cost else None
+                cc.number_format = currency_format
+                cc.alignment = center
+                cc.border = border
+                if cost:
+                    col_widths[num_cols - 1] = max(col_widths[num_cols - 1], len(f'${cost:,.2f}'))
+
             cur += 1
 
-            for item in sub['line_items']:
-                ws.cell(row=cur, column=1).value = item['zone_and_address']
-                for ci, key in enumerate(['nozzle','pop_up_6_inch','pop_up_12_inch','rotor_6_inch',
-                                          'new_pop_up_6_inch','new_pop_up_12_inch','riser','solenoid','stat_decoder_1'], 2):
-                    cell = ws.cell(row=cur, column=ci)
-                    val = item[key]
-                    cell.value = val if val else None
-                    cell.alignment = center
-                    cell.border = border
-                if pricing:
-                    cc = ws.cell(row=cur, column=11)
-                    cc.value = item['cost'] if item['cost'] else None
-                    cc.number_format = currency_format
-                    total_cost += item['cost']
-                cur += 1
+        # Grand total row
+        if pricing and grand_total:
             cur += 1
-
-        if pricing and total_cost:
-            cur += 1
-            ws.merge_cells(f'A{cur}:{col_letters[num_cols-1]}{cur}')
-            lbl = ws[f'A{cur}']
-            lbl.value = 'TOTAL COST'
+            lbl = ws.cell(row=cur, column=1)
+            lbl.value = 'TOTAL'
             lbl.font = Font(bold=True, size=11)
             lbl.fill = summary_fill
             lbl.alignment = center
             lbl.border = border
-            cur += 1
-            ws.merge_cells(f'A{cur}:{col_letters[num_cols-1]}{cur}')
-            tc2 = ws[f'A{cur}']
-            tc2.value = total_cost
-            tc2.font = Font(bold=True, size=13, color="2E7D32")
-            tc2.number_format = currency_format
-            tc2.fill = summary_fill
-            tc2.alignment = center
-            tc2.border = border
+            if num_cols > 1:
+                ws.merge_cells(f'A{cur}:{col_letters[num_cols-2]}{cur}')
+            tc = ws.cell(row=cur, column=num_cols)
+            tc.value = grand_total
+            tc.font = Font(bold=True, size=12, color="2E7D32")
+            tc.number_format = currency_format
+            tc.fill = summary_fill
+            tc.alignment = center
+            tc.border = border
             ws.row_dimensions[cur].height = 22
 
-        ws.column_dimensions['A'].width = 35
-        for col in list('BCDEFGHIJK'):
-            ws.column_dimensions[col].width = 14
+        # Auto-fit column widths (add padding, cap at 60)
+        for ci, w in enumerate(col_widths):
+            ws.column_dimensions[col_letters[ci]].width = min(w + 4, 60)
 
     try:
         wb = Workbook()
-        wb.remove(wb.active)  # remove default sheet
-        num_cols = 11 if pricing else 10
+        wb.remove(wb.active)
 
         if is_clock_community:
-            # Split into Common Area and Addresses sheets
-            ca_subs, addr_subs = [], []
-            for sub in submissions:
-                ca_items   = [i for i in sub['line_items'] if CA_PATTERN.match(i['zone_and_address'])]
-                addr_items = [i for i in sub['line_items'] if not CA_PATTERN.match(i['zone_and_address'])]
-                if ca_items:
-                    ca_subs.append({**sub, 'line_items': ca_items})
-                if addr_items:
-                    addr_subs.append({**sub, 'line_items': addr_items})
+            ca_zones   = [z for z in zone_order if CA_PATTERN.match(z)]
+            addr_zones = [z for z in zone_order if not CA_PATTERN.match(z)]
+
+            ws_res = wb.create_sheet("Residential")
+            write_sheet(ws_res, f"{community} — Residential ({work_month})", addr_zones)
 
             ws_ca = wb.create_sheet("Common Area")
-            write_sheet(ws_ca, f"{community} — Common Area ({work_month})", ca_subs, pricing, num_cols)
-
-            ws_addr = wb.create_sheet("Addresses")
-            write_sheet(ws_addr, f"{community} — Addresses ({work_month})", addr_subs, pricing, num_cols)
+            write_sheet(ws_ca, f"{community} — Common Area ({work_month})", ca_zones)
         else:
-            # Standard community: one flat sheet with every zone
             ws_main = wb.create_sheet("Submissions")
-            write_sheet(ws_main, f"Community Maintenance Report — {community} ({work_month})",
-                        submissions, pricing, num_cols)
+            write_sheet(ws_main, f"Community Maintenance Report — {community} ({work_month})", zone_order)
 
         import io
         buf = io.BytesIO()
