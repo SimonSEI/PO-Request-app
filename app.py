@@ -1369,6 +1369,14 @@ def init_db():
     if 'deleted_at' not in sub_cols:
         c.execute("ALTER TABLE community_billing_submissions ADD COLUMN deleted_at TEXT")
 
+    # Purge soft-deleted submissions older than 60 days
+    purge_cutoff = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d %H:%M:%S')
+    c.execute("""DELETE FROM community_billing_line_items WHERE submission_id IN (
+                     SELECT id FROM community_billing_submissions
+                     WHERE status = 'deleted' AND deleted_at < ?)""", (purge_cutoff,))
+    c.execute("""DELETE FROM community_billing_submissions
+                 WHERE status = 'deleted' AND deleted_at < ?""", (purge_cutoff,))
+
     # Job Costing App Tables
     # Stores imported proposal data (from PDF) for each install job
     c.execute('''CREATE TABLE IF NOT EXISTS job_proposals
@@ -16530,6 +16538,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             <button class="tab-button active" onclick="switchTab('manage')">🏘️ Manage Communities</button>
             <button class="tab-button" onclick="switchTab('submissions')">📋 Review Submissions</button>
             <button class="tab-button" onclick="switchTab('recent')">🕐 Recent Technician Activity</button>
+            <button class="tab-button" onclick="switchTab('trash')">🗑️ Deleted Submissions</button>
         </div>
 
         <!-- Manage Communities Tab -->
@@ -16773,6 +16782,16 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 <p style="color: #999; font-size: 14px;">Click this tab to load recent submissions.</p>
             </div>
         </div>
+
+        <!-- Deleted Submissions Tab -->
+        <div id="trash" class="tab-content">
+            <div style="margin-bottom:12px;">
+                <p style="color:#666;font-size:13px;margin:0;">Deleted submissions are kept for <strong>60 days</strong> and can be restored to draft at any time.</p>
+            </div>
+            <div id="trash-list" style="margin-top:10px;">
+                <p style="color:#999;font-size:14px;">Click this tab to load deleted submissions.</p>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -16790,6 +16809,81 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             event.target.classList.add('active');
 
             if (tabName === 'recent') loadRecentSubmissions();
+            if (tabName === 'trash')  loadTrashSubmissions();
+        }
+
+        // ── Deleted Submissions (Trash) ───────────────────────────────────────
+        function loadTrashSubmissions() {
+            const container = document.getElementById('trash-list');
+            if (!container) return;
+            container.innerHTML = '<p style="color:#666;font-size:14px;">Loading...</p>';
+            fetch('/community_deleted_submissions')
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.success) { container.innerHTML = `<p style="color:#dc3545;">${data.error}</p>`; return; }
+                    renderTrashTable(data.submissions);
+                })
+                .catch(() => { container.innerHTML = '<p style="color:#dc3545;">Error loading deleted submissions.</p>'; });
+        }
+
+        function renderTrashTable(submissions) {
+            const container = document.getElementById('trash-list');
+            if (!container) return;
+            if (submissions.length === 0) {
+                container.innerHTML = '<p style="color:#999;font-size:14px;">No deleted submissions found.</p>';
+                return;
+            }
+            let html = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">';
+            html += '<thead><tr>';
+            ['Community','Technician','Work Date','Deleted At','Days Left',''].forEach(h => {
+                html += `<th style="text-align:left;padding:9px 12px;border-bottom:2px solid #dee2e6;font-size:12px;color:#555;white-space:nowrap;background:#f8f9fa;">${h}</th>`;
+            });
+            html += '</tr></thead><tbody>';
+            submissions.forEach((s, i) => {
+                const bg = i % 2 === 0 ? '#fff' : '#fff5f5';
+                const daysLeft = s.days_left;
+                const daysColor = daysLeft <= 7 ? '#dc3545' : daysLeft <= 14 ? '#fd7e14' : '#666';
+                html += `<tr style="background:${bg};">
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;font-weight:600;">${s.community_name}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;">${s.tech_name}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#666;">${s.work_date || ''}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#dc3545;">${s.deleted_at || ''}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;font-weight:600;color:${daysColor};">${daysLeft}d remaining</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;">
+                        <button onclick="restoreSubmission(${s.id}, this)"
+                                style="padding:5px 14px;background:#28a745;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;">
+                            ↩ Restore
+                        </button>
+                    </td>
+                </tr>`;
+            });
+            html += '</tbody></table></div>';
+            html += `<p style="font-size:12px;color:#999;margin-top:8px;">${submissions.length} deleted submission(s)</p>`;
+            container.innerHTML = html;
+        }
+
+        function restoreSubmission(submissionId, btn) {
+            if (!confirm('Restore this submission to draft status?')) return;
+            btn.disabled = true;
+            btn.textContent = 'Restoring…';
+            fetch('/community_restore_submission', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({submission_id: submissionId})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    btn.closest('tr').style.opacity = '0.4';
+                    btn.textContent = '✓ Restored';
+                    setTimeout(() => loadTrashSubmissions(), 800);
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown error'));
+                    btn.disabled = false;
+                    btn.textContent = '↩ Restore';
+                }
+            })
+            .catch(() => { btn.disabled = false; btn.textContent = '↩ Restore'; });
         }
 
         function filterCommunities() {
@@ -21574,6 +21668,68 @@ def community_billing_delete_submission():
         return jsonify({'success': True, 'message': 'Submission deleted successfully'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/community_deleted_submissions', methods=['GET'])
+def community_deleted_submissions():
+    """Return deleted submissions still within the 60-day retention window."""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        cutoff = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d %H:%M:%S')
+        c.execute("""SELECT s.id, s.community_name, s.tech_username,
+                            COALESCE(u.full_name, s.tech_username) as tech_name,
+                            s.work_date, s.deleted_at, s.created_at
+                     FROM community_billing_submissions s
+                     LEFT JOIN users u ON u.username = s.tech_username
+                     WHERE s.status = 'deleted' AND s.deleted_at >= ?
+                     ORDER BY s.deleted_at DESC""", (cutoff,))
+        now = datetime.now()
+        submissions = []
+        for r in c.fetchall():
+            deleted_at_str = r[5] or ''
+            try:
+                deleted_dt = datetime.strptime(deleted_at_str[:19], '%Y-%m-%d %H:%M:%S')
+                days_left = max(0, 60 - (now - deleted_dt).days)
+            except Exception:
+                days_left = 60
+            submissions.append({
+                'id': r[0], 'community_name': r[1], 'tech_username': r[2],
+                'tech_name': r[3], 'work_date': r[4] or '',
+                'deleted_at': deleted_at_str, 'created_at': r[6] or '',
+                'days_left': days_left
+            })
+        return jsonify({'success': True, 'submissions': submissions})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+
+@app.route('/community_restore_submission', methods=['POST'])
+def community_restore_submission():
+    """Restore a soft-deleted submission back to draft."""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
+    try:
+        data = request.get_json()
+        submission_id = data.get('submission_id')
+        if not submission_id:
+            return jsonify({'success': False, 'error': 'Missing submission_id'})
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        c.execute("""UPDATE community_billing_submissions
+                     SET status = 'draft', deleted_at = NULL, updated_at = ?
+                     WHERE id = ? AND status = 'deleted'""", (now, submission_id))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
 
 # ============================================================================
 # HOUSE NUMBER MANAGEMENT ROUTES
