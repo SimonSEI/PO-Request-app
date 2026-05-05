@@ -25133,67 +25133,138 @@ if (jobParam) {
 # INSTALLATION MODULE — Unified Installation Management App
 # ══════════════════════════════════════════════════════════════════════════
 
-INSTALLATION_HUB_TEMPLATE = '''<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Installation Management</title>
+# ═══════════════════════════════════════════════════════════════════
+# INSTALLATION MODULE TEMPLATES  (hub · job detail · schedule · CO approval)
+# ═══════════════════════════════════════════════════════════════════
+
+_INST_CSS = """
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5;color:#1a1a2e}
-.top-bar{background:#1a3c5e;color:white;padding:14px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
-.top-bar h1{font-size:20px;font-weight:700}
-.top-bar nav a{color:rgba(255,255,255,0.85);text-decoration:none;margin-left:18px;font-size:14px;transition:color .2s}
-.top-bar nav a:hover{color:white}
-.content{max-width:1400px;margin:0 auto;padding:24px}
-.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:28px}
-.stat-card{background:white;border-radius:10px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.06)}
-.stat-label{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
-.stat-value{font-size:30px;font-weight:700;color:#1a3c5e}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5;color:#111827}
+.top-bar{background:#1a3c5e;color:white;padding:12px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:200;gap:12px;flex-wrap:wrap}
+.top-bar h1{font-size:18px;font-weight:700;white-space:nowrap}
+.top-bar nav{display:flex;gap:4px;flex-wrap:wrap}
+.top-bar nav a{color:rgba(255,255,255,.85);text-decoration:none;padding:6px 12px;border-radius:5px;font-size:13px;transition:background .2s}
+.top-bar nav a:hover{background:rgba(255,255,255,.15);color:white}
+.top-bar nav a.active{background:rgba(255,255,255,.2);color:white;font-weight:600}
+.page{max-width:1380px;margin:0 auto;padding:20px}
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:22px}
+.stat-card{background:white;border-radius:10px;padding:18px 20px;box-shadow:0 1px 6px rgba(0,0,0,.07)}
+.stat-label{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px}
+.stat-value{font-size:28px;font-weight:700;color:#1a3c5e;line-height:1}
 .stat-sub{font-size:12px;color:#9ca3af;margin-top:4px}
-.section-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
-.section-hdr h2{font-size:18px;font-weight:600;color:#1a3c5e}
-.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:500;cursor:pointer;border:none;text-decoration:none;transition:all .2s}
+.card{background:white;border-radius:10px;padding:20px;box-shadow:0 1px 6px rgba(0,0,0,.07);margin-bottom:16px}
+.card-title{font-size:15px;font-weight:700;color:#1a3c5e;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.section-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px}
+.section-hdr h2{font-size:17px;font-weight:700;color:#1a3c5e}
+.btn{display:inline-flex;align-items:center;gap:5px;padding:7px 15px;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;border:none;text-decoration:none;transition:all .15s;white-space:nowrap}
 .btn-primary{background:#1a3c5e;color:white}.btn-primary:hover{background:#0f2a45}
 .btn-secondary{background:#e5e7eb;color:#374151}.btn-secondary:hover{background:#d1d5db}
-.btn-sm{padding:5px 12px;font-size:13px}
-.badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.4px}
-.badge-planning{background:#dbeafe;color:#1d4ed8}
-.badge-active{background:#d1fae5;color:#065f46}
-.badge-on_hold{background:#fef3c7;color:#92400e}
-.badge-complete{background:#f3f4f6;color:#374151}
-.badge-cancelled{background:#fee2e2;color:#b91c1c}
-.badge-co{background:#fef3c7;color:#92400e}
-.jobs-list{display:grid;gap:12px}
-.job-card{background:white;border-radius:10px;padding:20px 24px;box-shadow:0 2px 8px rgba(0,0,0,.06);display:grid;grid-template-columns:1fr auto;gap:16px;align-items:center;transition:box-shadow .2s}
-.job-card:hover{box-shadow:0 4px 16px rgba(0,0,0,.1)}
-.job-name{font-size:16px;font-weight:600;color:#1a3c5e;margin-bottom:6px}
-.job-meta{display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:#6b7280}
-.progress-wrap{display:flex;align-items:center;gap:8px;margin-top:8px}
-.progress-bar{flex:1;max-width:120px;height:6px;background:#e5e7eb;border-radius:3px;overflow:hidden}
-.progress-fill{height:100%;border-radius:3px}
-.fill-ok{background:#059669}.fill-warn{background:#f59e0b}.fill-over{background:#dc2626}
-.job-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
-.empty-state{text-align:center;padding:60px;color:#9ca3af}
-.empty-icon{font-size:48px;margin-bottom:12px}
+.btn-success{background:#059669;color:white}.btn-success:hover{background:#047857}
+.btn-danger{background:#dc2626;color:white}.btn-danger:hover{background:#b91c1c}
+.btn-voice{background:#7c3aed;color:white}.btn-voice:hover{background:#6d28d9}
+.btn-print{background:#0891b2;color:white}.btn-print:hover{background:#0e7490}
+.btn-sm{padding:5px 10px;font-size:12px}
+.badge{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.3px}
+.badge-planning{background:#dbeafe;color:#1d4ed8}.badge-active{background:#d1fae5;color:#065f46}
+.badge-on_hold{background:#fef3c7;color:#92400e}.badge-complete{background:#f3f4f6;color:#374151}
+.badge-cancelled{background:#fee2e2;color:#b91c1c}.badge-draft{background:#e5e7eb;color:#374151}
+.badge-pending_approval{background:#fef3c7;color:#92400e}.badge-approved{background:#d1fae5;color:#065f46}
+.badge-rejected{background:#fee2e2;color:#b91c1c}.badge-no_approval_needed{background:#ede9fe;color:#5b21b6}
+.badge-open{background:#dbeafe;color:#1d4ed8}.badge-answered{background:#d1fae5;color:#065f46}
+.badge-closed{background:#f3f4f6;color:#374151}
+input,select,textarea{padding:8px 11px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;color:#111827;width:100%;font-family:inherit}
+input:focus,select:focus,textarea:focus{outline:none;border-color:#1a3c5e;box-shadow:0 0 0 3px rgba(26,60,94,.1)}
+textarea{resize:vertical;min-height:80px}
+label{font-size:13px;font-weight:500;color:#374151;display:block;margin-bottom:3px}
+.form-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:11px;margin-bottom:11px}
+.form-group{display:flex;flex-direction:column;gap:3px}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;padding:9px 12px;background:#f9fafb;font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid #e5e7eb}
+td{padding:9px 12px;border-bottom:1px solid #f3f4f6;font-size:13px;vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#fafafa}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;align-items:center;justify-content:center;padding:16px}
+.modal-overlay.open{display:flex}
+.modal{background:white;border-radius:12px;padding:26px;width:100%;max-width:600px;max-height:90vh;overflow-y:auto;position:relative}
+.modal h3{font-size:17px;font-weight:700;margin-bottom:18px;color:#1a3c5e}
+.modal-close{position:absolute;top:14px;right:18px;background:none;border:none;font-size:22px;cursor:pointer;color:#9ca3af;line-height:1}
+.metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px}
+.metric-card{background:#f9fafb;border-radius:8px;padding:14px;border-left:3px solid #1a3c5e}
+.metric-card.green{border-left-color:#059669}.metric-card.amber{border-left-color:#f59e0b}.metric-card.red{border-left-color:#dc2626}.metric-card.purple{border-left-color:#7c3aed}
+.metric-label{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.metric-value{font-size:22px;font-weight:700;color:#1a3c5e;line-height:1}
+.metric-card.green .metric-value{color:#059669}.metric-card.amber .metric-value{color:#b45309}.metric-card.red .metric-value{color:#dc2626}.metric-card.purple .metric-value{color:#7c3aed}
+.metric-sub{font-size:12px;color:#9ca3af;margin-top:3px}
+.progress-wrap{display:flex;align-items:center;gap:8px;margin-top:6px}
+.progress-bar{flex:1;height:7px;background:#e5e7eb;border-radius:4px;overflow:hidden}
+.progress-fill{height:100%;border-radius:4px;transition:width .4s}
+.fill-ok{background:#059669}.fill-warn{background:#f59e0b}.fill-over{background:#dc2626}.fill-blue{background:#1a3c5e}.fill-purple{background:#7c3aed}
+.tabs{display:flex;background:white;border-radius:10px;margin-bottom:18px;overflow:hidden;box-shadow:0 1px 6px rgba(0,0,0,.07);overflow-x:auto}
+.tab{padding:12px 14px;text-align:center;cursor:pointer;font-size:13px;font-weight:500;color:#6b7280;border-bottom:3px solid transparent;transition:all .15s;border:none;background:none;white-space:nowrap;flex-shrink:0}
+.tab:hover{background:#f9fafb;color:#1a3c5e}.tab.active{color:#1a3c5e;border-bottom-color:#1a3c5e;background:#f0f4f8;font-weight:700}
+.tab-content{display:none}.tab-content.active{display:block}
+.kv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px}
+.kv-item .kv-label{font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px}
+.kv-item .kv-val{font-size:14px;font-weight:500;color:#111827}
+.budget-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+.bi{background:#f9fafb;border-radius:8px;padding:12px}
+.bi-label{font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px}
+.bi-budget{font-size:15px;font-weight:700;color:#1a3c5e}
+.bi-actual{font-size:12px;color:#6b7280;margin-top:2px}
+.bi-bar{height:4px;background:#e5e7eb;border-radius:2px;margin-top:6px;overflow:hidden}
+.bi-fill{height:100%;border-radius:2px}
+.voice-rec{background:#f5f3ff;border:2px dashed #7c3aed;border-radius:10px;padding:18px;text-align:center;margin-bottom:14px}
+.voice-btn{width:60px;height:60px;border-radius:50%;background:#7c3aed;margin:0 auto 10px;display:flex;align-items:center;justify-content:center;font-size:26px;cursor:pointer;transition:all .2s;border:none;color:white}
+.voice-btn.recording{animation:pulse 1s infinite;background:#dc2626}
+@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.1)}}
+.voice-status{font-size:13px;color:#7c3aed;font-weight:500}
+.upload-zone{border:2px dashed #d1d5db;border-radius:10px;padding:36px;text-align:center;cursor:pointer;transition:all .2s;background:#fafafa}
+.upload-zone:hover,.upload-zone.dragover{border-color:#1a3c5e;background:#f0f4f8}
+.plan-card{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;border-radius:8px;background:#f9fafb;margin-bottom:8px;gap:12px;flex-wrap:wrap}
+.plan-name{font-weight:500;font-size:14px}
+.plan-meta{font-size:12px;color:#9ca3af;margin-top:2px}
+.current-tag{background:#d1fae5;color:#065f46;padding:2px 7px;border-radius:10px;font-size:11px;font-weight:600;margin-left:6px}
+.rfi-item{padding:12px;border-radius:8px;background:#f9fafb;margin-bottom:8px;display:flex;gap:12px}
+.rfi-num{font-size:11px;color:#9ca3af;font-weight:700;min-width:52px}
+.rfi-content{flex:1}
+.totals-bar{display:flex;gap:14px;flex-wrap:wrap;background:#f9fafb;border-radius:8px;padding:12px 14px;margin-bottom:14px}
+.t-item{font-size:13px;color:#6b7280}.t-item strong{color:#1a3c5e}
 @media(max-width:768px){
-  .stats-row{grid-template-columns:repeat(2,1fr)}
-  .job-card{grid-template-columns:1fr}
-  .job-actions{justify-content:flex-start}
+  .stats-row{grid-template-columns:1fr 1fr}
+  .metric-grid{grid-template-columns:1fr 1fr}
+  .kv-grid{grid-template-columns:1fr 1fr}
+  .form-row{grid-template-columns:1fr}
+}
+@media print{
+  .no-print,.top-bar nav,.btn,.tabs,.modal-overlay{display:none!important}
+  .tab-content{display:block!important}
+  body{background:white}
+  .card{box-shadow:none;border:1px solid #e5e7eb;margin-bottom:8px}
+  .page{padding:0}
 }
 </style>
+"""
+
+# ── Hub ──────────────────────────────────────────────────────────────────────
+
+INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Installation Management</title>
 </head>
 <body>
 <div class="top-bar">
-  <h1>🏗️ Installation Management</h1>
+  <h1>🏗️ Installation</h1>
   <nav>
-    <a href="/manage_jobs">⚙️ Manage Jobs</a>
+    <a href="/installation" class="active">Jobs</a>
+    <a href="/installation/schedule">📅 Schedule</a>
     <a href="/installation/crew">👷 Crew</a>
+    <a href="/installation/all-change-orders">📝 Change Orders</a>
     <a href="/dashboard">← Dashboard</a>
   </nav>
 </div>
-<div class="content">
+<div class="page">
   <div class="stats-row">
     <div class="stat-card">
       <div class="stat-label">Active Jobs</div>
@@ -25219,429 +25290,395 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
   <div class="section-hdr">
     <h2>Installation Jobs</h2>
-    <div style="display:flex;gap:8px">
-      <a href="/installation/all-change-orders" class="btn btn-secondary btn-sm">📋 All Change Orders</a>
-    </div>
+    <a href="/manage_jobs" class="btn btn-secondary btn-sm">⚙️ Manage Jobs</a>
   </div>
 
   {% if jobs %}
-  <div class="jobs-list">
+  <div style="display:grid;gap:10px">
   {% for j in jobs %}
-  <div class="job-card">
-    <div>
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
-        <span class="job-name">{{ j.job_name }}</span>
-        <span class="badge badge-{{ j.inst_status or 'planning' }}">{{ (j.inst_status or 'planning').replace('_',' ') }}</span>
-        {% if j.pending_cos > 0 %}<span class="badge badge-co">{{ j.pending_cos }} CO Pending</span>{% endif %}
-      </div>
-      <div class="job-meta">
-        {% if j.client_name %}<span>👤 {{ j.client_name }}</span>{% endif %}
-        {% if j.project_address %}<span>📍 {{ j.project_address[:45] }}{% if j.project_address|length > 45 %}…{% endif %}</span>{% endif %}
-        <span>📅 {{ j.year }}</span>
-        {% if j.days_on_job %}<span>⏱ {{ j.days_on_job }} day{{ 's' if j.days_on_job != 1 }}</span>{% endif %}
-        {% if j.total_cos %}<span>📝 {{ j.total_cos }} change order{{ 's' if j.total_cos != 1 }}</span>{% endif %}
-        {% if j.site_plans %}<span>🗺 {{ j.site_plans }} plan{{ 's' if j.site_plans != 1 }}</span>{% endif %}
-      </div>
-      {% if j.contract_value > 0 %}
-      <div class="progress-wrap">
-        <span style="font-size:12px;color:#6b7280">${{ "{:,.0f}".format(j.invoiced_total) }} / ${{ "{:,.0f}".format(j.contract_value) }}</span>
-        <div class="progress-bar">
-          {% set pct = [(j.invoiced_total / j.contract_value * 100)|int, 100]|min %}
-          <div class="progress-fill {{ 'fill-over' if pct >= 100 else ('fill-warn' if pct >= 80 else 'fill-ok') }}" style="width:{{ pct }}%"></div>
+  <div class="card" style="padding:16px 20px">
+    <div style="display:grid;grid-template-columns:1fr auto;gap:12px;align-items:start">
+      <div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;flex-wrap:wrap">
+          <span style="font-size:16px;font-weight:700;color:#1a3c5e">{{ j.job_name }}</span>
+          <span class="badge badge-{{ j.inst_status or 'planning' }}">{{ (j.inst_status or 'planning').replace('_',' ') }}</span>
+          {% if j.pending_cos > 0 %}<span class="badge" style="background:#fef3c7;color:#92400e">{{ j.pending_cos }} CO pending</span>{% endif %}
         </div>
-        <span style="font-size:12px;color:#6b7280">{{ pct }}%</span>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:13px;color:#6b7280;margin-bottom:8px">
+          {% if j.client_name %}<span>👤 {{ j.client_name }}</span>{% endif %}
+          {% if j.project_address %}<span>📍 {{ j.project_address[:40] }}{% if j.project_address|length > 40 %}…{% endif %}</span>{% endif %}
+          <span>📅 {{ j.year }}</span>
+          {% if j.days_on_job %}<span>⏱ {{ j.days_on_job }} day{{ 's' if j.days_on_job != 1 }} · ${{ "{:,.0f}".format(j.days_on_job * 1850) }}</span>{% endif %}
+        </div>
+        {% if j.contract_value > 0 %}
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span style="font-size:12px;color:#6b7280">Billed ${{ "{:,.0f}".format(j.invoiced_total) }} of ${{ "{:,.0f}".format(j.contract_value) }}</span>
+          <div class="progress-bar" style="max-width:140px">
+            {% set bp = [(j.invoiced_total / j.contract_value * 100)|int, 100]|min %}
+            <div class="progress-fill {{ 'fill-over' if bp >= 100 else ('fill-warn' if bp >= 80 else 'fill-ok') }}" style="width:{{ bp }}%"></div>
+          </div>
+          <span style="font-size:12px;color:#6b7280">{{ bp }}%</span>
+          {% if j.contract_value > 0 and j.invoiced_total > 0 %}
+          {% set margin_pct = ((j.contract_value - j.invoiced_total) / j.contract_value * 100)|int %}
+          <span style="font-size:12px;font-weight:600;color:{{ '#059669' if margin_pct >= 15 else ('#f59e0b' if margin_pct >= 0 else '#dc2626') }}">{{ margin_pct }}% margin</span>
+          {% endif %}
+        </div>
+        {% endif %}
       </div>
-      {% endif %}
-    </div>
-    <div class="job-actions">
-      <a href="/installation/job/{{ j.id }}" class="btn btn-primary btn-sm">Open →</a>
-      <a href="/installation/job/{{ j.id }}?tab=change-orders" class="btn btn-secondary btn-sm">COs</a>
-      <a href="/installation/job/{{ j.id }}?tab=schedule" class="btn btn-secondary btn-sm">📅</a>
-      <a href="/installation/job/{{ j.id }}?tab=site-plans" class="btn btn-secondary btn-sm">🗺</a>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+        <a href="/installation/job/{{ j.id }}" class="btn btn-primary btn-sm">Open →</a>
+        <a href="/installation/job/{{ j.id }}?tab=change-orders" class="btn btn-secondary btn-sm">COs</a>
+        <a href="/installation/schedule?job={{ j.id }}" class="btn btn-secondary btn-sm">📅</a>
+        <a href="/installation/job/{{ j.id }}?tab=site-plans" class="btn btn-secondary btn-sm">🗺</a>
+      </div>
     </div>
   </div>
   {% endfor %}
   </div>
   {% else %}
-  <div class="empty-state">
-    <div class="empty-icon">🏗️</div>
+  <div style="text-align:center;padding:60px;color:#9ca3af">
+    <div style="font-size:48px;margin-bottom:12px">🏗️</div>
     <p>No installation jobs found. <a href="/manage_jobs" style="color:#1a3c5e">Create jobs</a> to get started.</p>
   </div>
   {% endif %}
 </div>
-</body>
-</html>
+</body></html>
 '''
 
-INSTALLATION_JOB_CSS = """
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5;color:#1a1a2e}
-.top-bar{background:#1a3c5e;color:white;padding:12px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
-.top-bar h1{font-size:18px;font-weight:700}
-.top-bar nav a{color:rgba(255,255,255,.85);text-decoration:none;margin-left:16px;font-size:14px}
-.top-bar nav a:hover{color:white}
-.page{max-width:1300px;margin:0 auto;padding:20px}
-.job-header{background:white;border-radius:10px;padding:20px 24px;margin-bottom:20px;box-shadow:0 2px 8px rgba(0,0,0,.06);display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}
-.job-header-left h2{font-size:22px;font-weight:700;color:#1a3c5e;margin-bottom:4px}
-.job-header-left .meta{font-size:13px;color:#6b7280;display:flex;gap:16px;flex-wrap:wrap;margin-top:6px}
-.job-header-right{display:flex;gap:8px;flex-wrap:wrap}
-.badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.4px}
-.badge-planning{background:#dbeafe;color:#1d4ed8}.badge-active{background:#d1fae5;color:#065f46}
-.badge-on_hold{background:#fef3c7;color:#92400e}.badge-complete{background:#f3f4f6;color:#374151}
-.badge-cancelled{background:#fee2e2;color:#b91c1c}.badge-draft{background:#e5e7eb;color:#374151}
-.badge-pending_approval{background:#fef3c7;color:#92400e}.badge-approved{background:#d1fae5;color:#065f46}
-.badge-rejected{background:#fee2e2;color:#b91c1c}.badge-no_approval_needed{background:#ede9fe;color:#5b21b6}
-.badge-open{background:#dbeafe;color:#1d4ed8}.badge-answered{background:#d1fae5;color:#065f46}
-.badge-closed{background:#f3f4f6;color:#374151}
-.tabs{display:flex;gap:0;background:white;border-radius:10px;margin-bottom:20px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06)}
-.tab{flex:1;padding:12px 8px;text-align:center;cursor:pointer;font-size:13px;font-weight:500;color:#6b7280;border-bottom:3px solid transparent;transition:all .2s;border:none;background:none}
-.tab:hover{background:#f9fafb;color:#1a3c5e}
-.tab.active{color:#1a3c5e;border-bottom-color:#1a3c5e;background:#f0f4f8;font-weight:600}
-.tab-content{display:none}.tab-content.active{display:block}
-.card{background:white;border-radius:10px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.06);margin-bottom:16px}
-.card-title{font-size:16px;font-weight:600;color:#1a3c5e;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between}
-.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:500;cursor:pointer;border:none;text-decoration:none;transition:all .2s}
-.btn-primary{background:#1a3c5e;color:white}.btn-primary:hover{background:#0f2a45}
-.btn-secondary{background:#e5e7eb;color:#374151}.btn-secondary:hover{background:#d1d5db}
-.btn-success{background:#059669;color:white}.btn-success:hover{background:#047857}
-.btn-danger{background:#dc2626;color:white}.btn-danger:hover{background:#b91c1c}
-.btn-voice{background:#7c3aed;color:white}.btn-voice:hover{background:#6d28d9}
-.btn-sm{padding:5px 12px;font-size:13px}
-.form-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:12px}
-.form-group{display:flex;flex-direction:column;gap:4px}
-label{font-size:13px;font-weight:500;color:#374151}
-input,select,textarea{padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;color:#1a1a2e;width:100%}
-input:focus,select:focus,textarea:focus{outline:none;border-color:#1a3c5e;box-shadow:0 0 0 3px rgba(26,60,94,.1)}
-textarea{resize:vertical;min-height:80px}
-table{width:100%;border-collapse:collapse}
-th{text-align:left;padding:10px 12px;background:#f9fafb;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid #e5e7eb}
-td{padding:10px 12px;border-bottom:1px solid #f3f4f6;font-size:14px;vertical-align:top}
-tr:last-child td{border-bottom:none}
-tr:hover td{background:#fafafa}
-.kv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px}
-.kv-item label{font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:3px}
-.kv-item span{font-size:15px;font-weight:500;color:#1a1a2e}
-.budget-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
-.budget-item{background:#f9fafb;border-radius:8px;padding:14px}
-.budget-item .bi-label{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px}
-.budget-item .bi-budget{font-size:16px;font-weight:600;color:#1a3c5e}
-.budget-item .bi-actual{font-size:13px;color:#6b7280;margin-top:2px}
-.budget-item .bi-bar{height:4px;background:#e5e7eb;border-radius:2px;margin-top:6px;overflow:hidden}
-.budget-item .bi-fill{height:100%;border-radius:2px}
-.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center}
-.modal-overlay.open{display:flex}
-.modal{background:white;border-radius:12px;padding:28px;width:90%;max-width:620px;max-height:90vh;overflow-y:auto;position:relative}
-.modal h3{font-size:18px;font-weight:700;margin-bottom:20px;color:#1a3c5e}
-.modal-close{position:absolute;top:16px;right:20px;background:none;border:none;font-size:24px;cursor:pointer;color:#9ca3af}
-.voice-rec-area{background:#f5f3ff;border:2px dashed #7c3aed;border-radius:10px;padding:20px;text-align:center;margin-bottom:16px}
-.voice-indicator{width:60px;height:60px;border-radius:50%;background:#7c3aed;margin:0 auto 12px;display:flex;align-items:center;justify-content:center;font-size:28px;cursor:pointer;transition:all .2s}
-.voice-indicator.recording{animation:pulse 1s infinite;background:#dc2626}
-@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.1)}}
-.recording-status{font-size:14px;color:#7c3aed;font-weight:500}
-.upload-zone{border:2px dashed #d1d5db;border-radius:10px;padding:40px;text-align:center;cursor:pointer;transition:all .2s;background:#fafafa}
-.upload-zone:hover,.upload-zone.dragover{border-color:#1a3c5e;background:#f0f4f8}
-.upload-zone p{color:#6b7280;font-size:14px;margin-top:8px}
-.plan-card{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-radius:8px;background:#f9fafb;margin-bottom:8px;gap:12px;flex-wrap:wrap}
-.plan-info{flex:1;min-width:0}
-.plan-name{font-weight:500;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.plan-meta{font-size:12px;color:#9ca3af;margin-top:2px}
-.current-tag{background:#d1fae5;color:#065f46;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600}
-.expense-cats{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
-.expense-cat-btn{padding:5px 14px;border-radius:20px;border:1px solid #d1d5db;background:white;font-size:13px;cursor:pointer;transition:all .2s}
-.expense-cat-btn.active,.expense-cat-btn:hover{background:#1a3c5e;color:white;border-color:#1a3c5e}
-.totals-bar{display:flex;gap:16px;flex-wrap:wrap;background:#f9fafb;border-radius:8px;padding:14px;margin-bottom:16px}
-.totals-bar .t-item{font-size:13px;color:#6b7280}
-.totals-bar .t-item strong{color:#1a3c5e;font-size:15px}
-.alert{padding:12px 16px;border-radius:8px;font-size:14px;margin-bottom:16px}
-.alert-success{background:#d1fae5;color:#065f46}
-.alert-error{background:#fee2e2;color:#b91c1c}
-.rfi-row{padding:12px;border-radius:8px;background:#f9fafb;margin-bottom:8px;display:flex;gap:12px;align-items:flex-start}
-.rfi-row .rfi-num{font-size:11px;color:#9ca3af;font-weight:600;min-width:50px}
-.rfi-row .rfi-content{flex:1}
-.rfi-title{font-weight:600;font-size:14px;margin-bottom:3px}
-.rfi-q{font-size:13px;color:#4b5563}
-.schedule-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:16px}
-.sched-day{border-radius:6px;padding:6px;text-align:center;font-size:12px;cursor:pointer;transition:all .2s;min-height:50px;position:relative}
-.sched-day:hover{background:#e0e7ff}
-.sched-day.has-entry{background:#dbeafe;font-weight:600}
-.sched-day.today{border:2px solid #1a3c5e}
-.sched-day .day-num{font-weight:600;margin-bottom:2px}
-.sched-day .day-crew{font-size:10px;color:#6b7280;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-@media(max-width:768px){
-  .tabs{overflow-x:auto}.tab{white-space:nowrap;flex:none;padding:12px 14px}
-  .kv-grid{grid-template-columns:1fr 1fr}
-  .form-row{grid-template-columns:1fr}
-}
-</style>
-"""
+# ── Job Detail ───────────────────────────────────────────────────────────────
 
-INSTALLATION_JOB_TEMPLATE = INSTALLATION_JOB_CSS + '''<!DOCTYPE html>
+INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{ job.job_name }} — Installation</title>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ job.job_name }} — Installation</title>
 </head>
 <body>
 <div class="top-bar">
   <h1>🏗️ {{ job.job_name }}</h1>
   <nav>
-    <a href="/installation">← All Jobs</a>
+    <a href="/installation">← Jobs</a>
+    <a href="/installation/schedule">📅 Schedule</a>
+    <a href="/installation/all-change-orders">📝 All COs</a>
+    <a href="/installation/crew">👷 Crew</a>
     <a href="/dashboard">Dashboard</a>
   </nav>
 </div>
 <div class="page">
 
-  <!-- Job header bar -->
-  <div class="job-header">
-    <div class="job-header-left">
-      <h2>{{ job.job_name }}
-        <span class="badge badge-{{ job.inst_status or 'planning' }}" style="font-size:13px;vertical-align:middle">{{ (job.inst_status or 'planning').replace('_',' ') }}</span>
-      </h2>
-      <div class="meta">
-        {% if job.client_name %}<span>👤 {{ job.client_name }}</span>{% endif %}
-        {% if job.project_address %}<span>📍 {{ job.project_address }}</span>{% endif %}
-        {% if job.start_date %}<span>🗓 {{ job.start_date }}{% if job.end_date %} → {{ job.end_date }}{% endif %}</span>{% endif %}
-        {% if job.contract_value %}<span>💰 ${{ "{:,.0f}".format(job.contract_value) }}</span>{% endif %}
-        {% if job.job_code %}<span>🏷 {{ job.job_code }}</span>{% endif %}
+  <!-- Job header -->
+  <div class="card" style="margin-bottom:16px;padding:16px 20px">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;flex-wrap:wrap">
+          <span style="font-size:20px;font-weight:700;color:#1a3c5e">{{ job.job_name }}</span>
+          <span class="badge badge-{{ job.inst_status or 'planning' }}">{{ (job.inst_status or 'planning').replace('_',' ') }}</span>
+          {% if job.job_code %}<span style="font-size:12px;color:#9ca3af">{{ job.job_code }}</span>{% endif %}
+        </div>
+        <div style="font-size:13px;color:#6b7280;display:flex;gap:14px;flex-wrap:wrap">
+          {% if job.client_name %}<span>👤 {{ job.client_name }}</span>{% endif %}
+          {% if job.project_address %}<span>📍 {{ job.project_address }}</span>{% endif %}
+          {% if job.start_date %}<span>🗓 {{ job.start_date }}{% if job.end_date %} – {{ job.end_date }}{% endif %}</span>{% endif %}
+          {% if job.contract_value %}<span>💰 ${{ "{:,.0f}".format(job.contract_value) }}</span>{% endif %}
+        </div>
       </div>
-    </div>
-    <div class="job-header-right">
-      <button class="btn btn-secondary btn-sm" onclick="openModal('edit-job-modal')">✏️ Edit Info</button>
-      {% if role == 'office' or role == 'admin' %}<a href="/job_costing" class="btn btn-secondary btn-sm">💰 Legacy Cost</a>{% endif %}
+      <button class="btn btn-secondary btn-sm" onclick="openModal('edit-job-modal')">✏️ Edit</button>
     </div>
   </div>
 
   <!-- Tabs -->
   <div class="tabs" id="main-tabs">
     <button class="tab" data-tab="overview" onclick="switchTab('overview')">📊 Overview</button>
-    <button class="tab" data-tab="site-plans" onclick="switchTab('site-plans')">🗺 Site Plans</button>
+    <button class="tab" data-tab="costing" onclick="switchTab('costing')">📈 Financials</button>
+    <button class="tab" data-tab="site-plans" onclick="switchTab('site-plans')">🗺 Plans</button>
     <button class="tab" data-tab="change-orders" onclick="switchTab('change-orders')">📝 Change Orders</button>
     <button class="tab" data-tab="schedule" onclick="switchTab('schedule')">📅 Schedule</button>
     <button class="tab" data-tab="daily-logs" onclick="switchTab('daily-logs')">📋 Daily Logs</button>
     <button class="tab" data-tab="expenses" onclick="switchTab('expenses')">💳 Expenses</button>
     <button class="tab" data-tab="rfis" onclick="switchTab('rfis')">❓ RFIs</button>
-    {% if role == 'office' or role == 'admin' %}<button class="tab" data-tab="costing" onclick="switchTab('costing')">📈 Job Costing</button>{% endif %}
   </div>
 
-  <!-- ── OVERVIEW ─────────────────────────────────────────── -->
+  <!-- ── OVERVIEW ── -->
   <div class="tab-content" id="tab-overview">
+    <!-- Financial snapshot -->
+    {% if proposal %}
+    {% set bid = proposal.bid_amount or 0 %}
+    {% set invoiced = total_invoiced or 0 %}
+    {% set expenses = expense_grand_total or 0 %}
+    {% set crew_cost = days_on_job * 1850 %}
+    {% set total_cost = invoiced + expenses %}
+    {% set gross_margin = bid - total_cost %}
+    {% set margin_pct = (gross_margin / bid * 100)|round(1) if bid > 0 else 0 %}
+    {% set remaining_days = [(proposal.days_allotted or 0) - days_on_job, 0]|max %}
+    {% set predicted_cost = total_cost + (remaining_days * 1850) %}
+    {% set predicted_margin_pct = ((bid - predicted_cost) / bid * 100)|round(1) if bid > 0 else 0 %}
+    {% set billed_pct = (invoiced / bid * 100)|round(1) if bid > 0 else 0 %}
+    <div class="metric-grid" style="margin-bottom:16px">
+      <div class="metric-card">
+        <div class="metric-label">% of Contract Billed</div>
+        <div class="metric-value">{{ billed_pct }}%</div>
+        <div class="progress-wrap"><div class="progress-bar"><div class="progress-fill {{ 'fill-over' if billed_pct >= 100 else ('fill-warn' if billed_pct >= 80 else 'fill-blue') }}" style="width:{{ [billed_pct,100]|min }}%"></div></div></div>
+        <div class="metric-sub">${{ "{:,.0f}".format(invoiced) }} of ${{ "{:,.0f}".format(bid) }}</div>
+      </div>
+      <div class="metric-card {{ 'green' if margin_pct >= 15 else ('amber' if margin_pct >= 0 else 'red') }}">
+        <div class="metric-label">Current Net Margin</div>
+        <div class="metric-value">{{ margin_pct }}%</div>
+        <div class="metric-sub">${{ "{:,.0f}".format(gross_margin) }} remaining</div>
+      </div>
+      <div class="metric-card {{ 'green' if predicted_margin_pct >= 15 else ('amber' if predicted_margin_pct >= 0 else 'red') }}">
+        <div class="metric-label">Predicted Net Margin</div>
+        <div class="metric-value">{{ predicted_margin_pct }}%</div>
+        <div class="metric-sub">+{{ remaining_days }} days remaining @ $1,850</div>
+      </div>
+      <div class="metric-card purple">
+        <div class="metric-label">Days on Job</div>
+        <div class="metric-value">{{ days_on_job }}</div>
+        <div class="metric-sub">Crew cost: ${{ "{:,.0f}".format(crew_cost) }}{% if proposal.days_allotted %} · {{ proposal.days_allotted }} allotted{% endif %}</div>
+      </div>
+    </div>
+    {% endif %}
+    <!-- Project info -->
     <div class="card">
       <div class="card-title">Project Information</div>
       <div class="kv-grid">
-        <div class="kv-item"><label>Client</label><span>{{ job.client_name or '—' }}</span></div>
-        <div class="kv-item"><label>Client Contact</label><span>{{ job.client_contact or '—' }}</span></div>
-        <div class="kv-item"><label>Client Email</label><span>{{ job.client_email or '—' }}</span></div>
-        <div class="kv-item"><label>Address</label><span>{{ job.project_address or '—' }}</span></div>
-        <div class="kv-item"><label>Start Date</label><span>{{ job.start_date or '—' }}</span></div>
-        <div class="kv-item"><label>End Date</label><span>{{ job.end_date or '—' }}</span></div>
-        <div class="kv-item"><label>Contract Value</label><span>${{ "{:,.2f}".format(job.contract_value or 0) }}</span></div>
-        <div class="kv-item"><label>Days on Job</label><span>{{ days_on_job }}</span></div>
+        <div class="kv-item"><div class="kv-label">Client</div><div class="kv-val">{{ job.client_name or '—' }}</div></div>
+        <div class="kv-item"><div class="kv-label">Contact</div><div class="kv-val">{{ job.client_contact or '—' }}</div></div>
+        <div class="kv-item"><div class="kv-label">Client Email</div><div class="kv-val">{{ job.client_email or '—' }}</div></div>
+        <div class="kv-item"><div class="kv-label">Address</div><div class="kv-val">{{ job.project_address or '—' }}</div></div>
+        <div class="kv-item"><div class="kv-label">Start</div><div class="kv-val">{{ job.start_date or '—' }}</div></div>
+        <div class="kv-item"><div class="kv-label">End</div><div class="kv-val">{{ job.end_date or '—' }}</div></div>
+        <div class="kv-item"><div class="kv-label">Contract Value</div><div class="kv-val">${{ "{:,.2f}".format(job.contract_value or 0) }}</div></div>
+        <div class="kv-item"><div class="kv-label">Days on Job</div><div class="kv-val">{{ days_on_job }}</div></div>
       </div>
-      {% if job.description %}
-      <div style="margin-top:14px;padding-top:14px;border-top:1px solid #f3f4f6">
-        <label style="font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.5px">Description</label>
-        <p style="margin-top:6px;font-size:14px;color:#374151;line-height:1.6">{{ job.description }}</p>
+      {% if job.description %}<div style="margin-top:12px;padding-top:12px;border-top:1px solid #f3f4f6;font-size:14px;color:#374151;line-height:1.6">{{ job.description }}</div>{% endif %}
+    </div>
+    {% if recent_cos %}
+    <div class="card">
+      <div class="card-title">Recent Change Orders <a href="#" onclick="switchTab('change-orders');return false;" class="btn btn-secondary btn-sm">View all</a></div>
+      <table><thead><tr><th>CO #</th><th>Title</th><th>Amount</th><th>Status</th></tr></thead>
+      <tbody>{% for co in recent_cos[:5] %}<tr><td style="font-weight:600">{{ co.co_number }}</td><td>{{ co.title }}</td><td>${{ "{:,.2f}".format(co.amount or 0) }}</td><td><span class="badge badge-{{ co.status }}">{{ co.status.replace('_',' ') }}</span></td></tr>{% endfor %}</tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- ── FINANCIALS ── -->
+  <div class="tab-content" id="tab-costing">
+    {% if proposal %}
+    {% set bid = proposal.bid_amount or 0 %}
+    {% set invoiced = total_invoiced or 0 %}
+    {% set exp_total = expense_grand_total or 0 %}
+    {% set crew_cost = days_on_job * 1850 %}
+    {% set total_cost = invoiced + exp_total %}
+    {% set gross = bid - total_cost %}
+    {% set margin_pct = (gross / bid * 100)|round(1) if bid > 0 else 0 %}
+    {% set remaining_days = [(proposal.days_allotted or 0) - days_on_job, 0]|max %}
+    {% set pred_cost = total_cost + (remaining_days * 1850) %}
+    {% set pred_margin = ((bid - pred_cost) / bid * 100)|round(1) if bid > 0 else 0 %}
+    {% set billed_pct = (invoiced / bid * 100)|round(1) if bid > 0 else 0 %}
+    {% set budget_total = (proposal.materials_budget or 0) + (proposal.labor_budget or 0) + (proposal.travel_budget or 0) + (proposal.hotel_cash_budget or 0) + (proposal.subs_budget or 0) + (proposal.rental_budget or 0) + (proposal.permit_budget or 0) %}
+    {% set budget_used_pct = (exp_total / budget_total * 100)|round(1) if budget_total > 0 else 0 %}
+
+    <div class="card">
+      <div class="card-title">Financial Summary</div>
+      <div class="metric-grid">
+        <div class="metric-card">
+          <div class="metric-label">Bid / Contract Amount</div>
+          <div class="metric-value">${{ "{:,.0f}".format(bid) }}</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">% Contract Billed</div>
+          <div class="metric-value">{{ billed_pct }}%</div>
+          <div class="progress-wrap"><div class="progress-bar"><div class="progress-fill {{ 'fill-over' if billed_pct>=100 else ('fill-warn' if billed_pct>=80 else 'fill-blue') }}" style="width:{{ [billed_pct,100]|min }}%"></div></div></div>
+          <div class="metric-sub">${{ "{:,.0f}".format(invoiced) }} invoiced</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Budget Used</div>
+          <div class="metric-value">{{ budget_used_pct }}%</div>
+          <div class="progress-wrap"><div class="progress-bar"><div class="progress-fill {{ 'fill-over' if budget_used_pct>=100 else ('fill-warn' if budget_used_pct>=80 else 'fill-ok') }}" style="width:{{ [budget_used_pct,100]|min }}%"></div></div></div>
+          <div class="metric-sub">${{ "{:,.0f}".format(exp_total) }} of ${{ "{:,.0f}".format(budget_total) }}</div>
+        </div>
+        <div class="metric-card {{ 'green' if margin_pct >= 15 else ('amber' if margin_pct >= 0 else 'red') }}">
+          <div class="metric-label">Current Net Margin</div>
+          <div class="metric-value">{{ margin_pct }}%</div>
+          <div class="metric-sub">${{ "{:,.0f}".format(gross) }} gross profit</div>
+        </div>
+        <div class="metric-card {{ 'green' if pred_margin >= 15 else ('amber' if pred_margin >= 0 else 'red') }}">
+          <div class="metric-label">Predicted Net Margin</div>
+          <div class="metric-value">{{ pred_margin }}%</div>
+          <div class="metric-sub">+{{ remaining_days }} days @ $1,850 projected</div>
+        </div>
+        <div class="metric-card purple">
+          <div class="metric-label">Crew Cost</div>
+          <div class="metric-value">${{ "{:,.0f}".format(crew_cost) }}</div>
+          <div class="metric-sub">{{ days_on_job }} of {{ proposal.days_allotted or '?' }} days used</div>
+        </div>
       </div>
-      {% endif %}
     </div>
 
-    {% if proposal %}
     <div class="card">
-      <div class="card-title">Budget Summary</div>
+      <div class="card-title">Budget vs Expenses by Category</div>
       <div class="budget-row">
-        {% set cats = [
-          ('Materials', proposal.materials_budget, actuals.materials),
-          ('Labor', proposal.labor_budget, actuals.labor),
-          ('Travel', proposal.travel_budget, actuals.travel),
-          ('Hotel/Cash', proposal.hotel_cash_budget, actuals.hotel),
-          ('Subs', proposal.subs_budget, actuals.subs),
-          ('Rentals', proposal.rental_budget, actuals.rental),
-          ('Permits', proposal.permit_budget, actuals.permit),
+        {% for name, key, budget in [
+          ('Materials', 'materials', proposal.materials_budget),
+          ('Labor', 'labor', proposal.labor_budget),
+          ('Travel', 'travel', proposal.travel_budget),
+          ('Hotel/Cash', 'hotel', proposal.hotel_cash_budget),
+          ('Subs', 'subs', proposal.subs_budget),
+          ('Rentals', 'rental', proposal.rental_budget),
+          ('Permits', 'permit', proposal.permit_budget),
         ] %}
-        {% for name, budget, actual in cats %}
-        {% if budget > 0 %}
-        <div class="budget-item">
+        {% set budget_val = budget or 0 %}
+        {% set actual = expense_totals.get(key, 0) %}
+        {% if budget_val > 0 or actual > 0 %}
+        <div class="bi">
           <div class="bi-label">{{ name }}</div>
-          <div class="bi-budget">${{ "{:,.0f}".format(budget) }}</div>
-          <div class="bi-actual">Used: ${{ "{:,.0f}".format(actual or 0) }}</div>
-          <div class="bi-bar"><div class="bi-fill {{ 'fill-over' if (actual or 0) >= budget else ('fill-warn' if (actual or 0) >= budget*0.8 else 'fill-ok') }}" style="width:{{ [100, ((actual or 0)/budget*100)|int]|min }}%"></div></div>
+          <div class="bi-budget">${{ "{:,.0f}".format(budget_val) }}</div>
+          <div class="bi-actual">Used ${{ "{:,.0f}".format(actual) }}</div>
+          <div class="bi-bar"><div class="bi-fill {{ 'fill-over' if actual>=budget_val and budget_val>0 else ('fill-warn' if actual>=budget_val*0.8 and budget_val>0 else 'fill-ok') }}" style="width:{{ ([actual/budget_val*100, 100]|min)|int if budget_val > 0 else 0 }}%"></div></div>
         </div>
         {% endif %}
         {% endfor %}
       </div>
-      <div style="margin-top:14px;display:flex;gap:24px;flex-wrap:wrap;padding-top:12px;border-top:1px solid #f3f4f6">
-        <div><span style="font-size:12px;color:#9ca3af">Bid Amount</span><br><strong style="font-size:18px;color:#1a3c5e">${{ "{:,.0f}".format(proposal.bid_amount or 0) }}</strong></div>
-        <div><span style="font-size:12px;color:#9ca3af">Total Invoiced</span><br><strong style="font-size:18px;color:#059669">${{ "{:,.0f}".format(total_invoiced or 0) }}</strong></div>
-        <div><span style="font-size:12px;color:#9ca3af">Days Allotted</span><br><strong style="font-size:18px;color:#1a3c5e">{{ proposal.days_allotted or 0 }}</strong></div>
-        <div><span style="font-size:12px;color:#9ca3af">Days Used</span><br><strong style="font-size:18px;color:{{ '#dc2626' if days_on_job > (proposal.days_allotted or 0) else '#1a3c5e' }}">{{ days_on_job }}</strong></div>
-        <div><span style="font-size:12px;color:#9ca3af">Crew Cost</span><br><strong style="font-size:18px;color:#7c3aed">${{ "{:,.0f}".format(days_on_job * 1850) }}</strong><span style="font-size:11px;color:#9ca3af"> @ $1,850/day</span></div>
-      </div>
+    </div>
+    {% if pos %}
+    <div class="card">
+      <div class="card-title">PO / Invoice History</div>
+      <table><thead><tr><th>PO #</th><th>Tech</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Date</th></tr></thead>
+      <tbody>{% for po in pos %}<tr><td style="font-weight:600">#{{ po[0] }}</td><td>{{ po[2] }}</td><td>{{ po[3] }}</td><td>${{ "{:,.2f}".format(po[4] or 0) }}</td><td>${{ "{:,.2f}".format(po[5] or 0) }}</td><td style="font-size:12px;color:#9ca3af">{{ (po[6] or '')[:10] }}</td></tr>{% endfor %}</tbody>
+      </table>
     </div>
     {% endif %}
-
-    {% if recent_cos %}
-    <div class="card">
-      <div class="card-title">Recent Change Orders</div>
-      <table><thead><tr><th>CO #</th><th>Title</th><th>Amount</th><th>Status</th></tr></thead>
-      <tbody>
-      {% for co in recent_cos[:5] %}
-      <tr>
-        <td>{{ co.co_number }}</td>
-        <td>{{ co.title }}</td>
-        <td>${{ "{:,.2f}".format(co.amount or 0) }}</td>
-        <td><span class="badge badge-{{ co.status }}">{{ co.status.replace('_',' ') }}</span></td>
-      </tr>
-      {% endfor %}
-      </tbody></table>
+    {% else %}
+    <div class="card" style="text-align:center;padding:40px;color:#9ca3af">
+      <div style="font-size:40px;margin-bottom:10px">📈</div>
+      <p>No proposal imported yet. Import a proposal PDF from the Job Costing page to enable financial tracking.</p>
+      <a href="/job_costing" class="btn btn-primary" style="margin-top:16px;display:inline-flex">Import Proposal →</a>
     </div>
     {% endif %}
   </div>
 
-  <!-- ── SITE PLANS ─────────────────────────────────────────── -->
+  <!-- ── SITE PLANS ── -->
   <div class="tab-content" id="tab-site-plans">
     <div class="card">
       <div class="card-title">Site Plans & Drawings
-        <button class="btn btn-primary btn-sm" onclick="openModal('upload-plan-modal')">⬆ Upload Plan</button>
+        <button class="btn btn-primary btn-sm" onclick="openModal('upload-plan-modal')">⬆ Upload</button>
       </div>
       {% if site_plans %}
       {% for p in site_plans %}
       <div class="plan-card">
-        <div class="plan-info">
-          <div class="plan-name">
-            {{ p.original_filename }}
-            {% if p.is_current %}<span class="current-tag">Current</span>{% endif %}
-          </div>
-          <div class="plan-meta">v{{ p.version }} · {{ p.uploaded_at[:10] if p.uploaded_at else '' }} · {{ p.uploaded_by }} · {{ "%.1f"|format(p.file_size/1024/1024) }} MB{% if p.description %} · {{ p.description }}{% endif %}</div>
+        <div style="flex:1;min-width:0">
+          <div class="plan-name">{{ p.original_filename }}{% if p.is_current %}<span class="current-tag">Current</span>{% endif %}</div>
+          <div class="plan-meta">v{{ p.version }} · {{ (p.uploaded_at or '')[:10] }} · {{ p.uploaded_by }}{% if p.file_size %} · {{ "%.1f"|format(p.file_size/1024/1024) }} MB{% endif %}{% if p.description %} · {{ p.description }}{% endif %}</div>
         </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
           <a href="/installation/files/site-plan/{{ p.filename }}" target="_blank" class="btn btn-secondary btn-sm">⬇ View</a>
-          {% if not p.is_current %}<button class="btn btn-secondary btn-sm" onclick="markCurrent({{ p.id }})">✓ Set Current</button>{% endif %}
-          {% if role in ['office','admin'] %}<button class="btn btn-danger btn-sm" onclick="deletePlan({{ p.id }}, this)">🗑</button>{% endif %}
+          {% if not p.is_current %}<button class="btn btn-secondary btn-sm" onclick="markCurrent({{ p.id }})">✓ Current</button>{% endif %}
+          <button class="btn btn-danger btn-sm" onclick="deletePlan({{ p.id }}, this)">🗑</button>
         </div>
       </div>
       {% endfor %}
       {% else %}
-      <div style="text-align:center;padding:40px;color:#9ca3af">
-        <div style="font-size:40px;margin-bottom:10px">🗺</div>
-        <p>No site plans uploaded yet.</p>
-      </div>
+      <div style="text-align:center;padding:40px;color:#9ca3af"><div style="font-size:40px;margin-bottom:8px">🗺</div><p>No site plans uploaded yet.</p></div>
       {% endif %}
     </div>
   </div>
 
-  <!-- ── CHANGE ORDERS ─────────────────────────────────────────── -->
+  <!-- ── CHANGE ORDERS ── -->
   <div class="tab-content" id="tab-change-orders">
     <div class="card">
       <div class="card-title">Change Orders
-        <div style="display:flex;gap:8px">
-          <button class="btn btn-voice btn-sm" onclick="openModal('voice-co-modal')">🎤 Voice CO</button>
-          <button class="btn btn-primary btn-sm" onclick="openModal('new-co-modal')">+ New CO</button>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-voice btn-sm" onclick="openModal('voice-co-modal')">🎤 Voice</button>
+          <button class="btn btn-primary btn-sm" onclick="openModal('new-co-modal')">+ New</button>
         </div>
       </div>
       {% if change_orders %}
-      <table>
-        <thead><tr><th>CO #</th><th>Title</th><th>Amount</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
-        <tbody>
-        {% for co in change_orders %}
-        <tr>
-          <td style="font-weight:600">{{ co.co_number }}</td>
-          <td>
-            {{ co.title }}
-            {% if co.voice_transcript %}<span title="Created via voice" style="font-size:11px;color:#7c3aed"> 🎤</span>{% endif %}
-          </td>
-          <td>${{ "{:,.2f}".format(co.amount or 0) }}</td>
-          <td><span class="badge badge-{{ co.status }}">{{ co.status.replace('_',' ') }}</span></td>
-          <td style="font-size:12px;color:#9ca3af">{{ co.created_at[:10] if co.created_at else '' }}</td>
-          <td>
-            <div style="display:flex;gap:6px;flex-wrap:wrap">
-              {% if co.status == 'draft' %}
-                {% if job.client_email or co.client_email %}
-                <button class="btn btn-secondary btn-sm" onclick="sendCoApproval({{ co.id }})">📧 Send</button>
-                {% endif %}
-                <button class="btn btn-success btn-sm" onclick="updateCoStatus({{ co.id }},'no_approval_needed')">✓ No Approval</button>
-              {% endif %}
-              {% if co.status == 'pending_approval' %}
-                <button class="btn btn-success btn-sm" onclick="updateCoStatus({{ co.id }},'approved')">✓ Approve</button>
-                <button class="btn btn-danger btn-sm" onclick="updateCoStatus({{ co.id }},'rejected')">✗ Reject</button>
-              {% endif %}
-              {% if co.status == 'approved' %}<span style="font-size:12px;color:#059669">✓ Approved {{ co.approved_at[:10] if co.approved_at else '' }}</span>{% endif %}
-              {% if co.status == 'rejected' %}<span style="font-size:12px;color:#dc2626">✗ Rejected</span>{% endif %}
-            </div>
-          </td>
-        </tr>
-        {% endfor %}
-        </tbody>
-      </table>
+      <table><thead><tr><th>CO #</th><th>Title</th><th>Amount</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+      <tbody>
+      {% for co in change_orders %}
+      <tr>
+        <td style="font-weight:600">{{ co.co_number }}</td>
+        <td>{{ co.title }}{% if co.voice_transcript %} <span title="Voice CO" style="color:#7c3aed;font-size:11px">🎤</span>{% endif %}</td>
+        <td>${{ "{:,.2f}".format(co.amount or 0) }}</td>
+        <td><span class="badge badge-{{ co.status }}">{{ co.status.replace('_',' ') }}</span></td>
+        <td style="font-size:12px;color:#9ca3af">{{ (co.created_at or '')[:10] }}</td>
+        <td>
+          <div style="display:flex;gap:5px;flex-wrap:wrap">
+            {% if co.status == 'draft' %}
+              {% if job.client_email or co.client_email %}<button class="btn btn-secondary btn-sm" onclick="sendCoApproval({{ co.id }})">📧 Send</button>{% endif %}
+              <button class="btn btn-success btn-sm" onclick="updateCoStatus({{ co.id }},'no_approval_needed')">✓ No Appr.</button>
+            {% elif co.status == 'pending_approval' %}
+              <button class="btn btn-success btn-sm" onclick="updateCoStatus({{ co.id }},'approved')">✓ Approve</button>
+              <button class="btn btn-danger btn-sm" onclick="updateCoStatus({{ co.id }},'rejected')">✗ Reject</button>
+            {% elif co.status == 'approved' %}<span style="font-size:12px;color:#059669;font-weight:600">✓ Approved {{ (co.approved_at or '')[:10] }}</span>
+            {% elif co.status == 'rejected' %}<span style="font-size:12px;color:#dc2626">✗ Rejected</span>
+            {% elif co.status == 'no_approval_needed' %}<span style="font-size:12px;color:#7c3aed">✓ No approval needed</span>
+            {% endif %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody></table>
       {% else %}
-      <div style="text-align:center;padding:40px;color:#9ca3af">
-        <div style="font-size:40px;margin-bottom:10px">📝</div>
-        <p>No change orders yet. Use voice or manual entry to create one.</p>
-      </div>
+      <div style="text-align:center;padding:40px;color:#9ca3af"><div style="font-size:40px;margin-bottom:8px">📝</div><p>No change orders yet. Use Voice or New to create one.</p></div>
       {% endif %}
     </div>
   </div>
 
-  <!-- ── SCHEDULE ─────────────────────────────────────────── -->
+  <!-- ── SCHEDULE ── -->
   <div class="tab-content" id="tab-schedule">
     <div class="card">
-      <div class="card-title">Crew Schedule
-        <div style="display:flex;gap:8px">
+      <div class="card-title">Days on Job
+        <div style="display:flex;gap:6px">
           <button class="btn btn-secondary btn-sm" onclick="logPastWeek()">📋 Log Past Week</button>
+          <a href="/installation/schedule?job={{ job.id }}" class="btn btn-print btn-sm">📅 Full Schedule View</a>
           <button class="btn btn-primary btn-sm" onclick="openModal('add-sched-modal')">+ Add Day</button>
         </div>
       </div>
       {% set total_days = schedule_entries|length %}
       {% set total_cost = total_days * 1850 %}
       <div class="totals-bar">
-        <div class="t-item">Days on Job: <strong>{{ total_days }}</strong></div>
-        <div class="t-item">Crew Cost: <strong style="color:#1a3c5e">${{ "{:,.0f}".format(total_cost) }}</strong> <span style="font-size:11px;color:#9ca3af">($1,850/day)</span></div>
+        <div class="t-item">Days: <strong>{{ total_days }}</strong></div>
+        <div class="t-item">Crew Cost: <strong style="color:#1a3c5e">${{ "{:,.0f}".format(total_cost) }}</strong> <span style="font-size:11px;color:#9ca3af">@ $1,850/day</span></div>
         {% if proposal and proposal.days_allotted %}
-        <div class="t-item">Days Allotted: <strong>{{ proposal.days_allotted }}</strong></div>
-        {% set remaining = (proposal.days_allotted or 0) - total_days %}
-        <div class="t-item">Remaining: <strong style="color:{{ '#dc2626' if remaining < 0 else '#059669' }}">{{ remaining }}</strong></div>
+        {% set rem = (proposal.days_allotted or 0) - total_days %}
+        <div class="t-item">Allotted: <strong>{{ proposal.days_allotted }}</strong></div>
+        <div class="t-item">Remaining: <strong style="color:{{ '#dc2626' if rem < 0 else '#059669' }}">{{ rem }}</strong></div>
         {% endif %}
       </div>
       {% if schedule_entries %}
-      <table>
-        <thead><tr><th>Date</th><th>Crew</th><th>Notes</th><th>Cost</th><th></th></tr></thead>
-        <tbody>
-        {% for s in schedule_entries %}
-        <tr>
-          <td style="font-weight:600;white-space:nowrap">{{ s.schedule_date }}</td>
-          <td style="font-size:13px">{{ s.crew_members or '—' }}</td>
-          <td style="font-size:13px;color:#6b7280">{{ s.notes or '' }}</td>
-          <td style="font-weight:500;color:#1a3c5e">$1,850</td>
-          <td><button class="btn btn-danger btn-sm" onclick="deleteSchedEntry({{ s.id }}, this)">🗑</button></td>
-        </tr>
-        {% endfor %}
-        </tbody>
-      </table>
+      <table><thead><tr><th>Date</th><th>Crew</th><th>Notes</th><th>Cost</th><th></th></tr></thead>
+      <tbody>{% for s in schedule_entries %}<tr>
+        <td style="font-weight:600;white-space:nowrap">{{ s.schedule_date }}</td>
+        <td style="font-size:13px">{{ s.crew_members or '—' }}</td>
+        <td style="font-size:12px;color:#6b7280">{{ s.notes or '' }}</td>
+        <td style="font-weight:500;color:#1a3c5e">$1,850</td>
+        <td><button class="btn btn-danger btn-sm" onclick="deleteSchedEntry({{ s.id }}, this)">🗑</button></td>
+      </tr>{% endfor %}</tbody></table>
       {% else %}
-      <div style="text-align:center;padding:40px;color:#9ca3af">No schedule entries yet.</div>
+      <div style="text-align:center;padding:40px;color:#9ca3af">No days logged yet.</div>
       {% endif %}
     </div>
   </div>
 
-  <!-- ── DAILY LOGS ─────────────────────────────────────────── -->
+  <!-- ── DAILY LOGS ── -->
   <div class="tab-content" id="tab-daily-logs">
     <div class="card">
-      <div class="card-title">Daily Field Logs
-        <button class="btn btn-primary btn-sm" onclick="openModal('add-log-modal')">+ Add Log</button>
-      </div>
+      <div class="card-title">Daily Field Logs <button class="btn btn-primary btn-sm" onclick="openModal('add-log-modal')">+ Add Log</button></div>
       {% if daily_logs %}
       {% for log in daily_logs %}
-      <div style="border:1px solid #e5e7eb;border-radius:8px;padding:14px;margin-bottom:10px">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
-          <div>
+      <div style="border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px;margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:5px">
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
             <strong>{{ log.log_date }}</strong>
-            {% if log.weather %}<span style="font-size:13px;color:#6b7280;margin-left:10px">🌤 {{ log.weather }}{% if log.temp_high %} {{ log.temp_high }}°F{% endif %}</span>{% endif %}
-            {% if log.crew_count %}<span style="font-size:13px;color:#6b7280;margin-left:10px">👷 {{ log.crew_count }} crew</span>{% endif %}
-            {% if log.hours_worked %}<span style="font-size:13px;color:#6b7280;margin-left:10px">⏱ {{ log.hours_worked }}h</span>{% endif %}
+            {% if log.weather %}<span style="font-size:13px;color:#6b7280">🌤 {{ log.weather }}{% if log.temp_high %} {{ log.temp_high }}°F{% endif %}</span>{% endif %}
+            {% if log.crew_count %}<span style="font-size:13px;color:#6b7280">👷 {{ log.crew_count }}</span>{% endif %}
           </div>
-          <span style="font-size:12px;color:#9ca3af">By {{ log.logged_by }}</span>
+          <span style="font-size:12px;color:#9ca3af">{{ log.logged_by }}</span>
         </div>
-        {% if log.work_performed %}<p style="margin-top:8px;font-size:14px;color:#374151">{{ log.work_performed }}</p>{% endif %}
-        {% if log.issues_delays %}<p style="margin-top:4px;font-size:13px;color:#b45309">⚠ {{ log.issues_delays }}</p>{% endif %}
-        {% if log.materials_used %}<p style="margin-top:4px;font-size:13px;color:#374151">Materials: {{ log.materials_used }}</p>{% endif %}
+        {% if log.work_performed %}<p style="font-size:14px;color:#374151;margin-bottom:3px">{{ log.work_performed }}</p>{% endif %}
+        {% if log.issues_delays %}<p style="font-size:13px;color:#b45309">⚠ {{ log.issues_delays }}</p>{% endif %}
+        {% if log.materials_used %}<p style="font-size:13px;color:#374151">Materials: {{ log.materials_used }}</p>{% endif %}
       </div>
       {% endfor %}
       {% else %}
@@ -25650,61 +25687,46 @@ INSTALLATION_JOB_TEMPLATE = INSTALLATION_JOB_CSS + '''<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- ── EXPENSES ─────────────────────────────────────────── -->
+  <!-- ── EXPENSES ── -->
   <div class="tab-content" id="tab-expenses">
     <div class="card">
-      <div class="card-title">Expenses
-        <button class="btn btn-primary btn-sm" onclick="openModal('add-expense-modal')">+ Add Expense</button>
-      </div>
+      <div class="card-title">Expenses <button class="btn btn-primary btn-sm" onclick="openModal('add-expense-modal')">+ Add</button></div>
       {% if expenses %}
       <div class="totals-bar">
-        {% for cat, total in expense_totals.items() %}
-        <div class="t-item">{{ cat|title }}: <strong>${{ "{:,.0f}".format(total) }}</strong></div>
-        {% endfor %}
+        {% for cat, total in expense_totals.items() %}<div class="t-item">{{ cat|title }}: <strong>${{ "{:,.0f}".format(total) }}</strong></div>{% endfor %}
         <div class="t-item" style="font-weight:700">Total: <strong style="color:#1a3c5e">${{ "{:,.2f}".format(expense_grand_total) }}</strong></div>
       </div>
-      <table>
-        <thead><tr><th>Date</th><th>Category</th><th>Vendor</th><th>Description</th><th>Amount</th><th></th></tr></thead>
-        <tbody>
-        {% for e in expenses %}
-        <tr>
-          <td style="white-space:nowrap">{{ e.expense_date or '' }}</td>
-          <td><span style="text-transform:capitalize">{{ e.category }}</span></td>
-          <td>{{ e.vendor or '—' }}</td>
-          <td style="font-size:13px">{{ e.description or '' }}</td>
-          <td style="font-weight:600">${{ "{:,.2f}".format(e.amount or 0) }}</td>
-          <td>
-            {% if e.receipt_filename %}<a href="/installation/files/receipt/{{ e.receipt_filename }}" target="_blank" class="btn btn-secondary btn-sm">📄</a>{% endif %}
-            <button class="btn btn-danger btn-sm" onclick="deleteExpense({{ e.id }}, this)">🗑</button>
-          </td>
-        </tr>
-        {% endfor %}
-        </tbody>
-      </table>
+      <table><thead><tr><th>Date</th><th>Category</th><th>Vendor</th><th>Description</th><th>Amount</th><th></th></tr></thead>
+      <tbody>{% for e in expenses %}<tr>
+        <td style="white-space:nowrap">{{ e.expense_date or '' }}</td>
+        <td style="text-transform:capitalize">{{ e.category }}</td>
+        <td>{{ e.vendor or '—' }}</td>
+        <td style="font-size:13px">{{ e.description or '' }}</td>
+        <td style="font-weight:600">${{ "{:,.2f}".format(e.amount or 0) }}</td>
+        <td style="white-space:nowrap">
+          {% if e.receipt_filename %}<a href="/installation/files/receipt/{{ e.receipt_filename }}" target="_blank" class="btn btn-secondary btn-sm">📄</a>{% endif %}
+          <button class="btn btn-danger btn-sm" onclick="deleteExpense({{ e.id }}, this)">🗑</button>
+        </td>
+      </tr>{% endfor %}</tbody></table>
       {% else %}
       <div style="text-align:center;padding:40px;color:#9ca3af">No expenses logged yet.</div>
       {% endif %}
     </div>
   </div>
 
-  <!-- ── RFIs ─────────────────────────────────────────── -->
+  <!-- ── RFIs ── -->
   <div class="tab-content" id="tab-rfis">
     <div class="card">
-      <div class="card-title">RFIs (Requests for Information)
-        <button class="btn btn-primary btn-sm" onclick="openModal('add-rfi-modal')">+ New RFI</button>
-      </div>
+      <div class="card-title">RFIs <button class="btn btn-primary btn-sm" onclick="openModal('add-rfi-modal')">+ New RFI</button></div>
       {% if rfis %}
       {% for rfi in rfis %}
-      <div class="rfi-row">
+      <div class="rfi-item">
         <div class="rfi-num">{{ rfi.rfi_number }}</div>
         <div class="rfi-content">
-          <div class="rfi-title">{{ rfi.title }}
-            <span class="badge badge-{{ rfi.status }}" style="margin-left:8px">{{ rfi.status }}</span>
-            <span class="badge badge-{{ rfi.priority }}" style="margin-left:4px">{{ rfi.priority }}</span>
-          </div>
-          <div class="rfi-q">{{ rfi.question }}</div>
-          {% if rfi.response %}<div style="margin-top:6px;font-size:13px;color:#059669">Answer: {{ rfi.response }}</div>{% endif %}
-          {% if rfi.due_date %}<div style="font-size:12px;color:#9ca3af;margin-top:4px">Due: {{ rfi.due_date }}</div>{% endif %}
+          <div style="font-weight:600;font-size:14px;margin-bottom:3px">{{ rfi.title }} <span class="badge badge-{{ rfi.status }}" style="margin-left:6px">{{ rfi.status }}</span><span class="badge badge-{{ rfi.priority }}" style="margin-left:3px">{{ rfi.priority }}</span></div>
+          <div style="font-size:13px;color:#4b5563">{{ rfi.question }}</div>
+          {% if rfi.response %}<div style="margin-top:5px;font-size:13px;color:#059669">Answer: {{ rfi.response }}</div>{% endif %}
+          {% if rfi.due_date %}<div style="font-size:12px;color:#9ca3af;margin-top:3px">Due: {{ rfi.due_date }}</div>{% endif %}
         </div>
       </div>
       {% endfor %}
@@ -25714,93 +25736,52 @@ INSTALLATION_JOB_TEMPLATE = INSTALLATION_JOB_CSS + '''<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- ── JOB COSTING ─────────────────────────────────────────── -->
-  <div class="tab-content" id="tab-costing">
-    <div class="card">
-      <div class="card-title">Job Costing — Budget vs Actual
-        <a href="/job_costing" class="btn btn-secondary btn-sm">Full View →</a>
-      </div>
-      {% if pos %}
-      <table>
-        <thead><tr><th>PO #</th><th>Tech</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Date</th></tr></thead>
-        <tbody>
-        {% for po in pos %}
-        <tr>
-          <td style="font-weight:600">#{{ po[0] }}</td>
-          <td>{{ po[2] }}</td>
-          <td>{{ po[3] }}</td>
-          <td>${{ "{:,.2f}".format(po[4] or 0) }}</td>
-          <td>${{ "{:,.2f}".format(po[5] or 0) }}</td>
-          <td style="font-size:12px;color:#9ca3af">{{ po[6][:10] if po[6] else '' }}</td>
-        </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-      {% else %}
-      <div style="text-align:center;padding:40px;color:#9ca3af">No POs linked to this job.</div>
-      {% endif %}
-    </div>
-  </div>
+  <!-- ══ MODALS ══ -->
 
-  <!-- ══ MODALS ══════════════════════════════════════════════ -->
-
-  <!-- Edit Job Info -->
+  <!-- Edit Job -->
   <div class="modal-overlay" id="edit-job-modal">
     <div class="modal">
       <button class="modal-close" onclick="closeModal('edit-job-modal')">×</button>
-      <h3>✏️ Edit Job Information</h3>
+      <h3>✏️ Edit Job</h3>
       <div class="form-row">
         <div class="form-group"><label>Client Name</label><input id="ej-client" value="{{ job.client_name or '' }}"></div>
-        <div class="form-group"><label>Client Contact</label><input id="ej-contact" value="{{ job.client_contact or '' }}"></div>
+        <div class="form-group"><label>Contact</label><input id="ej-contact" value="{{ job.client_contact or '' }}"></div>
       </div>
       <div class="form-row">
         <div class="form-group"><label>Client Email</label><input id="ej-email" type="email" value="{{ job.client_email or '' }}"></div>
         <div class="form-group"><label>Status</label>
-          <select id="ej-status">
-            {% for s in ['planning','active','on_hold','complete','cancelled'] %}
-            <option value="{{ s }}" {{ 'selected' if (job.inst_status or 'planning') == s }}>{{ s.replace('_',' ')|title }}</option>
-            {% endfor %}
-          </select>
+          <select id="ej-status">{% for s in ['planning','active','on_hold','complete','cancelled'] %}<option value="{{ s }}" {{ 'selected' if (job.inst_status or 'planning') == s }}>{{ s.replace('_',' ')|title }}</option>{% endfor %}</select>
         </div>
       </div>
-      <div class="form-group" style="margin-bottom:12px"><label>Project Address</label><input id="ej-address" value="{{ job.project_address or '' }}"></div>
+      <div class="form-group" style="margin-bottom:10px"><label>Project Address</label><input id="ej-address" value="{{ job.project_address or '' }}"></div>
       <div class="form-row">
         <div class="form-group"><label>Start Date</label><input id="ej-start" type="date" value="{{ job.start_date or '' }}"></div>
         <div class="form-group"><label>End Date</label><input id="ej-end" type="date" value="{{ job.end_date or '' }}"></div>
         <div class="form-group"><label>Contract Value ($)</label><input id="ej-value" type="number" step="0.01" value="{{ job.contract_value or '' }}"></div>
       </div>
-      <div class="form-group" style="margin-bottom:20px"><label>Description</label><textarea id="ej-desc">{{ job.description or '' }}</textarea></div>
-      <button class="btn btn-primary" onclick="saveJobInfo()">Save Changes</button>
+      <div class="form-group" style="margin-bottom:18px"><label>Description</label><textarea id="ej-desc">{{ job.description or '' }}</textarea></div>
+      <button class="btn btn-primary" onclick="saveJobInfo()">Save</button>
     </div>
   </div>
 
-  <!-- Voice Change Order -->
+  <!-- Voice CO -->
   <div class="modal-overlay" id="voice-co-modal">
     <div class="modal">
       <button class="modal-close" onclick="closeModal('voice-co-modal')">×</button>
       <h3>🎤 Voice Change Order</h3>
-      <p style="font-size:14px;color:#6b7280;margin-bottom:16px">Press the microphone, describe the change order, then press stop to review and save.</p>
-      <div class="voice-rec-area">
-        <div class="voice-indicator" id="voice-btn" onclick="toggleRecording()">🎤</div>
-        <div class="recording-status" id="voice-status">Tap to start recording</div>
+      <p style="font-size:13px;color:#6b7280;margin-bottom:14px">Tap the mic, describe the change, then save.</p>
+      <div class="voice-rec">
+        <button class="voice-btn" id="voice-btn" onclick="toggleRecording()">🎤</button>
+        <div class="voice-status" id="voice-status">Tap to record</div>
       </div>
-      <div class="form-group" style="margin-bottom:12px">
-        <label>Transcript (edit as needed)</label>
-        <textarea id="voice-transcript" rows="4" placeholder="Your speech will appear here…"></textarea>
-      </div>
+      <div class="form-group" style="margin-bottom:10px"><label>Transcript</label><textarea id="voice-transcript" rows="3" placeholder="Speech appears here…"></textarea></div>
       <div class="form-row">
-        <div class="form-group"><label>CO Title</label><input id="voice-co-title" placeholder="Auto-filled or enter manually"></div>
-        <div class="form-group"><label>Amount ($)</label><input id="voice-co-amount" type="number" step="0.01" placeholder="0.00"></div>
+        <div class="form-group"><label>Title</label><input id="voice-co-title"></div>
+        <div class="form-group"><label>Amount ($)</label><input id="voice-co-amount" type="number" step="0.01"></div>
       </div>
-      <div class="form-row" style="margin-bottom:20px">
-        <div class="form-group">
-          <label>Requires Client Approval</label>
-          <select id="voice-co-approval">
-            <option value="1">Yes — send to client</option>
-            <option value="0">No — log only</option>
-          </select>
-        </div>
-        <div class="form-group"><label>Client Email (override)</label><input id="voice-co-email" placeholder="{{ job.client_email or '' }}" value="{{ job.client_email or '' }}"></div>
+      <div class="form-row" style="margin-bottom:18px">
+        <div class="form-group"><label>Requires Client Approval</label><select id="voice-co-approval"><option value="1">Yes — send to client</option><option value="0">No — log only</option></select></div>
+        <div class="form-group"><label>Client Email</label><input id="voice-co-email" value="{{ job.client_email or '' }}"></div>
       </div>
       <button class="btn btn-primary" onclick="submitVoiceCO()">💾 Save Change Order</button>
     </div>
@@ -25812,37 +25793,34 @@ INSTALLATION_JOB_TEMPLATE = INSTALLATION_JOB_CSS + '''<!DOCTYPE html>
       <button class="modal-close" onclick="closeModal('new-co-modal')">×</button>
       <h3>📝 New Change Order</h3>
       <div class="form-row">
-        <div class="form-group"><label>CO Number</label><input id="co-num" placeholder="Auto-generated"></div>
+        <div class="form-group"><label>CO #</label><input id="co-num" placeholder="Auto"></div>
         <div class="form-group"><label>Amount ($)</label><input id="co-amount" type="number" step="0.01"></div>
       </div>
-      <div class="form-group" style="margin-bottom:12px"><label>Title</label><input id="co-title" placeholder="Brief description of change"></div>
-      <div class="form-group" style="margin-bottom:12px"><label>Description</label><textarea id="co-desc" rows="4" placeholder="Detailed description of work, materials, or conditions causing the change order…"></textarea></div>
-      <div class="form-row" style="margin-bottom:20px">
-        <div class="form-group">
-          <label>Requires Client Approval</label>
-          <select id="co-approval">
-            <option value="1">Yes — send to client</option>
-            <option value="0">No — log only</option>
-          </select>
-        </div>
+      <div class="form-group" style="margin-bottom:10px"><label>Title</label><input id="co-title"></div>
+      <div class="form-group" style="margin-bottom:10px"><label>Description</label><textarea id="co-desc" rows="4"></textarea></div>
+      <div class="form-row" style="margin-bottom:10px">
+        <div class="form-group"><label>Requires Client Approval</label><select id="co-approval"><option value="1">Yes</option><option value="0">No</option></select></div>
         <div class="form-group"><label>Client Email</label><input id="co-client-email" value="{{ job.client_email or '' }}"></div>
       </div>
-      <div class="form-group" style="margin-bottom:20px"><label>Notes (internal)</label><input id="co-notes"></div>
-      <button class="btn btn-primary" onclick="submitCO()">Save Change Order</button>
+      <div class="form-group" style="margin-bottom:18px"><label>Internal Notes</label><input id="co-notes"></div>
+      <button class="btn btn-primary" onclick="submitCO()">Save</button>
     </div>
   </div>
 
-  <!-- Add Schedule -->
+  <!-- Add Day -->
   <div class="modal-overlay" id="add-sched-modal">
     <div class="modal">
       <button class="modal-close" onclick="closeModal('add-sched-modal')">×</button>
       <h3>📅 Log Day on Job</h3>
-      <p style="font-size:13px;color:#6b7280;margin-bottom:16px">Each day logged counts as 1 full day @ <strong>$1,850</strong>.</p>
+      <p style="font-size:13px;color:#6b7280;margin-bottom:14px">1 day = <strong>$1,850</strong> crew cost.</p>
       <div class="form-row">
         <div class="form-group"><label>Date</label><input id="sched-date" type="date" value="{{ today }}"></div>
       </div>
-      <div class="form-group" style="margin-bottom:12px"><label>Crew Members</label><input id="sched-crew" placeholder="Names or count, e.g. John, Maria, Tom"></div>
-      <div class="form-group" style="margin-bottom:20px"><label>Notes</label><textarea id="sched-notes" rows="2"></textarea></div>
+      <div class="form-group" style="margin-bottom:10px"><label>Crew Members</label>
+        <input id="sched-crew" placeholder="e.g. John, Maria, Tom">
+        {% if crew_members %}<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">{% for cm in crew_members %}<span onclick="addCrewName('{{ cm.name }}')" style="background:#e5e7eb;padding:3px 9px;border-radius:12px;font-size:12px;cursor:pointer;user-select:none">{{ cm.name }}</span>{% endfor %}</div>{% endif %}
+      </div>
+      <div class="form-group" style="margin-bottom:18px"><label>Notes</label><textarea id="sched-notes" rows="2"></textarea></div>
       <button class="btn btn-primary" onclick="submitSchedEntry()">Save Day ($1,850)</button>
     </div>
   </div>
@@ -25854,18 +25832,18 @@ INSTALLATION_JOB_TEMPLATE = INSTALLATION_JOB_CSS + '''<!DOCTYPE html>
       <h3>📋 Add Daily Log</h3>
       <div class="form-row">
         <div class="form-group"><label>Date</label><input id="log-date" type="date" value="{{ today }}"></div>
-        <div class="form-group"><label>Weather</label><input id="log-weather" placeholder="Sunny, Cloudy, Rain…"></div>
+        <div class="form-group"><label>Weather</label><input id="log-weather" placeholder="Sunny, Rain…"></div>
         <div class="form-group"><label>High Temp (°F)</label><input id="log-temp" type="number"></div>
       </div>
       <div class="form-row">
         <div class="form-group"><label>Crew Count</label><input id="log-crew-count" type="number" value="1"></div>
+        <div class="form-group"><label>Crew Members</label><input id="log-crew" placeholder="Names"></div>
       </div>
-      <div class="form-group" style="margin-bottom:12px"><label>Crew Members</label><input id="log-crew" placeholder="Names of crew on site"></div>
-      <div class="form-group" style="margin-bottom:12px"><label>Work Performed</label><textarea id="log-work" rows="3" placeholder="Describe work completed today…"></textarea></div>
-      <div class="form-group" style="margin-bottom:12px"><label>Materials Used</label><input id="log-materials" placeholder="Materials and quantities used"></div>
-      <div class="form-group" style="margin-bottom:12px"><label>Equipment Used</label><input id="log-equipment" placeholder="Equipment on site"></div>
-      <div class="form-group" style="margin-bottom:20px"><label>Issues / Delays</label><textarea id="log-issues" rows="2" placeholder="Any issues, delays, or safety concerns…"></textarea></div>
-      <button class="btn btn-primary" onclick="submitDailyLog()">Save Log</button>
+      <div class="form-group" style="margin-bottom:10px"><label>Work Performed</label><textarea id="log-work" rows="3"></textarea></div>
+      <div class="form-group" style="margin-bottom:10px"><label>Materials Used</label><input id="log-materials"></div>
+      <div class="form-group" style="margin-bottom:10px"><label>Equipment Used</label><input id="log-equipment"></div>
+      <div class="form-group" style="margin-bottom:18px"><label>Issues / Delays</label><textarea id="log-issues" rows="2"></textarea></div>
+      <button class="btn btn-primary" onclick="submitDailyLog()">Save</button>
     </div>
   </div>
 
@@ -25877,17 +25855,7 @@ INSTALLATION_JOB_TEMPLATE = INSTALLATION_JOB_CSS + '''<!DOCTYPE html>
       <div class="form-row">
         <div class="form-group"><label>Date</label><input id="exp-date" type="date" value="{{ today }}"></div>
         <div class="form-group"><label>Category</label>
-          <select id="exp-cat">
-            <option value="materials">Materials</option>
-            <option value="labor">Labor</option>
-            <option value="equipment">Equipment</option>
-            <option value="subcontractor">Subcontractor</option>
-            <option value="travel">Travel</option>
-            <option value="hotel">Hotel</option>
-            <option value="permit">Permit</option>
-            <option value="rental">Rental</option>
-            <option value="other">Other</option>
-          </select>
+          <select id="exp-cat"><option value="materials">Materials</option><option value="labor">Labor</option><option value="equipment">Equipment</option><option value="subcontractor">Subcontractor</option><option value="travel">Travel</option><option value="hotel">Hotel</option><option value="permit">Permit</option><option value="rental">Rental</option><option value="other">Other</option></select>
         </div>
         <div class="form-group"><label>Amount ($)</label><input id="exp-amount" type="number" step="0.01"></div>
       </div>
@@ -25895,22 +25863,19 @@ INSTALLATION_JOB_TEMPLATE = INSTALLATION_JOB_CSS + '''<!DOCTYPE html>
         <div class="form-group"><label>Vendor</label><input id="exp-vendor"></div>
         <div class="form-group"><label>Description</label><input id="exp-desc"></div>
       </div>
-      <div class="form-group" style="margin-bottom:20px"><label>Receipt (optional)</label><input id="exp-receipt" type="file" accept=".pdf,.jpg,.jpeg,.png"></div>
-      <button class="btn btn-primary" onclick="submitExpense()">Save Expense</button>
+      <div class="form-group" style="margin-bottom:18px"><label>Receipt (optional)</label><input id="exp-receipt" type="file" accept=".pdf,.jpg,.jpeg,.png"></div>
+      <button class="btn btn-primary" onclick="submitExpense()">Save</button>
     </div>
   </div>
 
-  <!-- Upload Site Plan -->
+  <!-- Upload Plan -->
   <div class="modal-overlay" id="upload-plan-modal">
     <div class="modal">
       <button class="modal-close" onclick="closeModal('upload-plan-modal')">×</button>
       <h3>🗺 Upload Site Plan</h3>
-      <div class="form-group" style="margin-bottom:12px"><label>File (PDF, DWG, image)</label><input id="plan-file" type="file" accept=".pdf,.dwg,.dxf,.jpg,.jpeg,.png,.tif,.tiff"></div>
-      <div class="form-group" style="margin-bottom:12px"><label>Description (optional)</label><input id="plan-desc" placeholder="e.g. Irrigation layout Rev 3"></div>
-      <div class="form-group" style="margin-bottom:20px">
-        <label>Mark as Current Version</label>
-        <select id="plan-current"><option value="1">Yes</option><option value="0">No</option></select>
-      </div>
+      <div class="form-group" style="margin-bottom:10px"><label>File</label><input id="plan-file" type="file" accept=".pdf,.dwg,.dxf,.jpg,.jpeg,.png,.tif,.tiff"></div>
+      <div class="form-group" style="margin-bottom:10px"><label>Description</label><input id="plan-desc" placeholder="e.g. Irrigation layout Rev 3"></div>
+      <div class="form-group" style="margin-bottom:18px"><label>Mark as Current</label><select id="plan-current"><option value="1">Yes</option><option value="0">No</option></select></div>
       <button class="btn btn-primary" onclick="uploadPlan()">Upload</button>
     </div>
   </div>
@@ -25922,334 +25887,291 @@ INSTALLATION_JOB_TEMPLATE = INSTALLATION_JOB_CSS + '''<!DOCTYPE html>
       <h3>❓ New RFI</h3>
       <div class="form-row">
         <div class="form-group"><label>Title</label><input id="rfi-title"></div>
-        <div class="form-group"><label>Priority</label>
-          <select id="rfi-priority"><option value="low">Low</option><option value="normal" selected>Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select>
-        </div>
+        <div class="form-group"><label>Priority</label><select id="rfi-priority"><option value="low">Low</option><option value="normal" selected>Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></div>
         <div class="form-group"><label>Due Date</label><input id="rfi-due" type="date"></div>
       </div>
-      <div class="form-group" style="margin-bottom:12px"><label>Assigned To</label><input id="rfi-assigned" placeholder="Name or role"></div>
-      <div class="form-group" style="margin-bottom:20px"><label>Question / Details</label><textarea id="rfi-question" rows="4" placeholder="Describe the information needed…"></textarea></div>
-      <button class="btn btn-primary" onclick="submitRFI()">Submit RFI</button>
+      <div class="form-group" style="margin-bottom:10px"><label>Assigned To</label><input id="rfi-assigned"></div>
+      <div class="form-group" style="margin-bottom:18px"><label>Question</label><textarea id="rfi-question" rows="4"></textarea></div>
+      <button class="btn btn-primary" onclick="submitRFI()">Submit</button>
     </div>
   </div>
 
-</div><!-- /page -->
-
+</div>
 <script>
 const JOB_ID = {{ job.id }};
-
-// ── Tab switching ──
-function switchTab(name) {
-  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
-  document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
-  document.getElementById('tab-' + name).classList.add('active');
-  document.querySelector('[data-tab="' + name + '"]').classList.add('active');
-  history.replaceState(null,'',location.pathname + '?tab=' + name);
-}
-// ── Modal helpers ──
-function openModal(id) { document.getElementById(id).classList.add('open'); }
-function closeModal(id) { document.getElementById(id).classList.remove('open'); }
-document.querySelectorAll('.modal-overlay').forEach(m => m.addEventListener('click', e => { if(e.target === m) m.classList.remove('open'); }));
-
-// ── Init tab from URL ──
-const initTab = new URLSearchParams(location.search).get('tab') || 'overview';
-switchTab(initTab);
-
-// ── Voice recording ──
-let recognition = null;
-let isRecording = false;
-let fullTranscript = '';
-
-function toggleRecording() {
-  if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-    alert('Speech recognition is not supported in this browser. Try Chrome on Android/Desktop.');
-    return;
-  }
-  if (isRecording) { stopRecording(); } else { startRecording(); }
-}
-function startRecording() {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  recognition = new SR();
-  recognition.continuous = true;
-  recognition.interimResults = true;
-  recognition.lang = 'en-US';
-  fullTranscript = '';
-  recognition.onresult = e => {
-    let interim = '';
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      if (e.results[i].isFinal) fullTranscript += e.results[i][0].transcript + ' ';
-      else interim = e.results[i][0].transcript;
-    }
-    document.getElementById('voice-transcript').value = fullTranscript + interim;
-  };
-  recognition.onend = () => { if (isRecording) recognition.start(); };
-  recognition.start();
-  isRecording = true;
-  document.getElementById('voice-btn').classList.add('recording');
-  document.getElementById('voice-btn').textContent = '⏹';
-  document.getElementById('voice-status').textContent = '🔴 Recording… speak now';
-}
-function stopRecording() {
-  if (recognition) { recognition.onend = null; recognition.stop(); }
-  isRecording = false;
-  document.getElementById('voice-btn').classList.remove('recording');
-  document.getElementById('voice-btn').textContent = '🎤';
-  document.getElementById('voice-status').textContent = 'Recording stopped. Review and save.';
-  // Auto-fill title from first sentence
-  const txt = document.getElementById('voice-transcript').value.trim();
-  if (txt && !document.getElementById('voice-co-title').value) {
-    const firstSentence = txt.split(/[.!?]/)[0].substring(0, 80);
-    document.getElementById('voice-co-title').value = firstSentence;
-  }
-}
-
-// ── AJAX helpers ──
-function api(url, data, cb, method) {
-  fetch(url, {
-    method: method || 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(data)
-  }).then(r => r.json()).then(d => {
-    if (d.success) cb(d);
-    else alert('Error: ' + (d.error || 'Unknown error'));
-  }).catch(e => alert('Network error: ' + e));
-}
-
-// ── Save job info ──
-function saveJobInfo() {
-  api('/installation/api/job/update', {
-    job_id: JOB_ID,
-    client_name: document.getElementById('ej-client').value,
-    client_contact: document.getElementById('ej-contact').value,
-    client_email: document.getElementById('ej-email').value,
-    inst_status: document.getElementById('ej-status').value,
-    project_address: document.getElementById('ej-address').value,
-    start_date: document.getElementById('ej-start').value,
-    end_date: document.getElementById('ej-end').value,
-    contract_value: document.getElementById('ej-value').value,
-    description: document.getElementById('ej-desc').value,
-  }, () => location.reload());
-}
-
-// ── Submit voice CO ──
-function submitVoiceCO() {
-  const transcript = document.getElementById('voice-transcript').value.trim();
-  if (!transcript && !document.getElementById('voice-co-title').value) { alert('Please record or type a description'); return; }
-  api('/installation/api/change-orders/create', {
-    job_id: JOB_ID,
-    title: document.getElementById('voice-co-title').value || transcript.substring(0,80),
-    description: transcript,
-    voice_transcript: transcript,
-    amount: document.getElementById('voice-co-amount').value || 0,
-    requires_approval: document.getElementById('voice-co-approval').value,
-    client_email: document.getElementById('voice-co-email').value,
-  }, d => {
-    closeModal('voice-co-modal');
-    location.reload();
-  });
-}
-
-// ── Submit text CO ──
-function submitCO() {
-  const title = document.getElementById('co-title').value.trim();
-  if (!title) { alert('Title is required'); return; }
-  api('/installation/api/change-orders/create', {
-    job_id: JOB_ID,
-    co_number: document.getElementById('co-num').value,
-    title: title,
-    description: document.getElementById('co-desc').value,
-    amount: document.getElementById('co-amount').value || 0,
-    requires_approval: document.getElementById('co-approval').value,
-    client_email: document.getElementById('co-client-email').value,
-    notes: document.getElementById('co-notes').value,
-  }, d => { closeModal('new-co-modal'); location.reload(); });
-}
-
-// ── CO status update ──
-function updateCoStatus(coId, status) {
-  const msg = status === 'approved' ? 'Mark this CO as approved?' : status === 'rejected' ? 'Mark this CO as rejected?' : 'Mark as no approval needed?';
-  if (!confirm(msg)) return;
-  api('/installation/api/change-orders/update-status', {co_id: coId, status: status}, () => location.reload());
-}
-
-// ── Send CO for approval ──
-function sendCoApproval(coId) {
-  if (!confirm('Send this change order to the client for approval?')) return;
-  api('/installation/api/change-orders/send-approval', {co_id: coId}, d => {
-    alert('Approval request sent to ' + (d.email || 'client'));
-    location.reload();
-  });
-}
-
-// ── Schedule entry ──
-function submitSchedEntry() {
-  const date = document.getElementById('sched-date').value;
-  if (!date) { alert('Date is required'); return; }
-  api('/install_scheduling/add_entry', {
-    job_id: JOB_ID,
-    schedule_date: date,
-    hours_worked: 0,
-    crew_members: document.getElementById('sched-crew').value,
-    notes: document.getElementById('sched-notes').value,
-  }, () => { closeModal('add-sched-modal'); location.reload(); });
-}
-function deleteSchedEntry(id, btn) {
-  if (!confirm('Delete this entry?')) return;
-  api('/install_scheduling/delete_entry', {id: id}, () => btn.closest('tr').remove());
-}
-
-// ── Log past week ──
-function logPastWeek() {
-  if (!confirm('Auto-log Mon–Fri of the past week for this job?')) return;
-  api('/installation/api/schedule/log-week', {job_id: JOB_ID}, d => {
-    alert(d.message || 'Week logged');
-    location.reload();
-  });
-}
-
-// ── Daily log ──
-function submitDailyLog() {
-  const date = document.getElementById('log-date').value;
-  if (!date) { alert('Date is required'); return; }
-  api('/installation/api/daily-logs/add', {
-    job_id: JOB_ID,
-    log_date: date,
-    weather: document.getElementById('log-weather').value,
-    temp_high: document.getElementById('log-temp').value || null,
-    crew_count: document.getElementById('log-crew-count').value || 0,
-    crew_members: document.getElementById('log-crew').value,
-    hours_worked: 0,
-    work_performed: document.getElementById('log-work').value,
-    materials_used: document.getElementById('log-materials').value,
-    equipment_used: document.getElementById('log-equipment').value,
-    issues_delays: document.getElementById('log-issues').value,
-  }, () => { closeModal('add-log-modal'); location.reload(); });
-}
-
-// ── Expense ──
-function submitExpense() {
-  const amount = document.getElementById('exp-amount').value;
-  if (!amount) { alert('Amount is required'); return; }
-  const form = new FormData();
-  form.append('job_id', JOB_ID);
-  form.append('expense_date', document.getElementById('exp-date').value);
-  form.append('category', document.getElementById('exp-cat').value);
-  form.append('amount', amount);
-  form.append('vendor', document.getElementById('exp-vendor').value);
-  form.append('description', document.getElementById('exp-desc').value);
-  const receipt = document.getElementById('exp-receipt').files[0];
-  if (receipt) form.append('receipt', receipt);
-  fetch('/installation/api/expenses/add', {method:'POST', body:form})
-    .then(r => r.json())
-    .then(d => { if (d.success) { closeModal('add-expense-modal'); location.reload(); } else alert('Error: ' + d.error); });
-}
-function deleteExpense(id, btn) {
-  if (!confirm('Delete this expense?')) return;
-  api('/installation/api/expenses/delete', {id: id}, () => btn.closest('tr').remove());
-}
-
-// ── Upload site plan ──
-function uploadPlan() {
-  const fileEl = document.getElementById('plan-file');
-  if (!fileEl.files.length) { alert('Select a file first'); return; }
-  const form = new FormData();
-  form.append('job_id', JOB_ID);
-  form.append('plan_file', fileEl.files[0]);
-  form.append('description', document.getElementById('plan-desc').value);
-  form.append('is_current', document.getElementById('plan-current').value);
-  fetch('/installation/api/site-plans/upload', {method:'POST', body:form})
-    .then(r => r.json())
-    .then(d => { if (d.success) { closeModal('upload-plan-modal'); location.reload(); } else alert('Error: ' + d.error); });
-}
-function markCurrent(planId) {
-  api('/installation/api/site-plans/mark-current', {plan_id: planId, job_id: JOB_ID}, () => location.reload());
-}
-function deletePlan(planId, btn) {
-  if (!confirm('Delete this site plan?')) return;
-  api('/installation/api/site-plans/delete', {plan_id: planId}, () => btn.closest('.plan-card').remove());
-}
-
-// ── RFI ──
-function submitRFI() {
-  const title = document.getElementById('rfi-title').value.trim();
-  if (!title) { alert('Title is required'); return; }
-  api('/installation/api/rfis/add', {
-    job_id: JOB_ID,
-    title: title,
-    priority: document.getElementById('rfi-priority').value,
-    due_date: document.getElementById('rfi-due').value,
-    assigned_to: document.getElementById('rfi-assigned').value,
-    question: document.getElementById('rfi-question').value,
-  }, () => { closeModal('add-rfi-modal'); location.reload(); });
-}
+function switchTab(name){document.querySelectorAll('.tab-content').forEach(el=>el.classList.remove('active'));document.querySelectorAll('.tab').forEach(el=>el.classList.remove('active'));document.getElementById('tab-'+name).classList.add('active');document.querySelector('[data-tab="'+name+'"]').classList.add('active');history.replaceState(null,'',location.pathname+'?tab='+name);}
+function openModal(id){document.getElementById(id).classList.add('open');}
+function closeModal(id){document.getElementById(id).classList.remove('open');}
+document.querySelectorAll('.modal-overlay').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open');}));
+const initTab=new URLSearchParams(location.search).get('tab')||'overview';switchTab(initTab);
+function addCrewName(name){const el=document.getElementById('sched-crew');el.value=el.value?(el.value+', '+name):name;}
+let recognition=null,isRecording=false,fullTranscript='';
+function toggleRecording(){if(!('webkitSpeechRecognition'in window)&&!('SpeechRecognition'in window)){alert('Speech recognition not supported. Try Chrome.');return;}isRecording?stopRecording():startRecording();}
+function startRecording(){const SR=window.SpeechRecognition||window.webkitSpeechRecognition;recognition=new SR();recognition.continuous=true;recognition.interimResults=true;recognition.lang='en-US';fullTranscript='';recognition.onresult=e=>{let interim='';for(let i=e.resultIndex;i<e.results.length;i++){if(e.results[i].isFinal)fullTranscript+=e.results[i][0].transcript+' ';else interim=e.results[i][0].transcript;}document.getElementById('voice-transcript').value=fullTranscript+interim;};recognition.onend=()=>{if(isRecording)recognition.start();};recognition.start();isRecording=true;document.getElementById('voice-btn').classList.add('recording');document.getElementById('voice-btn').textContent='⏹';document.getElementById('voice-status').textContent='🔴 Recording…';}
+function stopRecording(){if(recognition){recognition.onend=null;recognition.stop();}isRecording=false;document.getElementById('voice-btn').classList.remove('recording');document.getElementById('voice-btn').textContent='🎤';document.getElementById('voice-status').textContent='Done — review and save.';const txt=document.getElementById('voice-transcript').value.trim();if(txt&&!document.getElementById('voice-co-title').value)document.getElementById('voice-co-title').value=txt.split(/[.!?]/)[0].substring(0,80);}
+function api(url,data,cb){fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}).then(r=>r.json()).then(d=>{if(d.success)cb(d);else alert('Error: '+(d.error||'Unknown error'));}).catch(e=>alert('Network error: '+e));}
+function saveJobInfo(){api('/installation/api/job/update',{job_id:JOB_ID,client_name:document.getElementById('ej-client').value,client_contact:document.getElementById('ej-contact').value,client_email:document.getElementById('ej-email').value,inst_status:document.getElementById('ej-status').value,project_address:document.getElementById('ej-address').value,start_date:document.getElementById('ej-start').value,end_date:document.getElementById('ej-end').value,contract_value:document.getElementById('ej-value').value,description:document.getElementById('ej-desc').value},()=>location.reload());}
+function submitVoiceCO(){const t=document.getElementById('voice-transcript').value.trim();if(!t&&!document.getElementById('voice-co-title').value){alert('Record or type a description');return;}api('/installation/api/change-orders/create',{job_id:JOB_ID,title:document.getElementById('voice-co-title').value||t.substring(0,80),description:t,voice_transcript:t,amount:document.getElementById('voice-co-amount').value||0,requires_approval:document.getElementById('voice-co-approval').value,client_email:document.getElementById('voice-co-email').value},()=>{closeModal('voice-co-modal');location.reload();});}
+function submitCO(){const title=document.getElementById('co-title').value.trim();if(!title){alert('Title required');return;}api('/installation/api/change-orders/create',{job_id:JOB_ID,co_number:document.getElementById('co-num').value,title,description:document.getElementById('co-desc').value,amount:document.getElementById('co-amount').value||0,requires_approval:document.getElementById('co-approval').value,client_email:document.getElementById('co-client-email').value,notes:document.getElementById('co-notes').value},()=>{closeModal('new-co-modal');location.reload();});}
+function updateCoStatus(coId,status){if(!confirm('Update status to "'+status.replace('_',' ')+'"?'))return;api('/installation/api/change-orders/update-status',{co_id:coId,status},()=>location.reload());}
+function sendCoApproval(coId){if(!confirm('Send this change order to the client for approval?'))return;api('/installation/api/change-orders/send-approval',{co_id:coId},d=>{alert('Sent to '+(d.email||'client'));location.reload();});}
+function submitSchedEntry(){const date=document.getElementById('sched-date').value;if(!date){alert('Date required');return;}api('/install_scheduling/add_entry',{job_id:JOB_ID,schedule_date:date,hours_worked:0,crew_members:document.getElementById('sched-crew').value,notes:document.getElementById('sched-notes').value},()=>{closeModal('add-sched-modal');location.reload();});}
+function deleteSchedEntry(id,btn){if(!confirm('Delete this entry?'))return;api('/install_scheduling/delete_entry',{id},()=>btn.closest('tr').remove());}
+function logPastWeek(){if(!confirm('Auto-log Mon–Fri of last week?'))return;api('/installation/api/schedule/log-week',{job_id:JOB_ID},d=>{alert(d.message||'Done');location.reload();});}
+function submitDailyLog(){const date=document.getElementById('log-date').value;if(!date){alert('Date required');return;}api('/installation/api/daily-logs/add',{job_id:JOB_ID,log_date:date,weather:document.getElementById('log-weather').value,temp_high:document.getElementById('log-temp').value||null,crew_count:document.getElementById('log-crew-count').value||0,crew_members:document.getElementById('log-crew').value,hours_worked:0,work_performed:document.getElementById('log-work').value,materials_used:document.getElementById('log-materials').value,equipment_used:document.getElementById('log-equipment').value,issues_delays:document.getElementById('log-issues').value},()=>{closeModal('add-log-modal');location.reload();});}
+function submitExpense(){const amount=document.getElementById('exp-amount').value;if(!amount){alert('Amount required');return;}const form=new FormData();form.append('job_id',JOB_ID);form.append('expense_date',document.getElementById('exp-date').value);form.append('category',document.getElementById('exp-cat').value);form.append('amount',amount);form.append('vendor',document.getElementById('exp-vendor').value);form.append('description',document.getElementById('exp-desc').value);const rf=document.getElementById('exp-receipt').files[0];if(rf)form.append('receipt',rf);fetch('/installation/api/expenses/add',{method:'POST',body:form}).then(r=>r.json()).then(d=>{if(d.success){closeModal('add-expense-modal');location.reload();}else alert('Error: '+d.error);});}
+function deleteExpense(id,btn){if(!confirm('Delete?'))return;api('/installation/api/expenses/delete',{id},()=>btn.closest('tr').remove());}
+function uploadPlan(){const f=document.getElementById('plan-file');if(!f.files.length){alert('Select a file');return;}const form=new FormData();form.append('job_id',JOB_ID);form.append('plan_file',f.files[0]);form.append('description',document.getElementById('plan-desc').value);form.append('is_current',document.getElementById('plan-current').value);fetch('/installation/api/site-plans/upload',{method:'POST',body:form}).then(r=>r.json()).then(d=>{if(d.success){closeModal('upload-plan-modal');location.reload();}else alert('Error: '+d.error);});}
+function markCurrent(id){api('/installation/api/site-plans/mark-current',{plan_id:id,job_id:JOB_ID},()=>location.reload());}
+function deletePlan(id,btn){if(!confirm('Delete this plan?'))return;api('/installation/api/site-plans/delete',{plan_id:id},()=>btn.closest('.plan-card').remove());}
+function submitRFI(){const title=document.getElementById('rfi-title').value.trim();if(!title){alert('Title required');return;}api('/installation/api/rfis/add',{job_id:JOB_ID,title,priority:document.getElementById('rfi-priority').value,due_date:document.getElementById('rfi-due').value,assigned_to:document.getElementById('rfi-assigned').value,question:document.getElementById('rfi-question').value},()=>{closeModal('add-rfi-modal');location.reload();});}
 </script>
-</body>
-</html>
+</body></html>
 '''
 
+# ── Weekly Schedule ──────────────────────────────────────────────────────────
 
-INSTALLATION_CO_APPROVAL_TEMPLATE = '''<!DOCTYPE html>
+INSTALLATION_SCHEDULE_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
 <html lang="en">
-<head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Change Order Approval</title>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Installation Schedule</title>
 <style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
-.card{background:white;border-radius:12px;padding:36px;max-width:560px;width:100%;box-shadow:0 4px 24px rgba(0,0,0,.1)}
-.logo{font-size:28px;font-weight:800;color:#1a3c5e;margin-bottom:4px}
-.sub{font-size:14px;color:#9ca3af;margin-bottom:28px}
-h2{font-size:22px;font-weight:700;color:#1a3c5e;margin-bottom:20px}
-.info-row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f3f4f6;font-size:15px}
-.info-row span:first-child{color:#6b7280}
-.info-row span:last-child{font-weight:500}
-.desc-box{background:#f9fafb;border-radius:8px;padding:16px;margin:20px 0;font-size:14px;color:#374151;line-height:1.6}
-.btn-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:24px}
-.btn{padding:14px;border-radius:8px;font-size:16px;font-weight:600;border:none;cursor:pointer;transition:all .2s}
-.btn-approve{background:#059669;color:white}.btn-approve:hover{background:#047857}
-.btn-reject{background:#dc2626;color:white}.btn-reject:hover{background:#b91c1c}
-.result-box{text-align:center;padding:32px}
-.result-icon{font-size:56px;margin-bottom:12px}
-.result-msg{font-size:18px;font-weight:600;margin-bottom:8px}
-.result-sub{font-size:14px;color:#9ca3af}
-.badge{display:inline-block;padding:4px 14px;border-radius:20px;font-size:12px;font-weight:600;text-transform:uppercase}
-.badge-approved{background:#d1fae5;color:#065f46}
-.badge-rejected{background:#fee2e2;color:#b91c1c}
-.badge-pending{background:#fef3c7;color:#92400e}
+.week-nav{display:flex;align-items:center;gap:10px;margin-bottom:18px;flex-wrap:wrap}
+.week-nav h2{font-size:18px;font-weight:700;color:#1a3c5e;flex:1}
+.week-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:18px}
+.day-col{min-height:200px;background:white;border-radius:10px;box-shadow:0 1px 6px rgba(0,0,0,.07);overflow:hidden}
+.day-header{background:#1a3c5e;color:white;padding:10px 12px;font-size:13px;font-weight:700;text-align:center}
+.day-header.today-hdr{background:#059669}
+.day-body{padding:8px;min-height:160px}
+.day-body.drag-over{background:#f0f4ff;outline:2px dashed #1a3c5e}
+.job-block{background:#dbeafe;border-left:3px solid #1a3c5e;border-radius:6px;padding:8px 10px;margin-bottom:6px;cursor:grab;font-size:13px;position:relative;transition:opacity .15s}
+.job-block:active{cursor:grabbing;opacity:.7}
+.job-block .jb-name{font-weight:700;color:#1a3c5e;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.job-block .jb-crew{font-size:11px;color:#4b5563;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.job-block .jb-cost{font-size:11px;color:#059669;font-weight:600;margin-top:2px}
+.job-block .jb-del{position:absolute;top:4px;right:6px;background:none;border:none;cursor:pointer;color:#9ca3af;font-size:14px;line-height:1;padding:0}
+.job-block .jb-del:hover{color:#dc2626}
+.add-day-btn{display:flex;align-items:center;justify-content:center;gap:4px;padding:6px;border:1px dashed #d1d5db;border-radius:6px;font-size:12px;color:#9ca3af;cursor:pointer;background:none;width:100%;transition:all .15s}
+.add-day-btn:hover{border-color:#1a3c5e;color:#1a3c5e;background:#f0f4f8}
+.crew-legend{background:white;border-radius:10px;padding:16px;box-shadow:0 1px 6px rgba(0,0,0,.07);margin-bottom:18px}
+.crew-legend h3{font-size:14px;font-weight:700;color:#1a3c5e;margin-bottom:10px}
+.crew-chips{display:flex;gap:8px;flex-wrap:wrap}
+.crew-chip{padding:5px 12px;border-radius:20px;font-size:12px;font-weight:500;color:white}
+.week-summary{background:white;border-radius:10px;padding:14px 16px;box-shadow:0 1px 6px rgba(0,0,0,.07);display:flex;gap:20px;flex-wrap:wrap;margin-bottom:18px}
+.ws-item{font-size:13px;color:#6b7280}.ws-item strong{color:#1a3c5e;font-size:15px}
+@media(max-width:900px){.week-grid{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:600px){.week-grid{grid-template-columns:1fr 1fr}}
+@media print{
+  .top-bar nav,.btn,.no-print,.modal-overlay,.add-day-btn,.jb-del{display:none!important}
+  .week-grid{grid-template-columns:repeat(5,1fr)!important}
+  .day-col{box-shadow:none!important;border:1px solid #ccc}
+  body{background:white}
+  .page{padding:0}
+}
 </style>
 </head>
 <body>
-<div class="card">
-  <div class="logo">🏗️ Installation</div>
-  <div class="sub">Change Order Approval Request</div>
-
-  {% if already_actioned %}
-  <div class="result-box">
-    <div class="result-icon">{{ '✅' if co.status == 'approved' else '❌' }}</div>
-    <div class="result-msg">This change order has already been {{ co.status }}.</div>
-    {% if co.approved_at %}<div class="result-sub">On {{ co.approved_at[:10] }}</div>{% endif %}
-    <div style="margin-top:20px"><span class="badge badge-{{ co.status }}">{{ co.status }}</span></div>
-  </div>
-  {% else %}
-  <h2>Change Order #{{ co.co_number }}</h2>
-  <div class="info-row"><span>Project</span><span>{{ job_name }}</span></div>
-  <div class="info-row"><span>CO Title</span><span>{{ co.title }}</span></div>
-  <div class="info-row"><span>Amount</span><span style="font-size:18px;font-weight:700;color:#1a3c5e">${{ "{:,.2f}".format(co.amount or 0) }}</span></div>
-  <div class="info-row"><span>Submitted</span><span>{{ co.created_at[:10] if co.created_at else '—' }}</span></div>
-  {% if co.description %}
-  <div class="desc-box">{{ co.description }}</div>
-  {% endif %}
-  <form method="POST">
-    <div class="btn-row">
-      <button type="submit" name="action" value="approve" class="btn btn-approve">✓ Approve</button>
-      <button type="submit" name="action" value="reject" class="btn btn-reject">✗ Reject</button>
-    </div>
-  </form>
-  {% endif %}
+<div class="top-bar no-print">
+  <h1>📅 Weekly Schedule</h1>
+  <nav>
+    <a href="/installation">← Jobs</a>
+    <a href="/installation/crew">👷 Crew</a>
+    <a href="/dashboard">Dashboard</a>
+  </nav>
 </div>
-</body>
-</html>
+<div class="page">
+  <div class="week-nav no-print">
+    <h2>Week of {{ week_start_display }}</h2>
+    <a href="/installation/schedule?week={{ prev_week }}&job={{ filter_job }}" class="btn btn-secondary btn-sm">← Prev</a>
+    <a href="/installation/schedule?week={{ today_week }}&job={{ filter_job }}" class="btn btn-secondary btn-sm">Today</a>
+    <a href="/installation/schedule?week={{ next_week }}&job={{ filter_job }}" class="btn btn-secondary btn-sm">Next →</a>
+    <select onchange="location.href='/installation/schedule?week={{ week_param }}&job='+this.value" style="max-width:220px">
+      <option value="">All Jobs</option>
+      {% for j in all_jobs %}<option value="{{ j[0] }}" {{ 'selected' if filter_job == j[0]|string }}>{{ j[1] }}</option>{% endfor %}
+    </select>
+    <button class="btn btn-print btn-sm" onclick="window.print()">🖨 Print</button>
+    <button class="btn btn-primary btn-sm no-print" onclick="openModal('bulk-assign-modal')">+ Assign Crew</button>
+  </div>
+
+  <!-- Print header (hidden on screen) -->
+  <div style="display:none" class="print-only">
+    <h2 style="font-size:20px;font-weight:800;color:#1a3c5e;margin-bottom:4px">Installation Schedule</h2>
+    <p style="font-size:14px;color:#6b7280;margin-bottom:16px">Week of {{ week_start_display }}</p>
+  </div>
+
+  {% if crew_members %}
+  <div class="crew-legend no-print">
+    <h3>Active Crew</h3>
+    <div class="crew-chips">
+      {% set colors = ['#1a3c5e','#059669','#7c3aed','#0891b2','#b45309','#dc2626','#374151','#0e7490'] %}
+      {% for cm in crew_members %}
+      <span class="crew-chip" style="background:{{ colors[loop.index0 % colors|length] }}">{{ cm.name }}{% if cm.role != 'crew' %} ({{ cm.role }}){% endif %}</span>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Weekly summary bar -->
+  <div class="week-summary">
+    <div class="ws-item">Total Days: <strong>{{ total_week_days }}</strong></div>
+    <div class="ws-item">Crew Cost: <strong>${{ "{:,.0f}".format(total_week_days * 1850) }}</strong></div>
+    {% for jname, cnt in week_job_counts.items() %}<div class="ws-item">{{ jname }}: <strong>{{ cnt }} day{{ 's' if cnt != 1 }}</strong></div>{% endfor %}
+  </div>
+
+  <!-- 5-day grid -->
+  <div class="week-grid" id="schedule-grid">
+    {% for day in week_days %}
+    <div class="day-col" id="col-{{ day.date_str }}"
+         ondragover="onDragOver(event)" ondrop="onDrop(event,'{{ day.date_str }}')">
+      <div class="day-header {{ 'today-hdr' if day.is_today }}">
+        {{ day.weekday }}<br><span style="font-size:11px;font-weight:400;opacity:.85">{{ day.display }}</span>
+      </div>
+      <div class="day-body" id="body-{{ day.date_str }}">
+        {% for entry in day.entries %}
+        <div class="job-block" draggable="true"
+             id="entry-{{ entry.id }}"
+             ondragstart="onDragStart(event, {{ entry.id }})"
+             style="background:{{ entry.color }}20;border-left-color:{{ entry.color }}">
+          <button class="jb-del no-print" onclick="deleteEntry({{ entry.id }}, this)" title="Remove">×</button>
+          <div class="jb-name" style="color:{{ entry.color }}">{{ entry.job_name }}</div>
+          {% if entry.crew_members %}<div class="jb-crew">👷 {{ entry.crew_members }}</div>{% endif %}
+          <div class="jb-cost">$1,850</div>
+          {% if entry.notes %}<div style="font-size:11px;color:#6b7280;margin-top:2px">{{ entry.notes }}</div>{% endif %}
+        </div>
+        {% endfor %}
+        <button class="add-day-btn no-print" onclick="openAddForDay('{{ day.date_str }}')">+ Add</button>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<!-- Add/Assign Modal -->
+<div class="modal-overlay no-print" id="add-day-modal">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('add-day-modal')">×</button>
+    <h3>📅 Assign Job to Day</h3>
+    <p style="font-size:13px;color:#6b7280;margin-bottom:14px">Date: <strong id="modal-date-display"></strong> · Cost: <strong>$1,850</strong></p>
+    <input type="hidden" id="modal-date">
+    <div class="form-group" style="margin-bottom:10px"><label>Job *</label>
+      <select id="modal-job">
+        <option value="">— Select Job —</option>
+        {% for j in all_jobs %}<option value="{{ j[0] }}">{{ j[1] }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="form-group" style="margin-bottom:10px"><label>Crew Members</label>
+      <input id="modal-crew" placeholder="e.g. John, Maria, Tom">
+      {% if crew_members %}
+      <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
+        {% for cm in crew_members %}<span onclick="appendCrew('{{ cm.name }}')" style="background:#e5e7eb;padding:3px 9px;border-radius:12px;font-size:12px;cursor:pointer">{{ cm.name }}</span>{% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    <div class="form-group" style="margin-bottom:18px"><label>Notes</label><textarea id="modal-notes" rows="2"></textarea></div>
+    <button class="btn btn-primary" onclick="saveAddDay()">Save Day ($1,850)</button>
+  </div>
+</div>
+
+<!-- Bulk crew assign (assign one crew to multiple days for a job) -->
+<div class="modal-overlay no-print" id="bulk-assign-modal">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('bulk-assign-modal')">×</button>
+    <h3>👷 Assign Crew for the Week</h3>
+    <p style="font-size:13px;color:#6b7280;margin-bottom:14px">Assign a crew to work specific days on a job this week. Each checked day = $1,850.</p>
+    <div class="form-group" style="margin-bottom:10px"><label>Job *</label>
+      <select id="bulk-job">
+        <option value="">— Select Job —</option>
+        {% for j in all_jobs %}<option value="{{ j[0] }}">{{ j[1] }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="form-group" style="margin-bottom:10px"><label>Crew Members</label>
+      <input id="bulk-crew" placeholder="e.g. John, Maria, Tom">
+      {% if crew_members %}
+      <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">{% for cm in crew_members %}<span onclick="appendBulkCrew('{{ cm.name }}')" style="background:#e5e7eb;padding:3px 9px;border-radius:12px;font-size:12px;cursor:pointer">{{ cm.name }}</span>{% endfor %}</div>
+      {% endif %}
+    </div>
+    <div class="form-group" style="margin-bottom:18px">
+      <label style="margin-bottom:8px">Days to Assign</label>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        {% for day in week_days %}
+        <label style="display:flex;align-items:center;gap:5px;font-weight:400;cursor:pointer;background:#f9fafb;padding:6px 12px;border-radius:6px;border:1px solid #e5e7eb">
+          <input type="checkbox" name="bulk-day" value="{{ day.date_str }}" {% if day.is_today %}checked{% endif %} style="width:auto">
+          {{ day.weekday }} {{ day.display }}
+        </label>
+        {% endfor %}
+      </div>
+    </div>
+    <div id="bulk-cost-display" style="font-size:14px;color:#1a3c5e;font-weight:600;margin-bottom:14px"></div>
+    <button class="btn btn-primary" onclick="saveBulkAssign()">Assign Selected Days</button>
+  </div>
+</div>
+
+<script>
+function openModal(id){document.getElementById(id).classList.add('open');}
+function closeModal(id){document.getElementById(id).classList.remove('open');}
+document.querySelectorAll('.modal-overlay').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open');}));
+function appendCrew(n){const el=document.getElementById('modal-crew');el.value=el.value?(el.value+', '+n):n;}
+function appendBulkCrew(n){const el=document.getElementById('bulk-crew');el.value=el.value?(el.value+', '+n):n;}
+
+// Update bulk cost display
+document.querySelectorAll('[name="bulk-day"]').forEach(cb=>cb.addEventListener('change',updateBulkCost));
+function updateBulkCost(){const cnt=document.querySelectorAll('[name="bulk-day"]:checked').length;document.getElementById('bulk-cost-display').textContent=cnt>0?cnt+' day'+(cnt>1?'s':'')+' = $'+(cnt*1850).toLocaleString():'Select days above';}
+updateBulkCost();
+
+function openAddForDay(dateStr){
+  document.getElementById('modal-date').value=dateStr;
+  document.getElementById('modal-date-display').textContent=dateStr;
+  openModal('add-day-modal');
+}
+
+function saveAddDay(){
+  const jobId=document.getElementById('modal-job').value;
+  const date=document.getElementById('modal-date').value;
+  if(!jobId||!date){alert('Select a job and date');return;}
+  fetch('/install_scheduling/add_entry',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({job_id:jobId,schedule_date:date,hours_worked:0,
+      crew_members:document.getElementById('modal-crew').value,
+      notes:document.getElementById('modal-notes').value})})
+  .then(r=>r.json()).then(d=>{if(d.success){closeModal('add-day-modal');location.reload();}else alert(d.error);});
+}
+
+function saveBulkAssign(){
+  const jobId=document.getElementById('bulk-job').value;
+  const crew=document.getElementById('bulk-crew').value;
+  const days=[...document.querySelectorAll('[name="bulk-day"]:checked')].map(cb=>cb.value);
+  if(!jobId){alert('Select a job');return;}
+  if(!days.length){alert('Select at least one day');return;}
+  fetch('/installation/api/schedule/bulk-assign',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({job_id:jobId,dates:days,crew_members:crew})})
+  .then(r=>r.json()).then(d=>{if(d.success){closeModal('bulk-assign-modal');location.reload();}else alert(d.error);});
+}
+
+// Drag-and-drop
+let dragId=null;
+function onDragStart(e,id){dragId=id;e.dataTransfer.effectAllowed='move';}
+function onDragOver(e){e.preventDefault();e.currentTarget.classList.add('drag-over');}
+document.querySelectorAll('.day-col').forEach(col=>{col.addEventListener('dragleave',()=>col.querySelectorAll('.day-body').forEach(b=>b.classList.remove('drag-over')));});
+function onDrop(e,targetDate){
+  e.preventDefault();
+  e.currentTarget.querySelectorAll('.day-body').forEach(b=>b.classList.remove('drag-over'));
+  if(!dragId)return;
+  fetch('/installation/api/schedule/move',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({id:dragId,date:targetDate})})
+  .then(r=>r.json()).then(d=>{if(d.success)location.reload();else alert(d.error);});
+  dragId=null;
+}
+
+function deleteEntry(id,btn){
+  if(!confirm('Remove this day from the schedule?'))return;
+  fetch('/install_scheduling/delete_entry',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({id})})
+  .then(r=>r.json()).then(d=>{if(d.success)btn.closest('.job-block').remove();else alert(d.error);});
+}
+</script>
+</body></html>
 '''
+
+
 
 # ── Installation Module Routes ─────────────────────────────────────────────
 
@@ -26493,6 +26415,15 @@ def installation_job(job_id):
                      WHERE j.id=? AND pr.po_type='install' ORDER BY pr.request_date DESC""", (job_id,))
         pos = c.fetchall()
 
+        # Active crew members for schedule modal
+        c.execute("SELECT id, name, role FROM installation_crew_members WHERE active=1 ORDER BY name")
+        cm_rows = c.fetchall()
+        class _CM2: pass
+        crew_members = []
+        for cm in cm_rows:
+            obj = _CM2(); obj.id=cm[0]; obj.name=cm[1]; obj.role=cm[2]
+            crew_members.append(obj)
+
         conn.close()
         today = datetime.now().strftime('%Y-%m-%d')
         return render_template_string(INSTALLATION_JOB_TEMPLATE,
@@ -26503,6 +26434,7 @@ def installation_job(job_id):
             expenses=expenses, expense_totals=expense_totals,
             expense_grand_total=expense_grand_total,
             rfis=rfis, pos=pos, today=today,
+            crew_members=crew_members,
             role=session.get('role',''), username=session.get('username',''))
     except Exception as e:
         import traceback
@@ -27091,6 +27023,181 @@ def installation_crew_toggle():
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+
+# ── Weekly Schedule route ─────────────────────────────────────────────────
+
+@app.route('/installation/schedule')
+def installation_schedule():
+    if 'username' not in session:
+        return redirect(url_for('login'))
+    try:
+        from datetime import timedelta, date as _date
+
+        week_param = request.args.get('week', '')
+        filter_job = request.args.get('job', '')
+
+        # Determine week start (Monday)
+        today = _date.today()
+        if week_param:
+            try:
+                week_start = _date.fromisoformat(week_param)
+                # snap to Monday
+                week_start -= timedelta(days=week_start.weekday())
+            except ValueError:
+                week_start = today - timedelta(days=today.weekday())
+        else:
+            week_start = today - timedelta(days=today.weekday())
+
+        week_end = week_start + timedelta(days=4)  # Friday
+
+        # Nav params
+        prev_week = (week_start - timedelta(days=7)).isoformat()
+        next_week = (week_start + timedelta(days=7)).isoformat()
+        today_week = (today - timedelta(days=today.weekday())).isoformat()
+
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # All install jobs
+        c.execute("""SELECT id, job_name FROM jobs
+                     WHERE COALESCE(department,'install')='install' AND active=1
+                     ORDER BY job_name""")
+        all_jobs = c.fetchall()
+
+        # All active crew members
+        c.execute("SELECT id, name, role FROM installation_crew_members WHERE active=1 ORDER BY name")
+        crew_rows = c.fetchall()
+        class _CM: pass
+        crew_members = []
+        for cm in crew_rows:
+            obj = _CM(); obj.id=cm[0]; obj.name=cm[1]; obj.role=cm[2]
+            crew_members.append(obj)
+
+        # Schedule entries for this week
+        week_start_str = week_start.isoformat()
+        week_end_str = week_end.isoformat()
+        q = """SELECT s.id, s.job_id, s.schedule_date, s.crew_members, s.notes, j.job_name
+               FROM install_schedules s JOIN jobs j ON j.id=s.job_id
+               WHERE s.schedule_date >= ? AND s.schedule_date <= ?"""
+        params = [week_start_str, week_end_str]
+        if filter_job:
+            q += " AND s.job_id=?"
+            params.append(filter_job)
+        q += " ORDER BY s.schedule_date, j.job_name"
+        c.execute(q, params)
+        entries_raw = c.fetchall()
+        conn.close()
+
+        # Color palette per job (cycle)
+        palette = ['#1a3c5e','#059669','#7c3aed','#0891b2','#b45309','#dc2626','#374151','#0e7490','#065f46','#4f46e5']
+        job_colors = {}
+        for i, (jid, jname) in enumerate(all_jobs):
+            job_colors[jid] = palette[i % len(palette)]
+
+        # Group entries by date
+        from collections import defaultdict
+        entries_by_date = defaultdict(list)
+        for e in entries_raw:
+            class _E: pass
+            obj = _E()
+            obj.id=e[0]; obj.job_id=e[1]; obj.schedule_date=e[2]
+            obj.crew_members=e[3]; obj.notes=e[4]; obj.job_name=e[5]
+            obj.color = job_colors.get(e[1], '#374151')
+            entries_by_date[e[2]].append(obj)
+
+        # Build 5 day objects (Mon-Fri)
+        DAY_NAMES = ['Mon','Tue','Wed','Thu','Fri']
+        class _Day: pass
+        week_days = []
+        for i in range(5):
+            d = week_start + timedelta(days=i)
+            obj = _Day()
+            obj.date_str = d.isoformat()
+            obj.weekday = DAY_NAMES[i]
+            obj.display = d.strftime('%b %d')
+            obj.is_today = (d == today)
+            obj.entries = entries_by_date.get(d.isoformat(), [])
+            week_days.append(obj)
+
+        # Summary counts per job for this week
+        week_job_counts = {}
+        for e in entries_raw:
+            jname = e[5]
+            week_job_counts[jname] = week_job_counts.get(jname, 0) + 1
+        total_week_days = len(entries_raw)
+
+        week_start_display = f"{week_start.strftime('%B %d')} – {week_end.strftime('%d, %Y')}"
+
+        return render_template_string(INSTALLATION_SCHEDULE_TEMPLATE,
+            week_days=week_days, all_jobs=all_jobs, crew_members=crew_members,
+            week_start_display=week_start_display, week_param=week_start.isoformat(),
+            prev_week=prev_week, next_week=next_week, today_week=today_week,
+            filter_job=filter_job, total_week_days=total_week_days,
+            week_job_counts=week_job_counts)
+    except Exception as e:
+        import traceback
+        return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre><a href='/installation'>Back</a>"
+
+
+@app.route('/installation/api/schedule/move', methods=['POST'])
+def installation_schedule_move():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("UPDATE install_schedules SET schedule_date=? WHERE id=?",
+                  (data['date'], data['id']))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/schedule/bulk-assign', methods=['POST'])
+def installation_schedule_bulk_assign():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    job_id = data.get('job_id')
+    dates = data.get('dates', [])
+    crew = data.get('crew_members', '')
+    if not job_id or not dates:
+        return jsonify({'success': False, 'error': 'job_id and dates required'})
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        added = 0
+        for d in dates:
+            # Don't duplicate
+            c.execute("SELECT id FROM install_schedules WHERE job_id=? AND schedule_date=?", (job_id, d))
+            if not c.fetchone():
+                c.execute("INSERT INTO install_schedules (job_id, schedule_date, crew_members, hours_worked, created_by, created_at) VALUES (?,?,?,0,?,?)",
+                          (job_id, d, crew, session['username'], now))
+                added += 1
+        conn.commit(); conn.close()
+        return jsonify({'success': True, 'added': added})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+# Also pass crew_members to installation_job route (update the existing route)
+# We patch it by overriding the render call — crew_members fetched in route below
+# The existing installation_job route is updated to include crew_members below.
+
+
+# ── Redirect old standalone pages into unified Installation ───────────────
+
+@app.route('/job_costing_redirect')
+def job_costing_redirect():
+    return redirect(url_for('installation'))
+
+@app.route('/install_scheduling_redirect')
+def install_scheduling_redirect():
+    return redirect(url_for('installation_schedule'))
 
 
 init_db()
