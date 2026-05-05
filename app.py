@@ -1510,6 +1510,43 @@ def init_db():
                   active INTEGER DEFAULT 1,
                   created_at TEXT)''')
 
+    c.execute('''CREATE TABLE IF NOT EXISTS install_proposals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id INTEGER NOT NULL,
+        proposal_number TEXT DEFAULT '',
+        revision INTEGER DEFAULT 0,
+        title TEXT DEFAULT '',
+        status TEXT DEFAULT 'draft',
+        proposal_date TEXT DEFAULT '',
+        valid_days INTEGER DEFAULT 30,
+        days_allotted INTEGER DEFAULT 0,
+        crew_size INTEGER DEFAULT 1,
+        markup_pct REAL DEFAULT 0,
+        tax_pct REAL DEFAULT 0,
+        subtotal REAL DEFAULT 0,
+        markup_amount REAL DEFAULT 0,
+        tax_amount REAL DEFAULT 0,
+        total_amount REAL DEFAULT 0,
+        scope_summary TEXT DEFAULT '',
+        exclusions TEXT DEFAULT '',
+        terms TEXT DEFAULT 'Payment due within 30 days of invoice.',
+        notes TEXT DEFAULT '',
+        created_by TEXT DEFAULT '',
+        created_at TEXT DEFAULT '',
+        sent_at TEXT DEFAULT '',
+        approved_at TEXT DEFAULT '')''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS install_proposal_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        proposal_id INTEGER NOT NULL,
+        sort_order INTEGER DEFAULT 0,
+        category TEXT DEFAULT 'materials',
+        description TEXT DEFAULT '',
+        quantity REAL DEFAULT 1,
+        unit TEXT DEFAULT 'ea',
+        unit_cost REAL DEFAULT 0,
+        total REAL DEFAULT 0)''')
+
     c.execute('''CREATE TABLE IF NOT EXISTS installation_rfis
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   job_id INTEGER NOT NULL,
@@ -25321,6 +25358,7 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
 
   <div class="section-hdr">
     <h2>Installation Jobs</h2>
+    <a href="/manage_jobs" class="btn btn-primary btn-sm">+ New Job</a>
   </div>
 
   {% if jobs %}
@@ -25416,9 +25454,9 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
   <!-- Tabs -->
   <div class="tabs" id="main-tabs">
     <button class="tab" data-tab="overview" onclick="switchTab('overview')">📊 Overview</button>
-    <button class="tab" data-tab="proposals" onclick="switchTab('proposals')">📋 Proposals</button>
     <button class="tab" data-tab="site-plans" onclick="switchTab('site-plans')">🗺 Plans</button>
     <button class="tab" data-tab="schedule" onclick="switchTab('schedule')">📅 Schedule</button>
+    <button class="tab" data-tab="proposals" onclick="switchTab('proposals')">📋 Proposals</button>
     <button class="tab" data-tab="expenses" onclick="switchTab('expenses')">💳 Expenses</button>
   </div>
 
@@ -25489,120 +25527,414 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
   <!-- ── FINANCIALS ── -->
   <!-- ── PROPOSALS ── -->
   <div class="tab-content" id="tab-proposals">
+<style>
+/* Proposal system styles */
+.prop-layout{display:grid;grid-template-columns:230px 1fr;gap:0;height:calc(100vh - 200px);min-height:500px;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;background:white}
+.prop-sidebar{background:#f8f9fa;border-right:2px solid #e5e7eb;overflow-y:auto;display:flex;flex-direction:column}
+.prop-sidebar-hdr{padding:14px 14px 10px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between}
+.prop-sidebar-hdr h3{font-size:13px;font-weight:700;color:#374151;margin:0}
+.prop-list{padding:8px;flex:1;overflow-y:auto}
+.prop-item{padding:10px 12px;border-radius:7px;cursor:pointer;margin-bottom:4px;border:2px solid transparent;transition:all .15s}
+.prop-item:hover{background:#e9ecf0}
+.prop-item.active{background:#1a3c5e;border-color:#1a3c5e}
+.prop-item .pi-num{font-size:12px;font-weight:700;color:#1a3c5e}
+.prop-item.active .pi-num{color:#fff}
+.prop-item .pi-title{font-size:11px;color:#6b7280;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.prop-item.active .pi-title{color:rgba(255,255,255,.8)}
+.prop-item .pi-total{font-size:13px;font-weight:700;color:#059669;margin-top:3px}
+.prop-item.active .pi-total{color:#6ee7b7}
+.prop-item .pi-status{display:inline-block;font-size:10px;font-weight:700;padding:2px 6px;border-radius:3px;margin-top:3px;text-transform:uppercase}
+.st-draft{background:#f3f4f6;color:#6b7280}
+.st-sent{background:#dbeafe;color:#1d4ed8}
+.st-approved{background:#d1fae5;color:#065f46}
+.st-rejected{background:#fee2e2;color:#991b1b}
+.st-revised{background:#fef3c7;color:#92400e}
+.prop-detail{overflow-y:auto;display:flex;flex-direction:column}
+.prop-empty{display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:10px;color:#9ca3af}
+.prop-empty .pe-icon{font-size:48px}
+/* Proposal detail header */
+.pd-hdr{padding:16px 20px;border-bottom:2px solid #e5e7eb;display:flex;align-items:center;gap:10px;flex-wrap:wrap;position:sticky;top:0;background:white;z-index:10}
+.pd-hdr h2{font-size:17px;font-weight:800;color:#1a3c5e;margin:0;flex:1;min-width:120px}
+.pd-actions{display:flex;gap:6px;flex-wrap:wrap}
+/* Meta row */
+.pd-meta{padding:12px 20px;background:#f8f9fa;border-bottom:1px solid #e5e7eb;display:flex;gap:16px;flex-wrap:wrap;font-size:13px}
+.pd-meta .meta-field{display:flex;flex-direction:column;gap:2px}
+.pd-meta .meta-field label{font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase}
+.pd-meta .meta-field input,.pd-meta .meta-field select{border:1px solid #d1d5db;border-radius:5px;padding:4px 8px;font-size:13px;width:auto;min-width:80px;background:white}
+/* Line items */
+.pd-body{padding:16px 20px;flex:1}
+.li-section{margin-bottom:20px}
+.li-section-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;padding-bottom:6px;border-bottom:2px solid #e5e7eb}
+.li-section-hdr h4{font-size:12px;font-weight:800;color:#374151;text-transform:uppercase;letter-spacing:.5px;margin:0}
+.li-table{width:100%;border-collapse:collapse;font-size:13px}
+.li-table th{font-size:11px;font-weight:700;color:#9ca3af;text-transform:uppercase;padding:4px 6px;text-align:left;border-bottom:1px solid #f3f4f6}
+.li-table td{padding:3px 4px;border-bottom:1px solid #f9fafb;vertical-align:middle}
+.li-table td input{border:1px solid transparent;border-radius:4px;padding:4px 6px;font-size:13px;width:100%;background:transparent;font-family:inherit}
+.li-table td input:hover,.li-table td input:focus{border-color:#d1d5db;background:white;outline:none}
+.li-table td.td-del{width:28px;text-align:center}
+.li-table .del-row{background:none;border:none;color:#d1d5db;cursor:pointer;font-size:14px;padding:2px 5px;border-radius:3px;line-height:1}
+.li-table .del-row:hover{background:#fee2e2;color:#dc2626}
+.li-table td.td-total{font-weight:700;color:#1a3c5e;text-align:right;white-space:nowrap;padding-right:8px;width:90px}
+.td-qty{width:65px}.td-unit{width:65px}.td-cost{width:90px}
+/* Totals */
+.prop-totals{padding:16px 20px;border-top:2px solid #e5e7eb;background:#f8f9fa}
+.totals-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:12px}
+.total-input-row{display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:6px}
+.total-input-row label{flex:1;font-weight:600;color:#374151}
+.total-input-row input{width:70px;border:1px solid #d1d5db;border-radius:5px;padding:4px 8px;font-size:13px;text-align:right}
+.grand-total-row{display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:10px;border-top:2px solid #1a3c5e}
+.grand-total-row .gtl{font-size:16px;font-weight:800;color:#1a3c5e;flex:1}
+.grand-total-row .gtv{font-size:22px;font-weight:800;color:#059669}
+/* Scope/Terms */
+.pd-extra{padding:14px 20px;border-top:1px solid #e5e7eb}
+.pd-extra .form-row-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+.pd-extra textarea{width:100%;border:1px solid #d1d5db;border-radius:6px;padding:8px 10px;font-size:13px;resize:vertical;font-family:inherit;min-height:70px}
+.pd-extra label{font-size:12px;font-weight:700;color:#6b7280;display:block;margin-bottom:4px;text-transform:uppercase}
+/* Proposal crew/schedule bar */
+.prop-sch-bar{padding:10px 20px;border-top:1px solid #e5e7eb;background:#f8f9fa;display:flex;gap:16px;align-items:center;flex-wrap:wrap;font-size:13px}
+.prop-sch-bar .sf{display:flex;align-items:center;gap:6px}
+.prop-sch-bar label{font-weight:700;color:#374151;font-size:12px}
+.prop-sch-bar input,.prop-sch-bar select{border:1px solid #d1d5db;border-radius:5px;padding:4px 8px;font-size:13px;width:auto}
+/* Print styles */
+@media print{
+  .prop-sidebar,.pd-actions,.del-row,.btn-add-row,.prop-sch-bar .btn{display:none!important}
+  .prop-layout{grid-template-columns:1fr;height:auto;border:none}
+  .pd-hdr{position:static;border:none;padding:0 0 12px}
+  .prop-totals,.pd-extra{background:white}
+  .li-table td input{border:none!important;background:transparent!important}
+}
+.btn-add-row{background:none;border:1px dashed #d1d5db;color:#6b7280;font-size:12px;padding:4px 10px;border-radius:5px;cursor:pointer;width:100%;margin-top:4px;text-align:left}
+.btn-add-row:hover{border-color:#1a3c5e;color:#1a3c5e}
+</style>
 
-    <!-- Proposals list -->
-    <div class="card">
-      <div class="card-title">Proposals
-        <button class="btn btn-primary btn-sm" onclick="openModal('add-proposal-modal')">+ Add Proposal</button>
-      </div>
-      {% if proposals %}
-      <table><thead><tr><th>Proposal #</th><th>Bid Amount</th><th>Days Allotted</th><th>Materials</th><th>Labor</th><th>Subs</th><th>Added</th></tr></thead>
-      <tbody>
-      {% for p in proposals %}
-      <tr>
-        <td style="font-weight:700">{{ p.proposal_number or '—' }}</td>
-        <td style="font-weight:600;color:#1a3c5e">${{ "{:,.0f}".format(p.bid_amount or 0) }}</td>
-        <td>{{ p.days_allotted or '—' }} days</td>
-        <td>${{ "{:,.0f}".format(p.materials_budget or 0) }}</td>
-        <td>${{ "{:,.0f}".format(p.labor_budget or 0) }}</td>
-        <td>${{ "{:,.0f}".format(p.subs_budget or 0) }}</td>
-        <td style="font-size:12px;color:#9ca3af">{{ (p.imported_at or '')[:10] }}</td>
-      </tr>
-      {% endfor %}
-      </tbody></table>
-      {% else %}
-      <div style="text-align:center;padding:30px;color:#9ca3af"><div style="font-size:36px;margin-bottom:8px">📋</div><p>No proposals yet. Add one to enable financial tracking.</p></div>
-      {% endif %}
+<div class="prop-layout" id="prop-layout">
+  <!-- Sidebar -->
+  <div class="prop-sidebar">
+    <div class="prop-sidebar-hdr">
+      <h3>Proposals</h3>
+      <button class="btn btn-primary btn-sm" onclick="newProposal()">+ New</button>
     </div>
+    <div class="prop-list" id="prop-list">
+      <div style="text-align:center;padding:20px;color:#9ca3af;font-size:12px">Loading…</div>
+    </div>
+  </div>
+  <!-- Detail panel -->
+  <div class="prop-detail" id="prop-detail">
+    <div class="prop-empty">
+      <div class="pe-icon">📋</div>
+      <div style="font-weight:600;font-size:15px">Select a proposal</div>
+      <div style="font-size:13px">or create a new one</div>
+    </div>
+  </div>
+</div>
 
-    <!-- Financial summary (uses first/primary proposal) -->
-    {% if proposals %}
-    {% set proposal = proposals[0] %}
-    {% set bid = proposal.bid_amount or 0 %}
-    {% set invoiced = total_invoiced or 0 %}
-    {% set exp_total = expense_grand_total or 0 %}
-    {% set crew_cost = days_on_job * 1850 %}
-    {% set total_cost = invoiced + exp_total %}
-    {% set gross = bid - total_cost %}
-    {% set margin_pct = (gross / bid * 100)|round(1) if bid > 0 else 0 %}
-    {% set remaining_days = [(proposal.days_allotted or 0) - days_on_job, 0]|max %}
-    {% set pred_cost = total_cost + (remaining_days * 1850) %}
-    {% set pred_margin = ((bid - pred_cost) / bid * 100)|round(1) if bid > 0 else 0 %}
-    {% set billed_pct = (invoiced / bid * 100)|round(1) if bid > 0 else 0 %}
-    {% set budget_total = (proposal.materials_budget or 0) + (proposal.labor_budget or 0) + (proposal.travel_budget or 0) + (proposal.hotel_cash_budget or 0) + (proposal.subs_budget or 0) + (proposal.rental_budget or 0) + (proposal.permit_budget or 0) %}
-    {% set budget_used_pct = (exp_total / budget_total * 100)|round(1) if budget_total > 0 else 0 %}
-    <div class="card">
-      <div class="card-title">Financial Summary <span style="font-size:12px;font-weight:400;color:#6b7280">(based on Proposal {{ proposals[0].proposal_number or '#1' }})</span></div>
-      <div class="metric-grid">
-        <div class="metric-card"><div class="metric-label">Bid / Contract</div><div class="metric-value">${{ "{:,.0f}".format(bid) }}</div></div>
-        <div class="metric-card">
-          <div class="metric-label">% Billed</div><div class="metric-value">{{ billed_pct }}%</div>
-          <div class="progress-wrap"><div class="progress-bar"><div class="progress-fill {{ 'fill-over' if billed_pct>=100 else ('fill-warn' if billed_pct>=80 else 'fill-blue') }}" style="width:{{ [billed_pct,100]|min }}%"></div></div></div>
-          <div class="metric-sub">${{ "{:,.0f}".format(invoiced) }} invoiced</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Budget Used</div><div class="metric-value">{{ budget_used_pct }}%</div>
-          <div class="progress-wrap"><div class="progress-bar"><div class="progress-fill {{ 'fill-over' if budget_used_pct>=100 else ('fill-warn' if budget_used_pct>=80 else 'fill-ok') }}" style="width:{{ [budget_used_pct,100]|min }}%"></div></div></div>
-          <div class="metric-sub">${{ "{:,.0f}".format(exp_total) }} of ${{ "{:,.0f}".format(budget_total) }}</div>
-        </div>
-        <div class="metric-card {{ 'green' if margin_pct >= 15 else ('amber' if margin_pct >= 0 else 'red') }}">
-          <div class="metric-label">Current Net Margin</div><div class="metric-value">{{ margin_pct }}%</div>
-          <div class="metric-sub">${{ "{:,.0f}".format(gross) }} gross profit</div>
-        </div>
-        <div class="metric-card {{ 'green' if pred_margin >= 15 else ('amber' if pred_margin >= 0 else 'red') }}">
-          <div class="metric-label">Predicted Net Margin</div><div class="metric-value">{{ pred_margin }}%</div>
-          <div class="metric-sub">+{{ remaining_days }} days @ $1,850 projected</div>
-        </div>
-        <div class="metric-card purple">
-          <div class="metric-label">Crew Cost</div><div class="metric-value">${{ "{:,.0f}".format(crew_cost) }}</div>
-          <div class="metric-sub">{{ days_on_job }} of {{ proposal.days_allotted or '?' }} days used</div>
-        </div>
-      </div>
-    </div>
-    {% endif %}
+<script>
+/* ── Proposal system JS ── */
+const PROP_JOB_ID = {{ job.id }};
+let activeProposalId = null;
+let allProposals = [];
 
-    <!-- Change Orders -->
-    <div class="card">
-      <div class="card-title">Change Orders
-        <div style="display:flex;gap:6px">
-          <button class="btn btn-voice btn-sm" onclick="openModal('voice-co-modal')">🎤 Voice</button>
-          <button class="btn btn-primary btn-sm" onclick="openModal('new-co-modal')">+ New</button>
-        </div>
+const CATEGORIES = [
+  {key:'materials',  label:'Materials',       icon:'🪨'},
+  {key:'labor',      label:'Labor',           icon:'👷'},
+  {key:'equipment',  label:'Equipment',       icon:'🚜'},
+  {key:'subcontractor', label:'Subcontractors', icon:'🤝'},
+  {key:'other',      label:'Other',           icon:'📦'},
+];
+
+function fmt(n){return '$'+(parseFloat(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
+function fmtN(n){return (parseFloat(n)||0).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:2});}
+
+async function pApi(url, data){
+  const r = await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  return r.json();
+}
+
+async function loadProposals(){
+  const r = await fetch('/installation/api/v2/proposals/list?job_id='+PROP_JOB_ID);
+  const d = await r.json();
+  allProposals = d.proposals || [];
+  renderSidebar();
+  if(allProposals.length > 0 && !activeProposalId){
+    openProposal(allProposals[0].id);
+  } else if(activeProposalId){
+    openProposal(activeProposalId);
+  }
+}
+
+function renderSidebar(){
+  const list = document.getElementById('prop-list');
+  if(!allProposals.length){
+    list.innerHTML='<div style="text-align:center;padding:20px;color:#9ca3af;font-size:12px">No proposals yet</div>';
+    return;
+  }
+  list.innerHTML = allProposals.map(p=>{
+    const active = p.id === activeProposalId ? ' active':'';
+    const stClass = 'st-'+(p.status||'draft');
+    return `<div class="prop-item${active}" onclick="openProposal(${p.id})">
+      <div class="pi-num">${p.proposal_number||'DRAFT'}</div>
+      <div class="pi-title">${p.title||p.proposal_number||'Untitled'}</div>
+      <div class="pi-total">${fmt(p.total_amount)}</div>
+      <span class="pi-status ${stClass}">${(p.status||'draft').replace('_',' ')}</span>
+    </div>`;
+  }).join('');
+}
+
+async function openProposal(id){
+  activeProposalId = id;
+  renderSidebar();
+  const r = await fetch('/installation/api/v2/proposals/get/'+id);
+  const d = await r.json();
+  if(!d.proposal) return;
+  renderDetail(d.proposal, d.items||[]);
+}
+
+function statusColor(s){
+  return {draft:'#6b7280',sent:'#1d4ed8',approved:'#059669',rejected:'#dc2626',revised:'#92400e'}[s]||'#6b7280';
+}
+
+function renderDetail(p, items){
+  const det = document.getElementById('prop-detail');
+  const statusOpts = ['draft','sent','approved','rejected','revised'].map(s=>
+    `<option value="${s}"${p.status===s?' selected':''}>${s.charAt(0).toUpperCase()+s.slice(1)}</option>`
+  ).join('');
+
+  // Build line-item sections
+  let itemsHtml = '';
+  for(const cat of CATEGORIES){
+    const catItems = items.filter(i=>i.category===cat.key);
+    const rows = catItems.map(item=>renderItemRow(item)).join('');
+    itemsHtml += `<div class="li-section" data-cat="${cat.key}">
+      <div class="li-section-hdr">
+        <h4>${cat.icon} ${cat.label}</h4>
+        <span style="font-size:12px;font-weight:700;color:#1a3c5e" id="cat-sub-${cat.key}">${fmt(catItems.reduce((s,i)=>s+(i.total||0),0))}</span>
       </div>
-      {% if change_orders %}
-      <table><thead><tr><th>CO #</th><th>Title</th><th>Amount</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
-      <tbody>
-      {% for co in change_orders %}
-      <tr>
-        <td style="font-weight:600">{{ co.co_number }}</td>
-        <td>{{ co.title }}{% if co.voice_transcript %} <span title="Voice CO" style="color:#7c3aed;font-size:11px">🎤</span>{% endif %}</td>
-        <td>${{ "{:,.2f}".format(co.amount or 0) }}</td>
-        <td><span class="badge badge-{{ co.status }}">{{ co.status.replace('_',' ') }}</span></td>
-        <td style="font-size:12px;color:#9ca3af">{{ (co.created_at or '')[:10] }}</td>
-        <td>
-          <div style="display:flex;gap:5px;flex-wrap:wrap">
-            {% if co.status == 'draft' %}
-              {% if job.client_email or co.client_email %}<button class="btn btn-secondary btn-sm" onclick="sendCoApproval({{ co.id }})">📧 Send</button>{% endif %}
-              <button class="btn btn-success btn-sm" onclick="updateCoStatus({{ co.id }},'no_approval_needed')">✓ No Appr.</button>
-            {% elif co.status == 'pending_approval' %}
-              <button class="btn btn-success btn-sm" onclick="updateCoStatus({{ co.id }},'approved')">✓ Approve</button>
-              <button class="btn btn-danger btn-sm" onclick="updateCoStatus({{ co.id }},'rejected')">✗ Reject</button>
-            {% elif co.status == 'approved' %}<span style="font-size:12px;color:#059669;font-weight:600">✓ Approved {{ (co.approved_at or '')[:10] }}</span>
-            {% elif co.status == 'rejected' %}<span style="font-size:12px;color:#dc2626">✗ Rejected</span>
-            {% elif co.status == 'no_approval_needed' %}<span style="font-size:12px;color:#7c3aed">✓ No approval needed</span>
-            {% endif %}
-          </div>
-        </td>
-      </tr>
-      {% endfor %}
-      </tbody></table>
-      {% else %}
-      <div style="text-align:center;padding:30px;color:#9ca3af"><div style="font-size:36px;margin-bottom:8px">📝</div><p>No change orders yet. Use Voice or New to create one.</p></div>
-      {% endif %}
+      <table class="li-table">
+        <thead><tr><th>Description</th><th class="td-qty">Qty</th><th class="td-unit">Unit</th><th class="td-cost">Unit Cost</th><th style="text-align:right;padding-right:8px;width:90px">Total</th><th class="td-del"></th></tr></thead>
+        <tbody id="items-${cat.key}">${rows}</tbody>
+      </table>
+      <button class="btn-add-row" onclick="addItem(${p.id},'${cat.key}')">+ Add ${cat.label} Item</button>
+    </div>`;
+  }
+
+  det.innerHTML = `
+    <div class="pd-hdr">
+      <h2>📋 ${p.proposal_number||'New Proposal'} <span style="font-size:12px;font-weight:400;color:#6b7280">Rev.${p.revision||0}</span></h2>
+      <div class="pd-actions">
+        <button class="btn btn-secondary btn-sm" onclick="saveAll(${p.id})">💾 Save</button>
+        <button class="btn btn-secondary btn-sm" onclick="reviseProposal(${p.id})">📝 Revise</button>
+        <button class="btn btn-print btn-sm" onclick="window.print()">🖨 Print</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteProposal(${p.id})">🗑</button>
+      </div>
     </div>
+    <div class="pd-meta">
+      <div class="meta-field"><label>Proposal #</label><input id="pf-num" value="${p.proposal_number||''}" onchange="autoSave(${p.id})"></div>
+      <div class="meta-field"><label>Title / Project</label><input id="pf-title" value="${p.title||''}" style="min-width:180px" onchange="autoSave(${p.id})"></div>
+      <div class="meta-field"><label>Date</label><input id="pf-date" type="date" value="${p.proposal_date||''}" onchange="autoSave(${p.id})"></div>
+      <div class="meta-field"><label>Valid (days)</label><input id="pf-valid" type="number" value="${p.valid_days||30}" style="width:65px" onchange="autoSave(${p.id})"></div>
+      <div class="meta-field"><label>Status</label>
+        <select id="pf-status" onchange="autoSave(${p.id})">${statusOpts}</select>
+      </div>
+    </div>
+    <div class="prop-sch-bar">
+      <div class="sf"><label>Days Allotted:</label><input id="pf-days" type="number" value="${p.days_allotted||0}" style="width:65px" onchange="autoSave(${p.id})"></div>
+      <div class="sf"><label>Crew Size:</label><input id="pf-crew" type="number" value="${p.crew_size||1}" style="width:55px" onchange="autoSave(${p.id})"></div>
+      <div class="sf" style="margin-left:auto">
+        <button class="btn btn-secondary btn-sm" onclick="saveAll(${p.id})">💾 Save All</button>
+      </div>
+    </div>
+    <div class="pd-body">${itemsHtml}</div>
+    <div class="prop-totals">
+      <div class="total-input-row"><label>Subtotal</label><span id="sub-total" style="font-weight:700;color:#1a3c5e;font-size:15px">${fmt(p.subtotal)}</span></div>
+      <div class="total-input-row">
+        <label>Markup %</label>
+        <input id="pf-markup" type="number" step="0.1" value="${p.markup_pct||0}" style="width:70px;border:1px solid #d1d5db;border-radius:5px;padding:4px 8px;text-align:right" oninput="recalcTotals(${p.id})">
+        <span id="markup-amt" style="color:#6b7280;font-size:12px">${fmt(p.markup_amount)}</span>
+      </div>
+      <div class="total-input-row">
+        <label>Tax %</label>
+        <input id="pf-tax" type="number" step="0.1" value="${p.tax_pct||0}" style="width:70px;border:1px solid #d1d5db;border-radius:5px;padding:4px 8px;text-align:right" oninput="recalcTotals(${p.id})">
+        <span id="tax-amt" style="color:#6b7280;font-size:12px">${fmt(p.tax_amount)}</span>
+      </div>
+      <div class="grand-total-row">
+        <span class="gtl">TOTAL</span>
+        <span class="gtv" id="grand-total">${fmt(p.total_amount)}</span>
+      </div>
+    </div>
+    <div class="pd-extra">
+      <div class="form-row-3">
+        <div><label>Scope of Work</label><textarea id="pf-scope" oninput="autoSave(${p.id})">${p.scope_summary||''}</textarea></div>
+        <div><label>Exclusions</label><textarea id="pf-excl" oninput="autoSave(${p.id})">${p.exclusions||''}</textarea></div>
+        <div><label>Terms & Notes</label><textarea id="pf-terms" oninput="autoSave(${p.id})">${p.terms||'Payment due within 30 days of invoice.'}</textarea></div>
+      </div>
+    </div>
+  `;
+}
+
+function renderItemRow(item){
+  return `<tr id="row-${item.id}">
+    <td><input value="${(item.description||'').replace(/"/g,'&quot;')}" onchange="updateItem(${item.id},'description',this.value)" style="min-width:140px"></td>
+    <td class="td-qty"><input type="number" value="${fmtN(item.quantity)}" onchange="updateItem(${item.id},'quantity',this.value)" oninput="recalcRow(${item.id},this)" class="td-qty"></td>
+    <td class="td-unit"><input value="${item.unit||'ea'}" onchange="updateItem(${item.id},'unit',this.value)" style="width:55px"></td>
+    <td class="td-cost"><input type="number" step="0.01" value="${fmtN(item.unit_cost)}" onchange="updateItem(${item.id},'unit_cost',this.value)" oninput="recalcRow(${item.id},this)"></td>
+    <td class="td-total" id="row-total-${item.id}">${fmt(item.total)}</td>
+    <td class="td-del"><button class="del-row" onclick="deleteItem(${item.id},'${item.category}')">✕</button></td>
+  </tr>`;
+}
+
+function recalcRow(itemId, changedInput){
+  const row = document.getElementById('row-'+itemId);
+  if(!row) return;
+  const inputs = row.querySelectorAll('input[type=number]');
+  const qty = parseFloat(inputs[0].value)||0;
+  const cost = parseFloat(inputs[1].value)||0;
+  const total = qty * cost;
+  const td = document.getElementById('row-total-'+itemId);
+  if(td) td.textContent = fmt(total);
+  recalcAllTotals();
+}
+
+function recalcAllTotals(){
+  let subtotal = 0;
+  for(const cat of CATEGORIES){
+    let catSub = 0;
+    const tbody = document.getElementById('items-'+cat.key);
+    if(tbody){
+      tbody.querySelectorAll('tr').forEach(row=>{
+        const nums = row.querySelectorAll('input[type=number]');
+        if(nums.length>=2){
+          catSub += (parseFloat(nums[0].value)||0)*(parseFloat(nums[1].value)||0);
+        }
+      });
+    }
+    const el = document.getElementById('cat-sub-'+cat.key);
+    if(el) el.textContent = fmt(catSub);
+    subtotal += catSub;
+  }
+  const subEl = document.getElementById('sub-total');
+  if(subEl) subEl.textContent = fmt(subtotal);
+  const markupPct = parseFloat(document.getElementById('pf-markup')?.value)||0;
+  const taxPct = parseFloat(document.getElementById('pf-tax')?.value)||0;
+  const markupAmt = subtotal * markupPct / 100;
+  const taxAmt = (subtotal + markupAmt) * taxPct / 100;
+  const grand = subtotal + markupAmt + taxAmt;
+  const mEl = document.getElementById('markup-amt');
+  const tEl = document.getElementById('tax-amt');
+  const gEl = document.getElementById('grand-total');
+  if(mEl) mEl.textContent = fmt(markupAmt);
+  if(tEl) tEl.textContent = fmt(taxAmt);
+  if(gEl) gEl.textContent = fmt(grand);
+}
+
+function recalcTotals(propId){
+  recalcAllTotals();
+}
+
+let autoSaveTimer = null;
+function autoSave(propId){
+  clearTimeout(autoSaveTimer);
+  autoSaveTimer = setTimeout(()=>saveHeader(propId), 1500);
+}
+
+async function saveHeader(propId){
+  const subtotal = parseFloat(document.getElementById('sub-total')?.textContent?.replace(/[$,]/g,''))||0;
+  const markupPct = parseFloat(document.getElementById('pf-markup')?.value)||0;
+  const taxPct = parseFloat(document.getElementById('pf-tax')?.value)||0;
+  const markupAmt = subtotal * markupPct / 100;
+  const taxAmt = (subtotal + markupAmt) * taxPct / 100;
+  const grand = subtotal + markupAmt + taxAmt;
+  await pApi('/installation/api/v2/proposals/update',{
+    id: propId,
+    proposal_number: document.getElementById('pf-num')?.value||'',
+    title: document.getElementById('pf-title')?.value||'',
+    proposal_date: document.getElementById('pf-date')?.value||'',
+    valid_days: parseInt(document.getElementById('pf-valid')?.value)||30,
+    status: document.getElementById('pf-status')?.value||'draft',
+    days_allotted: parseInt(document.getElementById('pf-days')?.value)||0,
+    crew_size: parseInt(document.getElementById('pf-crew')?.value)||1,
+    markup_pct: markupPct, tax_pct: taxPct,
+    subtotal, markup_amount: markupAmt, tax_amount: taxAmt, total_amount: grand,
+    scope_summary: document.getElementById('pf-scope')?.value||'',
+    exclusions: document.getElementById('pf-excl')?.value||'',
+    terms: document.getElementById('pf-terms')?.value||''
+  });
+  // refresh sidebar total
+  const p = allProposals.find(x=>x.id===propId);
+  if(p){ p.total_amount=grand; p.proposal_number=document.getElementById('pf-num')?.value||p.proposal_number; p.status=document.getElementById('pf-status')?.value||p.status; renderSidebar(); }
+}
+
+async function saveAll(propId){
+  await saveHeader(propId);
+  // Also save all item rows
+  const rows = document.querySelectorAll('[id^="row-"]:not([id^="row-total"])');
+  // Items are saved on-change; just trigger a reload to sync
+  await loadProposals();
+}
+
+async function updateItem(itemId, field, value){
+  const row = document.getElementById('row-'+itemId);
+  if(row){
+    const inputs = row.querySelectorAll('input[type=number]');
+    const qty = parseFloat(inputs[0]?.value)||0;
+    const cost = parseFloat(inputs[1]?.value)||0;
+    await pApi('/installation/api/v2/proposal-items/update',{id:itemId,[field]:value,total:qty*cost});
+    autoSave(activeProposalId);
+  }
+}
+
+async function addItem(propId, category){
+  const d = await pApi('/installation/api/v2/proposal-items/add',{proposal_id:propId,category,description:'',quantity:1,unit:'ea',unit_cost:0,total:0});
+  if(d.item){
+    const tbody = document.getElementById('items-'+category);
+    if(tbody){ tbody.insertAdjacentHTML('beforeend',renderItemRow(d.item)); }
+  }
+}
+
+async function deleteItem(itemId, category){
+  if(!confirm('Remove this line item?')) return;
+  await pApi('/installation/api/v2/proposal-items/delete',{id:itemId});
+  const row = document.getElementById('row-'+itemId);
+  if(row) row.remove();
+  recalcAllTotals();
+  autoSave(activeProposalId);
+}
+
+async function newProposal(){
+  const d = await pApi('/installation/api/v2/proposals/create',{job_id:PROP_JOB_ID});
+  if(d.id){
+    await loadProposals();
+    openProposal(d.id);
+  }
+}
+
+async function deleteProposal(propId){
+  if(!confirm('Delete this proposal? This cannot be undone.')) return;
+  await pApi('/installation/api/v2/proposals/delete',{id:propId});
+  activeProposalId = null;
+  document.getElementById('prop-detail').innerHTML='<div class="prop-empty"><div class="pe-icon">📋</div><div style="font-weight:600;font-size:15px">Select a proposal</div></div>';
+  await loadProposals();
+}
+
+async function reviseProposal(propId){
+  if(!confirm('Create a new revision of this proposal?')) return;
+  const d = await pApi('/installation/api/v2/proposals/revise',{id:propId});
+  if(d.id){ await loadProposals(); openProposal(d.id); }
+}
+
+// Load on tab switch
+document.addEventListener('DOMContentLoaded',()=>{
+  const params = new URLSearchParams(location.search);
+  if(params.get('tab')==='proposals') loadProposals();
+});
+// Also load when tab is clicked
+const propTabBtn = document.querySelector('[data-tab="proposals"]');
+if(propTabBtn) propTabBtn.addEventListener('click',()=>{ if(!allProposals.length) loadProposals(); });
+</script>
   </div>
 
   <!-- ── SITE PLANS ── -->
+
+    <!-- ── SITE PLANS ── -->
   <div class="tab-content" id="tab-site-plans">
     <div class="card">
       <div class="card-title">Site Plans & Drawings
@@ -26554,6 +26886,239 @@ def installation_proposal_add():
                    float(data.get('permit_budget') or 0),
                    int(data.get('days_allotted') or 0),
                    now))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+# ── v2 Proposal API routes ────────────────────────────────────────────────────
+
+@app.route('/installation/api/v2/proposals/list')
+def v2_proposals_list():
+    if 'username' not in session:
+        return jsonify({'error': 'Not logged in'}), 401
+    job_id = request.args.get('job_id')
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""SELECT id, proposal_number, title, status, total_amount, revision, proposal_date
+                     FROM install_proposals WHERE job_id=? ORDER BY created_at DESC""", (job_id,))
+        rows = c.fetchall()
+        conn.close()
+        proposals = [{'id':r[0],'proposal_number':r[1],'title':r[2],'status':r[3],
+                      'total_amount':r[4],'revision':r[5],'proposal_date':r[6]} for r in rows]
+        return jsonify({'proposals': proposals})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/installation/api/v2/proposals/get/<int:prop_id>')
+def v2_proposals_get(prop_id):
+    if 'username' not in session:
+        return jsonify({'error': 'Not logged in'}), 401
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""SELECT id, job_id, proposal_number, revision, title, status,
+                            proposal_date, valid_days, days_allotted, crew_size,
+                            markup_pct, tax_pct, subtotal, markup_amount, tax_amount,
+                            total_amount, scope_summary, exclusions, terms, notes,
+                            created_by, created_at, sent_at, approved_at
+                     FROM install_proposals WHERE id=?""", (prop_id,))
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({'error': 'Not found'}), 404
+        cols = ['id','job_id','proposal_number','revision','title','status','proposal_date',
+                'valid_days','days_allotted','crew_size','markup_pct','tax_pct','subtotal',
+                'markup_amount','tax_amount','total_amount','scope_summary','exclusions',
+                'terms','notes','created_by','created_at','sent_at','approved_at']
+        proposal = dict(zip(cols, row))
+        c.execute("""SELECT id, sort_order, category, description, quantity, unit, unit_cost, total
+                     FROM install_proposal_items WHERE proposal_id=? ORDER BY sort_order, id""", (prop_id,))
+        items = [{'id':r[0],'sort_order':r[1],'category':r[2],'description':r[3],
+                  'quantity':r[4],'unit':r[5],'unit_cost':r[6],'total':r[7]}
+                 for r in c.fetchall()]
+        conn.close()
+        return jsonify({'proposal': proposal, 'items': items})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/installation/api/v2/proposals/create', methods=['POST'])
+def v2_proposals_create():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        today = datetime.now().strftime('%Y-%m-%d')
+        c.execute("SELECT COUNT(*)+1 FROM install_proposals WHERE job_id=?", (data['job_id'],))
+        n = c.fetchone()[0]
+        c.execute("SELECT job_code FROM jobs WHERE id=?", (data['job_id'],))
+        jrow = c.fetchone()
+        code = (jrow[0] or 'PROP') if jrow else 'PROP'
+        prop_num = f"{code}-{n:03d}"
+        c.execute("""INSERT INTO install_proposals
+                     (job_id, proposal_number, revision, status, proposal_date, valid_days,
+                      days_allotted, crew_size, markup_pct, tax_pct,
+                      subtotal, markup_amount, tax_amount, total_amount,
+                      terms, created_by, created_at)
+                     VALUES (?,?,0,'draft',?,30,0,1,0,0,0,0,0,0,
+                             'Payment due within 30 days of invoice.',?,?)""",
+                  (data['job_id'], prop_num, today, session['username'], now))
+        new_id = c.lastrowid
+        conn.commit(); conn.close()
+        return jsonify({'success': True, 'id': new_id})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/v2/proposals/update', methods=['POST'])
+def v2_proposals_update():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""UPDATE install_proposals SET
+                     proposal_number=?, title=?, proposal_date=?, valid_days=?,
+                     status=?, days_allotted=?, crew_size=?,
+                     markup_pct=?, tax_pct=?, subtotal=?,
+                     markup_amount=?, tax_amount=?, total_amount=?,
+                     scope_summary=?, exclusions=?, terms=?
+                     WHERE id=?""",
+                  (data.get('proposal_number',''), data.get('title',''),
+                   data.get('proposal_date',''), int(data.get('valid_days') or 30),
+                   data.get('status','draft'),
+                   int(data.get('days_allotted') or 0), int(data.get('crew_size') or 1),
+                   float(data.get('markup_pct') or 0), float(data.get('tax_pct') or 0),
+                   float(data.get('subtotal') or 0), float(data.get('markup_amount') or 0),
+                   float(data.get('tax_amount') or 0), float(data.get('total_amount') or 0),
+                   data.get('scope_summary',''), data.get('exclusions',''),
+                   data.get('terms',''), data['id']))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/v2/proposals/delete', methods=['POST'])
+def v2_proposals_delete():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("DELETE FROM install_proposal_items WHERE proposal_id=?", (data['id'],))
+        c.execute("DELETE FROM install_proposals WHERE id=?", (data['id'],))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/v2/proposals/revise', methods=['POST'])
+def v2_proposals_revise():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        c.execute("SELECT revision, proposal_number FROM install_proposals WHERE id=?", (data['id'],))
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Not found'})
+        rev = (row[0] or 0) + 1
+        base = (row[1] or 'PROP').split('-REV')[0]
+        new_num = f"{base}-REV{rev}"
+        c.execute("""INSERT INTO install_proposals
+                     (job_id, proposal_number, revision, title, status, proposal_date, valid_days,
+                      days_allotted, crew_size, markup_pct, tax_pct, subtotal, markup_amount,
+                      tax_amount, total_amount, scope_summary, exclusions, terms, notes,
+                      created_by, created_at)
+                     SELECT job_id, ?, ?, title, 'draft', proposal_date, valid_days,
+                      days_allotted, crew_size, markup_pct, tax_pct, subtotal, markup_amount,
+                      tax_amount, total_amount, scope_summary, exclusions, terms, notes,
+                      ?, ?
+                     FROM install_proposals WHERE id=?""",
+                  (new_num, rev, session['username'], now, data['id']))
+        new_id = c.lastrowid
+        c.execute("SELECT sort_order, category, description, quantity, unit, unit_cost, total FROM install_proposal_items WHERE proposal_id=?", (data['id'],))
+        for item in c.fetchall():
+            c.execute("INSERT INTO install_proposal_items (proposal_id, sort_order, category, description, quantity, unit, unit_cost, total) VALUES (?,?,?,?,?,?,?,?)",
+                      (new_id,) + item)
+        conn.commit(); conn.close()
+        return jsonify({'success': True, 'id': new_id})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/v2/proposal-items/add', methods=['POST'])
+def v2_proposal_items_add():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT COALESCE(MAX(sort_order),0)+1 FROM install_proposal_items WHERE proposal_id=? AND category=?",
+                  (data['proposal_id'], data.get('category','materials')))
+        sort = c.fetchone()[0]
+        c.execute("""INSERT INTO install_proposal_items
+                     (proposal_id, sort_order, category, description, quantity, unit, unit_cost, total)
+                     VALUES (?,?,?,?,?,?,?,?)""",
+                  (data['proposal_id'], sort, data.get('category','materials'),
+                   data.get('description',''), float(data.get('quantity') or 1),
+                   data.get('unit','ea'), float(data.get('unit_cost') or 0),
+                   float(data.get('total') or 0)))
+        new_id = c.lastrowid
+        conn.commit(); conn.close()
+        return jsonify({'success': True, 'item': {
+            'id': new_id, 'sort_order': sort, 'category': data.get('category','materials'),
+            'description': '', 'quantity': 1, 'unit': 'ea', 'unit_cost': 0, 'total': 0
+        }})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/v2/proposal-items/update', methods=['POST'])
+def v2_proposal_items_update():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        allowed = {'description', 'quantity', 'unit', 'unit_cost', 'total', 'sort_order', 'category'}
+        fields = {k: v for k, v in data.items() if k in allowed}
+        if fields:
+            sets = ', '.join(f"{k}=?" for k in fields)
+            vals = list(fields.values()) + [data['id']]
+            c.execute(f"UPDATE install_proposal_items SET {sets} WHERE id=?", vals)
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/v2/proposal-items/delete', methods=['POST'])
+def v2_proposal_items_delete():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("DELETE FROM install_proposal_items WHERE id=?", (data['id'],))
         conn.commit(); conn.close()
         return jsonify({'success': True})
     except Exception as e:
