@@ -16791,6 +16791,18 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                     {% endif %}
                                 </div>
 
+                                <!-- Custom Tabs -->
+                                <div style="margin-top: 16px; border-top: 1px solid #eee; padding-top: 14px;">
+                                    <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 10px;">
+                                        <h4 style="margin: 0; font-size: 14px; color: #333;">📋 Custom Tabs</h4>
+                                        <button type="button" onclick="addCustomTabGroup({{ community.id }})"
+                                                style="padding: 4px 12px; background: #6f42c1; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">+ Add Custom Tab</button>
+                                    </div>
+                                    <div id="comm-custom-tabs-list-{{ community.id }}">
+                                        <p style="color: #999; font-size: 13px;">No custom tabs yet.</p>
+                                    </div>
+                                </div>
+
                                 <!-- Nozzle Pricing -->
                                 <div class="pricing-section" style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px;">
                                     <h4>💰 Nozzle Pricing</h4>
