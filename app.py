@@ -16807,11 +16807,13 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
     </div>
 
     <!-- Draft Review Modal -->
-    <div id="draftReviewModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;overflow-y:auto;padding:30px 16px;">
-        <div style="background:white;border-radius:10px;max-width:900px;margin:0 auto;padding:28px;position:relative;">
-            <button onclick="closeDraftReview()" style="position:absolute;top:14px;right:16px;background:none;border:none;font-size:22px;cursor:pointer;color:#666;">&times;</button>
-            <div id="draftReviewHeader" style="margin-bottom:18px;"></div>
-            <div id="draftReviewBody"></div>
+    <div id="draftReviewModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;padding:30px 16px;">
+        <div style="background:white;border-radius:10px;max-width:900px;margin:0 auto;display:flex;flex-direction:column;max-height:calc(100vh - 60px);">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;padding:20px 24px 14px;border-bottom:1px solid #eee;flex-shrink:0;">
+                <div id="draftReviewHeader"></div>
+                <button onclick="closeDraftReview()" style="background:none;border:none;font-size:24px;cursor:pointer;color:#666;line-height:1;margin-left:16px;flex-shrink:0;">&times;</button>
+            </div>
+            <div id="draftReviewBody" style="overflow-y:auto;padding:20px 24px;"></div>
         </div>
     </div>
 
