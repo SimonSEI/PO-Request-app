@@ -14292,28 +14292,35 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
                         <input type="hidden" name="community" value="{{ submission.community }}">
                         <input type="hidden" name="work_date" value="{{ submission.work_date }}">
                         <input type="hidden" name="submission_id" value="{{ submission.id }}">
-                        <button type="submit" style="width: 100%; text-align: left; background: white; border: 1px solid #e0e0e0; border-radius: {% if submission.status == 'draft' %}8px 8px 0 0{% else %}8px{% endif %}; padding: 14px 16px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: background 0.2s; gap: 10px;">
+                        <button type="submit" style="width: 100%; text-align: left; background: {% if submission.status == 'deleted' %}#fff0f0{% else %}white{% endif %}; border: 1px solid {% if submission.status == 'deleted' %}#f5c6cb{% else %}#e0e0e0{% endif %}; border-radius: 8px; padding: 14px 16px; cursor: {% if submission.status == 'deleted' %}default{% else %}pointer{% endif %}; display: flex; justify-content: space-between; align-items: center; transition: background 0.2s; gap: 10px;" {% if submission.status == 'deleted' %}disabled{% endif %}>
                             <div style="flex: 1; min-width: 0;">
                                 <div style="font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 3px;">{{ submission.community }}</div>
                                 {% if submission.clocks_label %}
-                                <div style="font-size: 19px; font-weight: 800; color: #333; line-height: 1.2; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ submission.clocks_label }}</div>
+                                <div style="font-size: 19px; font-weight: 800; color: {% if submission.status == 'deleted' %}#dc3545{% else %}#333{% endif %}; line-height: 1.2; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; {% if submission.status == 'deleted' %}text-decoration:line-through;{% endif %}">{{ submission.clocks_label }}</div>
                                 {% else %}
-                                <div style="font-size: 19px; font-weight: 800; color: #333; line-height: 1.2; margin-bottom: 4px;">{{ submission.community }}</div>
+                                <div style="font-size: 19px; font-weight: 800; color: {% if submission.status == 'deleted' %}#dc3545{% else %}#333{% endif %}; line-height: 1.2; margin-bottom: 4px; {% if submission.status == 'deleted' %}text-decoration:line-through;{% endif %}">{{ submission.community }}</div>
                                 {% endif %}
                                 <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
                                     <span style="font-size: 12px; color: #666;"><span data-i18n="date_label">Date:</span> {{ submission.work_date }}</span>
-                                    {% if submission.status == 'submitted' %}
+                                    {% if submission.status == 'deleted' %}
+                                        <span style="font-size: 12px; color: #dc3545; font-weight: 700;">🗑 This submission was deleted</span>
+                                    {% elif submission.status == 'submitted' %}
                                         <span style="font-size: 12px; color: #28a745; font-weight: 600;" data-i18n="status_finalized">✓ Finalized</span>
                                     {% else %}
                                         <span style="font-size: 12px; color: #ff9800; font-weight: 600;" data-i18n="status_draft">● Draft</span>
                                     {% endif %}
                                 </div>
                             </div>
+                            {% if submission.status != 'deleted' %}
                             <div style="color: #667eea; font-weight: 700; font-size: 15px; flex-shrink: 0;">{% if submission.status == 'submitted' %}<span data-i18n="view_btn">View →</span>{% else %}<span data-i18n="edit_btn">Edit →</span>{% endif %}</div>
+                            {% endif %}
                         </button>
                     </form>
                     {% if submission.status == 'draft' %}
                     <button type="button" onclick="event.stopPropagation(); deleteDraft({{ submission.id }}, '{{ submission.community }}')" style="background: #fff5f5; border: 1px solid #e0e0e0; border-top: none; border-radius: 0 0 8px 8px; padding: 8px 16px; cursor: pointer; color: #dc3545; font-size: 13px; font-weight: 600; transition: all 0.2s; text-align: center; width: 100%;" data-i18n="delete_draft_btn">🗑 Delete This Draft</button>
+                    {% endif %}
+                    {% if submission.status == 'deleted' %}
+                    <div style="background: #dc3545; border-radius: 0 0 8px 8px; padding: 6px 16px; text-align: center; color: white; font-size: 12px; font-weight: 700; letter-spacing: 0.4px;">DELETED</div>
                     {% endif %}
                 </div>
                 {% endfor %}
