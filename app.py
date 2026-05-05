@@ -16806,6 +16806,15 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         </div>
     </div>
 
+    <!-- Draft Review Modal -->
+    <div id="draftReviewModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;overflow-y:auto;padding:30px 16px;">
+        <div style="background:white;border-radius:10px;max-width:900px;margin:0 auto;padding:28px;position:relative;">
+            <button onclick="closeDraftReview()" style="position:absolute;top:14px;right:16px;background:none;border:none;font-size:22px;cursor:pointer;color:#666;">&times;</button>
+            <div id="draftReviewHeader" style="margin-bottom:18px;"></div>
+            <div id="draftReviewBody"></div>
+        </div>
+    </div>
+
     <script>
         function switchTab(tabName) {
             // Hide all tabs
@@ -16849,7 +16858,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             }
             let html = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">';
             html += '<thead><tr>';
-            ['Status','Community','Technician','Clocks with Data','Work Date','Last Modified'].forEach(h => {
+            ['Status','Community','Technician','Clocks with Data','Work Date','Last Modified',''].forEach(h => {
                 html += `<th style="text-align:left;padding:9px 12px;border-bottom:2px solid #dee2e6;font-size:12px;color:#555;white-space:nowrap;background:#f8f9fa;">${h}</th>`;
             });
             html += '</tr></thead><tbody>';
@@ -16870,11 +16879,77 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     <td style="padding:8px 12px;border-bottom:1px solid #eee;">${clocksCell}</td>
                     <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#666;">${d.work_date || ''}</td>
                     <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#666;">${d.last_modified || ''}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;">
+                        <button onclick="reviewDraft(${d.id}, '${d.community_name.replace(/'/g,"\\'")}', '${d.tech_name.replace(/'/g,"\\'")}', '${d.work_date}')"
+                                style="padding:5px 14px;background:#007bff;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;">
+                            👁 Review
+                        </button>
+                    </td>
                 </tr>`;
             });
             html += '</tbody></table></div>';
             html += `<p style="font-size:12px;color:#999;margin-top:8px;">${drafts.length} active draft(s) — auto-refreshes every 30s</p>`;
             container.innerHTML = html;
+        }
+
+        function closeDraftReview() {
+            document.getElementById('draftReviewModal').style.display = 'none';
+        }
+
+        function reviewDraft(submissionId, community, techName, workDate) {
+            const modal  = document.getElementById('draftReviewModal');
+            const header = document.getElementById('draftReviewHeader');
+            const body   = document.getElementById('draftReviewBody');
+            header.innerHTML = `<h3 style="margin:0 0 4px 0;color:#333;">${community}</h3>
+                <div style="font-size:13px;color:#666;">Tech: <strong>${techName}</strong> &nbsp;|&nbsp; Work Date: <strong>${workDate}</strong></div>`;
+            body.innerHTML = '<p style="color:#666;font-size:14px;">Loading…</p>';
+            modal.style.display = 'block';
+
+            fetch(`/community_draft_review?submission_id=${submissionId}`)
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.success) { body.innerHTML = `<p style="color:#dc3545;">${data.error}</p>`; return; }
+                    const items = data.items.filter(i =>
+                        i.nozzle || i.pop_up_6_inch || i.pop_up_12_inch || i.rotor_6_inch ||
+                        i.new_pop_up_6_inch || i.new_pop_up_12_inch || i.riser || i.solenoid ||
+                        i.stat_decoder_1 || i.notes);
+                    const all  = data.items;
+                    if (all.length === 0) { body.innerHTML = '<p style="color:#999;">No line items found.</p>'; return; }
+
+                    const PARTS = [
+                        {key:'nozzle',           label:'Nozzle'},
+                        {key:'pop_up_6_inch',    label:'6" Pop Up'},
+                        {key:'pop_up_12_inch',   label:'12" Pop Up'},
+                        {key:'rotor_6_inch',     label:'6" Rotor'},
+                        {key:'new_pop_up_6_inch',label:'NEW 6" Pop Up'},
+                        {key:'new_pop_up_12_inch',label:'NEW 12" Pop Up'},
+                        {key:'riser',            label:'Riser'},
+                        {key:'solenoid',         label:'Solenoid'},
+                        {key:'stat_decoder_1',   label:'1 Stat Decoder'},
+                    ];
+
+                    let html = `<p style="font-size:12px;color:#888;margin-bottom:12px;">${items.length} zone(s) with data out of ${all.length} total</p>`;
+                    html += '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12px;">';
+                    html += '<thead><tr><th style="text-align:left;padding:7px 10px;background:#f8f9fa;border-bottom:2px solid #dee2e6;">Zone & Address</th>';
+                    PARTS.forEach(p => { html += `<th style="text-align:center;padding:7px 8px;background:#f8f9fa;border-bottom:2px solid #dee2e6;white-space:nowrap;">${p.label}</th>`; });
+                    html += '<th style="text-align:left;padding:7px 10px;background:#f8f9fa;border-bottom:2px solid #dee2e6;">Notes</th></tr></thead><tbody>';
+
+                    all.forEach((item, i) => {
+                        const hasData = PARTS.some(p => item[p.key]) || item.notes;
+                        const bg = hasData ? (i % 2 === 0 ? '#fff' : '#f8f9fa') : '#fafafa';
+                        const textColor = hasData ? '#333' : '#bbb';
+                        html += `<tr style="background:${bg};color:${textColor};">
+                            <td style="padding:6px 10px;border-bottom:1px solid #eee;font-size:11px;">${item.zone_and_address || ''}</td>`;
+                        PARTS.forEach(p => {
+                            const v = item[p.key];
+                            html += `<td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:center;font-weight:${v ? '700' : '400'};color:${v ? '#007bff' : '#ccc'};">${v || '—'}</td>`;
+                        });
+                        html += `<td style="padding:6px 10px;border-bottom:1px solid #eee;font-size:11px;color:#666;">${item.notes || ''}</td></tr>`;
+                    });
+                    html += '</tbody></table></div>';
+                    body.innerHTML = html;
+                })
+                .catch(() => { body.innerHTML = '<p style="color:#dc3545;">Error loading entry.</p>'; });
         }
 
         function loadActiveDrafts() {
@@ -21754,6 +21829,39 @@ def community_billing_delete_submission():
         return jsonify({'success': True, 'message': 'Submission deleted successfully'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/community_draft_review', methods=['GET'])
+def community_draft_review():
+    """Return all line items for a draft submission for office review."""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
+    submission_id = request.args.get('submission_id')
+    if not submission_id:
+        return jsonify({'success': False, 'error': 'Missing submission_id'})
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("""SELECT zone_and_address, nozzle, pop_up_6_inch, pop_up_12_inch,
+                            rotor_6_inch, new_pop_up_6_inch, new_pop_up_12_inch,
+                            riser, solenoid, stat_decoder_1, notes
+                     FROM community_billing_line_items
+                     WHERE submission_id = ?
+                     ORDER BY id""", (submission_id,))
+        items = [
+            {'zone_and_address': r[0] or '', 'nozzle': r[1] or 0,
+             'pop_up_6_inch': r[2] or 0, 'pop_up_12_inch': r[3] or 0,
+             'rotor_6_inch': r[4] or 0, 'new_pop_up_6_inch': r[5] or 0,
+             'new_pop_up_12_inch': r[6] or 0, 'riser': r[7] or 0,
+             'solenoid': r[8] or 0, 'stat_decoder_1': r[9] or 0,
+             'notes': r[10] or ''}
+            for r in c.fetchall()
+        ]
+        return jsonify({'success': True, 'items': items})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
 
 
 @app.route('/community_active_drafts', methods=['GET'])
