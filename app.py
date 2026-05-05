@@ -21345,14 +21345,14 @@ def community_billing_export_excel():
         return sum(totals[k] * pricing[k] for k in PART_KEYS)
 
     def write_sheet(ws, title_text, zones):
-        """Write aggregated zone rows into a worksheet."""
+        """Write aggregated zone rows with column totals."""
         header_font  = Font(bold=True, color="FFFFFF", size=11)
         header_fill  = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-        summary_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+        totals_fill  = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
         border = Border(left=Side(style='thin'), right=Side(style='thin'),
                         top=Side(style='thin'), bottom=Side(style='thin'))
-        center   = Alignment(horizontal='center', vertical='center', wrap_text=False)
-        left_al  = Alignment(horizontal='left',   vertical='center', wrap_text=False)
+        center  = Alignment(horizontal='center', vertical='center', wrap_text=False)
+        left_al = Alignment(horizontal='left',   vertical='center', wrap_text=False)
         currency_format = '$#,##0.00'
 
         headers = ['Zone & Address', 'Nozzle', '6" Pop Up', '12" Pop Up', '6" Rotor',
@@ -21364,12 +21364,13 @@ def community_billing_export_excel():
 
         # Title row
         ws.merge_cells(f'A1:{col_letters[num_cols-1]}1')
-        ws['A1'].value = title_text
-        ws['A1'].font = Font(bold=True, size=13)
-        ws['A1'].alignment = center
+        t = ws['A1']
+        t.value = title_text
+        t.font = Font(bold=True, size=13)
+        t.alignment = center
         ws.row_dimensions[1].height = 24
 
-        # Header row
+        # Column header row
         for ci, h in enumerate(headers, 1):
             cell = ws.cell(row=2, column=ci)
             cell.value = h
@@ -21379,90 +21380,113 @@ def community_billing_export_excel():
             cell.border = border
         ws.row_dimensions[2].height = 20
 
-        grand_total = 0.0
+        # Track column widths and per-column sums for totals row
+        col_widths = [len(h) for h in headers]
+        col_sums   = {k: 0 for k in PART_KEYS}
+        grand_cost  = 0.0
         cur = 3
-        col_widths = [len(h) for h in headers]  # track max width per column
 
         for zone in zones:
             totals = zone_totals[zone]
             cost   = calc_cost(totals)
-            grand_total += cost
+            grand_cost += cost
 
-            # Zone & Address column
             zc = ws.cell(row=cur, column=1)
             zc.value = zone
             zc.alignment = left_al
             zc.border = border
             col_widths[0] = max(col_widths[0], len(zone))
 
-            # Part columns
             for ci, key in enumerate(PART_KEYS, 2):
                 cell = ws.cell(row=cur, column=ci)
                 val = totals[key]
                 cell.value = val if val else None
                 cell.alignment = center
                 cell.border = border
+                col_sums[key] += val
                 if val:
                     col_widths[ci - 1] = max(col_widths[ci - 1], len(str(val)))
 
-            # Cost column
             if pricing:
                 cc = ws.cell(row=cur, column=num_cols)
                 cc.value = cost if cost else None
                 cc.number_format = currency_format
                 cc.alignment = center
                 cc.border = border
-                if cost:
-                    col_widths[num_cols - 1] = max(col_widths[num_cols - 1], len(f'${cost:,.2f}'))
 
             cur += 1
 
-        # Grand total row
-        if pricing and grand_total:
-            cur += 1
-            lbl = ws.cell(row=cur, column=1)
-            lbl.value = 'TOTAL'
-            lbl.font = Font(bold=True, size=11)
-            lbl.fill = summary_fill
-            lbl.alignment = center
-            lbl.border = border
-            if num_cols > 1:
-                ws.merge_cells(f'A{cur}:{col_letters[num_cols-2]}{cur}')
+        # Totals row
+        cur += 1
+        lbl = ws.cell(row=cur, column=1)
+        lbl.value = 'TOTALS'
+        lbl.font = Font(bold=True, size=11)
+        lbl.fill = totals_fill
+        lbl.alignment = center
+        lbl.border = border
+
+        for ci, key in enumerate(PART_KEYS, 2):
+            cell = ws.cell(row=cur, column=ci)
+            s = col_sums[key]
+            cell.value = s if s else None
+            cell.font = Font(bold=True)
+            cell.fill = totals_fill
+            cell.alignment = center
+            cell.border = border
+
+        if pricing:
             tc = ws.cell(row=cur, column=num_cols)
-            tc.value = grand_total
-            tc.font = Font(bold=True, size=12, color="2E7D32")
+            tc.value = grand_cost if grand_cost else None
+            tc.font = Font(bold=True, size=11, color="2E7D32")
             tc.number_format = currency_format
-            tc.fill = summary_fill
+            tc.fill = totals_fill
             tc.alignment = center
             tc.border = border
-            ws.row_dimensions[cur].height = 22
+        ws.row_dimensions[cur].height = 22
 
-        # Auto-fit column widths (add padding, cap at 60)
+        # Auto-fit column widths
         for ci, w in enumerate(col_widths):
             ws.column_dimensions[col_letters[ci]].width = min(w + 4, 60)
+
+    # Parse month label and build sheet name helper
+    try:
+        from datetime import datetime as _dt
+        month_label = _dt.strptime(work_month, '%Y-%m').strftime('%B %Y')
+    except Exception:
+        month_label = work_month
+
+    def tab_name(suffix):
+        name = f"{month_label} {community} {suffix}"
+        return name[:31]
 
     try:
         wb = Workbook()
         wb.remove(wb.active)
 
         if is_clock_community:
-            ca_zones   = [z for z in zone_order if CA_PATTERN.match(z)]
-            addr_zones = [z for z in zone_order if not CA_PATTERN.match(z)]
+            # Sort zones numerically by clock number (SQL already orders, but re-sort to be safe)
+            import re as _re2
+            def clock_sort_key(z):
+                m = _re2.match(r'^Clock\s+(\d+)', z, _re2.I)
+                return int(m.group(1)) if m else 9999
 
-            ws_res = wb.create_sheet("Residential")
-            write_sheet(ws_res, f"{community} — Residential ({work_month})", addr_zones)
+            addr_zones = sorted([z for z in zone_order if not CA_PATTERN.match(z)], key=clock_sort_key)
+            ca_zones   = sorted([z for z in zone_order if CA_PATTERN.match(z)],     key=clock_sort_key)
 
-            ws_ca = wb.create_sheet("Common Area")
-            write_sheet(ws_ca, f"{community} — Common Area ({work_month})", ca_zones)
+            ws1 = wb.create_sheet(tab_name("Residential"))
+            write_sheet(ws1, f"{community} — Residential — {month_label}", addr_zones)
+
+            ws2 = wb.create_sheet(tab_name("Common Area"))
+            write_sheet(ws2, f"{community} — Common Area — {month_label}", ca_zones)
         else:
-            ws_main = wb.create_sheet("Submissions")
-            write_sheet(ws_main, f"Community Maintenance Report — {community} ({work_month})", zone_order)
+            ws_main = wb.create_sheet(tab_name("Parts Summary"))
+            write_sheet(ws_main, f"{community} — {month_label} Parts Summary", zone_order)
 
         import io
         buf = io.BytesIO()
         wb.save(buf)
         buf.seek(0)
-        filename = f"community_billing_{community.replace(' ', '_')}_{work_month}.xlsx"
+        filename = f"{month_label} {community} Parts Summary.xlsx"
         return send_file(buf, as_attachment=True, download_name=filename,
                          mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     except Exception as e:
