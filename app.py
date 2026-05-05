@@ -25414,9 +25414,7 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
     <button class="tab" data-tab="site-plans" onclick="switchTab('site-plans')">🗺 Plans</button>
     <button class="tab" data-tab="change-orders" onclick="switchTab('change-orders')">📝 Change Orders</button>
     <button class="tab" data-tab="schedule" onclick="switchTab('schedule')">📅 Schedule</button>
-    <button class="tab" data-tab="daily-logs" onclick="switchTab('daily-logs')">📋 Daily Logs</button>
     <button class="tab" data-tab="expenses" onclick="switchTab('expenses')">💳 Expenses</button>
-    <button class="tab" data-tab="rfis" onclick="switchTab('rfis')">❓ RFIs</button>
   </div>
 
   <!-- ── OVERVIEW ── -->
@@ -25652,9 +25650,7 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
     <div class="card">
       <div class="card-title">Days on Job
         <div style="display:flex;gap:6px">
-          <button class="btn btn-secondary btn-sm" onclick="logPastWeek()">📋 Log Past Week</button>
-          <a href="/installation/schedule?job={{ job.id }}" class="btn btn-print btn-sm">📅 Full Schedule View</a>
-          <button class="btn btn-primary btn-sm" onclick="openModal('add-sched-modal')">+ Add Day</button>
+          <a href="/installation/schedule" class="btn btn-print btn-sm">📅 Full Schedule View</a>
         </div>
       </div>
       {% set total_days = schedule_entries|length %}
@@ -25684,31 +25680,6 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
   </div>
 
   <!-- ── DAILY LOGS ── -->
-  <div class="tab-content" id="tab-daily-logs">
-    <div class="card">
-      <div class="card-title">Daily Field Logs <button class="btn btn-primary btn-sm" onclick="openModal('add-log-modal')">+ Add Log</button></div>
-      {% if daily_logs %}
-      {% for log in daily_logs %}
-      <div style="border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px;margin-bottom:8px">
-        <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:5px">
-          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-            <strong>{{ log.log_date }}</strong>
-            {% if log.weather %}<span style="font-size:13px;color:#6b7280">🌤 {{ log.weather }}{% if log.temp_high %} {{ log.temp_high }}°F{% endif %}</span>{% endif %}
-            {% if log.crew_count %}<span style="font-size:13px;color:#6b7280">👷 {{ log.crew_count }}</span>{% endif %}
-          </div>
-          <span style="font-size:12px;color:#9ca3af">{{ log.logged_by }}</span>
-        </div>
-        {% if log.work_performed %}<p style="font-size:14px;color:#374151;margin-bottom:3px">{{ log.work_performed }}</p>{% endif %}
-        {% if log.issues_delays %}<p style="font-size:13px;color:#b45309">⚠ {{ log.issues_delays }}</p>{% endif %}
-        {% if log.materials_used %}<p style="font-size:13px;color:#374151">Materials: {{ log.materials_used }}</p>{% endif %}
-      </div>
-      {% endfor %}
-      {% else %}
-      <div style="text-align:center;padding:40px;color:#9ca3af">No daily logs yet.</div>
-      {% endif %}
-    </div>
-  </div>
-
   <!-- ── EXPENSES ── -->
   <div class="tab-content" id="tab-expenses">
     <div class="card">
@@ -25732,28 +25703,6 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
       </tr>{% endfor %}</tbody></table>
       {% else %}
       <div style="text-align:center;padding:40px;color:#9ca3af">No expenses logged yet.</div>
-      {% endif %}
-    </div>
-  </div>
-
-  <!-- ── RFIs ── -->
-  <div class="tab-content" id="tab-rfis">
-    <div class="card">
-      <div class="card-title">RFIs <button class="btn btn-primary btn-sm" onclick="openModal('add-rfi-modal')">+ New RFI</button></div>
-      {% if rfis %}
-      {% for rfi in rfis %}
-      <div class="rfi-item">
-        <div class="rfi-num">{{ rfi.rfi_number }}</div>
-        <div class="rfi-content">
-          <div style="font-weight:600;font-size:14px;margin-bottom:3px">{{ rfi.title }} <span class="badge badge-{{ rfi.status }}" style="margin-left:6px">{{ rfi.status }}</span><span class="badge badge-{{ rfi.priority }}" style="margin-left:3px">{{ rfi.priority }}</span></div>
-          <div style="font-size:13px;color:#4b5563">{{ rfi.question }}</div>
-          {% if rfi.response %}<div style="margin-top:5px;font-size:13px;color:#059669">Answer: {{ rfi.response }}</div>{% endif %}
-          {% if rfi.due_date %}<div style="font-size:12px;color:#9ca3af;margin-top:3px">Due: {{ rfi.due_date }}</div>{% endif %}
-        </div>
-      </div>
-      {% endfor %}
-      {% else %}
-      <div style="text-align:center;padding:40px;color:#9ca3af">No RFIs yet.</div>
       {% endif %}
     </div>
   </div>
@@ -25847,28 +25796,6 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Add Daily Log -->
-  <div class="modal-overlay" id="add-log-modal">
-    <div class="modal">
-      <button class="modal-close" onclick="closeModal('add-log-modal')">×</button>
-      <h3>📋 Add Daily Log</h3>
-      <div class="form-row">
-        <div class="form-group"><label>Date</label><input id="log-date" type="date" value="{{ today }}"></div>
-        <div class="form-group"><label>Weather</label><input id="log-weather" placeholder="Sunny, Rain…"></div>
-        <div class="form-group"><label>High Temp (°F)</label><input id="log-temp" type="number"></div>
-      </div>
-      <div class="form-row">
-        <div class="form-group"><label>Crew Count</label><input id="log-crew-count" type="number" value="1"></div>
-        <div class="form-group"><label>Crew Members</label><input id="log-crew" placeholder="Names"></div>
-      </div>
-      <div class="form-group" style="margin-bottom:10px"><label>Work Performed</label><textarea id="log-work" rows="3"></textarea></div>
-      <div class="form-group" style="margin-bottom:10px"><label>Materials Used</label><input id="log-materials"></div>
-      <div class="form-group" style="margin-bottom:10px"><label>Equipment Used</label><input id="log-equipment"></div>
-      <div class="form-group" style="margin-bottom:18px"><label>Issues / Delays</label><textarea id="log-issues" rows="2"></textarea></div>
-      <button class="btn btn-primary" onclick="submitDailyLog()">Save</button>
-    </div>
-  </div>
-
   <!-- Add Expense -->
   <div class="modal-overlay" id="add-expense-modal">
     <div class="modal">
@@ -25902,21 +25829,6 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Add RFI -->
-  <div class="modal-overlay" id="add-rfi-modal">
-    <div class="modal">
-      <button class="modal-close" onclick="closeModal('add-rfi-modal')">×</button>
-      <h3>❓ New RFI</h3>
-      <div class="form-row">
-        <div class="form-group"><label>Title</label><input id="rfi-title"></div>
-        <div class="form-group"><label>Priority</label><select id="rfi-priority"><option value="low">Low</option><option value="normal" selected>Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></div>
-        <div class="form-group"><label>Due Date</label><input id="rfi-due" type="date"></div>
-      </div>
-      <div class="form-group" style="margin-bottom:10px"><label>Assigned To</label><input id="rfi-assigned"></div>
-      <div class="form-group" style="margin-bottom:18px"><label>Question</label><textarea id="rfi-question" rows="4"></textarea></div>
-      <button class="btn btn-primary" onclick="submitRFI()">Submit</button>
-    </div>
-  </div>
 
 </div>
 <script>
@@ -25939,14 +25851,11 @@ function updateCoStatus(coId,status){if(!confirm('Update status to "'+status.rep
 function sendCoApproval(coId){if(!confirm('Send this change order to the client for approval?'))return;api('/installation/api/change-orders/send-approval',{co_id:coId},d=>{alert('Sent to '+(d.email||'client'));location.reload();});}
 function submitSchedEntry(){const date=document.getElementById('sched-date').value;if(!date){alert('Date required');return;}api('/install_scheduling/add_entry',{job_id:JOB_ID,schedule_date:date,hours_worked:0,crew_members:document.getElementById('sched-crew').value,notes:document.getElementById('sched-notes').value},()=>{closeModal('add-sched-modal');location.reload();});}
 function deleteSchedEntry(id,btn){if(!confirm('Delete this entry?'))return;api('/install_scheduling/delete_entry',{id},()=>btn.closest('tr').remove());}
-function logPastWeek(){if(!confirm('Auto-log Mon–Fri of last week?'))return;api('/installation/api/schedule/log-week',{job_id:JOB_ID},d=>{alert(d.message||'Done');location.reload();});}
-function submitDailyLog(){const date=document.getElementById('log-date').value;if(!date){alert('Date required');return;}api('/installation/api/daily-logs/add',{job_id:JOB_ID,log_date:date,weather:document.getElementById('log-weather').value,temp_high:document.getElementById('log-temp').value||null,crew_count:document.getElementById('log-crew-count').value||0,crew_members:document.getElementById('log-crew').value,hours_worked:0,work_performed:document.getElementById('log-work').value,materials_used:document.getElementById('log-materials').value,equipment_used:document.getElementById('log-equipment').value,issues_delays:document.getElementById('log-issues').value},()=>{closeModal('add-log-modal');location.reload();});}
 function submitExpense(){const amount=document.getElementById('exp-amount').value;if(!amount){alert('Amount required');return;}const form=new FormData();form.append('job_id',JOB_ID);form.append('expense_date',document.getElementById('exp-date').value);form.append('category',document.getElementById('exp-cat').value);form.append('amount',amount);form.append('vendor',document.getElementById('exp-vendor').value);form.append('description',document.getElementById('exp-desc').value);const rf=document.getElementById('exp-receipt').files[0];if(rf)form.append('receipt',rf);fetch('/installation/api/expenses/add',{method:'POST',body:form}).then(r=>r.json()).then(d=>{if(d.success){closeModal('add-expense-modal');location.reload();}else alert('Error: '+d.error);});}
 function deleteExpense(id,btn){if(!confirm('Delete?'))return;api('/installation/api/expenses/delete',{id},()=>btn.closest('tr').remove());}
 function uploadPlan(){const f=document.getElementById('plan-file');if(!f.files.length){alert('Select a file');return;}const form=new FormData();form.append('job_id',JOB_ID);form.append('plan_file',f.files[0]);form.append('description',document.getElementById('plan-desc').value);form.append('is_current',document.getElementById('plan-current').value);fetch('/installation/api/site-plans/upload',{method:'POST',body:form}).then(r=>r.json()).then(d=>{if(d.success){closeModal('upload-plan-modal');location.reload();}else alert('Error: '+d.error);});}
 function markCurrent(id){api('/installation/api/site-plans/mark-current',{plan_id:id,job_id:JOB_ID},()=>location.reload());}
 function deletePlan(id,btn){if(!confirm('Delete this plan?'))return;api('/installation/api/site-plans/delete',{plan_id:id},()=>btn.closest('.plan-card').remove());}
-function submitRFI(){const title=document.getElementById('rfi-title').value.trim();if(!title){alert('Title required');return;}api('/installation/api/rfis/add',{job_id:JOB_ID,title,priority:document.getElementById('rfi-priority').value,due_date:document.getElementById('rfi-due').value,assigned_to:document.getElementById('rfi-assigned').value,question:document.getElementById('rfi-question').value},()=>{closeModal('add-rfi-modal');location.reload();});}
 </script>
 </body></html>
 '''
