@@ -20353,14 +20353,14 @@ def community_billing_tech():
     c.execute("SELECT name FROM communities WHERE active = 1 ORDER BY name")
     communities = [row[0] for row in c.fetchall()]
 
-    # Get tech's submissions for the current month
+    # Get tech's submissions for the last 60 days
     username = session.get('username')
-    current_month = datetime.now().strftime('%Y-%m')
+    cutoff = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
     c.execute("""SELECT id, community_name, work_date, status, submitted_at, created_at
                  FROM community_billing_submissions
-                 WHERE tech_username = ? AND work_date LIKE ?
+                 WHERE tech_username = ? AND COALESCE(work_date, created_at) >= ?
                  ORDER BY work_date DESC, COALESCE(submitted_at, created_at) DESC""",
-             (username, current_month + '%'))
+             (username, cutoff))
 
     submissions = []
     for row in c.fetchall():
