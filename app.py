@@ -1361,6 +1361,14 @@ def init_db():
         c.execute("DROP TABLE community_billing_submissions")
         c.execute("ALTER TABLE community_billing_submissions_new RENAME TO community_billing_submissions")
 
+    # Migrate: add updated_at and deleted_at to community_billing_submissions
+    c.execute("PRAGMA table_info(community_billing_submissions)")
+    sub_cols = [col[1] for col in c.fetchall()]
+    if 'updated_at' not in sub_cols:
+        c.execute("ALTER TABLE community_billing_submissions ADD COLUMN updated_at TEXT")
+    if 'deleted_at' not in sub_cols:
+        c.execute("ALTER TABLE community_billing_submissions ADD COLUMN deleted_at TEXT")
+
     # Job Costing App Tables
     # Stores imported proposal data (from PDF) for each install job
     c.execute('''CREATE TABLE IF NOT EXISTS job_proposals
@@ -19200,7 +19208,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         const _recentCols = [
             {key: 'community_name', label: 'Community'},
             {key: 'tech_username',  label: 'Technician'},
-            {key: 'work_date',      label: 'Work Date'},
+            {key: 'last_modified',  label: 'Last Modified'},
             {key: 'status',         label: 'Status'},
             {key: 'created_at',     label: 'Created At'},
             {key: 'submitted_at',   label: 'Submitted At'},
@@ -19257,13 +19265,17 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             });
             html += '</tr></thead><tbody>';
             sorted.forEach((s, i) => {
-                const bg = i % 2 === 0 ? '#fff' : '#f8f9fa';
-                const statusColor = s.status === 'submitted' ? '#28a745' : '#6c757d';
-                html += `<tr style="background:${bg};">
-                    <td style="padding:8px 12px;border-bottom:1px solid #eee;font-weight:600;">${s.community_name}</td>
-                    <td style="padding:8px 12px;border-bottom:1px solid #eee;">${s.tech_username}</td>
-                    <td style="padding:8px 12px;border-bottom:1px solid #eee;">${s.work_date || ''}</td>
-                    <td style="padding:8px 12px;border-bottom:1px solid #eee;color:${statusColor};font-weight:600;">${s.status}</td>
+                const isDeleted = s.status === 'deleted';
+                const bg = isDeleted ? '#fff5f5' : (i % 2 === 0 ? '#fff' : '#f8f9fa');
+                const rowStyle = isDeleted ? 'opacity:0.75;' : '';
+                const textDecor = isDeleted ? 'text-decoration:line-through;color:#999;' : '';
+                const statusColor = isDeleted ? '#dc3545' : (s.status === 'submitted' ? '#28a745' : '#6c757d');
+                const statusLabel = isDeleted ? '🗑 Deleted' : s.status;
+                html += `<tr style="background:${bg};${rowStyle}">
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;font-weight:600;${textDecor}">${s.community_name}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;${textDecor}">${s.tech_username}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#666;">${s.last_modified || ''}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;color:${statusColor};font-weight:600;">${statusLabel}</td>
                     <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#666;">${s.created_at || ''}</td>
                     <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#666;">${s.submitted_at || ''}</td>
                 </tr>`;
@@ -20775,6 +20787,10 @@ def community_billing_save_draft():
                           datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
                 inserted_count += 1
 
+        # Stamp updated_at on the submission
+        c.execute("UPDATE community_billing_submissions SET updated_at = ? WHERE id = ?",
+                 (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), submission_id))
+
         conn.commit()
 
         # Verify the save by querying back
@@ -21504,13 +21520,15 @@ def community_recent_submissions():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
-        c.execute("""SELECT community_name, tech_username, work_date, submitted_at, status, created_at
+        c.execute("""SELECT community_name, tech_username, work_date, submitted_at, status,
+                            created_at, COALESCE(updated_at, created_at, '') as last_modified
                      FROM community_billing_submissions
-                     ORDER BY submitted_at DESC
+                     ORDER BY COALESCE(updated_at, created_at, submitted_at) DESC
                      LIMIT 100""")
         submissions = [
             {'community_name': r[0], 'tech_username': r[1], 'work_date': r[2],
-             'submitted_at': r[3] or '', 'status': r[4], 'created_at': r[5] or ''}
+             'submitted_at': r[3] or '', 'status': r[4], 'created_at': r[5] or '',
+             'last_modified': r[6] or ''}
             for r in c.fetchall()
         ]
         return jsonify({'success': True, 'submissions': submissions})
@@ -21536,11 +21554,10 @@ def community_billing_delete_submission():
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
 
-        # Delete all line items for this submission
-        c.execute("DELETE FROM community_billing_line_items WHERE submission_id = ?", (submission_id,))
-
-        # Delete the submission itself
-        c.execute("DELETE FROM community_billing_submissions WHERE id = ?", (submission_id,))
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        c.execute("""UPDATE community_billing_submissions
+                     SET status = 'deleted', deleted_at = ?, updated_at = ?
+                     WHERE id = ?""", (now, now, submission_id))
 
         conn.commit()
         conn.close()
