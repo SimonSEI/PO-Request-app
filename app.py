@@ -16563,9 +16563,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 Enable split
                             </label>
                         </div>
-                        <div class="form-group" id="num_clocks_group" style="flex: 0 0 auto; min-width: 130px; display:none;">
-                            <label for="num_clocks">Number of Clocks</label>
-                            <input type="number" id="num_clocks" name="num_clocks" placeholder="e.g. 4" min="1" style="width: 90px; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;">
+                        <div class="form-group" id="num_clocks_group" style="flex: 0 0 auto; min-width: 130px;">
+                            <label for="num_clocks">Clocks</label>
+                            <input type="number" id="num_clocks" name="num_clocks" placeholder="e.g. 4" min="0" style="width: 90px; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;">
                         </div>
                         <div class="form-group" style="flex: 0 0 auto;">
                             <label style="display:block; margin-bottom: 6px;">Custom Tabs</label>
@@ -16633,8 +16633,19 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 <!-- Header row -->
                                 <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 12px;">
                                     <h4 style="margin: 0; font-size: 14px; color: #333;">🕐 Clock Addresses</h4>
-                                    <button type="button" onclick="exportZoneLocate({{ community.id }}, '{{ community.name | e }}')"
-                                            style="padding: 4px 12px; background: #17a2b8; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">📥 Export Excel Zone Locate</button>
+                                    <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                                        <label style="margin: 0; font-size: 12px; color: #666;">Clocks:</label>
+                                        <input type="number" id="comm-clock-num-{{ community.id }}" min="1" max="999"
+                                               value="{{ community.num_clocks }}"
+                                               style="width: 60px; padding: 4px 6px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px;"
+                                               onwheel="this.blur()"
+                                               onkeypress="if(event.key==='Enter') updateCommunityClockCount({{ community.id }})">
+                                        <button type="button" onclick="updateCommunityClockCount({{ community.id }})"
+                                                style="padding: 4px 12px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">Update</button>
+                                        <span id="comm-clock-count-msg-{{ community.id }}" style="font-size: 12px;"></span>
+                                        <button type="button" onclick="exportZoneLocate({{ community.id }}, '{{ community.name | e }}')"
+                                                style="padding: 4px 12px; background: #17a2b8; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">📥 Export Excel Zone Locate</button>
+                                    </div>
                                 </div>
 
                                 <!-- Excel import (no common area checkbox — all addresses go under their clock) -->
@@ -17243,15 +17254,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         // Used by the "Add New Community" form to queue custom tabs before submission
         let _ctgCounter = 0;
         function toggleCaSplit(enabled) {
-            const group = document.getElementById('num_clocks_group');
-            const input = document.getElementById('num_clocks');
-            if (enabled) {
-                group.style.display = 'block';
-                if (!input.value) input.value = '1';
-            } else {
-                group.style.display = 'none';
-                input.value = '';
-            }
+            // CA split toggle — no effect on clock count field
         }
 
         function addCustomTabToForm() {
