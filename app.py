@@ -25297,7 +25297,6 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
     <a href="/installation" class="active">Jobs</a>
     <a href="/installation/schedule">📅 Schedule</a>
     <a href="/installation/crews">👷 Manage Crews</a>
-    <a href="/installation/all-change-orders">📝 Change Orders</a>
     <a href="/dashboard">← Dashboard</a>
   </nav>
 </div>
@@ -25307,11 +25306,6 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
       <div class="stat-label">Active Jobs</div>
       <div class="stat-value">{{ active_count }}</div>
       <div class="stat-sub">{{ total_count }} total</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Pending Change Orders</div>
-      <div class="stat-value" style="color:{% if pending_cos > 0 %}#b45309{% else %}#1a3c5e{% endif %}">{{ pending_cos }}</div>
-      <div class="stat-sub">Awaiting approval</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Total Contract Value</div>
@@ -25363,7 +25357,7 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
         <a href="/installation/job/{{ j.id }}" class="btn btn-primary btn-sm">Open →</a>
-        <a href="/installation/job/{{ j.id }}?tab=change-orders" class="btn btn-secondary btn-sm">COs</a>
+        <a href="/installation/job/{{ j.id }}?tab=proposals" class="btn btn-secondary btn-sm">📋 Proposals</a>
         <a href="/installation/job/{{ j.id }}?tab=site-plans" class="btn btn-secondary btn-sm">🗺</a>
       </div>
     </div>
@@ -25393,7 +25387,6 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
   <nav>
     <a href="/installation">← Jobs</a>
     <a href="/installation/schedule">📅 Schedule</a>
-    <a href="/installation/all-change-orders">📝 All COs</a>
     <a href="/installation/crews">👷 Manage Crews</a>
     <a href="/dashboard">Dashboard</a>
   </nav>
@@ -25423,9 +25416,8 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
   <!-- Tabs -->
   <div class="tabs" id="main-tabs">
     <button class="tab" data-tab="overview" onclick="switchTab('overview')">📊 Overview</button>
-    <button class="tab" data-tab="costing" onclick="switchTab('costing')">📈 Financials</button>
+    <button class="tab" data-tab="proposals" onclick="switchTab('proposals')">📋 Proposals</button>
     <button class="tab" data-tab="site-plans" onclick="switchTab('site-plans')">🗺 Plans</button>
-    <button class="tab" data-tab="change-orders" onclick="switchTab('change-orders')">📝 Change Orders</button>
     <button class="tab" data-tab="schedule" onclick="switchTab('schedule')">📅 Schedule</button>
     <button class="tab" data-tab="expenses" onclick="switchTab('expenses')">💳 Expenses</button>
   </div>
@@ -25495,8 +25487,37 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
   </div>
 
   <!-- ── FINANCIALS ── -->
-  <div class="tab-content" id="tab-costing">
-    {% if proposal %}
+  <!-- ── PROPOSALS ── -->
+  <div class="tab-content" id="tab-proposals">
+
+    <!-- Proposals list -->
+    <div class="card">
+      <div class="card-title">Proposals
+        <button class="btn btn-primary btn-sm" onclick="openModal('add-proposal-modal')">+ Add Proposal</button>
+      </div>
+      {% if proposals %}
+      <table><thead><tr><th>Proposal #</th><th>Bid Amount</th><th>Days Allotted</th><th>Materials</th><th>Labor</th><th>Subs</th><th>Added</th></tr></thead>
+      <tbody>
+      {% for p in proposals %}
+      <tr>
+        <td style="font-weight:700">{{ p.proposal_number or '—' }}</td>
+        <td style="font-weight:600;color:#1a3c5e">${{ "{:,.0f}".format(p.bid_amount or 0) }}</td>
+        <td>{{ p.days_allotted or '—' }} days</td>
+        <td>${{ "{:,.0f}".format(p.materials_budget or 0) }}</td>
+        <td>${{ "{:,.0f}".format(p.labor_budget or 0) }}</td>
+        <td>${{ "{:,.0f}".format(p.subs_budget or 0) }}</td>
+        <td style="font-size:12px;color:#9ca3af">{{ (p.imported_at or '')[:10] }}</td>
+      </tr>
+      {% endfor %}
+      </tbody></table>
+      {% else %}
+      <div style="text-align:center;padding:30px;color:#9ca3af"><div style="font-size:36px;margin-bottom:8px">📋</div><p>No proposals yet. Add one to enable financial tracking.</p></div>
+      {% endif %}
+    </div>
+
+    <!-- Financial summary (uses first/primary proposal) -->
+    {% if proposals %}
+    {% set proposal = proposals[0] %}
     {% set bid = proposal.bid_amount or 0 %}
     {% set invoiced = total_invoiced or 0 %}
     {% set exp_total = expense_grand_total or 0 %}
@@ -25510,114 +25531,37 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
     {% set billed_pct = (invoiced / bid * 100)|round(1) if bid > 0 else 0 %}
     {% set budget_total = (proposal.materials_budget or 0) + (proposal.labor_budget or 0) + (proposal.travel_budget or 0) + (proposal.hotel_cash_budget or 0) + (proposal.subs_budget or 0) + (proposal.rental_budget or 0) + (proposal.permit_budget or 0) %}
     {% set budget_used_pct = (exp_total / budget_total * 100)|round(1) if budget_total > 0 else 0 %}
-
     <div class="card">
-      <div class="card-title">Financial Summary</div>
+      <div class="card-title">Financial Summary <span style="font-size:12px;font-weight:400;color:#6b7280">(based on Proposal {{ proposals[0].proposal_number or '#1' }})</span></div>
       <div class="metric-grid">
+        <div class="metric-card"><div class="metric-label">Bid / Contract</div><div class="metric-value">${{ "{:,.0f}".format(bid) }}</div></div>
         <div class="metric-card">
-          <div class="metric-label">Bid / Contract Amount</div>
-          <div class="metric-value">${{ "{:,.0f}".format(bid) }}</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">% Contract Billed</div>
-          <div class="metric-value">{{ billed_pct }}%</div>
+          <div class="metric-label">% Billed</div><div class="metric-value">{{ billed_pct }}%</div>
           <div class="progress-wrap"><div class="progress-bar"><div class="progress-fill {{ 'fill-over' if billed_pct>=100 else ('fill-warn' if billed_pct>=80 else 'fill-blue') }}" style="width:{{ [billed_pct,100]|min }}%"></div></div></div>
           <div class="metric-sub">${{ "{:,.0f}".format(invoiced) }} invoiced</div>
         </div>
         <div class="metric-card">
-          <div class="metric-label">Budget Used</div>
-          <div class="metric-value">{{ budget_used_pct }}%</div>
+          <div class="metric-label">Budget Used</div><div class="metric-value">{{ budget_used_pct }}%</div>
           <div class="progress-wrap"><div class="progress-bar"><div class="progress-fill {{ 'fill-over' if budget_used_pct>=100 else ('fill-warn' if budget_used_pct>=80 else 'fill-ok') }}" style="width:{{ [budget_used_pct,100]|min }}%"></div></div></div>
           <div class="metric-sub">${{ "{:,.0f}".format(exp_total) }} of ${{ "{:,.0f}".format(budget_total) }}</div>
         </div>
         <div class="metric-card {{ 'green' if margin_pct >= 15 else ('amber' if margin_pct >= 0 else 'red') }}">
-          <div class="metric-label">Current Net Margin</div>
-          <div class="metric-value">{{ margin_pct }}%</div>
+          <div class="metric-label">Current Net Margin</div><div class="metric-value">{{ margin_pct }}%</div>
           <div class="metric-sub">${{ "{:,.0f}".format(gross) }} gross profit</div>
         </div>
         <div class="metric-card {{ 'green' if pred_margin >= 15 else ('amber' if pred_margin >= 0 else 'red') }}">
-          <div class="metric-label">Predicted Net Margin</div>
-          <div class="metric-value">{{ pred_margin }}%</div>
+          <div class="metric-label">Predicted Net Margin</div><div class="metric-value">{{ pred_margin }}%</div>
           <div class="metric-sub">+{{ remaining_days }} days @ $1,850 projected</div>
         </div>
         <div class="metric-card purple">
-          <div class="metric-label">Crew Cost</div>
-          <div class="metric-value">${{ "{:,.0f}".format(crew_cost) }}</div>
+          <div class="metric-label">Crew Cost</div><div class="metric-value">${{ "{:,.0f}".format(crew_cost) }}</div>
           <div class="metric-sub">{{ days_on_job }} of {{ proposal.days_allotted or '?' }} days used</div>
         </div>
       </div>
     </div>
-
-    <div class="card">
-      <div class="card-title">Budget vs Expenses by Category</div>
-      <div class="budget-row">
-        {% for name, key, budget in [
-          ('Materials', 'materials', proposal.materials_budget),
-          ('Labor', 'labor', proposal.labor_budget),
-          ('Travel', 'travel', proposal.travel_budget),
-          ('Hotel/Cash', 'hotel', proposal.hotel_cash_budget),
-          ('Subs', 'subs', proposal.subs_budget),
-          ('Rentals', 'rental', proposal.rental_budget),
-          ('Permits', 'permit', proposal.permit_budget),
-        ] %}
-        {% set budget_val = budget or 0 %}
-        {% set actual = expense_totals.get(key, 0) %}
-        {% if budget_val > 0 or actual > 0 %}
-        <div class="bi">
-          <div class="bi-label">{{ name }}</div>
-          <div class="bi-budget">${{ "{:,.0f}".format(budget_val) }}</div>
-          <div class="bi-actual">Used ${{ "{:,.0f}".format(actual) }}</div>
-          <div class="bi-bar"><div class="bi-fill {{ 'fill-over' if actual>=budget_val and budget_val>0 else ('fill-warn' if actual>=budget_val*0.8 and budget_val>0 else 'fill-ok') }}" style="width:{{ ([actual/budget_val*100, 100]|min)|int if budget_val > 0 else 0 }}%"></div></div>
-        </div>
-        {% endif %}
-        {% endfor %}
-      </div>
-    </div>
-    {% if pos %}
-    <div class="card">
-      <div class="card-title">PO / Invoice History</div>
-      <table><thead><tr><th>PO #</th><th>Tech</th><th>Status</th><th>Estimated</th><th>Invoiced</th><th>Date</th></tr></thead>
-      <tbody>{% for po in pos %}<tr><td style="font-weight:600">#{{ po[0] }}</td><td>{{ po[2] }}</td><td>{{ po[3] }}</td><td>${{ "{:,.2f}".format(po[4] or 0) }}</td><td>${{ "{:,.2f}".format(po[5] or 0) }}</td><td style="font-size:12px;color:#9ca3af">{{ (po[6] or '')[:10] }}</td></tr>{% endfor %}</tbody>
-      </table>
-    </div>
     {% endif %}
-    {% else %}
-    <div class="card" style="text-align:center;padding:40px;color:#9ca3af">
-      <div style="font-size:40px;margin-bottom:10px">📈</div>
-      <p>No proposal imported yet. Import a proposal PDF from the Job Costing page to enable financial tracking.</p>
-      <a href="/job_costing" class="btn btn-primary" style="margin-top:16px;display:inline-flex">Import Proposal →</a>
-    </div>
-    {% endif %}
-  </div>
 
-  <!-- ── SITE PLANS ── -->
-  <div class="tab-content" id="tab-site-plans">
-    <div class="card">
-      <div class="card-title">Site Plans & Drawings
-        <button class="btn btn-primary btn-sm" onclick="openModal('upload-plan-modal')">⬆ Upload</button>
-      </div>
-      {% if site_plans %}
-      {% for p in site_plans %}
-      <div class="plan-card">
-        <div style="flex:1;min-width:0">
-          <div class="plan-name">{{ p.original_filename }}{% if p.is_current %}<span class="current-tag">Current</span>{% endif %}</div>
-          <div class="plan-meta">v{{ p.version }} · {{ (p.uploaded_at or '')[:10] }} · {{ p.uploaded_by }}{% if p.file_size %} · {{ "%.1f"|format(p.file_size/1024/1024) }} MB{% endif %}{% if p.description %} · {{ p.description }}{% endif %}</div>
-        </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <a href="/installation/files/site-plan/{{ p.filename }}" target="_blank" class="btn btn-secondary btn-sm">⬇ View</a>
-          {% if not p.is_current %}<button class="btn btn-secondary btn-sm" onclick="markCurrent({{ p.id }})">✓ Current</button>{% endif %}
-          <button class="btn btn-danger btn-sm" onclick="deletePlan({{ p.id }}, this)">🗑</button>
-        </div>
-      </div>
-      {% endfor %}
-      {% else %}
-      <div style="text-align:center;padding:40px;color:#9ca3af"><div style="font-size:40px;margin-bottom:8px">🗺</div><p>No site plans uploaded yet.</p></div>
-      {% endif %}
-    </div>
-  </div>
-
-  <!-- ── CHANGE ORDERS ── -->
-  <div class="tab-content" id="tab-change-orders">
+    <!-- Change Orders -->
     <div class="card">
       <div class="card-title">Change Orders
         <div style="display:flex;gap:6px">
@@ -25653,11 +25597,38 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
       {% endfor %}
       </tbody></table>
       {% else %}
-      <div style="text-align:center;padding:40px;color:#9ca3af"><div style="font-size:40px;margin-bottom:8px">📝</div><p>No change orders yet. Use Voice or New to create one.</p></div>
+      <div style="text-align:center;padding:30px;color:#9ca3af"><div style="font-size:36px;margin-bottom:8px">📝</div><p>No change orders yet. Use Voice or New to create one.</p></div>
       {% endif %}
     </div>
   </div>
 
+  <!-- ── SITE PLANS ── -->
+  <div class="tab-content" id="tab-site-plans">
+    <div class="card">
+      <div class="card-title">Site Plans & Drawings
+        <button class="btn btn-primary btn-sm" onclick="openModal('upload-plan-modal')">⬆ Upload</button>
+      </div>
+      {% if site_plans %}
+      {% for p in site_plans %}
+      <div class="plan-card">
+        <div style="flex:1;min-width:0">
+          <div class="plan-name">{{ p.original_filename }}{% if p.is_current %}<span class="current-tag">Current</span>{% endif %}</div>
+          <div class="plan-meta">v{{ p.version }} · {{ (p.uploaded_at or '')[:10] }} · {{ p.uploaded_by }}{% if p.file_size %} · {{ "%.1f"|format(p.file_size/1024/1024) }} MB{% endif %}{% if p.description %} · {{ p.description }}{% endif %}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <a href="/installation/files/site-plan/{{ p.filename }}" target="_blank" class="btn btn-secondary btn-sm">⬇ View</a>
+          {% if not p.is_current %}<button class="btn btn-secondary btn-sm" onclick="markCurrent({{ p.id }})">✓ Current</button>{% endif %}
+          <button class="btn btn-danger btn-sm" onclick="deletePlan({{ p.id }}, this)">🗑</button>
+        </div>
+      </div>
+      {% endfor %}
+      {% else %}
+      <div style="text-align:center;padding:40px;color:#9ca3af"><div style="font-size:40px;margin-bottom:8px">🗺</div><p>No site plans uploaded yet.</p></div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- ── CHANGE ORDERS ── -->
   <!-- ── SCHEDULE ── -->
   <div class="tab-content" id="tab-schedule">
     <div class="card">
@@ -25830,6 +25801,31 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Add Proposal -->
+  <div class="modal-overlay" id="add-proposal-modal">
+    <div class="modal">
+      <button class="modal-close" onclick="closeModal('add-proposal-modal')">×</button>
+      <h3>📋 Add Proposal</h3>
+      <div class="form-row">
+        <div class="form-group"><label>Proposal #</label><input id="prop-num" placeholder="e.g. 2024-001"></div>
+        <div class="form-group"><label>Bid / Contract Amount ($)</label><input id="prop-bid" type="number" step="0.01" placeholder="0.00"></div>
+        <div class="form-group"><label>Days Allotted</label><input id="prop-days" type="number" placeholder="0"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Materials Budget ($)</label><input id="prop-mat" type="number" step="0.01" value="0"></div>
+        <div class="form-group"><label>Labor Budget ($)</label><input id="prop-lab" type="number" step="0.01" value="0"></div>
+        <div class="form-group"><label>Subs Budget ($)</label><input id="prop-subs" type="number" step="0.01" value="0"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Travel Budget ($)</label><input id="prop-trav" type="number" step="0.01" value="0"></div>
+        <div class="form-group"><label>Hotel/Cash Budget ($)</label><input id="prop-hotel" type="number" step="0.01" value="0"></div>
+        <div class="form-group"><label>Rental Budget ($)</label><input id="prop-rent" type="number" step="0.01" value="0"></div>
+        <div class="form-group"><label>Permit Budget ($)</label><input id="prop-permit" type="number" step="0.01" value="0"></div>
+      </div>
+      <button class="btn btn-primary" style="margin-top:8px" onclick="submitProposal()">Save Proposal</button>
+    </div>
+  </div>
+
   <!-- Upload Plan -->
   <div class="modal-overlay" id="upload-plan-modal">
     <div class="modal">
@@ -25859,6 +25855,7 @@ function stopRecording(){if(recognition){recognition.onend=null;recognition.stop
 function api(url,data,cb){fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}).then(r=>r.json()).then(d=>{if(d.success)cb(d);else alert('Error: '+(d.error||'Unknown error'));}).catch(e=>alert('Network error: '+e));}
 function saveJobInfo(){api('/installation/api/job/update',{job_id:JOB_ID,client_name:document.getElementById('ej-client').value,client_contact:document.getElementById('ej-contact').value,client_email:document.getElementById('ej-email').value,inst_status:document.getElementById('ej-status').value,project_address:document.getElementById('ej-address').value,start_date:document.getElementById('ej-start').value,end_date:document.getElementById('ej-end').value,contract_value:document.getElementById('ej-value').value,description:document.getElementById('ej-desc').value},()=>location.reload());}
 function submitVoiceCO(){const t=document.getElementById('voice-transcript').value.trim();if(!t&&!document.getElementById('voice-co-title').value){alert('Record or type a description');return;}api('/installation/api/change-orders/create',{job_id:JOB_ID,title:document.getElementById('voice-co-title').value||t.substring(0,80),description:t,voice_transcript:t,amount:document.getElementById('voice-co-amount').value||0,requires_approval:document.getElementById('voice-co-approval').value,client_email:document.getElementById('voice-co-email').value},()=>{closeModal('voice-co-modal');location.reload();});}
+function submitProposal(){const bid=document.getElementById('prop-bid').value;if(!bid){alert('Bid amount required');return;}api('/installation/api/proposals/add',{job_id:JOB_ID,proposal_number:document.getElementById('prop-num').value,bid_amount:parseFloat(bid)||0,days_allotted:parseInt(document.getElementById('prop-days').value)||0,materials_budget:parseFloat(document.getElementById('prop-mat').value)||0,labor_budget:parseFloat(document.getElementById('prop-lab').value)||0,subs_budget:parseFloat(document.getElementById('prop-subs').value)||0,travel_budget:parseFloat(document.getElementById('prop-trav').value)||0,hotel_cash_budget:parseFloat(document.getElementById('prop-hotel').value)||0,rental_budget:parseFloat(document.getElementById('prop-rent').value)||0,permit_budget:parseFloat(document.getElementById('prop-permit').value)||0},()=>{closeModal('add-proposal-modal');location.reload();});}
 function submitCO(){const title=document.getElementById('co-title').value.trim();if(!title){alert('Title required');return;}api('/installation/api/change-orders/create',{job_id:JOB_ID,co_number:document.getElementById('co-num').value,title,description:document.getElementById('co-desc').value,amount:document.getElementById('co-amount').value||0,requires_approval:document.getElementById('co-approval').value,client_email:document.getElementById('co-client-email').value,notes:document.getElementById('co-notes').value},()=>{closeModal('new-co-modal');location.reload();});}
 function updateCoStatus(coId,status){if(!confirm('Update status to "'+status.replace('_',' ')+'"?'))return;api('/installation/api/change-orders/update-status',{co_id:coId,status},()=>location.reload());}
 function sendCoApproval(coId){if(!confirm('Send this change order to the client for approval?'))return;api('/installation/api/change-orders/send-approval',{co_id:coId},d=>{alert('Sent to '+(d.email||'client'));location.reload();});}
@@ -26365,20 +26362,23 @@ def installation_job(job_id):
         job.inst_status = jrow[11]; job.contract_value = jrow[12]
         job.description = jrow[13]; job.budget = jrow[14]
 
-        # proposal
-        c.execute("""SELECT bid_amount, materials_budget, labor_budget, travel_budget,
-                            hotel_cash_budget, subs_budget, rental_budget, permit_budget,
-                            asbuilt_budget, days_allotted FROM job_proposals WHERE job_id=? LIMIT 1""", (job_id,))
-        pr = c.fetchone()
+        # proposals (all for this job)
+        c.execute("""SELECT id, proposal_number, bid_amount, materials_budget, labor_budget,
+                            travel_budget, hotel_cash_budget, subs_budget, rental_budget,
+                            permit_budget, asbuilt_budget, days_allotted, imported_at
+                     FROM job_proposals WHERE job_id=? ORDER BY imported_at DESC""", (job_id,))
+        prop_rows_job = c.fetchall()
         class _P: pass
-        proposal = None
-        if pr:
-            proposal = _P()
-            proposal.bid_amount = pr[0]; proposal.materials_budget = pr[1]
-            proposal.labor_budget = pr[2]; proposal.travel_budget = pr[3]
-            proposal.hotel_cash_budget = pr[4]; proposal.subs_budget = pr[5]
-            proposal.rental_budget = pr[6]; proposal.permit_budget = pr[7]
-            proposal.asbuilt_budget = pr[8]; proposal.days_allotted = pr[9]
+        proposals = []
+        for pr in prop_rows_job:
+            obj = _P()
+            obj.id=pr[0]; obj.proposal_number=pr[1]; obj.bid_amount=pr[2]
+            obj.materials_budget=pr[3]; obj.labor_budget=pr[4]; obj.travel_budget=pr[5]
+            obj.hotel_cash_budget=pr[6]; obj.subs_budget=pr[7]; obj.rental_budget=pr[8]
+            obj.permit_budget=pr[9]; obj.asbuilt_budget=pr[10]; obj.days_allotted=pr[11]
+            obj.imported_at=pr[12]
+            proposals.append(obj)
+        proposal = proposals[0] if proposals else None
 
         # actuals from expenses
         c.execute("SELECT category, SUM(amount) FROM installation_expenses WHERE job_id=? GROUP BY category", (job_id,))
@@ -26513,7 +26513,7 @@ def installation_job(job_id):
         conn.close()
         today = datetime.now().strftime('%Y-%m-%d')
         return render_template_string(INSTALLATION_JOB_TEMPLATE,
-            job=job, proposal=proposal, actuals=actuals,
+            job=job, proposal=proposal, proposals=proposals, actuals=actuals,
             total_invoiced=total_invoiced, days_on_job=days_on_job,
             site_plans=site_plans, change_orders=change_orders, recent_cos=recent_cos,
             schedule_entries=schedule_entries, daily_logs=daily_logs,
@@ -26525,6 +26525,39 @@ def installation_job(job_id):
     except Exception as e:
         import traceback
         return f"<h2>Error loading job</h2><pre>{traceback.format_exc()}</pre><a href='/installation'>Back</a>"
+
+
+@app.route('/installation/api/proposals/add', methods=['POST'])
+def installation_proposal_add():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    if not data.get('job_id') or not data.get('bid_amount'):
+        return jsonify({'success': False, 'error': 'job_id and bid_amount required'})
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        c.execute("""INSERT INTO job_proposals
+                     (job_id, proposal_number, bid_amount, materials_budget, labor_budget,
+                      travel_budget, hotel_cash_budget, subs_budget, rental_budget,
+                      permit_budget, days_allotted, imported_at)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  (data['job_id'], data.get('proposal_number',''),
+                   float(data.get('bid_amount') or 0),
+                   float(data.get('materials_budget') or 0),
+                   float(data.get('labor_budget') or 0),
+                   float(data.get('travel_budget') or 0),
+                   float(data.get('hotel_cash_budget') or 0),
+                   float(data.get('subs_budget') or 0),
+                   float(data.get('rental_budget') or 0),
+                   float(data.get('permit_budget') or 0),
+                   int(data.get('days_allotted') or 0),
+                   now))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
 
 
 @app.route('/installation/api/job/update', methods=['POST'])
