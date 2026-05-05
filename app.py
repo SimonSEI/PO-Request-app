@@ -26354,6 +26354,859 @@ function moveCrew(id, dir) {
 
 # ── Weekly Schedule route (complete rewrite) ──────────────────────────────────
 
+@app.route('/installation')
+def installation():
+    if 'username' not in session:
+        return redirect(url_for('login'))
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""SELECT j.id, j.job_name, j.year, j.active,
+                            COALESCE(j.client_name,''), COALESCE(j.project_address,''),
+                            COALESCE(j.inst_status,'planning'), COALESCE(j.contract_value,0),
+                            COALESCE(j.job_code,'')
+                     FROM jobs j WHERE COALESCE(j.department,'install')='install'
+                     ORDER BY j.active DESC, j.year DESC, j.job_name ASC""")
+        raw_jobs = c.fetchall()
+
+        # days on job per job_id
+        c.execute("SELECT job_id, COUNT(*) FROM install_schedules GROUP BY job_id")
+        days_map = {r[0]: r[1] for r in c.fetchall()}
+
+        # invoice totals per job (via job_name join)
+        c.execute("""SELECT j.id, COALESCE(SUM(i.invoice_cost),0)
+                     FROM jobs j
+                     JOIN po_requests pr ON pr.job_name=j.job_name AND pr.po_type='install'
+                     JOIN invoices i ON i.po_id=pr.id
+                     GROUP BY j.id""")
+        inv_map = {r[0]: r[1] for r in c.fetchall()}
+
+        # change order counts
+        c.execute("SELECT job_id, COUNT(*), SUM(CASE WHEN status='pending_approval' THEN 1 ELSE 0 END) FROM installation_change_orders GROUP BY job_id")
+        co_map = {r[0]: {'total': r[1], 'pending': r[2] or 0} for r in c.fetchall()}
+
+        # site plan counts
+        c.execute("SELECT job_id, COUNT(*) FROM installation_site_plans GROUP BY job_id")
+        plan_map = {r[0]: r[1] for r in c.fetchall()}
+
+        jobs = []
+        total_contract = 0.0
+        total_invoiced = 0.0
+        active_count = 0
+        pending_cos = 0
+        for row in raw_jobs:
+            jid = row[0]
+            inv_total = inv_map.get(jid, 0)
+            co_info = co_map.get(jid, {'total': 0, 'pending': 0})
+            contract = row[7] or 0
+            if row[3]:
+                active_count += 1
+                total_contract += contract
+                total_invoiced += inv_total
+            pending_cos += co_info['pending']
+
+            class _J: pass
+            j = _J()
+            j.id = jid; j.job_name = row[1]; j.year = row[2]; j.active = row[3]
+            j.client_name = row[4]; j.project_address = row[5]
+            j.inst_status = row[6]; j.contract_value = contract
+            j.job_code = row[8]
+            j.days_on_job = days_map.get(jid, 0)
+            j.invoiced_total = inv_total
+            j.total_cos = co_info['total']
+            j.pending_cos = co_info['pending']
+            j.site_plans = plan_map.get(jid, 0)
+            jobs.append(j)
+
+        conn.close()
+        return render_template_string(INSTALLATION_HUB_TEMPLATE,
+            jobs=jobs, active_count=active_count, total_count=len(jobs),
+            pending_cos=pending_cos, total_contract=total_contract,
+            total_invoiced=total_invoiced)
+    except Exception as e:
+        import traceback
+        return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre><a href='/dashboard'>Back</a>"
+
+
+@app.route('/installation/job/<int:job_id>')
+def installation_job(job_id):
+    if 'username' not in session:
+        return redirect(url_for('login'))
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        c.execute("""SELECT id, job_name, year, active, job_code,
+                            COALESCE(client_name,''), COALESCE(client_email,''),
+                            COALESCE(client_contact,''), COALESCE(project_address,''),
+                            COALESCE(start_date,''), COALESCE(end_date,''),
+                            COALESCE(inst_status,'planning'), COALESCE(contract_value,0),
+                            COALESCE(description,''), COALESCE(budget,0)
+                     FROM jobs WHERE id=?""", (job_id,))
+        jrow = c.fetchone()
+        if not jrow:
+            conn.close()
+            return "<h2>Job not found</h2><a href='/installation'>Back</a>"
+
+        class _J: pass
+        job = _J()
+        job.id = jrow[0]; job.job_name = jrow[1]; job.year = jrow[2]
+        job.active = jrow[3]; job.job_code = jrow[4]
+        job.client_name = jrow[5]; job.client_email = jrow[6]
+        job.client_contact = jrow[7]; job.project_address = jrow[8]
+        job.start_date = jrow[9]; job.end_date = jrow[10]
+        job.inst_status = jrow[11]; job.contract_value = jrow[12]
+        job.description = jrow[13]; job.budget = jrow[14]
+
+        # proposal
+        c.execute("""SELECT bid_amount, materials_budget, labor_budget, travel_budget,
+                            hotel_cash_budget, subs_budget, rental_budget, permit_budget,
+                            asbuilt_budget, days_allotted FROM job_proposals WHERE job_id=? LIMIT 1""", (job_id,))
+        pr = c.fetchone()
+        class _P: pass
+        proposal = None
+        if pr:
+            proposal = _P()
+            proposal.bid_amount = pr[0]; proposal.materials_budget = pr[1]
+            proposal.labor_budget = pr[2]; proposal.travel_budget = pr[3]
+            proposal.hotel_cash_budget = pr[4]; proposal.subs_budget = pr[5]
+            proposal.rental_budget = pr[6]; proposal.permit_budget = pr[7]
+            proposal.asbuilt_budget = pr[8]; proposal.days_allotted = pr[9]
+
+        # actuals from expenses
+        c.execute("SELECT category, SUM(amount) FROM installation_expenses WHERE job_id=? GROUP BY category", (job_id,))
+        class _A: pass
+        actuals = _A()
+        actuals.materials=0; actuals.labor=0; actuals.travel=0
+        actuals.hotel=0; actuals.subs=0; actuals.rental=0; actuals.permit=0
+        for row in c.fetchall():
+            cat = row[0].lower()
+            if hasattr(actuals, cat): setattr(actuals, cat, row[1])
+
+        # invoice total
+        c.execute("""SELECT COALESCE(SUM(i.invoice_cost),0)
+                     FROM invoices i JOIN po_requests pr ON pr.id=i.po_id
+                     WHERE pr.job_name=(SELECT job_name FROM jobs WHERE id=?) AND pr.po_type='install'""", (job_id,))
+        total_invoiced = c.fetchone()[0] or 0
+
+        # days on job
+        c.execute("SELECT COUNT(*) FROM install_schedules WHERE job_id=?", (job_id,))
+        days_on_job = c.fetchone()[0]
+
+        # site plans
+        c.execute("SELECT id, filename, original_filename, version, description, file_size, uploaded_by, uploaded_at, is_current FROM installation_site_plans WHERE job_id=? ORDER BY uploaded_at DESC", (job_id,))
+        plan_rows = c.fetchall()
+        class _Plan: pass
+        site_plans = []
+        for p in plan_rows:
+            obj = _Plan()
+            obj.id=p[0]; obj.filename=p[1]; obj.original_filename=p[2]
+            obj.version=p[3]; obj.description=p[4]; obj.file_size=p[5] or 0
+            obj.uploaded_by=p[6]; obj.uploaded_at=p[7] or ''; obj.is_current=p[8]
+            site_plans.append(obj)
+
+        # change orders
+        c.execute("""SELECT id, co_number, title, description, voice_transcript, amount,
+                            status, requires_approval, created_by, created_at,
+                            approved_by, approved_at, client_email, notes
+                     FROM installation_change_orders WHERE job_id=? ORDER BY created_at DESC""", (job_id,))
+        co_rows = c.fetchall()
+        class _CO: pass
+        change_orders = []
+        for co in co_rows:
+            obj = _CO()
+            obj.id=co[0]; obj.co_number=co[1]; obj.title=co[2]
+            obj.description=co[3]; obj.voice_transcript=co[4]; obj.amount=co[5]
+            obj.status=co[6]; obj.requires_approval=co[7]
+            obj.created_by=co[8]; obj.created_at=co[9] or ''
+            obj.approved_by=co[10]; obj.approved_at=co[11] or ''
+            obj.client_email=co[12]; obj.notes=co[13]
+            change_orders.append(obj)
+
+        recent_cos = change_orders[:5]
+
+        # schedule
+        c.execute("SELECT id, schedule_date, crew_members, notes, hours_worked FROM install_schedules WHERE job_id=? ORDER BY schedule_date DESC", (job_id,))
+        sched_rows = c.fetchall()
+        class _S: pass
+        schedule_entries = []
+        for s in sched_rows:
+            obj = _S()
+            obj.id=s[0]; obj.schedule_date=s[1]; obj.crew_members=s[2]
+            obj.notes=s[3]; obj.hours_worked=s[4] or 0
+            schedule_entries.append(obj)
+
+        # daily logs
+        c.execute("""SELECT id, log_date, weather, temp_high, crew_count, crew_members,
+                            hours_worked, work_performed, materials_used, equipment_used,
+                            issues_delays, logged_by FROM installation_daily_logs
+                     WHERE job_id=? ORDER BY log_date DESC""", (job_id,))
+        log_rows = c.fetchall()
+        class _L: pass
+        daily_logs = []
+        for lg in log_rows:
+            obj = _L()
+            obj.id=lg[0]; obj.log_date=lg[1]; obj.weather=lg[2]
+            obj.temp_high=lg[3]; obj.crew_count=lg[4]; obj.crew_members=lg[5]
+            obj.hours_worked=lg[6] or 0; obj.work_performed=lg[7]
+            obj.materials_used=lg[8]; obj.equipment_used=lg[9]
+            obj.issues_delays=lg[10]; obj.logged_by=lg[11]
+            daily_logs.append(obj)
+
+        # expenses
+        c.execute("""SELECT id, expense_date, category, vendor, description, amount,
+                            receipt_filename, logged_by FROM installation_expenses
+                     WHERE job_id=? ORDER BY expense_date DESC""", (job_id,))
+        exp_rows = c.fetchall()
+        class _E: pass
+        expenses = []
+        expense_totals = {}
+        expense_grand_total = 0.0
+        for e in exp_rows:
+            obj = _E()
+            obj.id=e[0]; obj.expense_date=e[1]; obj.category=e[2]
+            obj.vendor=e[3]; obj.description=e[4]; obj.amount=e[5] or 0
+            obj.receipt_filename=e[6]; obj.logged_by=e[7]
+            expenses.append(obj)
+            expense_totals[e[2]] = expense_totals.get(e[2], 0) + (e[5] or 0)
+            expense_grand_total += (e[5] or 0)
+
+        # RFIs
+        c.execute("""SELECT id, rfi_number, title, question, response, status,
+                            priority, assigned_to, due_date, created_by, created_at
+                     FROM installation_rfis WHERE job_id=? ORDER BY created_at DESC""", (job_id,))
+        rfi_rows = c.fetchall()
+        class _R: pass
+        rfis = []
+        for r in rfi_rows:
+            obj = _R()
+            obj.id=r[0]; obj.rfi_number=r[1]; obj.title=r[2]
+            obj.question=r[3]; obj.response=r[4]; obj.status=r[5]
+            obj.priority=r[6]; obj.assigned_to=r[7]; obj.due_date=r[8]
+            obj.created_by=r[9]; obj.created_at=r[10]
+            rfis.append(obj)
+
+        # POs for costing tab
+        c.execute("""SELECT pr.id, j.id, pr.tech_username, pr.status,
+                            COALESCE(pr.estimated_cost,0), COALESCE(pr.invoice_cost,0),
+                            pr.request_date
+                     FROM po_requests pr JOIN jobs j ON j.job_name=pr.job_name
+                     WHERE j.id=? AND pr.po_type='install' ORDER BY pr.request_date DESC""", (job_id,))
+        pos = c.fetchall()
+
+        # Active crew members for schedule modal
+        c.execute("SELECT id, name, role FROM installation_crew_members WHERE active=1 ORDER BY name")
+        cm_rows = c.fetchall()
+        class _CM2: pass
+        crew_members = []
+        for cm in cm_rows:
+            obj = _CM2(); obj.id=cm[0]; obj.name=cm[1]; obj.role=cm[2]
+            crew_members.append(obj)
+
+        conn.close()
+        today = datetime.now().strftime('%Y-%m-%d')
+        return render_template_string(INSTALLATION_JOB_TEMPLATE,
+            job=job, proposal=proposal, actuals=actuals,
+            total_invoiced=total_invoiced, days_on_job=days_on_job,
+            site_plans=site_plans, change_orders=change_orders, recent_cos=recent_cos,
+            schedule_entries=schedule_entries, daily_logs=daily_logs,
+            expenses=expenses, expense_totals=expense_totals,
+            expense_grand_total=expense_grand_total,
+            rfis=rfis, pos=pos, today=today,
+            crew_members=crew_members,
+            role=session.get('role',''), username=session.get('username',''))
+    except Exception as e:
+        import traceback
+        return f"<h2>Error loading job</h2><pre>{traceback.format_exc()}</pre><a href='/installation'>Back</a>"
+
+
+@app.route('/installation/api/job/update', methods=['POST'])
+def installation_job_update():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    job_id = data.get('job_id')
+    if not job_id:
+        return jsonify({'success': False, 'error': 'No job_id'})
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""UPDATE jobs SET client_name=?, client_email=?, client_contact=?,
+                     inst_status=?, project_address=?, start_date=?, end_date=?,
+                     contract_value=?, description=? WHERE id=?""",
+                  (data.get('client_name',''), data.get('client_email',''),
+                   data.get('client_contact',''), data.get('inst_status','planning'),
+                   data.get('project_address',''), data.get('start_date',''),
+                   data.get('end_date',''), float(data.get('contract_value') or 0),
+                   data.get('description',''), job_id))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/site-plans/upload', methods=['POST'])
+def installation_site_plan_upload():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    try:
+        job_id = request.form.get('job_id')
+        if not job_id or 'plan_file' not in request.files:
+            return jsonify({'success': False, 'error': 'Missing file or job_id'})
+        f = request.files['plan_file']
+        if not f.filename:
+            return jsonify({'success': False, 'error': 'Empty file'})
+        desc = request.form.get('description', '')
+        is_current = int(request.form.get('is_current', 1))
+        ext = os.path.splitext(f.filename)[1].lower()
+        safe_name = f"{job_id}_{int(datetime.now().timestamp())}{ext}"
+        save_path = os.path.join(SITE_PLANS_DIR, safe_name)
+        f.save(save_path)
+        file_size = os.path.getsize(save_path)
+
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        # version number
+        c.execute("SELECT COALESCE(MAX(version),0)+1 FROM installation_site_plans WHERE job_id=?", (job_id,))
+        version = c.fetchone()[0]
+        if is_current:
+            c.execute("UPDATE installation_site_plans SET is_current=0 WHERE job_id=?", (job_id,))
+        c.execute("""INSERT INTO installation_site_plans
+                     (job_id, filename, original_filename, version, description, file_size, uploaded_by, uploaded_at, is_current)
+                     VALUES (?,?,?,?,?,?,?,?,?)""",
+                  (job_id, safe_name, f.filename, version, desc, file_size,
+                   session['username'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), is_current))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/files/site-plan/<filename>')
+def installation_site_plan_file(filename):
+    if 'username' not in session:
+        return redirect(url_for('login'))
+    return send_from_directory(SITE_PLANS_DIR, filename)
+
+
+@app.route('/installation/files/photo/<filename>')
+def installation_photo_file(filename):
+    if 'username' not in session:
+        return redirect(url_for('login'))
+    return send_from_directory(DAILY_LOG_PHOTOS_DIR, filename)
+
+
+@app.route('/installation/files/receipt/<filename>')
+def installation_receipt_file(filename):
+    if 'username' not in session:
+        return redirect(url_for('login'))
+    return send_from_directory(EXPENSE_RECEIPTS_DIR, filename)
+
+
+@app.route('/installation/api/site-plans/mark-current', methods=['POST'])
+def installation_site_plan_mark_current():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("UPDATE installation_site_plans SET is_current=0 WHERE job_id=?", (data['job_id'],))
+        c.execute("UPDATE installation_site_plans SET is_current=1 WHERE id=?", (data['plan_id'],))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/site-plans/delete', methods=['POST'])
+def installation_site_plan_delete():
+    if 'username' not in session or session.get('role') not in ['office','admin']:
+        return jsonify({'success': False, 'error': 'Access denied'}), 403
+    data = request.get_json()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT filename FROM installation_site_plans WHERE id=?", (data['plan_id'],))
+        row = c.fetchone()
+        if row:
+            fp = os.path.join(SITE_PLANS_DIR, row[0])
+            if os.path.exists(fp): os.remove(fp)
+        c.execute("DELETE FROM installation_site_plans WHERE id=?", (data['plan_id'],))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/change-orders/create', methods=['POST'])
+def installation_co_create():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    job_id = data.get('job_id')
+    if not job_id:
+        return jsonify({'success': False, 'error': 'No job_id'})
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        # Auto-number
+        c.execute("SELECT COUNT(*)+1 FROM installation_change_orders WHERE job_id=?", (job_id,))
+        co_seq = c.fetchone()[0]
+        co_number = data.get('co_number') or f"CO-{job_id:03d}-{co_seq:03d}"
+        requires_approval = int(data.get('requires_approval', 1))
+        status = 'draft' if requires_approval else 'no_approval_needed'
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        c.execute("""INSERT INTO installation_change_orders
+                     (job_id, co_number, title, description, voice_transcript, amount,
+                      status, requires_approval, created_by, created_at, client_email, notes)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  (job_id, co_number, data.get('title',''), data.get('description',''),
+                   data.get('voice_transcript',''), float(data.get('amount') or 0),
+                   status, requires_approval, session['username'], now,
+                   data.get('client_email',''), data.get('notes','')))
+        conn.commit(); conn.close()
+        return jsonify({'success': True, 'co_number': co_number})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/change-orders/update-status', methods=['POST'])
+def installation_co_update_status():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        if data['status'] == 'approved':
+            c.execute("UPDATE installation_change_orders SET status=?, approved_by=?, approved_at=? WHERE id=?",
+                      (data['status'], session['username'], now, data['co_id']))
+        else:
+            c.execute("UPDATE installation_change_orders SET status=? WHERE id=?",
+                      (data['status'], data['co_id']))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/change-orders/send-approval', methods=['POST'])
+def installation_co_send_approval():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    co_id = data.get('co_id')
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""SELECT ico.*, j.job_name, j.client_email
+                     FROM installation_change_orders ico
+                     JOIN jobs j ON j.id=ico.job_id
+                     WHERE ico.id=?""", (co_id,))
+        co = c.fetchone()
+        if not co:
+            conn.close()
+            return jsonify({'success': False, 'error': 'CO not found'})
+        token = str(uuid.uuid4())
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        c.execute("UPDATE installation_change_orders SET approval_token=?, approval_sent_at=?, status='pending_approval' WHERE id=?",
+                  (token, now, co_id))
+        conn.commit()
+        client_email = co[12] or co[-1]  # client_email from CO or from job
+        conn.close()
+
+        # Send email if email is configured
+        approval_url = f"{WEBSITE_URL}/installation/co/approve/{token}"
+        if EMAIL_ENABLED and client_email:
+            try:
+                import smtplib
+                from email.mime.text import MIMEText
+                from email.mime.multipart import MIMEMultipart
+                msg = MIMEMultipart('alternative')
+                msg['Subject'] = f"Change Order Approval Request — {co[2]}"
+                msg['From'] = EMAIL_ADDRESS
+                msg['To'] = client_email
+                html = f"""
+                <p>You have received a change order for your review and approval.</p>
+                <p><strong>Project:</strong> {co[-2]}</p>
+                <p><strong>CO:</strong> {co[2]} — {co[3]}</p>
+                <p><strong>Amount:</strong> ${co[6]:,.2f}</p>
+                <p><strong>Description:</strong> {co[4] or ''}</p>
+                <p><a href="{approval_url}" style="background:#1a3c5e;color:white;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block;margin-top:12px">Review & Approve Change Order</a></p>
+                """
+                msg.attach(MIMEText(html, 'html'))
+                with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+                    server.starttls()
+                    server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+                    server.sendmail(EMAIL_ADDRESS, client_email, msg.as_string())
+            except Exception:
+                pass
+
+        return jsonify({'success': True, 'email': client_email, 'approval_url': approval_url})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/co/approve/<token>', methods=['GET', 'POST'])
+def installation_co_approve(token):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""SELECT ico.id, ico.co_number, ico.title, ico.description,
+                            ico.amount, ico.status, ico.created_at, ico.approved_at,
+                            j.job_name
+                     FROM installation_change_orders ico
+                     JOIN jobs j ON j.id=ico.job_id
+                     WHERE ico.approval_token=?""", (token,))
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return "<h2>Invalid or expired link.</h2>"
+
+        class _CO: pass
+        co = _CO()
+        co.id=row[0]; co.co_number=row[1]; co.title=row[2]
+        co.description=row[3]; co.amount=row[4]; co.status=row[5]
+        co.created_at=row[6]; co.approved_at=row[7]
+        job_name = row[8]
+        already_actioned = co.status in ('approved', 'rejected')
+
+        if request.method == 'POST' and not already_actioned:
+            action = request.form.get('action')
+            if action in ('approve', 'reject'):
+                new_status = 'approved' if action == 'approve' else 'rejected'
+                now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                approved_by = 'client' if new_status == 'approved' else None
+                c.execute("UPDATE installation_change_orders SET status=?, approved_by=?, approved_at=? WHERE id=?",
+                          (new_status, approved_by, now, co.id))
+                conn.commit()
+                co.status = new_status
+                co.approved_at = now
+                already_actioned = True
+
+        conn.close()
+        return render_template_string(INSTALLATION_CO_APPROVAL_TEMPLATE,
+                                      co=co, job_name=job_name, already_actioned=already_actioned)
+    except Exception as e:
+        import traceback
+        return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre>"
+
+
+@app.route('/installation/api/schedule/log-week', methods=['POST'])
+def installation_log_week():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    job_id = data.get('job_id')
+    try:
+        from datetime import timedelta
+        today = datetime.now().date()
+        # last completed Mon–Fri week
+        monday = today - timedelta(days=today.weekday() + 7)
+        days_added = 0
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        for i in range(5):
+            day = monday + timedelta(days=i)
+            day_str = day.strftime('%Y-%m-%d')
+            c.execute("SELECT id FROM install_schedules WHERE job_id=? AND schedule_date=?", (job_id, day_str))
+            if not c.fetchone():
+                c.execute("""INSERT INTO install_schedules (job_id, schedule_date, crew_members, hours_worked, created_by, created_at)
+                             VALUES (?,?,?,?,?,?)""",
+                          (job_id, day_str, '', 8, session['username'], datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                days_added += 1
+        conn.commit(); conn.close()
+        return jsonify({'success': True, 'message': f"Added {days_added} day(s) for the week of {monday.strftime('%b %d')}"})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/daily-logs/add', methods=['POST'])
+def installation_daily_log_add():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    job_id = data.get('job_id')
+    if not job_id:
+        return jsonify({'success': False, 'error': 'No job_id'})
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""INSERT INTO installation_daily_logs
+                     (job_id, log_date, weather, temp_high, crew_count, crew_members,
+                      hours_worked, work_performed, materials_used, equipment_used,
+                      issues_delays, logged_by, created_at)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  (job_id, data.get('log_date'), data.get('weather',''),
+                   data.get('temp_high') or None, data.get('crew_count', 0),
+                   data.get('crew_members',''), float(data.get('hours_worked') or 0),
+                   data.get('work_performed',''), data.get('materials_used',''),
+                   data.get('equipment_used',''), data.get('issues_delays',''),
+                   session['username'], datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        new_id = c.lastrowid
+        conn.commit(); conn.close()
+        return jsonify({'success': True, 'id': new_id})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/expenses/add', methods=['POST'])
+def installation_expense_add():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    try:
+        job_id = request.form.get('job_id')
+        if not job_id:
+            return jsonify({'success': False, 'error': 'No job_id'})
+        receipt_filename = None
+        if 'receipt' in request.files:
+            rf = request.files['receipt']
+            if rf.filename:
+                ext = os.path.splitext(rf.filename)[1].lower()
+                receipt_filename = f"receipt_{job_id}_{int(datetime.now().timestamp())}{ext}"
+                rf.save(os.path.join(EXPENSE_RECEIPTS_DIR, receipt_filename))
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""INSERT INTO installation_expenses
+                     (job_id, expense_date, category, description, vendor, amount,
+                      receipt_filename, logged_by, created_at)
+                     VALUES (?,?,?,?,?,?,?,?,?)""",
+                  (job_id, request.form.get('expense_date'),
+                   request.form.get('category','other'),
+                   request.form.get('description',''),
+                   request.form.get('vendor',''),
+                   float(request.form.get('amount') or 0),
+                   receipt_filename, session['username'],
+                   datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/expenses/delete', methods=['POST'])
+def installation_expense_delete():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT receipt_filename FROM installation_expenses WHERE id=?", (data['id'],))
+        row = c.fetchone()
+        if row and row[0]:
+            fp = os.path.join(EXPENSE_RECEIPTS_DIR, row[0])
+            if os.path.exists(fp): os.remove(fp)
+        c.execute("DELETE FROM installation_expenses WHERE id=?", (data['id'],))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/rfis/add', methods=['POST'])
+def installation_rfi_add():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    job_id = data.get('job_id')
+    if not job_id:
+        return jsonify({'success': False, 'error': 'No job_id'})
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*)+1 FROM installation_rfis WHERE job_id=?", (job_id,))
+        seq = c.fetchone()[0]
+        rfi_number = f"RFI-{job_id:03d}-{seq:03d}"
+        c.execute("""INSERT INTO installation_rfis
+                     (job_id, rfi_number, title, question, status, priority,
+                      assigned_to, due_date, created_by, created_at)
+                     VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                  (job_id, rfi_number, data.get('title',''),
+                   data.get('question',''), 'open',
+                   data.get('priority','normal'), data.get('assigned_to',''),
+                   data.get('due_date',''), session['username'],
+                   datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        conn.commit(); conn.close()
+        return jsonify({'success': True, 'rfi_number': rfi_number})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/all-change-orders')
+def installation_all_change_orders():
+    if 'username' not in session:
+        return redirect(url_for('login'))
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""SELECT ico.id, ico.co_number, ico.title, ico.amount, ico.status,
+                            ico.created_at, ico.approved_at, j.id, j.job_name
+                     FROM installation_change_orders ico
+                     JOIN jobs j ON j.id=ico.job_id
+                     ORDER BY ico.created_at DESC""")
+        rows = c.fetchall()
+        conn.close()
+        html = """<!DOCTYPE html><html><head><meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>All Change Orders</title>
+        <style>
+        *{box-sizing:border-box;margin:0;padding:0}
+        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5}
+        .top-bar{background:#1a3c5e;color:white;padding:12px 24px;display:flex;align-items:center;justify-content:space-between}
+        .top-bar h1{font-size:18px;font-weight:700}
+        .top-bar a{color:rgba(255,255,255,.85);text-decoration:none;font-size:14px;margin-left:16px}
+        .content{max-width:1200px;margin:0 auto;padding:24px}
+        .card{background:white;border-radius:10px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+        table{width:100%;border-collapse:collapse}
+        th{text-align:left;padding:10px 12px;background:#f9fafb;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;border-bottom:1px solid #e5e7eb}
+        td{padding:10px 12px;border-bottom:1px solid #f3f4f6;font-size:14px}
+        .badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;text-transform:uppercase}
+        .badge-draft{background:#e5e7eb;color:#374151}
+        .badge-pending_approval{background:#fef3c7;color:#92400e}
+        .badge-approved{background:#d1fae5;color:#065f46}
+        .badge-rejected{background:#fee2e2;color:#b91c1c}
+        .badge-no_approval_needed{background:#ede9fe;color:#5b21b6}
+        a.job-link{color:#1a3c5e;text-decoration:none;font-weight:500}
+        a.job-link:hover{text-decoration:underline}
+        </style></head><body>
+        <div class="top-bar"><h1>📝 All Change Orders</h1>
+        <nav><a href="/installation">← Installation</a><a href="/dashboard">Dashboard</a></nav></div>
+        <div class="content"><div class="card">
+        <table><thead><tr><th>CO #</th><th>Job</th><th>Title</th><th>Amount</th><th>Status</th><th>Created</th><th>Approved</th></tr></thead>
+        <tbody>"""
+        for r in rows:
+            status = r[4] or 'draft'
+            badge_cls = f"badge-{status}"
+            html += f"""<tr>
+            <td style="font-weight:600">{r[1]}</td>
+            <td><a class="job-link" href="/installation/job/{r[7]}">{r[8]}</a></td>
+            <td>{r[2] or ''}</td>
+            <td>${r[3]:,.2f}</td>
+            <td><span class="badge {badge_cls}">{status.replace('_',' ')}</span></td>
+            <td style="font-size:12px;color:#9ca3af">{(r[5] or '')[:10]}</td>
+            <td style="font-size:12px;color:#059669">{(r[6] or '')[:10]}</td>
+            </tr>"""
+        html += """</tbody></table></div></div></body></html>"""
+        return html
+    except Exception as e:
+        import traceback
+        return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre>"
+
+
+@app.route('/installation/crew')
+def installation_crew():
+    if 'username' not in session or session.get('role') not in ['office', 'admin']:
+        return redirect(url_for('login'))
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT id, name, role, phone, active FROM installation_crew_members ORDER BY name")
+        members = c.fetchall()
+        conn.close()
+        html = """<!DOCTYPE html><html><head><meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>Crew Members</title>
+        <style>
+        *{box-sizing:border-box;margin:0;padding:0}
+        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5}
+        .top-bar{background:#1a3c5e;color:white;padding:12px 24px;display:flex;align-items:center;justify-content:space-between}
+        .top-bar h1{font-size:18px;font-weight:700}
+        .top-bar a{color:rgba(255,255,255,.85);text-decoration:none;font-size:14px;margin-left:16px}
+        .content{max-width:900px;margin:0 auto;padding:24px}
+        .card{background:white;border-radius:10px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.06);margin-bottom:20px}
+        .btn{display:inline-flex;align-items:center;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:500;cursor:pointer;border:none;text-decoration:none}
+        .btn-primary{background:#1a3c5e;color:white}
+        .form-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px}
+        input,select{padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;width:100%}
+        label{font-size:13px;font-weight:500;color:#374151;display:block;margin-bottom:4px}
+        table{width:100%;border-collapse:collapse}
+        th{text-align:left;padding:10px 12px;background:#f9fafb;font-size:12px;font-weight:600;color:#6b7280;border-bottom:1px solid #e5e7eb}
+        td{padding:10px 12px;border-bottom:1px solid #f3f4f6;font-size:14px}
+        </style></head><body>
+        <div class="top-bar"><h1>👷 Crew Members</h1>
+        <nav><a href="/installation">← Installation</a></nav></div>
+        <div class="content">
+        <div class="card">
+          <h3 style="font-size:16px;font-weight:600;margin-bottom:16px">Add Crew Member</h3>
+          <div class="form-row">
+            <div><label>Name</label><input id="cm-name" placeholder="Full name"></div>
+            <div><label>Role</label><select id="cm-role"><option value="crew">Crew</option><option value="foreman">Foreman</option><option value="sub">Subcontractor</option><option value="supervisor">Supervisor</option></select></div>
+            <div><label>Phone</label><input id="cm-phone" placeholder="(555) 000-0000"></div>
+          </div>
+          <button class="btn btn-primary" onclick="addMember()">Add Member</button>
+        </div>
+        <div class="card">
+          <table><thead><tr><th>Name</th><th>Role</th><th>Phone</th><th>Active</th><th></th></tr></thead>
+          <tbody id="crew-tbody">"""
+        for m in members:
+            active_badge = '<span style="color:#059669">✓ Active</span>' if m[4] else '<span style="color:#dc2626">Inactive</span>'
+            html += f"<tr><td>{m[1]}</td><td style='text-transform:capitalize'>{m[2]}</td><td>{m[3] or '—'}</td><td>{active_badge}</td><td><button onclick=\"toggleMember({m[0]}, this)\" style='background:#e5e7eb;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px'>{'Deactivate' if m[4] else 'Activate'}</button></td></tr>"
+        html += """</tbody></table>
+        </div></div>
+        <script>
+        function addMember() {
+          const name = document.getElementById('cm-name').value.trim();
+          if (!name) { alert('Name required'); return; }
+          fetch('/installation/api/crew/add', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name, role: document.getElementById('cm-role').value, phone: document.getElementById('cm-phone').value})
+          }).then(r => r.json()).then(d => { if (d.success) location.reload(); else alert(d.error); });
+        }
+        function toggleMember(id, btn) {
+          fetch('/installation/api/crew/toggle', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({id})
+          }).then(r => r.json()).then(d => { if (d.success) location.reload(); });
+        }
+        </script></body></html>"""
+        return html
+    except Exception as e:
+        import traceback
+        return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre>"
+
+
+@app.route('/installation/api/crew/add', methods=['POST'])
+def installation_crew_add():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    if not data.get('name'):
+        return jsonify({'success': False, 'error': 'Name required'})
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("INSERT INTO installation_crew_members (name, role, phone, active, created_at) VALUES (?,?,?,1,?)",
+                  (data['name'], data.get('role','crew'), data.get('phone',''),
+                   datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/crew/toggle', methods=['POST'])
+def installation_crew_toggle():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("UPDATE installation_crew_members SET active = 1 - active WHERE id=?", (data['id'],))
+        conn.commit(); conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+# ── Weekly Schedule route ─────────────────────────────────────────────────
+
+
 @app.route('/installation/schedule')
 def installation_schedule():
     if 'username' not in session:
