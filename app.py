@@ -19214,7 +19214,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
         const _recentCols = [
             {key: 'community_name', label: 'Community'},
-            {key: 'tech_username',  label: 'Technician'},
+            {key: 'tech_name',      label: 'Technician'},
             {key: 'last_modified',  label: 'Last Modified'},
             {key: 'status',         label: 'Status'},
             {key: 'created_at',     label: 'Created At'},
@@ -19280,7 +19280,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 const statusLabel = isDeleted ? '🗑 Deleted' : s.status;
                 html += `<tr style="background:${bg};${rowStyle}">
                     <td style="padding:8px 12px;border-bottom:1px solid #eee;font-weight:600;${textDecor}">${s.community_name}</td>
-                    <td style="padding:8px 12px;border-bottom:1px solid #eee;${textDecor}">${s.tech_username}</td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;${textDecor}">${s.tech_name}</td>
                     <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#666;">${s.last_modified || ''}</td>
                     <td style="padding:8px 12px;border-bottom:1px solid #eee;color:${statusColor};font-weight:600;">${statusLabel}</td>
                     <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#666;">${s.created_at || ''}</td>
@@ -21527,15 +21527,18 @@ def community_recent_submissions():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
-        c.execute("""SELECT community_name, tech_username, work_date, submitted_at, status,
-                            created_at, COALESCE(updated_at, created_at, '') as last_modified
-                     FROM community_billing_submissions
-                     ORDER BY COALESCE(updated_at, created_at, submitted_at) DESC
+        c.execute("""SELECT s.community_name, s.tech_username,
+                            COALESCE(u.full_name, s.tech_username) as tech_name,
+                            s.work_date, s.submitted_at, s.status,
+                            s.created_at, COALESCE(s.updated_at, s.created_at, '') as last_modified
+                     FROM community_billing_submissions s
+                     LEFT JOIN users u ON u.username = s.tech_username
+                     ORDER BY COALESCE(s.updated_at, s.created_at, s.submitted_at) DESC
                      LIMIT 100""")
         submissions = [
-            {'community_name': r[0], 'tech_username': r[1], 'work_date': r[2],
-             'submitted_at': r[3] or '', 'status': r[4], 'created_at': r[5] or '',
-             'last_modified': r[6] or ''}
+            {'community_name': r[0], 'tech_username': r[1], 'tech_name': r[2],
+             'work_date': r[3], 'submitted_at': r[4] or '', 'status': r[5],
+             'created_at': r[6] or '', 'last_modified': r[7] or ''}
             for r in c.fetchall()
         ]
         return jsonify({'success': True, 'submissions': submissions})
