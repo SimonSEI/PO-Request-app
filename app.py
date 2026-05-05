@@ -21278,6 +21278,11 @@ def community_billing_export_excel():
     community_row = c.fetchone()
     community_id = community_row[0] if community_row else None
     num_clocks = community_row[1] if community_row else 0
+    # Verona Walk HOA predates num_clocks — fall back to clock address table
+    if community_id and num_clocks == 0:
+        c.execute("SELECT MAX(clock_number) FROM verona_walk_clock_addresses WHERE community_id = ?", (community_id,))
+        max_clock = c.fetchone()[0] or 0
+        num_clocks = max_clock
     is_clock_community = num_clocks > 0
 
     pricing = None
