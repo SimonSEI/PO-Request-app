@@ -16527,9 +16527,16 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                             <label for="community_name">Community Name</label>
                             <input type="text" id="community_name" name="community_name" placeholder="Enter community name" required>
                         </div>
-                        <div class="form-group" style="flex: 0 0 auto; min-width: 130px;">
+                        <div class="form-group" style="flex: 0 0 auto;">
+                            <label style="display:block; margin-bottom: 6px;">Common Area / Residential</label>
+                            <label style="display:flex; align-items:center; gap:6px; font-weight:400; font-size:14px; cursor:pointer;">
+                                <input type="checkbox" id="enable_ca_split" onchange="toggleCaSplit(this.checked)" style="width:16px;height:16px;">
+                                Enable split
+                            </label>
+                        </div>
+                        <div class="form-group" id="num_clocks_group" style="flex: 0 0 auto; min-width: 130px; display:none;">
                             <label for="num_clocks">Number of Clocks</label>
-                            <input type="number" id="num_clocks" name="num_clocks" placeholder="Optional" min="0" style="width: 90px; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;">
+                            <input type="number" id="num_clocks" name="num_clocks" placeholder="e.g. 4" min="1" style="width: 90px; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;">
                         </div>
                         <div class="form-group" style="flex: 0 0 auto;">
                             <label style="display:block; margin-bottom: 6px;">Custom Tabs</label>
@@ -16966,6 +16973,18 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
         // Used by the "Add New Community" form to queue custom tabs before submission
         let _ctgCounter = 0;
+        function toggleCaSplit(enabled) {
+            const group = document.getElementById('num_clocks_group');
+            const input = document.getElementById('num_clocks');
+            if (enabled) {
+                group.style.display = 'block';
+                if (!input.value) input.value = '1';
+            } else {
+                group.style.display = 'none';
+                input.value = '';
+            }
+        }
+
         function addCustomTabToForm() {
             const tabName = prompt('What do you want to name this tab?');
             if (!tabName || !tabName.trim()) return;
@@ -21251,209 +21270,191 @@ def community_billing_export_excel():
     community = request.args.get('community', '')
     work_month = request.args.get('work_month', '')
 
-    # Get submissions data
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
-    # Get community ID for pricing
-    c.execute("SELECT id FROM communities WHERE name = ? AND active = 1", (community,))
+    # Get community ID and num_clocks
+    c.execute("SELECT id, COALESCE(num_clocks, 0) FROM communities WHERE name = ? AND active = 1", (community,))
     community_row = c.fetchone()
     community_id = community_row[0] if community_row else None
+    num_clocks = community_row[1] if community_row else 0
+    is_clock_community = num_clocks > 0
 
-    # Get pricing for this community
+    # Get pricing
     pricing = None
     if community_id:
         c.execute("""SELECT nozzle, pop_up_6_inch, pop_up_12_inch, rotor_6_inch,
                             new_pop_up_6_inch, new_pop_up_12_inch, riser, solenoid, stat_decoder_1
-                     FROM community_nozzle_prices
-                     WHERE community_id = ?""", (community_id,))
+                     FROM community_nozzle_prices WHERE community_id = ?""", (community_id,))
         pricing_row = c.fetchone()
         if pricing_row:
             pricing = {
-                'nozzle': pricing_row[0],
-                'pop_up_6_inch': pricing_row[1],
-                'pop_up_12_inch': pricing_row[2],
-                'rotor_6_inch': pricing_row[3],
-                'new_pop_up_6_inch': pricing_row[4],
-                'new_pop_up_12_inch': pricing_row[5],
-                'riser': pricing_row[6],
-                'solenoid': pricing_row[7],
-                'stat_decoder_1': pricing_row[8]
+                'nozzle': pricing_row[0], 'pop_up_6_inch': pricing_row[1],
+                'pop_up_12_inch': pricing_row[2], 'rotor_6_inch': pricing_row[3],
+                'new_pop_up_6_inch': pricing_row[4], 'new_pop_up_12_inch': pricing_row[5],
+                'riser': pricing_row[6], 'solenoid': pricing_row[7], 'stat_decoder_1': pricing_row[8]
             }
 
-    c.execute("""SELECT id, tech_username, status, submitted_at
+    c.execute("""SELECT id, tech_username, submitted_at
                  FROM community_billing_submissions
                  WHERE community_name = ? AND work_date LIKE ? AND status = 'submitted'
                  ORDER BY work_date DESC, submitted_at DESC""",
              (community, work_month + '%'))
 
     submissions = []
-    total_cost = 0.0
     for row in c.fetchall():
         submission_id = row[0]
-
         c.execute("""SELECT zone_and_address, nozzle, pop_up_6_inch, pop_up_12_inch,
                             rotor_6_inch, new_pop_up_6_inch, new_pop_up_12_inch,
                             riser, solenoid, stat_decoder_1
                      FROM community_billing_line_items
-                     WHERE submission_id = ?
-                     ORDER BY id""", (submission_id,))
-
+                     WHERE submission_id = ? ORDER BY id""", (submission_id,))
         line_items = []
-        for item_row in c.fetchall():
-            item_dict = {
-                'zone_and_address': item_row[0] or '',
-                'nozzle': item_row[1] or 0,
-                'pop_up_6_inch': item_row[2] or 0,
-                'pop_up_12_inch': item_row[3] or 0,
-                'rotor_6_inch': item_row[4] or 0,
-                'new_pop_up_6_inch': item_row[5] or 0,
-                'new_pop_up_12_inch': item_row[6] or 0,
-                'riser': item_row[7] or 0,
-                'solenoid': item_row[8] or 0,
-                'stat_decoder_1': item_row[9] or 0
+        for ir in c.fetchall():
+            item = {
+                'zone_and_address': ir[0] or '',
+                'nozzle': ir[1] or 0, 'pop_up_6_inch': ir[2] or 0,
+                'pop_up_12_inch': ir[3] or 0, 'rotor_6_inch': ir[4] or 0,
+                'new_pop_up_6_inch': ir[5] or 0, 'new_pop_up_12_inch': ir[6] or 0,
+                'riser': ir[7] or 0, 'solenoid': ir[8] or 0, 'stat_decoder_1': ir[9] or 0
             }
-
-            # Calculate cost for this item if pricing is available
             if pricing:
-                item_cost = (
-                    (item_row[1] or 0) * pricing['nozzle'] +
-                    (item_row[2] or 0) * pricing['pop_up_6_inch'] +
-                    (item_row[3] or 0) * pricing['pop_up_12_inch'] +
-                    (item_row[4] or 0) * pricing['rotor_6_inch'] +
-                    (item_row[5] or 0) * pricing['new_pop_up_6_inch'] +
-                    (item_row[6] or 0) * pricing['new_pop_up_12_inch'] +
-                    (item_row[7] or 0) * pricing['riser'] +
-                    (item_row[8] or 0) * pricing['solenoid'] +
-                    (item_row[9] or 0) * pricing['stat_decoder_1']
-                )
-                item_dict['cost'] = item_cost
-                total_cost += item_cost
+                item['cost'] = sum([
+                    item['nozzle'] * pricing['nozzle'],
+                    item['pop_up_6_inch'] * pricing['pop_up_6_inch'],
+                    item['pop_up_12_inch'] * pricing['pop_up_12_inch'],
+                    item['rotor_6_inch'] * pricing['rotor_6_inch'],
+                    item['new_pop_up_6_inch'] * pricing['new_pop_up_6_inch'],
+                    item['new_pop_up_12_inch'] * pricing['new_pop_up_12_inch'],
+                    item['riser'] * pricing['riser'],
+                    item['solenoid'] * pricing['solenoid'],
+                    item['stat_decoder_1'] * pricing['stat_decoder_1'],
+                ])
             else:
-                item_dict['cost'] = 0
-
-            line_items.append(item_dict)
-
-        submissions.append({
-            'tech_username': row[1],
-            'submitted_at': row[3],
-            'line_items': line_items
-        })
+                item['cost'] = 0
+            line_items.append(item)
+        submissions.append({'tech_username': row[1], 'submitted_at': row[2], 'line_items': line_items})
 
     conn.close()
 
-    # Create Excel workbook
-    try:
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Submissions"
+    import re as _re
+    CA_PATTERN = _re.compile(r'^Clock\s+\d+\s+Common Area\s*[-–]', _re.I)
 
-        # Set up styles
-        header_font = Font(bold=True, color="FFFFFF", size=12)
+    def item_cost_str(item):
+        return item['cost'] if pricing else None
+
+    def write_sheet(ws, title_text, items_by_sub, pricing, num_cols):
+        """Write a submission table into a worksheet."""
+        header_font = Font(bold=True, color="FFFFFF", size=11)
         header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
         summary_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
-        summary_font = Font(bold=True, size=11)
-        border = Border(
-            left=Side(style='thin'),
-            right=Side(style='thin'),
-            top=Side(style='thin'),
-            bottom=Side(style='thin')
-        )
-        center_align = Alignment(horizontal='center', vertical='center')
+        border = Border(left=Side(style='thin'), right=Side(style='thin'),
+                        top=Side(style='thin'), bottom=Side(style='thin'))
+        center = Alignment(horizontal='center', vertical='center')
         currency_format = '$#,##0.00'
+        col_letters = 'ABCDEFGHIJK'
 
-        # Title
-        ws.merge_cells('A1:J1')
-        title_cell = ws['A1']
-        title_cell.value = f"Community Maintenance Report - {community} ({work_month})"
-        title_cell.font = Font(bold=True, size=14)
-        title_cell.alignment = center_align
-        ws.row_dimensions[1].height = 25
+        ws.merge_cells(f'A1:{col_letters[num_cols-1]}1')
+        ws['A1'].value = title_text
+        ws['A1'].font = Font(bold=True, size=13)
+        ws['A1'].alignment = center
+        ws.row_dimensions[1].height = 22
 
-        current_row = 3
+        headers = ['Zone & Address', 'Nozzle', '6" Pop Up', '12" Pop Up', '6" Rotor',
+                   'NEW 6" Pop Up', 'NEW 12" Pop Up', 'Riser', 'Solenoid', '1 Stat Decoder']
+        if pricing:
+            headers.append('Item Cost')
 
-        # Add submissions
-        for submission in submissions:
-            # Tech name header
-            ws.merge_cells(f'A{current_row}:J{current_row}')
-            tech_cell = ws[f'A{current_row}']
-            tech_cell.value = f"Tech: {submission['tech_username']} (Submitted: {submission['submitted_at']})"
-            tech_cell.font = Font(bold=True, size=11)
-            tech_cell.fill = PatternFill(start_color="D9E8F5", end_color="D9E8F5", fill_type="solid")
-            ws.row_dimensions[current_row].height = 18
-            current_row += 1
+        total_cost = 0.0
+        cur = 3
+        for sub in items_by_sub:
+            if not sub['line_items']:
+                continue
+            ws.merge_cells(f'A{cur}:{col_letters[num_cols-1]}{cur}')
+            tc = ws[f'A{cur}']
+            tc.value = f"Tech: {sub['tech_username']}  (Submitted: {sub['submitted_at']})"
+            tc.font = Font(bold=True, size=10)
+            tc.fill = PatternFill(start_color="D9E8F5", end_color="D9E8F5", fill_type="solid")
+            ws.row_dimensions[cur].height = 16
+            cur += 1
 
-            # Column headers
-            headers = ['Zone & Address', 'Nozzle', '6" Pop Up', '12" Pop Up', '6" Rotor',
-                      'NEW 6" Pop Up', 'NEW 12" Pop Up', 'Riser', 'Solenoid', '1 Stat Decoder']
-            if pricing:
-                headers.append('Item Cost')
-
-            for col_num, header in enumerate(headers, 1):
-                cell = ws.cell(row=current_row, column=col_num)
-                cell.value = header
+            for ci, h in enumerate(headers, 1):
+                cell = ws.cell(row=cur, column=ci)
+                cell.value = h
                 cell.font = header_font
                 cell.fill = header_fill
-                cell.alignment = center_align
+                cell.alignment = center
                 cell.border = border
+            ws.row_dimensions[cur].height = 18
+            cur += 1
 
-            ws.row_dimensions[current_row].height = 20
-            current_row += 1
-
-            # Data rows
-            for item in submission['line_items']:
-                ws.cell(row=current_row, column=1).value = item['zone_and_address']
-                ws.cell(row=current_row, column=2).value = item['nozzle']
-                ws.cell(row=current_row, column=3).value = item['pop_up_6_inch']
-                ws.cell(row=current_row, column=4).value = item['pop_up_12_inch']
-                ws.cell(row=current_row, column=5).value = item['rotor_6_inch']
-                ws.cell(row=current_row, column=6).value = item['new_pop_up_6_inch']
-                ws.cell(row=current_row, column=7).value = item['new_pop_up_12_inch']
-                ws.cell(row=current_row, column=8).value = item['riser']
-                ws.cell(row=current_row, column=9).value = item['solenoid']
-                ws.cell(row=current_row, column=10).value = item['stat_decoder_1']
-
-                if pricing:
-                    cost_cell = ws.cell(row=current_row, column=11)
-                    cost_cell.value = item['cost']
-                    cost_cell.number_format = currency_format
-
-                # Apply borders and center alignment to numeric columns
-                for col in range(2, 11):
-                    cell = ws.cell(row=current_row, column=col)
-                    cell.alignment = center_align
+            for item in sub['line_items']:
+                ws.cell(row=cur, column=1).value = item['zone_and_address']
+                for ci, key in enumerate(['nozzle','pop_up_6_inch','pop_up_12_inch','rotor_6_inch',
+                                          'new_pop_up_6_inch','new_pop_up_12_inch','riser','solenoid','stat_decoder_1'], 2):
+                    cell = ws.cell(row=cur, column=ci)
+                    val = item[key]
+                    cell.value = val if val else None
+                    cell.alignment = center
                     cell.border = border
+                if pricing:
+                    cc = ws.cell(row=cur, column=11)
+                    cc.value = item['cost'] if item['cost'] else None
+                    cc.number_format = currency_format
+                    total_cost += item['cost']
+                cur += 1
+            cur += 1
 
-                current_row += 1
+        if pricing and total_cost:
+            cur += 1
+            ws.merge_cells(f'A{cur}:{col_letters[num_cols-1]}{cur}')
+            lbl = ws[f'A{cur}']
+            lbl.value = 'TOTAL COST'
+            lbl.font = Font(bold=True, size=11)
+            lbl.fill = summary_fill
+            lbl.alignment = center
+            lbl.border = border
+            cur += 1
+            ws.merge_cells(f'A{cur}:{col_letters[num_cols-1]}{cur}')
+            tc2 = ws[f'A{cur}']
+            tc2.value = total_cost
+            tc2.font = Font(bold=True, size=13, color="2E7D32")
+            tc2.number_format = currency_format
+            tc2.fill = summary_fill
+            tc2.alignment = center
+            tc2.border = border
+            ws.row_dimensions[cur].height = 22
 
-            current_row += 1
+        ws.column_dimensions['A'].width = 35
+        for col in list('BCDEFGHIJK'):
+            ws.column_dimensions[col].width = 14
 
-        # Add total cost summary at the end
-        if pricing:
-            current_row += 1
-            ws.merge_cells(f'A{current_row}:J{current_row}')
-            summary_label = ws[f'A{current_row}']
-            summary_label.value = "TOTAL COST FOR ALL PARTS"
-            summary_label.font = summary_font
-            summary_label.fill = summary_fill
-            summary_label.alignment = center_align
-            summary_label.border = border
-            current_row += 1
+    try:
+        wb = Workbook()
+        wb.remove(wb.active)  # remove default sheet
+        num_cols = 11 if pricing else 10
 
-            ws.merge_cells(f'A{current_row}:J{current_row}')
-            total_cell = ws[f'A{current_row}']
-            total_cell.value = total_cost
-            total_cell.font = Font(bold=True, size=14, color="2E7D32")
-            total_cell.number_format = currency_format
-            total_cell.fill = summary_fill
-            total_cell.alignment = center_align
-            total_cell.border = border
-            ws.row_dimensions[current_row].height = 25
+        if is_clock_community:
+            # Split into Common Area and Addresses sheets
+            ca_subs, addr_subs = [], []
+            for sub in submissions:
+                ca_items   = [i for i in sub['line_items'] if CA_PATTERN.match(i['zone_and_address'])]
+                addr_items = [i for i in sub['line_items'] if not CA_PATTERN.match(i['zone_and_address'])]
+                if ca_items:
+                    ca_subs.append({**sub, 'line_items': ca_items})
+                if addr_items:
+                    addr_subs.append({**sub, 'line_items': addr_items})
 
-        # Adjust column widths
-        ws.column_dimensions['A'].width = 20
-        for col in ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K']:
-            ws.column_dimensions[col].width = 15
+            ws_ca = wb.create_sheet("Common Area")
+            write_sheet(ws_ca, f"{community} — Common Area ({work_month})", ca_subs, pricing, num_cols)
+
+            ws_addr = wb.create_sheet("Addresses")
+            write_sheet(ws_addr, f"{community} — Addresses ({work_month})", addr_subs, pricing, num_cols)
+        else:
+            # Standard community: one flat sheet with every zone
+            ws_main = wb.create_sheet("Submissions")
+            write_sheet(ws_main, f"Community Maintenance Report — {community} ({work_month})",
+                        submissions, pricing, num_cols)
 
         import io
         buf = io.BytesIO()
