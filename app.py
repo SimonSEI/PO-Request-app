@@ -131,6 +131,7 @@ except Exception as e:
 # Installation module directory references
 INSTALLATION_DIR = os.path.join(DATA_DIR, 'installation')
 SITE_PLANS_DIR = os.path.join(INSTALLATION_DIR, 'site_plans')
+DAILY_CREW_RATE = 1850.0  # $ cost per crew day
 DAILY_LOG_PHOTOS_DIR = os.path.join(INSTALLATION_DIR, 'photos')
 EXPENSE_RECEIPTS_DIR = os.path.join(INSTALLATION_DIR, 'receipts')
 
@@ -24618,8 +24619,12 @@ function renderJobCard(job) {
                     <div class="value ${netProfit < 0 ? 'over' : 'good'}">${fmt(netProfit)}</div>
                 </div>
                 <div class="cost-cell">
-                    <div class="label">Days</div>
+                    <div class="label">Days Used</div>
                     <div class="value">${daysUsed}${daysAllotted > 0 ? ' / '+daysAllotted : ''}</div>
+                </div>
+                <div class="cost-cell">
+                    <div class="label">Crew Cost</div>
+                    <div class="value">${fmt(daysUsed * 1850)}</div>
                 </div>
             </div>
 
@@ -24936,9 +24941,8 @@ INSTALL_SCHEDULING_TEMPLATE = '''
                 <div style="font-size:12px;color:#888;margin-bottom:8px;">{{ job[2] }}</div>
                 {% endif %}
                 <span class="days-badge">{{ jdays.days }} day{% if jdays.days != 1 %}s{% endif %}</span>
-                {% if jdays.hours > 0 %}
-                <span style="font-size:12px;color:#555;margin-left:8px;">{{ "%.1f"|format(jdays.hours) }} hrs</span>
-                {% endif %}
+                <span style="font-size:12px;color:#1a5276;margin-left:8px;font-weight:600">${{ "{:,.0f}".format(jdays.days * 1850) }}</span>
+                <span style="font-size:11px;color:#888;"> @ $1,850/day</span>
                 <div style="margin-top:10px;">
                     <button class="btn btn-green" style="font-size:12px;padding:5px 10px;"
                             onclick="openAddModal({{ job[0] }}, '{{ job[1]|replace("'", "\\'") }}')">+ Log Day</button>
@@ -24977,7 +24981,7 @@ INSTALL_SCHEDULING_TEMPLATE = '''
                         <th>Date</th>
                         <th>Job</th>
                         <th>Crew Members</th>
-                        <th>Hours</th>
+                        <th>Cost</th>
                         <th>Notes</th>
                         <th>Logged By</th>
                         <th>Actions</th>
@@ -24989,7 +24993,7 @@ INSTALL_SCHEDULING_TEMPLATE = '''
                     <td>{{ entry[2] or '—' }}</td>
                     <td>{{ entry[7] }}{% if entry[8] %} <small style="color:#888;">[{{ entry[8] }}]</small>{% endif %}</td>
                     <td>{{ entry[3] or '—' }}</td>
-                    <td>{{ entry[5] or 0 }}</td>
+                    <td style="font-weight:500;color:#1a5276">$1,850</td>
                     <td>{{ entry[4] or '—' }}</td>
                     <td>{{ entry[6] or '—' }}</td>
                     <td>
@@ -25021,14 +25025,11 @@ INSTALL_SCHEDULING_TEMPLATE = '''
             {% endfor %}
         </select>
     </div>
+    <p style="font-size:13px;color:#555;margin-bottom:14px;">Each day logged = 1 full day @ <strong>$1,850</strong>.</p>
     <div class="form-row">
         <div class="form-group">
             <label>Date *</label>
             <input type="date" id="entry-date">
-        </div>
-        <div class="form-group">
-            <label>Hours Worked</label>
-            <input type="number" id="entry-hours" step="0.5" min="0" placeholder="e.g. 8">
         </div>
     </div>
     <div class="form-group">
@@ -25040,7 +25041,7 @@ INSTALL_SCHEDULING_TEMPLATE = '''
         <textarea id="entry-notes" rows="3" placeholder="What was accomplished today?"></textarea>
     </div>
     <div style="display:flex;gap:10px;margin-top:8px;">
-        <button class="btn btn-green" onclick="saveEntry()">💾 Save</button>
+        <button class="btn btn-green" onclick="saveEntry()">💾 Save Day ($1,850)</button>
         <button class="btn btn-gray" onclick="document.getElementById('add-entry-modal').classList.remove('open')">Cancel</button>
     </div>
 </div>
@@ -25081,7 +25082,6 @@ function clearFilter() {
 function saveEntry() {
     const jobId = document.getElementById('entry-job-id').value;
     const date = document.getElementById('entry-date').value;
-    const hours = document.getElementById('entry-hours').value;
     const crew = document.getElementById('entry-crew').value;
     const notes = document.getElementById('entry-notes').value;
 
@@ -25091,7 +25091,7 @@ function saveEntry() {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({job_id: jobId, schedule_date: date,
-                              hours_worked: hours, crew_members: crew, notes: notes})
+                              hours_worked: 0, crew_members: crew, notes: notes})
     })
     .then(r => r.json())
     .then(data => {
@@ -25473,6 +25473,7 @@ INSTALLATION_JOB_TEMPLATE = INSTALLATION_JOB_CSS + '''<!DOCTYPE html>
         <div><span style="font-size:12px;color:#9ca3af">Total Invoiced</span><br><strong style="font-size:18px;color:#059669">${{ "{:,.0f}".format(total_invoiced or 0) }}</strong></div>
         <div><span style="font-size:12px;color:#9ca3af">Days Allotted</span><br><strong style="font-size:18px;color:#1a3c5e">{{ proposal.days_allotted or 0 }}</strong></div>
         <div><span style="font-size:12px;color:#9ca3af">Days Used</span><br><strong style="font-size:18px;color:{{ '#dc2626' if days_on_job > (proposal.days_allotted or 0) else '#1a3c5e' }}">{{ days_on_job }}</strong></div>
+        <div><span style="font-size:12px;color:#9ca3af">Crew Cost</span><br><strong style="font-size:18px;color:#7c3aed">${{ "{:,.0f}".format(days_on_job * 1850) }}</strong><span style="font-size:11px;color:#9ca3af"> @ $1,850/day</span></div>
       </div>
     </div>
     {% endif %}
@@ -25588,21 +25589,27 @@ INSTALLATION_JOB_TEMPLATE = INSTALLATION_JOB_CSS + '''<!DOCTYPE html>
           <button class="btn btn-primary btn-sm" onclick="openModal('add-sched-modal')">+ Add Day</button>
         </div>
       </div>
+      {% set total_days = schedule_entries|length %}
+      {% set total_cost = total_days * 1850 %}
       <div class="totals-bar">
-        <div class="t-item">Days Scheduled: <strong>{{ schedule_entries|length }}</strong></div>
-        <div class="t-item">Total Hours: <strong>{{ "%.1f"|format(schedule_entries|sum(attribute='hours_worked')) }}</strong></div>
-        {% if proposal %}<div class="t-item">Days Allotted: <strong>{{ proposal.days_allotted or '—' }}</strong></div>{% endif %}
+        <div class="t-item">Days on Job: <strong>{{ total_days }}</strong></div>
+        <div class="t-item">Crew Cost: <strong style="color:#1a3c5e">${{ "{:,.0f}".format(total_cost) }}</strong> <span style="font-size:11px;color:#9ca3af">($1,850/day)</span></div>
+        {% if proposal and proposal.days_allotted %}
+        <div class="t-item">Days Allotted: <strong>{{ proposal.days_allotted }}</strong></div>
+        {% set remaining = (proposal.days_allotted or 0) - total_days %}
+        <div class="t-item">Remaining: <strong style="color:{{ '#dc2626' if remaining < 0 else '#059669' }}">{{ remaining }}</strong></div>
+        {% endif %}
       </div>
       {% if schedule_entries %}
       <table>
-        <thead><tr><th>Date</th><th>Crew</th><th>Hours</th><th>Notes</th><th></th></tr></thead>
+        <thead><tr><th>Date</th><th>Crew</th><th>Notes</th><th>Cost</th><th></th></tr></thead>
         <tbody>
         {% for s in schedule_entries %}
         <tr>
           <td style="font-weight:600;white-space:nowrap">{{ s.schedule_date }}</td>
           <td style="font-size:13px">{{ s.crew_members or '—' }}</td>
-          <td>{{ s.hours_worked or '—' }}</td>
           <td style="font-size:13px;color:#6b7280">{{ s.notes or '' }}</td>
+          <td style="font-weight:500;color:#1a3c5e">$1,850</td>
           <td><button class="btn btn-danger btn-sm" onclick="deleteSchedEntry({{ s.id }}, this)">🗑</button></td>
         </tr>
         {% endfor %}
@@ -25830,13 +25837,13 @@ INSTALLATION_JOB_TEMPLATE = INSTALLATION_JOB_CSS + '''<!DOCTYPE html>
     <div class="modal">
       <button class="modal-close" onclick="closeModal('add-sched-modal')">×</button>
       <h3>📅 Log Day on Job</h3>
+      <p style="font-size:13px;color:#6b7280;margin-bottom:16px">Each day logged counts as 1 full day @ <strong>$1,850</strong>.</p>
       <div class="form-row">
         <div class="form-group"><label>Date</label><input id="sched-date" type="date" value="{{ today }}"></div>
-        <div class="form-group"><label>Hours Worked</label><input id="sched-hours" type="number" step="0.5" value="8"></div>
       </div>
       <div class="form-group" style="margin-bottom:12px"><label>Crew Members</label><input id="sched-crew" placeholder="Names or count, e.g. John, Maria, Tom"></div>
       <div class="form-group" style="margin-bottom:20px"><label>Notes</label><textarea id="sched-notes" rows="2"></textarea></div>
-      <button class="btn btn-primary" onclick="submitSchedEntry()">Save</button>
+      <button class="btn btn-primary" onclick="submitSchedEntry()">Save Day ($1,850)</button>
     </div>
   </div>
 
@@ -25852,7 +25859,6 @@ INSTALLATION_JOB_TEMPLATE = INSTALLATION_JOB_CSS + '''<!DOCTYPE html>
       </div>
       <div class="form-row">
         <div class="form-group"><label>Crew Count</label><input id="log-crew-count" type="number" value="1"></div>
-        <div class="form-group"><label>Hours Worked</label><input id="log-hours" type="number" step="0.5" value="8"></div>
       </div>
       <div class="form-group" style="margin-bottom:12px"><label>Crew Members</label><input id="log-crew" placeholder="Names of crew on site"></div>
       <div class="form-group" style="margin-bottom:12px"><label>Work Performed</label><textarea id="log-work" rows="3" placeholder="Describe work completed today…"></textarea></div>
@@ -26082,7 +26088,7 @@ function submitSchedEntry() {
   api('/install_scheduling/add_entry', {
     job_id: JOB_ID,
     schedule_date: date,
-    hours_worked: document.getElementById('sched-hours').value || 0,
+    hours_worked: 0,
     crew_members: document.getElementById('sched-crew').value,
     notes: document.getElementById('sched-notes').value,
   }, () => { closeModal('add-sched-modal'); location.reload(); });
@@ -26112,7 +26118,7 @@ function submitDailyLog() {
     temp_high: document.getElementById('log-temp').value || null,
     crew_count: document.getElementById('log-crew-count').value || 0,
     crew_members: document.getElementById('log-crew').value,
-    hours_worked: document.getElementById('log-hours').value || 0,
+    hours_worked: 0,
     work_performed: document.getElementById('log-work').value,
     materials_used: document.getElementById('log-materials').value,
     equipment_used: document.getElementById('log-equipment').value,
