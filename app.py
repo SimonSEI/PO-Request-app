@@ -25296,7 +25296,7 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
   <nav>
     <a href="/installation" class="active">Jobs</a>
     <a href="/installation/schedule">📅 Schedule</a>
-    <a href="/installation/crew">👷 Crew</a>
+    <a href="/installation/crews">👷 Manage Crews</a>
     <a href="/installation/all-change-orders">📝 Change Orders</a>
     <a href="/dashboard">← Dashboard</a>
   </nav>
@@ -25396,7 +25396,7 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
     <a href="/installation">← Jobs</a>
     <a href="/installation/schedule">📅 Schedule</a>
     <a href="/installation/all-change-orders">📝 All COs</a>
-    <a href="/installation/crew">👷 Crew</a>
+    <a href="/installation/crews">👷 Manage Crews</a>
     <a href="/dashboard">Dashboard</a>
   </nav>
 </div>
@@ -27098,76 +27098,7 @@ def installation_all_change_orders():
 
 @app.route('/installation/crew')
 def installation_crew():
-    if 'username' not in session or session.get('role') not in ['office', 'admin']:
-        return redirect(url_for('login'))
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT id, name, role, phone, active FROM installation_crew_members ORDER BY name")
-        members = c.fetchall()
-        conn.close()
-        html = """<!DOCTYPE html><html><head><meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width,initial-scale=1">
-        <title>Crew Members</title>
-        <style>
-        *{box-sizing:border-box;margin:0;padding:0}
-        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5}
-        .top-bar{background:#1a3c5e;color:white;padding:12px 24px;display:flex;align-items:center;justify-content:space-between}
-        .top-bar h1{font-size:18px;font-weight:700}
-        .top-bar a{color:rgba(255,255,255,.85);text-decoration:none;font-size:14px;margin-left:16px}
-        .content{max-width:900px;margin:0 auto;padding:24px}
-        .card{background:white;border-radius:10px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.06);margin-bottom:20px}
-        .btn{display:inline-flex;align-items:center;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:500;cursor:pointer;border:none;text-decoration:none}
-        .btn-primary{background:#1a3c5e;color:white}
-        .form-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px}
-        input,select{padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;width:100%}
-        label{font-size:13px;font-weight:500;color:#374151;display:block;margin-bottom:4px}
-        table{width:100%;border-collapse:collapse}
-        th{text-align:left;padding:10px 12px;background:#f9fafb;font-size:12px;font-weight:600;color:#6b7280;border-bottom:1px solid #e5e7eb}
-        td{padding:10px 12px;border-bottom:1px solid #f3f4f6;font-size:14px}
-        </style></head><body>
-        <div class="top-bar"><h1>👷 Crew Members</h1>
-        <nav><a href="/installation">← Installation</a></nav></div>
-        <div class="content">
-        <div class="card">
-          <h3 style="font-size:16px;font-weight:600;margin-bottom:16px">Add Crew Member</h3>
-          <div class="form-row">
-            <div><label>Name</label><input id="cm-name" placeholder="Full name"></div>
-            <div><label>Role</label><select id="cm-role"><option value="crew">Crew</option><option value="foreman">Foreman</option><option value="sub">Subcontractor</option><option value="supervisor">Supervisor</option></select></div>
-            <div><label>Phone</label><input id="cm-phone" placeholder="(555) 000-0000"></div>
-          </div>
-          <button class="btn btn-primary" onclick="addMember()">Add Member</button>
-        </div>
-        <div class="card">
-          <table><thead><tr><th>Name</th><th>Role</th><th>Phone</th><th>Active</th><th></th></tr></thead>
-          <tbody id="crew-tbody">"""
-        for m in members:
-            active_badge = '<span style="color:#059669">✓ Active</span>' if m[4] else '<span style="color:#dc2626">Inactive</span>'
-            html += f"<tr><td>{m[1]}</td><td style='text-transform:capitalize'>{m[2]}</td><td>{m[3] or '—'}</td><td>{active_badge}</td><td><button onclick=\"toggleMember({m[0]}, this)\" style='background:#e5e7eb;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px'>{'Deactivate' if m[4] else 'Activate'}</button></td></tr>"
-        html += """</tbody></table>
-        </div></div>
-        <script>
-        function addMember() {
-          const name = document.getElementById('cm-name').value.trim();
-          if (!name) { alert('Name required'); return; }
-          fetch('/installation/api/crew/add', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({name, role: document.getElementById('cm-role').value, phone: document.getElementById('cm-phone').value})
-          }).then(r => r.json()).then(d => { if (d.success) location.reload(); else alert(d.error); });
-        }
-        function toggleMember(id, btn) {
-          fetch('/installation/api/crew/toggle', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({id})
-          }).then(r => r.json()).then(d => { if (d.success) location.reload(); });
-        }
-        </script></body></html>"""
-        return html
-    except Exception as e:
-        import traceback
-        return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre>"
+    return redirect('/installation/crews')
 
 
 @app.route('/installation/api/crew/add', methods=['POST'])
