@@ -47,7 +47,7 @@ ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 USE_CLAUDE_MATCHING = os.environ.get('USE_CLAUDE_MATCHING', 'true').lower() == 'true'
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'irrigation-po-system-secret-key-2024')
+app.secret_key = os.environ.get('SECRET_KEY', 'the-office-app-secret-key-2025')
 APP_VERSION = "1.2.0"  # Added API verify endpoint
 # Multi-session support - allows up to 80 concurrent users per account
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
@@ -231,20 +231,20 @@ def send_reset_email(email, reset_token):
         reset_link = f"{WEBSITE_URL}/reset_password/{reset_token}"
 
         msg = MIMEMultipart('alternative')
-        msg['Subject'] = 'Password Reset - Irrigation PO System'
+        msg['Subject'] = 'Password Reset - The Office App'
         msg['From'] = EMAIL_ADDRESS
         msg['To'] = email
 
         html = f"""
         <html>
-        <body style="font-family: Arial, sans-serif; padding: 20px;">
+        <body style="font-family: 'Inter', Arial, sans-serif; padding: 20px;">
             <div style="max-width: 600px; margin: 0 auto; background: #f9f9f9; padding: 30px; border-radius: 10px;">
-                <h2 style="color: #667eea;">🔐 Password Reset Request</h2>
-                <p>You requested a password reset for your Irrigation PO System account.</p>
+                <h2 style="color: #1E6F3E; font-family: Arial, sans-serif;">Password Reset Request — The Office App</h2>
+                <p>You requested a password reset for your The Office App account.</p>
                 <p>Click the button below to reset your password:</p>
                 <div style="text-align: center; margin: 30px 0;">
                     <a href="{reset_link}"
-                       style="background: #667eea; color: white; padding: 15px 30px;
+                       style="background: #1E6F3E; color: white; padding: 15px 30px;
                               text-decoration: none; border-radius: 5px; font-weight: bold;
                               display: inline-block;">
                         Reset Password
@@ -292,7 +292,7 @@ def send_notification_email(invoice_number, invoice_cost, email_sender, email_su
 
         html = f"""
         <html>
-        <body style="font-family: Arial, sans-serif; padding: 20px;">
+        <body style="font-family: 'Inter', Arial, sans-serif; padding: 20px;">
             <div style="max-width: 600px; margin: 0 auto; background: #fff3cd; padding: 30px; border-radius: 10px; border-left: 5px solid #ff9800;">
                 <h2 style="color: #ff9800;">⚠️ Unmatched Invoice Detected</h2>
                 <p><strong>Invoice Number:</strong> {invoice_number}</p>
@@ -316,14 +316,14 @@ def send_notification_email(invoice_number, invoice_cost, email_sender, email_su
                 </div>
                 <div style="text-align: center; margin: 30px 0;">
                     <a href="{WEBSITE_URL}/dashboard"
-                       style="background: #667eea; color: white; padding: 15px 30px;
+                       style="background: #1E6F3E; color: white; padding: 15px 30px;
                               text-decoration: none; border-radius: 5px; font-weight: bold;
                               display: inline-block;">
                         View in System
                     </a>
                 </div>
                 <p style="color: #999; font-size: 12px; margin-top: 30px;">
-                    This is an automated notification from the PO Request System.
+                    This is an automated notification from the The Office App.
                 </p>
             </div>
         </body>
@@ -6360,14 +6360,27 @@ MANAGE_TECHS_UNIFIED_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Manage Technicians</title>
+    <title>Manage Technicians — The Office App</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
+        body { font-family: 'Inter', Arial, sans-serif; background: var(--se-bg, #F2F7F4); padding: 20px; min-height: 100vh; }
         .header {
             background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08); display: flex;
             justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
         }
         h1 { color: #333; font-size: 28px; }
@@ -6383,7 +6396,7 @@ MANAGE_TECHS_UNIFIED_TEMPLATE = '''
         }
         .column {
             background: white; padding: 20px; border-radius: 10px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
         }
         .column h2 {
             padding-bottom: 15px; border-bottom: 3px solid;
@@ -6416,7 +6429,7 @@ MANAGE_TECHS_UNIFIED_TEMPLATE = '''
         .tech-creds p { margin: 4px 0; }
         .code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; }
         .tech-buttons { display: flex; gap: 8px; margin-top: 10px; }
-        .btn-view { background: #667eea; color: white; padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; flex: 1; }
+        .btn-view { background: #1E6F3E; color: white; padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; flex: 1; }
         .btn-delete { background: #dc3545; color: white; padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; flex: 1; }
         .modal {
             display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
@@ -6435,7 +6448,7 @@ MANAGE_TECHS_UNIFIED_TEMPLATE = '''
         .close-btn { background: #dc3545; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; font-weight: bold; }
         .po-list { display: flex; flex-direction: column; gap: 15px; }
         .po-item {
-            background: #f9f9f9; padding: 15px; border-radius: 8px; border-left: 4px solid #667eea;
+            background: #f9f9f9; padding: 15px; border-radius: 8px; border-left: 4px solid var(--se-green, #1E6F3E);
         }
         .po-item h4 { color: #333; margin-bottom: 8px; }
         .po-meta { font-size: 12px; color: #666; }
@@ -6692,14 +6705,27 @@ MANAGE_TECHS_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Manage Technicians</title>
+    <title>Manage Technicians — The Office App</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
+        body { font-family: 'Inter', Arial, sans-serif; background: var(--se-bg, #F2F7F4); padding: 20px; min-height: 100vh; }
         .header {
             background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08); display: flex;
             justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
         }
         h1 { color: #333; font-size: 24px; }
@@ -6711,7 +6737,7 @@ MANAGE_TECHS_TEMPLATE = '''
         .btn-danger { background: #dc3545; color: white; }
         .card {
             background: white; padding: 20px; border-radius: 10px;
-            margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);
         }
         .tech-type-buttons {
             display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; margin: 30px 0;
@@ -6763,12 +6789,25 @@ MANAGE_SERVICE_TECHS_TEMPLATE = '''
 <head>
     <title>Manage Service Technicians</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
+        body { font-family: 'Inter', Arial, sans-serif; background: var(--se-bg, #F2F7F4); padding: 20px; min-height: 100vh; }
         .header {
             background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08); display: flex;
             justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
         }
         h1 { color: #007bff; font-size: 24px; }
@@ -6781,11 +6820,11 @@ MANAGE_SERVICE_TECHS_TEMPLATE = '''
         .btn-success { background: #28a745; color: white; }
         .card {
             background: white; padding: 20px; border-radius: 10px;
-            margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);
         }
         .tech-card {
             background: white; border-radius: 10px; margin-bottom: 15px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1); overflow: hidden;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08); overflow: hidden;
         }
         .tech-header {
             background: #007bff; color: white; padding: 15px 20px;
@@ -6978,12 +7017,25 @@ MANAGE_INSTALL_TECHS_TEMPLATE = '''
 <head>
     <title>Manage Install Technicians</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
+        body { font-family: 'Inter', Arial, sans-serif; background: var(--se-bg, #F2F7F4); padding: 20px; min-height: 100vh; }
         .header {
             background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08); display: flex;
             justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
         }
         h1 { color: #28a745; font-size: 24px; }
@@ -6996,11 +7048,11 @@ MANAGE_INSTALL_TECHS_TEMPLATE = '''
         .btn-success { background: #28a745; color: white; }
         .card {
             background: white; padding: 20px; border-radius: 10px;
-            margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);
         }
         .tech-card {
             background: white; border-radius: 10px; margin-bottom: 15px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1); overflow: hidden;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08); overflow: hidden;
         }
         .tech-header {
             background: #28a745; color: white; padding: 15px 20px;
@@ -7193,31 +7245,44 @@ JOB_MANAGEMENT_TEMPLATE = '''
 <head>
     <title>Manage Jobs</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
-        .header { background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
+        body { font-family: 'Inter', Arial, sans-serif; background: var(--se-bg, #F2F7F4); padding: 20px; min-height: 100vh; }
+        .header { background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
         h1 { color: #333; font-size: 24px; }
         .btn { padding: 10px 20px; border-radius: 5px; text-decoration: none; font-weight: bold; border: none; cursor: pointer; font-size: 14px; }
-        .btn-primary { background: #667eea; color: white; }
+        .btn-primary { background: var(--se-green, #1E6F3E); color: white; }
         .btn-secondary { background: #6c757d; color: white; }
         .btn-success { background: #28a745; color: white; }
         .btn-danger { background: #dc3545; color: white; }
-        .card { background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        .card { background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
         .form-group { margin-bottom: 15px; }
         label { display: block; margin-bottom: 5px; font-weight: bold; color: #555; }
         input, select { width: 100%; padding: 10px; border: 2px solid #ddd; border-radius: 5px; font-size: 16px; }
         .filter-controls { background: #f0f4ff; padding: 20px; border-radius: 5px; margin-bottom: 20px; display: flex; gap: 15px; align-items: flex-end; flex-wrap: wrap; }
         .filter-group { flex: 1; min-width: 200px; }
-        .filter-group label { color: #667eea; margin-bottom: 5px; }
-        .filter-group input, .filter-group select { border: 2px solid #667eea; }
+        .filter-group label { color: #1E6F3E; margin-bottom: 5px; }
+        .filter-group input, .filter-group select { border: 2px solid #1E6F3E; }
         .filter-stats { background: #e7f3ff; padding: 15px; border-radius: 5px; margin-bottom: 20px; display: flex; gap: 20px; flex-wrap: wrap; }
         .stat-item { flex: 1; min-width: 150px; }
-        .stat-number { font-size: 24px; font-weight: bold; color: #667eea; }
+        .stat-number { font-size: 24px; font-weight: bold; color: #1E6F3E; }
         .stat-label { color: #666; font-size: 14px; }
         table { width: 100%; border-collapse: collapse; }
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
-        th { background: #667eea; color: white; font-weight: bold; }
+        th { background: #1E6F3E; color: white; font-weight: bold; }
         tr:hover { background: #f5f5f5; }
         .status-badge { padding: 5px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; display: inline-block; }
         .status-active { background: #28a745; color: white; }
@@ -7225,7 +7290,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
         .expandable-row { display: none; background: #f9f9f9; }
         .expandable-row.show { display: table-row; }
         .invoice-details { padding: 20px; background: white; border-radius: 5px; }
-        .invoice-item { padding: 15px; background: #e7f3ff; margin: 10px 0; border-radius: 5px; border-left: 4px solid #667eea; }
+        .invoice-item { padding: 15px; background: #e7f3ff; margin: 10px 0; border-radius: 5px; border-left: 4px solid var(--se-green, #1E6F3E); }
         .expand-icon { transition: transform 0.3s; display: inline-block; }
         .expand-icon.rotated { transform: rotate(90deg); }
         .money-positive { color: #28a745; font-weight: bold; }
@@ -7327,13 +7392,13 @@ JOB_MANAGEMENT_TEMPLATE = '''
                         container.innerHTML = '<p style="text-align: center; color: #999;">No invoices for this job yet.</p>';
                         return;
                     }
-                    let html = '<h3 style="color: #667eea; margin-bottom: 15px;">Invoices for ' + escapeHtml(data.job_name) + '</h3>';
+                    let html = '<h3 style="color: #1E6F3E; margin-bottom: 15px;">Invoices for ' + escapeHtml(data.job_name) + '</h3>';
                     if (data.budget && data.budget > 0) {
                         const pct = data.budget_pct || 0;
                         const remaining = data.budget - data.total_invoiced;
                         const barColor = pct <= 50 ? 'budget-green' : pct <= 75 ? 'budget-yellow' : pct <= 100 ? 'budget-orange' : 'budget-red';
-                        html += '<div style="background: #f0f4ff; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 2px solid #667eea;">';
-                        html += '<strong style="color: #667eea;">Budget Summary</strong><br>';
+                        html += '<div style="background: #f0f4ff; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 2px solid #1E6F3E;">';
+                        html += '<strong style="color: #1E6F3E;">Budget Summary</strong><br>';
                         html += '<span>Budget: $' + data.budget.toFixed(2) + ' | Spent: $' + data.total_invoiced.toFixed(2) + ' | Remaining: <strong class="' + (remaining >= 0 ? 'money-positive' : 'money-negative') + '">$' + remaining.toFixed(2) + '</strong></span><br>';
                         html += '<div class="budget-bar-container" style="height: 26px; margin-top: 10px;"><div class="budget-bar ' + barColor + '" style="width: ' + Math.min(pct, 100) + '%"></div><span class="budget-bar-label">' + pct + '% used</span></div>';
                         html += '</div>';
@@ -7350,7 +7415,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
                         html += '<input type="text" id="jobber-inv-' + inv.po_id + '" value="' + escapeHtml(jobberNum) + '" placeholder="Enter Jobber Invoice #" style="width: 150px; padding: 5px; border: 1px solid #ddd; border-radius: 3px; font-size: 13px;">';
                         html += ' <button class="btn btn-primary" style="padding: 5px 10px; font-size: 12px;" onclick="saveJobberInvoice(' + inv.po_id + ')">Save</button>';
                         html += '</div>';
-                        if (inv.filename && inv.filename !== 'MANUAL_ENTRY') html += '<a href="/view_invoice/' + inv.filename + '" target="_blank" style="color: #667eea; display: inline-block; margin-top: 8px;">View Invoice</a>';
+                        if (inv.filename && inv.filename !== 'MANUAL_ENTRY') html += '<a href="/view_invoice/' + inv.filename + '" target="_blank" style="color: #1E6F3E; display: inline-block; margin-top: 8px;">View Invoice</a>';
                         html += '</div>';
                     });
                     container.innerHTML = html;
@@ -7582,7 +7647,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
     {% endwith %}
 
     <div class="card">
-        <h2 style="color: #667eea; margin-bottom: 20px;">Add New Job</h2>
+        <h2 style="color: #1E6F3E; margin-bottom: 20px;">Add New Job</h2>
         <p style="color: #888; font-size: 13px; margin-bottom: 15px;">Note: each job name must be unique.</p>
         <form method="POST" action="/add_job">
             <div class="form-group">
@@ -7602,7 +7667,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
     </div>
 
     <div class="card">
-        <h2 style="color: #667eea; margin-bottom: 20px;">Jobs</h2>
+        <h2 style="color: #1E6F3E; margin-bottom: 20px;">Jobs</h2>
         <div class="filter-controls">
             <div class="filter-group">
                 <label>Filter by Year</label>
@@ -7714,133 +7779,261 @@ JOB_MANAGEMENT_TEMPLATE = '''
 '''
 LOGIN_TEMPLATE = '''
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>PO Request System - Login</title>
+    <title>The Office App — Stahlman-England</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --se-green:       #1E6F3E;
+            --se-green-dark:  #155530;
+            --se-green-deep:  #0D3D22;
+            --se-navy:        #1C3D5A;
+            --se-gold:        #C49A1A;
+            --se-bg:          #F2F7F4;
+            --se-border:      #C8DDD2;
+            --se-text:        #1A2820;
+            --se-muted:       #5A7265;
+        }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Inter', Arial, sans-serif;
+            background: linear-gradient(160deg, var(--se-green-deep) 0%, var(--se-navy) 100%);
             min-height: 100vh;
             display: flex;
+            flex-direction: column;
             align-items: center;
             justify-content: center;
             padding: 20px;
         }
-        .container {
-            background: white;
-            padding: 40px;
-            border-radius: 10px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        .login-wrapper {
             width: 100%;
-            max-width: 400px;
+            max-width: 420px;
         }
-        h1 { color: #333; margin-bottom: 10px; font-size: 28px; }
-        .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
-        .form-group { margin-bottom: 20px; }
-        label { display: block; margin-bottom: 5px; color: #555; font-weight: bold; }
-        input {
-            width: 100%;
-            padding: 12px;
-            border: 2px solid #ddd;
-            border-radius: 5px;
-            font-size: 16px;
+        .logo-block {
+            text-align: center;
+            margin-bottom: 28px;
         }
-        input:focus { outline: none; border-color: #667eea; }
-        button {
-            width: 100%;
-            padding: 12px;
-            background: #667eea;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            font-size: 16px;
-            font-weight: bold;
-            cursor: pointer;
+        .logo-block img {
+            max-height: 70px;
+            max-width: 260px;
+            object-fit: contain;
         }
-        button:hover { background: #5568d3; }
-        .error {
-            background: #fee;
-            color: #c33;
-            padding: 10px;
-            border-radius: 5px;
+        .logo-text {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+        }
+        .logo-text .company {
+            font-size: 22px;
+            font-weight: 700;
+            color: #ffffff;
+            letter-spacing: 0.5px;
+        }
+        .logo-text .divider {
+            width: 40px;
+            height: 2px;
+            background: var(--se-gold);
+            border-radius: 2px;
+        }
+        .logo-text .tagline {
+            font-size: 11px;
+            font-weight: 500;
+            color: rgba(255,255,255,0.65);
+            letter-spacing: 2px;
+            text-transform: uppercase;
+        }
+        .card {
+            background: #ffffff;
+            border-radius: 14px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+            overflow: hidden;
+        }
+        .card-header {
+            background: var(--se-green);
+            padding: 26px 36px 22px;
+            text-align: center;
+        }
+        .card-header h1 {
+            font-size: 22px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 4px;
+            letter-spacing: 0.2px;
+        }
+        .card-header p {
+            font-size: 13px;
+            color: rgba(255,255,255,0.75);
+            font-weight: 400;
+        }
+        .card-body {
+            padding: 32px 36px 28px;
+        }
+        .error-alert {
+            background: #FEF2F2;
+            border: 1px solid #FECACA;
+            color: #B91C1C;
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .form-group {
             margin-bottom: 20px;
         }
-        .lang-toggle-btn {
-            background: rgba(255,255,255,0.15);
-            color: white;
-            padding: 6px 14px;
-            border: 2px solid rgba(255,255,255,0.7);
-            border-radius: 5px;
-            font-size: 13px;
-            font-weight: bold;
+        .form-group label {
+            display: block;
+            margin-bottom: 7px;
+            color: var(--se-text);
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 13px 16px;
+            border: 1.5px solid var(--se-border);
+            border-radius: 8px;
+            font-size: 15px;
+            font-family: inherit;
+            color: var(--se-text);
+            background: var(--se-bg);
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .form-group input:focus {
+            outline: none;
+            border-color: var(--se-green);
+            background: #fff;
+            box-shadow: 0 0 0 3px rgba(30,111,62,0.12);
+        }
+        .login-btn {
+            width: 100%;
+            padding: 14px;
+            background: var(--se-green);
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 700;
+            font-family: inherit;
             cursor: pointer;
+            letter-spacing: 0.3px;
+            transition: background 0.2s, transform 0.1s;
+            margin-top: 4px;
+        }
+        .login-btn:hover { background: var(--se-green-dark); }
+        .login-btn:active { transform: scale(0.99); }
+        .card-footer {
+            padding: 0 36px 28px;
+            text-align: center;
+        }
+        .card-footer a {
+            color: var(--se-green);
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .card-footer a:hover { text-decoration: underline; }
+        .card-footer .sep {
+            color: var(--se-border);
+            margin: 0 8px;
+        }
+        .lang-btn {
             position: fixed;
             top: 16px;
-            right: 20px;
+            right: 18px;
+            background: rgba(255,255,255,0.12);
+            color: white;
+            padding: 7px 14px;
+            border: 1.5px solid rgba(255,255,255,0.5);
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            font-family: inherit;
+            cursor: pointer;
+            transition: background 0.2s;
         }
-        .lang-toggle-btn:hover { background: rgba(255,255,255,0.3); }
-        .lang-toggle-btn.es-active { background: rgba(200,16,46,0.7); border-color: white; }
+        .lang-btn:hover { background: rgba(255,255,255,0.22); }
+        .lang-btn.es-active { background: rgba(196,30,30,0.7); border-color: rgba(255,255,255,0.7); }
+        .copyright {
+            text-align: center;
+            color: rgba(255,255,255,0.35);
+            font-size: 11px;
+            margin-top: 20px;
+        }
     </style>
 </head>
 <body>
-    <button class="lang-toggle-btn" id="langToggleBtn" onclick="toggleLanguage()">🇪🇸 Español</button>
-    <div class="container">
-        <h1 data-i18n="title">🌱 Irrigation PO System</h1>
-        <p class="subtitle" data-i18n="subtitle">Purchase Order Request System</p>
-        {% with messages = get_flashed_messages() %}
-            {% if messages %}
-                {% for message in messages %}
-                    <div class="error">{{ message }}</div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
-        <form method="POST">
-            <div class="form-group">
-                <label data-i18n="username_label">Username</label>
-                <input type="text" name="username" required autofocus>
+    <button class="lang-btn" id="langToggleBtn" onclick="toggleLanguage()">🇪🇸 Español</button>
+    <div class="login-wrapper">
+        <div class="logo-block">
+            <img src="https://www.stahlman-england.com/wp-content/uploads/stahlman-england-logo.png"
+                 alt="Stahlman-England"
+                 onerror="this.style.display='none'; document.querySelector('.logo-text').style.display='flex';">
+            <div class="logo-text">
+                <span class="company">Stahlman-England</span>
+                <div class="divider"></div>
+                <span class="tagline">Irrigation &amp; Landscaping</span>
             </div>
-            <div class="form-group">
-                <label data-i18n="password_label">Password</label>
-                <input type="password" name="password" required>
+        </div>
+        <div class="card">
+            <div class="card-header">
+                <h1 data-i18n="app_title">The Office App</h1>
+                <p data-i18n="subtitle">Sign in to your account</p>
             </div>
-            <button type="submit" data-i18n="login_btn">Login</button>
-        </form>
-    <div style="text-align: center; margin-top: 20px; color: #666;">
-            <span data-i18n="office_manager_q">Office Manager?</span> <a href="{{ url_for('register') }}" style="color: #667eea; text-decoration: none; font-weight: bold;" data-i18n="create_account">Create Account</a>
+            <div class="card-body">
+                {% with messages = get_flashed_messages() %}
+                    {% if messages %}
+                        {% for message in messages %}
+                            <div class="error-alert">{{ message }}</div>
+                        {% endfor %}
+                    {% endif %}
+                {% endwith %}
+                <form method="POST">
+                    <div class="form-group">
+                        <label data-i18n="username_label">Username</label>
+                        <input type="text" name="username" required autofocus autocomplete="username" placeholder="Enter your username">
+                    </div>
+                    <div class="form-group">
+                        <label data-i18n="password_label">Password</label>
+                        <input type="password" name="password" required autocomplete="current-password" placeholder="Enter your password">
+                    </div>
+                    <button class="login-btn" type="submit" data-i18n="login_btn">Sign In</button>
+                </form>
+            </div>
+            <div class="card-footer">
+                <a href="{{ url_for('forgot_password') }}" data-i18n="forgot_password">Forgot your password?</a>
+                <span class="sep">|</span>
+                <a href="{{ url_for('register') }}" data-i18n="create_account">Create Account</a>
+            </div>
         </div>
-        <div style="text-align: center; margin-top: 15px;">
-            <a href="{{ url_for('forgot_password') }}" style="color: #667eea; text-decoration: none; font-size: 14px;" data-i18n="forgot_password">Forgot your password?</a>
-        </div>
+        <div class="copyright">&copy; Stahlman-England Irrigation, Inc.</div>
     </div>
     <script>
         const TRANSLATIONS = {
             en: {
-                title: '🌱 Irrigation PO System',
-                subtitle: 'Purchase Order Request System',
+                app_title: 'The Office App',
+                subtitle: 'Sign in to your account',
                 username_label: 'Username',
                 password_label: 'Password',
-                login_btn: 'Login',
-                office_manager_q: 'Office Manager?',
-                create_account: 'Create Account',
+                login_btn: 'Sign In',
                 forgot_password: 'Forgot your password?',
+                create_account: 'Create Account',
             },
             es: {
-                title: '🌱 Sistema de PO de Irrigación',
-                subtitle: 'Sistema de Solicitudes de Órdenes de Compra',
+                app_title: 'The Office App',
+                subtitle: 'Inicie sesión en su cuenta',
                 username_label: 'Usuario',
                 password_label: 'Contraseña',
                 login_btn: 'Iniciar Sesión',
-                office_manager_q: '¿Gerente de Oficina?',
-                create_account: 'Crear Cuenta',
                 forgot_password: '¿Olvidó su contraseña?',
+                create_account: 'Crear Cuenta',
             }
         };
-
         let currentLang = localStorage.getItem('techDashLang') || 'en';
-
         function applyLanguage(lang) {
             const tr = TRANSLATIONS[lang];
             document.querySelectorAll('[data-i18n]').forEach(el => {
@@ -7853,13 +8046,11 @@ LOGIN_TEMPLATE = '''
                 lang === 'es' ? btn.classList.add('es-active') : btn.classList.remove('es-active');
             }
         }
-
         function toggleLanguage() {
             currentLang = currentLang === 'en' ? 'es' : 'en';
             localStorage.setItem('techDashLang', currentLang);
             applyLanguage(currentLang);
         }
-
         applyLanguage(currentLang);
     </script>
 </body>
@@ -7868,248 +8059,339 @@ LOGIN_TEMPLATE = '''
 
 DASHBOARD_MENU_TEMPLATE = '''
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Application Dashboard</title>
+    <title>The Office App — Stahlman-England</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+            --se-card-shadow: 0 4px 18px rgba(0,0,0,0.12);
+        }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Inter', Arial, sans-serif;
+            background: linear-gradient(160deg, var(--se-green-deep) 0%, var(--se-navy) 100%);
             min-height: 100vh;
             display: flex;
             flex-direction: column;
-            padding: 20px;
         }
-        .header {
-            text-align: center;
-            color: white;
-            margin-bottom: 40px;
-            padding-top: 20px;
-        }
-        .header h1 {
-            font-size: 32px;
-            margin-bottom: 10px;
-        }
-        .header p {
-            font-size: 16px;
-            opacity: 0.9;
-        }
-        .user-info {
-            text-align: center;
-            color: white;
-            margin-bottom: 30px;
-            font-size: 14px;
-        }
-        .container {
+        /* ── Top nav bar ── */
+        .topbar {
             display: flex;
-            justify-content: center;
-            gap: 30px;
-            flex-wrap: wrap;
-            max-width: 900px;
-            margin: 0 auto;
-            flex-grow: 1;
             align-items: center;
+            justify-content: space-between;
+            padding: 14px 28px;
+            background: rgba(0,0,0,0.25);
+            backdrop-filter: blur(6px);
+        }
+        .topbar-logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .topbar-logo img {
+            height: 38px;
+            object-fit: contain;
+        }
+        .topbar-logo-text {
+            display: none;
+        }
+        .topbar-logo-text .co {
+            font-size: 16px;
+            font-weight: 700;
+            color: #fff;
+            letter-spacing: 0.3px;
+        }
+        .topbar-logo-text .sub {
+            font-size: 10px;
+            font-weight: 500;
+            color: rgba(255,255,255,0.6);
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+        }
+        .topbar-app-name {
+            font-size: 18px;
+            font-weight: 700;
+            color: #fff;
+            letter-spacing: 0.2px;
+        }
+        .topbar-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .lang-btn {
+            background: rgba(255,255,255,0.1);
+            color: rgba(255,255,255,0.9);
+            padding: 6px 12px;
+            border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            font-family: inherit;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .lang-btn:hover { background: rgba(255,255,255,0.2); }
+        .lang-btn.es-active { background: rgba(185,28,28,0.6); border-color: rgba(255,255,255,0.4); }
+        .logout-link {
+            background: rgba(255,255,255,0.1);
+            color: rgba(255,255,255,0.9);
+            padding: 7px 16px;
+            border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            font-family: inherit;
+            text-decoration: none;
+            transition: background 0.2s;
+        }
+        .logout-link:hover { background: rgba(220,38,38,0.5); border-color: rgba(255,100,100,0.5); }
+
+        /* ── Main content ── */
+        .main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 40px 20px;
+        }
+        .welcome-block {
+            text-align: center;
+            margin-bottom: 36px;
+        }
+        .welcome-block h1 {
+            font-size: 28px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        .welcome-block p {
+            font-size: 15px;
+            color: rgba(255,255,255,0.7);
+        }
+        .welcome-block .user-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(255,255,255,0.12);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 100px;
+            padding: 7px 18px;
+            margin-top: 14px;
+            color: rgba(255,255,255,0.9);
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .user-chip .role-badge {
+            background: var(--se-gold);
+            color: #fff;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            padding: 2px 8px;
+            border-radius: 100px;
+        }
+
+        /* ── App cards ── */
+        .cards-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 24px;
+            justify-content: center;
+            max-width: 1000px;
+            width: 100%;
         }
         .app-card {
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 15px 35px rgba(0,0,0,0.2);
-            padding: 40px 30px;
-            width: 280px;
+            background: #fff;
+            border-radius: 16px;
+            box-shadow: var(--se-card-shadow);
+            padding: 32px 28px 28px;
+            width: 260px;
             text-align: center;
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
-            cursor: pointer;
             text-decoration: none;
             color: inherit;
+            transition: transform 0.25s, box-shadow 0.25s;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
         }
         .app-card:hover {
-            transform: translateY(-8px);
-            box-shadow: 0 20px 50px rgba(0,0,0,0.3);
+            transform: translateY(-6px);
+            box-shadow: 0 16px 40px rgba(0,0,0,0.22);
         }
-        .app-icon {
-            font-size: 60px;
-            margin-bottom: 15px;
+        .card-icon {
+            width: 64px;
+            height: 64px;
+            border-radius: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 30px;
+            margin-bottom: 16px;
+            background: var(--se-bg);
         }
+        .card-icon.green { background: #E8F5EC; }
+        .card-icon.navy  { background: #EAF0F6; }
+        .card-icon.gold  { background: #FDF6E3; }
+        .card-icon.teal  { background: #E6F4F1; }
         .app-card h2 {
-            font-size: 24px;
-            color: #333;
-            margin-bottom: 10px;
+            font-size: 17px;
+            font-weight: 700;
+            color: var(--se-text);
+            margin-bottom: 8px;
         }
         .app-card p {
-            color: #666;
-            font-size: 14px;
+            font-size: 13px;
+            color: var(--se-muted);
             line-height: 1.6;
-            margin-bottom: 25px;
+            margin-bottom: 22px;
+            flex: 1;
         }
-        .app-button {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
+        .card-btn {
+            background: var(--se-green);
+            color: #fff;
             border: none;
-            padding: 12px 30px;
-            border-radius: 5px;
-            font-size: 16px;
-            font-weight: bold;
+            padding: 11px 0;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            font-family: inherit;
             cursor: pointer;
             width: 100%;
-            transition: opacity 0.3s ease;
+            transition: background 0.2s;
+            letter-spacing: 0.2px;
         }
-        .app-button:hover {
-            opacity: 0.9;
-        }
+        .card-btn:hover { background: var(--se-green-dark); }
+
+        /* ── Footer ── */
         .footer {
             text-align: center;
-            color: white;
-            margin-top: 40px;
-            font-size: 14px;
+            color: rgba(255,255,255,0.4);
+            font-size: 12px;
+            padding: 16px 20px 24px;
         }
-        .logout-btn {
-            background: rgba(255,255,255,0.2);
-            color: white;
-            padding: 8px 20px;
-            border: 2px solid white;
-            border-radius: 5px;
-            text-decoration: none;
-            font-size: 14px;
-            display: inline-block;
-            margin-top: 10px;
-            transition: background 0.3s ease;
-        }
-        .logout-btn:hover {
-            background: rgba(255,255,255,0.3);
-        }
-        .lang-toggle-btn {
-            background: rgba(255,255,255,0.15);
-            color: white;
-            padding: 8px 16px;
-            border: 2px solid rgba(255,255,255,0.7);
-            border-radius: 5px;
-            font-size: 14px;
-            font-weight: bold;
-            cursor: pointer;
-            transition: background 0.3s ease;
-            margin-bottom: 10px;
-        }
-        .lang-toggle-btn:hover { background: rgba(255,255,255,0.3); }
-        .lang-toggle-btn.es-active { background: rgba(200,16,46,0.7); border-color: white; }
-        .top-right {
-            position: fixed; top: 16px; right: 20px;
+        @media (max-width: 600px) {
+            .topbar-app-name { display: none; }
+            .app-card { width: 100%; max-width: 340px; }
         }
     </style>
 </head>
 <body>
-    <div class="top-right">
-        <button class="lang-toggle-btn" id="langToggleBtn" onclick="toggleLanguage()">🇪🇸 Español</button>
-    </div>
-    <div class="header">
-        <h1 data-i18n="welcome_title">🌱 Welcome to Your Dashboard</h1>
-        <p data-i18n="choose_app">Choose an application to continue</p>
-    </div>
-
-    <div class="user-info">
-        <p><span data-i18n="logged_in_as">Logged in as:</span> <strong>{{ full_name }}</strong> ({{ role }})</p>
-    </div>
-
-    <div class="container">
-        <!-- PO Request App -->
-        <a href="{% if role == 'technician' %}{{ url_for('tech_dashboard') }}{% elif role == 'admin' %}{{ url_for('admin_dashboard') }}{% else %}{{ url_for('office_dashboard') }}{% endif %}" style="text-decoration: none;">
-            <div class="app-card">
-                <div class="app-icon">📋</div>
-                <h2 data-i18n="po_app_title">PO Request App</h2>
-                <p data-i18n="po_app_desc">Manage purchase orders, track invoices, and monitor project costs</p>
-                <button class="app-button" data-i18n="po_app_btn">Open PO App</button>
+    <nav class="topbar">
+        <div class="topbar-logo">
+            <img src="https://www.stahlman-england.com/wp-content/uploads/stahlman-england-logo.png"
+                 alt="Stahlman-England"
+                 onerror="this.style.display='none'; document.querySelector('.topbar-logo-text').style.display='flex';">
+            <div class="topbar-logo-text" style="flex-direction:column; line-height:1.3;">
+                <span class="co">Stahlman-England</span>
+                <span class="sub">Irrigation &amp; Landscaping</span>
             </div>
-        </a>
+        </div>
+        <span class="topbar-app-name">The Office App</span>
+        <div class="topbar-right">
+            <button class="lang-btn" id="langToggleBtn" onclick="toggleLanguage()">🇪🇸 Español</button>
+            <a href="{{ url_for('logout') }}" class="logout-link" data-i18n="logout">Sign Out</a>
+        </div>
+    </nav>
 
-        <!-- Office Administrator (Office only) -->
-        {% if role == 'office' %}
-        <a href="{{ url_for('office_admin') }}" style="text-decoration: none;">
-            <div class="app-card">
-                <div class="app-icon">🔐</div>
-                <h2 data-i18n="admin_title">Office Administrator</h2>
+    <div class="main">
+        <div class="welcome-block">
+            <h1 data-i18n="welcome_title">Welcome Back</h1>
+            <p data-i18n="choose_app">Select an application to get started</p>
+            <div class="user-chip">
+                <span>{{ full_name }}</span>
+                <span class="role-badge">{{ role }}</span>
+            </div>
+        </div>
+
+        <div class="cards-grid">
+            <!-- PO Request App -->
+            <a class="app-card" href="{% if role == 'technician' %}{{ url_for('tech_dashboard') }}{% elif role == 'admin' %}{{ url_for('admin_dashboard') }}{% else %}{{ url_for('office_dashboard') }}{% endif %}">
+                <div class="card-icon green">📋</div>
+                <h2 data-i18n="po_app_title">PO Requests</h2>
+                <p data-i18n="po_app_desc">Submit and manage purchase orders, track invoices, and monitor project costs</p>
+                <button class="card-btn" data-i18n="po_app_btn">Open PO App</button>
+            </a>
+
+            {% if role == 'office' %}
+            <!-- Office Admin -->
+            <a class="app-card" href="{{ url_for('office_admin') }}">
+                <div class="card-icon navy">🔐</div>
+                <h2 data-i18n="admin_title">Admin Panel</h2>
                 <p data-i18n="admin_desc">Manage technician accounts, passwords, and system settings</p>
-                <button class="app-button" data-i18n="admin_btn">Open Admin Panel</button>
-            </div>
-        </a>
-        {% endif %}
+                <button class="card-btn" data-i18n="admin_btn">Open Admin</button>
+            </a>
+            {% endif %}
 
-        <!-- Installation Management App (Office + Install Tech) -->
-        {% if role == 'office' or (role == 'technician' and tech_type == 'install') %}
-        <a href="{{ url_for('installation') }}" style="text-decoration: none;">
-            <div class="app-card">
-                <div class="app-icon">🏗️</div>
+            {% if role == 'office' or (role == 'technician' and tech_type == 'install') %}
+            <!-- Installation -->
+            <a class="app-card" href="{{ url_for('installation') }}">
+                <div class="card-icon teal">🏗️</div>
                 <h2>Installation</h2>
-                <p>Manage install jobs, site plans, change orders, crew scheduling, daily logs, expenses, and job costing in one place</p>
-                <button class="app-button">Open Installation</button>
-            </div>
-        </a>
-        {% endif %}
+                <p>Manage install jobs, site plans, crew scheduling, daily logs, and job costing</p>
+                <button class="card-btn">Open Installation</button>
+            </a>
+            {% endif %}
 
-        <!-- Community Maintenance App -->
-        <a href="{{ url_for('community_billing') }}" style="text-decoration: none;">
-            <div class="app-card" onclick="window.location.href='{{ url_for('community_billing') }}'">
-                <div class="app-icon">💰</div>
+            <!-- Community Maintenance -->
+            <a class="app-card" href="{{ url_for('community_billing') }}">
+                <div class="card-icon gold">💰</div>
                 <h2 data-i18n="cm_title">Community Maintenance</h2>
                 <p data-i18n="cm_desc">Enter and review equipment installation data by community</p>
-                <button class="app-button" data-i18n="cm_btn">Access Community Maintenance</button>
-            </div>
-        </a>
+                <button class="card-btn" data-i18n="cm_btn">Open Community</button>
+            </a>
+        </div>
     </div>
 
-    <div class="footer">
-        <a href="{{ url_for('logout') }}" class="logout-btn" data-i18n="logout">Logout</a>
-    </div>
+    <div class="footer">&copy; Stahlman-England Irrigation, Inc. — The Office App</div>
 
 <script>
     const TRANSLATIONS = {
         en: {
-            welcome_title: '🌱 Welcome to Your Dashboard',
-            choose_app: 'Choose an application to continue',
-            logged_in_as: 'Logged in as:',
-            po_app_title: 'PO Request App',
-            po_app_desc: 'Manage purchase orders, track invoices, and monitor project costs',
+            welcome_title: 'Welcome Back',
+            choose_app: 'Select an application to get started',
+            po_app_title: 'PO Requests',
+            po_app_desc: 'Submit and manage purchase orders, track invoices, and monitor project costs',
             po_app_btn: 'Open PO App',
-            admin_title: 'Office Administrator',
+            admin_title: 'Admin Panel',
             admin_desc: 'Manage technician accounts, passwords, and system settings',
-            admin_btn: 'Open Admin Panel',
-            jc_title: 'Job Costing',
-            jc_desc: 'Track install job costs, match invoices, and compare estimate vs actual',
-            jc_btn: 'Open Job Costing',
-            is_title: 'Install Scheduling',
-            is_desc: 'Schedule install crews, track days on job, and manage job timelines',
-            is_btn: 'Open Scheduling',
+            admin_btn: 'Open Admin',
             cm_title: 'Community Maintenance',
             cm_desc: 'Enter and review equipment installation data by community',
-            cm_btn: 'Access Community Maintenance',
-            logout: 'Logout',
+            cm_btn: 'Open Community',
+            logout: 'Sign Out',
         },
         es: {
-            welcome_title: '🌱 Bienvenido a Su Panel',
-            choose_app: 'Elija una aplicación para continuar',
-            logged_in_as: 'Conectado como:',
-            po_app_title: 'App de Solicitudes de PO',
-            po_app_desc: 'Gestionar órdenes de compra, rastrear facturas y monitorear costos del proyecto',
+            welcome_title: 'Bienvenido de Nuevo',
+            choose_app: 'Seleccione una aplicación para comenzar',
+            po_app_title: 'Solicitudes de PO',
+            po_app_desc: 'Enviar y gestionar órdenes de compra, rastrear facturas y costos del proyecto',
             po_app_btn: 'Abrir App de PO',
-            admin_title: 'Administrador de Oficina',
+            admin_title: 'Panel de Admin',
             admin_desc: 'Gestionar cuentas de técnicos, contraseñas y configuraciones del sistema',
-            admin_btn: 'Abrir Panel de Admin',
-            jc_title: 'Costo de Trabajo',
-            jc_desc: 'Rastrear costos de instalación, facturas y comparar estimado vs real',
-            jc_btn: 'Abrir Costo de Trabajo',
-            is_title: 'Programación de Instalación',
-            is_desc: 'Programar cuadrillas, rastrear días de trabajo y gestionar cronogramas',
-            is_btn: 'Abrir Programación',
+            admin_btn: 'Abrir Admin',
             cm_title: 'Mantenimiento Comunitario',
             cm_desc: 'Ingresar y revisar datos de instalación de equipos por comunidad',
-            cm_btn: 'Acceder a Mantenimiento Comunitario',
+            cm_btn: 'Abrir Comunidad',
             logout: 'Cerrar Sesión',
         }
     };
-
     let currentLang = {{ user_lang|tojson }};
     localStorage.setItem('techDashLang', currentLang);
-
     function applyLanguage(lang) {
         const t = TRANSLATIONS[lang];
         document.querySelectorAll('[data-i18n]').forEach(el => {
@@ -8118,23 +8400,16 @@ DASHBOARD_MENU_TEMPLATE = '''
         });
         const btn = document.getElementById('langToggleBtn');
         if (btn) {
-            if (lang === 'es') {
-                btn.textContent = '🇺🇸 English';
-                btn.classList.add('es-active');
-            } else {
-                btn.textContent = '🇪🇸 Español';
-                btn.classList.remove('es-active');
-            }
+            btn.textContent = lang === 'es' ? '🇺🇸 English' : '🇪🇸 Español';
+            lang === 'es' ? btn.classList.add('es-active') : btn.classList.remove('es-active');
         }
     }
-
     function toggleLanguage() {
         currentLang = currentLang === 'en' ? 'es' : 'en';
         localStorage.setItem('techDashLang', currentLang);
         applyLanguage(currentLang);
         fetch('/set_user_language', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({lang:currentLang})}).catch(function(){});
     }
-
     applyLanguage(currentLang);
 </script>
 </body>
@@ -8147,15 +8422,28 @@ OFFICE_ADMIN_TEMPLATE = '''
 <head>
     <title>Office Administrator - Account Management</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
         body {
-            font-family: Arial, sans-serif;
+            font-family: 'Inter', Arial, sans-serif;
             background: #f5f5f5;
             padding: 20px;
         }
         .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #1E6F3E 0%, #0D4525 100%);
             color: white;
             padding: 20px;
             border-radius: 10px;
@@ -8254,19 +8542,54 @@ OFFICE_ADMIN_TEMPLATE = '''
             color: #666;
             font-size: 14px;
         }
+
+        /* ── SE Brand Header ── */
+        .se-header {
+            background: var(--se-green, #1E6F3E); padding: 0 22px; display: flex;
+            align-items: center; justify-content: space-between; min-height: 60px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2); margin: -20px -20px 22px;
+            flex-wrap: wrap; gap: 8px; border-radius: 0;
+        }
+        .se-header-left { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
+        .se-logo-img { height: 34px; object-fit: contain; }
+        .se-logo-txt { display: none; flex-direction: column; line-height: 1.25; }
+        .se-logo-txt .co { font-size: 13px; font-weight: 700; color: #fff; }
+        .se-logo-txt .sub { font-size: 9px; color: rgba(255,255,255,0.6); text-transform: uppercase; letter-spacing: 1.5px; }
+        .se-hdivider { width: 1px; height: 26px; background: rgba(255,255,255,0.3); }
+        .se-header-title { font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.92); }
+        .se-header-right { display: flex; align-items: center; gap: 8px; padding: 12px 0; flex-wrap: wrap; }
+        .se-nav-btn {
+            font-family: 'Inter', Arial, sans-serif; font-size: 13px; font-weight: 500;
+            padding: 7px 14px; border-radius: 6px; cursor: pointer;
+            text-decoration: none; transition: background 0.2s; border: none; display: inline-block;
+        }
+        .se-ghost { background: rgba(255,255,255,0.12); color: rgba(255,255,255,0.9); border: 1px solid rgba(255,255,255,0.25) !important; }
+        .se-ghost:hover { background: rgba(255,255,255,0.22); color: #fff; }
+        .se-ghost.es-active { background: rgba(185,28,28,0.6); }
+        .se-danger { background: rgba(220,38,38,0.75); color: #fff; }
+        .se-danger:hover { background: rgba(185,28,28,0.95); }
     </style>
 </head>
 <body>
-    <div class="header">
-        <div>
-            <h1>🔐 Office Administrator</h1>
-            <p style="opacity: 0.9; margin-top: 5px;">Logged in as: {{ full_name }}</p>
+    <header class="se-header">
+        <div class="se-header-left">
+            <img class="se-logo-img"
+                 src="https://www.stahlman-england.com/wp-content/uploads/stahlman-england-logo.png"
+                 alt="Stahlman-England"
+                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+            <div class="se-logo-txt">
+                <span class="co">Stahlman-England</span>
+                <span class="sub">Irrigation</span>
+            </div>
+            <div class="se-hdivider"></div>
+            <span class="se-header-title">The Office App</span>
         </div>
-        <div class="header-buttons">
-            <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">← Back to Dashboard</a>
-            <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
+        <div class="se-header-right">
+            <span style="color:rgba(255,255,255,0.8);font-size:13px;">{{ full_name }}</span>
+            <a href="{{ url_for('dashboard') }}" class="se-nav-btn se-ghost">Home</a>
+            <a href="{{ url_for('logout') }}" class="se-nav-btn se-danger">Sign Out</a>
         </div>
-    </div>
+    </header>
 
     <div class="container">
         <!-- Technician Management -->
@@ -8291,7 +8614,7 @@ OFFICE_ADMIN_TEMPLATE = '''
     </div>
 
     <div class="footer">
-        <p>Office Administrator Panel • PO Request System v1.2.0</p>
+        <p>Office Administrator Panel • The Office App v1.2.0</p>
     </div>
 </body>
 </html>
@@ -8303,15 +8626,28 @@ MANAGE_OFFICE_ADMINS_TEMPLATE = '''
 <head>
     <title>Manage Office Administrators</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
         body {
-            font-family: Arial, sans-serif;
+            font-family: 'Inter', Arial, sans-serif;
             background: #f5f5f5;
             padding: 20px;
         }
         .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #1E6F3E 0%, #0D4525 100%);
             color: white;
             padding: 20px;
             border-radius: 10px;
@@ -8349,7 +8685,7 @@ MANAGE_OFFICE_ADMINS_TEMPLATE = '''
         .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; }
         .table { width: 100%; border-collapse: collapse; margin-top: 20px; }
         .table th {
-            background: #667eea;
+            background: #1E6F3E;
             color: white;
             padding: 12px;
             text-align: left;
@@ -8372,19 +8708,53 @@ MANAGE_OFFICE_ADMINS_TEMPLATE = '''
         .success { background: #d4edda; color: #155724; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
         .error { background: #f8d7da; color: #721c24; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
         .footer { text-align: center; margin-top: 40px; color: #666; font-size: 14px; }
+
+        /* ── SE Brand Header ── */
+        .se-header {
+            background: var(--se-green, #1E6F3E); padding: 0 22px; display: flex;
+            align-items: center; justify-content: space-between; min-height: 60px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2); margin: -20px -20px 22px;
+            flex-wrap: wrap; gap: 8px; border-radius: 0;
+        }
+        .se-header-left { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
+        .se-logo-img { height: 34px; object-fit: contain; }
+        .se-logo-txt { display: none; flex-direction: column; line-height: 1.25; }
+        .se-logo-txt .co { font-size: 13px; font-weight: 700; color: #fff; }
+        .se-logo-txt .sub { font-size: 9px; color: rgba(255,255,255,0.6); text-transform: uppercase; letter-spacing: 1.5px; }
+        .se-hdivider { width: 1px; height: 26px; background: rgba(255,255,255,0.3); }
+        .se-header-title { font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.92); }
+        .se-header-right { display: flex; align-items: center; gap: 8px; padding: 12px 0; flex-wrap: wrap; }
+        .se-nav-btn {
+            font-family: 'Inter', Arial, sans-serif; font-size: 13px; font-weight: 500;
+            padding: 7px 14px; border-radius: 6px; cursor: pointer;
+            text-decoration: none; transition: background 0.2s; border: none; display: inline-block;
+        }
+        .se-ghost { background: rgba(255,255,255,0.12); color: rgba(255,255,255,0.9); border: 1px solid rgba(255,255,255,0.25) !important; }
+        .se-ghost:hover { background: rgba(255,255,255,0.22); color: #fff; }
+        .se-ghost.es-active { background: rgba(185,28,28,0.6); }
+        .se-danger { background: rgba(220,38,38,0.75); color: #fff; }
+        .se-danger:hover { background: rgba(185,28,28,0.95); }
     </style>
 </head>
 <body>
-    <div class="header">
-        <div>
-            <h1>🔑 Manage Office Administrators</h1>
-            <p style="opacity: 0.9; margin-top: 5px;">Logged in as: {{ full_name }}</p>
+    <header class="se-header">
+        <div class="se-header-left">
+            <img class="se-logo-img"
+                 src="https://www.stahlman-england.com/wp-content/uploads/stahlman-england-logo.png"
+                 alt="Stahlman-England"
+                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+            <div class="se-logo-txt">
+                <span class="co">Stahlman-England</span>
+                <span class="sub">Irrigation</span>
+            </div>
+            <div class="se-hdivider"></div>
+            <span class="se-header-title">The Office App</span>
         </div>
-        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-            <a href="{{ url_for('office_admin') }}" class="btn btn-secondary">← Back to Admin</a>
-            <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
+        <div class="se-header-right">
+            <a href="{{ url_for('office_admin') }}" class="se-nav-btn se-ghost">← Admin</a>
+            <a href="{{ url_for('logout') }}" class="se-nav-btn se-danger">Sign Out</a>
         </div>
-    </div>
+    </header>
 
     <div class="container">
         <!-- Add New Admin -->
@@ -8462,7 +8832,7 @@ MANAGE_OFFICE_ADMINS_TEMPLATE = '''
             <form onsubmit="submitEditPassword(event)">
                 <input type="hidden" id="editAdminId">
                 <div class="form-group" style="margin-bottom: 15px;">
-                    <label style="display: block; margin-bottom: 5px; color: #555; font-weight: bold;">Administrator: <span id="editAdminName" style="color: #667eea;"></span></label>
+                    <label style="display: block; margin-bottom: 5px; color: #555; font-weight: bold;">Administrator: <span id="editAdminName" style="color: #1E6F3E;"></span></label>
                 </div>
                 <div class="form-group">
                     <label for="editPassword">New Password *</label>
@@ -8478,7 +8848,7 @@ MANAGE_OFFICE_ADMINS_TEMPLATE = '''
     </div>
 
     <div class="footer">
-        <p>Office Administrator Management • PO Request System v1.2.0</p>
+        <p>Office Administrator Management • The Office App v1.2.0</p>
     </div>
 
     <script>
@@ -8624,26 +8994,78 @@ TECH_DASHBOARD_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Technician Dashboard</title>
+    <title>Technician Dashboard — The Office App</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
-        .header {
-            background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex;
-            justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
         }
-        h1 { color: #333; font-size: 24px; }
+        body { font-family: 'Inter', Arial, sans-serif; background: var(--se-bg, #F2F7F4); padding: 20px; min-height: 100vh; }
+        /* ── SE Brand Header ── */
+        .se-header {
+            background: var(--se-green);
+            padding: 0 22px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            min-height: 60px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+            margin-bottom: 22px;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .se-header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 0;
+        }
+        .se-logo-img { height: 34px; object-fit: contain; }
+        .se-logo-txt { display: none; flex-direction: column; line-height: 1.25; }
+        .se-logo-txt .co { font-size: 13px; font-weight: 700; color: #fff; }
+        .se-logo-txt .sub { font-size: 9px; color: rgba(255,255,255,0.6); text-transform: uppercase; letter-spacing: 1.5px; }
+        .se-hdivider { width: 1px; height: 26px; background: rgba(255,255,255,0.3); }
+        .se-header-title { font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.92); }
+        .se-header-right {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 0;
+        }
+        .se-nav-btn {
+            font-family: 'Inter', Arial, sans-serif;
+            font-size: 13px; font-weight: 500;
+            padding: 7px 14px; border-radius: 6px; cursor: pointer;
+            text-decoration: none; transition: background 0.2s; border: none;
+        }
+        .se-ghost { background: rgba(255,255,255,0.12); color: rgba(255,255,255,0.9); border: 1px solid rgba(255,255,255,0.25); }
+        .se-ghost:hover { background: rgba(255,255,255,0.22); }
+        .se-ghost.es-active { background: rgba(185,28,28,0.6); border-color: rgba(255,100,100,0.4); }
+        .se-danger { background: rgba(220,38,38,0.75); color: #fff; }
+        .se-danger:hover { background: rgba(185,28,28,0.95); }
+        .se-primary-btn { background: #fff; color: var(--se-green); font-weight: 600; }
+        .se-primary-btn:hover { background: #f0f9f4; }
         .logout-btn {
-            background: #dc3545; color: white; padding: 10px 20px;
-            text-decoration: none; border-radius: 5px; font-size: 14px;
+            background: rgba(220,38,38,0.75); color: white; padding: 7px 14px;
+            text-decoration: none; border-radius: 6px; font-size: 13px; font-weight: 500;
         }
+        .logout-btn:hover { background: rgba(185,28,28,0.95); }
         .card {
             background: white; padding: 20px; border-radius: 10px;
-            margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);
         }
-        h2 { color: #667eea; margin-bottom: 20px; font-size: 20px; }
+        h2 { color: var(--se-green, #1E6F3E); margin-bottom: 16px; font-size: 18px; font-weight: 700; }
         .form-group { margin-bottom: 15px; }
         label { display: block; margin-bottom: 5px; color: #555; font-weight: bold; }
         input, textarea, select {
@@ -8652,13 +9074,13 @@ TECH_DASHBOARD_TEMPLATE = '''
         }
         textarea { min-height: 100px; resize: vertical; }
         button {
-            background: #667eea; color: white; padding: 12px 30px;
+            background: #1E6F3E; color: white; padding: 12px 30px;
             border: none; border-radius: 5px; font-size: 16px;
             cursor: pointer; font-weight: bold;
         }
-        button:hover { background: #5568d3; }
+        button:hover { background: #155530; }
         .request-item {
-            background: #f9f9f9; padding: 15px; border-left: 4px solid #667eea;
+            background: #f9f9f9; padding: 15px; border-left: 4px solid var(--se-green, #1E6F3E);
             margin-bottom: 15px; border-radius: 5px; position: relative;
         }
         .request-item.approved { border-left-color: #28a745; }
@@ -8699,13 +9121,28 @@ TECH_DASHBOARD_TEMPLATE = '''
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>{% if tech_type == 'install' %}<span data-i18n-dynamic="dashboard_title_install" data-name="{{ full_name }}">🔧 Install Technician Dashboard - {{ full_name }}</span>{% else %}<span data-i18n-dynamic="dashboard_title_service" data-name="{{ full_name }}">📱 Service Technician Dashboard - {{ full_name }}</span>{% endif %}</h1>
-        <div class="header-actions">
-            <button class="lang-toggle-btn" id="langToggleBtn" onclick="toggleLanguage()">🇪🇸 Español</button>
-            <a href="{{ url_for('logout') }}" class="logout-btn" data-i18n="logout">Logout</a>
+    <header class="se-header">
+        <div class="se-header-left">
+            <img class="se-logo-img"
+                 src="https://www.stahlman-england.com/wp-content/uploads/stahlman-england-logo.png"
+                 alt="Stahlman-England"
+                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+            <div class="se-logo-txt">
+                <span class="co">Stahlman-England</span>
+                <span class="sub">Irrigation</span>
+            </div>
+            <div class="se-hdivider"></div>
+            <span class="se-header-title">The Office App</span>
         </div>
-    </div>
+        <div class="se-header-right">
+            <span style="color:rgba(255,255,255,0.82);font-size:13px;font-weight:500;">
+                {% if tech_type == 'install' %}<span data-i18n-dynamic="dashboard_title_install" data-name="{{ full_name }}">Install Tech — {{ full_name }}</span>{% else %}<span data-i18n-dynamic="dashboard_title_service" data-name="{{ full_name }}">Service Tech — {{ full_name }}</span>{% endif %}
+            </span>
+            <button class="se-nav-btn se-ghost" id="langToggleBtn" onclick="toggleLanguage()">🇪🇸 Español</button>
+            <a href="{{ url_for('dashboard') }}" class="se-nav-btn se-ghost">Home</a>
+            <a href="{{ url_for('logout') }}" class="se-nav-btn se-danger" data-i18n="logout">Sign Out</a>
+        </div>
+    </header>
 
     {% with messages = get_flashed_messages() %}
         {% if messages %}
@@ -8714,7 +9151,7 @@ TECH_DASHBOARD_TEMPLATE = '''
                     {% set parts = message.split('|') %}
                     {% set po_num = parts[0] %}
                     {% set job_nm = parts[1] %}
-                    <div style="background: #28a745; color: white; padding: 25px; border-radius: 10px; margin-bottom: 20px; text-align: center; box-shadow: 0 4px 12px rgba(40,167,69,0.4);">
+                    <div style="background: var(--se-green, #1E6F3E); color: white; padding: 25px; border-radius: 12px; margin-bottom: 20px; text-align: center; box-shadow: 0 4px 16px rgba(30,111,62,0.35);">
                         <div style="font-size: 28px; font-weight: bold; margin-bottom: 8px;" data-i18n="po_submitted">PO SUBMITTED!</div>
                         <div style="font-size: 42px; font-weight: bold; letter-spacing: 2px; margin: 10px 0;">{{ po_num }}</div>
                         <div style="font-size: 22px; margin-bottom: 12px;"><span data-i18n="job_label">Job:</span> <strong>{{ job_nm }}</strong></div>
@@ -8819,8 +9256,8 @@ TECH_DASHBOARD_TEMPLATE = '''
             confirm_delete: 'Are you sure you want to delete this PO request? This action cannot be undone.',
             delete_success: 'PO request deleted successfully',
             delete_error: 'Error deleting request',
-            dashboard_title_install: '🔧 Install Technician Dashboard',
-            dashboard_title_service: '📱 Service Technician Dashboard',
+            dashboard_title_install: 'Install Technician',
+            dashboard_title_service: 'Service Technician',
             use_po_at_store: 'when placing your order at the store',
         },
         es: {
@@ -8862,8 +9299,8 @@ TECH_DASHBOARD_TEMPLATE = '''
             confirm_delete: '¿Está seguro de que desea eliminar esta solicitud de PO? Esta acción no se puede deshacer.',
             delete_success: 'Solicitud de PO eliminada con éxito',
             delete_error: 'Error al eliminar la solicitud',
-            dashboard_title_install: '🔧 Panel del Técnico de Instalación',
-            dashboard_title_service: '📱 Panel del Técnico de Servicio',
+            dashboard_title_install: 'Técnico de Instalación',
+            dashboard_title_service: 'Técnico de Servicio',
             use_po_at_store: 'al realizar su pedido en la tienda',
         }
     };
@@ -9020,7 +9457,7 @@ TECH_DASHBOARD_TEMPLATE = '''
         <h2>📋 <span data-i18n="my_po_requests">My PO Requests</span></h2>
 
         {% if requests %}
-        <div style="background: #f9f9f9; padding: 15px; border-radius: 5px; margin-bottom: 20px; border-left: 4px solid #667eea;">
+        <div style="background: #f9f9f9; padding: 15px; border-radius: 5px; margin-bottom: 20px; border-left: 4px solid var(--se-green, #1E6F3E);">
             <h3 style="color: #333; margin-bottom: 15px; font-size: 16px;" data-i18n="search_my_pos">🔍 Search My POs</h3>
             <div style="display: flex; gap: 10px; align-items: flex-end;">
                 <input type="text" id="poSearchFilter" placeholder="Search by client name or description..." style="flex: 1; padding: 10px; border: 2px solid #ddd; border-radius: 4px; font-size: 14px;" data-i18n-placeholder="search_placeholder">
@@ -9081,20 +9518,33 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Department Dashboard</title>
+    <title>Department Dashboard — The Office App</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
+        body { font-family: 'Inter', Arial, sans-serif; background: var(--se-bg, #F2F7F4); padding: 20px; min-height: 100vh; }
         .header {
             background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08); display: flex;
             justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
         }
         h1 { color: #333; font-size: 28px; }
         .header-nav { display: flex; gap: 8px; flex-wrap: wrap; }
         .btn { padding: 10px 20px; border-radius: 5px; text-decoration: none; font-weight: bold; border: none; cursor: pointer; font-size: 14px; display: inline-block; }
-        .btn-primary { background: #667eea; color: white; }
+        .btn-primary { background: var(--se-green, #1E6F3E); color: white; }
         .btn-secondary { background: #6c757d; color: white; }
         .btn-danger { background: #dc3545; color: white; }
         .btn-success { background: #28a745; color: white; }
@@ -9105,7 +9555,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             cursor: pointer; font-weight: bold; font-size: 16px; transition: all 0.3s;
         }
         .tab-btn:hover { background: #f5f5f5; }
-        .tab-btn.active { background: #667eea; color: white; border-color: #667eea; }
+        .tab-btn.active { background: #1E6F3E; color: white; border-color: #1E6F3E; }
         .tab-btn.service { color: #007bff; }
         .tab-btn.service.active { background: #007bff; color: white; }
         .tab-btn.install { color: #28a745; }
@@ -9116,25 +9566,25 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         .year-filter {
             background: white; padding: 15px; border-radius: 5px; margin-bottom: 20px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08); display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
         }
         .year-filter select { padding: 8px 15px; border: 2px solid #ddd; border-radius: 5px; font-size: 14px; }
-        .year-filter button { padding: 8px 15px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        .year-filter button { padding: 8px 15px; background: #1E6F3E; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
 
         .stats-grid {
             display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px;
         }
         .stat-card {
-            background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-            border-left: 4px solid #667eea;
+            background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            border-left: 4px solid var(--se-green, #1E6F3E);
         }
-        .stat-number { font-size: 28px; font-weight: bold; color: #667eea; }
+        .stat-number { font-size: 28px; font-weight: bold; color: #1E6F3E; }
         .stat-label { color: #666; font-size: 13px; margin-top: 5px; }
 
         .jobs-container { display: flex; flex-direction: column; gap: 15px; }
         .job-card {
-            background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-            border-left: 4px solid #667eea;
+            background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            border-left: 4px solid var(--se-green, #1E6F3E);
         }
         .job-card.inactive { opacity: 0.7; border-left-color: #dc3545; }
         .job-header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 15px; flex-wrap: wrap; gap: 10px; }
@@ -9148,7 +9598,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 15px;
         }
         .job-stat-item { background: #f9f9f9; padding: 10px; border-radius: 5px; }
-        .job-stat-value { font-weight: bold; color: #667eea; }
+        .job-stat-value { font-weight: bold; color: #1E6F3E; }
         .job-stat-label { font-size: 12px; color: #666; }
 
         .budget-bar {
@@ -9166,7 +9616,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         .pos-title { font-weight: bold; color: #333; margin-bottom: 10px; }
         .po-item {
             background: #f5f7ff; padding: 12px; border-radius: 5px; margin-bottom: 8px;
-            border-left: 3px solid #667eea; font-size: 13px;
+            border-left: 3px solid #1E6F3E; font-size: 13px;
         }
         .po-tech { font-weight: bold; color: #007bff; }
         .po-status { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 11px; margin-left: 8px; }
@@ -9184,25 +9634,25 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         .add-job-card {
             background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1); border-left: 4px solid #667eea;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08); border-left: 4px solid var(--se-green, #1E6F3E);
         }
-        .add-job-card h2 { color: #667eea; margin-bottom: 15px; font-size: 18px; }
+        .add-job-card h2 { color: #1E6F3E; margin-bottom: 15px; font-size: 18px; }
         .add-job-card p { color: #666; font-size: 13px; margin-bottom: 15px; }
         .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 15px; }
         .form-group { display: flex; flex-direction: column; }
         .form-group label { font-weight: bold; color: #555; margin-bottom: 5px; font-size: 13px; }
         .form-group input, .form-group select { padding: 10px; border: 2px solid #ddd; border-radius: 5px; font-size: 14px; }
-        .form-group input:focus, .form-group select:focus { outline: none; border-color: #667eea; }
+        .form-group input:focus, .form-group select:focus { outline: none; border-color: #1E6F3E; }
         .form-actions { display: flex; gap: 10px; }
         .form-actions button { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; font-size: 14px; }
 
         .search-bar {
             background: white; padding: 15px; border-radius: 5px; margin-bottom: 20px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex; gap: 10px; align-items: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08); display: flex; gap: 10px; align-items: center;
         }
         .search-bar input { flex: 1; padding: 10px 15px; border: 2px solid #ddd; border-radius: 5px; font-size: 14px; }
-        .search-bar input:focus { outline: none; border-color: #667eea; }
-        .search-bar button { padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        .search-bar input:focus { outline: none; border-color: #1E6F3E; }
+        .search-bar button { padding: 10px 20px; background: #1E6F3E; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
 
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; overflow-y: auto; }
         .modal.open { display: block; }
@@ -9212,7 +9662,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         .modal-close { background: #dc3545; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; font-weight: bold; }
         .all-pos-table { width: 100%; border-collapse: collapse; }
         .all-pos-table th, .all-pos-table td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
-        .all-pos-table th { background: #667eea; color: white; font-weight: bold; }
+        .all-pos-table th { background: #1E6F3E; color: white; font-weight: bold; }
         .all-pos-table tr:hover { background: #f5f5f5; }
 
         /* Modal Styles */
@@ -9236,11 +9686,11 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
         /* Invoice Upload Styles */
         .invoice-upload-dropzone {
-            border: 3px dashed #667eea; border-radius: 10px; padding: 40px 20px;
+            border: 3px dashed #1E6F3E; border-radius: 10px; padding: 40px 20px;
             text-align: center; background: #f9f9f9; cursor: pointer; transition: all 0.3s;
             margin: 15px 0;
         }
-        .invoice-upload-dropzone:hover { background: #f0f0f0; border-color: #667eea; }
+        .invoice-upload-dropzone:hover { background: #f0f0f0; border-color: #1E6F3E; }
         .invoice-upload-dropzone .big-icon { font-size: 48px; margin-bottom: 10px; }
         .invoice-upload-dropzone p { margin: 5px 0; color: #666; }
         .invoice-upload-dropzone p:first-of-type { font-size: 16px; font-weight: bold; }
@@ -9257,7 +9707,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             background: white; border: 2px solid #ddd; border-radius: 8px; padding: 12px;
             margin: 10px 0; cursor: pointer; transition: all 0.3s;
         }
-        .po-suggestion:hover { border-color: #667eea; background: #f9f9f9; }
+        .po-suggestion:hover { border-color: #1E6F3E; background: #f9f9f9; }
         .po-suggestion.selected { border-color: #28a745; background: #f0f8f0; box-shadow: 0 0 10px rgba(40,167,69,0.2); }
 
         /* Invoice Dropdown Styles */
@@ -9267,7 +9717,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         }
         .po-item-content { flex: 1; }
         .invoice-dropdown-toggle {
-            background: none; border: none; padding: 4px 8px; cursor: pointer; color: #667eea;
+            background: none; border: none; padding: 4px 8px; cursor: pointer; color: #1E6F3E;
             font-size: 16px; font-weight: bold; display: inline-flex; align-items: center;
             margin-left: 10px; transition: all 0.2s;
         }
@@ -9288,20 +9738,57 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         .invoice-item-number { font-weight: bold; color: #333; }
         .invoice-item-cost { color: #28a745; font-weight: bold; }
         .invoice-item-date { color: #666; font-size: 12px; }
-        .invoice-item-file { color: #667eea; font-size: 12px; word-break: break-word; }
+        .invoice-item-file { color: #1E6F3E; font-size: 12px; word-break: break-word; }
         .no-invoices { color: #999; font-style: italic; padding: 10px; }
+
+        /* ── SE Brand Header ── */
+        .se-header {
+            background: var(--se-green, #1E6F3E); padding: 0 22px; display: flex;
+            align-items: center; justify-content: space-between; min-height: 60px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2); margin: -20px -20px 22px;
+            flex-wrap: wrap; gap: 8px; border-radius: 0;
+        }
+        .se-header-left { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
+        .se-logo-img { height: 34px; object-fit: contain; }
+        .se-logo-txt { display: none; flex-direction: column; line-height: 1.25; }
+        .se-logo-txt .co { font-size: 13px; font-weight: 700; color: #fff; }
+        .se-logo-txt .sub { font-size: 9px; color: rgba(255,255,255,0.6); text-transform: uppercase; letter-spacing: 1.5px; }
+        .se-hdivider { width: 1px; height: 26px; background: rgba(255,255,255,0.3); }
+        .se-header-title { font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.92); }
+        .se-header-right { display: flex; align-items: center; gap: 8px; padding: 12px 0; flex-wrap: wrap; }
+        .se-nav-btn {
+            font-family: 'Inter', Arial, sans-serif; font-size: 13px; font-weight: 500;
+            padding: 7px 14px; border-radius: 6px; cursor: pointer;
+            text-decoration: none; transition: background 0.2s; border: none; display: inline-block;
+        }
+        .se-ghost { background: rgba(255,255,255,0.12); color: rgba(255,255,255,0.9); border: 1px solid rgba(255,255,255,0.25) !important; }
+        .se-ghost:hover { background: rgba(255,255,255,0.22); color: #fff; }
+        .se-ghost.es-active { background: rgba(185,28,28,0.6); }
+        .se-danger { background: rgba(220,38,38,0.75); color: #fff; }
+        .se-danger:hover { background: rgba(185,28,28,0.95); }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>🏢 Department Dashboard</h1>
-        <div class="header-nav">
-            <button onclick="openInvoiceUploadModal()" style="background: #28a745; color: white; padding: 10px 20px; border: none; text-decoration: none; border-radius: 5px; font-weight: bold; cursor: pointer;">📄 Upload Invoice</button>
-            <button onclick="checkPOEmails()" style="background: #0d6efd; color: white; padding: 10px 20px; border: none; text-decoration: none; border-radius: 5px; font-weight: bold; cursor: pointer;" id="check-emails-btn">📧 Check PO Emails</button>
-            <a href="{{ url_for('dashboard') }}" style="background: #6c757d; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">← Dashboard</a>
-            <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
+    <header class="se-header">
+        <div class="se-header-left">
+            <img class="se-logo-img"
+                 src="https://www.stahlman-england.com/wp-content/uploads/stahlman-england-logo.png"
+                 alt="Stahlman-England"
+                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+            <div class="se-logo-txt">
+                <span class="co">Stahlman-England</span>
+                <span class="sub">Irrigation</span>
+            </div>
+            <div class="se-hdivider"></div>
+            <span class="se-header-title">The Office App</span>
         </div>
-    </div>
+        <div class="se-header-right">
+            <button onclick="openInvoiceUploadModal()" class="se-nav-btn" style="background:rgba(40,167,69,0.8);color:#fff;border:1px solid rgba(255,255,255,0.2);">Upload Invoice</button>
+            <button onclick="checkPOEmails()" class="se-nav-btn se-ghost" id="check-emails-btn">Check Emails</button>
+            <a href="{{ url_for('dashboard') }}" class="se-nav-btn se-ghost">Home</a>
+            <a href="{{ url_for('logout') }}" class="se-nav-btn se-danger">Sign Out</a>
+        </div>
+    </header>
 
     <div class="tabs-container">
         <button class="tab-btn service active" id="service-btn" onclick="switchTab('service', event)">📱 Service Department</button>
@@ -9368,7 +9855,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
             <div class="modal-actions" style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
                 <button class="secondary-btn" onclick="closeInvoiceUploadModal()" style="background: #6c757d; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer;">Cancel</button>
-                <button class="primary-btn" id="submit-invoice-btn" onclick="submitInvoiceUpload()" style="display: none; background: #667eea; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer;">💾 Save Invoice</button>
+                <button class="primary-btn" id="submit-invoice-btn" onclick="submitInvoiceUpload()" style="display: none; background: #1E6F3E; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer;">💾 Save Invoice</button>
             </div>
         </div>
     </div>
@@ -9380,7 +9867,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             <div style="display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; align-items: center;">
                 <input type="text" id="service-po-client-search" placeholder="Search by client..." style="flex: 1; min-width: 200px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
                 <input type="text" id="service-po-keyword-search" placeholder="Search by keyword..." style="flex: 1; min-width: 200px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
-                <button onclick="filterServicePOs()" style="background: #667eea; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">🔍 Search</button>
+                <button onclick="filterServicePOs()" style="background: #1E6F3E; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">🔍 Search</button>
                 <button onclick="clearServicePOSearch()" style="background: #999; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">Clear</button>
             </div>
         </div>
@@ -9436,7 +9923,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             <h2>🔍 Search All POs</h2>
             <div style="display: flex; gap: 10px; margin-bottom: 15px;">
                 <input type="text" id="po-search-input" placeholder="Search by description or tech name..." style="flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
-                <button onclick="searchAllPOs()" style="background: #667eea; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">🔍 Search</button>
+                <button onclick="searchAllPOs()" style="background: #1E6F3E; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">🔍 Search</button>
                 <button onclick="clearPOSearch()" style="background: #999; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">Clear</button>
             </div>
         </div>
@@ -9558,7 +10045,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                                 <p style="color: #666; font-size: 12px; margin: 5px 0;"><strong>Received:</strong> ${notif.email_received_date}</p>
                             </div>
                             <div style="display: flex; gap: 8px; flex-direction: column;">
-                                <button onclick="showMatchNotificationModal(${notif.id}, '${notif.invoice_number}')" style="background: #667eea; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">🔗 Match to PO</button>
+                                <button onclick="showMatchNotificationModal(${notif.id}, '${notif.invoice_number}')" style="background: #1E6F3E; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">🔗 Match to PO</button>
                                 <button onclick="dismissNotification(${notif.id})" style="background: #6c757d; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">✕ Dismiss</button>
                             </div>
                         </div>
@@ -10866,24 +11353,76 @@ OFFICE_DASHBOARD_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Office Dashboard</title>
+    <title>Office Dashboard — The Office App</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
-        .header {
-            background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex;
-            justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
         }
-        h1 { color: #333; font-size: 24px; }
+        body { font-family: 'Inter', Arial, sans-serif; background: var(--se-bg, #F2F7F4); padding: 20px; min-height: 100vh; }
+        /* ── SE Brand Header ── */
+        .se-header {
+            background: var(--se-green);
+            padding: 0 22px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            min-height: 60px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+            margin-bottom: 22px;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .se-header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 0;
+        }
+        .se-logo-img { height: 34px; object-fit: contain; }
+        .se-logo-txt { display: none; flex-direction: column; line-height: 1.25; }
+        .se-logo-txt .co { font-size: 13px; font-weight: 700; color: #fff; }
+        .se-logo-txt .sub { font-size: 9px; color: rgba(255,255,255,0.6); text-transform: uppercase; letter-spacing: 1.5px; }
+        .se-hdivider { width: 1px; height: 26px; background: rgba(255,255,255,0.3); }
+        .se-header-title { font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.92); }
+        .se-header-right {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 0;
+        }
+        .se-nav-btn {
+            font-family: 'Inter', Arial, sans-serif;
+            font-size: 13px; font-weight: 500;
+            padding: 7px 14px; border-radius: 6px; cursor: pointer;
+            text-decoration: none; transition: background 0.2s; border: none;
+        }
+        .se-ghost { background: rgba(255,255,255,0.12); color: rgba(255,255,255,0.9); border: 1px solid rgba(255,255,255,0.25); }
+        .se-ghost:hover { background: rgba(255,255,255,0.22); }
+        .se-ghost.es-active { background: rgba(185,28,28,0.6); border-color: rgba(255,100,100,0.4); }
+        .se-danger { background: rgba(220,38,38,0.75); color: #fff; }
+        .se-danger:hover { background: rgba(185,28,28,0.95); }
+        .se-primary-btn { background: #fff; color: var(--se-green); font-weight: 600; }
+        .se-primary-btn:hover { background: #f0f9f4; }
         .logout-btn {
-            background: #dc3545; color: white; padding: 10px 20px;
-            text-decoration: none; border-radius: 5px; font-size: 14px;
+            background: rgba(220,38,38,0.75); color: white; padding: 7px 14px;
+            text-decoration: none; border-radius: 6px; font-size: 13px; font-weight: 500;
         }
+        .logout-btn:hover { background: rgba(185,28,28,0.95); }
         .search-card {
             background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
         }
         .search-form { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
         .search-form input, .search-form select {
@@ -10891,18 +11430,19 @@ OFFICE_DASHBOARD_TEMPLATE = '''
             border-radius: 5px; font-size: 16px;
         }
         .search-btn {
-            background: #667eea; color: white; padding: 12px 30px; border: none;
-            border-radius: 5px; font-size: 16px; cursor: pointer; font-weight: bold;
+            background: var(--se-green, #1E6F3E); color: white; padding: 12px 24px; border: none;
+            border-radius: 8px; font-size: 15px; cursor: pointer; font-weight: 600; transition: background 0.2s;
         }
+        .search-btn:hover { background: var(--se-green-dark, #155530); }
         .stats {
             display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
             gap: 20px; margin-bottom: 20px;
         }
         .stat-card {
             background: white; padding: 20px; border-radius: 10px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1); text-align: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08); text-align: center;
         }
-        .stat-number { font-size: 36px; font-weight: bold; color: #667eea; }
+        .stat-number { font-size: 32px; font-weight: 700; color: var(--se-green, #1E6F3E); }
         .stat-label { color: #666; margin-top: 5px; }
         .tabs {
             background: white; padding: 0; border-radius: 10px 10px 0 0;
@@ -10914,15 +11454,15 @@ OFFICE_DASHBOARD_TEMPLATE = '''
             color: #666; white-space: nowrap;
         }
         .tab.active {
-            background: white; color: #667eea; border-bottom: 3px solid #667eea;
+            background: white; color: var(--se-green); border-bottom: 3px solid var(--se-green);
         }
         .tab-content {
             background: white; padding: 20px; border-radius: 0 0 10px 10px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: none;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08); display: none;
         }
         .tab-content.active { display: block; }
         .request-item {
-            background: #f9f9f9; padding: 20px; border-left: 4px solid #667eea;
+            background: #f9f9f9; padding: 20px; border-left: 4px solid var(--se-green, #1E6F3E);
             margin-bottom: 15px; border-radius: 5px; position: relative;
         }
         .request-item h3 { color: #333; margin-bottom: 10px; }
@@ -11020,9 +11560,9 @@ OFFICE_DASHBOARD_TEMPLATE = '''
         }
         .invoice-upload-section {
             background: #f0f8ff; padding: 15px; border-radius: 5px;
-            margin-top: 15px; border: 2px dashed #667eea;
+            margin-top: 15px; border: 2px dashed var(--se-green, #1E6F3E);
         }
-        .invoice-upload-section h4 { color: #667eea; margin-bottom: 10px; }
+        .invoice-upload-section h4 { color: var(--se-green, #1E6F3E); margin-bottom: 10px; font-weight: 600; }
         .invoice-form { display: grid; gap: 10px; }
         .invoice-form input[type="text"], .invoice-form input[type="number"] {
             width: 100%; padding: 10px; border: 2px solid #ddd;
@@ -11034,15 +11574,15 @@ OFFICE_DASHBOARD_TEMPLATE = '''
             transition: all 0.3s; margin-bottom: 10px;
         }
         .dropzone:hover, .dropzone.dragover {
-            background: #e7f0ff; border-color: #667eea;
+            background: #e7f0ff; border-color: #1E6F3E;
         }
         .dropzone p { color: #666; font-size: 14px; margin: 0; }
         .upload-invoice-btn {
-            background: #667eea; color: white; padding: 10px 20px;
+            background: #1E6F3E; color: white; padding: 10px 20px;
             border: none; border-radius: 5px; cursor: pointer;
             font-weight: bold; width: 100%; font-size: 14px;
         }
-        .upload-invoice-btn:hover { background: #5568d3; }
+        .upload-invoice-btn:hover { background: #155530; }
         .upload-invoice-btn:disabled { background: #ccc; cursor: not-allowed; }
         .file-button {
             background: #f0f0f0; color: #333; padding: 10px 15px;
@@ -11050,7 +11590,7 @@ OFFICE_DASHBOARD_TEMPLATE = '''
             font-size: 14px; width: 100%; text-align: center;
             transition: all 0.3s;
         }
-        .file-button:hover { background: #e7f0ff; border-color: #667eea; }
+        .file-button:hover { background: #e7f0ff; border-color: #1E6F3E; }
         .error-message {
             background: #f8d7da;
             color: #721c24;
@@ -11081,7 +11621,7 @@ OFFICE_DASHBOARD_TEMPLATE = '''
 
 #bulk-actions h3 {
     margin: 0 0 15px 0;
-    color: #667eea;
+    color: #1E6F3E;
 }
 
 .bulk-btn {
@@ -11139,7 +11679,7 @@ OFFICE_DASHBOARD_TEMPLATE = '''
 
         #bulk-actions h3 {
             margin: 0 0 15px 0;
-            color: #667eea;
+            color: #1E6F3E;
         }
 
         .bulk-btn {
@@ -11224,7 +11764,7 @@ OFFICE_DASHBOARD_TEMPLATE = '''
             color: #333;
         }
         .invoice-upload-dropzone {
-            border: 2px dashed #667eea;
+            border: 2px dashed var(--se-green, #1E6F3E);
             border-radius: 8px;
             padding: 30px;
             text-align: center;
@@ -11236,7 +11776,7 @@ OFFICE_DASHBOARD_TEMPLATE = '''
         .invoice-upload-dropzone:hover,
         .invoice-upload-dropzone.dragover {
             background: #e7f0ff;
-            border-color: #5568d3;
+            border-color: #155530;
         }
         .invoice-upload-dropzone p {
             margin: 5px 0;
@@ -11254,7 +11794,7 @@ OFFICE_DASHBOARD_TEMPLATE = '''
             padding: 15px;
             background: #f0f8ff;
             border-radius: 8px;
-            border-left: 4px solid #667eea;
+            border-left: 4px solid var(--se-green, #1E6F3E);
         }
         .po-suggestion {
             background: white;
@@ -11266,11 +11806,11 @@ OFFICE_DASHBOARD_TEMPLATE = '''
             border: 2px solid #e0e0e0;
         }
         .po-suggestion:hover {
-            border-color: #667eea;
+            border-color: #1E6F3E;
             background: #f9faff;
         }
         .po-suggestion.selected {
-            border-color: #667eea;
+            border-color: #1E6F3E;
             background: #e7f0ff;
             font-weight: bold;
         }
@@ -11289,11 +11829,11 @@ OFFICE_DASHBOARD_TEMPLATE = '''
             font-size: 14px;
         }
         .modal-actions .primary-btn {
-            background: #667eea;
+            background: #1E6F3E;
             color: white;
         }
         .modal-actions .primary-btn:hover {
-            background: #5568d3;
+            background: #155530;
         }
         .modal-actions .primary-btn:disabled {
             background: #ccc;
@@ -11507,7 +12047,7 @@ OFFICE_DASHBOARD_TEMPLATE = '''
                 const cost = inv.invoice_cost ? '$' + parseFloat(inv.invoice_cost).toFixed(2) : 'N/A';
                 const date = inv.invoice_upload_date ? new Date(inv.invoice_upload_date).toLocaleDateString() : 'N/A';
                 const fileLink = inv.invoice_filename && inv.invoice_filename !== 'MANUAL_ENTRY'
-                    ? '<a href="/view_invoice/' + inv.invoice_filename + '" target="_blank" style="color: #667eea; text-decoration: underline;">📄 View</a>'
+                    ? '<a href="/view_invoice/' + inv.invoice_filename + '" target="_blank" style="color: #1E6F3E; text-decoration: underline;">📄 View</a>'
                     : '<span style="color: #999;">No file</span>';
 
                 html += `
@@ -11629,14 +12169,14 @@ OFFICE_DASHBOARD_TEMPLATE = '''
                             html += '<li style="padding: 8px; background: #fff3cd; margin: 5px 0; border-radius: 3px; font-size: 12px;">';
                             html += '📄 Page ' + page.page;
                             if (page.filename) {
-                                 html += ' - <a href="/view_invoice/' + page.filename + '" target="_blank" style="color: #667eea; text-decoration: underline;">View PDF</a>';
+                                 html += ' - <a href="/view_invoice/' + page.filename + '" target="_blank" style="color: #1E6F3E; text-decoration: underline;">View PDF</a>';
                             }
                             html += '</li>';
                         });
                         html += '</ul>';
                     }
 
-                    html += '<button onclick="location.reload()" style="margin-top: 15px; padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold;">Refresh to See Updates</button>';
+                    html += '<button onclick="location.reload()" style="margin-top: 15px; padding: 10px 20px; background: #1E6F3E; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold;">Refresh to See Updates</button>';
                     html += '</div>';
                     statusDiv.innerHTML = html;
                 } else {
@@ -11950,14 +12490,26 @@ function searchInTab(tabId, searchInputId) {
     </script>
 </head>
 <body>
-    <div class="header">
-        <h1>🏢 Office Dashboard - {{ username }}</h1>
-        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-            <button onclick="openInvoiceUploadModal()" style="background: #e74c3c; color: white; padding: 10px 20px; border: none; border-radius: 5px; font-size: 14px; cursor: pointer; font-weight: bold;">📄 Upload & Match Invoice</button>
-            <a href="{{ url_for('dashboard') }}" style="background: #6c757d; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-size: 14px;">← Back to Dashboard</a>
-            <a href="{{ url_for('logout') }}" class="logout-btn">Logout</a>
+    <header class="se-header">
+        <div class="se-header-left">
+            <img class="se-logo-img"
+                 src="https://www.stahlman-england.com/wp-content/uploads/stahlman-england-logo.png"
+                 alt="Stahlman-England"
+                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+            <div class="se-logo-txt">
+                <span class="co">Stahlman-England</span>
+                <span class="sub">Irrigation</span>
+            </div>
+            <div class="se-hdivider"></div>
+            <span class="se-header-title">The Office App</span>
         </div>
-    </div>
+        <div class="se-header-right">
+            <span style="color:rgba(255,255,255,0.8);font-size:13px;">{{ username }}</span>
+            <button onclick="openInvoiceUploadModal()" class="se-nav-btn" style="background:rgba(40,167,69,0.8);color:#fff;border:1px solid rgba(255,255,255,0.2);">Upload Invoice</button>
+            <a href="{{ url_for('dashboard') }}" class="se-nav-btn se-ghost">Home</a>
+            <a href="{{ url_for('logout') }}" class="se-nav-btn se-danger">Sign Out</a>
+        </div>
+    </header>
 
     {% with messages = get_flashed_messages() %}
         {% if messages %}
@@ -11971,7 +12523,7 @@ function searchInTab(tabId, searchInputId) {
         {% endif %}
     {% endwith %}
 
-    <div class="search-card" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+    <div class="search-card" style="background: linear-gradient(135deg, #1E6F3E 0%, #0D4525 100%); color: white;">
         <h2 style="color: white; margin-bottom: 15px;">📦 Bulk Invoice Upload (Auto-Process)</h2>
         <p style="margin-bottom: 15px; opacity: 0.95;">Upload a multi-page PDF with multiple invoices. System will extract invoice numbers, costs, match to POs, and split the PDF automatically.</p>
         <form id="bulk-upload-form" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
@@ -12229,7 +12781,7 @@ function searchInTab(tabId, searchInputId) {
                     <p><strong>Total Cost:</strong> ${{ req[inv_cost_idx] if req|length > inv_cost_idx else '0.00' }}</p>
                     <p><strong>Entered:</strong> {{ req[inv_upload_idx] if req|length > inv_upload_idx else 'N/A' }}</p>
                     {% if req[inv_filename_idx] and req[inv_filename_idx] != 'MANUAL_ENTRY' %}
-                        <p><strong>File:</strong> <a href="{{ url_for('view_invoice', filename=req[inv_filename_idx]) }}" target="_blank" style="color: #667eea; text-decoration: underline;">📄 View Invoice PDF</a></p>
+                        <p><strong>File:</strong> <a href="{{ url_for('view_invoice', filename=req[inv_filename_idx]) }}" target="_blank" style="color: #1E6F3E; text-decoration: underline;">📄 View Invoice PDF</a></p>
                     {% else %}
                         <p><strong>File:</strong> <span style="color: #666;">No file attached (manual entry)</span></p>
                     {% endif %}
@@ -12296,116 +12848,79 @@ function searchInTab(tabId, searchInputId) {
 '''
 REGISTER_TEMPLATE = '''
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Register - Office Manager</title>
+    <title>Create Account — The Office App</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        :root { --se-green:#1E6F3E; --se-green-dark:#155530; --se-green-deep:#0D3D22; --se-navy:#1C3D5A; --se-bg:#F2F7F4; --se-border:#C8DDD2; --se-text:#1A2820; --se-muted:#5A7265; }
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }
-        .container {
-            background: white;
-            padding: 40px;
-            border-radius: 10px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-            width: 100%;
-            max-width: 450px;
-        }
-        h1 { color: #333; margin-bottom: 10px; font-size: 28px; }
-        .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
-        .form-group { margin-bottom: 20px; }
-        label { display: block; margin-bottom: 5px; color: #555; font-weight: bold; }
-        input {
-            width: 100%;
-            padding: 12px;
-            border: 2px solid #ddd;
-            border-radius: 5px;
-            font-size: 16px;
-        }
-        input:focus { outline: none; border-color: #667eea; }
-        button {
-            width: 100%;
-            padding: 12px;
-            background: #667eea;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            font-size: 16px;
-            font-weight: bold;
-            cursor: pointer;
-        }
-        button:hover { background: #5568d3; }
-        .error {
-            background: #fee;
-            color: #c33;
-            padding: 10px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-        }
-        .success {
-            background: #efe;
-            color: #3c3;
-            padding: 10px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-        }
-        .login-link {
-            text-align: center;
-            margin-top: 20px;
-            color: #666;
-        }
-        .login-link a {
-            color: #667eea;
-            text-decoration: none;
-            font-weight: bold;
-        }
+        body { font-family:'Inter',Arial,sans-serif; background:linear-gradient(160deg,var(--se-green-deep) 0%,var(--se-navy) 100%); min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:20px; }
+        .wrap { width:100%; max-width:460px; }
+        .logo-block { text-align:center; margin-bottom:24px; }
+        .logo-block img { max-height:60px; max-width:240px; object-fit:contain; }
+        .logo-txt { display:none; flex-direction:column; align-items:center; gap:4px; }
+        .logo-txt .co { font-size:20px; font-weight:700; color:#fff; }
+        .logo-txt hr { width:36px; border:none; border-top:2px solid #C49A1A; margin:2px auto; }
+        .card { background:#fff; border-radius:14px; box-shadow:0 20px 60px rgba(0,0,0,0.35); overflow:hidden; }
+        .card-header { background:var(--se-green); padding:22px 32px 18px; text-align:center; }
+        .card-header h1 { font-size:20px; font-weight:700; color:#fff; margin-bottom:3px; }
+        .card-header p { font-size:13px; color:rgba(255,255,255,0.75); }
+        .card-body { padding:28px 32px 24px; }
+        .alert-error { background:#FEF2F2; border:1px solid #FECACA; color:#B91C1C; padding:11px 14px; border-radius:7px; margin-bottom:18px; font-size:14px; }
+        .alert-success { background:#F0FDF4; border:1px solid #BBF7D0; color:#166534; padding:11px 14px; border-radius:7px; margin-bottom:18px; font-size:14px; }
+        .fg { margin-bottom:18px; }
+        .fg label { display:block; margin-bottom:6px; color:var(--se-text); font-size:14px; font-weight:600; }
+        .fg input { width:100%; padding:12px 14px; border:1.5px solid var(--se-border); border-radius:7px; font-size:15px; font-family:inherit; color:var(--se-text); background:var(--se-bg); transition:border-color .2s,box-shadow .2s; }
+        .fg input:focus { outline:none; border-color:var(--se-green); background:#fff; box-shadow:0 0 0 3px rgba(30,111,62,.12); }
+        .submit-btn { width:100%; padding:13px; background:var(--se-green); color:#fff; border:none; border-radius:7px; font-size:16px; font-weight:700; font-family:inherit; cursor:pointer; transition:background .2s; margin-top:4px; }
+        .submit-btn:hover { background:var(--se-green-dark); }
+        .card-footer { padding:0 32px 24px; text-align:center; color:var(--se-muted); font-size:14px; }
+        .card-footer a { color:var(--se-green); text-decoration:none; font-weight:600; }
+        .card-footer a:hover { text-decoration:underline; }
+        .copyright { text-align:center; color:rgba(255,255,255,0.35); font-size:11px; margin-top:18px; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>🏢 Office Manager Registration</h1>
-        <p class="subtitle">Create your account to manage PO requests</p>
-        {% with messages = get_flashed_messages() %}
-            {% if messages %}
-                {% for message in messages %}
-                    <div class="{% if 'success' in message.lower() %}success{% else %}error{% endif %}">{{ message }}</div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
-        <form method="POST">
-            <div class="form-group">
-                <label>Full Name</label>
-                <input type="text" name="full_name" required placeholder="e.g., Sarah Johnson">
+    <div class="wrap">
+        <div class="logo-block">
+            <img src="https://www.stahlman-england.com/wp-content/uploads/stahlman-england-logo.png"
+                 alt="Stahlman-England"
+                 onerror="this.style.display='none'; document.querySelector('.logo-txt').style.display='flex';">
+            <div class="logo-txt">
+                <span class="co">Stahlman-England</span>
+                <hr>
             </div>
-            <div class="form-group">
-                <label>Email Address</label>
-                <input type="email" name="email" required placeholder="your.email@company.com">
-            </div>
-            <div class="form-group">
-                <label>Username</label>
-                <input type="text" name="username" required placeholder="Choose a username">
-            </div>
-            <div class="form-group">
-                <label>Password</label>
-                <input type="password" name="password" required minlength="6" placeholder="At least 6 characters">
-            </div>
-            <div class="form-group">
-                <label>Confirm Password</label>
-                <input type="password" name="confirm_password" required placeholder="Re-enter password">
-            </div>
-            <button type="submit">Create Account</button>
-        </form>
-        <div class="login-link">
-            Already have an account? <a href="{{ url_for('login') }}">Login here</a>
         </div>
+        <div class="card">
+            <div class="card-header">
+                <h1>Create Account</h1>
+                <p>Office Manager Registration</p>
+            </div>
+            <div class="card-body">
+                {% with messages = get_flashed_messages() %}
+                    {% if messages %}
+                        {% for message in messages %}
+                            <div class="{% if 'success' in message.lower() %}alert-success{% else %}alert-error{% endif %}">{{ message }}</div>
+                        {% endfor %}
+                    {% endif %}
+                {% endwith %}
+                <form method="POST">
+                    <div class="fg"><label>Full Name</label><input type="text" name="full_name" required placeholder="e.g., Sarah Johnson" autocomplete="name"></div>
+                    <div class="fg"><label>Email Address</label><input type="email" name="email" required placeholder="your.email@company.com" autocomplete="email"></div>
+                    <div class="fg"><label>Username</label><input type="text" name="username" required placeholder="Choose a username" autocomplete="username"></div>
+                    <div class="fg"><label>Password</label><input type="password" name="password" required minlength="6" placeholder="At least 6 characters" autocomplete="new-password"></div>
+                    <div class="fg"><label>Confirm Password</label><input type="password" name="confirm_password" required placeholder="Re-enter password" autocomplete="new-password"></div>
+                    <button class="submit-btn" type="submit">Create Account</button>
+                </form>
+            </div>
+            <div class="card-footer">
+                Already have an account? <a href="{{ url_for('login') }}">Sign in here</a>
+            </div>
+        </div>
+        <div class="copyright">&copy; Stahlman-England Irrigation, Inc.</div>
     </div>
 </body>
 </html>
@@ -12415,14 +12930,27 @@ ACTIVITY_LOG_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Activity Log</title>
+    <title>Activity Log — The Office App</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
+        body { font-family: 'Inter', Arial, sans-serif; background: var(--se-bg, #F2F7F4); padding: 20px; min-height: 100vh; }
         .header {
             background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08); display: flex;
             justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
         }
         h1 { color: #333; font-size: 24px; }
@@ -12434,19 +12962,19 @@ ACTIVITY_LOG_TEMPLATE = '''
         .btn-danger { background: #dc3545; color: white; }
         .card {
             background: white; padding: 20px; border-radius: 10px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 20px;
         }
         .filter-controls {
             background: #f0f4ff; padding: 15px; border-radius: 5px;
             margin-bottom: 20px; display: flex; gap: 10px; flex-wrap: wrap;
         }
         .filter-controls input, .filter-controls select {
-            padding: 8px; border: 2px solid #667eea; border-radius: 5px;
+            padding: 8px; border: 2px solid #1E6F3E; border-radius: 5px;
             font-size: 14px;
         }
         table { width: 100%; border-collapse: collapse; }
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
-        th { background: #667eea; color: white; font-weight: bold; }
+        th { background: #1E6F3E; color: white; font-weight: bold; }
         tr:hover { background: #f5f5f5; }
         .action-badge {
             padding: 5px 10px; border-radius: 20px; font-size: 12px;
@@ -12455,21 +12983,58 @@ ACTIVITY_LOG_TEMPLATE = '''
         .action-approved { background: #28a745; color: white; }
         .action-denied { background: #dc3545; color: white; }
         .action-login { background: #17a2b8; color: white; }
-        .action-registered { background: #667eea; color: white; }
+        .action-registered { background: #1E6F3E; color: white; }
         .action-bulk { background: #ffc107; color: #000; }
+
+        /* ── SE Brand Header ── */
+        .se-header {
+            background: var(--se-green, #1E6F3E); padding: 0 22px; display: flex;
+            align-items: center; justify-content: space-between; min-height: 60px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2); margin: -20px -20px 22px;
+            flex-wrap: wrap; gap: 8px;
+        }
+        .se-header-left { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
+        .se-logo-img { height: 34px; object-fit: contain; }
+        .se-logo-txt { display: none; flex-direction: column; line-height: 1.25; }
+        .se-logo-txt .co { font-size: 13px; font-weight: 700; color: #fff; }
+        .se-logo-txt .sub { font-size: 9px; color: rgba(255,255,255,0.6); text-transform: uppercase; letter-spacing: 1.5px; }
+        .se-hdivider { width: 1px; height: 26px; background: rgba(255,255,255,0.3); }
+        .se-header-title { font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.92); }
+        .se-header-right { display: flex; align-items: center; gap: 8px; padding: 12px 0; flex-wrap: wrap; }
+        .se-nav-btn {
+            font-family: 'Inter', Arial, sans-serif; font-size: 13px; font-weight: 500;
+            padding: 7px 14px; border-radius: 6px; cursor: pointer;
+            text-decoration: none; transition: background 0.2s; border: none; display: inline-block;
+        }
+        .se-ghost { background: rgba(255,255,255,0.12); color: rgba(255,255,255,0.9); border: 1px solid rgba(255,255,255,0.25) !important; }
+        .se-ghost:hover { background: rgba(255,255,255,0.22); color: #fff; }
+        .se-ghost.es-active { background: rgba(185,28,28,0.6); }
+        .se-danger { background: rgba(220,38,38,0.75); color: #fff; border: 1px solid transparent !important; }
+        .se-danger:hover { background: rgba(185,28,28,0.95); }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>📋 Activity Log</h1>
-        <div>
-            <a href="{{ url_for('office_dashboard') }}" class="btn btn-secondary">← Back to Dashboard</a>
-            <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
+    <header class="se-header">
+        <div class="se-header-left">
+            <img class="se-logo-img"
+                 src="https://www.stahlman-england.com/wp-content/uploads/stahlman-england-logo.png"
+                 alt="Stahlman-England"
+                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+            <div class="se-logo-txt">
+                <span class="co">Stahlman-England</span>
+                <span class="sub">Irrigation</span>
+            </div>
+            <div class="se-hdivider"></div>
+            <span class="se-header-title">The Office App</span>
         </div>
-    </div>
+        <div class="se-header-right">
+            <a href="{{ url_for('office_dashboard') }}" class="se-nav-btn se-ghost">← Dashboard</a>
+            <a href="{{ url_for('logout') }}" class="se-nav-btn se-danger">Sign Out</a>
+        </div>
+    </header>
 
     <div class="card">
-        <h2 style="color: #667eea; margin-bottom: 15px;">Filter Activity</h2>
+        <h2 style="color: #1E6F3E; margin-bottom: 15px;">Filter Activity</h2>
         <form method="GET" class="filter-controls">
             <input type="text" name="filter_user" placeholder="Filter by user..." value="{{ filter_user }}">
             <select name="filter_action">
@@ -12484,7 +13049,7 @@ ACTIVITY_LOG_TEMPLATE = '''
     </div>
 
     <div class="card">
-        <h2 style="color: #667eea; margin-bottom: 20px;">Recent Activity (Last 500 entries)</h2>
+        <h2 style="color: #1E6F3E; margin-bottom: 20px;">Recent Activity (Last 500 entries)</h2>
         <table>
             <thead>
                 <tr>
@@ -12517,102 +13082,73 @@ ACTIVITY_LOG_TEMPLATE = '''
 '''
 FORGOT_PASSWORD_TEMPLATE = '''
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Forgot Password</title>
+    <title>Forgot Password — The Office App</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        :root { --se-green:#1E6F3E; --se-green-dark:#155530; --se-green-deep:#0D3D22; --se-navy:#1C3D5A; --se-bg:#F2F7F4; --se-border:#C8DDD2; --se-text:#1A2820; --se-muted:#5A7265; }
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }
-        .container {
-            background: white;
-            padding: 40px;
-            border-radius: 10px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-            width: 100%;
-            max-width: 450px;
-        }
-        h1 { color: #333; margin-bottom: 10px; font-size: 28px; }
-        .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
-        .form-group { margin-bottom: 20px; }
-        label { display: block; margin-bottom: 5px; color: #555; font-weight: bold; }
-        input {
-            width: 100%;
-            padding: 12px;
-            border: 2px solid #ddd;
-            border-radius: 5px;
-            font-size: 16px;
-        }
-        input:focus { outline: none; border-color: #667eea; }
-        button {
-            width: 100%;
-            padding: 12px;
-            background: #667eea;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            font-size: 16px;
-            font-weight: bold;
-            cursor: pointer;
-        }
-        button:hover { background: #5568d3; }
-        .success {
-            background: #d4edda;
-            color: #155724;
-            padding: 12px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-            border: 1px solid #c3e6cb;
-        }
-        .error {
-            background: #f8d7da;
-            color: #721c24;
-            padding: 12px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-            border: 1px solid #f5c6cb;
-        }
-        .back-link {
-            text-align: center;
-            margin-top: 20px;
-            color: #666;
-        }
-        .back-link a {
-            color: #667eea;
-            text-decoration: none;
-            font-weight: bold;
-        }
+        body { font-family:'Inter',Arial,sans-serif; background:linear-gradient(160deg,var(--se-green-deep) 0%,var(--se-navy) 100%); min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:20px; }
+        .wrap { width:100%; max-width:440px; }
+        .logo-block { text-align:center; margin-bottom:22px; }
+        .logo-block img { max-height:58px; max-width:220px; object-fit:contain; }
+        .logo-txt { display:none; flex-direction:column; align-items:center; }
+        .logo-txt .co { font-size:18px; font-weight:700; color:#fff; }
+        .card { background:#fff; border-radius:14px; box-shadow:0 20px 60px rgba(0,0,0,0.35); overflow:hidden; }
+        .card-header { background:var(--se-green); padding:22px 30px 18px; text-align:center; }
+        .card-header h1 { font-size:19px; font-weight:700; color:#fff; margin-bottom:3px; }
+        .card-header p { font-size:13px; color:rgba(255,255,255,0.75); }
+        .card-body { padding:26px 30px 22px; }
+        .alert-error { background:#FEF2F2; border:1px solid #FECACA; color:#B91C1C; padding:11px 14px; border-radius:7px; margin-bottom:16px; font-size:14px; }
+        .alert-success { background:#F0FDF4; border:1px solid #BBF7D0; color:#166534; padding:11px 14px; border-radius:7px; margin-bottom:16px; font-size:14px; }
+        .fg { margin-bottom:16px; }
+        .fg label { display:block; margin-bottom:6px; color:var(--se-text); font-size:14px; font-weight:600; }
+        .fg input { width:100%; padding:12px 14px; border:1.5px solid var(--se-border); border-radius:7px; font-size:15px; font-family:inherit; color:var(--se-text); background:var(--se-bg); transition:border-color .2s,box-shadow .2s; }
+        .fg input:focus { outline:none; border-color:var(--se-green); background:#fff; box-shadow:0 0 0 3px rgba(30,111,62,.12); }
+        .submit-btn { width:100%; padding:13px; background:var(--se-green); color:#fff; border:none; border-radius:7px; font-size:15px; font-weight:700; font-family:inherit; cursor:pointer; transition:background .2s; }
+        .submit-btn:hover { background:var(--se-green-dark); }
+        .card-footer { padding:0 30px 22px; text-align:center; color:var(--se-muted); font-size:13px; }
+        .card-footer a { color:var(--se-green); text-decoration:none; font-weight:600; }
+        .copyright { text-align:center; color:rgba(255,255,255,0.35); font-size:11px; margin-top:16px; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>🔐 Forgot Password</h1>
-        <p class="subtitle">Enter your email to receive a password reset link</p>
-        {% with messages = get_flashed_messages() %}
-            {% if messages %}
-                {% for message in messages %}
-                    <div class="{% if '✓' in message %}success{% else %}error{% endif %}">{{ message }}</div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
-        <form method="POST">
-            <div class="form-group">
-                <label>Email Address</label>
-                <input type="email" name="email" required placeholder="your.email@company.com" autofocus>
-            </div>
-            <button type="submit">Send Reset Link</button>
-        </form>
-        <div class="back-link">
-            <a href="{{ url_for('login') }}">← Back to Login</a>
+    <div class="wrap">
+        <div class="logo-block">
+            <img src="https://www.stahlman-england.com/wp-content/uploads/stahlman-england-logo.png"
+                 alt="Stahlman-England"
+                 onerror="this.style.display='none'; document.querySelector('.logo-txt').style.display='flex';">
+            <div class="logo-txt"><span class="co">Stahlman-England</span></div>
         </div>
+        <div class="card">
+            <div class="card-header">
+                <h1>Forgot Password</h1>
+                <p>We'll send you a reset link</p>
+            </div>
+            <div class="card-body">
+                {% with messages = get_flashed_messages() %}
+                    {% if messages %}
+                        {% for message in messages %}
+                            <div class="{% if '✓' in message %}alert-success{% else %}alert-error{% endif %}">{{ message }}</div>
+                        {% endfor %}
+                    {% endif %}
+                {% endwith %}
+                <form method="POST">
+                    <div class="fg">
+                        <label>Email Address</label>
+                        <input type="email" name="email" required placeholder="your.email@company.com" autofocus autocomplete="email">
+                    </div>
+                    <button class="submit-btn" type="submit">Send Reset Link</button>
+                </form>
+            </div>
+            <div class="card-footer">
+                <a href="{{ url_for('login') }}">← Back to Sign In</a>
+            </div>
+        </div>
+        <div class="copyright">&copy; Stahlman-England Irrigation, Inc.</div>
     </div>
 </body>
 </html>
@@ -12622,13 +13158,26 @@ RESET_PASSWORD_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Reset Password</title>
+    <title>Reset Password — The Office App</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
         body {
-            font-family: Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Inter', Arial, sans-serif;
+            background: linear-gradient(135deg, #1E6F3E 0%, #0D4525 100%);
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -12654,11 +13203,11 @@ RESET_PASSWORD_TEMPLATE = '''
             border-radius: 5px;
             font-size: 16px;
         }
-        input:focus { outline: none; border-color: #667eea; }
+        input:focus { outline: none; border-color: #1E6F3E; }
         button {
             width: 100%;
             padding: 12px;
-            background: #667eea;
+            background: #1E6F3E;
             color: white;
             border: none;
             border-radius: 5px;
@@ -12666,7 +13215,7 @@ RESET_PASSWORD_TEMPLATE = '''
             font-weight: bold;
             cursor: pointer;
         }
-        button:hover { background: #5568d3; }
+        button:hover { background: #155530; }
         .error {
             background: #f8d7da;
             color: #721c24;
@@ -12725,11 +13274,24 @@ ADMIN_USERS_TEMPLATE = '''
 <head>
     <title>User Management - Admin</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
         body {
             font-family: 'Segoe UI', Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #1E6F3E 0%, #0D4525 100%);
             min-height: 100vh;
             padding: 20px;
         }
@@ -12768,10 +13330,10 @@ ADMIN_USERS_TEMPLATE = '''
             transition: all 0.3s;
         }
         .btn-primary {
-            background: #667eea;
+            background: #1E6F3E;
             color: white;
         }
-        .btn-primary:hover { background: #5568d3; }
+        .btn-primary:hover { background: #155530; }
         .btn-secondary {
             background: #6c757d;
             color: white;
@@ -12816,7 +13378,7 @@ ADMIN_USERS_TEMPLATE = '''
             margin-top: 20px;
         }
         th {
-            background: #667eea;
+            background: #1E6F3E;
             color: white;
             padding: 15px;
             text-align: left;
@@ -12938,11 +13500,24 @@ ADMIN_EDIT_USER_TEMPLATE = '''
 <head>
     <title>Edit User - Admin</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
         body {
-            font-family: Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Inter', Arial, sans-serif;
+            background: linear-gradient(135deg, #1E6F3E 0%, #0D4525 100%);
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -12984,7 +13559,7 @@ ADMIN_EDIT_USER_TEMPLATE = '''
         }
         input:focus, select:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: #1E6F3E;
         }
         .btn {
             padding: 12px 24px;
@@ -12998,11 +13573,11 @@ ADMIN_EDIT_USER_TEMPLATE = '''
             transition: all 0.3s;
         }
         .btn-primary {
-            background: #667eea;
+            background: #1E6F3E;
             color: white;
             width: 100%;
         }
-        .btn-primary:hover { background: #5568d3; }
+        .btn-primary:hover { background: #155530; }
         .btn-secondary {
             background: #6c757d;
             color: white;
@@ -13087,11 +13662,24 @@ ADMIN_CREATE_USER_TEMPLATE = '''
 <head>
     <title>Create User - Admin</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
         body {
-            font-family: Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Inter', Arial, sans-serif;
+            background: linear-gradient(135deg, #1E6F3E 0%, #0D4525 100%);
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -13133,7 +13721,7 @@ ADMIN_CREATE_USER_TEMPLATE = '''
         }
         input:focus, select:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: #1E6F3E;
         }
         .btn {
             padding: 12px 24px;
@@ -13436,11 +14024,24 @@ ADMIN_DASHBOARD_TEMPLATE = '''
 <head>
     <title>Admin Dashboard</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
         body {
             font-family: 'Segoe UI', Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #1E6F3E 0%, #0D4525 100%);
             min-height: 100vh;
             padding: 20px;
         }
@@ -13491,7 +14092,7 @@ ADMIN_DASHBOARD_TEMPLATE = '''
         .stat-value {
             font-size: 36px;
             font-weight: bold;
-            color: #667eea;
+            color: #1E6F3E;
             margin-bottom: 5px;
         }
         .stat-label {
@@ -13523,7 +14124,7 @@ ADMIN_DASHBOARD_TEMPLATE = '''
             margin-bottom: 15px;
         }
         .action-card h3 {
-            color: #667eea;
+            color: #1E6F3E;
             margin-bottom: 10px;
         }
         .recent-activity {
@@ -13545,18 +14146,55 @@ ADMIN_DASHBOARD_TEMPLATE = '''
         }
         .activity-action {
             font-weight: bold;
-            color: #667eea;
+            color: #1E6F3E;
         }
+
+        /* ── SE Brand Header ── */
+        .se-header {
+            background: var(--se-green, #1E6F3E); padding: 0 22px; display: flex;
+            align-items: center; justify-content: space-between; min-height: 60px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2); margin: -20px -20px 22px;
+            flex-wrap: wrap; gap: 8px;
+        }
+        .se-header-left { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
+        .se-logo-img { height: 34px; object-fit: contain; }
+        .se-logo-txt { display: none; flex-direction: column; line-height: 1.25; }
+        .se-logo-txt .co { font-size: 13px; font-weight: 700; color: #fff; }
+        .se-logo-txt .sub { font-size: 9px; color: rgba(255,255,255,0.6); text-transform: uppercase; letter-spacing: 1.5px; }
+        .se-hdivider { width: 1px; height: 26px; background: rgba(255,255,255,0.3); }
+        .se-header-title { font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.92); }
+        .se-header-right { display: flex; align-items: center; gap: 8px; padding: 12px 0; flex-wrap: wrap; }
+        .se-nav-btn {
+            font-family: 'Inter', Arial, sans-serif; font-size: 13px; font-weight: 500;
+            padding: 7px 14px; border-radius: 6px; cursor: pointer;
+            text-decoration: none; transition: background 0.2s; border: none; display: inline-block;
+        }
+        .se-ghost { background: rgba(255,255,255,0.12); color: rgba(255,255,255,0.9); border: 1px solid rgba(255,255,255,0.25) !important; }
+        .se-ghost:hover { background: rgba(255,255,255,0.22); color: #fff; }
+        .se-ghost.es-active { background: rgba(185,28,28,0.6); }
+        .se-danger { background: rgba(220,38,38,0.75); color: #fff; border: 1px solid transparent !important; }
+        .se-danger:hover { background: rgba(185,28,28,0.95); }
     </style>
 </head>
 <body>
-    <div class="header">
-        <div>
-            <h1>🔐 Admin Dashboard</h1>
-            <div class="user-info">Logged in as: <strong>{{ session['username'] }}</strong></div>
+    <header class="se-header">
+        <div class="se-header-left">
+            <img class="se-logo-img"
+                 src="https://www.stahlman-england.com/wp-content/uploads/stahlman-england-logo.png"
+                 alt="Stahlman-England"
+                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+            <div class="se-logo-txt">
+                <span class="co">Stahlman-England</span>
+                <span class="sub">Irrigation</span>
+            </div>
+            <div class="se-hdivider"></div>
+            <span class="se-header-title">The Office App</span>
         </div>
-        <a href="{{ url_for('logout') }}" class="logout-btn">Logout</a>
-    </div>
+        <div class="se-header-right">
+            <span style="color:rgba(255,255,255,0.8);font-size:13px;">{{ session['username'] }}</span>
+            <a href="{{ url_for('logout') }}" class="se-nav-btn se-danger">Sign Out</a>
+        </div>
+    </header>
 
     <div class="dashboard-grid">
         <div class="stat-card">
@@ -13624,11 +14262,24 @@ ADMIN_USERS_TEMPLATE = '''
 <head>
     <title>User Management - Admin</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
         body {
             font-family: 'Segoe UI', Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #1E6F3E 0%, #0D4525 100%);
             min-height: 100vh;
             padding: 20px;
         }
@@ -13667,10 +14318,10 @@ ADMIN_USERS_TEMPLATE = '''
             transition: all 0.3s;
         }
         .btn-primary {
-            background: #667eea;
+            background: #1E6F3E;
             color: white;
         }
-        .btn-primary:hover { background: #5568d3; }
+        .btn-primary:hover { background: #155530; }
         .btn-secondary {
             background: #6c757d;
             color: white;
@@ -13715,7 +14366,7 @@ ADMIN_USERS_TEMPLATE = '''
             margin-top: 20px;
         }
         th {
-            background: #667eea;
+            background: #1E6F3E;
             color: white;
             padding: 15px;
             text-align: left;
@@ -13837,11 +14488,24 @@ ADMIN_EDIT_USER_TEMPLATE = '''
 <head>
     <title>Edit User - Admin</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
         body {
-            font-family: Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Inter', Arial, sans-serif;
+            background: linear-gradient(135deg, #1E6F3E 0%, #0D4525 100%);
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -13883,7 +14547,7 @@ ADMIN_EDIT_USER_TEMPLATE = '''
         }
         input:focus, select:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: #1E6F3E;
         }
         .btn {
             padding: 12px 24px;
@@ -13897,11 +14561,11 @@ ADMIN_EDIT_USER_TEMPLATE = '''
             transition: all 0.3s;
         }
         .btn-primary {
-            background: #667eea;
+            background: #1E6F3E;
             color: white;
             width: 100%;
         }
-        .btn-primary:hover { background: #5568d3; }
+        .btn-primary:hover { background: #155530; }
         .btn-secondary {
             background: #6c757d;
             color: white;
@@ -13986,11 +14650,24 @@ ADMIN_CREATE_USER_TEMPLATE = '''
 <head>
     <title>Create User - Admin</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
         body {
-            font-family: Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Inter', Arial, sans-serif;
+            background: linear-gradient(135deg, #1E6F3E 0%, #0D4525 100%);
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -14032,7 +14709,7 @@ ADMIN_CREATE_USER_TEMPLATE = '''
         }
         input:focus, select:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: #1E6F3E;
         }
         .btn {
             padding: 12px 24px;
@@ -14200,29 +14877,42 @@ SETTINGS_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Settings - PO Request System</title>
+    <title>Settings — The Office App</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
+        body { font-family: 'Inter', Arial, sans-serif; background: var(--se-bg, #F2F7F4); padding: 20px; min-height: 100vh; }
         .header {
             background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08); display: flex;
             justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
         }
         h1 { color: #333; font-size: 24px; }
-        h2 { color: #667eea; font-size: 18px; margin-bottom: 15px; }
+        h2 { color: #1E6F3E; font-size: 18px; margin-bottom: 15px; }
         .btn {
             padding: 10px 20px; border-radius: 5px; text-decoration: none;
             font-weight: bold; border: none; cursor: pointer; font-size: 14px;
         }
-        .btn-primary { background: #667eea; color: white; }
+        .btn-primary { background: var(--se-green, #1E6F3E); color: white; }
         .btn-secondary { background: #6c757d; color: white; }
         .btn-success { background: #28a745; color: white; }
         .btn-danger { background: #dc3545; color: white; }
         .card {
             background: white; padding: 20px; border-radius: 10px;
-            margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);
         }
         .setting-row {
             display: flex; justify-content: space-between; align-items: center;
@@ -14252,7 +14942,7 @@ SETTINGS_TEMPLATE = '''
         .stat-box {
             background: #f8f9fa; padding: 15px; border-radius: 8px; text-align: center;
         }
-        .stat-value { font-size: 24px; font-weight: bold; color: #667eea; }
+        .stat-value { font-size: 24px; font-weight: bold; color: #1E6F3E; }
         .stat-label { color: #666; font-size: 12px; margin-top: 5px; }
         table { width: 100%; border-collapse: collapse; margin-top: 15px; }
         th, td { padding: 10px; text-align: left; border-bottom: 1px solid #eee; }
@@ -14272,13 +14962,53 @@ SETTINGS_TEMPLATE = '''
         }
         .api-status.available { background: #d4edda; color: #155724; }
         .api-status.unavailable { background: #f8d7da; color: #721c24; }
+
+        /* ── SE Brand Header ── */
+        .se-header {
+            background: var(--se-green, #1E6F3E); padding: 0 22px; display: flex;
+            align-items: center; justify-content: space-between; min-height: 60px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2); margin: -20px -20px 22px;
+            flex-wrap: wrap; gap: 8px;
+        }
+        .se-header-left { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
+        .se-logo-img { height: 34px; object-fit: contain; }
+        .se-logo-txt { display: none; flex-direction: column; line-height: 1.25; }
+        .se-logo-txt .co { font-size: 13px; font-weight: 700; color: #fff; }
+        .se-logo-txt .sub { font-size: 9px; color: rgba(255,255,255,0.6); text-transform: uppercase; letter-spacing: 1.5px; }
+        .se-hdivider { width: 1px; height: 26px; background: rgba(255,255,255,0.3); }
+        .se-header-title { font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.92); }
+        .se-header-right { display: flex; align-items: center; gap: 8px; padding: 12px 0; flex-wrap: wrap; }
+        .se-nav-btn {
+            font-family: 'Inter', Arial, sans-serif; font-size: 13px; font-weight: 500;
+            padding: 7px 14px; border-radius: 6px; cursor: pointer;
+            text-decoration: none; transition: background 0.2s; border: none; display: inline-block;
+        }
+        .se-ghost { background: rgba(255,255,255,0.12); color: rgba(255,255,255,0.9); border: 1px solid rgba(255,255,255,0.25) !important; }
+        .se-ghost:hover { background: rgba(255,255,255,0.22); color: #fff; }
+        .se-ghost.es-active { background: rgba(185,28,28,0.6); }
+        .se-danger { background: rgba(220,38,38,0.75); color: #fff; border: 1px solid transparent !important; }
+        .se-danger:hover { background: rgba(185,28,28,0.95); }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>⚙️ Settings</h1>
-        <a href="{{ url_for('office_dashboard') }}" class="btn btn-secondary">← Back to Dashboard</a>
-    </div>
+    <header class="se-header">
+        <div class="se-header-left">
+            <img class="se-logo-img"
+                 src="https://www.stahlman-england.com/wp-content/uploads/stahlman-england-logo.png"
+                 alt="Stahlman-England"
+                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+            <div class="se-logo-txt">
+                <span class="co">Stahlman-England</span>
+                <span class="sub">Irrigation</span>
+            </div>
+            <div class="se-hdivider"></div>
+            <span class="se-header-title">The Office App</span>
+        </div>
+        <div class="se-header-right">
+            <a href="{{ url_for('office_dashboard') }}" class="se-nav-btn se-ghost">← Dashboard</a>
+            <a href="{{ url_for('logout') }}" class="se-nav-btn se-danger">Sign Out</a>
+        </div>
+    </header>
 
     <div class="card">
         <h2>🤖 Claude AI Matching</h2>
@@ -14428,9 +15158,20 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #1E6F3E 0%, #0D4525 100%);
             min-height: 100vh;
             display: flex;
             justify-content: center;
@@ -14477,7 +15218,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
         }
         select:focus, input[type="date"]:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: #1E6F3E;
         }
         .button-group {
             display: flex;
@@ -14495,11 +15236,11 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             transition: all 0.3s;
         }
         .btn-next {
-            background: #667eea;
+            background: #1E6F3E;
             color: white;
         }
         .btn-next:hover {
-            background: #5568d3;
+            background: #155530;
             transform: translateY(-2px);
             box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
         }
@@ -14511,7 +15252,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
             background: #e0e0e0;
         }
         .username {
-            color: #667eea;
+            color: #1E6F3E;
             font-weight: 600;
         }
         .error {
@@ -14583,7 +15324,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
                                 </div>
                             </div>
                             {% if submission.status != 'deleted' %}
-                            <div style="color: #667eea; font-weight: 700; font-size: 15px; flex-shrink: 0;">{% if submission.status == 'submitted' %}<span data-i18n="view_btn">View →</span>{% else %}<span data-i18n="edit_btn">Edit →</span>{% endif %}</div>
+                            <div style="color: #1E6F3E; font-weight: 700; font-size: 15px; flex-shrink: 0;">{% if submission.status == 'submitted' %}<span data-i18n="view_btn">View →</span>{% else %}<span data-i18n="edit_btn">Edit →</span>{% endif %}</div>
                             {% endif %}
                         </button>
                     </form>
@@ -14815,6 +15556,17 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
             background: #f5f7fa;
@@ -14896,7 +15648,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         input:focus,
         select:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: #1E6F3E;
             box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.1);
         }
         .action-buttons {
@@ -14944,7 +15696,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         }
         .btn-primary {
             padding: 10px 20px;
-            background: #667eea;
+            background: #1E6F3E;
             color: white;
             border: none;
             border-radius: 6px;
@@ -14953,7 +15705,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             transition: all 0.3s;
         }
         .btn-primary:hover {
-            background: #5568d3;
+            background: #155530;
         }
         .btn-secondary {
             padding: 10px 20px;
@@ -15024,7 +15776,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             font-weight: 600;
         }
         .vw-clock-selector select:focus {
-            border-color: #667eea;
+            border-color: #1E6F3E;
             outline: none;
         }
         .vw-columns {
@@ -15102,7 +15854,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             width: 100%;
         }
         .vw-field input:focus {
-            border-color: #667eea;
+            border-color: #1E6F3E;
             outline: none;
         }
         .vw-empty {
@@ -15173,16 +15925,16 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         }
         .lang-toggle-btn {
             padding: 10px 16px;
-            background: #667eea;
+            background: #1E6F3E;
             color: white;
-            border: 2px solid #5568d3;
+            border: 2px solid #155530;
             border-radius: 6px;
             font-size: 14px;
             font-weight: bold;
             cursor: pointer;
             transition: background 0.3s ease;
         }
-        .lang-toggle-btn:hover { background: #5568d3; }
+        .lang-toggle-btn:hover { background: #155530; }
         .lang-toggle-btn.es-active { background: #c8102e; border-color: #c8102e; }
     </style>
 </head>
@@ -16152,6 +16904,17 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
     <title>Community Maintenance - Office View</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
             background: #f5f7fa;
@@ -16204,11 +16967,11 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         }
         select:focus, input[type="date"]:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: #1E6F3E;
         }
         .btn-search {
             padding: 10px 20px;
-            background: #667eea;
+            background: #1E6F3E;
             color: white;
             border: none;
             border-radius: 6px;
@@ -16217,7 +16980,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             margin-top: 26px;
         }
         .btn-search:hover {
-            background: #5568d3;
+            background: #155530;
         }
         .btn-export {
             padding: 10px 20px;
@@ -16335,8 +17098,8 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             color: #333;
         }
         .tab-button.active {
-            color: #667eea;
-            border-bottom-color: #667eea;
+            color: #1E6F3E;
+            border-bottom-color: #1E6F3E;
         }
         .tab-content {
             display: none;
@@ -16349,7 +17112,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             border-radius: 8px;
             padding: 20px;
             margin-bottom: 20px;
-            border-left: 4px solid #667eea;
+            border-left: 4px solid var(--se-green, #1E6F3E);
         }
         .form-group-inline {
             display: flex;
@@ -19893,9 +20656,20 @@ MANAGE_COMMUNITIES_TEMPLATE = '''
     <title>Manage Communities</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #1E6F3E 0%, #0D4525 100%);
             min-height: 100vh;
             padding: 20px;
         }
@@ -19922,7 +20696,7 @@ MANAGE_COMMUNITIES_TEMPLATE = '''
             border-radius: 8px;
             padding: 20px;
             margin-bottom: 30px;
-            border-left: 4px solid #667eea;
+            border-left: 4px solid var(--se-green, #1E6F3E);
         }
         .form-group {
             margin-bottom: 15px;
@@ -19944,7 +20718,7 @@ MANAGE_COMMUNITIES_TEMPLATE = '''
         }
         input[type="text"]:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: #1E6F3E;
             box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
         }
         button {
@@ -19957,11 +20731,11 @@ MANAGE_COMMUNITIES_TEMPLATE = '''
             transition: all 0.3s;
         }
         .btn-primary {
-            background: #667eea;
+            background: #1E6F3E;
             color: white;
         }
         .btn-primary:hover {
-            background: #5568d3;
+            background: #155530;
             transform: translateY(-2px);
             box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
         }
@@ -24431,9 +25205,22 @@ JOB_COSTING_TEMPLATE = '''
 <head>
     <title>Job Costing - Install</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: Arial, sans-serif; background: #f0f2f5; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
+        body { font-family: 'Inter', Arial, sans-serif; background: #f0f2f5; }
         .header {
             background: linear-gradient(135deg, #1a5276 0%, #2980b9 100%);
             color: white; padding: 16px 24px;
@@ -25040,9 +25827,22 @@ INSTALL_SCHEDULING_TEMPLATE = '''
 <head>
     <title>Install Scheduling</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: Arial, sans-serif; background: #f0f2f5; }
+        :root {
+            --se-green:      #1E6F3E;
+            --se-green-dark: #155530;
+            --se-green-deep: #0D3D22;
+            --se-navy:       #1C3D5A;
+            --se-gold:       #C49A1A;
+            --se-bg:         #F2F7F4;
+            --se-border:     #C8DDD2;
+            --se-text:       #1A2820;
+            --se-muted:      #5A7265;
+        }
+        body { font-family: 'Inter', Arial, sans-serif; background: #f0f2f5; }
         .header {
             background: linear-gradient(135deg, #145a32 0%, #1e8449 100%);
             color: white; padding: 16px 24px;
