@@ -1562,7 +1562,7 @@ def init_db():
 
     c.execute('''CREATE TABLE IF NOT EXISTS install_proposals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        job_id INTEGER NOT NULL,
+        job_id INTEGER,
         proposal_number TEXT DEFAULT '',
         revision INTEGER DEFAULT 0,
         title TEXT DEFAULT '',
@@ -1585,6 +1585,38 @@ def init_db():
         created_at TEXT DEFAULT '',
         sent_at TEXT DEFAULT '',
         approved_at TEXT DEFAULT '')''')
+
+    # Migrate: remove NOT NULL from job_id if it exists (SQLite requires table rebuild)
+    try:
+        c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='install_proposals'")
+        _ddl = (c.fetchone() or ('',))[0] or ''
+        if 'job_id INTEGER NOT NULL' in _ddl:
+            c.execute('''CREATE TABLE IF NOT EXISTS _install_proposals_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER,
+                proposal_number TEXT DEFAULT '', revision INTEGER DEFAULT 0,
+                title TEXT DEFAULT '', status TEXT DEFAULT 'draft',
+                proposal_date TEXT DEFAULT '', valid_days INTEGER DEFAULT 30,
+                days_allotted INTEGER DEFAULT 0, crew_size INTEGER DEFAULT 1,
+                markup_pct REAL DEFAULT 0, tax_pct REAL DEFAULT 0,
+                subtotal REAL DEFAULT 0, markup_amount REAL DEFAULT 0,
+                tax_amount REAL DEFAULT 0, total_amount REAL DEFAULT 0,
+                scope_summary TEXT DEFAULT '', exclusions TEXT DEFAULT '',
+                terms TEXT DEFAULT 'Payment due within 30 days of invoice.',
+                notes TEXT DEFAULT '', created_by TEXT DEFAULT '',
+                created_at TEXT DEFAULT '', sent_at TEXT DEFAULT '',
+                approved_at TEXT DEFAULT '')''')
+            c.execute('''INSERT INTO _install_proposals_new
+                         SELECT id,job_id,proposal_number,revision,title,status,
+                                proposal_date,valid_days,days_allotted,crew_size,
+                                markup_pct,tax_pct,subtotal,markup_amount,tax_amount,
+                                total_amount,scope_summary,exclusions,terms,notes,
+                                created_by,created_at,sent_at,approved_at
+                         FROM install_proposals''')
+            c.execute('DROP TABLE install_proposals')
+            c.execute('ALTER TABLE _install_proposals_new RENAME TO install_proposals')
+    except Exception:
+        pass
 
     c.execute('''CREATE TABLE IF NOT EXISTS install_proposal_items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
