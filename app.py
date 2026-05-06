@@ -21791,6 +21791,8 @@ def community_billing_export_excel():
             zone_totals[zone][key] += row[i + 1] or 0
         if row[10]:
             zone_totals[zone]['has_notes'] = True
+    # Zones present here were actually touched this month
+    zones_with_entries = set(zone_totals.keys())
 
     # Build the master zone list from the community's saved addresses so every
     # zone appears in the export even if no submission was made for it this month.
@@ -21827,8 +21829,10 @@ def community_billing_export_excel():
         header_font   = Font(bold=True, color="FFFFFF", size=11)
         header_fill   = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
         totals_fill   = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
-        all_good_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-        all_good_font = Font(bold=True, color="276221", size=10)
+        all_good_fill      = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        all_good_font      = Font(bold=True, color="276221", size=10)
+        not_serviced_fill  = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+        not_serviced_font  = Font(italic=True, color="595959", size=10)
         border = Border(left=Side(style='thin'), right=Side(style='thin'),
                         top=Side(style='thin'), bottom=Side(style='thin'))
         center  = Alignment(horizontal='center', vertical='center', wrap_text=False)
@@ -21875,13 +21879,19 @@ def community_billing_export_excel():
             cost   = calc_cost(totals)
             grand_cost += cost
 
-            # Status column (col 1): green "All good" when no parts and no notes
+            # Status column (col 1)
             has_any_parts = any(totals[k] for k in PART_KEYS)
             has_notes = totals.get('has_notes', False)
+            was_serviced = zone in zones_with_entries
             sc = ws.cell(row=cur, column=1)
             sc.border = border
             sc.alignment = center
-            if not has_any_parts and not has_notes:
+            if not was_serviced:
+                sc.value = 'Not serviced this month'
+                sc.fill = not_serviced_fill
+                sc.font = not_serviced_font
+                col_widths[0] = max(col_widths[0], len('Not serviced this month'))
+            elif not has_any_parts and not has_notes:
                 sc.value = 'All good'
                 sc.fill = all_good_fill
                 sc.font = all_good_font
