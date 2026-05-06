@@ -21876,6 +21876,17 @@ def community_billing_export_excel():
         grand_cost  = 0.0
         cur = 3
 
+        # Which clock numbers had at least one zone with actual work this month.
+        # A zone with all-zero parts and no notes that lives inside a clock where
+        # nothing was done should read "Not serviced" rather than "All good".
+        import re as _re_ws
+        clocks_with_work = set()
+        for _z, _t in zone_totals.items():
+            if any(_t[k] for k in PART_KEYS) or _t.get('has_notes', False):
+                _m = _re_ws.match(r'^Clock\s+(\d+)', _z, _re_ws.I)
+                if _m:
+                    clocks_with_work.add(int(_m.group(1)))
+
         for zone in zones:
             totals = zone_totals[zone]
             cost   = calc_cost(totals)
@@ -21884,20 +21895,28 @@ def community_billing_export_excel():
             # Status column (col 1)
             has_any_parts = any(totals[k] for k in PART_KEYS)
             has_notes = totals.get('has_notes', False)
-            was_serviced = zone in zones_with_entries
             sc = ws.cell(row=cur, column=1)
             sc.border = border
             sc.alignment = center
-            if not was_serviced:
-                sc.value = 'Not serviced this month'
-                sc.fill = not_serviced_fill
-                sc.font = not_serviced_font
-                col_widths[0] = max(col_widths[0], len('Not serviced this month'))
-            elif not has_any_parts and not has_notes:
-                sc.value = 'All good'
-                sc.fill = all_good_fill
-                sc.font = all_good_font
-                col_widths[0] = max(col_widths[0], len('All good'))
+            if not has_any_parts and not has_notes:
+                # For clock-labelled zones use the clock-level work signal so that
+                # zones belonging to an entirely unserviced clock are not incorrectly
+                # marked "All good" just because the form auto-included them.
+                _m = _re_ws.match(r'^Clock\s+(\d+)', zone, _re_ws.I)
+                if _m:
+                    clock_had_work = int(_m.group(1)) in clocks_with_work
+                else:
+                    clock_had_work = zone in zones_with_entries
+                if clock_had_work:
+                    sc.value = 'All good'
+                    sc.fill = all_good_fill
+                    sc.font = all_good_font
+                    col_widths[0] = max(col_widths[0], len('All good'))
+                else:
+                    sc.value = 'Not serviced this month'
+                    sc.fill = not_serviced_fill
+                    sc.font = not_serviced_font
+                    col_widths[0] = max(col_widths[0], len('Not serviced this month'))
 
             # Zone & Address column (col 2)
             zc = ws.cell(row=cur, column=2)
