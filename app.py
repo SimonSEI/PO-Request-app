@@ -8585,7 +8585,7 @@ OFFICE_ADMIN_TEMPLATE = '''
         </div>
         <div class="se-header-right">
             <span style="color:rgba(255,255,255,0.8);font-size:13px;">{{ full_name }}</span>
-            <a href="{{ url_for('dashboard') }}" class="se-nav-btn se-ghost">Home</a>
+            <a href="{{ url_for('dashboard') }}" class="se-nav-btn se-ghost">← Dashboard</a>
             <a href="{{ url_for('logout') }}" class="se-nav-btn se-danger">Sign Out</a>
         </div>
     </header>
@@ -9138,7 +9138,7 @@ TECH_DASHBOARD_TEMPLATE = '''
                 {% if tech_type == 'install' %}<span data-i18n-dynamic="dashboard_title_install" data-name="{{ full_name }}">Install Tech — {{ full_name }}</span>{% else %}<span data-i18n-dynamic="dashboard_title_service" data-name="{{ full_name }}">Service Tech — {{ full_name }}</span>{% endif %}
             </span>
             <button class="se-nav-btn se-ghost" id="langToggleBtn" onclick="toggleLanguage()">🇪🇸 Español</button>
-            <a href="{{ url_for('dashboard') }}" class="se-nav-btn se-ghost">Home</a>
+            <a href="{{ url_for('dashboard') }}" class="se-nav-btn se-ghost">← Dashboard</a>
             <a href="{{ url_for('logout') }}" class="se-nav-btn se-danger" data-i18n="logout">Sign Out</a>
         </div>
     </header>
@@ -9784,16 +9784,13 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         <div class="se-header-right">
             <button onclick="openInvoiceUploadModal()" class="se-nav-btn" style="background:rgba(40,167,69,0.8);color:#fff;border:1px solid rgba(255,255,255,0.2);">Upload Invoice</button>
             <button onclick="checkPOEmails()" class="se-nav-btn se-ghost" id="check-emails-btn">Check Emails</button>
-            <a href="{{ url_for('dashboard') }}" class="se-nav-btn se-ghost">Home</a>
+            <a href="{{ url_for('dashboard') }}" class="se-nav-btn se-ghost">← Dashboard</a>
             <a href="{{ url_for('logout') }}" class="se-nav-btn se-danger">Sign Out</a>
         </div>
     </header>
 
     <div class="tabs-container">
         <button class="tab-btn service active" id="service-btn" onclick="switchTab('service', event)">📱 Service Department</button>
-        <a href="{{ url_for('job_costing') }}" style="display:inline-block; background:#1a5276; color:white; padding:10px 18px; border-radius:5px; text-decoration:none; font-weight:bold; font-size:14px; margin-right:4px;">💰 Job Costing (Install)</a>
-        <button class="tab-btn" id="all-pos-btn" style="color: #9b59b6;" onclick="switchTab('all-pos', event)">📋 View All POs</button>
-        <button class="tab-btn" id="notifications-btn" style="color: #ff6b6b;" onclick="switchTab('notifications', event)">🔔 Notifications <span id="notification-badge" style="background: #ff6b6b; color: white; border-radius: 50%; padding: 2px 8px; margin-left: 5px; font-size: 12px; display: none;">0</span></button>
     </div>
 
     <div class="search-bar">
@@ -12505,7 +12502,7 @@ function searchInTab(tabId, searchInputId) {
         <div class="se-header-right">
             <span style="color:rgba(255,255,255,0.8);font-size:13px;">{{ username }}</span>
             <button onclick="openInvoiceUploadModal()" class="se-nav-btn" style="background:rgba(40,167,69,0.8);color:#fff;border:1px solid rgba(255,255,255,0.2);">Upload Invoice</button>
-            <a href="{{ url_for('dashboard') }}" class="se-nav-btn se-ghost">Home</a>
+            <a href="{{ url_for('dashboard') }}" class="se-nav-btn se-ghost">← Dashboard</a>
             <a href="{{ url_for('logout') }}" class="se-nav-btn se-danger">Sign Out</a>
         </div>
     </header>
