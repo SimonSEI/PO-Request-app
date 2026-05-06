@@ -971,6 +971,48 @@ def auto_check_po_emails():
                 email_results
             )
 
+        # ── Scan for installation proposal PO numbers ──────────────────────
+        try:
+            import re as _re
+            conn2 = sqlite3.connect(DB_PATH)
+            c2 = conn2.cursor()
+            # Build lookup: po_number -> proposal_id
+            c2.execute("SELECT po_number, id FROM install_proposals WHERE po_number != ''")
+            po_lookup = {row[0]: row[1] for row in c2.fetchall()}
+            if po_lookup:
+                po_pattern = _re.compile(r'\b(' + '|'.join(_re.escape(k) for k in po_lookup.keys()) + r')\b')
+                amount_pattern = _re.compile(r'\$\s*([\d,]+(?:\.\d{2})?)')
+                for msg_uid, msg in emails:
+                    subject = msg.get('Subject','') or ''
+                    body_parts = []
+                    if hasattr(msg, 'walk'):
+                        for part in msg.walk():
+                            if part.get_content_type() == 'text/plain':
+                                try: body_parts.append(part.get_payload(decode=True).decode('utf-8','ignore'))
+                                except: pass
+                    text = subject + ' ' + ' '.join(body_parts)
+                    matches = po_pattern.findall(text)
+                    for po_num in set(matches):
+                        prop_id = po_lookup.get(po_num)
+                        if not prop_id: continue
+                        amounts = [float(a.replace(',','')) for a in amount_pattern.findall(text) if float(a.replace(',','')) > 0]
+                        amount = max(amounts) if amounts else 0.0
+                        now2 = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        c2.execute("SELECT id FROM install_proposal_transactions WHERE email_uid=? AND proposal_id=?",
+                                   (str(msg_uid), prop_id))
+                        if not c2.fetchone():
+                            c2.execute("""INSERT OR IGNORE INTO install_proposal_transactions
+                                         (proposal_id, po_number, amount, source, email_subject, email_uid, received_date, created_at)
+                                         VALUES (?,?,?,'email',?,?,?,?)""",
+                                       (prop_id, po_num, amount, subject[:255], str(msg_uid),
+                                        msg.get('Date','')[:50] if msg.get('Date') else '',now2))
+                            print(f"  📋 Matched proposal PO {po_num} — ${amount:.2f}")
+                conn2.commit()
+            conn2.close()
+        except Exception as _pe:
+            print(f"  ⚠ Proposal PO scan error: {_pe}")
+        # ──────────────────────────────────────────────────────────────────────
+
         print(f"\n{'='*60}")
         print(f"✅ AUTO EMAIL CHECK COMPLETE")
         print(f"  Emails processed: {processed_count}")
@@ -1546,6 +1588,43 @@ def init_db():
         unit TEXT DEFAULT 'ea',
         unit_cost REAL DEFAULT 0,
         total REAL DEFAULT 0)''')
+
+    # install_proposals extra columns (migrate)
+    for _col, _defn in [
+        ('po_number',            "TEXT DEFAULT ''"),
+        ('standalone',           "INTEGER DEFAULT 0"),
+        ('client_name_override', "TEXT DEFAULT ''"),
+        ('project_name',         "TEXT DEFAULT ''"),
+        ('job_po_prefix',        "TEXT DEFAULT ''"),
+    ]:
+        try:
+            c.execute(f"ALTER TABLE install_proposals ADD COLUMN {_col} {_defn}")
+        except Exception:
+            pass
+
+    c.execute('''CREATE TABLE IF NOT EXISTS install_proposal_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        proposal_id INTEGER NOT NULL,
+        sort_order INTEGER DEFAULT 0,
+        category TEXT DEFAULT 'materials',
+        description TEXT DEFAULT '',
+        quantity REAL DEFAULT 1,
+        unit TEXT DEFAULT 'ea',
+        unit_cost REAL DEFAULT 0,
+        total REAL DEFAULT 0)''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS install_proposal_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        proposal_id INTEGER NOT NULL,
+        po_number TEXT DEFAULT '',
+        amount REAL DEFAULT 0,
+        source TEXT DEFAULT 'email',
+        email_subject TEXT DEFAULT '',
+        email_uid TEXT DEFAULT '',
+        received_date TEXT DEFAULT '',
+        notes TEXT DEFAULT '',
+        created_at TEXT DEFAULT '',
+        FOREIGN KEY(proposal_id) REFERENCES install_proposals(id))''')
 
     c.execute('''CREATE TABLE IF NOT EXISTS installation_rfis
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -25311,6 +25390,29 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Installation Management</title>
+<style>
+.search-bar{display:flex;align-items:center;gap:10px;padding:12px 20px;background:white;border-bottom:1px solid #e5e7eb;position:sticky;top:52px;z-index:90}
+.search-bar input{flex:1;border:1px solid #d1d5db;border-radius:8px;padding:8px 14px;font-size:14px;max-width:400px}
+.search-bar input:focus{outline:none;border-color:#1a3c5e;box-shadow:0 0 0 3px rgba(26,60,94,.1)}
+.job-grid{display:grid;gap:10px;padding:12px 20px}
+.job-card{background:white;border:1px solid #e5e7eb;border-radius:10px;padding:16px 20px;display:grid;grid-template-columns:1fr auto;gap:12px;align-items:start;transition:box-shadow .15s}
+.job-card:hover{box-shadow:0 4px 16px rgba(0,0,0,.08);border-color:#c7d2fe}
+.job-card.inactive-card{opacity:.6}
+.jc-name{font-size:15px;font-weight:700;color:#1a3c5e}
+.jc-meta{display:flex;gap:12px;flex-wrap:wrap;font-size:13px;color:#6b7280;margin:5px 0}
+.prop-chip{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600;border:1px solid #e5e7eb;background:#f9fafb;color:#374151;text-decoration:none}
+.prop-chip:hover{border-color:#1a3c5e}
+.prop-chip.chip-approved{background:#d1fae5;color:#065f46;border-color:#6ee7b7}
+.prop-chip.chip-sent{background:#dbeafe;color:#1d4ed8;border-color:#bfdbfe}
+.prop-chip.chip-rejected{background:#fee2e2;color:#991b1b;border-color:#fca5a5}
+.standalone-section{padding:0 20px 20px}
+.standalone-hdr{font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.6px;margin:20px 0 8px;display:flex;align-items:center;gap:8px}
+.sa-card{background:white;border:1px solid #e5e7eb;border-radius:8px;padding:11px 16px;display:flex;align-items:center;gap:12px;margin-bottom:6px;cursor:pointer;transition:all .15s;text-decoration:none;color:inherit}
+.sa-card:hover{border-color:#1a3c5e;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.sa-po{font-size:12px;font-weight:800;color:#1a3c5e;min-width:100px}
+.sa-name{font-size:13px;font-weight:600;flex:1}
+.sa-total{font-size:14px;font-weight:700;color:#059669}
+</style>
 </head>
 <body>
 <div class="top-bar">
@@ -25318,82 +25420,176 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
   <nav>
     <a href="/installation" class="active">Jobs</a>
     <a href="/installation/schedule">📅 Schedule</a>
-    <a href="/installation/crews">👷 Manage Crews</a>
+    <a href="/installation/crews">👷 Crews</a>
     <a href="/dashboard">← Dashboard</a>
   </nav>
+  <button class="btn btn-primary" onclick="openNewPropModal(null,null)" style="margin-left:auto;white-space:nowrap;flex-shrink:0">+ New Proposal</button>
 </div>
-<div class="page">
-  <div class="stats-row">
-    <div class="stat-card">
-      <div class="stat-label">Active Jobs</div>
-      <div class="stat-value">{{ active_count }}</div>
-      <div class="stat-sub">{{ total_count }} total</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Total Contract Value</div>
-      <div class="stat-value">${{ "{:,.0f}".format(total_contract) }}</div>
-      <div class="stat-sub">Active jobs</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Total Invoiced</div>
-      <div class="stat-value">${{ "{:,.0f}".format(total_invoiced) }}</div>
-      <div class="stat-sub">Across all jobs</div>
-    </div>
-  </div>
 
-  <div class="section-hdr">
-    <h2>Installation Jobs</h2>
-    <a href="/manage_jobs" class="btn btn-primary btn-sm">+ New Job</a>
+<div class="search-bar">
+  <input type="text" id="search-input" placeholder="🔍  Search jobs, clients, addresses…" oninput="filterCards()">
+  <span style="font-size:13px;color:#6b7280" id="search-count">{{ jobs|length }} jobs</span>
+</div>
+
+<div class="page" style="padding-top:0">
+  <div class="stats-row" style="margin-top:12px">
+    <div class="stat-card"><div class="stat-label">Active Jobs</div><div class="stat-value">{{ active_count }}</div><div class="stat-sub">{{ total_count }} total</div></div>
+    <div class="stat-card"><div class="stat-label">Contract Value</div><div class="stat-value">${{ "{:,.0f}".format(total_contract) }}</div><div class="stat-sub">Active jobs</div></div>
+    <div class="stat-card"><div class="stat-label">Open Proposals</div><div class="stat-value">{{ open_proposals }}</div><div class="stat-sub">Draft + Sent</div></div>
+    <div class="stat-card"><div class="stat-label">Approved Value</div><div class="stat-value">${{ "{:,.0f}".format(approved_value) }}</div><div class="stat-sub">Approved proposals</div></div>
   </div>
 
   {% if jobs %}
-  <div style="display:grid;gap:10px">
+  <div class="job-grid" id="job-grid">
   {% for j in jobs %}
-  <div class="card" style="padding:16px 20px">
-    <div style="display:grid;grid-template-columns:1fr auto;gap:12px;align-items:start">
-      <div>
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;flex-wrap:wrap">
-          <span style="font-size:16px;font-weight:700;color:#1a3c5e">{{ j.job_name }}</span>
-          <span class="badge badge-{{ j.inst_status or 'planning' }}">{{ (j.inst_status or 'planning').replace('_',' ') }}</span>
-          {% if j.pending_cos > 0 %}<span class="badge" style="background:#fef3c7;color:#92400e">{{ j.pending_cos }} CO pending</span>{% endif %}
-        </div>
-        <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:13px;color:#6b7280;margin-bottom:8px">
-          {% if j.client_name %}<span>👤 {{ j.client_name }}</span>{% endif %}
-          {% if j.project_address %}<span>📍 {{ j.project_address[:40] }}{% if j.project_address|length > 40 %}…{% endif %}</span>{% endif %}
-          <span>📅 {{ j.year }}</span>
-          {% if j.days_on_job %}<span>⏱ {{ j.days_on_job }} day{{ 's' if j.days_on_job != 1 }} · ${{ "{:,.0f}".format(j.days_on_job * 1850) }}</span>{% endif %}
-        </div>
-        {% if j.contract_value > 0 %}
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-          <span style="font-size:12px;color:#6b7280">Billed ${{ "{:,.0f}".format(j.invoiced_total) }} of ${{ "{:,.0f}".format(j.contract_value) }}</span>
-          <div class="progress-bar" style="max-width:140px">
-            {% set bp = [(j.invoiced_total / j.contract_value * 100)|int, 100]|min %}
-            <div class="progress-fill {{ 'fill-over' if bp >= 100 else ('fill-warn' if bp >= 80 else 'fill-ok') }}" style="width:{{ bp }}%"></div>
-          </div>
-          <span style="font-size:12px;color:#6b7280">{{ bp }}%</span>
-          {% if j.contract_value > 0 and j.invoiced_total > 0 %}
-          {% set margin_pct = ((j.contract_value - j.invoiced_total) / j.contract_value * 100)|int %}
-          <span style="font-size:12px;font-weight:600;color:{{ '#059669' if margin_pct >= 15 else ('#f59e0b' if margin_pct >= 0 else '#dc2626') }}">{{ margin_pct }}% margin</span>
-          {% endif %}
-        </div>
-        {% endif %}
+  <div class="job-card{% if not j.active %} inactive-card{% endif %}" data-search="{{ (j.job_name + ' ' + j.client_name + ' ' + j.project_address)|lower }}">
+    <div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px;flex-wrap:wrap">
+        <span class="jc-name">{{ j.job_name }}</span>
+        <span class="badge badge-{{ j.inst_status or 'planning' }}">{{ (j.inst_status or 'planning').replace('_',' ') }}</span>
+        {% if j.job_po_prefix %}<span style="font-size:11px;font-weight:700;color:#9ca3af;background:#f3f4f6;padding:2px 8px;border-radius:4px;letter-spacing:.4px">{{ j.job_po_prefix }}</span>{% endif %}
       </div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
-        <a href="/installation/job/{{ j.id }}" class="btn btn-primary btn-sm">Open →</a>
-        <a href="/installation/job/{{ j.id }}?tab=proposals" class="btn btn-secondary btn-sm">📋 Proposals</a>
-        <a href="/installation/job/{{ j.id }}?tab=site-plans" class="btn btn-secondary btn-sm">🗺</a>
+      <div class="jc-meta">
+        {% if j.client_name %}<span>👤 {{ j.client_name }}</span>{% endif %}
+        {% if j.project_address %}<span>📍 {{ j.project_address[:50] }}{% if j.project_address|length > 50 %}…{% endif %}</span>{% endif %}
+        <span>{{ j.year }}</span>
+        {% if j.days_on_job %}<span>⏱ {{ j.days_on_job }} days</span>{% endif %}
       </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
+        {% for p in j.proposals %}
+        <a href="/installation/job/{{ j.id }}?tab=proposals" class="prop-chip chip-{{ p.status }}">
+          {{ p.po_number or p.proposal_number or 'DRAFT' }} · ${{ "{:,.0f}".format(p.total_amount or 0) }}
+        </a>
+        {% endfor %}
+        {% if not j.proposals %}<span style="font-size:12px;color:#d1d5db">No proposals yet</span>{% endif %}
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:5px;align-items:flex-end;min-width:100px">
+      <a href="/installation/job/{{ j.id }}" class="btn btn-primary btn-sm">Open →</a>
+      <button class="btn btn-secondary btn-sm" onclick="openNewPropModal({{ j.id }}, '{{ j.job_name|replace("\'","\\\'") }}')">+ Proposal</button>
+      <a href="/installation/job/{{ j.id }}?tab=site-plans" class="btn btn-secondary btn-sm" style="font-size:11px">🗺 Plans</a>
     </div>
   </div>
   {% endfor %}
   </div>
   {% else %}
-  <div style="text-align:center;padding:60px;color:#9ca3af">
+  <div style="text-align:center;padding:60px 20px;color:#9ca3af">
     <div style="font-size:48px;margin-bottom:12px">🏗️</div>
-    <p>No installation jobs found. <a href="/manage_jobs" style="color:#1a3c5e">Create jobs</a> to get started.</p>
+    <p style="font-weight:600;font-size:16px;margin-bottom:6px">No installation jobs yet</p>
+    <p>Click <strong>+ New Proposal</strong> to get started with a standalone proposal, or add jobs via Job Management.</p>
+  </div>
+  {% endif %}
+
+  {% if standalone_proposals %}
+  <div class="standalone-section" id="standalone-section">
+    <div class="standalone-hdr">📄 Standalone Proposals</div>
+    {% for p in standalone_proposals %}
+    <a href="/installation/proposal/{{ p.id }}" class="sa-card">
+      <div class="sa-po">{{ p.po_number or '—' }}</div>
+      <div class="sa-name">{{ p.title or p.project_name or 'Untitled' }}<br><span style="font-size:12px;color:#9ca3af">{{ p.client_name_override or '' }}</span></div>
+      <div class="sa-total">${{ "{:,.0f}".format(p.total_amount or 0) }}</div>
+      <span class="sa-status st-{{ p.status or 'draft' }}">{{ (p.status or 'draft').replace('_',' ') }}</span>
+    </a>
+    {% endfor %}
   </div>
   {% endif %}
 </div>
+
+<!-- New Proposal Modal -->
+<div class="modal-overlay" id="new-prop-modal" onclick="if(event.target===this)this.classList.remove('open')">
+  <div class="modal" style="max-width:480px">
+    <button class="modal-close" onclick="document.getElementById('new-prop-modal').classList.remove('open')">×</button>
+    <h3 style="margin-bottom:14px">📋 New Proposal</h3>
+    <div style="display:flex;gap:0;margin-bottom:16px;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">
+      <button id="toggle-linked" onclick="setNpType('linked')" style="flex:1;padding:9px;font-size:13px;font-weight:600;border:none;cursor:pointer;background:#1a3c5e;color:white;transition:all .15s">🔗 Link to Job</button>
+      <button id="toggle-standalone" onclick="setNpType('standalone')" style="flex:1;padding:9px;font-size:13px;font-weight:600;border:none;cursor:pointer;background:#f3f4f6;color:#374151;transition:all .15s">📄 Standalone</button>
+    </div>
+    <div id="np-linked-fields">
+      <label style="font-size:12px;font-weight:700;color:#6b7280;display:block;margin-bottom:5px;text-transform:uppercase">Job</label>
+      <select id="np-job-select" onchange="updatePoPreview()" style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:8px 10px;font-size:14px;margin-bottom:14px">
+        <option value="">— Select a job —</option>
+        {% for j in jobs %}
+        <option value="{{ j.id }}" data-prefix="{{ j.job_po_prefix }}" data-name="{{ j.job_name|e }}">{{ j.job_name }}{% if j.client_name %} — {{ j.client_name }}{% endif %}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div id="np-standalone-fields" style="display:none">
+      <label style="font-size:12px;font-weight:700;color:#6b7280;display:block;margin-bottom:5px;text-transform:uppercase">Client Name</label>
+      <input id="np-client" style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:8px 10px;font-size:14px;margin-bottom:10px" placeholder="e.g. Madison Capital Group" oninput="updatePoPreview()">
+      <label style="font-size:12px;font-weight:700;color:#6b7280;display:block;margin-bottom:5px;text-transform:uppercase">Project / Title</label>
+      <input id="np-project" style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:8px 10px;font-size:14px;margin-bottom:14px" placeholder="e.g. Parking Lot Landscaping">
+    </div>
+    <div style="background:#f0f7ff;border:1px solid #bfdbfe;border-radius:6px;padding:10px 14px;margin-bottom:16px;display:flex;align-items:center;gap:10px">
+      <span style="font-size:12px;color:#6b7280;white-space:nowrap">PO Number:</span>
+      <span id="po-preview" style="font-size:18px;font-weight:800;color:#1a3c5e;letter-spacing:.5px">—</span>
+      <span style="font-size:11px;color:#9ca3af">(auto-assigned on save)</span>
+    </div>
+    <button class="btn btn-primary" style="width:100%;padding:10px" onclick="createProposalFromHub()">Create Proposal →</button>
+  </div>
+</div>
+
+<script>
+let _npType = 'linked';
+function setNpType(t){
+  _npType = t;
+  document.getElementById('np-linked-fields').style.display = t==='linked'?'':'none';
+  document.getElementById('np-standalone-fields').style.display = t==='standalone'?'':'none';
+  const styles = {active:'flex:1;padding:9px;font-size:13px;font-weight:600;border:none;cursor:pointer;background:#1a3c5e;color:white;transition:all .15s',
+                  inactive:'flex:1;padding:9px;font-size:13px;font-weight:600;border:none;cursor:pointer;background:#f3f4f6;color:#374151;transition:all .15s'};
+  document.getElementById('toggle-linked').style.cssText = t==='linked'?styles.active:styles.inactive;
+  document.getElementById('toggle-standalone').style.cssText = t==='standalone'?styles.active:styles.inactive;
+  updatePoPreview();
+}
+function makeInitials(name){
+  if(!name) return '';
+  const stop = new Set(['THE','OF','AND','A','AN','IN','AT','FOR','TO','LLC','INC','CORP','CO','GROUP','GRP','&']);
+  return name.toUpperCase().split(/[\s&]+/).filter(w=>w&&!stop.has(w)&&/^[A-Z]/i.test(w)).map(w=>w[0]).join('').substring(0,5)||'PROP';
+}
+function updatePoPreview(){
+  let prefix = '';
+  if(_npType==='linked'){
+    const sel = document.getElementById('np-job-select');
+    const opt = sel.options[sel.selectedIndex];
+    prefix = opt?.dataset?.prefix || makeInitials(opt?.dataset?.name||'');
+  } else {
+    prefix = makeInitials(document.getElementById('np-client')?.value||'');
+  }
+  document.getElementById('po-preview').textContent = prefix ? prefix+'-###' : '—';
+}
+function openNewPropModal(jobId, jobName){
+  if(jobId){ setNpType('linked'); document.getElementById('np-job-select').value = jobId; }
+  else { setNpType('linked'); document.getElementById('np-job-select').value = ''; }
+  updatePoPreview();
+  document.getElementById('new-prop-modal').classList.add('open');
+}
+async function createProposalFromHub(){
+  const payload = {standalone: _npType==='standalone' ? 1 : 0};
+  if(_npType==='linked'){
+    payload.job_id = document.getElementById('np-job-select').value||null;
+    if(!payload.job_id){alert('Please select a job');return;}
+  } else {
+    payload.job_id = null;
+    payload.client_name_override = document.getElementById('np-client').value.trim();
+    payload.project_name = document.getElementById('np-project').value.trim();
+    if(!payload.client_name_override){alert('Client name is required for a standalone proposal');return;}
+  }
+  const r = await fetch('/installation/api/v2/proposals/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  const d = await r.json();
+  if(d.id){
+    if(_npType==='linked' && payload.job_id) window.location.href='/installation/job/'+payload.job_id+'?tab=proposals';
+    else window.location.href='/installation/proposal/'+d.id;
+  } else alert('Error: '+(d.error||'Unknown'));
+}
+function filterCards(){
+  const q = document.getElementById('search-input').value.toLowerCase().trim();
+  const cards = document.querySelectorAll('.job-card');
+  let vis=0;
+  cards.forEach(c=>{const m=!q||c.dataset.search.includes(q);c.style.display=m?'':'none';if(m)vis++;});
+  document.getElementById('search-count').textContent=vis+' job'+(vis===1?'':'s');
+  const sa=document.getElementById('standalone-section');
+  if(sa) sa.style.display=q?'none':'';
+}
+</script>
 </body></html>
 '''
 
@@ -26590,11 +26786,9 @@ def installation():
                      ORDER BY j.active DESC, j.year DESC, j.job_name ASC""")
         raw_jobs = c.fetchall()
 
-        # days on job per job_id
         c.execute("SELECT job_id, COUNT(*) FROM install_schedules GROUP BY job_id")
         days_map = {r[0]: r[1] for r in c.fetchall()}
 
-        # invoice totals per job (via job_name join)
         c.execute("""SELECT j.id, COALESCE(SUM(i.invoice_cost),0)
                      FROM jobs j
                      JOIN po_requests pr ON pr.job_name=j.job_name AND pr.po_type='install'
@@ -26602,48 +26796,71 @@ def installation():
                      GROUP BY j.id""")
         inv_map = {r[0]: r[1] for r in c.fetchall()}
 
-        # change order counts
-        c.execute("SELECT job_id, COUNT(*), SUM(CASE WHEN status='pending_approval' THEN 1 ELSE 0 END) FROM installation_change_orders GROUP BY job_id")
-        co_map = {r[0]: {'total': r[1], 'pending': r[2] or 0} for r in c.fetchall()}
+        # Proposals per job (new system)
+        c.execute("""SELECT job_id, id, proposal_number, po_number, title, status, total_amount
+                     FROM install_proposals WHERE (standalone=0 OR standalone IS NULL) AND job_id IS NOT NULL
+                     ORDER BY created_at DESC""")
+        props_by_job = {}
+        for pr in c.fetchall():
+            jid = pr[0]
+            if jid not in props_by_job:
+                props_by_job[jid] = []
+            class _PP: pass
+            p = _PP()
+            p.id=pr[1]; p.proposal_number=pr[2]; p.po_number=pr[3]
+            p.title=pr[4]; p.status=pr[5] or 'draft'; p.total_amount=pr[6] or 0
+            props_by_job[jid].append(p)
 
-        # site plan counts
-        c.execute("SELECT job_id, COUNT(*) FROM installation_site_plans GROUP BY job_id")
-        plan_map = {r[0]: r[1] for r in c.fetchall()}
+        # Summary stats
+        open_proposals = 0; approved_value = 0.0
+        c.execute("SELECT status, COUNT(*), COALESCE(SUM(total_amount),0) FROM install_proposals GROUP BY status")
+        for row in c.fetchall():
+            if row[0] in ('draft','sent'): open_proposals += row[1]
+            if row[0] == 'approved': approved_value += row[2]
+
+        stop_words = {'THE','OF','AND','A','AN','IN','AT','FOR','TO','LLC','INC','CORP','CO','GROUP','GRP'}
+        def make_prefix(name):
+            if not name: return 'PROP'
+            initials = ''.join(w[0] for w in name.upper().split()
+                               if w and w not in stop_words and w[0].isalpha())
+            return initials[:5] or 'PROP'
 
         jobs = []
-        total_contract = 0.0
-        total_invoiced = 0.0
-        active_count = 0
-        pending_cos = 0
+        total_contract = 0.0; total_invoiced = 0.0
+        active_count = 0; total_count = 0
         for row in raw_jobs:
-            jid = row[0]
-            inv_total = inv_map.get(jid, 0)
-            co_info = co_map.get(jid, {'total': 0, 'pending': 0})
-            contract = row[7] or 0
-            if row[3]:
-                active_count += 1
-                total_contract += contract
-                total_invoiced += inv_total
-            pending_cos += co_info['pending']
-
+            jid = row[0]; contract = row[7] or 0; inv_total = inv_map.get(jid, 0)
+            if row[3]: active_count += 1; total_contract += contract; total_invoiced += inv_total
+            total_count += 1
             class _J: pass
             j = _J()
-            j.id = jid; j.job_name = row[1]; j.year = row[2]; j.active = row[3]
-            j.client_name = row[4]; j.project_address = row[5]
-            j.inst_status = row[6]; j.contract_value = contract
-            j.job_code = row[8]
-            j.days_on_job = days_map.get(jid, 0)
-            j.invoiced_total = inv_total
-            j.total_cos = co_info['total']
-            j.pending_cos = co_info['pending']
-            j.site_plans = plan_map.get(jid, 0)
+            j.id=jid; j.job_name=row[1]; j.year=row[2]; j.active=row[3]
+            j.client_name=row[4]; j.project_address=row[5]
+            j.inst_status=row[6]; j.contract_value=contract; j.job_code=row[8]
+            j.days_on_job=days_map.get(jid, 0); j.invoiced_total=inv_total
+            j.proposals=props_by_job.get(jid, [])
+            j.job_po_prefix=make_prefix(row[1])
             jobs.append(j)
+
+        # Standalone proposals
+        c.execute("""SELECT id, proposal_number, po_number, title, project_name,
+                            client_name_override, status, total_amount
+                     FROM install_proposals WHERE standalone=1 ORDER BY created_at DESC""")
+        class _SP: pass
+        standalone_proposals = []
+        for sr in c.fetchall():
+            p = _SP()
+            p.id=sr[0]; p.proposal_number=sr[1]; p.po_number=sr[2]
+            p.title=sr[3]; p.project_name=sr[4]; p.client_name_override=sr[5]
+            p.status=sr[6] or 'draft'; p.total_amount=sr[7] or 0
+            standalone_proposals.append(p)
 
         conn.close()
         return render_template_string(INSTALLATION_HUB_TEMPLATE,
-            jobs=jobs, active_count=active_count, total_count=len(jobs),
-            pending_cos=pending_cos, total_contract=total_contract,
-            total_invoiced=total_invoiced)
+            jobs=jobs, active_count=active_count, total_count=total_count,
+            total_contract=total_contract, total_invoiced=total_invoiced,
+            open_proposals=open_proposals, approved_value=approved_value,
+            standalone_proposals=standalone_proposals)
     except Exception as e:
         import traceback
         return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre><a href='/dashboard'>Back</a>"
@@ -26941,23 +27158,52 @@ def v2_proposals_create():
         c = conn.cursor()
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         today = datetime.now().strftime('%Y-%m-%d')
-        c.execute("SELECT COUNT(*)+1 FROM install_proposals WHERE job_id=?", (data['job_id'],))
+
+        # Generate PO prefix from job name or client name
+        _stop = {'THE','OF','AND','A','AN','IN','AT','FOR','TO','LLC','INC','CORP','CO','GROUP','GRP'}
+        def _prefix(name):
+            if not name: return 'PROP'
+            return (''.join(w[0] for w in name.upper().split()
+                            if w and w not in _stop and w[0].isalpha())[:5] or 'PROP')
+
+        standalone = int(data.get('standalone') or 0)
+        job_id = data.get('job_id') or None
+        client_name_override = data.get('client_name_override','')
+        project_name = data.get('project_name','')
+
+        if job_id:
+            c.execute("SELECT job_name, job_code FROM jobs WHERE id=?", (job_id,))
+            jrow = c.fetchone()
+            name_for_prefix = (jrow[0] if jrow else '') or ''
+            code = _prefix(name_for_prefix)
+        else:
+            code = _prefix(client_name_override or project_name)
+
+        # Sequential number across all proposals with this prefix
+        c.execute("SELECT COUNT(*)+1 FROM install_proposals WHERE job_po_prefix=?", (code,))
         n = c.fetchone()[0]
-        c.execute("SELECT job_code FROM jobs WHERE id=?", (data['job_id'],))
-        jrow = c.fetchone()
-        code = (jrow[0] or 'PROP') if jrow else 'PROP'
-        prop_num = f"{code}-{n:03d}"
+        po_number = f"{code}-{n:03d}"
+        # Ensure uniqueness
+        while True:
+            c.execute("SELECT id FROM install_proposals WHERE po_number=?", (po_number,))
+            if not c.fetchone(): break
+            n += 1
+            po_number = f"{code}-{n:03d}"
+
         c.execute("""INSERT INTO install_proposals
-                     (job_id, proposal_number, revision, status, proposal_date, valid_days,
+                     (job_id, proposal_number, po_number, job_po_prefix, revision,
+                      standalone, client_name_override, project_name,
+                      status, proposal_date, valid_days,
                       days_allotted, crew_size, markup_pct, tax_pct,
                       subtotal, markup_amount, tax_amount, total_amount,
                       terms, created_by, created_at)
-                     VALUES (?,?,0,'draft',?,30,0,1,0,0,0,0,0,0,
+                     VALUES (?,?,?,?,0,?,?,?,'draft',?,30,0,1,0,0,0,0,0,0,
                              'Payment due within 30 days of invoice.',?,?)""",
-                  (data['job_id'], prop_num, today, session['username'], now))
+                  (job_id, po_number, po_number, code, standalone,
+                   client_name_override, project_name, today, session['username'], now))
         new_id = c.lastrowid
         conn.commit(); conn.close()
-        return jsonify({'success': True, 'id': new_id})
+        return jsonify({'success': True, 'id': new_id, 'po_number': po_number})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
@@ -27924,6 +28170,27 @@ def installation_crews_move():
         return jsonify({'success': False, 'error': str(e)})
 
 
+
+
+@app.route('/installation/proposal/<int:prop_id>')
+def installation_standalone_proposal(prop_id):
+    if 'username' not in session:
+        return redirect(url_for('login'))
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT job_id FROM install_proposals WHERE id=?", (prop_id,))
+        row = c.fetchone()
+        conn.close()
+        if not row:
+            return "<h2>Proposal not found</h2><a href='/installation'>Back</a>"
+        if row[0]:
+            return redirect(f'/installation/job/{row[0]}?tab=proposals')
+        # Standalone: render the job template in proposals-tab mode with no job
+        return redirect(f'/installation/job/0?tab=proposals&prop_id={prop_id}')
+    except Exception as e:
+        import traceback
+        return f"<pre>{traceback.format_exc()}</pre>"
 
 
 # ── Redirect old standalone pages into unified Installation ───────────────
