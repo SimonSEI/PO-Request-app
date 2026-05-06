@@ -21771,7 +21771,7 @@ def community_billing_export_excel():
     # Pull every line item for all submitted submissions in this month
     c.execute("""SELECT li.zone_and_address, li.nozzle, li.pop_up_6_inch, li.pop_up_12_inch,
                         li.rotor_6_inch, li.new_pop_up_6_inch, li.new_pop_up_12_inch,
-                        li.riser, li.solenoid, li.stat_decoder_1
+                        li.riser, li.solenoid, li.stat_decoder_1, li.notes
                  FROM community_billing_line_items li
                  JOIN community_billing_submissions s ON s.id = li.submission_id
                  WHERE s.community_name = ? AND s.work_date LIKE ? AND s.status = 'submitted'
@@ -21786,8 +21786,11 @@ def community_billing_export_excel():
         zone = row[0] or ''
         if zone not in zone_totals:
             zone_totals[zone] = {k: 0 for k in PART_KEYS}
+            zone_totals[zone]['has_notes'] = False
         for i, key in enumerate(PART_KEYS):
             zone_totals[zone][key] += row[i + 1] or 0
+        if row[10]:
+            zone_totals[zone]['has_notes'] = True
 
     # Build the master zone list from the community's saved addresses so every
     # zone appears in the export even if no submission was made for it this month.
@@ -21821,21 +21824,24 @@ def community_billing_export_excel():
 
     def write_sheet(ws, title_text, zones):
         """Write aggregated zone rows with column totals."""
-        header_font  = Font(bold=True, color="FFFFFF", size=11)
-        header_fill  = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-        totals_fill  = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+        header_font   = Font(bold=True, color="FFFFFF", size=11)
+        header_fill   = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        totals_fill   = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+        all_good_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        all_good_font = Font(bold=True, color="276221", size=10)
         border = Border(left=Side(style='thin'), right=Side(style='thin'),
                         top=Side(style='thin'), bottom=Side(style='thin'))
         center  = Alignment(horizontal='center', vertical='center', wrap_text=False)
         left_al = Alignment(horizontal='left',   vertical='center', wrap_text=False)
         currency_format = '$#,##0.00'
 
-        headers = ['Zone & Address', 'Nozzle', '6" Pop Up', '12" Pop Up', '6" Rotor',
+        # Status is the first column; Zone & Address shifts to column 2
+        headers = ['Status', 'Zone & Address', 'Nozzle', '6" Pop Up', '12" Pop Up', '6" Rotor',
                    'NEW 6" Pop Up', 'NEW 12" Pop Up', 'Riser', 'Solenoid', '1 Stat Decoder']
         if pricing:
             headers.append('Total Cost')
         num_cols = len(headers)
-        col_letters = list('ABCDEFGHIJK')
+        col_letters = list('ABCDEFGHIJKL')
 
         # Title row
         ws.merge_cells(f'A1:{col_letters[num_cols-1]}1')
@@ -21855,6 +21861,9 @@ def community_billing_export_excel():
             cell.border = border
         ws.row_dimensions[2].height = 20
 
+        # Keep title + header rows visible while scrolling
+        ws.freeze_panes = 'A3'
+
         # Track column widths and per-column sums for totals row
         col_widths = [len(h) for h in headers]
         col_sums   = {k: 0 for k in PART_KEYS}
@@ -21866,13 +21875,26 @@ def community_billing_export_excel():
             cost   = calc_cost(totals)
             grand_cost += cost
 
-            zc = ws.cell(row=cur, column=1)
+            # Status column (col 1): green "All good" when no parts and no notes
+            has_any_parts = any(totals[k] for k in PART_KEYS)
+            has_notes = totals.get('has_notes', False)
+            sc = ws.cell(row=cur, column=1)
+            sc.border = border
+            sc.alignment = center
+            if not has_any_parts and not has_notes:
+                sc.value = 'All good'
+                sc.fill = all_good_fill
+                sc.font = all_good_font
+                col_widths[0] = max(col_widths[0], len('All good'))
+
+            # Zone & Address column (col 2)
+            zc = ws.cell(row=cur, column=2)
             zc.value = zone
             zc.alignment = left_al
             zc.border = border
-            col_widths[0] = max(col_widths[0], len(zone))
+            col_widths[1] = max(col_widths[1], len(zone))
 
-            for ci, key in enumerate(PART_KEYS, 2):
+            for ci, key in enumerate(PART_KEYS, 3):
                 cell = ws.cell(row=cur, column=ci)
                 val = totals[key]
                 cell.value = val if val else None
@@ -21893,14 +21915,17 @@ def community_billing_export_excel():
 
         # Totals row
         cur += 1
-        lbl = ws.cell(row=cur, column=1)
+        ws.cell(row=cur, column=1).fill = totals_fill
+        ws.cell(row=cur, column=1).border = border
+
+        lbl = ws.cell(row=cur, column=2)
         lbl.value = 'TOTALS'
         lbl.font = Font(bold=True, size=11)
         lbl.fill = totals_fill
         lbl.alignment = center
         lbl.border = border
 
-        for ci, key in enumerate(PART_KEYS, 2):
+        for ci, key in enumerate(PART_KEYS, 3):
             cell = ws.cell(row=cur, column=ci)
             s = col_sums[key]
             cell.value = s if s else None
