@@ -1390,6 +1390,14 @@ def init_db():
     c.execute("""DELETE FROM community_billing_submissions
                  WHERE status = 'deleted' AND deleted_at < ?""", (purge_cutoff,))
 
+    # Indexes for billing query performance
+    c.execute("""CREATE INDEX IF NOT EXISTS idx_billing_sub_community_date_status
+                 ON community_billing_submissions(community_name, work_date, status)""")
+    c.execute("""CREATE INDEX IF NOT EXISTS idx_billing_line_items_submission
+                 ON community_billing_line_items(submission_id)""")
+    c.execute("""CREATE INDEX IF NOT EXISTS idx_clock_addresses_community
+                 ON verona_walk_clock_addresses(community_id)""")
+
     # Job Costing App Tables
     # Stores imported proposal data (from PDF) for each install job
     c.execute('''CREATE TABLE IF NOT EXISTS job_proposals
@@ -21616,100 +21624,94 @@ def community_billing_office_data():
                 'stat_decoder_1': pricing_row[8]
             }
 
-    # Get all submissions for this community and month
-    c.execute("""SELECT id, tech_username, status, submitted_at
-                 FROM community_billing_submissions
-                 WHERE community_name = ? AND work_date LIKE ? AND status = 'submitted'
-                 ORDER BY work_date DESC, submitted_at DESC""",
+    # Fetch all submissions and their line items in one query to avoid N+1 round-trips
+    import json as _json
+    c.execute("""SELECT s.id, s.tech_username, s.status, s.submitted_at,
+                        li.zone_and_address, li.nozzle, li.pop_up_6_inch, li.pop_up_12_inch,
+                        li.rotor_6_inch, li.new_pop_up_6_inch, li.new_pop_up_12_inch,
+                        li.riser, li.solenoid, li.stat_decoder_1, li.notes,
+                        COALESCE(li.photos, '[]')
+                 FROM community_billing_submissions s
+                 LEFT JOIN community_billing_line_items li ON li.submission_id = s.id
+                 WHERE s.community_name = ? AND s.work_date LIKE ? AND s.status = 'submitted'
+                 ORDER BY s.work_date DESC, s.submitted_at DESC, s.id, li.id""",
              (community, work_month + '%'))
+
+    # Group rows by submission, preserving order
+    sub_map = {}   # ordered dict: submission_id -> submission dict
+    sub_order = []
+    for row in c.fetchall():
+        sid = row[0]
+        if sid not in sub_map:
+            sub_map[sid] = {
+                'id': sid,
+                'tech_username': row[1],
+                'status': row[2],
+                'submitted_at': row[3],
+                'line_items': [],
+            }
+            sub_order.append(sid)
+        # LEFT JOIN may return a NULL line-item row when submission has no items
+        if row[4] is not None:
+            try:
+                photos_list = _json.loads(row[15] or '[]')
+            except Exception:
+                photos_list = []
+            sub_map[sid]['line_items'].append({
+                'zone_and_address': row[4],
+                'nozzle': row[5],
+                'pop_up_6_inch': row[6],
+                'pop_up_12_inch': row[7],
+                'rotor_6_inch': row[8],
+                'new_pop_up_6_inch': row[9],
+                'new_pop_up_12_inch': row[10],
+                'riser': row[11],
+                'solenoid': row[12],
+                'stat_decoder_1': row[13],
+                'notes': row[14],
+                'photos': photos_list,
+            })
+
+    conn.close()
 
     submissions = []
     total_cost = 0.0
     common_area_cost = 0.0
     clocks_cost = 0.0
 
-    for row in c.fetchall():
-        submission_id = row[0]
-
-        # Get line items for this submission
-        c.execute("""SELECT zone_and_address, nozzle, pop_up_6_inch, pop_up_12_inch,
-                            rotor_6_inch, new_pop_up_6_inch, new_pop_up_12_inch,
-                            riser, solenoid, stat_decoder_1, notes, COALESCE(photos, '[]')
-                     FROM community_billing_line_items
-                     WHERE submission_id = ?
-                     ORDER BY id""", (submission_id,))
-
-        line_items = []
-        for item_row in c.fetchall():
-            import json as _json
-            try:
-                photos_list = _json.loads(item_row[11] or '[]')
-            except Exception:
-                photos_list = []
-            line_items.append({
-                'zone_and_address': item_row[0],
-                'nozzle': item_row[1],
-                'pop_up_6_inch': item_row[2],
-                'pop_up_12_inch': item_row[3],
-                'rotor_6_inch': item_row[4],
-                'new_pop_up_6_inch': item_row[5],
-                'new_pop_up_12_inch': item_row[6],
-                'riser': item_row[7],
-                'solenoid': item_row[8],
-                'stat_decoder_1': item_row[9],
-                'notes': item_row[10],
-                'photos': photos_list
-            })
-
-            # Calculate cost for this item if pricing is available
+    for sid in sub_order:
+        sub = sub_map[sid]
+        clock_nums = set()
+        for item in sub['line_items']:
             if pricing:
                 item_cost = (
-                    (item_row[1] or 0) * pricing['nozzle'] +
-                    (item_row[2] or 0) * pricing['pop_up_6_inch'] +
-                    (item_row[3] or 0) * pricing['pop_up_12_inch'] +
-                    (item_row[4] or 0) * pricing['rotor_6_inch'] +
-                    (item_row[5] or 0) * pricing['new_pop_up_6_inch'] +
-                    (item_row[6] or 0) * pricing['new_pop_up_12_inch'] +
-                    (item_row[7] or 0) * pricing['riser'] +
-                    (item_row[8] or 0) * pricing['solenoid'] +
-                    (item_row[9] or 0) * pricing['stat_decoder_1']
+                    (item['nozzle'] or 0) * pricing['nozzle'] +
+                    (item['pop_up_6_inch'] or 0) * pricing['pop_up_6_inch'] +
+                    (item['pop_up_12_inch'] or 0) * pricing['pop_up_12_inch'] +
+                    (item['rotor_6_inch'] or 0) * pricing['rotor_6_inch'] +
+                    (item['new_pop_up_6_inch'] or 0) * pricing['new_pop_up_6_inch'] +
+                    (item['new_pop_up_12_inch'] or 0) * pricing['new_pop_up_12_inch'] +
+                    (item['riser'] or 0) * pricing['riser'] +
+                    (item['solenoid'] or 0) * pricing['solenoid'] +
+                    (item['stat_decoder_1'] or 0) * pricing['stat_decoder_1']
                 )
                 total_cost += item_cost
-
-                # Separate common area and residential costs for all communities
-                zone = (item_row[0] or '').lower()
-                if 'common area' in zone:
+                if 'common area' in (item['zone_and_address'] or '').lower():
                     common_area_cost += item_cost
                 else:
                     clocks_cost += item_cost
 
-        # Derive which clocks have data entered (reuse already-fetched line_items)
-        clock_nums = set()
-        for item in line_items:
-            total_vals = (
-                (item['nozzle'] or 0) + (item['pop_up_6_inch'] or 0) +
-                (item['pop_up_12_inch'] or 0) + (item['rotor_6_inch'] or 0) +
-                (item['new_pop_up_6_inch'] or 0) + (item['new_pop_up_12_inch'] or 0) +
-                (item['riser'] or 0) + (item['solenoid'] or 0) +
-                (item['stat_decoder_1'] or 0)
-            )
+            total_vals = sum(item[k] or 0 for k in (
+                'nozzle','pop_up_6_inch','pop_up_12_inch','rotor_6_inch',
+                'new_pop_up_6_inch','new_pop_up_12_inch','riser','solenoid','stat_decoder_1'))
             has_notes = bool(item.get('notes') and str(item['notes']).strip())
             if total_vals > 0 or has_notes:
                 m = re.match(r'^Clock\s+(\d+)', item['zone_and_address'] or '', re.IGNORECASE)
                 if m:
                     clock_nums.add(int(m.group(1)))
-        clocks_label = ', '.join(f'Clock {n}' for n in sorted(clock_nums)) if clock_nums else ''
 
-        submissions.append({
-            'id': submission_id,
-            'tech_username': row[1],
-            'status': row[2],
-            'submitted_at': row[3],
-            'line_items': line_items,
-            'clocks_label': clocks_label
-        })
-
-    conn.close()
+        sub['clocks_label'] = ', '.join(f'Clock {n}' for n in sorted(clock_nums)) if clock_nums else ''
+        submissions.append(sub)
 
     response = {
         'success': True,
