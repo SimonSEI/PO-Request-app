@@ -15855,17 +15855,19 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         input[type="number"],
         select {
             width: 100%;
-            padding: 6px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 13px;
+            padding: 5px 6px !important;
+            border: 1.5px solid var(--border) !important;
+            border-radius: 6px !important;
+            font-size: 13px !important;
             font-family: inherit;
+            box-sizing: border-box;
+            min-width: 0;
         }
         input:focus,
         select:focus {
             outline: none;
-            border-color: #14B8A6;
-            box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.1);
+            border-color: var(--accent) !important;
+            box-shadow: 0 0 0 2px var(--accent-glow) !important;
         }
         .action-buttons {
             display: flex;
@@ -16047,31 +16049,39 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         }
         .vw-fields-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
             gap: 6px;
         }
         .vw-field {
             display: flex;
             flex-direction: column;
+            min-width: 0;
         }
         .vw-field label {
-            font-size: 12px;
-            color: #888;
-            margin-bottom: 2px;
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-bottom: 3px;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+            font-weight: 600;
+            letter-spacing: .02em;
         }
         .vw-field input {
-            padding: 6px 8px;
-            border: 1px solid #ddd;
-            border-radius: 3px;
-            font-size: 16px;
-            width: 100%;
+            padding: 6px 6px !important;
+            border: 1.5px solid var(--border) !important;
+            border-radius: 6px !important;
+            font-size: 14px !important;
+            width: 100% !important;
+            min-width: 0 !important;
+            box-sizing: border-box !important;
+            text-align: center;
+            font-weight: 600;
         }
         .vw-field input:focus {
-            border-color: #14B8A6;
-            outline: none;
+            border-color: var(--accent) !important;
+            box-shadow: 0 0 0 2px var(--accent-glow) !important;
+            outline: none !important;
         }
         .vw-empty {
             color: #999;
@@ -16083,11 +16093,12 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             margin-top: 6px;
         }
         .vw-notes-field input {
-            width: 100%;
-            padding: 6px 8px;
-            border: 1px solid #ddd;
-            border-radius: 3px;
-            font-size: 16px;
+            width: 100% !important;
+            padding: 6px 8px !important;
+            border: 1.5px solid var(--border) !important;
+            border-radius: 6px !important;
+            font-size: 13px !important;
+            box-sizing: border-box;
         }
         .photo-upload-label {
             display: inline-flex;
@@ -17691,30 +17702,35 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         }
         .clock-subtabs {
             display: flex;
-            gap: 0;
-            margin-bottom: 10px;
-            border-bottom: 2px solid #e0e0e0;
+            gap: 4px;
+            margin-bottom: 12px;
+            border-bottom: 2px solid var(--border);
+            padding-bottom: 0;
         }
         .clock-subtab {
-            padding: 6px 14px;
-            background: #f0f0f0;
-            border: 1px solid #e0e0e0;
+            padding: 7px 16px;
+            background: #CBD5E1;
+            border: 1.5px solid #94A3B8;
             border-bottom: none;
-            border-radius: 4px 4px 0 0;
+            border-radius: 6px 6px 0 0;
             cursor: pointer;
             font-size: 12px;
-            font-weight: 600;
-            color: #666;
-            margin-right: 2px;
+            font-weight: 700;
+            color: #334155;
+            margin-bottom: -2px;
+            transition: all .15s;
+            letter-spacing: .02em;
         }
         .clock-subtab:hover {
-            background: #e8e8e8;
+            background: #B0BEC5;
+            color: #1E293B;
         }
         .clock-subtab.active {
-            background: white;
-            color: #333;
-            border-bottom: 2px solid white;
-            margin-bottom: -2px;
+            background: #fff;
+            color: var(--accent);
+            border-color: var(--border);
+            border-bottom: 2px solid #fff;
+            box-shadow: 0 -2px 0 var(--accent) inset;
         }
         .clock-subtab-content {
             display: none;
