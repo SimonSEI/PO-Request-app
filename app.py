@@ -18309,7 +18309,14 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                         <div style="width: 100%;">
                             <div style="display: flex; justify-content: space-between; align-items: flex-start;">
                                 <div class="community-info">
-                                    <div class="community-name">{{ community.name }}</div>
+                                    <div class="community-name">
+                                        {{ community.name }}
+                                        {% if not community.has_pricing %}
+                                        <span style="margin-left:8px; display:inline-flex; align-items:center; gap:4px; background:#FEE2E2; color:#991B1B; border:1px solid #FECACA; border-radius:6px; padding:2px 8px; font-size:11px; font-weight:700; vertical-align:middle;">
+                                            🚩 Missing pricing info
+                                        </span>
+                                        {% endif %}
+                                    </div>
                                     <div class="community-meta">
                                         Created: {{ community.created_at|truncate(10) }}
                                         {% if community.active %}
@@ -21747,7 +21754,14 @@ MANAGE_COMMUNITIES_TEMPLATE = '''
                     <div class="community-card" style="flex-direction:column; align-items:stretch;">
                         <div style="display:flex; justify-content:space-between; align-items:center;">
                             <div class="community-info">
-                                <div class="community-name" id="name-display-{{ community.id }}">{{ community.name }}</div>
+                                <div class="community-name" id="name-display-{{ community.id }}">
+                            {{ community.name }}
+                            {% if not community.has_pricing %}
+                            <span style="margin-left:8px; display:inline-flex; align-items:center; gap:4px; background:#FEE2E2; color:#991B1B; border:1px solid #FECACA; border-radius:6px; padding:2px 8px; font-size:11px; font-weight:700; vertical-align:middle;">
+                                🚩 Missing pricing info
+                            </span>
+                            {% endif %}
+                        </div>
                                 <div class="community-meta">
                                     Created by {{ community.created_by }} on {{ community.created_at|truncate(10) }}
                                     <span class="badge {% if community.active %}badge-active{% else %}badge-inactive{% endif %}">
@@ -23300,8 +23314,14 @@ def manage_communities():
             except Exception as e:
                 flash(f'Error deleting community: {str(e)}', 'error')
 
-    # Get all communities
-    c.execute("SELECT id, name, created_by, created_at, active FROM communities ORDER BY name")
+    # Get all communities with pricing status
+    c.execute("""
+        SELECT c.id, c.name, c.created_by, c.created_at, c.active,
+               CASE WHEN p.id IS NOT NULL THEN 1 ELSE 0 END as has_pricing
+        FROM communities c
+        LEFT JOIN community_nozzle_prices p ON p.community_id = c.id
+        ORDER BY c.name
+    """)
     communities = []
     for row in c.fetchall():
         communities.append({
@@ -23309,7 +23329,8 @@ def manage_communities():
             'name': row[1],
             'created_by': row[2],
             'created_at': row[3],
-            'active': row[4]
+            'active': row[4],
+            'has_pricing': bool(row[5])
         })
     conn.close()
 
@@ -23388,13 +23409,25 @@ def community_billing_office():
             except Exception as e:
                 flash(f'Error deleting community: {str(e)}', 'error')
 
-    # Get list of active communities only
-    c.execute("SELECT id, name, created_at FROM communities WHERE active = 1 ORDER BY name")
-    communities = [{'id': row[0], 'name': row[1], 'created_at': row[2], 'active': True} for row in c.fetchall()]
+    # Get list of active communities only (with pricing status)
+    c.execute("""
+        SELECT c.id, c.name, c.created_at,
+               CASE WHEN p.id IS NOT NULL THEN 1 ELSE 0 END as has_pricing
+        FROM communities c
+        LEFT JOIN community_nozzle_prices p ON p.community_id = c.id
+        WHERE c.active = 1 ORDER BY c.name
+    """)
+    communities = [{'id': row[0], 'name': row[1], 'created_at': row[2], 'active': True, 'has_pricing': bool(row[3])} for row in c.fetchall()]
 
-    # Get all communities including inactive ones
-    c.execute("SELECT id, name, created_at, active, COALESCE(num_clocks, 0) FROM communities ORDER BY name")
-    all_communities = [{'id': row[0], 'name': row[1], 'created_at': row[2], 'active': row[3], 'num_clocks': row[4]} for row in c.fetchall()]
+    # Get all communities including inactive ones (with pricing status)
+    c.execute("""
+        SELECT c.id, c.name, c.created_at, c.active, COALESCE(c.num_clocks, 0),
+               CASE WHEN p.id IS NOT NULL THEN 1 ELSE 0 END as has_pricing
+        FROM communities c
+        LEFT JOIN community_nozzle_prices p ON p.community_id = c.id
+        ORDER BY c.name
+    """)
+    all_communities = [{'id': row[0], 'name': row[1], 'created_at': row[2], 'active': row[3], 'num_clocks': row[4], 'has_pricing': bool(row[5])} for row in c.fetchall()]
 
     conn.close()
 
