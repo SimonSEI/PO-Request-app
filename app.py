@@ -30171,6 +30171,23 @@ def v2_rate_card_delete():
     return jsonify({'success': True})
 
 
+@app.route('/installation/api/v2/rate-card/update', methods=['POST'])
+def v2_rate_card_update():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""UPDATE install_rate_card
+                 SET category=?, description=?, unit=?, unit_cost=?, notes=?
+                 WHERE id=?""",
+              (data.get('category', 'materials'), data.get('description', ''),
+               data.get('unit', 'ea'), float(data.get('unit_cost') or 0),
+               data.get('notes', ''), data['id']))
+    conn.commit(); conn.close()
+    return jsonify({'success': True})
+
+
 @app.route('/installation/api/v2/proposals/match-job')
 def v2_proposals_match_job():
     if 'username' not in session:
@@ -30483,6 +30500,7 @@ body{{background:#eef0f3;margin:0}}
   <nav>
     <a href="/installation">&#8592; Jobs</a>
     <a href="/installation/schedule">Schedule</a>
+    <a href="/installation/rate-card">&#128218; Parts Catalog</a>
     <a href="/dashboard">Dashboard</a>
   </nav>
 </div>
@@ -31005,6 +31023,83 @@ async function insertRcItems(){{
   if(d.success){{closeRateCardModal();location.reload();}}
   else alert('Insert failed: '+(d.error||'unknown'));
 }}
+
+/* ── Parts autocomplete ── */
+let _rcAllItems = null;
+async function _ensureRcItems(){{
+  if(_rcAllItems) return;
+  const d = await fetch('/installation/api/v2/rate-card').then(r=>r.json());
+  _rcAllItems = d.items||[];
+}}
+
+function _attachDescAutocomplete(input){{
+  if(input._acAttached) return;
+  input._acAttached = true;
+  input.setAttribute('autocomplete','off');
+  let _drop = null;
+  function _removeDrop(){{ if(_drop){{_drop.remove();_drop=null;}} }}
+  function _showDrop(matches){{
+    _removeDrop();
+    if(!matches.length) return;
+    _drop = document.createElement('div');
+    _drop.style.cssText='position:fixed;background:white;border:1px solid #d1d5db;border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.14);z-index:99999;min-width:320px;max-height:260px;overflow-y:auto';
+    const r=input.getBoundingClientRect();
+    _drop.style.top=(r.bottom+4)+'px';
+    _drop.style.left=r.left+'px';
+    matches.slice(0,10).forEach(item=>{{
+      const row=document.createElement('div');
+      row.style.cssText='padding:8px 12px;cursor:pointer;font-size:13px;display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid #f1f5f9';
+      row.innerHTML='<div><div style="font-weight:600">'+item.description.replace(/</g,'&lt;')+'</div>'
+        +'<div style="font-size:11px;color:#6b7280;margin-top:1px">'+item.category+' &middot; per '+item.unit+'</div></div>'
+        +'<div style="font-weight:700;color:#059669;white-space:nowrap;font-size:14px">$'+item.unit_cost.toFixed(2)+'</div>';
+      row.addEventListener('mouseover',()=>row.style.background='#f0f7ff');
+      row.addEventListener('mouseout',()=>row.style.background='');
+      row.addEventListener('mousedown',e=>{{
+        e.preventDefault();
+        _fillFromRcItem(input,item);
+        _removeDrop();
+      }});
+      _drop.appendChild(row);
+    }});
+    document.body.appendChild(_drop);
+  }}
+  input.addEventListener('input',async()=>{{
+    await _ensureRcItems();
+    const q=input.value.toLowerCase().trim();
+    if(q.length<2){{_removeDrop();return;}}
+    const matches=_rcAllItems.filter(i=>
+      i.description.toLowerCase().includes(q)||i.category.toLowerCase().includes(q)
+    );
+    _showDrop(matches);
+  }});
+  input.addEventListener('blur',()=>setTimeout(_removeDrop,160));
+  input.addEventListener('keydown',e=>{{if(e.key==='Escape')_removeDrop();}});
+}}
+
+function _fillFromRcItem(input,item){{
+  input.value=item.description;
+  const row=input.closest('tr');
+  if(!row)return;
+  const allIn=row.querySelectorAll('input');
+  // order: description, qty(number), unit, unit_cost(number)
+  if(allIn[2]) allIn[2].value=item.unit;
+  if(allIn[3]){{allIn[3].value=item.unit_cost.toFixed(2);}}
+  const itemId=parseInt(row.id.replace('row-',''));
+  if(isNaN(itemId))return;
+  recalcRow(itemId);
+  updateItem(itemId,'description',item.description);
+  updateItem(itemId,'unit',item.unit);
+  updateItem(itemId,'unit_cost',item.unit_cost);
+}}
+
+function _attachAllDescAutocompletes(){{
+  document.querySelectorAll('.fm-table tbody tr').forEach(row=>{{
+    const descIn=row.querySelectorAll('input')[0];
+    if(descIn&&!descIn._acAttached) _attachDescAutocomplete(descIn);
+  }});
+}}
+
+document.addEventListener('DOMContentLoaded',_attachAllDescAutocompletes);
 </script>
 
 <!-- Import Modal -->
@@ -31079,6 +31174,260 @@ async function insertRcItems(){{
     except Exception as e:
         import traceback
         return f"<pre>{traceback.format_exc()}</pre>"
+
+
+@app.route('/installation/rate-card')
+def installation_rate_card_page():
+    if 'username' not in session:
+        return redirect(url_for('login'))
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT id,category,description,unit,unit_cost,notes FROM install_rate_card ORDER BY category,description")
+        items = [{'id':r[0],'category':r[1],'description':r[2],'unit':r[3],'unit_cost':r[4],'notes':r[5] or ''} for r in c.fetchall()]
+        conn.close()
+
+        import json as _json
+        items_json = _json.dumps(items)
+
+        html = _INST_CSS + """<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Parts Catalog</title>
+<style>
+body{background:#f0f2f5}
+.pc-wrap{max-width:1100px;margin:0 auto;padding:20px}
+.pc-add-card{background:white;border-radius:10px;border:1px solid #e5e7eb;padding:20px 24px;margin-bottom:20px;box-shadow:0 1px 6px rgba(0,0,0,.06)}
+.pc-add-card h2{font-size:15px;font-weight:800;color:#1a3c5e;margin-bottom:14px;letter-spacing:.3px}
+.pc-add-grid{display:grid;grid-template-columns:2fr 1fr 0.7fr 1fr 1.5fr auto;gap:10px;align-items:end}
+.pc-add-grid label{font-size:10px;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:3px}
+.pc-add-grid input,.pc-add-grid select{width:100%;border:1px solid #d1d5db;border-radius:6px;padding:7px 10px;font-size:13px;font-family:inherit}
+.pc-add-grid input:focus,.pc-add-grid select:focus{outline:none;border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.12)}
+.pc-toolbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.pc-search{flex:1;min-width:200px;border:1px solid #d1d5db;border-radius:8px;padding:8px 14px;font-size:13px;font-family:inherit}
+.pc-search:focus{outline:none;border-color:#2563eb}
+.pc-cat-btn{padding:5px 14px;border-radius:20px;border:1px solid #d1d5db;background:white;cursor:pointer;font-size:12px;font-weight:600;color:#6b7280;transition:all .15s}
+.pc-cat-btn.active,.pc-cat-btn:hover{background:#1a3c5e;color:white;border-color:#1a3c5e}
+.pc-count{font-size:12px;color:#9ca3af;margin-left:auto}
+.pc-table-wrap{background:white;border-radius:10px;border:1px solid #e5e7eb;overflow:hidden;box-shadow:0 1px 6px rgba(0,0,0,.06)}
+.pc-table{width:100%;border-collapse:collapse;font-size:13px}
+.pc-table th{background:#f1f5f9;padding:9px 14px;text-align:left;font-size:10px;font-weight:800;color:#475569;text-transform:uppercase;letter-spacing:.5px;border-bottom:2px solid #e2e8f0}
+.pc-table th.th-r{text-align:right}
+.pc-table td{padding:8px 14px;border-bottom:1px solid #f1f5f9;vertical-align:middle;color:#374151}
+.pc-table tbody tr:hover td{background:#f8fafc}
+.pc-cat-badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:700;background:#e0f2fe;color:#0369a1}
+.pc-cat-badge.labor{background:#dcfce7;color:#15803d}
+.pc-cat-badge.equipment{background:#fef9c3;color:#854d0e}
+.pc-cat-badge.travel{background:#fce7f3;color:#9d174d}
+.pc-cat-badge.subcontractor{background:#ede9fe;color:#6d28d9}
+.pc-cat-badge.other{background:#f1f5f9;color:#475569}
+.pc-cost{font-weight:700;color:#1a3c5e;text-align:right;font-size:14px}
+.pc-unit{color:#6b7280}
+.pc-edit-row input,.pc-edit-row select{border:1px solid #93c5fd;border-radius:5px;padding:4px 7px;font-size:12px;width:100%}
+.pc-act{display:flex;gap:6px;justify-content:flex-end}
+.btn-edit{padding:4px 10px;border:1px solid #d1d5db;background:white;border-radius:5px;cursor:pointer;font-size:11px;font-weight:600;color:#374151}
+.btn-edit:hover{background:#f1f5f9}
+.btn-save{padding:4px 10px;border:none;background:#2563eb;color:white;border-radius:5px;cursor:pointer;font-size:11px;font-weight:600}
+.btn-save:hover{background:#1d4ed8}
+.btn-del{padding:4px 8px;border:none;background:#fee2e2;color:#dc2626;border-radius:5px;cursor:pointer;font-size:11px;font-weight:600}
+.btn-del:hover{background:#fca5a5}
+.empty-state{text-align:center;padding:40px;color:#9ca3af}
+</style>
+</head>
+<body>
+<div class="top-bar">
+  <h1>&#128218; Parts Catalog</h1>
+  <nav>
+    <a href="/installation">&#8592; Jobs</a>
+    <a href="/installation/schedule">Schedule</a>
+    <a href="/installation/rate-card" class="active">Parts Catalog</a>
+    <a href="/dashboard">Dashboard</a>
+  </nav>
+</div>
+
+<div class="pc-wrap">
+
+  <!-- Add new item -->
+  <div class="pc-add-card">
+    <h2>&#43; Add New Part / Rate</h2>
+    <div class="pc-add-grid">
+      <div><label>Description</label><input id="new-desc" placeholder="e.g. 1&quot; Hunter PGP Rotor" onkeydown="if(event.key==='Enter')addPart()"></div>
+      <div><label>Category</label>
+        <select id="new-cat">
+          <option value="materials">Materials</option>
+          <option value="labor">Labor</option>
+          <option value="equipment">Equipment</option>
+          <option value="travel">Travel</option>
+          <option value="subcontractor">Subcontractor</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <div><label>Unit</label><input id="new-unit" placeholder="ea" value="ea"></div>
+      <div><label>Unit Cost ($)</label><input id="new-cost" type="number" step="0.01" min="0" placeholder="0.00"></div>
+      <div><label>Notes</label><input id="new-notes" placeholder="Optional notes..."></div>
+      <div><label>&nbsp;</label><button onclick="addPart()" style="width:100%;padding:8px 0;background:#1a3c5e;color:white;border:none;border-radius:7px;cursor:pointer;font-weight:700;font-size:13px;white-space:nowrap">&#43; Add Part</button></div>
+    </div>
+  </div>
+
+  <!-- Toolbar -->
+  <div class="pc-toolbar">
+    <input class="pc-search" id="pc-search" placeholder="&#128269; Search parts..." oninput="filterTable()">
+    <button class="pc-cat-btn active" data-cat="" onclick="setCat(this,'')">All</button>
+    <button class="pc-cat-btn" data-cat="materials" onclick="setCat(this,'materials')">Materials</button>
+    <button class="pc-cat-btn" data-cat="labor" onclick="setCat(this,'labor')">Labor</button>
+    <button class="pc-cat-btn" data-cat="equipment" onclick="setCat(this,'equipment')">Equipment</button>
+    <button class="pc-cat-btn" data-cat="travel" onclick="setCat(this,'travel')">Travel</button>
+    <button class="pc-cat-btn" data-cat="subcontractor" onclick="setCat(this,'subcontractor')">Subcontractor</button>
+    <button class="pc-cat-btn" data-cat="other" onclick="setCat(this,'other')">Other</button>
+    <span class="pc-count" id="pc-count"></span>
+  </div>
+
+  <!-- Table -->
+  <div class="pc-table-wrap">
+    <table class="pc-table" id="pc-table">
+      <thead>
+        <tr>
+          <th style="width:35%">Description</th>
+          <th style="width:120px">Category</th>
+          <th style="width:65px">Unit</th>
+          <th class="th-r" style="width:110px">Unit Cost</th>
+          <th>Notes</th>
+          <th style="width:130px"></th>
+        </tr>
+      </thead>
+      <tbody id="pc-tbody"></tbody>
+    </table>
+  </div>
+
+</div>
+
+<script>
+let _parts = """ + items_json + """;
+let _filterCat = '';
+
+function fmtC(n){return '$'+(parseFloat(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+function catBadge(c){
+  return '<span class="pc-cat-badge '+c+'">'+c+'</span>';
+}
+
+function renderTable(){
+  const q = document.getElementById('pc-search').value.toLowerCase().trim();
+  const tbody = document.getElementById('pc-tbody');
+  const visible = _parts.filter(p=>{
+    if(_filterCat && p.category !== _filterCat) return false;
+    if(q && !p.description.toLowerCase().includes(q) && !p.notes.toLowerCase().includes(q) && !p.category.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  document.getElementById('pc-count').textContent = visible.length + ' item' + (visible.length!==1?'s':'');
+  if(!visible.length){
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No parts found. Add one above.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = visible.map(p=>`
+    <tr id="part-row-${p.id}" data-cat="${p.category}">
+      <td>${esc(p.description)}</td>
+      <td>${catBadge(p.category)}</td>
+      <td class="pc-unit">${esc(p.unit)}</td>
+      <td class="pc-cost">${fmtC(p.unit_cost)}</td>
+      <td style="color:#6b7280">${esc(p.notes)}</td>
+      <td><div class="pc-act">
+        <button class="btn-edit" onclick="editRow(${p.id})">&#9998; Edit</button>
+        <button class="btn-del" onclick="deletePart(${p.id})">&#128465;</button>
+      </div></td>
+    </tr>
+    <tr id="edit-row-${p.id}" class="pc-edit-row" style="display:none;background:#f0f7ff">
+      <td><input id="e-desc-${p.id}" value="${esc(p.description)}" style="min-width:200px"></td>
+      <td><select id="e-cat-${p.id}">
+        ${['materials','labor','equipment','travel','subcontractor','other'].map(c=>`<option value="${c}"${p.category===c?' selected':''}>${c}</option>`).join('')}
+      </select></td>
+      <td><input id="e-unit-${p.id}" value="${esc(p.unit)}"></td>
+      <td><input id="e-cost-${p.id}" type="number" step="0.01" value="${p.unit_cost.toFixed(2)}" style="text-align:right"></td>
+      <td><input id="e-notes-${p.id}" value="${esc(p.notes)}" placeholder="Notes..."></td>
+      <td><div class="pc-act">
+        <button class="btn-save" onclick="savePart(${p.id})">&#10003; Save</button>
+        <button class="btn-edit" onclick="cancelEdit(${p.id})">Cancel</button>
+      </div></td>
+    </tr>
+  `).join('');
+}
+
+function filterTable(){ renderTable(); }
+
+function setCat(btn, cat){
+  document.querySelectorAll('.pc-cat-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  _filterCat = cat;
+  renderTable();
+}
+
+async function addPart(){
+  const desc = document.getElementById('new-desc').value.trim();
+  if(!desc){alert('Description is required');document.getElementById('new-desc').focus();return;}
+  const d = await fetch('/installation/api/v2/rate-card',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    description: desc,
+    category: document.getElementById('new-cat').value,
+    unit: document.getElementById('new-unit').value||'ea',
+    unit_cost: parseFloat(document.getElementById('new-cost').value)||0,
+    notes: document.getElementById('new-notes').value||''
+  })}).then(r=>r.json());
+  if(d.success){
+    _parts.push({id:d.id, description:desc, category:document.getElementById('new-cat').value,
+      unit:document.getElementById('new-unit').value||'ea',
+      unit_cost:parseFloat(document.getElementById('new-cost').value)||0,
+      notes:document.getElementById('new-notes').value||''});
+    document.getElementById('new-desc').value='';
+    document.getElementById('new-cost').value='';
+    document.getElementById('new-notes').value='';
+    document.getElementById('new-unit').value='ea';
+    renderTable();
+    document.getElementById('new-desc').focus();
+  }
+}
+
+function editRow(id){
+  document.getElementById('part-row-'+id).style.display='none';
+  document.getElementById('edit-row-'+id).style.display='';
+  document.getElementById('e-desc-'+id).focus();
+}
+
+function cancelEdit(id){
+  document.getElementById('edit-row-'+id).style.display='none';
+  document.getElementById('part-row-'+id).style.display='';
+}
+
+async function savePart(id){
+  const desc=document.getElementById('e-desc-'+id).value.trim();
+  if(!desc){alert('Description required');return;}
+  const updated={id,description:desc,category:document.getElementById('e-cat-'+id).value,
+    unit:document.getElementById('e-unit-'+id).value||'ea',
+    unit_cost:parseFloat(document.getElementById('e-cost-'+id).value)||0,
+    notes:document.getElementById('e-notes-'+id).value||''};
+  const d=await fetch('/installation/api/v2/rate-card/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(updated)}).then(r=>r.json());
+  if(d.success){
+    const idx=_parts.findIndex(p=>p.id===id);
+    if(idx>=0) _parts[idx]=updated;
+    renderTable();
+  }
+}
+
+async function deletePart(id){
+  if(!confirm('Remove this part from the catalog?')) return;
+  const d=await fetch('/installation/api/v2/rate-card/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})}).then(r=>r.json());
+  if(d.success){
+    _parts=_parts.filter(p=>p.id!==id);
+    renderTable();
+  }
+}
+
+renderTable();
+</script>
+</body></html>"""
+        return html
+    except Exception as e:
+        import traceback
+        return f"<pre>Parts Catalog error:\\n{traceback.format_exc()}</pre>", 500
 
 
 # ── Redirect old standalone pages into unified Installation ───────────────
