@@ -1658,6 +1658,16 @@ def init_db():
         created_at TEXT DEFAULT '',
         FOREIGN KEY(proposal_id) REFERENCES install_proposals(id))''')
 
+    c.execute('''CREATE TABLE IF NOT EXISTS install_rate_card (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category TEXT DEFAULT 'materials',
+        description TEXT NOT NULL,
+        unit TEXT DEFAULT 'ea',
+        unit_cost REAL DEFAULT 0,
+        notes TEXT DEFAULT '',
+        created_by TEXT DEFAULT '',
+        created_at TEXT DEFAULT '')''')
+
     c.execute('''CREATE TABLE IF NOT EXISTS installation_rfis
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   job_id INTEGER NOT NULL,
@@ -28211,6 +28221,76 @@ def v2_proposals_regen_po():
 
 
 
+@app.route('/installation/api/v2/proposals/import-items', methods=['POST'])
+def v2_proposals_import_items():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    proposal_id = data.get('proposal_id')
+    items = data.get('items', [])  # list of {category, description, quantity, unit, unit_cost}
+    if not proposal_id or not items:
+        return jsonify({'success': False, 'error': 'Missing data'})
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        for item in items:
+            cat = item.get('category', 'materials')
+            c.execute("SELECT COALESCE(MAX(sort_order),0)+1 FROM install_proposal_items WHERE proposal_id=? AND category=?", (proposal_id, cat))
+            sort = c.fetchone()[0]
+            qty = float(item.get('quantity') or 1)
+            cost = float(item.get('unit_cost') or 0)
+            c.execute("""INSERT INTO install_proposal_items
+                         (proposal_id, sort_order, category, description, quantity, unit, unit_cost, total)
+                         VALUES (?,?,?,?,?,?,?,?)""",
+                      (proposal_id, sort, cat, item.get('description',''), qty,
+                       item.get('unit','ea'), cost, qty * cost))
+        conn.commit(); conn.close()
+        return jsonify({'success': True, 'count': len(items)})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/v2/rate-card', methods=['GET','POST'])
+def v2_rate_card():
+    if 'username' not in session:
+        return jsonify({'error': 'Not logged in'}), 401
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    if request.method == 'POST':
+        data = request.get_json()
+        import datetime as _dt2
+        c.execute("""INSERT INTO install_rate_card (category,description,unit,unit_cost,notes,created_by,created_at)
+                     VALUES (?,?,?,?,?,?,?)""",
+                  (data.get('category','materials'), data.get('description',''), data.get('unit','ea'),
+                   float(data.get('unit_cost') or 0), data.get('notes',''),
+                   session.get('username',''), _dt2.datetime.now().isoformat()))
+        conn.commit()
+        new_id = c.lastrowid
+        conn.close()
+        return jsonify({'success': True, 'id': new_id})
+    else:
+        cat = request.args.get('category', '')
+        if cat:
+            c.execute("SELECT id,category,description,unit,unit_cost,notes FROM install_rate_card WHERE category=? ORDER BY description", (cat,))
+        else:
+            c.execute("SELECT id,category,description,unit,unit_cost,notes FROM install_rate_card ORDER BY category,description")
+        rows = [{'id':r[0],'category':r[1],'description':r[2],'unit':r[3],'unit_cost':r[4],'notes':r[5]} for r in c.fetchall()]
+        conn.close()
+        return jsonify({'items': rows})
+
+
+@app.route('/installation/api/v2/rate-card/delete', methods=['POST'])
+def v2_rate_card_delete():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM install_rate_card WHERE id=?", (data['id'],))
+    conn.commit(); conn.close()
+    return jsonify({'success': True})
+
+
 @app.route('/installation/api/v2/proposals/match-job')
 def v2_proposals_match_job():
     if 'username' not in session:
@@ -28333,6 +28413,7 @@ def installation_standalone_proposal(prop_id):
             ('labor',        'Labor',          '&#128119;'),
             ('equipment',    'Equipment',      '&#128668;'),
             ('subcontractor','Subcontractors', '&#129309;'),
+            ('travel',       'Travel & Hotels','&#9992;'),
             ('other',        'Other',          '&#128230;'),
         ]
 
@@ -28487,6 +28568,32 @@ body{{background:#eef0f3;margin:0}}
   .prop-doc{{margin:0;border:none;box-shadow:none;max-width:none}}
   body{{background:white}}
 }}
+.imp-modal-bg{{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9000;align-items:center;justify-content:center}}
+.imp-modal-bg.open{{display:flex}}
+.imp-modal{{background:white;border-radius:12px;width:min(820px,95vw);max-height:90vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,.3)}}
+.imp-modal-hdr{{background:#1a3c5e;color:white;padding:16px 20px;display:flex;align-items:center;justify-content:space-between;font-weight:700;font-size:15px}}
+.imp-modal-body{{flex:1;overflow-y:auto;padding:16px 20px}}
+.imp-modal-footer{{padding:12px 20px;border-top:1px solid #e5e7eb;display:flex;gap:8px;justify-content:flex-end}}
+.imp-tabs{{display:flex;gap:0;border-bottom:2px solid #e5e7eb;margin-bottom:16px}}
+.imp-tab-btn{{padding:8px 16px;border:none;background:none;cursor:pointer;font-weight:600;font-size:13px;color:#6b7280;border-bottom:3px solid transparent;margin-bottom:-2px}}
+.imp-tab-btn.active{{color:#1a3c5e;border-bottom-color:#1a3c5e}}
+.imp-textarea{{width:100%;height:180px;font-family:monospace;font-size:12px;border:1px solid #d1d5db;border-radius:6px;padding:8px;resize:vertical}}
+.imp-preview-table{{width:100%;border-collapse:collapse;font-size:12px;margin-top:12px}}
+.imp-preview-table th{{background:#f1f5f9;padding:6px 8px;text-align:left;border-bottom:2px solid #e2e8f0;font-size:11px;font-weight:700;text-transform:uppercase}}
+.imp-preview-table td{{padding:5px 8px;border-bottom:1px solid #f1f5f9;vertical-align:middle}}
+.imp-preview-table select,.imp-preview-table input{{font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:2px 4px}}
+.rc-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px;margin-top:12px}}
+.rc-card{{border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;cursor:pointer;transition:all .15s;position:relative}}
+.rc-card:hover{{border-color:#2563eb;background:#f0f7ff}}
+.rc-card.selected{{border-color:#2563eb;background:#dbeafe}}
+.rc-card .rc-desc{{font-weight:600;font-size:13px;margin-bottom:2px}}
+.rc-card .rc-meta{{font-size:11px;color:#6b7280}}
+.rc-card .rc-price{{font-size:14px;font-weight:700;color:#059669;margin-top:4px}}
+.rc-del{{position:absolute;top:6px;right:8px;background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px;opacity:.4}}
+.rc-del:hover{{opacity:1}}
+.rc-add-form{{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-bottom:14px;display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:8px;align-items:end}}
+.rc-add-form label{{font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;display:block;margin-bottom:3px}}
+.rc-add-form input,.rc-add-form select{{width:100%;font-size:13px;border:1px solid #d1d5db;border-radius:6px;padding:5px 8px}}
 </style>
 </head>
 <body>
@@ -28551,6 +28658,8 @@ body{{background:#eef0f3;margin:0}}
       <button class="btn btn-secondary btn-sm" onclick="saveAll()">Save</button>
       <button class="btn btn-secondary btn-sm" onclick="revise()">Revise</button>
       <button class="btn btn-print btn-sm" onclick="window.print()">Print</button>
+      <button class="btn btn-secondary btn-sm" onclick="openImportModal()">&#128229; Import</button>
+      <button class="btn btn-secondary btn-sm" onclick="openRateCardModal()">&#128218; Rate Card</button>
     </div>
   </div>
 
