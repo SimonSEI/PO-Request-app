@@ -1666,6 +1666,16 @@ def init_db():
         created_at TEXT DEFAULT '',
         FOREIGN KEY(proposal_id) REFERENCES install_proposals(id))''')
 
+    c.execute('''CREATE TABLE IF NOT EXISTS install_rate_card (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category TEXT DEFAULT 'materials',
+        description TEXT NOT NULL,
+        unit TEXT DEFAULT 'ea',
+        unit_cost REAL DEFAULT 0,
+        notes TEXT DEFAULT '',
+        created_by TEXT DEFAULT '',
+        created_at TEXT DEFAULT '')''')
+
     c.execute('''CREATE TABLE IF NOT EXISTS installation_rfis
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   job_id INTEGER NOT NULL,
@@ -30091,6 +30101,76 @@ def v2_proposals_regen_po():
 
 
 
+@app.route('/installation/api/v2/proposals/import-items', methods=['POST'])
+def v2_proposals_import_items():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    proposal_id = data.get('proposal_id')
+    items = data.get('items', [])  # list of {category, description, quantity, unit, unit_cost}
+    if not proposal_id or not items:
+        return jsonify({'success': False, 'error': 'Missing data'})
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        for item in items:
+            cat = item.get('category', 'materials')
+            c.execute("SELECT COALESCE(MAX(sort_order),0)+1 FROM install_proposal_items WHERE proposal_id=? AND category=?", (proposal_id, cat))
+            sort = c.fetchone()[0]
+            qty = float(item.get('quantity') or 1)
+            cost = float(item.get('unit_cost') or 0)
+            c.execute("""INSERT INTO install_proposal_items
+                         (proposal_id, sort_order, category, description, quantity, unit, unit_cost, total)
+                         VALUES (?,?,?,?,?,?,?,?)""",
+                      (proposal_id, sort, cat, item.get('description',''), qty,
+                       item.get('unit','ea'), cost, qty * cost))
+        conn.commit(); conn.close()
+        return jsonify({'success': True, 'count': len(items)})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/installation/api/v2/rate-card', methods=['GET','POST'])
+def v2_rate_card():
+    if 'username' not in session:
+        return jsonify({'error': 'Not logged in'}), 401
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    if request.method == 'POST':
+        data = request.get_json()
+        import datetime as _dt2
+        c.execute("""INSERT INTO install_rate_card (category,description,unit,unit_cost,notes,created_by,created_at)
+                     VALUES (?,?,?,?,?,?,?)""",
+                  (data.get('category','materials'), data.get('description',''), data.get('unit','ea'),
+                   float(data.get('unit_cost') or 0), data.get('notes',''),
+                   session.get('username',''), _dt2.datetime.now().isoformat()))
+        conn.commit()
+        new_id = c.lastrowid
+        conn.close()
+        return jsonify({'success': True, 'id': new_id})
+    else:
+        cat = request.args.get('category', '')
+        if cat:
+            c.execute("SELECT id,category,description,unit,unit_cost,notes FROM install_rate_card WHERE category=? ORDER BY description", (cat,))
+        else:
+            c.execute("SELECT id,category,description,unit,unit_cost,notes FROM install_rate_card ORDER BY category,description")
+        rows = [{'id':r[0],'category':r[1],'description':r[2],'unit':r[3],'unit_cost':r[4],'notes':r[5]} for r in c.fetchall()]
+        conn.close()
+        return jsonify({'items': rows})
+
+
+@app.route('/installation/api/v2/rate-card/delete', methods=['POST'])
+def v2_rate_card_delete():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM install_rate_card WHERE id=?", (data['id'],))
+    conn.commit(); conn.close()
+    return jsonify({'success': True})
+
+
 @app.route('/installation/api/v2/proposals/match-job')
 def v2_proposals_match_job():
     if 'username' not in session:
@@ -30213,6 +30293,7 @@ def installation_standalone_proposal(prop_id):
             ('labor',        'Labor',          '&#128119;'),
             ('equipment',    'Equipment',      '&#128668;'),
             ('subcontractor','Subcontractors', '&#129309;'),
+            ('travel',       'Travel & Hotels','&#9992;'),
             ('other',        'Other',          '&#128230;'),
         ]
 
@@ -30367,6 +30448,32 @@ body{{background:#eef0f3;margin:0}}
   .prop-doc{{margin:0;border:none;box-shadow:none;max-width:none}}
   body{{background:white}}
 }}
+.imp-modal-bg{{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9000;align-items:center;justify-content:center}}
+.imp-modal-bg.open{{display:flex}}
+.imp-modal{{background:white;border-radius:12px;width:min(820px,95vw);max-height:90vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,.3)}}
+.imp-modal-hdr{{background:#1a3c5e;color:white;padding:16px 20px;display:flex;align-items:center;justify-content:space-between;font-weight:700;font-size:15px}}
+.imp-modal-body{{flex:1;overflow-y:auto;padding:16px 20px}}
+.imp-modal-footer{{padding:12px 20px;border-top:1px solid #e5e7eb;display:flex;gap:8px;justify-content:flex-end}}
+.imp-tabs{{display:flex;gap:0;border-bottom:2px solid #e5e7eb;margin-bottom:16px}}
+.imp-tab-btn{{padding:8px 16px;border:none;background:none;cursor:pointer;font-weight:600;font-size:13px;color:#6b7280;border-bottom:3px solid transparent;margin-bottom:-2px}}
+.imp-tab-btn.active{{color:#1a3c5e;border-bottom-color:#1a3c5e}}
+.imp-textarea{{width:100%;height:180px;font-family:monospace;font-size:12px;border:1px solid #d1d5db;border-radius:6px;padding:8px;resize:vertical}}
+.imp-preview-table{{width:100%;border-collapse:collapse;font-size:12px;margin-top:12px}}
+.imp-preview-table th{{background:#f1f5f9;padding:6px 8px;text-align:left;border-bottom:2px solid #e2e8f0;font-size:11px;font-weight:700;text-transform:uppercase}}
+.imp-preview-table td{{padding:5px 8px;border-bottom:1px solid #f1f5f9;vertical-align:middle}}
+.imp-preview-table select,.imp-preview-table input{{font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:2px 4px}}
+.rc-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px;margin-top:12px}}
+.rc-card{{border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;cursor:pointer;transition:all .15s;position:relative}}
+.rc-card:hover{{border-color:#2563eb;background:#f0f7ff}}
+.rc-card.selected{{border-color:#2563eb;background:#dbeafe}}
+.rc-card .rc-desc{{font-weight:600;font-size:13px;margin-bottom:2px}}
+.rc-card .rc-meta{{font-size:11px;color:#6b7280}}
+.rc-card .rc-price{{font-size:14px;font-weight:700;color:#059669;margin-top:4px}}
+.rc-del{{position:absolute;top:6px;right:8px;background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px;opacity:.4}}
+.rc-del:hover{{opacity:1}}
+.rc-add-form{{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-bottom:14px;display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:8px;align-items:end}}
+.rc-add-form label{{font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;display:block;margin-bottom:3px}}
+.rc-add-form input,.rc-add-form select{{width:100%;font-size:13px;border:1px solid #d1d5db;border-radius:6px;padding:5px 8px}}
 </style>
 </head>
 <body>
@@ -30431,6 +30538,8 @@ body{{background:#eef0f3;margin:0}}
       <button class="btn btn-secondary btn-sm" onclick="saveAll()">Save</button>
       <button class="btn btn-secondary btn-sm" onclick="revise()">Revise</button>
       <button class="btn btn-print btn-sm" onclick="window.print()">Print</button>
+      <button class="btn btn-secondary btn-sm" onclick="openImportModal()">&#128229; Import</button>
+      <button class="btn btn-secondary btn-sm" onclick="openRateCardModal()">&#128218; Rate Card</button>
     </div>
   </div>
 
@@ -30683,7 +30792,253 @@ async function revise(){{
   const d=await api('/installation/api/v2/proposals/revise',{{id:PROP_ID}});
   if(d.id)location.href='/installation/proposal/'+d.id;
 }}
+
+/* ═══ IMPORT MODAL ═══ */
+function openImportModal(){{document.getElementById('import-modal').classList.add('open');switchImpTab('paste');}}
+function closeImportModal(){{document.getElementById('import-modal').classList.remove('open');document.getElementById('imp-preview').innerHTML='';document.getElementById('imp-paste-area').value='';}}
+function openRateCardModal(){{document.getElementById('rc-modal').classList.add('open');loadRateCard('');}}
+function closeRateCardModal(){{document.getElementById('rc-modal').classList.remove('open');}}
+
+function switchImpTab(t){{
+  document.getElementById('imp-paste-pane').style.display=t==='paste'?'':'none';
+  document.getElementById('imp-file-pane').style.display=t==='file'?'':'none';
+  document.querySelectorAll('.imp-tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===t));
+}}
+
+const CAT_OPTIONS = ['materials','labor','equipment','travel','subcontractor','other'];
+function buildCatSelect(sel){{
+  return '<select class="cat-sel">'+CAT_OPTIONS.map(c=>'<option value="'+c+'"'+(c===sel?' selected':'')+'>'+c+'</option>').join('')+'</select>';
+}}
+
+function parsePaste(){{
+  const raw=document.getElementById('imp-paste-area').value.trim();
+  if(!raw){{alert('Paste some data first');return;}}
+  const lines=raw.split('\n').filter(l=>l.trim());
+  const rows=lines.map(l=>l.split('\t').map(s=>s.trim()));
+  renderPreview(rows);
+}}
+
+function handleFileUpload(evt){{
+  const file=evt.target.files[0];
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=function(e){{
+    const text=e.target.result;
+    const sep=text.includes('\t')?'\t':',';
+    const lines=text.split('\n').filter(l=>l.trim());
+    const rows=lines.map(l=>{{
+      if(sep===','){{
+        const r=[];let cur='',inq=false;
+        for(const ch of l){{if(ch==='"')inq=!inq;else if(ch===','&&!inq){{r.push(cur.trim());cur='';}}else cur+=ch;}}
+        r.push(cur.trim());return r;
+      }}
+      return l.split('\t').map(s=>s.trim());
+    }});
+    renderPreview(rows);
+  }};
+  reader.readAsText(file);
+}}
+
+function guessCategory(desc){{
+  desc=(desc||'').toLowerCase();
+  if(/labor|install|tech|crew|man.?hour|worker/.test(desc))return 'labor';
+  if(/hotel|lodg|motel|per.?diem|travel|airfare|flight|rental.?car|gas|mileage/.test(desc))return 'travel';
+  if(/equip|tool|machine|rental/.test(desc))return 'equipment';
+  if(/sub|contract|outsourc/.test(desc))return 'subcontractor';
+  return 'materials';
+}}
+
+function renderPreview(rows){{
+  if(!rows.length)return;
+  let start=0;
+  const first=rows[0];
+  if(first[0]&&/desc|item|name|material/i.test(first[0]))start=1;
+  let html='<table class="imp-preview-table"><thead><tr><th>#</th><th>Description</th><th>Qty</th><th>Unit</th><th>Unit Cost</th><th>Category</th><th></th></tr></thead><tbody>';
+  for(let i=start;i<rows.length;i++){{
+    const r=rows[i];
+    const desc=r[0]||'';
+    const qty=parseFloat(r[1])||1;
+    const unit=r[2]||'ea';
+    const cost=parseFloat((r[3]||r[2]||'0').replace(/[$,]/g,''))||0;
+    const cat=guessCategory(desc);
+    html+='<tr data-idx="'+i+'">'
+      +'<td style="color:#9ca3af;font-size:11px">'+(i-start+1)+'</td>'
+      +'<td><input value="'+desc.replace(/"/g,'&quot;')+'" style="width:200px;font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:2px 6px"></td>'
+      +'<td><input type="number" value="'+qty+'" style="width:55px;font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:2px 4px;text-align:right"></td>'
+      +'<td><input value="'+unit+'" style="width:45px;font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:2px 4px"></td>'
+      +'<td><input type="number" step="0.01" value="'+cost.toFixed(2)+'" style="width:80px;font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:2px 4px;text-align:right"></td>'
+      +'<td>'+buildCatSelect(cat)+'</td>'
+      +'<td><button onclick="this.closest('tr').remove()" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px">&times;</button></td>'
+      +'</tr>';
+  }}
+  html+='</tbody></table>';
+  document.getElementById('imp-preview').innerHTML=html;
+}}
+
+async function doImport(){{
+  const rows=document.querySelectorAll('#imp-preview tbody tr');
+  if(!rows.length){{alert('Nothing to import — paste data and click Parse first.');return;}}
+  const items=[];
+  rows.forEach(tr=>{{
+    const inputs=tr.querySelectorAll('input');
+    const sel=tr.querySelector('select');
+    const desc=inputs[0].value.trim();
+    if(!desc)return;
+    const qty=parseFloat(inputs[1].value)||1;
+    const unit=inputs[2].value||'ea';
+    const cost=parseFloat(inputs[3].value)||0;
+    const cat=sel?sel.value:'materials';
+    items.push({{category:cat,description:desc,quantity:qty,unit:unit,unit_cost:cost}});
+  }});
+  if(!items.length){{alert('No valid rows to import');return;}}
+  const btn=document.getElementById('do-import-btn');
+  btn.disabled=true;btn.textContent='Importing...';
+  const d=await api('/installation/api/v2/proposals/import-items',{{proposal_id:PROP_ID,items}});
+  if(d.success){{closeImportModal();location.reload();}}
+  else{{alert('Import failed: '+(d.error||'unknown'));btn.disabled=false;btn.textContent='Import '+items.length+' Items';}}
+}}
+
+/* ═══ RATE CARD MODAL ═══ */
+let _rcItems=[];
+let _rcSelected=new Set();
+
+async function loadRateCard(cat){{
+  document.querySelectorAll('.rc-filter-btn').forEach(b=>b.classList.toggle('active',b.dataset.cat===cat));
+  const url='/installation/api/v2/rate-card'+(cat?'?category='+cat:'');
+  const d=await fetch(url).then(r=>r.json());
+  _rcItems=d.items||[];
+  _rcSelected.clear();
+  renderRcGrid();
+}}
+
+function renderRcGrid(){{
+  if(!_rcItems.length){{
+    document.getElementById('rc-grid').innerHTML='<p style="color:#9ca3af;font-size:13px;padding:20px 0">No rate card items yet. Add some above.</p>';
+    return;
+  }}
+  let html='';
+  _rcItems.forEach(item=>{{
+    const sel=_rcSelected.has(item.id);
+    html+='<div class="rc-card'+(sel?' selected':'')+'" onclick="toggleRc('+item.id+')">'
+      +'<button class="rc-del" onclick="event.stopPropagation();deleteRcItem('+item.id+')" title="Remove from rate card">&times;</button>'
+      +'<div class="rc-desc">'+item.description+'</div>'
+      +'<div class="rc-meta">'+item.category+' &middot; per '+item.unit+'</div>'
+      +'<div class="rc-price">$'+item.unit_cost.toFixed(2)+'</div>'
+      +'</div>';
+  }});
+  document.getElementById('rc-grid').innerHTML=html;
+}}
+
+function toggleRc(id){{
+  if(_rcSelected.has(id))_rcSelected.delete(id);else _rcSelected.add(id);
+  renderRcGrid();
+  const sz=_rcSelected.size;
+  document.getElementById('rc-insert-btn').textContent='Insert '+sz+' Item'+(sz!==1?'s':'');
+  document.getElementById('rc-insert-btn').disabled=sz===0;
+}}
+
+async function addRcItem(){{
+  const desc=document.getElementById('rc-new-desc').value.trim();
+  if(!desc){{alert('Description required');return;}}
+  const d=await api('/installation/api/v2/rate-card',{{
+    category:document.getElementById('rc-new-cat').value,
+    description:desc,
+    unit:document.getElementById('rc-new-unit').value||'ea',
+    unit_cost:parseFloat(document.getElementById('rc-new-cost').value)||0,
+  }});
+  if(d.success){{
+    document.getElementById('rc-new-desc').value='';
+    document.getElementById('rc-new-cost').value='';
+    const activeBtn=document.querySelector('.rc-filter-btn.active');
+    loadRateCard(activeBtn?activeBtn.dataset.cat:'');
+  }}
+}}
+
+async function deleteRcItem(id){{
+  if(!confirm('Remove this item from the rate card?'))return;
+  await api('/installation/api/v2/rate-card/delete',{{id}});
+  const activeBtn=document.querySelector('.rc-filter-btn.active');
+  loadRateCard(activeBtn?activeBtn.dataset.cat:'');
+}}
+
+async function insertRcItems(){{
+  if(!_rcSelected.size)return;
+  const items=_rcItems.filter(i=>_rcSelected.has(i.id)).map(i=>({{
+    category:i.category,description:i.description,unit:i.unit,unit_cost:i.unit_cost,quantity:1
+  }}));
+  const d=await api('/installation/api/v2/proposals/import-items',{{proposal_id:PROP_ID,items}});
+  if(d.success){{closeRateCardModal();location.reload();}}
+  else alert('Insert failed: '+(d.error||'unknown'));
+}}
 </script>
+
+<!-- Import Modal -->
+<div id="import-modal" class="imp-modal-bg">
+  <div class="imp-modal">
+    <div class="imp-modal-hdr">
+      <span>&#128229; Import Cost Items</span>
+      <button onclick="closeImportModal()" style="background:none;border:none;color:white;font-size:20px;cursor:pointer">&times;</button>
+    </div>
+    <div class="imp-modal-body">
+      <div class="imp-tabs">
+        <button class="imp-tab-btn active" data-tab="paste" onclick="switchImpTab('paste')">Paste from Excel</button>
+        <button class="imp-tab-btn" data-tab="file" onclick="switchImpTab('file')">Upload CSV</button>
+      </div>
+      <!-- Paste pane -->
+      <div id="imp-paste-pane">
+        <p style="font-size:12px;color:#6b7280;margin-bottom:8px">Copy rows from Excel or Google Sheets and paste below. Columns: <strong>Description &nbsp;|&nbsp; Qty &nbsp;|&nbsp; Unit &nbsp;|&nbsp; Unit Cost</strong></p>
+        <textarea id="imp-paste-area" class="imp-textarea" placeholder="Paste Excel rows here&#10;e.g.:&#10;1&quot; PVC Pipe (10ft)&#9;50&#9;ea&#9;4.75&#10;Labor - Installation&#9;8&#9;hr&#9;85.00&#10;Hotel (per night)&#9;3&#9;night&#9;129.00"></textarea>
+        <button onclick="parsePaste()" style="margin-top:8px;padding:6px 16px;background:#1a3c5e;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px">Parse &#9654;</button>
+      </div>
+      <!-- File pane -->
+      <div id="imp-file-pane" style="display:none">
+        <p style="font-size:12px;color:#6b7280;margin-bottom:8px">Upload a .csv file. Expected columns: <strong>Description, Qty, Unit, Unit Cost</strong> (first row may be a header).</p>
+        <input type="file" accept=".csv,.txt" onchange="handleFileUpload(event)" style="font-size:13px">
+      </div>
+      <!-- Preview table -->
+      <div id="imp-preview" style="margin-top:12px;overflow-x:auto"></div>
+    </div>
+    <div class="imp-modal-footer">
+      <button onclick="closeImportModal()" style="padding:8px 18px;border:1px solid #d1d5db;background:white;border-radius:6px;cursor:pointer;font-size:13px">Cancel</button>
+      <button id="do-import-btn" onclick="doImport()" style="padding:8px 18px;background:#059669;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px">Import Items</button>
+    </div>
+  </div>
+</div>
+
+<!-- Rate Card Modal -->
+<div id="rc-modal" class="imp-modal-bg">
+  <div class="imp-modal">
+    <div class="imp-modal-hdr">
+      <span>&#128218; Rate Card Library</span>
+      <button onclick="closeRateCardModal()" style="background:none;border:none;color:white;font-size:20px;cursor:pointer">&times;</button>
+    </div>
+    <div class="imp-modal-body">
+      <!-- Add new item form -->
+      <div class="rc-add-form">
+        <div><label>Description</label><input id="rc-new-desc" placeholder="e.g. Labor - Irrigation Tech"></div>
+        <div><label>Category</label><select id="rc-new-cat"><option value="materials">Materials</option><option value="labor">Labor</option><option value="equipment">Equipment</option><option value="travel">Travel</option><option value="subcontractor">Subcontractor</option><option value="other">Other</option></select></div>
+        <div><label>Unit</label><input id="rc-new-unit" placeholder="ea" style="width:100%"></div>
+        <div><label>Unit Cost ($)</label><input id="rc-new-cost" type="number" step="0.01" placeholder="0.00"></div>
+        <div><label>&nbsp;</label><button onclick="addRcItem()" style="width:100%;padding:6px 0;background:#1a3c5e;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:700">+ Add</button></div>
+      </div>
+      <!-- Filter bar -->
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
+        <button class="rc-filter-btn active" data-cat="" onclick="loadRateCard('')" style="padding:4px 12px;border-radius:20px;border:1px solid #d1d5db;background:white;cursor:pointer;font-size:12px;font-weight:600">All</button>
+        <button class="rc-filter-btn" data-cat="materials" onclick="loadRateCard('materials')" style="padding:4px 12px;border-radius:20px;border:1px solid #d1d5db;background:white;cursor:pointer;font-size:12px;font-weight:600">Materials</button>
+        <button class="rc-filter-btn" data-cat="labor" onclick="loadRateCard('labor')" style="padding:4px 12px;border-radius:20px;border:1px solid #d1d5db;background:white;cursor:pointer;font-size:12px;font-weight:600">Labor</button>
+        <button class="rc-filter-btn" data-cat="equipment" onclick="loadRateCard('equipment')" style="padding:4px 12px;border-radius:20px;border:1px solid #d1d5db;background:white;cursor:pointer;font-size:12px;font-weight:600">Equipment</button>
+        <button class="rc-filter-btn" data-cat="travel" onclick="loadRateCard('travel')" style="padding:4px 12px;border-radius:20px;border:1px solid #d1d5db;background:white;cursor:pointer;font-size:12px;font-weight:600">Travel</button>
+        <button class="rc-filter-btn" data-cat="subcontractor" onclick="loadRateCard('subcontractor')" style="padding:4px 12px;border-radius:20px;border:1px solid #d1d5db;background:white;cursor:pointer;font-size:12px;font-weight:600">Subcontractor</button>
+        <button class="rc-filter-btn" data-cat="other" onclick="loadRateCard('other')" style="padding:4px 12px;border-radius:20px;border:1px solid #d1d5db;background:white;cursor:pointer;font-size:12px;font-weight:600">Other</button>
+      </div>
+      <div id="rc-grid" class="rc-grid"></div>
+    </div>
+    <div class="imp-modal-footer">
+      <button onclick="closeRateCardModal()" style="padding:8px 18px;border:1px solid #d1d5db;background:white;border-radius:6px;cursor:pointer;font-size:13px">Cancel</button>
+      <button id="rc-insert-btn" onclick="insertRcItems()" disabled style="padding:8px 18px;background:#059669;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px">Insert 0 Items</button>
+    </div>
+  </div>
+</div>
 </body></html>"""
         return html
     except Exception as e:
