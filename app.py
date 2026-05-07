@@ -30649,6 +30649,8 @@ function switchTab(t){{
   if(t==='proposal') syncProposalView();
 }}
 
+const CAT_LABELS = {{materials:'Materials',labor:'Labor',equipment:'Equipment',subcontractor:'Subcontractors',travel:'Travel & Hotels',other:'Other'}};
+
 function syncProposalView(){{
   const client = document.getElementById('pf-client').value;
   const title  = document.getElementById('pf-title').value;
@@ -30675,6 +30677,31 @@ function syncProposalView(){{
   if(vterm) vterm.textContent = terms;
   const vtot = document.getElementById('vw-total');
   if(vtot) vtot.textContent = grand;
+
+  // Rebuild items from live estimate data (no unit costs — client-facing)
+  const vwItems = document.getElementById('vw-items');
+  if(vwItems){{
+    let rows = '';
+    CATS.forEach(cat=>{{
+      const label = CAT_LABELS[cat]||cat;
+      const tbody = document.getElementById('items-'+cat);
+      if(!tbody) return;
+      tbody.querySelectorAll('tr').forEach(row=>{{
+        const descInput = row.querySelector('td:first-child input');
+        const numInputs = row.querySelectorAll('input[type=number]');
+        const desc = descInput ? descInput.value.trim() : '';
+        if(!desc) return;
+        const qty = parseFloat(numInputs[0]?.value)||0;
+        const unit = row.querySelector('td:nth-child(3) input')?.value||'';
+        rows += '<tr>'
+          +'<td style="color:#6b7280;font-size:12px">'+label+'</td>'
+          +'<td style="text-align:center">'+qty+(unit?' '+unit:'')+'</td>'
+          +'<td>'+desc.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</td>'
+          +'</tr>';
+      }});
+    }});
+    vwItems.innerHTML = rows || '<tr><td colspan="3" style="color:#9ca3af;padding:20px;text-align:center">No line items yet</td></tr>';
+  }}
 }}
 
 /* ── Line item math ── */
@@ -30876,7 +30903,7 @@ function renderPreview(rows){{
       +'<td><input value="'+unit+'" style="width:45px;font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:2px 4px"></td>'
       +'<td><input type="number" step="0.01" value="'+cost.toFixed(2)+'" style="width:80px;font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:2px 4px;text-align:right"></td>'
       +'<td>'+buildCatSelect(cat)+'</td>'
-      +'<td><button onclick="this.closest('tr').remove()" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px">&times;</button></td>'
+      +'<td><button onclick="this.closest(\\'tr\\').remove()" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px">&times;</button></td>'
       +'</tr>';
   }}
   html+='</tbody></table>';
