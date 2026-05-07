@@ -27353,7 +27353,8 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
     <a href="/installation/rate-card">📋 Expense Catalog</a>
     <a href="/dashboard">← Dashboard</a>
   </nav>
-  <a href="/installation/proposal/new" class="btn btn-primary" style="margin-left:auto;white-space:nowrap;flex-shrink:0">+ New Proposal</a>
+  <button onclick="openHubLogoModal()" style="color:rgba(255,255,255,.85);background:none;border:1px solid rgba(255,255,255,.25);border-radius:5px;padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit;margin-left:auto" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background='none'">&#128444; Company Logo</button>
+  <a href="/installation/proposal/new" class="btn btn-primary" style="white-space:nowrap;flex-shrink:0">+ New Proposal</a>
 </div>
 
 <!-- Hero CTA -->
@@ -27462,7 +27463,78 @@ function filterCards(){
   const sa=document.getElementById('standalone-section');
   if(sa) sa.style.display=q?'none':'';
 }
+
+/* ── Hub Logo Upload ── */
+function openHubLogoModal(){
+  document.getElementById('hub-logo-modal').style.display='flex';
+  fetch('/installation/api/v2/logo').then(r=>r.json()).then(d=>{
+    const cur=document.getElementById('hub-logo-current');
+    const none=document.getElementById('hub-logo-none');
+    if(d.logo){cur.src=d.logo;cur.style.display='block';if(none)none.style.display='none';}
+    else{cur.style.display='none';if(none)none.style.display='';}
+  });
+}
+function closeHubLogoModal(){
+  document.getElementById('hub-logo-modal').style.display='none';
+  document.getElementById('hub-logo-preview').style.display='none';
+  document.getElementById('hub-logo-preview').src='';
+  document.getElementById('hub-logo-input').value='';
+  delete document.getElementById('hub-logo-save-btn').dataset.src;
+}
+function handleHubLogoFile(evt){
+  const file=evt.target.files[0];
+  if(!file)return;
+  if(!file.type.startsWith('image/')){alert('Please select an image file.');return;}
+  const reader=new FileReader();
+  reader.onload=function(e){
+    document.getElementById('hub-logo-preview').src=e.target.result;
+    document.getElementById('hub-logo-preview').style.display='block';
+    document.getElementById('hub-logo-save-btn').dataset.src=e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+async function saveHubLogo(){
+  const src=document.getElementById('hub-logo-save-btn').dataset.src||'';
+  if(!src){alert('Please choose an image first.');return;}
+  await fetch('/installation/api/v2/logo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({logo:src})});
+  closeHubLogoModal();
+  alert('Logo saved! It will appear on all proposals.');
+}
+async function removeHubLogo(){
+  if(!confirm('Remove the company logo from all proposals?'))return;
+  await fetch('/installation/api/v2/logo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({logo:''})});
+  closeHubLogoModal();
+}
 </script>
+
+<!-- Hub Logo Modal -->
+<div id="hub-logo-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9000;align-items:center;justify-content:center">
+  <div style="background:white;border-radius:12px;width:460px;max-width:95vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+    <div style="background:#1a3c5e;color:white;padding:14px 18px;display:flex;align-items:center;justify-content:space-between">
+      <span style="font-weight:700;font-size:15px">&#128444; Company Logo</span>
+      <button onclick="closeHubLogoModal()" style="background:none;border:none;color:white;font-size:20px;cursor:pointer">&times;</button>
+    </div>
+    <div style="padding:22px">
+      <p style="font-size:13px;color:#6b7280;margin:0 0 14px">Upload your company logo. It will appear on all proposals above the company name, address, and phone number.</p>
+      <div style="margin-bottom:14px">
+        <div style="font-size:11px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Current Logo</div>
+        <img id="hub-logo-current" src="" alt="" style="display:none;max-height:72px;max-width:220px;object-fit:contain;border:1px solid #e5e7eb;border-radius:6px;padding:6px">
+        <div id="hub-logo-none" style="font-size:13px;color:#9ca3af">No logo set</div>
+      </div>
+      <div style="margin-bottom:16px">
+        <div style="font-size:11px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Upload New Logo</div>
+        <input id="hub-logo-input" type="file" accept="image/*" onchange="handleHubLogoFile(event)" style="font-size:13px">
+        <img id="hub-logo-preview" src="" alt="Preview" style="display:none;max-height:80px;max-width:240px;object-fit:contain;margin-top:10px;border:1px solid #e5e7eb;border-radius:6px;padding:6px">
+      </div>
+    </div>
+    <div style="padding:14px 22px;background:#f9fafb;border-top:1px solid #e5e7eb;display:flex;gap:8px;justify-content:flex-end">
+      <button onclick="removeHubLogo()" style="padding:8px 16px;border:1px solid #fca5a5;background:#fee2e2;color:#dc2626;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">Remove Logo</button>
+      <button onclick="closeHubLogoModal()" style="padding:8px 16px;border:1px solid #d1d5db;background:white;border-radius:6px;cursor:pointer;font-size:13px">Cancel</button>
+      <button id="hub-logo-save-btn" onclick="saveHubLogo()" style="padding:8px 18px;border:none;background:#1a3c5e;color:white;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px">Save Logo</button>
+    </div>
+  </div>
+</div>
+
 </body></html>
 '''
 
@@ -30597,7 +30669,6 @@ body{{background:#eef0f3;margin:0}}
       <button class="btn btn-secondary btn-sm" onclick="saveAll()">Save</button>
       <button class="btn btn-secondary btn-sm" onclick="revise()">Revise</button>
       <button class="btn btn-print btn-sm" onclick="window.print()">Print</button>
-      <button class="btn btn-secondary btn-sm" onclick="openImportModal()">&#128229; Import</button>
       <button class="btn btn-secondary btn-sm" onclick="openRateCardModal()">&#128218; Expense Catalog</button>
       <button class="btn btn-secondary btn-sm" onclick="openLogoModal()">&#128444; Logo</button>
       <button class="btn btn-secondary btn-sm" onclick="openLaborModal()" style="background:#15803d;color:white;border-color:#15803d">&#9889; Calc Labor</button>
@@ -30639,8 +30710,8 @@ body{{background:#eef0f3;margin:0}}
 
   <div class="prop-header">
     <div class="prop-co-info">
-      <div id="vw-logo-wrap">
-        <img id="vw-logo" src="" alt="" style="display:none;max-height:72px;max-width:200px;object-fit:contain;margin-bottom:6px">
+      <div id="vw-logo-wrap" style="display:flex;flex-direction:column;gap:5px">
+        <img id="vw-logo" src="" alt="" style="display:none;max-height:64px;max-width:180px;object-fit:contain">
         <div id="vw-co-text">
           <div class="prop-co-name">STAHLMAN-ENGLAND IRRIGATION</div>
           <div class="prop-co-addr">2063 Trade Center Way &middot; Naples, FL 34109</div>
@@ -30894,8 +30965,6 @@ async function revise(){{
 }}
 
 /* ═══ IMPORT MODAL ═══ */
-function openImportModal(){{document.getElementById('import-modal').classList.add('open');switchImpTab('paste');}}
-function closeImportModal(){{document.getElementById('import-modal').classList.remove('open');document.getElementById('imp-preview').innerHTML='';document.getElementById('imp-paste-area').value='';}}
 function openRateCardModal(){{document.getElementById('rc-modal').classList.add('open');loadRateCard('');}}
 function closeRateCardModal(){{document.getElementById('rc-modal').classList.remove('open');}}
 
@@ -31025,105 +31094,6 @@ async function laborAddLineItem(){{
 }}
 
 function _escH(s){{return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}}
-
-function switchImpTab(t){{
-  document.getElementById('imp-paste-pane').style.display=t==='paste'?'':'none';
-  document.getElementById('imp-file-pane').style.display=t==='file'?'':'none';
-  document.querySelectorAll('.imp-tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===t));
-}}
-
-const CAT_OPTIONS = ['materials','labor','equipment','travel','subcontractor','other'];
-function buildCatSelect(sel){{
-  return '<select class="cat-sel">'+CAT_OPTIONS.map(c=>'<option value="'+c+'"'+(c===sel?' selected':'')+'>'+c+'</option>').join('')+'</select>';
-}}
-
-function parsePaste(){{
-  const raw=document.getElementById('imp-paste-area').value.trim();
-  if(!raw){{alert('Paste some data first');return;}}
-  const lines=raw.split('\\n').filter(l=>l.trim());
-  const rows=lines.map(l=>l.split('\\t').map(s=>s.trim()));
-  renderPreview(rows);
-}}
-
-function handleFileUpload(evt){{
-  const file=evt.target.files[0];
-  if(!file)return;
-  const reader=new FileReader();
-  reader.onload=function(e){{
-    const text=e.target.result;
-    const sep=text.includes('\\t')?'\\t':',';
-    const lines=text.split('\\n').filter(l=>l.trim());
-    const rows=lines.map(l=>{{
-      if(sep===','){{
-        const r=[];let cur='',inq=false;
-        for(const ch of l){{if(ch==='"')inq=!inq;else if(ch===','&&!inq){{r.push(cur.trim());cur='';}}else cur+=ch;}}
-        r.push(cur.trim());return r;
-      }}
-      return l.split('\\t').map(s=>s.trim());
-    }});
-    renderPreview(rows);
-  }};
-  reader.readAsText(file);
-}}
-
-function guessCategory(desc){{
-  desc=(desc||'').toLowerCase();
-  if(/labor|install|tech|crew|man.?hour|worker/.test(desc))return 'labor';
-  if(/hotel|lodg|motel|per.?diem|travel|airfare|flight|rental.?car|gas|mileage/.test(desc))return 'travel';
-  if(/equip|tool|machine|rental/.test(desc))return 'equipment';
-  if(/sub|contract|outsourc/.test(desc))return 'subcontractor';
-  return 'materials';
-}}
-
-function renderPreview(rows){{
-  if(!rows.length)return;
-  let start=0;
-  const first=rows[0];
-  if(first[0]&&/desc|item|name|material/i.test(first[0]))start=1;
-  let html='<table class="imp-preview-table"><thead><tr><th>#</th><th>Description</th><th>Qty</th><th>Unit</th><th>Unit Cost</th><th>Category</th><th></th></tr></thead><tbody>';
-  for(let i=start;i<rows.length;i++){{
-    const r=rows[i];
-    const desc=r[0]||'';
-    const qty=parseFloat(r[1])||1;
-    const unit=r[2]||'ea';
-    const cost=parseFloat((r[3]||r[2]||'0').replace(/[$,]/g,''))||0;
-    const cat=guessCategory(desc);
-    html+='<tr data-idx="'+i+'">'
-      +'<td style="color:#9ca3af;font-size:11px">'+(i-start+1)+'</td>'
-      +'<td><input value="'+desc.replace(/"/g,'&quot;')+'" style="width:200px;font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:2px 6px"></td>'
-      +'<td><input type="number" value="'+qty+'" style="width:55px;font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:2px 4px;text-align:right"></td>'
-      +'<td><input value="'+unit+'" style="width:45px;font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:2px 4px"></td>'
-      +'<td><input type="number" step="0.01" value="'+cost.toFixed(2)+'" style="width:80px;font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:2px 4px;text-align:right"></td>'
-      +'<td>'+buildCatSelect(cat)+'</td>'
-      +'<td><button onclick="this.closest(\\'tr\\').remove()" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px">&times;</button></td>'
-      +'</tr>';
-  }}
-  html+='</tbody></table>';
-  document.getElementById('imp-preview').innerHTML=html;
-}}
-
-async function doImport(){{
-  const rows=document.querySelectorAll('#imp-preview tbody tr');
-  if(!rows.length){{alert('Nothing to import — paste data and click Parse first.');return;}}
-  const items=[];
-  rows.forEach(tr=>{{
-    const inputs=tr.querySelectorAll('input');
-    const sel=tr.querySelector('select');
-    const desc=inputs[0].value.trim();
-    if(!desc)return;
-    const qty=parseFloat(inputs[1].value)||1;
-    const unit=inputs[2].value||'ea';
-    const cost=parseFloat(inputs[3].value)||0;
-    const cat=sel?sel.value:'materials';
-    items.push({{category:cat,description:desc,quantity:qty,unit:unit,unit_cost:cost}});
-  }});
-  if(!items.length){{alert('No valid rows to import');return;}}
-  const btn=document.getElementById('do-import-btn');
-  btn.disabled=true;btn.textContent='Importing...';
-  const d=await api('/installation/api/v2/proposals/import-items',{{proposal_id:PROP_ID,items}});
-  if(d.success){{closeImportModal();location.reload();}}
-  else{{alert('Import failed: '+(d.error||'unknown'));btn.disabled=false;btn.textContent='Import '+items.length+' Items';}}
-}}
 
 /* ═══ RATE CARD MODAL ═══ */
 let _rcItems=[];
@@ -31379,14 +31349,11 @@ async function _loadLogo(){{
 }}
 function _applyLogo(src){{
   const img=document.getElementById('vw-logo');
-  const txt=document.getElementById('vw-co-text');
   if(!img)return;
   if(src){{
     img.src=src; img.style.display='block';
-    if(txt) txt.style.display='none';
   }}else{{
     img.style.display='none';
-    if(txt) txt.style.display='';
   }}
 }}
 function openLogoModal(){{
@@ -31436,39 +31403,6 @@ async function removeLogo(){{
       <button onclick="removeLogo()" style="padding:8px 14px;border:1px solid #fca5a5;background:#fee2e2;color:#dc2626;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">Remove Logo</button>
       <button onclick="closeLogoModal()" style="padding:8px 18px;border:1px solid #d1d5db;background:white;border-radius:6px;cursor:pointer;font-size:13px">Cancel</button>
       <button id="logo-save-btn" onclick="saveLogo()" data-src="" style="padding:8px 18px;background:#1a3c5e;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px">Save Logo</button>
-    </div>
-  </div>
-</div>
-
-<!-- Import Modal -->
-<div id="import-modal" class="imp-modal-bg">
-  <div class="imp-modal">
-    <div class="imp-modal-hdr">
-      <span>&#128229; Import Cost Items</span>
-      <button onclick="closeImportModal()" style="background:none;border:none;color:white;font-size:20px;cursor:pointer">&times;</button>
-    </div>
-    <div class="imp-modal-body">
-      <div class="imp-tabs">
-        <button class="imp-tab-btn active" data-tab="paste" onclick="switchImpTab('paste')">Paste from Excel</button>
-        <button class="imp-tab-btn" data-tab="file" onclick="switchImpTab('file')">Upload CSV</button>
-      </div>
-      <!-- Paste pane -->
-      <div id="imp-paste-pane">
-        <p style="font-size:12px;color:#6b7280;margin-bottom:8px">Copy rows from Excel or Google Sheets and paste below. Columns: <strong>Description &nbsp;|&nbsp; Qty &nbsp;|&nbsp; Unit &nbsp;|&nbsp; Unit Cost</strong></p>
-        <textarea id="imp-paste-area" class="imp-textarea" placeholder="Paste Excel rows here&#10;e.g.:&#10;1&quot; PVC Pipe (10ft)&#9;50&#9;ea&#9;4.75&#10;Labor - Installation&#9;8&#9;hr&#9;85.00&#10;Hotel (per night)&#9;3&#9;night&#9;129.00"></textarea>
-        <button onclick="parsePaste()" style="margin-top:8px;padding:6px 16px;background:#1a3c5e;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px">Parse &#9654;</button>
-      </div>
-      <!-- File pane -->
-      <div id="imp-file-pane" style="display:none">
-        <p style="font-size:12px;color:#6b7280;margin-bottom:8px">Upload a .csv file. Expected columns: <strong>Description, Qty, Unit, Unit Cost</strong> (first row may be a header).</p>
-        <input type="file" accept=".csv,.txt" onchange="handleFileUpload(event)" style="font-size:13px">
-      </div>
-      <!-- Preview table -->
-      <div id="imp-preview" style="margin-top:12px;overflow-x:auto"></div>
-    </div>
-    <div class="imp-modal-footer">
-      <button onclick="closeImportModal()" style="padding:8px 18px;border:1px solid #d1d5db;background:white;border-radius:6px;cursor:pointer;font-size:13px">Cancel</button>
-      <button id="do-import-btn" onclick="doImport()" style="padding:8px 18px;background:#059669;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px">Import Items</button>
     </div>
   </div>
 </div>
@@ -31615,6 +31549,7 @@ body{background:#f0f2f5}
     <a href="/installation/rate-card" class="active">Expense Catalog</a>
     <a href="/dashboard">Dashboard</a>
   </nav>
+  <button onclick="openCatImportModal()" style="color:rgba(255,255,255,.85);background:none;border:1px solid rgba(255,255,255,.25);border-radius:5px;padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit;margin-left:auto" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background='none'">&#128229; Import</button>
 </div>
 
 <div class="pc-wrap">
@@ -31802,7 +31737,156 @@ async function deletePart(id){
 }
 
 renderTable();
+
+/* ═══ CATALOG IMPORT ═══ */
+function openCatImportModal(){
+  document.getElementById('cat-import-modal').style.display='flex';
+  document.getElementById('cat-imp-paste-pane').style.display='';
+  document.getElementById('cat-imp-file-pane').style.display='none';
+  document.getElementById('cat-imp-preview').innerHTML='';
+  document.getElementById('cat-imp-paste-area').value='';
+}
+function closeCatImportModal(){
+  document.getElementById('cat-import-modal').style.display='none';
+}
+function switchCatImpTab(t){
+  document.getElementById('cat-imp-paste-pane').style.display=t==='paste'?'':'none';
+  document.getElementById('cat-imp-file-pane').style.display=t==='file'?'':'none';
+  document.querySelectorAll('.cat-imp-tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===t));
+}
+const CAT_OPTS=['materials','labor','equipment','travel','subcontractor','other'];
+function _catSel(chosen){
+  return '<select style="font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:2px 4px">'+
+    CAT_OPTS.map(c=>'<option value="'+c+'"'+(c===chosen?' selected':'')+'>'+c+'</option>').join('')+'</select>';
+}
+function _guesscat(desc){
+  desc=(desc||'').toLowerCase();
+  if(/labor|install|tech|crew|man.?hour|worker/.test(desc)) return 'labor';
+  if(/hotel|lodg|motel|per.?diem|travel|airfare|flight|rental.?car|gas|mileage/.test(desc)) return 'travel';
+  if(/equip|tool|machine|rental/.test(desc)) return 'equipment';
+  if(/sub|contract|outsourc/.test(desc)) return 'subcontractor';
+  return 'materials';
+}
+function parseCatPaste(){
+  const raw=document.getElementById('cat-imp-paste-area').value.trim();
+  if(!raw){alert('Paste some data first');return;}
+  const lines=raw.split('\\n').filter(l=>l.trim());
+  const rows=lines.map(l=>l.split('\\t').map(s=>s.trim()));
+  renderCatPreview(rows);
+}
+function handleCatFile(evt){
+  const file=evt.target.files[0];
+  if(!file) return;
+  const reader=new FileReader();
+  reader.onload=function(e){
+    const text=e.target.result;
+    const sep=text.includes('\\t')?'\\t':',';
+    const lines=text.split('\\n').filter(l=>l.trim());
+    const rows=lines.map(l=>{
+      if(sep===','){
+        const r=[];let cur='',inq=false;
+        for(const ch of l){if(ch==='"')inq=!inq;else if(ch===','&&!inq){r.push(cur.trim());cur='';}else cur+=ch;}
+        r.push(cur.trim());return r;
+      }
+      return l.split('\\t').map(s=>s.trim());
+    });
+    renderCatPreview(rows);
+  };
+  reader.readAsText(file);
+}
+function renderCatPreview(rows){
+  if(!rows.length) return;
+  let start=0;
+  if(rows[0][0]&&/desc|item|name|material|part/i.test(rows[0][0])) start=1;
+  let html='<table style="width:100%;border-collapse:collapse;font-size:12px">'
+    +'<thead><tr style="background:#f1f5f9">'
+    +'<th style="padding:4px 6px;text-align:left">#</th>'
+    +'<th style="padding:4px 6px;text-align:left">Description</th>'
+    +'<th style="padding:4px 6px">Category</th>'
+    +'<th style="padding:4px 6px">Unit</th>'
+    +'<th style="padding:4px 6px;text-align:right">Unit Cost</th>'
+    +'<th style="padding:4px 6px;text-align:right">Install Rate</th>'
+    +'<th style="padding:4px 6px"></th>'
+    +'</tr></thead><tbody>';
+  for(let i=start;i<rows.length;i++){
+    const r=rows[i];
+    const desc=r[0]||'';
+    const unit=r[1]||'ea';
+    const cost=parseFloat((r[2]||'0').replace(/[$,]/g,''))||0;
+    const irate=parseFloat(r[3]||'0')||0;
+    const cat=_guesscat(desc);
+    html+='<tr>'
+      +'<td style="padding:4px 6px;color:#9ca3af">'+(i-start+1)+'</td>'
+      +'<td style="padding:4px 6px"><input value="'+esc(desc)+'" style="width:180px;font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:2px 5px"></td>'
+      +'<td style="padding:4px 6px">'+_catSel(cat)+'</td>'
+      +'<td style="padding:4px 6px"><input value="'+esc(unit)+'" style="width:45px;font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:2px 4px"></td>'
+      +'<td style="padding:4px 6px"><input type="number" step="0.01" value="'+cost.toFixed(2)+'" style="width:75px;font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:2px 4px;text-align:right"></td>'
+      +'<td style="padding:4px 6px"><input type="number" step="0.1" value="'+irate.toFixed(1)+'" style="width:65px;font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:2px 4px;text-align:right" placeholder="0"></td>'
+      +'<td style="padding:4px 6px"><button onclick="this.closest(\'tr\').remove()" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px">&times;</button></td>'
+      +'</tr>';
+  }
+  html+='</tbody></table>';
+  document.getElementById('cat-imp-preview').innerHTML=html;
+}
+async function doCatImport(){
+  const rows=document.querySelectorAll('#cat-imp-preview tbody tr');
+  if(!rows.length){alert('Nothing to import — paste data and click Parse first.');return;}
+  const btn=document.getElementById('cat-do-import-btn');
+  btn.disabled=true; btn.textContent='Importing...';
+  let added=0;
+  for(const tr of rows){
+    const inputs=tr.querySelectorAll('input');
+    const sel=tr.querySelector('select');
+    const desc=inputs[0].value.trim();
+    if(!desc) continue;
+    const unit=inputs[1].value||'ea';
+    const cost=parseFloat(inputs[2].value)||0;
+    const irate=parseFloat(inputs[3].value)||0;
+    const cat=sel?sel.value:'materials';
+    const d=await fetch('/installation/api/v2/rate-card',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({description:desc,category:cat,unit,unit_cost:cost,install_rate:irate,notes:''})}).then(r=>r.json());
+    if(d.success){
+      _parts.push({id:d.id,description:desc,category:cat,unit,unit_cost:cost,install_rate:irate,notes:''});
+      added++;
+    }
+  }
+  closeCatImportModal();
+  renderTable();
+  if(added) alert(added+' item'+(added===1?'':'s')+' added to the Expense Catalog.');
+  btn.disabled=false; btn.textContent='Import to Catalog';
+}
 </script>
+
+<!-- Catalog Import Modal -->
+<div id="cat-import-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9000;align-items:center;justify-content:center">
+  <div style="background:white;border-radius:12px;width:820px;max-width:97vw;max-height:90vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+    <div style="background:#1a3c5e;color:white;padding:14px 18px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+      <span style="font-weight:700;font-size:15px">&#128229; Import to Expense Catalog</span>
+      <button onclick="closeCatImportModal()" style="background:none;border:none;color:white;font-size:20px;cursor:pointer">&times;</button>
+    </div>
+    <div style="padding:18px;overflow-y:auto;flex:1">
+      <div style="display:flex;gap:4px;margin-bottom:14px">
+        <button class="cat-imp-tab active" data-tab="paste" onclick="switchCatImpTab('paste')" style="padding:6px 14px;border-radius:6px 6px 0 0;border:1px solid #d1d5db;border-bottom:none;background:white;cursor:pointer;font-size:13px;font-weight:600">Paste from Excel</button>
+        <button class="cat-imp-tab" data-tab="file" onclick="switchCatImpTab('file')" style="padding:6px 14px;border-radius:6px 6px 0 0;border:1px solid #d1d5db;border-bottom:none;background:#f9fafb;cursor:pointer;font-size:13px;font-weight:600">Upload CSV</button>
+      </div>
+      <div id="cat-imp-paste-pane" style="border:1px solid #d1d5db;border-radius:0 6px 6px 6px;padding:14px">
+        <p style="font-size:12px;color:#6b7280;margin:0 0 8px">Copy rows from Excel or Google Sheets. Columns: <strong>Description &nbsp;|&nbsp; Unit &nbsp;|&nbsp; Unit Cost &nbsp;|&nbsp; Install Rate (optional)</strong></p>
+        <textarea id="cat-imp-paste-area" style="width:100%;height:120px;border:1px solid #d1d5db;border-radius:6px;padding:8px;font-size:13px;font-family:inherit;resize:vertical;box-sizing:border-box" placeholder="1&quot; Hunter PGP Rotor&#9;ea&#9;14.50&#9;30&#10;1&quot; PVC Pipe (10ft)&#9;ea&#9;4.75&#10;Labor - Installation&#9;hr&#9;85.00&#9;8"></textarea>
+        <button onclick="parseCatPaste()" style="margin-top:8px;padding:6px 16px;background:#1a3c5e;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px">Parse &#9654;</button>
+      </div>
+      <div id="cat-imp-file-pane" style="display:none;border:1px solid #d1d5db;border-radius:0 6px 6px 6px;padding:14px">
+        <p style="font-size:12px;color:#6b7280;margin:0 0 8px">Upload a .csv file. Columns: <strong>Description, Unit, Unit Cost, Install Rate</strong></p>
+        <input type="file" accept=".csv,.txt" onchange="handleCatFile(event)" style="font-size:13px">
+      </div>
+      <div id="cat-imp-preview" style="margin-top:14px;overflow-x:auto"></div>
+    </div>
+    <div style="padding:12px 18px;background:#f9fafb;border-top:1px solid #e5e7eb;display:flex;gap:8px;justify-content:flex-end;flex-shrink:0">
+      <button onclick="closeCatImportModal()" style="padding:8px 16px;border:1px solid #d1d5db;background:white;border-radius:6px;cursor:pointer;font-size:13px">Cancel</button>
+      <button id="cat-do-import-btn" onclick="doCatImport()" style="padding:8px 18px;border:none;background:#059669;color:white;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px">Import to Catalog</button>
+    </div>
+  </div>
+</div>
+
 </body></html>"""
         return html
     except Exception as e:
