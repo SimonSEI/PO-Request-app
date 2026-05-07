@@ -27343,7 +27343,7 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
     <a href="/installation" class="active">Jobs</a>
     <a href="/installation/schedule">📅 Schedule</a>
     <a href="/installation/crews">👷 Crews</a>
-    <a href="/installation/rate-card">📋 Parts Catalog</a>
+    <a href="/installation/rate-card">📋 Expense Catalog</a>
     <a href="/dashboard">← Dashboard</a>
   </nav>
   <a href="/installation/proposal/new" class="btn btn-primary" style="margin-left:auto;white-space:nowrap;flex-shrink:0">+ New Proposal</a>
@@ -27473,7 +27473,7 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
     <a href="/installation">← Jobs</a>
     <a href="/installation/schedule">📅 Schedule</a>
     <a href="/installation/crews">👷 Manage Crews</a>
-    <a href="/installation/rate-card">📋 Parts Catalog</a>
+    <a href="/installation/rate-card">📋 Expense Catalog</a>
     <a href="/dashboard">Dashboard</a>
   </nav>
 </div>
@@ -28346,7 +28346,7 @@ select:focus,input:focus{outline:none;border-color:#1a3c5e}
   <nav>
     <a href="/installation">← Jobs</a>
     <a href="/installation/crews">👷 Manage Crews</a>
-    <a href="/installation/rate-card">📋 Parts Catalog</a>
+    <a href="/installation/rate-card">📋 Expense Catalog</a>
     <a href="/dashboard">Dashboard</a>
   </nav>
 </div>
@@ -28534,7 +28534,7 @@ INSTALLATION_CREWS_TEMPLATE = _INST_CSS + """<!DOCTYPE html>
   <nav>
     <a href="/installation/schedule">← Schedule</a>
     <a href="/installation">Jobs</a>
-    <a href="/installation/rate-card">📋 Parts Catalog</a>
+    <a href="/installation/rate-card">📋 Expense Catalog</a>
     <a href="/dashboard">Dashboard</a>
   </nav>
 </div>
@@ -30504,7 +30504,7 @@ body{{background:#eef0f3;margin:0}}
   <nav>
     <a href="/installation">&#8592; Jobs</a>
     <a href="/installation/schedule">Schedule</a>
-    <a href="/installation/rate-card">&#128218; Parts Catalog</a>
+    <a href="/installation/rate-card">&#128218; Expense Catalog</a>
     <a href="/dashboard">Dashboard</a>
   </nav>
 </div>
@@ -30562,7 +30562,7 @@ body{{background:#eef0f3;margin:0}}
       <button class="btn btn-secondary btn-sm" onclick="revise()">Revise</button>
       <button class="btn btn-print btn-sm" onclick="window.print()">Print</button>
       <button class="btn btn-secondary btn-sm" onclick="openImportModal()">&#128229; Import</button>
-      <button class="btn btn-secondary btn-sm" onclick="openRateCardModal()">&#128218; Rate Card</button>
+      <button class="btn btn-secondary btn-sm" onclick="openRateCardModal()">&#128218; Expense Catalog</button>
     </div>
   </div>
 
@@ -31028,7 +31028,7 @@ async function insertRcItems(){{
   else alert('Insert failed: '+(d.error||'unknown'));
 }}
 
-/* ── Parts autocomplete ── */
+/* ── Expense Catalog fuzzy autocomplete ── */
 let _rcAllItems = null;
 async function _ensureRcItems(){{
   if(_rcAllItems) return;
@@ -31036,28 +31036,95 @@ async function _ensureRcItems(){{
   _rcAllItems = d.items||[];
 }}
 
+/* Fuzzy score: returns 0 if no match, higher = better.
+   Awards bonus for consecutive matches and prefix matches. */
+function _fuzzyScore(str, query){{
+  str = str.toLowerCase();
+  query = query.toLowerCase();
+  if(!query) return 0;
+  // Exact substring = highest priority
+  if(str.includes(query)) return 1000 + (str.startsWith(query) ? 500 : 0) + (100 - str.length);
+  // Character-sequence fuzzy match
+  let si=0, qi=0, score=0, cons=0;
+  while(si<str.length && qi<query.length){{
+    if(str[si]===query[qi]){{ score+=10+(cons*5); cons++; qi++; }}
+    else cons=0;
+    si++;
+  }}
+  return qi===query.length ? score : 0;
+}}
+
+function _fuzzyRank(items, query){{
+  return items
+    .map(i=>{{
+      const s=Math.max(_fuzzyScore(i.description,query),_fuzzyScore(i.category,query)*0.4);
+      return {{item:i,score:s}};
+    }})
+    .filter(x=>x.score>0)
+    .sort((a,b)=>b.score-a.score)
+    .map(x=>x.item);
+}}
+
+function _highlightMatch(text, query){{
+  if(!query) return text.replace(/</g,'&lt;');
+  const lo=text.toLowerCase(), q=query.toLowerCase();
+  const idx=lo.indexOf(q);
+  if(idx>=0){{
+    return text.slice(0,idx).replace(/</g,'&lt;')
+      +'<mark style="background:#fef08a;border-radius:2px;padding:0 1px">'+text.slice(idx,idx+q.length).replace(/</g,'&lt;')+'</mark>'
+      +text.slice(idx+q.length).replace(/</g,'&lt;');
+  }}
+  // highlight individual fuzzy chars
+  let out='',ti=0,qi=0,qlo=q;
+  while(ti<text.length){{
+    if(qi<qlo.length && text[ti].toLowerCase()===qlo[qi]){{
+      out+='<mark style="background:#fef08a;border-radius:2px;padding:0 1px">'+text[ti].replace(/</g,'&lt;')+'</mark>';
+      qi++;
+    }}else{{
+      out+=text[ti].replace(/</g,'&lt;');
+    }}
+    ti++;
+  }}
+  return out;
+}}
+
 function _attachDescAutocomplete(input){{
   if(input._acAttached) return;
   input._acAttached = true;
   input.setAttribute('autocomplete','off');
-  let _drop = null;
-  function _removeDrop(){{ if(_drop){{_drop.remove();_drop=null;}} }}
-  function _showDrop(matches){{
+  let _drop=null, _activeIdx=-1, _matches=[];
+
+  function _removeDrop(){{ if(_drop){{_drop.remove();_drop=null;}} _activeIdx=-1; _matches=[]; }}
+
+  function _setActive(idx){{
+    _activeIdx=idx;
+    if(!_drop) return;
+    _drop.querySelectorAll('.ac-row').forEach((r,i)=>{{
+      r.style.background = i===idx ? '#e0f2fe' : '';
+    }});
+  }}
+
+  function _showDrop(matches, query){{
     _removeDrop();
     if(!matches.length) return;
-    _drop = document.createElement('div');
-    _drop.style.cssText='position:fixed;background:white;border:1px solid #d1d5db;border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.14);z-index:99999;min-width:320px;max-height:260px;overflow-y:auto';
+    _matches=matches;
+    _drop=document.createElement('div');
+    _drop.style.cssText='position:fixed;background:white;border:1px solid #bfdbfe;border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.16);z-index:99999;min-width:340px;max-height:280px;overflow-y:auto';
     const r=input.getBoundingClientRect();
-    _drop.style.top=(r.bottom+4)+'px';
+    _drop.style.top=(r.bottom+3)+'px';
     _drop.style.left=r.left+'px';
-    matches.slice(0,10).forEach(item=>{{
+    const hint=document.createElement('div');
+    hint.style.cssText='padding:5px 12px;font-size:10px;color:#94a3b8;border-bottom:1px solid #f1f5f9;letter-spacing:.3px';
+    hint.textContent='TAB or → to accept · ↑↓ to navigate · ESC to close';
+    _drop.appendChild(hint);
+    matches.slice(0,12).forEach((item,i)=>{{
       const row=document.createElement('div');
-      row.style.cssText='padding:8px 12px;cursor:pointer;font-size:13px;display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid #f1f5f9';
-      row.innerHTML='<div><div style="font-weight:600">'+item.description.replace(/</g,'&lt;')+'</div>'
+      row.className='ac-row';
+      row.style.cssText='padding:8px 12px;cursor:pointer;font-size:13px;display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid #f8fafc;transition:background .1s';
+      row.innerHTML='<div style="min-width:0"><div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+_highlightMatch(item.description,query)+'</div>'
         +'<div style="font-size:11px;color:#6b7280;margin-top:1px">'+item.category+' &middot; per '+item.unit+'</div></div>'
-        +'<div style="font-weight:700;color:#059669;white-space:nowrap;font-size:14px">$'+item.unit_cost.toFixed(2)+'</div>';
-      row.addEventListener('mouseover',()=>row.style.background='#f0f7ff');
-      row.addEventListener('mouseout',()=>row.style.background='');
+        +'<div style="font-weight:700;color:#059669;white-space:nowrap;font-size:14px;flex-shrink:0">$'+item.unit_cost.toFixed(2)+'</div>';
+      row.addEventListener('mouseover',()=>_setActive(i));
       row.addEventListener('mousedown',e=>{{
         e.preventDefault();
         _fillFromRcItem(input,item);
@@ -31066,18 +31133,46 @@ function _attachDescAutocomplete(input){{
       _drop.appendChild(row);
     }});
     document.body.appendChild(_drop);
+    _setActive(0); // auto-highlight best match
   }}
+
   input.addEventListener('input',async()=>{{
     await _ensureRcItems();
-    const q=input.value.toLowerCase().trim();
-    if(q.length<2){{_removeDrop();return;}}
-    const matches=_rcAllItems.filter(i=>
-      i.description.toLowerCase().includes(q)||i.category.toLowerCase().includes(q)
-    );
-    _showDrop(matches);
+    const q=input.value.trim();
+    if(q.length<1){{_removeDrop();return;}}
+    const ranked=_fuzzyRank(_rcAllItems,q);
+    _showDrop(ranked,q);
   }});
+
+  input.addEventListener('keydown',e=>{{
+    if(!_drop){{
+      // reopen on ArrowDown if catalog loaded
+      if(e.key==='ArrowDown' && _rcAllItems){{
+        const q=input.value.trim();
+        if(q.length>=1){{const r=_fuzzyRank(_rcAllItems,q);_showDrop(r,q);}}
+      }}
+      return;
+    }}
+    if(e.key==='ArrowDown'){{ e.preventDefault(); _setActive(Math.min(_activeIdx+1,Math.min(_matches.length,12)-1)); }}
+    else if(e.key==='ArrowUp'){{ e.preventDefault(); _setActive(Math.max(_activeIdx-1,0)); }}
+    else if(e.key==='Tab'||e.key==='ArrowRight'){{
+      if(_activeIdx>=0 && _matches[_activeIdx]){{
+        e.preventDefault();
+        _fillFromRcItem(input,_matches[_activeIdx]);
+        _removeDrop();
+      }}
+    }}
+    else if(e.key==='Enter'){{
+      if(_activeIdx>=0 && _matches[_activeIdx]){{
+        e.preventDefault();
+        _fillFromRcItem(input,_matches[_activeIdx]);
+        _removeDrop();
+      }}
+    }}
+    else if(e.key==='Escape'){{ _removeDrop(); }}
+  }});
+
   input.addEventListener('blur',()=>setTimeout(_removeDrop,160));
-  input.addEventListener('keydown',e=>{{if(e.key==='Escape')_removeDrop();}});
 }}
 
 function _fillFromRcItem(input,item){{
@@ -31085,7 +31180,6 @@ function _fillFromRcItem(input,item){{
   const row=input.closest('tr');
   if(!row)return;
   const allIn=row.querySelectorAll('input');
-  // order: description, qty(number), unit, unit_cost(number)
   if(allIn[2]) allIn[2].value=item.unit;
   if(allIn[3]){{allIn[3].value=item.unit_cost.toFixed(2);}}
   const itemId=parseInt(row.id.replace('row-',''));
@@ -31143,7 +31237,7 @@ document.addEventListener('DOMContentLoaded',_attachAllDescAutocompletes);
 <div id="rc-modal" class="imp-modal-bg">
   <div class="imp-modal">
     <div class="imp-modal-hdr">
-      <span>&#128218; Rate Card Library</span>
+      <span>&#128218; Expense Catalog</span>
       <button onclick="closeRateCardModal()" style="background:none;border:none;color:white;font-size:20px;cursor:pointer">&times;</button>
     </div>
     <div class="imp-modal-body">
@@ -31197,7 +31291,7 @@ def installation_rate_card_page():
         html = _INST_CSS + """<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Parts Catalog</title>
+<title>Expense Catalog</title>
 <style>
 body{background:#f0f2f5}
 .pc-wrap{max-width:1100px;margin:0 auto;padding:20px}
@@ -31240,11 +31334,11 @@ body{background:#f0f2f5}
 </head>
 <body>
 <div class="top-bar">
-  <h1>&#128218; Parts Catalog</h1>
+  <h1>&#128218; Expense Catalog</h1>
   <nav>
     <a href="/installation">&#8592; Jobs</a>
     <a href="/installation/schedule">Schedule</a>
-    <a href="/installation/rate-card" class="active">Parts Catalog</a>
+    <a href="/installation/rate-card" class="active">Expense Catalog</a>
     <a href="/dashboard">Dashboard</a>
   </nav>
 </div>
@@ -31431,7 +31525,7 @@ renderTable();
         return html
     except Exception as e:
         import traceback
-        return f"<pre>Parts Catalog error:\\n{traceback.format_exc()}</pre>", 500
+        return f"<pre>Expense Catalog error:\\n{traceback.format_exc()}</pre>", 500
 
 
 # ── Redirect old standalone pages into unified Installation ───────────────
