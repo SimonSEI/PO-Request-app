@@ -27207,9 +27207,9 @@ _INST_CSS = """
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5;color:#111827}
-.top-bar{background:#1a3c5e;color:white;padding:12px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:200;gap:12px;flex-wrap:wrap}
+.top-bar{background:#1a3c5e;color:white;padding:12px 24px;display:flex;align-items:center;justify-content:flex-start;position:sticky;top:0;z-index:200;gap:12px;flex-wrap:wrap}
 .top-bar h1{font-size:18px;font-weight:700;white-space:nowrap}
-.top-bar nav{display:flex;gap:4px;flex-wrap:wrap}
+.top-bar nav{display:flex;gap:4px;flex-wrap:wrap;margin-left:auto}
 .top-bar nav a{color:rgba(255,255,255,.85);text-decoration:none;padding:6px 12px;border-radius:5px;font-size:13px;transition:background .2s}
 .top-bar nav a:hover{background:rgba(255,255,255,.15);color:white}
 .top-bar nav a.active{background:rgba(255,255,255,.2);color:white;font-weight:600}
@@ -27335,8 +27335,9 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
 .prop-chip.chip-rejected{background:#fee2e2;color:#991b1b;border-color:#fca5a5}
 .standalone-section{padding:0 20px 20px}
 .standalone-hdr{font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.6px;margin:20px 0 8px;display:flex;align-items:center;gap:8px}
-.sa-card{background:white;border:1px solid #e5e7eb;border-radius:8px;padding:11px 16px;display:flex;align-items:center;gap:12px;margin-bottom:6px;cursor:pointer;transition:all .15s;text-decoration:none;color:inherit}
+.sa-card{background:white;border:1px solid #e5e7eb;border-radius:8px;padding:11px 16px;display:flex;align-items:center;gap:12px;margin-bottom:6px;transition:all .15s}
 .sa-card:hover{border-color:#1a3c5e;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.sa-card-link{text-decoration:none;color:inherit;display:flex;align-items:center;gap:12px;flex:1;min-width:0}
 .sa-po{font-size:12px;font-weight:800;color:#1a3c5e;min-width:100px}
 .sa-name{font-size:13px;font-weight:600;flex:1}
 .sa-total{font-size:14px;font-weight:700;color:#059669}
@@ -27351,9 +27352,9 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
     <a href="/installation/schedule">📅 Schedule</a>
     <a href="/installation/crews">👷 Crews</a>
     <a href="/installation/rate-card">📋 Expense Catalog</a>
-    <a href="/dashboard">← Dashboard</a>
+    <a href="/dashboard">Dashboard</a>
   </nav>
-  <button onclick="openHubLogoModal()" style="color:rgba(255,255,255,.85);background:none;border:1px solid rgba(255,255,255,.25);border-radius:5px;padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit;margin-left:auto" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background='none'">&#128444; Company Logo</button>
+  <button onclick="openHubLogoModal()" style="color:rgba(255,255,255,.85);background:none;border:1px solid rgba(255,255,255,.25);border-radius:5px;padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background='none'">&#128444; Company Logo</button>
   <a href="/installation/proposal/new" class="btn btn-primary" style="white-space:nowrap;flex-shrink:0">+ New Proposal</a>
 </div>
 
@@ -27427,18 +27428,28 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
   <div class="standalone-section" id="standalone-section">
     <div class="standalone-hdr">📄 Standalone Proposals</div>
     {% for p in standalone_proposals %}
-    <a href="/installation/proposal/{{ p.id }}" class="sa-card">
-      <div class="sa-po">{{ p.po_number or '—' }}</div>
-      <div class="sa-name">{{ p.title or p.project_name or 'Untitled' }}<br><span style="font-size:12px;color:#9ca3af">{{ p.client_name_override or '' }}</span></div>
-      <div class="sa-total">${{ "{:,.0f}".format(p.total_amount or 0) }}</div>
-      <span class="sa-status st-{{ p.status or 'draft' }}">{{ (p.status or 'draft').replace('_',' ') }}</span>
-    </a>
+    <div class="sa-card">
+      <a href="/installation/proposal/{{ p.id }}" class="sa-card-link">
+        <div class="sa-po">{{ p.po_number or '—' }}</div>
+        <div class="sa-name">{{ p.title or p.project_name or 'Untitled' }}<br><span style="font-size:12px;color:#9ca3af">{{ p.client_name_override or '' }}</span></div>
+        <div class="sa-total">${{ "{:,.0f}".format(p.total_amount or 0) }}</div>
+        <span class="sa-status st-{{ p.status or 'draft' }}">{{ (p.status or 'draft').replace('_',' ') }}</span>
+      </a>
+      <button onclick="deleteStandaloneProposal({{ p.id }}, this)" style="background:none;border:1px solid #fca5a5;color:#dc2626;border-radius:5px;padding:4px 8px;cursor:pointer;font-size:12px;flex-shrink:0" title="Delete proposal">🗑</button>
+    </div>
     {% endfor %}
   </div>
   {% endif %}
 </div>
 
 <script>
+async function deleteStandaloneProposal(propId, btn){
+  if(!confirm('Delete this proposal? This cannot be undone.')) return;
+  btn.disabled=true;
+  const d=await fetch('/installation/api/v2/proposals/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:propId})}).then(r=>r.json());
+  if(d.success) btn.closest('.sa-card').remove();
+  else{alert('Delete failed');btn.disabled=false;}
+}
 function makeInitials(name){
   if(!name) return '';
   const stop = new Set(['THE','OF','AND','A','AN','IN','AT','FOR','TO','LLC','INC','CORP','CO','GROUP','GRP','&']);
@@ -27550,9 +27561,9 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
   <h1>🏗️ {{ job.job_name }}</h1>
   <nav>
     <button onclick="history.back()" style="color:rgba(255,255,255,.85);background:none;border:1px solid rgba(255,255,255,.25);border-radius:5px;padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background='none'">&#8592; Back</button>
-    <a href="/installation">← Jobs</a>
+    <a href="/installation">Jobs</a>
     <a href="/installation/schedule">📅 Schedule</a>
-    <a href="/installation/crews">👷 Manage Crews</a>
+    <a href="/installation/crews">👷 Crews</a>
     <a href="/installation/rate-card">📋 Expense Catalog</a>
     <a href="/dashboard">Dashboard</a>
   </nav>
@@ -28355,10 +28366,12 @@ INSTALLATION_SCHEDULE_TEMPLATE = _INST_CSS + r"""<!DOCTYPE html>
 <title>Weekly Schedule</title>
 <style>
 /* ── screen styles ── */
-.top-nav{background:#1a3c5e;color:white;padding:10px 20px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;position:sticky;top:0;z-index:200}
+.top-nav{background:#1a3c5e;color:white;padding:10px 20px;display:flex;align-items:center;justify-content:flex-start;gap:10px;flex-wrap:wrap;position:sticky;top:0;z-index:200}
 .top-nav h1{font-size:17px;font-weight:700}
+.top-nav nav{display:flex;gap:4px;flex-wrap:wrap;margin-left:auto}
 .top-nav nav a{color:rgba(255,255,255,.85);text-decoration:none;padding:5px 11px;border-radius:5px;font-size:13px}
 .top-nav nav a:hover{background:rgba(255,255,255,.15)}
+.top-nav nav a.active{background:rgba(255,255,255,.2);color:white;font-weight:600}
 .week-controls{display:flex;align-items:center;gap:8px;padding:14px 20px;background:white;border-bottom:1px solid #e5e7eb;flex-wrap:wrap}
 .week-controls h2{font-size:16px;font-weight:700;color:#1a3c5e;flex:1}
 .btn{display:inline-flex;align-items:center;gap:4px;padding:6px 13px;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;border:none;text-decoration:none;transition:all .15s}
@@ -28425,8 +28438,9 @@ select:focus,input:focus{outline:none;border-color:#1a3c5e}
   <h1>📅 Weekly Schedule</h1>
   <nav>
     <button onclick="history.back()" style="color:rgba(255,255,255,.85);background:none;border:1px solid rgba(255,255,255,.25);border-radius:5px;padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background='none'">&#8592; Back</button>
-    <a href="/installation">← Jobs</a>
-    <a href="/installation/crews">👷 Manage Crews</a>
+    <a href="/installation">Jobs</a>
+    <a href="/installation/schedule" class="active">📅 Schedule</a>
+    <a href="/installation/crews">👷 Crews</a>
     <a href="/installation/rate-card">📋 Expense Catalog</a>
     <a href="/dashboard">Dashboard</a>
   </nav>
@@ -28614,8 +28628,9 @@ INSTALLATION_CREWS_TEMPLATE = _INST_CSS + """<!DOCTYPE html>
   <h1>👷 Crew Management</h1>
   <nav>
     <button onclick="history.back()" style="color:rgba(255,255,255,.85);background:none;border:1px solid rgba(255,255,255,.25);border-radius:5px;padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background='none'">&#8592; Back</button>
-    <a href="/installation/schedule">← Schedule</a>
     <a href="/installation">Jobs</a>
+    <a href="/installation/schedule">📅 Schedule</a>
+    <a href="/installation/crews" class="active">👷 Crews</a>
     <a href="/installation/rate-card">📋 Expense Catalog</a>
     <a href="/dashboard">Dashboard</a>
   </nav>
@@ -30610,9 +30625,10 @@ body{{background:#eef0f3;margin:0}}
   <h1>&#128203; {esc(po_display)}</h1>
   <nav>
     <button onclick="history.back()" style="color:rgba(255,255,255,.85);background:none;border:1px solid rgba(255,255,255,.25);border-radius:5px;padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background='none'">&#8592; Back</button>
-    <a href="/installation">&#8592; Jobs</a>
-    <a href="/installation/schedule">Schedule</a>
-    <a href="/installation/rate-card">&#128218; Expense Catalog</a>
+    <a href="/installation">Jobs</a>
+    <a href="/installation/schedule">📅 Schedule</a>
+    <a href="/installation/crews">👷 Crews</a>
+    <a href="/installation/rate-card">📋 Expense Catalog</a>
     <a href="/dashboard">Dashboard</a>
   </nav>
 </div>
@@ -30672,6 +30688,7 @@ body{{background:#eef0f3;margin:0}}
       <button class="btn btn-secondary btn-sm" onclick="openRateCardModal()">&#128218; Expense Catalog</button>
       <button class="btn btn-secondary btn-sm" onclick="openLogoModal()">&#128444; Logo</button>
       <button class="btn btn-secondary btn-sm" onclick="openLaborModal()" style="background:#15803d;color:white;border-color:#15803d">&#9889; Calc Labor</button>
+      <button class="btn btn-sm" onclick="deleteThisProposal()" style="background:#fee2e2;color:#dc2626;border:1px solid #fca5a5">&#128465; Delete</button>
     </div>
   </div>
 
@@ -30947,6 +30964,14 @@ async function deleteItem(itemId,category){{
   await api('/installation/api/v2/proposal-items/delete',{{id:itemId}});
   const row=document.getElementById('row-'+itemId);if(row)row.remove();
   recalc();autoSave();
+}}
+
+/* ── Delete this proposal ── */
+async function deleteThisProposal(){{
+  if(!confirm('Delete this proposal permanently? This cannot be undone.')) return;
+  const d=await api('/installation/api/v2/proposals/delete',{{id:PROP_ID}});
+  if(d.success) window.location.href='/installation';
+  else alert('Delete failed: '+(d.error||'unknown'));
 }}
 
 /* ── Link to job ── */
@@ -31546,12 +31571,13 @@ body{background:#f0f2f5}
   <h1>&#128218; Expense Catalog</h1>
   <nav>
     <button onclick="history.back()" style="color:rgba(255,255,255,.85);background:none;border:1px solid rgba(255,255,255,.25);border-radius:5px;padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background='none'">&#8592; Back</button>
-    <a href="/installation">&#8592; Jobs</a>
-    <a href="/installation/schedule">Schedule</a>
-    <a href="/installation/rate-card" class="active">Expense Catalog</a>
+    <a href="/installation">Jobs</a>
+    <a href="/installation/schedule">📅 Schedule</a>
+    <a href="/installation/crews">👷 Crews</a>
+    <a href="/installation/rate-card" class="active">📋 Expense Catalog</a>
     <a href="/dashboard">Dashboard</a>
   </nav>
-  <button onclick="openCatImportModal()" style="color:rgba(255,255,255,.85);background:none;border:1px solid rgba(255,255,255,.25);border-radius:5px;padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit;margin-left:auto" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background='none'">&#128229; Import</button>
+  <button onclick="openCatImportModal()" style="color:rgba(255,255,255,.85);background:none;border:1px solid rgba(255,255,255,.25);border-radius:5px;padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background='none'">&#128229; Import</button>
 </div>
 
 <div class="pc-wrap">
