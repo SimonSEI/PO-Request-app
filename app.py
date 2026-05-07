@@ -29009,7 +29009,8 @@ def v2_proposals_update():
                      status=?, days_allotted=?, crew_size=?,
                      markup_pct=?, tax_pct=?, subtotal=?,
                      markup_amount=?, tax_amount=?, total_amount=?,
-                     scope_summary=?, exclusions=?, terms=?
+                     scope_summary=?, exclusions=?, terms=?,
+                     client_name_override=?
                      WHERE id=?""",
                   (data.get('proposal_number',''), data.get('title',''),
                    data.get('proposal_date',''), int(data.get('valid_days') or 30),
@@ -29019,7 +29020,12 @@ def v2_proposals_update():
                    float(data.get('subtotal') or 0), float(data.get('markup_amount') or 0),
                    float(data.get('tax_amount') or 0), float(data.get('total_amount') or 0),
                    data.get('scope_summary',''), data.get('exclusions',''),
-                   data.get('terms',''), data['id']))
+                   data.get('terms',''), data.get('client_name_override',''),
+                   data['id']))
+        # Allow linking to a job (standalone → linked)
+        if 'job_id' in data and data['job_id']:
+            c.execute("UPDATE install_proposals SET job_id=?, standalone=? WHERE id=?",
+                      (data['job_id'], data.get('standalone', 0), data['id']))
         conn.commit(); conn.close()
         return jsonify({'success': True})
     except Exception as e:
@@ -29965,169 +29971,30 @@ def installation_new_proposal_page():
     if 'username' not in session:
         return redirect(url_for('login'))
     try:
+        import datetime as _dt
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        stop_words = {'THE','OF','AND','A','AN','IN','AT','FOR','TO','LLC','INC','CORP','CO','GROUP','GRP'}
-        def _pfx(name):
-            if not name: return 'PROP'
-            return (''.join(w[0] for w in name.upper().split()
-                            if w and w not in stop_words and w[0].isalpha())[:5] or 'PROP')
-        c.execute("""SELECT id, job_name, client_name FROM jobs
-                     WHERE COALESCE(department,'install')='install' ORDER BY active DESC, job_name ASC""")
-        jobs_raw = c.fetchall()
+        today = _dt.date.today().isoformat()
+        c.execute("""INSERT INTO install_proposals
+                     (standalone, status, proposal_date, valid_days, crew_size,
+                      terms, created_at, created_by)
+                     VALUES (1,'draft',?,30,1,'Payment due within 30 days of invoice.',?,?)""",
+                  (today, today, session.get('username', '')))
+        prop_id = c.lastrowid
+        c.execute("SELECT COUNT(*)+1 FROM install_proposals WHERE job_po_prefix='PROP'")
+        n = c.fetchone()[0]
+        po = f"PROP-{n:03d}"
+        while True:
+            c.execute("SELECT id FROM install_proposals WHERE po_number=?", (po,))
+            if not c.fetchone(): break
+            n += 1; po = f"PROP-{n:03d}"
+        c.execute("UPDATE install_proposals SET po_number=?, job_po_prefix='PROP' WHERE id=?", (po, prop_id))
+        conn.commit()
         conn.close()
-        jobs_opts = ''.join(
-            '<option value="{}" data-prefix="{}" data-name="{}">{}</option>'.format(
-                r[0], _pfx(r[1]), r[1].replace('"', '&quot;'),
-                r[1] + ('  —  ' + r[2] if r[2] else ''))
-            for r in jobs_raw
-        )
-    except Exception:
-        jobs_opts = ''
-
-    html = _INST_CSS + '''<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>New Proposal — Installation</title>
-<style>
-.np-wrap{max-width:560px;margin:48px auto;padding:0 20px 60px}
-.np-card{background:white;border-radius:14px;border:1px solid #e5e7eb;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.07)}
-.np-header{background:linear-gradient(135deg,#1a3c5e 0%,#2563eb 100%);padding:28px 32px;color:white}
-.np-header h1{font-size:24px;font-weight:800;margin:0 0 4px}
-.np-header p{font-size:14px;color:rgba(255,255,255,.7);margin:0}
-.np-body{padding:28px 32px}
-.toggle-row{display:flex;border:2px solid #e5e7eb;border-radius:10px;overflow:hidden;margin-bottom:28px}
-.toggle-btn{flex:1;padding:14px 16px;font-size:14px;font-weight:700;border:none;cursor:pointer;transition:all .15s;display:flex;align-items:center;justify-content:center;gap:8px}
-.toggle-btn.active{background:#1a3c5e;color:white}
-.toggle-btn.inactive{background:#f9fafb;color:#6b7280}
-.toggle-btn.inactive:hover{background:#f3f4f6;color:#374151}
-.field-group{margin-bottom:18px}
-.field-group label{display:block;font-size:11px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px}
-.field-group select,.field-group input{width:100%;border:1.5px solid #d1d5db;border-radius:8px;padding:10px 14px;font-size:14px;transition:border-color .15s;box-sizing:border-box}
-.field-group select:focus,.field-group input:focus{outline:none;border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.1)}
-.po-preview{background:#f0f7ff;border:1.5px solid #bfdbfe;border-radius:8px;padding:14px 18px;margin-bottom:24px;display:flex;align-items:center;gap:14px}
-.po-preview .label{font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.6px;white-space:nowrap}
-.po-preview .value{font-size:26px;font-weight:900;color:#1a3c5e;letter-spacing:.5px;flex:1}
-.po-preview .hint{font-size:11px;color:#9ca3af;white-space:nowrap}
-.create-btn{width:100%;padding:15px;font-size:16px;font-weight:800;background:#1a3c5e;color:white;border:none;border-radius:10px;cursor:pointer;transition:all .15s;letter-spacing:.2px}
-.create-btn:hover{background:#2563eb;transform:translateY(-1px);box-shadow:0 4px 16px rgba(37,99,235,.3)}
-.create-btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
-.back-link{display:inline-flex;align-items:center;gap:6px;color:#6b7280;font-size:13px;text-decoration:none;margin-bottom:20px}
-.back-link:hover{color:#1a3c5e}
-</style>
-</head>
-<body>
-<div class="top-bar">
-  <h1>🏗️ Installation</h1>
-  <nav>
-    <a href="/installation">Jobs</a>
-    <a href="/installation/schedule">📅 Schedule</a>
-    <a href="/installation/crews">👷 Crews</a>
-    <a href="/dashboard">← Dashboard</a>
-  </nav>
-</div>
-
-<div class="np-wrap">
-  <a href="/installation" class="back-link">← Back to Jobs</a>
-  <div class="np-card">
-    <div class="np-header">
-      <h1>📋 New Proposal</h1>
-      <p>Choose how this proposal is organized, then start building.</p>
-    </div>
-    <div class="np-body">
-
-      <div class="toggle-row">
-        <button class="toggle-btn active" id="btn-linked" onclick="setType('linked')">🔗 Link to a Job</button>
-        <button class="toggle-btn inactive" id="btn-standalone" onclick="setType('standalone')">📄 Standalone</button>
-      </div>
-
-      <div id="linked-fields">
-        <div class="field-group">
-          <label>Job</label>
-          <select id="job-select" onchange="updatePreview()">
-            <option value="">— Select a job —</option>
-            ''' + jobs_opts + '''
-          </select>
-        </div>
-      </div>
-
-      <div id="standalone-fields" style="display:none">
-        <div class="field-group">
-          <label>Client Name</label>
-          <input id="client-name" placeholder="e.g. Madison Capital Group" oninput="updatePreview()">
-        </div>
-        <div class="field-group">
-          <label>Project / Proposal Title</label>
-          <input id="project-name" placeholder="e.g. Parking Lot Landscaping">
-        </div>
-      </div>
-
-      <div class="po-preview">
-        <span class="label">PO #</span>
-        <span class="value" id="po-val">—</span>
-        <span class="hint">auto-assigned</span>
-      </div>
-
-      <button class="create-btn" id="create-btn" onclick="doCreate()">Create Proposal →</button>
-
-    </div>
-  </div>
-</div>
-
-<script>
-let _type = 'linked';
-function setType(t){
-  _type = t;
-  document.getElementById('linked-fields').style.display = t==='linked'?'':'none';
-  document.getElementById('standalone-fields').style.display = t==='standalone'?'':'none';
-  document.getElementById('btn-linked').className = 'toggle-btn '+(t==='linked'?'active':'inactive');
-  document.getElementById('btn-standalone').className = 'toggle-btn '+(t==='standalone'?'active':'inactive');
-  updatePreview();
-}
-function makeInitials(name){
-  if(!name) return '';
-  const stop = new Set(['THE','OF','AND','A','AN','IN','AT','FOR','TO','LLC','INC','CORP','CO','GROUP','GRP','&']);
-  return name.toUpperCase().split(/[\\s&]+/).filter(w=>w&&!stop.has(w)&&/^[A-Z]/i.test(w)).map(w=>w[0]).join('').substring(0,5)||'PROP';
-}
-function updatePreview(){
-  let prefix = '';
-  if(_type==='linked'){
-    const sel = document.getElementById('job-select');
-    const opt = sel.options[sel.selectedIndex];
-    prefix = opt?.dataset?.prefix || makeInitials(opt?.dataset?.name||'');
-  } else {
-    prefix = makeInitials(document.getElementById('client-name').value||'');
-  }
-  document.getElementById('po-val').textContent = prefix ? prefix+'-###' : '—';
-}
-async function doCreate(){
-  const btn = document.getElementById('create-btn');
-  const payload = {standalone: _type==='standalone' ? 1 : 0};
-  if(_type==='linked'){
-    payload.job_id = document.getElementById('job-select').value || null;
-    if(!payload.job_id){alert('Please select a job, or switch to Standalone.');return;}
-  } else {
-    payload.job_id = null;
-    payload.client_name_override = document.getElementById('client-name').value.trim();
-    payload.project_name = document.getElementById('project-name').value.trim();
-    if(!payload.client_name_override){alert('Client name is required.');return;}
-  }
-  btn.disabled = true; btn.textContent = 'Creating…';
-  try {
-    const r = await fetch('/installation/api/v2/proposals/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-    const d = await r.json();
-    if(d.id){
-      if(_type==='linked' && payload.job_id)
-        window.location.href = '/installation/job/'+payload.job_id+'?tab=proposals&prop_id='+d.id;
-      else
-        window.location.href = '/installation/proposal/'+d.id;
-    } else { alert('Error: '+(d.error||'Unknown')); btn.disabled=false; btn.textContent='Create Proposal →'; }
-  } catch(e){ alert('Network error'); btn.disabled=false; btn.textContent='Create Proposal →'; }
-}
-</script>
-</body></html>
-'''
-    return html
+        return redirect(f'/installation/proposal/{prop_id}')
+    except Exception as e:
+        import traceback
+        return f"<pre>Error creating proposal:\n{traceback.format_exc()}</pre>", 500
 
 
 @app.route('/installation/proposal/<int:prop_id>')
@@ -30139,12 +30006,21 @@ def installation_standalone_proposal(prop_id):
         c = conn.cursor()
         c.execute("SELECT job_id, po_number, title, client_name_override, project_name FROM install_proposals WHERE id=?", (prop_id,))
         row = c.fetchone()
-        conn.close()
         if not row:
+            conn.close()
             return "<h2>Proposal not found</h2><a href='/installation'>Back</a>"
         # If linked to a job, redirect there
         if row[0]:
+            conn.close()
             return redirect(f'/installation/job/{row[0]}?tab=proposals')
+        # Load jobs list for the "link to job" dropdown inside editor
+        c.execute("SELECT id, job_name FROM jobs WHERE COALESCE(department,'install')='install' ORDER BY active DESC, job_name ASC")
+        jobs_for_link = c.fetchall()
+        conn.close()
+        jobs_opts_py = '<option value="">— Keep standalone —</option>' + ''.join(
+            '<option value="{}">{}</option>'.format(r[0], r[1].replace('"', '&quot;'))
+            for r in jobs_for_link
+        )
         # Standalone — render a self-contained proposal editor page
         po_number = row[1] or ''
         title = row[2] or row[4] or 'Untitled'
@@ -30169,6 +30045,7 @@ def installation_standalone_proposal(prop_id):
 const PROP_ID = {prop_id};
 const PROP_JOB_ID = null;
 let activeProposalId = {prop_id};
+const JOBS_OPTS_HTML = `{jobs_opts_py}`;
 
 /* reuse proposal rendering helpers from hub — inline minimal version */
 const CATEGORIES = [
@@ -30222,6 +30099,8 @@ function renderDetail(p, items){{
         </div>
       </div>
       <div class="pd-meta">
+        <div class="meta-field"><label>Client</label><input id="pf-client" value="${{p.client_name_override||''}}" placeholder="Client name…" style="min-width:160px" onchange="autoSave(${{p.id}})"></div>
+        <div class="meta-field" style="min-width:180px"><label>Link to Job <span style="font-weight:400;color:#9ca3af">(optional)</span></label><select id="pf-job" onchange="linkJobChanged(${{p.id}})">${{JOBS_OPTS_HTML}}</select></div>
         <div class="meta-field"><label>PO Number</label><input id="pf-num" value="${{p.po_number||p.proposal_number||''}}" onchange="autoSave(${{p.id}})"></div>
         <div class="meta-field"><label>Title / Project</label><input id="pf-title" value="${{p.title||''}}" style="min-width:180px" onchange="autoSave(${{p.id}})"></div>
         <div class="meta-field"><label>Date</label><input id="pf-date" type="date" value="${{p.proposal_date||''}}" onchange="autoSave(${{p.id}})"></div>
@@ -30289,6 +30168,15 @@ function recalcAllTotals(){{
   const tEl=document.getElementById('tax-amt');if(tEl)tEl.textContent=fmt(ta);
   const gEl=document.getElementById('grand-total');if(gEl)gEl.textContent=fmt(grand);
 }}
+async function linkJobChanged(propId){{
+  const jobId = document.getElementById('pf-job')?.value||null;
+  if(!jobId) return;
+  if(!confirm('Link this proposal to that job? You will be taken to the job page.')) {{
+    document.getElementById('pf-job').value = ''; return;
+  }}
+  await pApi('/installation/api/v2/proposals/update',{{id:propId,job_id:jobId,standalone:0}});
+  window.location.href = '/installation/job/'+jobId+'?tab=proposals';
+}}
 let autoSaveTimer=null;
 function autoSave(pid){{clearTimeout(autoSaveTimer);autoSaveTimer=setTimeout(()=>saveHeader(pid),1500);}}
 async function saveHeader(propId){{
@@ -30297,7 +30185,9 @@ async function saveHeader(propId){{
   const tp=parseFloat(document.getElementById('pf-tax')?.value)||0;
   const ma=subtotal*mp/100; const ta=(subtotal+ma)*tp/100; const grand=subtotal+ma+ta;
   await pApi('/installation/api/v2/proposals/update',{{
-    id:propId,proposal_number:document.getElementById('pf-num')?.value||'',
+    id:propId,
+    client_name_override:document.getElementById('pf-client')?.value||'',
+    proposal_number:document.getElementById('pf-num')?.value||'',
     title:document.getElementById('pf-title')?.value||'',
     proposal_date:document.getElementById('pf-date')?.value||'',
     valid_days:parseInt(document.getElementById('pf-valid')?.value)||30,
