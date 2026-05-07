@@ -18213,6 +18213,21 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         h3 { font-size:16px; font-weight:700; color:var(--text-primary); }
         /* unsaved */
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+        /* Pricing inputs: compact padding so numbers fit inside width:90px */
+        .price-input {
+            width: 90px !important;
+            padding: 6px 8px !important;
+            font-size: 14px !important;
+            border: 1.5px solid var(--border) !important;
+            border-radius: 7px !important;
+            text-align: right;
+            box-sizing: border-box !important;
+        }
+        .price-input:focus {
+            outline: none !important;
+            border-color: var(--accent) !important;
+            box-shadow: 0 0 0 2px var(--accent-glow) !important;
+        }
     </style>
 </head>
 <body>
