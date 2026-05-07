@@ -21648,22 +21648,56 @@ MANAGE_COMMUNITIES_TEMPLATE = '''
             <div class="communities-list">
                 <h3 style="margin-bottom: 15px; color: #333;">Existing Communities ({{ communities|length }})</h3>
                 {% for community in communities %}
-                    <div class="community-card">
-                        <div class="community-info">
-                            <div class="community-name">{{ community.name }}</div>
-                            <div class="community-meta">
-                                Created by {{ community.created_by }} on {{ community.created_at|truncate(10) }}
-                                <span class="badge {% if community.active %}badge-active{% else %}badge-inactive{% endif %}">
-                                    {% if community.active %}Active{% else %}Inactive{% endif %}
-                                </span>
+                    <div class="community-card" style="flex-direction:column; align-items:stretch;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <div class="community-info">
+                                <div class="community-name" id="name-display-{{ community.id }}">{{ community.name }}</div>
+                                <div class="community-meta">
+                                    Created by {{ community.created_by }} on {{ community.created_at|truncate(10) }}
+                                    <span class="badge {% if community.active %}badge-active{% else %}badge-inactive{% endif %}">
+                                        {% if community.active %}Active{% else %}Inactive{% endif %}
+                                    </span>
+                                </div>
+                            </div>
+                            <div style="display:flex; gap:8px; flex-shrink:0;">
+                                <button type="button"
+                                        onclick="toggleEditForm({{ community.id }}, '{{ community.name|replace("'", "\\'") }}')"
+                                        style="background:#DBEAFE; color:#1E40AF; border:1.5px solid #BFDBFE; padding:7px 13px; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; font-family:inherit; transition:all .15s;"
+                                        onmouseover="this.style.background='#2563EB'; this.style.color='#fff'; this.style.borderColor='#2563EB';"
+                                        onmouseout="this.style.background='#DBEAFE'; this.style.color='#1E40AF'; this.style.borderColor='#BFDBFE';">
+                                    ✏️ Rename
+                                </button>
+                                <form method="POST" action="{{ url_for('manage_communities') }}" style="display: inline;"
+                                      onsubmit="return confirm('Delete this community and all its data?\n\nThis action CANNOT be undone.') && confirm('Are you absolutely sure? This will permanently delete all submissions and addresses for this community.');">
+                                    <input type="hidden" name="action" value="delete">
+                                    <input type="hidden" name="community_id" value="{{ community.id }}">
+                                    <button type="submit" class="btn-delete">🗑️ Delete</button>
+                                </form>
                             </div>
                         </div>
-                        <form method="POST" action="{{ url_for('manage_communities') }}" style="display: inline;"
-                              onsubmit="return confirm('Delete this community and all its data?\n\nThis action CANNOT be undone.') && confirm('Are you absolutely sure? This will permanently delete all submissions and addresses for this community.');">
-                            <input type="hidden" name="action" value="delete">
-                            <input type="hidden" name="community_id" value="{{ community.id }}">
-                            <button type="submit" class="btn-delete">🗑️ Delete</button>
-                        </form>
+                        <div id="edit-form-{{ community.id }}" style="display:none; margin-top:10px;">
+                            <form method="POST" action="{{ url_for('manage_communities') }}"
+                                  style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;"
+                                  onsubmit="return validateRename({{ community.id }});">
+                                <input type="hidden" name="action" value="rename">
+                                <input type="hidden" name="community_id" value="{{ community.id }}">
+                                <input type="text" id="rename-input-{{ community.id }}" name="new_name"
+                                       style="flex:1; min-width:180px; padding:8px 12px; font-size:14px; border:1.5px solid #14B8A6; border-radius:8px; font-family:inherit;"
+                                       placeholder="New community name" required>
+                                <button type="submit"
+                                        style="background:#D1FAE5; color:#065F46; border:1.5px solid #A7F3D0; padding:7px 13px; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; font-family:inherit; transition:all .15s;"
+                                        onmouseover="this.style.background='#059669'; this.style.color='#fff'; this.style.borderColor='#059669';"
+                                        onmouseout="this.style.background='#D1FAE5'; this.style.color='#065F46'; this.style.borderColor='#A7F3D0';">
+                                    ✓ Save
+                                </button>
+                                <button type="button" onclick="toggleEditForm({{ community.id }})"
+                                        style="background:#F1F5F9; color:#475569; border:1.5px solid #E2E8F0; padding:7px 13px; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; font-family:inherit; transition:all .15s;"
+                                        onmouseover="this.style.background='#E2E8F0';"
+                                        onmouseout="this.style.background='#F1F5F9';">
+                                    Cancel
+                                </button>
+                            </form>
+                        </div>
                     </div>
                 {% endfor %}
             </div>
@@ -21675,6 +21709,31 @@ MANAGE_COMMUNITIES_TEMPLATE = '''
         {% endif %}
     </div>
     </div>
+
+<script>
+function toggleEditForm(id, currentName) {
+    var form = document.getElementById('edit-form-' + id);
+    var input = document.getElementById('rename-input-' + id);
+    if (form.style.display === 'none') {
+        form.style.display = 'block';
+        input.value = currentName || '';
+        input.focus();
+        input.select();
+    } else {
+        form.style.display = 'none';
+    }
+}
+
+function validateRename(id) {
+    var input = document.getElementById('rename-input-' + id);
+    var val = input.value.trim();
+    if (!val) {
+        alert('Community name cannot be empty.');
+        return false;
+    }
+    return true;
+}
+</script>
 </body>
 </html>
 '''
@@ -23098,6 +23157,28 @@ def manage_communities():
                     flash(f'Community "{community_name}" added successfully', 'success')
                 except sqlite3.IntegrityError:
                     flash(f'Community "{community_name}" already exists', 'error')
+
+        elif action == 'rename':
+            community_id = request.form.get('community_id')
+            new_name = request.form.get('new_name', '').strip()
+            if not new_name:
+                flash('Community name cannot be empty', 'error')
+            else:
+                try:
+                    c.execute("SELECT name FROM communities WHERE id = ?", (community_id,))
+                    community = c.fetchone()
+                    if not community:
+                        flash('Community not found', 'error')
+                    else:
+                        old_name = community[0]
+                        c.execute("UPDATE communities SET name = ? WHERE id = ?", (new_name, community_id))
+                        c.execute("UPDATE community_billing_submissions SET community_name = ? WHERE community_name = ?", (new_name, old_name))
+                        conn.commit()
+                        flash(f'Community renamed from "{old_name}" to "{new_name}"', 'success')
+                except sqlite3.IntegrityError:
+                    flash(f'A community named "{new_name}" already exists', 'error')
+                except Exception as e:
+                    flash(f'Error renaming community: {str(e)}', 'error')
 
         elif action == 'delete':
             community_id = request.form.get('community_id')
