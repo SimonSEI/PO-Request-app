@@ -29963,15 +29963,206 @@ def installation_standalone_proposal(prop_id):
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("SELECT job_id FROM install_proposals WHERE id=?", (prop_id,))
+        c.execute("SELECT job_id, po_number, title, client_name_override, project_name FROM install_proposals WHERE id=?", (prop_id,))
         row = c.fetchone()
         conn.close()
         if not row:
             return "<h2>Proposal not found</h2><a href='/installation'>Back</a>"
+        # If linked to a job, redirect there
         if row[0]:
             return redirect(f'/installation/job/{row[0]}?tab=proposals')
-        # Standalone: render the job template in proposals-tab mode with no job
-        return redirect(f'/installation/job/0?tab=proposals&prop_id={prop_id}')
+        # Standalone — render a self-contained proposal editor page
+        po_number = row[1] or ''
+        title = row[2] or row[4] or 'Untitled'
+        client = row[3] or ''
+        page_title = f"{po_number} — {title}" if po_number else title
+        html = _INST_CSS + f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{page_title}</title>
+</head>
+<body>
+<div class="top-bar">
+  <h1>📋 {page_title}</h1>
+  <nav>
+    <a href="/installation">← Jobs</a>
+    <a href="/installation/schedule">📅 Schedule</a>
+    <a href="/dashboard">Dashboard</a>
+  </nav>
+</div>
+<div id="prop-detail-wrap" style="height:calc(100vh - 56px);overflow-y:auto;background:#f0f2f5"></div>
+<script>
+const PROP_ID = {prop_id};
+const PROP_JOB_ID = null;
+let activeProposalId = {prop_id};
+
+/* reuse proposal rendering helpers from hub — inline minimal version */
+const CATEGORIES = [
+  {{key:'materials',label:'Materials',icon:'🪨'}},
+  {{key:'labor',label:'Labor',icon:'👷'}},
+  {{key:'equipment',label:'Equipment',icon:'🚜'}},
+  {{key:'subcontractor',label:'Subcontractors',icon:'🤝'}},
+  {{key:'other',label:'Other',icon:'📦'}},
+];
+function fmt(n){{return '$'+(parseFloat(n)||0).toLocaleString('en-US',{{minimumFractionDigits:2,maximumFractionDigits:2}});}}
+function fmtN(n){{return (parseFloat(n)||0).toLocaleString('en-US',{{minimumFractionDigits:0,maximumFractionDigits:2}});}}
+async function pApi(url,data){{const r=await fetch(url,{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(data)}});return r.json();}}
+
+async function load(){{
+  const r = await fetch('/installation/api/v2/proposals/get/'+PROP_ID);
+  const d = await r.json();
+  if(!d.proposal){{document.getElementById('prop-detail-wrap').innerHTML='<p style="padding:40px;color:#dc2626">Error loading proposal.</p>';return;}}
+  renderDetail(d.proposal, d.items||[]);
+}}
+
+function renderDetail(p, items){{
+  const det = document.getElementById('prop-detail-wrap');
+  const statusOpts = ['draft','sent','approved','rejected','revised'].map(s=>
+    `<option value="${{s}}"${{p.status===s?' selected':''}}>${{s.charAt(0).toUpperCase()+s.slice(1)}}</option>`
+  ).join('');
+  let itemsHtml = '';
+  for(const cat of CATEGORIES){{
+    const catItems = items.filter(i=>i.category===cat.key);
+    const rows = catItems.map(item=>renderItemRow(item)).join('');
+    itemsHtml += `<div class="li-section" data-cat="${{cat.key}}">
+      <div class="li-section-hdr">
+        <h4>${{cat.icon}} ${{cat.label}}</h4>
+        <span style="font-size:12px;font-weight:700;color:#1a3c5e" id="cat-sub-${{cat.key}}">${{fmt(catItems.reduce((s,i)=>s+(i.total||0),0))}}</span>
+      </div>
+      <table class="li-table">
+        <thead><tr><th>Description</th><th class="td-qty">Qty</th><th class="td-unit">Unit</th><th class="td-cost">Unit Cost</th><th style="text-align:right;padding-right:8px;width:90px">Total</th><th class="td-del"></th></tr></thead>
+        <tbody id="items-${{cat.key}}">${{rows}}</tbody>
+      </table>
+      <button class="btn-add-row" onclick="addItem(${{p.id}},'${{cat.key}}')">+ Add ${{cat.label}} Item</button>
+    </div>`;
+  }}
+
+  det.innerHTML = `<div style="max-width:1100px;margin:0 auto;padding:20px">
+    <div style="background:white;border-radius:10px;border:1px solid #e5e7eb;overflow:hidden">
+      <div class="pd-hdr">
+        <h2>📋 ${{p.po_number||p.proposal_number||'New Proposal'}} <span style="font-size:12px;font-weight:400;color:#6b7280">Rev.${{p.revision||0}}</span></h2>
+        <div class="pd-actions">
+          <button class="btn btn-secondary btn-sm" onclick="saveAll(${{p.id}})">💾 Save</button>
+          <button class="btn btn-secondary btn-sm" onclick="reviseProposal(${{p.id}})">📝 Revise</button>
+          <button class="btn btn-print btn-sm" onclick="window.print()">🖨 Print</button>
+        </div>
+      </div>
+      <div class="pd-meta">
+        <div class="meta-field"><label>PO Number</label><input id="pf-num" value="${{p.po_number||p.proposal_number||''}}" onchange="autoSave(${{p.id}})"></div>
+        <div class="meta-field"><label>Title / Project</label><input id="pf-title" value="${{p.title||''}}" style="min-width:180px" onchange="autoSave(${{p.id}})"></div>
+        <div class="meta-field"><label>Date</label><input id="pf-date" type="date" value="${{p.proposal_date||''}}" onchange="autoSave(${{p.id}})"></div>
+        <div class="meta-field"><label>Valid (days)</label><input id="pf-valid" type="number" value="${{p.valid_days||30}}" style="width:65px" onchange="autoSave(${{p.id}})"></div>
+        <div class="meta-field"><label>Status</label><select id="pf-status" onchange="autoSave(${{p.id}})">${{statusOpts}}</select></div>
+      </div>
+      <div class="prop-sch-bar">
+        <div class="sf"><label>Days Allotted:</label><input id="pf-days" type="number" value="${{p.days_allotted||0}}" style="width:65px" onchange="autoSave(${{p.id}})"></div>
+        <div class="sf"><label>Crew Size:</label><input id="pf-crew" type="number" value="${{p.crew_size||1}}" style="width:55px" onchange="autoSave(${{p.id}})"></div>
+        <div class="sf" style="margin-left:auto"><button class="btn btn-secondary btn-sm" onclick="saveAll(${{p.id}})">💾 Save All</button></div>
+      </div>
+      <div class="pd-body">${{itemsHtml}}</div>
+      <div class="prop-totals">
+        <div class="total-input-row"><label>Subtotal</label><span id="sub-total" style="font-weight:700;color:#1a3c5e;font-size:15px">${{fmt(p.subtotal)}}</span></div>
+        <div class="total-input-row"><label>Markup %</label><input id="pf-markup" type="number" step="0.1" value="${{p.markup_pct||0}}" style="width:70px;border:1px solid #d1d5db;border-radius:5px;padding:4px 8px;text-align:right" oninput="recalcAllTotals()"><span id="markup-amt" style="color:#6b7280;font-size:12px">${{fmt(p.markup_amount)}}</span></div>
+        <div class="total-input-row"><label>Tax %</label><input id="pf-tax" type="number" step="0.1" value="${{p.tax_pct||0}}" style="width:70px;border:1px solid #d1d5db;border-radius:5px;padding:4px 8px;text-align:right" oninput="recalcAllTotals()"><span id="tax-amt" style="color:#6b7280;font-size:12px">${{fmt(p.tax_amount)}}</span></div>
+        <div class="grand-total-row"><span class="gtl">TOTAL</span><span class="gtv" id="grand-total">${{fmt(p.total_amount)}}</span></div>
+      </div>
+      <div class="pd-extra">
+        <div class="form-row-3">
+          <div><label>Scope of Work</label><textarea id="pf-scope" oninput="autoSave(${{p.id}})">${{p.scope_summary||''}}</textarea></div>
+          <div><label>Exclusions</label><textarea id="pf-excl" oninput="autoSave(${{p.id}})">${{p.exclusions||''}}</textarea></div>
+          <div><label>Terms & Notes</label><textarea id="pf-terms" oninput="autoSave(${{p.id}})">${{p.terms||'Payment due within 30 days of invoice.'}}</textarea></div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}}
+
+function renderItemRow(item){{
+  return `<tr id="row-${{item.id}}">
+    <td><input value="${{(item.description||'').replace(/"/g,'&quot;')}}" onchange="updateItem(${{item.id}},'description',this.value)" style="min-width:140px"></td>
+    <td class="td-qty"><input type="number" value="${{fmtN(item.quantity)}}" onchange="updateItem(${{item.id}},'quantity',this.value)" oninput="recalcRow(${{item.id}},this)" class="td-qty"></td>
+    <td class="td-unit"><input value="${{item.unit||'ea'}}" onchange="updateItem(${{item.id}},'unit',this.value)" style="width:55px"></td>
+    <td class="td-cost"><input type="number" step="0.01" value="${{fmtN(item.unit_cost)}}" onchange="updateItem(${{item.id}},'unit_cost',this.value)" oninput="recalcRow(${{item.id}},this)"></td>
+    <td class="td-total" id="row-total-${{item.id}}">${{fmt(item.total)}}</td>
+    <td class="td-del"><button class="del-row" onclick="deleteItem(${{item.id}},'${{item.category}}')">✕</button></td>
+  </tr>`;
+}}
+
+function recalcRow(itemId,el){{
+  const row=document.getElementById('row-'+itemId);if(!row)return;
+  const nums=row.querySelectorAll('input[type=number]');
+  const total=(parseFloat(nums[0].value)||0)*(parseFloat(nums[1].value)||0);
+  const td=document.getElementById('row-total-'+itemId);if(td)td.textContent=fmt(total);
+  recalcAllTotals();
+}}
+function recalcAllTotals(){{
+  let subtotal=0;
+  for(const cat of CATEGORIES){{
+    let catSub=0;
+    const tbody=document.getElementById('items-'+cat.key);
+    if(tbody)tbody.querySelectorAll('tr').forEach(row=>{{
+      const nums=row.querySelectorAll('input[type=number]');
+      if(nums.length>=2)catSub+=(parseFloat(nums[0].value)||0)*(parseFloat(nums[1].value)||0);
+    }});
+    const el=document.getElementById('cat-sub-'+cat.key);if(el)el.textContent=fmt(catSub);
+    subtotal+=catSub;
+  }}
+  const subEl=document.getElementById('sub-total');if(subEl)subEl.textContent=fmt(subtotal);
+  const mp=parseFloat(document.getElementById('pf-markup')?.value)||0;
+  const tp=parseFloat(document.getElementById('pf-tax')?.value)||0;
+  const ma=subtotal*mp/100; const ta=(subtotal+ma)*tp/100; const grand=subtotal+ma+ta;
+  const mEl=document.getElementById('markup-amt');if(mEl)mEl.textContent=fmt(ma);
+  const tEl=document.getElementById('tax-amt');if(tEl)tEl.textContent=fmt(ta);
+  const gEl=document.getElementById('grand-total');if(gEl)gEl.textContent=fmt(grand);
+}}
+let autoSaveTimer=null;
+function autoSave(pid){{clearTimeout(autoSaveTimer);autoSaveTimer=setTimeout(()=>saveHeader(pid),1500);}}
+async function saveHeader(propId){{
+  const subtotal=parseFloat(document.getElementById('sub-total')?.textContent?.replace(/[$,]/g,''))||0;
+  const mp=parseFloat(document.getElementById('pf-markup')?.value)||0;
+  const tp=parseFloat(document.getElementById('pf-tax')?.value)||0;
+  const ma=subtotal*mp/100; const ta=(subtotal+ma)*tp/100; const grand=subtotal+ma+ta;
+  await pApi('/installation/api/v2/proposals/update',{{
+    id:propId,proposal_number:document.getElementById('pf-num')?.value||'',
+    title:document.getElementById('pf-title')?.value||'',
+    proposal_date:document.getElementById('pf-date')?.value||'',
+    valid_days:parseInt(document.getElementById('pf-valid')?.value)||30,
+    status:document.getElementById('pf-status')?.value||'draft',
+    days_allotted:parseInt(document.getElementById('pf-days')?.value)||0,
+    crew_size:parseInt(document.getElementById('pf-crew')?.value)||1,
+    markup_pct:mp,tax_pct:tp,subtotal,markup_amount:ma,tax_amount:ta,total_amount:grand,
+    scope_summary:document.getElementById('pf-scope')?.value||'',
+    exclusions:document.getElementById('pf-excl')?.value||'',
+    terms:document.getElementById('pf-terms')?.value||''
+  }});
+}}
+async function saveAll(pid){{await saveHeader(pid);await load();}}
+async function updateItem(itemId,field,value){{
+  const row=document.getElementById('row-'+itemId);if(!row)return;
+  const nums=row.querySelectorAll('input[type=number]');
+  const qty=parseFloat(nums[0]?.value)||0;const cost=parseFloat(nums[1]?.value)||0;
+  await pApi('/installation/api/v2/proposal-items/update',{{id:itemId,[field]:value,total:qty*cost}});
+  autoSave(activeProposalId);
+}}
+async function addItem(propId,category){{
+  const d=await pApi('/installation/api/v2/proposal-items/add',{{proposal_id:propId,category,description:'',quantity:1,unit:'ea',unit_cost:0,total:0}});
+  if(d.item){{const tbody=document.getElementById('items-'+category);if(tbody)tbody.insertAdjacentHTML('beforeend',renderItemRow(d.item));}}
+}}
+async function deleteItem(itemId,category){{
+  if(!confirm('Remove this line item?'))return;
+  await pApi('/installation/api/v2/proposal-items/delete',{{id:itemId}});
+  const row=document.getElementById('row-'+itemId);if(row)row.remove();
+  recalcAllTotals();autoSave(activeProposalId);
+}}
+async function reviseProposal(propId){{
+  if(!confirm('Create a new revision of this proposal?'))return;
+  const d=await pApi('/installation/api/v2/proposals/revise',{{id:propId}});
+  if(d.id)window.location.href='/installation/proposal/'+d.id;
+}}
+load();
+</script>
+</body></html>"""
+        return html
     except Exception as e:
         import traceback
         return f"<pre>{traceback.format_exc()}</pre>"
