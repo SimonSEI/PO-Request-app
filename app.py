@@ -28270,24 +28270,88 @@ def installation_standalone_proposal(prop_id):
 <html lang="en">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{page_title}</title>
+<style>
+body{{background:#eef0f3;margin:0}}
+/* FileMaker standalone editor */
+.fm-doc{{background:white;margin:16px;border-radius:10px;border:1px solid #d1d5db;box-shadow:0 2px 12px rgba(0,0,0,.08);overflow:hidden}}
+.fm-doc-topbar{{background:#1a3c5e;padding:14px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}}
+.fm-doc-topbar .fm-po-block{{display:flex;flex-direction:column;align-items:flex-end}}
+.fm-doc-topbar .fm-po-label{{font-size:10px;font-weight:700;color:rgba(255,255,255,.6);text-transform:uppercase;letter-spacing:.6px}}
+.fm-doc-topbar .fm-po-num{{font-size:22px;font-weight:900;color:white;letter-spacing:.5px;font-family:monospace;cursor:pointer}}
+.fm-doc-topbar .fm-title-block{{color:white;flex:1}}
+.fm-doc-topbar .fm-word{{font-size:13px;font-weight:800;letter-spacing:3px;color:rgba(255,255,255,.5);text-transform:uppercase}}
+.fm-client-input{{font-size:20px;font-weight:700;background:transparent;border:none;border-bottom:2px solid rgba(255,255,255,.3);color:white;padding:2px 0;min-width:260px;max-width:480px;display:block;margin-top:4px}}
+.fm-client-input::placeholder{{color:rgba(255,255,255,.4)}}
+.fm-client-input:focus{{outline:none;border-bottom-color:white}}
+.fm-subtitle-input{{font-size:14px;background:transparent;border:none;border-bottom:1px solid rgba(255,255,255,.2);color:rgba(255,255,255,.75);padding:2px 0;min-width:260px;display:block;margin-top:6px}}
+.fm-subtitle-input::placeholder{{color:rgba(255,255,255,.3)}}
+.fm-subtitle-input:focus{{outline:none;border-bottom-color:rgba(255,255,255,.6)}}
+.fm-meta-strip{{background:#f1f5f9;border-bottom:1px solid #e2e8f0;padding:10px 20px;display:flex;gap:20px;flex-wrap:wrap;align-items:center}}
+.fm-meta-strip .fm-mf{{display:flex;flex-direction:column;gap:1px}}
+.fm-meta-strip .fm-mf label{{font-size:10px;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px}}
+.fm-meta-strip .fm-mf input,.fm-meta-strip .fm-mf select{{border:1px solid #cbd5e1;border-radius:5px;padding:5px 8px;font-size:13px;background:white;min-width:80px}}
+.fm-meta-strip .fm-mf input:focus,.fm-meta-strip .fm-mf select:focus{{outline:none;border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.15)}}
+.fm-actions{{display:flex;gap:6px;margin-left:auto;flex-wrap:wrap}}
+.fm-section{{border-top:1px solid #e5e7eb}}
+.fm-section-hdr{{background:#f8fafc;padding:8px 20px;display:flex;align-items:center;justify-content:space-between}}
+.fm-section-hdr .fm-sh-label{{font-size:11px;font-weight:800;color:#475569;text-transform:uppercase;letter-spacing:.7px}}
+.fm-section-hdr .fm-sh-sub{{font-size:14px;font-weight:800;color:#1a3c5e}}
+.fm-table{{width:100%;border-collapse:collapse;font-size:13px}}
+.fm-table th{{font-size:10px;font-weight:800;color:#94a3b8;text-transform:uppercase;padding:6px 8px;text-align:left;border-bottom:2px solid #e2e8f0;background:#f8fafc;letter-spacing:.4px}}
+.fm-table th.th-r{{text-align:right}}
+.fm-table td{{padding:4px 6px;border-bottom:1px solid #f1f5f9;vertical-align:middle}}
+.fm-table tbody tr:hover td{{background:#f8fafc}}
+.fm-table td input{{border:1px solid transparent;border-radius:4px;padding:5px 7px;font-size:13px;width:100%;background:transparent;font-family:inherit}}
+.fm-table td input:hover,.fm-table td input:focus{{border-color:#cbd5e1;background:white;outline:none;box-shadow:0 0 0 2px rgba(37,99,235,.1)}}
+.fm-table td.td-del{{width:28px;text-align:center}}
+.fm-table .del-row{{background:none;border:none;color:#d1d5db;cursor:pointer;font-size:14px;padding:2px 5px;border-radius:3px;line-height:1}}
+.fm-table .del-row:hover{{background:#fee2e2;color:#dc2626}}
+.fm-table td.td-total{{font-weight:700;color:#1a3c5e;text-align:right;white-space:nowrap;padding-right:10px;width:90px}}
+.fm-table td.td-qty{{width:65px;text-align:right}}.fm-table td.td-unit{{width:65px}}.fm-table td.td-cost{{width:95px;text-align:right}}
+.fm-add-row{{display:block;width:100%;background:none;border:none;border-top:1px dashed #e2e8f0;color:#94a3b8;font-size:12px;padding:7px 20px;cursor:pointer;text-align:left;font-family:inherit}}
+.fm-add-row:hover{{color:#2563eb;background:#f0f7ff}}
+.fm-bottom{{display:grid;grid-template-columns:1fr auto;border-top:2px solid #e2e8f0}}
+.fm-text-areas{{padding:16px 20px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}}
+.fm-text-areas .fm-ta-wrap label{{font-size:10px;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px}}
+.fm-text-areas textarea{{width:100%;border:1px solid #e2e8f0;border-radius:6px;padding:8px 10px;font-size:12px;resize:vertical;font-family:inherit;min-height:80px;box-sizing:border-box}}
+.fm-text-areas textarea:focus{{outline:none;border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.1)}}
+.fm-totals-block{{padding:16px 24px;background:#f8fafc;border-left:2px solid #e2e8f0;min-width:220px;display:flex;flex-direction:column;gap:0}}
+.fm-total-row{{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:5px 0;font-size:13px;border-bottom:1px solid #f1f5f9}}
+.fm-total-row label{{font-weight:600;color:#475569}}
+.fm-total-row .tr-val{{font-weight:700;color:#1a3c5e;min-width:80px;text-align:right}}
+.fm-total-row input{{width:55px;border:1px solid #cbd5e1;border-radius:4px;padding:3px 6px;font-size:12px;text-align:right}}
+.fm-total-row .tr-pct-amt{{font-size:11px;color:#94a3b8;min-width:70px;text-align:right}}
+.fm-grand{{display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:10px;border-top:2px solid #1a3c5e}}
+.fm-grand label{{font-size:16px;font-weight:900;color:#1a3c5e;letter-spacing:.5px}}
+.fm-grand .fg-val{{font-size:24px;font-weight:900;color:#059669}}
+.link-job-bar{{background:#fff7ed;border-bottom:1px solid #fed7aa;padding:8px 20px;display:flex;align-items:center;gap:12px;font-size:13px}}
+.link-job-bar label{{font-size:11px;font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:.4px;white-space:nowrap}}
+.link-job-bar select{{border:1px solid #fed7aa;border-radius:5px;padding:5px 8px;font-size:13px;background:white;flex:1;max-width:340px}}
+@media print{{
+  .top-bar,.fm-actions,.del-row,.fm-add-row,.link-job-bar{{display:none!important}}
+  .fm-doc{{margin:0;border:none;box-shadow:none}}
+  .fm-doc-topbar{{background:#1a3c5e!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+  .fm-table td input{{border:none!important;background:transparent!important}}
+  body{{background:white}}
+}}
+</style>
 </head>
 <body>
 <div class="top-bar">
-  <h1>📋 {page_title}</h1>
+  <h1>📋 {po_number or 'Proposal'}</h1>
   <nav>
     <a href="/installation">← Jobs</a>
     <a href="/installation/schedule">📅 Schedule</a>
     <a href="/dashboard">Dashboard</a>
   </nav>
 </div>
-<div id="prop-detail-wrap" style="height:calc(100vh - 56px);overflow-y:auto;background:#f0f2f5"></div>
+<div style="height:calc(100vh - 56px);overflow-y:auto;background:#eef0f3" id="editor-scroll">
+  <div id="prop-detail-wrap"></div>
+</div>
 <script>
 const PROP_ID = {prop_id};
-const PROP_JOB_ID = null;
 let activeProposalId = {prop_id};
 const JOBS_OPTS_HTML = `{jobs_opts_py}`;
-
-/* reuse proposal rendering helpers from hub — inline minimal version */
 const CATEGORIES = [
   {{key:'materials',label:'Materials',icon:'🪨'}},
   {{key:'labor',label:'Labor',icon:'👷'}},
@@ -28307,75 +28371,108 @@ async function load(){{
 }}
 
 function renderDetail(p, items){{
-  const det = document.getElementById('prop-detail-wrap');
   const statusOpts = ['draft','sent','approved','rejected','revised'].map(s=>
     `<option value="${{s}}"${{p.status===s?' selected':''}}>${{s.charAt(0).toUpperCase()+s.slice(1)}}</option>`
   ).join('');
-  let itemsHtml = '';
+
+  let portalsHtml = '';
   for(const cat of CATEGORIES){{
     const catItems = items.filter(i=>i.category===cat.key);
     const rows = catItems.map(item=>renderItemRow(item)).join('');
-    itemsHtml += `<div class="li-section" data-cat="${{cat.key}}">
-      <div class="li-section-hdr">
-        <h4>${{cat.icon}} ${{cat.label}}</h4>
-        <span style="font-size:12px;font-weight:700;color:#1a3c5e" id="cat-sub-${{cat.key}}">${{fmt(catItems.reduce((s,i)=>s+(i.total||0),0))}}</span>
+    const catTotal = catItems.reduce((s,i)=>s+(i.total||0),0);
+    portalsHtml += `<div class="fm-section" data-cat="${{cat.key}}">
+      <div class="fm-section-hdr">
+        <span class="fm-sh-label">${{cat.icon}} ${{cat.label}}</span>
+        <span class="fm-sh-sub" id="cat-sub-${{cat.key}}">${{fmt(catTotal)}}</span>
       </div>
-      <table class="li-table">
-        <thead><tr><th>Description</th><th class="td-qty">Qty</th><th class="td-unit">Unit</th><th class="td-cost">Unit Cost</th><th style="text-align:right;padding-right:8px;width:90px">Total</th><th class="td-del"></th></tr></thead>
+      <table class="fm-table">
+        <thead><tr>
+          <th>Description</th>
+          <th class="th-r" style="width:60px">Qty</th>
+          <th style="width:60px">Unit</th>
+          <th class="th-r" style="width:95px">Unit Cost</th>
+          <th class="th-r" style="width:90px">Total</th>
+          <th style="width:28px"></th>
+        </tr></thead>
         <tbody id="items-${{cat.key}}">${{rows}}</tbody>
       </table>
-      <button class="btn-add-row" onclick="addItem(${{p.id}},'${{cat.key}}')">+ Add ${{cat.label}} Item</button>
+      <button class="fm-add-row" onclick="addItem(${{p.id}},'${{cat.key}}')">＋ Add ${{cat.label}} item</button>
     </div>`;
   }}
 
-  det.innerHTML = `<div style="max-width:1100px;margin:0 auto;padding:20px">
-    <div style="background:white;border-radius:10px;border:1px solid #e5e7eb;overflow:hidden">
-      <div class="pd-hdr">
-        <h2>📋 ${{p.po_number||p.proposal_number||'New Proposal'}} <span style="font-size:12px;font-weight:400;color:#6b7280">Rev.${{p.revision||0}}</span></h2>
-        <div class="pd-actions">
-          <button class="btn btn-secondary btn-sm" onclick="saveAll(${{p.id}})">💾 Save</button>
-          <button class="btn btn-secondary btn-sm" onclick="reviseProposal(${{p.id}})">📝 Revise</button>
-          <button class="btn btn-print btn-sm" onclick="window.print()">🖨 Print</button>
+  document.getElementById('prop-detail-wrap').innerHTML = `
+    <div style="max-width:1100px;margin:0 auto;padding:16px">
+      <div class="fm-doc">
+        <div class="fm-doc-topbar">
+          <div class="fm-title-block">
+            <div class="fm-word">Proposal</div>
+            <input class="fm-client-input" id="pf-client" value="${{(p.client_name_override||'').replace(/"/g,'&quot;')}}"
+              placeholder="Client / Company Name…"
+              oninput="onClientNameChange(${{p.id}}, this.value)"
+              onchange="autoSave(${{p.id}})">
+            <input class="fm-subtitle-input" id="pf-title" value="${{(p.title||'').replace(/"/g,'&quot;')}}"
+              placeholder="Project title…"
+              onchange="autoSave(${{p.id}})">
+          </div>
+          <div class="fm-po-block">
+            <span class="fm-po-label">Proposal No.</span>
+            <span class="fm-po-num" id="po-display">${{p.po_number||p.proposal_number||'—'}}</span>
+            <span style="font-size:10px;color:rgba(255,255,255,.5);text-align:right">Rev. ${{p.revision||0}}</span>
+          </div>
+        </div>
+        <div class="link-job-bar">
+          <label>🔗 Link to Job:</label>
+          <select onchange="linkJobChanged(${{p.id}}, this.value)">
+            ${{JOBS_OPTS_HTML}}
+          </select>
+          <span style="color:#92400e;font-size:12px">Linking moves this proposal to the job\'s Proposals tab.</span>
+        </div>
+        <div class="fm-meta-strip">
+          <div class="fm-mf"><label>Date</label><input id="pf-date" type="date" value="${{p.proposal_date||''}}" onchange="autoSave(${{p.id}})"></div>
+          <div class="fm-mf"><label>Valid (days)</label><input id="pf-valid" type="number" value="${{p.valid_days||30}}" style="width:65px" onchange="autoSave(${{p.id}})"></div>
+          <div class="fm-mf"><label>Status</label><select id="pf-status" onchange="autoSave(${{p.id}})">${{statusOpts}}</select></div>
+          <div class="fm-mf"><label>Days Allotted</label><input id="pf-days" type="number" value="${{p.days_allotted||0}}" style="width:65px" onchange="autoSave(${{p.id}})"></div>
+          <div class="fm-mf"><label>Crew Size</label><input id="pf-crew" type="number" value="${{p.crew_size||1}}" style="width:55px" onchange="autoSave(${{p.id}})"></div>
+          <div class="fm-actions">
+            <button class="btn btn-secondary btn-sm" onclick="saveAll(${{p.id}})">💾 Save</button>
+            <button class="btn btn-secondary btn-sm" onclick="reviseProposal(${{p.id}})">📝 Revise</button>
+            <button class="btn btn-print btn-sm" onclick="window.print()">🖨 Print</button>
+          </div>
+        </div>
+        ${{portalsHtml}}
+        <div class="fm-bottom">
+          <div class="fm-text-areas">
+            <div class="fm-ta-wrap"><label>Scope of Work</label><textarea id="pf-scope" oninput="autoSave(${{p.id}})">${{p.scope_summary||''}}</textarea></div>
+            <div class="fm-ta-wrap"><label>Exclusions</label><textarea id="pf-excl" oninput="autoSave(${{p.id}})">${{p.exclusions||''}}</textarea></div>
+            <div class="fm-ta-wrap"><label>Terms &amp; Conditions</label><textarea id="pf-terms" oninput="autoSave(${{p.id}})">${{p.terms||'Payment due within 30 days of invoice.'}}</textarea></div>
+          </div>
+          <div class="fm-totals-block">
+            <div class="fm-total-row"><label>Subtotal</label><span class="tr-val" id="sub-total">${{fmt(p.subtotal)}}</span></div>
+            <div class="fm-total-row">
+              <label>Markup</label>
+              <input id="pf-markup" type="number" step="0.1" value="${{p.markup_pct||0}}" oninput="recalcAllTotals()">
+              <span style="font-size:11px;color:#94a3b8">%</span>
+              <span class="tr-pct-amt" id="markup-amt">${{fmt(p.markup_amount)}}</span>
+            </div>
+            <div class="fm-total-row">
+              <label>Tax</label>
+              <input id="pf-tax" type="number" step="0.1" value="${{p.tax_pct||0}}" oninput="recalcAllTotals()">
+              <span style="font-size:11px;color:#94a3b8">%</span>
+              <span class="tr-pct-amt" id="tax-amt">${{fmt(p.tax_amount)}}</span>
+            </div>
+            <div class="fm-grand"><label>TOTAL</label><span class="fg-val" id="grand-total">${{fmt(p.total_amount)}}</span></div>
+          </div>
         </div>
       </div>
-      <div class="pd-meta">
-        <div class="meta-field"><label>Client</label><input id="pf-client" value="${{p.client_name_override||''}}" placeholder="Client name…" style="min-width:160px" onchange="autoSave(${{p.id}})"></div>
-        <div class="meta-field" style="min-width:180px"><label>Link to Job <span style="font-weight:400;color:#9ca3af">(optional)</span></label><select id="pf-job" onchange="linkJobChanged(${{p.id}})">${{JOBS_OPTS_HTML}}</select></div>
-        <div class="meta-field"><label>PO Number</label><input id="pf-num" value="${{p.po_number||p.proposal_number||''}}" onchange="autoSave(${{p.id}})"></div>
-        <div class="meta-field"><label>Title / Project</label><input id="pf-title" value="${{p.title||''}}" style="min-width:180px" onchange="autoSave(${{p.id}})"></div>
-        <div class="meta-field"><label>Date</label><input id="pf-date" type="date" value="${{p.proposal_date||''}}" onchange="autoSave(${{p.id}})"></div>
-        <div class="meta-field"><label>Valid (days)</label><input id="pf-valid" type="number" value="${{p.valid_days||30}}" style="width:65px" onchange="autoSave(${{p.id}})"></div>
-        <div class="meta-field"><label>Status</label><select id="pf-status" onchange="autoSave(${{p.id}})">${{statusOpts}}</select></div>
-      </div>
-      <div class="prop-sch-bar">
-        <div class="sf"><label>Days Allotted:</label><input id="pf-days" type="number" value="${{p.days_allotted||0}}" style="width:65px" onchange="autoSave(${{p.id}})"></div>
-        <div class="sf"><label>Crew Size:</label><input id="pf-crew" type="number" value="${{p.crew_size||1}}" style="width:55px" onchange="autoSave(${{p.id}})"></div>
-        <div class="sf" style="margin-left:auto"><button class="btn btn-secondary btn-sm" onclick="saveAll(${{p.id}})">💾 Save All</button></div>
-      </div>
-      <div class="pd-body">${{itemsHtml}}</div>
-      <div class="prop-totals">
-        <div class="total-input-row"><label>Subtotal</label><span id="sub-total" style="font-weight:700;color:#1a3c5e;font-size:15px">${{fmt(p.subtotal)}}</span></div>
-        <div class="total-input-row"><label>Markup %</label><input id="pf-markup" type="number" step="0.1" value="${{p.markup_pct||0}}" style="width:70px;border:1px solid #d1d5db;border-radius:5px;padding:4px 8px;text-align:right" oninput="recalcAllTotals()"><span id="markup-amt" style="color:#6b7280;font-size:12px">${{fmt(p.markup_amount)}}</span></div>
-        <div class="total-input-row"><label>Tax %</label><input id="pf-tax" type="number" step="0.1" value="${{p.tax_pct||0}}" style="width:70px;border:1px solid #d1d5db;border-radius:5px;padding:4px 8px;text-align:right" oninput="recalcAllTotals()"><span id="tax-amt" style="color:#6b7280;font-size:12px">${{fmt(p.tax_amount)}}</span></div>
-        <div class="grand-total-row"><span class="gtl">TOTAL</span><span class="gtv" id="grand-total">${{fmt(p.total_amount)}}</span></div>
-      </div>
-      <div class="pd-extra">
-        <div class="form-row-3">
-          <div><label>Scope of Work</label><textarea id="pf-scope" oninput="autoSave(${{p.id}})">${{p.scope_summary||''}}</textarea></div>
-          <div><label>Exclusions</label><textarea id="pf-excl" oninput="autoSave(${{p.id}})">${{p.exclusions||''}}</textarea></div>
-          <div><label>Terms & Notes</label><textarea id="pf-terms" oninput="autoSave(${{p.id}})">${{p.terms||'Payment due within 30 days of invoice.'}}</textarea></div>
-        </div>
-      </div>
-    </div>
-  </div>`;
+    </div>`;
 }}
 
 function renderItemRow(item){{
   return `<tr id="row-${{item.id}}">
-    <td><input value="${{(item.description||'').replace(/"/g,'&quot;')}}" onchange="updateItem(${{item.id}},'description',this.value)" style="min-width:140px"></td>
-    <td class="td-qty"><input type="number" value="${{fmtN(item.quantity)}}" onchange="updateItem(${{item.id}},'quantity',this.value)" oninput="recalcRow(${{item.id}},this)" class="td-qty"></td>
+    <td><input value="${{(item.description||'').replace(/"/g,'&quot;')}}" onchange="updateItem(${{item.id}},'description',this.value)" style="min-width:160px"></td>
+    <td class="td-qty" style="text-align:right"><input type="number" value="${{fmtN(item.quantity)}}" onchange="updateItem(${{item.id}},'quantity',this.value)" oninput="recalcRow(${{item.id}},this)" style="text-align:right"></td>
     <td class="td-unit"><input value="${{item.unit||'ea'}}" onchange="updateItem(${{item.id}},'unit',this.value)" style="width:55px"></td>
-    <td class="td-cost"><input type="number" step="0.01" value="${{fmtN(item.unit_cost)}}" onchange="updateItem(${{item.id}},'unit_cost',this.value)" oninput="recalcRow(${{item.id}},this)"></td>
+    <td class="td-cost" style="text-align:right"><input type="number" step="0.01" value="${{fmtN(item.unit_cost)}}" onchange="updateItem(${{item.id}},'unit_cost',this.value)" oninput="recalcRow(${{item.id}},this)" style="text-align:right"></td>
     <td class="td-total" id="row-total-${{item.id}}">${{fmt(item.total)}}</td>
     <td class="td-del"><button class="del-row" onclick="deleteItem(${{item.id}},'${{item.category}}')">✕</button></td>
   </tr>`;
@@ -28408,17 +28505,33 @@ function recalcAllTotals(){{
   const tEl=document.getElementById('tax-amt');if(tEl)tEl.textContent=fmt(ta);
   const gEl=document.getElementById('grand-total');if(gEl)gEl.textContent=fmt(grand);
 }}
-async function linkJobChanged(propId){{
-  const jobId = document.getElementById('pf-job')?.value||null;
-  if(!jobId) return;
-  if(!confirm('Link this proposal to that job? You will be taken to the job page.')) {{
-    document.getElementById('pf-job').value = ''; return;
-  }}
-  await pApi('/installation/api/v2/proposals/update',{{id:propId,job_id:jobId,standalone:0}});
-  window.location.href = '/installation/job/'+jobId+'?tab=proposals';
-}}
+
 let autoSaveTimer=null;
 function autoSave(pid){{clearTimeout(autoSaveTimer);autoSaveTimer=setTimeout(()=>saveHeader(pid),1500);}}
+
+let _poRegenTimer=null;
+function onClientNameChange(pid, val){{
+  clearTimeout(_poRegenTimer);
+  _poRegenTimer = setTimeout(async()=>{{
+    if(!val.trim()) return;
+    const d = await pApi('/installation/api/v2/proposals/regen-po',{{id:pid,name:val.trim()}});
+    if(d.changed && d.po_number){{
+      const el=document.getElementById('po-display');
+      if(el)el.textContent=d.po_number;
+    }}
+    autoSave(pid);
+  }}, 800);
+}}
+
+async function linkJobChanged(propId, jobId){{
+  if(!jobId) return;
+  if(!confirm('Link this proposal to that job? You will be taken to the job\'s Proposals tab.')){{
+    return;
+  }}
+  await pApi('/installation/api/v2/proposals/update',{{id:propId,job_id:jobId,standalone:0}});
+  window.location.href='/installation/job/'+jobId+'?tab=proposals';
+}}
+
 async function saveHeader(propId){{
   const subtotal=parseFloat(document.getElementById('sub-total')?.textContent?.replace(/[$,]/g,''))||0;
   const mp=parseFloat(document.getElementById('pf-markup')?.value)||0;
@@ -28427,7 +28540,7 @@ async function saveHeader(propId){{
   await pApi('/installation/api/v2/proposals/update',{{
     id:propId,
     client_name_override:document.getElementById('pf-client')?.value||'',
-    proposal_number:document.getElementById('pf-num')?.value||'',
+    proposal_number:document.getElementById('po-display')?.textContent||'',
     title:document.getElementById('pf-title')?.value||'',
     proposal_date:document.getElementById('pf-date')?.value||'',
     valid_days:parseInt(document.getElementById('pf-valid')?.value)||30,
