@@ -30311,10 +30311,10 @@ def installation_standalone_proposal(prop_id):
                 for item in cat_items:
                     rows_html += (
                         f'<tr id="row-{item[0]}">' +
-                        f'<td><input value="{esc(item[2])}" onchange="updateItem({item[0]},\'description\',this.value)" style="min-width:160px"></td>' +
-                        f'<td style="text-align:right"><input type="number" value="{fmt_num(item[3])}" onchange="updateItem({item[0]},\'quantity\',this.value)" oninput="recalcRow({item[0]})" style="width:65px;text-align:right"></td>' +
+                        f'<td><input value="{esc(item[2])}" oninput="debounceUpdate({item[0]},\'description\',this.value)" onblur="updateItem({item[0]},\'description\',this.value)" placeholder="Description" style="min-width:180px;width:100%"></td>' +
+                        f'<td style="text-align:right"><input type="number" value="{fmt_num(item[3])}" onchange="updateItem({item[0]},\'quantity\',this.value)" oninput="recalcRow({item[0]})" style="width:70px;text-align:right"></td>' +
                         f'<td><input value="{esc(item[4] or chr(101)+chr(97))}" onchange="updateItem({item[0]},\'unit\',this.value)" style="width:55px"></td>' +
-                        f'<td style="text-align:right"><input type="number" step="0.01" value="{fmt_num(item[5])}" onchange="updateItem({item[0]},\'unit_cost\',this.value)" oninput="recalcRow({item[0]})" style="width:80px;text-align:right"></td>' +
+                        f'<td style="text-align:right"><input type="number" step="0.01" value="{fmt_num(item[5])}" onchange="updateItem({item[0]},\'unit_cost\',this.value)" oninput="recalcRow({item[0]})" style="width:90px;text-align:right"></td>' +
                         f'<td class="td-total" id="row-total-{item[0]}">{fmt_money(item[6])}</td>' +
                         f'<td><button class="del-row" onclick="deleteItem({item[0]},\'{cat_key}\')">&times;</button></td>' +
                         '</tr>'
@@ -30394,8 +30394,9 @@ body{{background:#eef0f3;margin:0}}
 .fm-table th.th-r{{text-align:right}}
 .fm-table td{{padding:4px 6px;border-bottom:1px solid #f1f5f9;vertical-align:middle}}
 .fm-table tbody tr:hover td{{background:#f8fafc}}
-.fm-table td input{{border:1px solid transparent;border-radius:4px;padding:5px 7px;font-size:13px;width:100%;background:transparent;font-family:inherit}}
-.fm-table td input:hover,.fm-table td input:focus{{border-color:#cbd5e1;background:white;outline:none}}
+.fm-table td input{{border:1px solid #e2e8f0;border-radius:4px;padding:5px 7px;font-size:13px;width:100%;background:white;font-family:inherit;box-sizing:border-box}}
+.fm-table td input:hover{{border-color:#94a3b8}}
+.fm-table td input:focus{{border-color:#2563eb;outline:none;box-shadow:0 0 0 2px rgba(37,99,235,.15)}}
 .td-total{{font-weight:700;color:#1a3c5e;text-align:right;white-space:nowrap;padding-right:10px;width:90px}}
 .del-row{{background:none;border:none;color:#d1d5db;cursor:pointer;font-size:14px;padding:2px 5px;border-radius:3px}}
 .del-row:hover{{background:#fee2e2;color:#dc2626}}
@@ -30627,10 +30628,17 @@ body{{background:#eef0f3;margin:0}}
 
 <script>
 const PROP_ID = {pid};
-const CATS = ['materials','labor','equipment','subcontractor','other'];
+const CATS = ['materials','labor','equipment','subcontractor','travel','other'];
 
 function fmt(n){{return '$'+(parseFloat(n)||0).toLocaleString('en-US',{{minimumFractionDigits:2,maximumFractionDigits:2}});}}
 async function api(url,data){{const r=await fetch(url,{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(data)}});return r.json();}}
+
+/* ── Debounced description save ── */
+const _dbt={{}};
+function debounceUpdate(itemId,field,value){{
+  clearTimeout(_dbt[itemId]);
+  _dbt[itemId]=setTimeout(()=>updateItem(itemId,field,value),600);
+}}
 
 /* ── Tab switching ── */
 function switchTab(t){{
