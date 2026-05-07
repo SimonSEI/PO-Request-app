@@ -27343,6 +27343,7 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
     <a href="/installation" class="active">Jobs</a>
     <a href="/installation/schedule">📅 Schedule</a>
     <a href="/installation/crews">👷 Crews</a>
+    <a href="/installation/rate-card">📋 Parts Catalog</a>
     <a href="/dashboard">← Dashboard</a>
   </nav>
   <a href="/installation/proposal/new" class="btn btn-primary" style="margin-left:auto;white-space:nowrap;flex-shrink:0">+ New Proposal</a>
@@ -27472,6 +27473,7 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
     <a href="/installation">← Jobs</a>
     <a href="/installation/schedule">📅 Schedule</a>
     <a href="/installation/crews">👷 Manage Crews</a>
+    <a href="/installation/rate-card">📋 Parts Catalog</a>
     <a href="/dashboard">Dashboard</a>
   </nav>
 </div>
@@ -28344,6 +28346,7 @@ select:focus,input:focus{outline:none;border-color:#1a3c5e}
   <nav>
     <a href="/installation">← Jobs</a>
     <a href="/installation/crews">👷 Manage Crews</a>
+    <a href="/installation/rate-card">📋 Parts Catalog</a>
     <a href="/dashboard">Dashboard</a>
   </nav>
 </div>
@@ -28531,6 +28534,7 @@ INSTALLATION_CREWS_TEMPLATE = _INST_CSS + """<!DOCTYPE html>
   <nav>
     <a href="/installation/schedule">← Schedule</a>
     <a href="/installation">Jobs</a>
+    <a href="/installation/rate-card">📋 Parts Catalog</a>
     <a href="/dashboard">Dashboard</a>
   </nav>
 </div>
