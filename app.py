@@ -16347,6 +16347,18 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
     </style>
 </head>
 <body>
+    <div class="controls">
+        <a href="/community_billing_tech" class="btn btn-secondary" style="padding: 10px 20px; text-decoration: none; border-radius: 6px; color: white; background: #6c757d; border: none; cursor: pointer; font-weight: 600; display: inline-block;" data-i18n="back_home_btn">← Back to Home</a>
+        <button class="btn-secondary" id="saveBtn" type="button" style="padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;" data-i18n="save_btn">Save</button>
+        <span id="unsavedDot" style="display:none; color:#e67e22; font-size:13px; font-weight:600; align-self:center;" data-i18n="unsaved_indicator">● Unsaved</span>
+        <button class="btn-success" id="submitBtn" type="button" {% if status == 'submitted' %}disabled{% endif %} style="padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
+            {% if status == 'submitted' %}<span data-i18n="btn_finalized">✓ Finalized</span>{% else %}<span data-i18n="btn_submit_finalize">Submit & Finalize</span>{% endif %}
+        </button>
+        {% if status == 'submitted' %}
+        <button id="reopenBtn" type="button" style="padding: 10px 20px; background: #fd7e14; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;" data-i18n="btn_reopen">↩ Reopen for Editing</button>
+        {% endif %}
+        <button class="lang-toggle-btn" id="langToggleBtn" onclick="toggleLanguage()">🇪🇸 Español</button>
+    </div>
     <div class="container">
         <div class="header">
             <h1 data-i18n="page_title">Community Maintenance Entry
@@ -16449,18 +16461,6 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
             💰 Current Invoice Total: $<span id="liveInvoiceTotal">0.00</span>
         </div>
 
-        <div class="controls">
-            <a href="/community_billing_tech" class="btn btn-secondary" style="padding: 10px 20px; text-decoration: none; border-radius: 6px; color: white; background: #6c757d; border: none; cursor: pointer; font-weight: 600; display: inline-block;" data-i18n="back_home_btn">← Back to Home</a>
-            <button class="btn-secondary" id="saveBtn" type="button" style="padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;" data-i18n="save_btn">Save</button>
-            <span id="unsavedDot" style="display:none; color:#e67e22; font-size:13px; font-weight:600; align-self:center;" data-i18n="unsaved_indicator">● Unsaved</span>
-            <button class="btn-success" id="submitBtn" type="button" {% if status == 'submitted' %}disabled{% endif %} style="padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
-                {% if status == 'submitted' %}<span data-i18n="btn_finalized">✓ Finalized</span>{% else %}<span data-i18n="btn_submit_finalize">Submit & Finalize</span>{% endif %}
-            </button>
-            {% if status == 'submitted' %}
-            <button id="reopenBtn" type="button" style="padding: 10px 20px; background: #fd7e14; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;" data-i18n="btn_reopen">↩ Reopen for Editing</button>
-            {% endif %}
-            <button class="lang-toggle-btn" id="langToggleBtn" onclick="toggleLanguage()">🇪🇸 Español</button>
-        </div>
     </div>
 
     <script type="application/json" id="pageData">
