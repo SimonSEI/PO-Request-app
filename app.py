@@ -25455,7 +25455,19 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
     <a href="/installation/crews">👷 Crews</a>
     <a href="/dashboard">← Dashboard</a>
   </nav>
-  <button class="btn btn-primary" onclick="openNewPropModal(null,null)" style="margin-left:auto;white-space:nowrap;flex-shrink:0">+ New Proposal</button>
+  <a href="/installation/proposal/new" class="btn btn-primary" style="margin-left:auto;white-space:nowrap;flex-shrink:0">+ New Proposal</a>
+</div>
+
+<!-- Hero CTA -->
+<div style="background:linear-gradient(135deg,#1a3c5e 0%,#2563eb 100%);padding:28px 24px;display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap">
+  <div>
+    <div style="color:rgba(255,255,255,.7);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px">Ready to start?</div>
+    <div style="color:white;font-size:20px;font-weight:800;margin-bottom:2px">Create a New Proposal</div>
+    <div style="color:rgba(255,255,255,.65);font-size:13px">Link to an existing job or start a standalone proposal</div>
+  </div>
+  <a href="/installation/proposal/new" style="display:inline-flex;align-items:center;gap:10px;background:white;color:#1a3c5e;font-size:16px;font-weight:800;padding:14px 28px;border-radius:10px;text-decoration:none;white-space:nowrap;box-shadow:0 4px 16px rgba(0,0,0,.2);letter-spacing:.2px;transition:transform .1s" onmouseover="this.style.transform='scale(1.03)'" onmouseout="this.style.transform='scale(1)'">
+    📋 New Proposal →
+  </a>
 </div>
 
 <div class="search-bar">
@@ -25527,90 +25539,21 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
   {% endif %}
 </div>
 
-<!-- New Proposal Modal -->
-<div class="modal-overlay" id="new-prop-modal" onclick="if(event.target===this)this.classList.remove('open')">
-  <div class="modal" style="max-width:480px">
-    <button class="modal-close" onclick="document.getElementById('new-prop-modal').classList.remove('open')">×</button>
-    <h3 style="margin-bottom:14px">📋 New Proposal</h3>
-    <div style="display:flex;gap:0;margin-bottom:16px;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">
-      <button id="toggle-linked" onclick="setNpType('linked')" style="flex:1;padding:9px;font-size:13px;font-weight:600;border:none;cursor:pointer;background:#1a3c5e;color:white;transition:all .15s">🔗 Link to Job</button>
-      <button id="toggle-standalone" onclick="setNpType('standalone')" style="flex:1;padding:9px;font-size:13px;font-weight:600;border:none;cursor:pointer;background:#f3f4f6;color:#374151;transition:all .15s">📄 Standalone</button>
-    </div>
-    <div id="np-linked-fields">
-      <label style="font-size:12px;font-weight:700;color:#6b7280;display:block;margin-bottom:5px;text-transform:uppercase">Job</label>
-      <select id="np-job-select" onchange="updatePoPreview()" style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:8px 10px;font-size:14px;margin-bottom:14px">
-        <option value="">— Select a job —</option>
-        {% for j in jobs %}
-        <option value="{{ j.id }}" data-prefix="{{ j.job_po_prefix }}" data-name="{{ j.job_name|e }}">{{ j.job_name }}{% if j.client_name %} — {{ j.client_name }}{% endif %}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div id="np-standalone-fields" style="display:none">
-      <label style="font-size:12px;font-weight:700;color:#6b7280;display:block;margin-bottom:5px;text-transform:uppercase">Client Name</label>
-      <input id="np-client" style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:8px 10px;font-size:14px;margin-bottom:10px" placeholder="e.g. Madison Capital Group" oninput="updatePoPreview()">
-      <label style="font-size:12px;font-weight:700;color:#6b7280;display:block;margin-bottom:5px;text-transform:uppercase">Project / Title</label>
-      <input id="np-project" style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:8px 10px;font-size:14px;margin-bottom:14px" placeholder="e.g. Parking Lot Landscaping">
-    </div>
-    <div style="background:#f0f7ff;border:1px solid #bfdbfe;border-radius:6px;padding:10px 14px;margin-bottom:16px;display:flex;align-items:center;gap:10px">
-      <span style="font-size:12px;color:#6b7280;white-space:nowrap">PO Number:</span>
-      <span id="po-preview" style="font-size:18px;font-weight:800;color:#1a3c5e;letter-spacing:.5px">—</span>
-      <span style="font-size:11px;color:#9ca3af">(auto-assigned on save)</span>
-    </div>
-    <button class="btn btn-primary" style="width:100%;padding:10px" onclick="createProposalFromHub()">Create Proposal →</button>
-  </div>
-</div>
-
 <script>
-let _npType = 'linked';
-function setNpType(t){
-  _npType = t;
-  document.getElementById('np-linked-fields').style.display = t==='linked'?'':'none';
-  document.getElementById('np-standalone-fields').style.display = t==='standalone'?'':'none';
-  const styles = {active:'flex:1;padding:9px;font-size:13px;font-weight:600;border:none;cursor:pointer;background:#1a3c5e;color:white;transition:all .15s',
-                  inactive:'flex:1;padding:9px;font-size:13px;font-weight:600;border:none;cursor:pointer;background:#f3f4f6;color:#374151;transition:all .15s'};
-  document.getElementById('toggle-linked').style.cssText = t==='linked'?styles.active:styles.inactive;
-  document.getElementById('toggle-standalone').style.cssText = t==='standalone'?styles.active:styles.inactive;
-  updatePoPreview();
-}
 function makeInitials(name){
   if(!name) return '';
   const stop = new Set(['THE','OF','AND','A','AN','IN','AT','FOR','TO','LLC','INC','CORP','CO','GROUP','GRP','&']);
   return name.toUpperCase().split(/[\s&]+/).filter(w=>w&&!stop.has(w)&&/^[A-Z]/i.test(w)).map(w=>w[0]).join('').substring(0,5)||'PROP';
 }
-function updatePoPreview(){
-  let prefix = '';
-  if(_npType==='linked'){
-    const sel = document.getElementById('np-job-select');
-    const opt = sel.options[sel.selectedIndex];
-    prefix = opt?.dataset?.prefix || makeInitials(opt?.dataset?.name||'');
-  } else {
-    prefix = makeInitials(document.getElementById('np-client')?.value||'');
-  }
-  document.getElementById('po-preview').textContent = prefix ? prefix+'-###' : '—';
-}
 function openNewPropModal(jobId, jobName){
-  if(jobId){ setNpType('linked'); document.getElementById('np-job-select').value = jobId; }
-  else { setNpType('linked'); document.getElementById('np-job-select').value = ''; }
-  updatePoPreview();
-  document.getElementById('new-prop-modal').classList.add('open');
-}
-async function createProposalFromHub(){
-  const payload = {standalone: _npType==='standalone' ? 1 : 0};
-  if(_npType==='linked'){
-    payload.job_id = document.getElementById('np-job-select').value||null;
-    if(!payload.job_id){alert('Please select a job');return;}
-  } else {
-    payload.job_id = null;
-    payload.client_name_override = document.getElementById('np-client').value.trim();
-    payload.project_name = document.getElementById('np-project').value.trim();
-    if(!payload.client_name_override){alert('Client name is required for a standalone proposal');return;}
-  }
-  const r = await fetch('/installation/api/v2/proposals/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-  const d = await r.json();
-  if(d.id){
-    if(_npType==='linked' && payload.job_id) window.location.href='/installation/job/'+payload.job_id+'?tab=proposals';
-    else window.location.href='/installation/proposal/'+d.id;
-  } else alert('Error: '+(d.error||'Unknown'));
+  // Per-job shortcut: immediately create a linked proposal
+  if(!jobId){ window.location.href='/installation/proposal/new'; return; }
+  if(!confirm('Create a new proposal for "'+jobName+'"?')) return;
+  fetch('/installation/api/v2/proposals/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:jobId,standalone:0})})
+    .then(r=>r.json()).then(d=>{
+      if(d.id) window.location.href='/installation/job/'+jobId+'?tab=proposals&prop_id='+d.id;
+      else alert('Error: '+(d.error||'Unknown'));
+    });
 }
 function filterCards(){
   const q = document.getElementById('search-input').value.toLowerCase().trim();
@@ -28202,6 +28145,176 @@ def installation_crews_move():
         return jsonify({'success': False, 'error': str(e)})
 
 
+
+
+@app.route('/installation/proposal/new')
+def installation_new_proposal_page():
+    if 'username' not in session:
+        return redirect(url_for('login'))
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        stop_words = {'THE','OF','AND','A','AN','IN','AT','FOR','TO','LLC','INC','CORP','CO','GROUP','GRP'}
+        def _pfx(name):
+            if not name: return 'PROP'
+            return (''.join(w[0] for w in name.upper().split()
+                            if w and w not in stop_words and w[0].isalpha())[:5] or 'PROP')
+        c.execute("""SELECT id, job_name, client_name FROM jobs
+                     WHERE COALESCE(department,'install')='install' ORDER BY active DESC, job_name ASC""")
+        jobs_raw = c.fetchall()
+        conn.close()
+        jobs_opts = ''.join(
+            '<option value="{}" data-prefix="{}" data-name="{}">{}</option>'.format(
+                r[0], _pfx(r[1]), r[1].replace('"', '&quot;'),
+                r[1] + ('  —  ' + r[2] if r[2] else ''))
+            for r in jobs_raw
+        )
+    except Exception:
+        jobs_opts = ''
+
+    html = _INST_CSS + '''<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>New Proposal — Installation</title>
+<style>
+.np-wrap{max-width:560px;margin:48px auto;padding:0 20px 60px}
+.np-card{background:white;border-radius:14px;border:1px solid #e5e7eb;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.07)}
+.np-header{background:linear-gradient(135deg,#1a3c5e 0%,#2563eb 100%);padding:28px 32px;color:white}
+.np-header h1{font-size:24px;font-weight:800;margin:0 0 4px}
+.np-header p{font-size:14px;color:rgba(255,255,255,.7);margin:0}
+.np-body{padding:28px 32px}
+.toggle-row{display:flex;border:2px solid #e5e7eb;border-radius:10px;overflow:hidden;margin-bottom:28px}
+.toggle-btn{flex:1;padding:14px 16px;font-size:14px;font-weight:700;border:none;cursor:pointer;transition:all .15s;display:flex;align-items:center;justify-content:center;gap:8px}
+.toggle-btn.active{background:#1a3c5e;color:white}
+.toggle-btn.inactive{background:#f9fafb;color:#6b7280}
+.toggle-btn.inactive:hover{background:#f3f4f6;color:#374151}
+.field-group{margin-bottom:18px}
+.field-group label{display:block;font-size:11px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px}
+.field-group select,.field-group input{width:100%;border:1.5px solid #d1d5db;border-radius:8px;padding:10px 14px;font-size:14px;transition:border-color .15s;box-sizing:border-box}
+.field-group select:focus,.field-group input:focus{outline:none;border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.1)}
+.po-preview{background:#f0f7ff;border:1.5px solid #bfdbfe;border-radius:8px;padding:14px 18px;margin-bottom:24px;display:flex;align-items:center;gap:14px}
+.po-preview .label{font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.6px;white-space:nowrap}
+.po-preview .value{font-size:26px;font-weight:900;color:#1a3c5e;letter-spacing:.5px;flex:1}
+.po-preview .hint{font-size:11px;color:#9ca3af;white-space:nowrap}
+.create-btn{width:100%;padding:15px;font-size:16px;font-weight:800;background:#1a3c5e;color:white;border:none;border-radius:10px;cursor:pointer;transition:all .15s;letter-spacing:.2px}
+.create-btn:hover{background:#2563eb;transform:translateY(-1px);box-shadow:0 4px 16px rgba(37,99,235,.3)}
+.create-btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+.back-link{display:inline-flex;align-items:center;gap:6px;color:#6b7280;font-size:13px;text-decoration:none;margin-bottom:20px}
+.back-link:hover{color:#1a3c5e}
+</style>
+</head>
+<body>
+<div class="top-bar">
+  <h1>🏗️ Installation</h1>
+  <nav>
+    <a href="/installation">Jobs</a>
+    <a href="/installation/schedule">📅 Schedule</a>
+    <a href="/installation/crews">👷 Crews</a>
+    <a href="/dashboard">← Dashboard</a>
+  </nav>
+</div>
+
+<div class="np-wrap">
+  <a href="/installation" class="back-link">← Back to Jobs</a>
+  <div class="np-card">
+    <div class="np-header">
+      <h1>📋 New Proposal</h1>
+      <p>Choose how this proposal is organized, then start building.</p>
+    </div>
+    <div class="np-body">
+
+      <div class="toggle-row">
+        <button class="toggle-btn active" id="btn-linked" onclick="setType('linked')">🔗 Link to a Job</button>
+        <button class="toggle-btn inactive" id="btn-standalone" onclick="setType('standalone')">📄 Standalone</button>
+      </div>
+
+      <div id="linked-fields">
+        <div class="field-group">
+          <label>Job</label>
+          <select id="job-select" onchange="updatePreview()">
+            <option value="">— Select a job —</option>
+            ''' + jobs_opts + '''
+          </select>
+        </div>
+      </div>
+
+      <div id="standalone-fields" style="display:none">
+        <div class="field-group">
+          <label>Client Name</label>
+          <input id="client-name" placeholder="e.g. Madison Capital Group" oninput="updatePreview()">
+        </div>
+        <div class="field-group">
+          <label>Project / Proposal Title</label>
+          <input id="project-name" placeholder="e.g. Parking Lot Landscaping">
+        </div>
+      </div>
+
+      <div class="po-preview">
+        <span class="label">PO #</span>
+        <span class="value" id="po-val">—</span>
+        <span class="hint">auto-assigned</span>
+      </div>
+
+      <button class="create-btn" id="create-btn" onclick="doCreate()">Create Proposal →</button>
+
+    </div>
+  </div>
+</div>
+
+<script>
+let _type = 'linked';
+function setType(t){
+  _type = t;
+  document.getElementById('linked-fields').style.display = t==='linked'?'':'none';
+  document.getElementById('standalone-fields').style.display = t==='standalone'?'':'none';
+  document.getElementById('btn-linked').className = 'toggle-btn '+(t==='linked'?'active':'inactive');
+  document.getElementById('btn-standalone').className = 'toggle-btn '+(t==='standalone'?'active':'inactive');
+  updatePreview();
+}
+function makeInitials(name){
+  if(!name) return '';
+  const stop = new Set(['THE','OF','AND','A','AN','IN','AT','FOR','TO','LLC','INC','CORP','CO','GROUP','GRP','&']);
+  return name.toUpperCase().split(/[\\s&]+/).filter(w=>w&&!stop.has(w)&&/^[A-Z]/i.test(w)).map(w=>w[0]).join('').substring(0,5)||'PROP';
+}
+function updatePreview(){
+  let prefix = '';
+  if(_type==='linked'){
+    const sel = document.getElementById('job-select');
+    const opt = sel.options[sel.selectedIndex];
+    prefix = opt?.dataset?.prefix || makeInitials(opt?.dataset?.name||'');
+  } else {
+    prefix = makeInitials(document.getElementById('client-name').value||'');
+  }
+  document.getElementById('po-val').textContent = prefix ? prefix+'-###' : '—';
+}
+async function doCreate(){
+  const btn = document.getElementById('create-btn');
+  const payload = {standalone: _type==='standalone' ? 1 : 0};
+  if(_type==='linked'){
+    payload.job_id = document.getElementById('job-select').value || null;
+    if(!payload.job_id){alert('Please select a job, or switch to Standalone.');return;}
+  } else {
+    payload.job_id = null;
+    payload.client_name_override = document.getElementById('client-name').value.trim();
+    payload.project_name = document.getElementById('project-name').value.trim();
+    if(!payload.client_name_override){alert('Client name is required.');return;}
+  }
+  btn.disabled = true; btn.textContent = 'Creating…';
+  try {
+    const r = await fetch('/installation/api/v2/proposals/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const d = await r.json();
+    if(d.id){
+      if(_type==='linked' && payload.job_id)
+        window.location.href = '/installation/job/'+payload.job_id+'?tab=proposals&prop_id='+d.id;
+      else
+        window.location.href = '/installation/proposal/'+d.id;
+    } else { alert('Error: '+(d.error||'Unknown')); btn.disabled=false; btn.textContent='Create Proposal →'; }
+  } catch(e){ alert('Network error'); btn.disabled=false; btn.textContent='Create Proposal →'; }
+}
+</script>
+</body></html>
+'''
+    return html
 
 
 @app.route('/installation/proposal/<int:prop_id>')
