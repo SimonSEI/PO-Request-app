@@ -28210,6 +28210,27 @@ def v2_proposals_regen_po():
         return jsonify({'success': False, 'error': str(e)})
 
 
+
+@app.route('/installation/api/v2/proposals/match-job')
+def v2_proposals_match_job():
+    if 'username' not in session:
+        return jsonify({'matches': []})
+    name = request.args.get('name', '').strip().lower()
+    if len(name) < 3:
+        return jsonify({'matches': []})
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""SELECT id, job_name, client_name FROM jobs
+                     WHERE LOWER(job_name) LIKE ? OR LOWER(COALESCE(client_name,'')) LIKE ?
+                     LIMIT 5""", (f'%{name}%', f'%{name}%'))
+        matches = [{'id': r[0], 'name': r[1], 'client': r[2] or ''} for r in c.fetchall()]
+        conn.close()
+        return jsonify({'matches': matches})
+    except:
+        return jsonify({'matches': []})
+
+
 @app.route('/installation/proposal/new')
 def installation_new_proposal_page():
     if 'username' not in session:
@@ -28308,11 +28329,11 @@ def installation_standalone_proposal(prop_id):
             except: return '0'
 
         CATS = [
-            ('materials', 'Materials', '\U0001FAA8'),
-            ('labor', 'Labor', '\U0001F477'),
-            ('equipment', 'Equipment', '\U0001F69C'),
-            ('subcontractor', 'Subcontractors', '\U0001F91D'),
-            ('other', 'Other', '\U0001F4E6'),
+            ('materials',    'Materials',      '&#129704;'),
+            ('labor',        'Labor',          '&#128119;'),
+            ('equipment',    'Equipment',      '&#128668;'),
+            ('subcontractor','Subcontractors', '&#129309;'),
+            ('other',        'Other',          '&#128230;'),
         ]
 
         items_by_cat = {}
@@ -28334,7 +28355,7 @@ def installation_standalone_proposal(prop_id):
                         f'<td><input value="{esc(item[4] or chr(101)+chr(97))}" onchange="updateItem({item[0]},\'unit\',this.value)" style="width:55px"></td>' +
                         f'<td style="text-align:right"><input type="number" step="0.01" value="{fmt_num(item[5])}" onchange="updateItem({item[0]},\'unit_cost\',this.value)" oninput="recalcRow({item[0]})" style="width:80px;text-align:right"></td>' +
                         f'<td class="td-total" id="row-total-{item[0]}">{fmt_money(item[6])}</td>' +
-                        f'<td><button class="del-row" onclick="deleteItem({item[0]},\'{ cat_key}\')">&times;</button></td>' +
+                        f'<td><button class="del-row" onclick="deleteItem({item[0]},\'{cat_key}\')">&times;</button></td>' +
                         '</tr>'
                     )
                 out += (
@@ -28346,10 +28367,20 @@ def installation_standalone_proposal(prop_id):
                     '<th style="width:60px">Unit</th><th class="th-r" style="width:95px">Unit Cost</th>' +
                     '<th class="th-r" style="width:90px">Total</th><th style="width:28px"></th></tr></thead>' +
                     f'<tbody id="items-{cat_key}">{rows_html}</tbody></table>' +
-                    f'<button class="fm-add-row" onclick="addItem({pid},\'{ cat_key}\')">+ Add {cat_label} item</button>' +
+                    f'<button class="fm-add-row" onclick="addItem({pid},\'{cat_key}\')">+ Add {cat_label} item</button>' +
                     '</div>'
                 )
             return out
+
+        def build_prop_items():
+            rows = ''
+            for cat_key, cat_label, cat_icon in CATS:
+                cat_items = items_by_cat.get(cat_key, [])
+                for item in cat_items:
+                    if not str(item[2]).strip():
+                        continue
+                    rows += f'<tr><td style="color:#6b7280;font-size:12px">{cat_label}</td><td style="text-align:center">{fmt_num(item[3])}</td><td>{esc(item[2])}</td></tr>'
+            return rows or '<tr><td colspan="3" style="color:#9ca3af;padding:20px;text-align:center">No line items yet</td></tr>'
 
         status_opts = ''
         for s in ['draft','sent','approved','rejected','revised']:
@@ -28360,7 +28391,9 @@ def installation_standalone_proposal(prop_id):
         for j in jobs_list:
             jobs_opts += f'<option value="{j[0]}">{esc(j[1])}</option>'
 
-        portals_html = build_portals()
+        portals_html   = build_portals()
+        prop_items_html = build_prop_items()
+        excl_block = (f'<div class="prop-excl-box"><strong>Exclusions:</strong> {esc(exclusions)}</div>') if exclusions else ''
 
         html = _INST_CSS + f"""<!DOCTYPE html>
 <html lang="en">
@@ -28368,6 +28401,7 @@ def installation_standalone_proposal(prop_id):
 <title>{esc(page_title)}</title>
 <style>
 body{{background:#eef0f3;margin:0}}
+/* ── FM Estimate styles ── */
 .fm-doc{{background:white;margin:16px;border-radius:10px;border:1px solid #d1d5db;box-shadow:0 2px 12px rgba(0,0,0,.08);overflow:hidden}}
 .fm-doc-topbar{{background:#1a3c5e;padding:16px 22px;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}}
 .fm-word{{font-size:11px;font-weight:800;letter-spacing:3px;color:rgba(255,255,255,.5);text-transform:uppercase;margin-bottom:6px}}
@@ -28420,11 +28454,37 @@ body{{background:#eef0f3;margin:0}}
 .fm-grand{{display:flex;align-items:center;justify-content:space-between;margin-top:12px;padding-top:12px;border-top:2px solid #1a3c5e}}
 .fm-grand label{{font-size:16px;font-weight:900;color:#1a3c5e;letter-spacing:.5px;margin:0}}
 .fg-val{{font-size:26px;font-weight:900;color:#059669}}
+/* ── Tab switcher ── */
+.ep-tabs{{display:flex;background:white;border-bottom:2px solid #e5e7eb;padding:0 16px}}
+.ep-tab-btn{{padding:12px 20px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px;color:#6b7280}}
+.ep-tab-btn.active{{color:#1a3c5e;border-bottom-color:#1a3c5e}}
+/* ── Proposal document ── */
+.prop-doc{{background:white;margin:16px auto;border:1px solid #d1d5db;border-radius:10px;padding:0;box-shadow:0 2px 12px rgba(0,0,0,.08);overflow:hidden;max-width:900px}}
+.prop-header{{display:grid;grid-template-columns:1fr 1fr 1fr;border-bottom:2px solid #1a3c5e;padding:16px 20px;gap:16px;background:#f8fafc}}
+.prop-co-name{{font-size:16px;font-weight:900;color:#1a3c5e}}
+.prop-co-addr,.prop-co-tel{{font-size:11px;color:#6b7280;margin-top:2px}}
+.prop-h-label{{font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}}
+.prop-site-detail{{font-size:13px;color:#1a3c5e;font-weight:500}}
+.prop-big-title{{font-size:28px;font-weight:900;color:#1a3c5e;text-align:right;letter-spacing:2px}}
+.prop-info-table{{font-size:12px;width:100%;margin-top:6px}}
+.prop-info-table td{{padding:2px 6px;color:#374151}}
+.prop-info-val{{font-weight:700;color:#1a3c5e;text-align:right}}
+.prop-project-title{{background:#1a3c5e;color:white;text-align:center;padding:10px 20px;font-size:14px;font-weight:800;letter-spacing:.5px}}
+.prop-items-table{{width:100%;border-collapse:collapse;font-size:13px}}
+.prop-items-table th{{background:#f0f4f8;padding:7px 12px;text-align:left;font-size:11px;font-weight:700;color:#475569;text-transform:uppercase;border-bottom:2px solid #e2e8f0}}
+.prop-items-table td{{padding:6px 12px;border-bottom:1px solid #f1f5f9;vertical-align:top}}
+.prop-items-table tr:nth-child(even) td{{background:#fafbfc}}
+.prop-notes-box{{padding:14px 20px;font-size:12px;color:#374151;border-top:1px solid #e5e7eb;line-height:1.6;white-space:pre-wrap}}
+.prop-excl-box{{padding:8px 20px;font-size:12px;color:#374151;border-top:1px solid #e5e7eb}}
+.prop-terms{{padding:10px 20px;font-size:10px;color:#9ca3af;border-top:2px solid #e5e7eb;line-height:1.5;font-style:italic}}
+.prop-footer{{padding:16px 20px;border-top:2px solid #1a3c5e;display:flex;justify-content:space-between;align-items:flex-end}}
+.prop-sig-line{{font-size:12px;color:#374151;line-height:2}}
+.prop-total-box{{text-align:right}}
+.prop-page-footer{{text-align:center;font-size:11px;color:#9ca3af;padding:8px 20px;border-top:1px solid #e5e7eb;background:#f8fafc}}
 @media print{{
-  .top-bar,.fm-actions,.del-row,.fm-add-row,.link-bar{{display:none!important}}
-  .fm-doc{{margin:0;border:none;box-shadow:none}}
-  .fm-doc-topbar{{background:#1a3c5e!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
-  .fm-table td input{{border:none!important;background:transparent!important}}
+  .top-bar,.fm-actions,.del-row,.fm-add-row,.link-bar,.ep-tabs,#tab-estimate{{display:none!important}}
+  #tab-proposal{{display:block!important}}
+  .prop-doc{{margin:0;border:none;box-shadow:none;max-width:none}}
   body{{background:white}}
 }}
 </style>
@@ -28438,13 +28498,22 @@ body{{background:#eef0f3;margin:0}}
     <a href="/dashboard">Dashboard</a>
   </nav>
 </div>
-<div style="height:calc(100vh - 56px);overflow-y:auto;background:#eef0f3">
-<div style="max-width:1100px;margin:0 auto;padding:16px">
+
+<!-- Tab switcher -->
+<div class="ep-tabs">
+  <button class="ep-tab-btn active" id="btn-estimate" onclick="switchTab('estimate')">&#128202; Estimate</button>
+  <button class="ep-tab-btn" id="btn-proposal" onclick="switchTab('proposal')">&#128203; Proposal</button>
+</div>
+
+<div style="height:calc(100vh - 96px);overflow-y:auto;background:#eef0f3">
+
+<!-- ═══════════════ ESTIMATE TAB ═══════════════ -->
+<div id="tab-estimate" class="ep-tab" style="max-width:1100px;margin:0 auto;padding:16px">
 <div class="fm-doc">
 
   <div class="fm-doc-topbar">
     <div>
-      <div class="fm-word">Proposal</div>
+      <div class="fm-word">Proposal / Estimate</div>
       <input class="fm-client-input" id="pf-client" value="{esc(client)}"
         placeholder="Client / Company Name..."
         oninput="onClientChange(this.value)" onchange="autoSave()">
@@ -28458,10 +28527,18 @@ body{{background:#eef0f3;margin:0}}
     </div>
   </div>
 
+  <!-- job continuation banner -->
+  <div id="continuation-bar" style="display:none;background:#fffbeb;border-bottom:1px solid #fcd34d;padding:8px 22px;font-size:13px;align-items:center;gap:12px">
+    <span>&#128279; Possible continuation:</span>
+    <span id="cont-job-name" style="font-weight:700"></span>
+    <button onclick="linkToCont()" class="btn btn-secondary btn-sm">Link to this job</button>
+    <button onclick="document.getElementById('continuation-bar').style.display='none'" style="background:none;border:none;color:#9ca3af;cursor:pointer">&#10005;</button>
+  </div>
+
   <div class="link-bar">
     <label>Link to Job:</label>
     <select onchange="linkJob(this.value)">{jobs_opts}</select>
-    <span style="color:#92400e;font-size:12px">Linking moves this proposal into the job's Proposals tab.</span>
+    <span style="color:#92400e;font-size:12px">Links this proposal to a job's Proposals tab.</span>
   </div>
 
   <div class="fm-meta-strip">
@@ -28503,12 +28580,107 @@ body{{background:#eef0f3;margin:0}}
     </div>
   </div>
 
-</div></div></div>
+</div>
+</div>
+
+<!-- ═══════════════ PROPOSAL TAB ═══════════════ -->
+<div id="tab-proposal" class="ep-tab" style="display:none;padding:0 0 32px 0">
+<div class="prop-doc">
+
+  <div class="prop-header">
+    <div class="prop-co-info">
+      <div class="prop-co-name">STAHLMAN-ENGLAND IRRIGATION</div>
+      <div class="prop-co-addr">2063 Trade Center Way &middot; Naples, FL 34109</div>
+      <div class="prop-co-tel">Tel: 239-514-1200</div>
+    </div>
+    <div class="prop-header-center">
+      <div class="prop-h-label">Site Details</div>
+      <div class="prop-site-detail" id="vw-site">{esc(client)}<br>{esc(project_name or title)}</div>
+    </div>
+    <div class="prop-header-right">
+      <div class="prop-big-title">PROPOSAL</div>
+      <table class="prop-info-table">
+        <tr><td>Proposal #</td><td class="prop-info-val" id="vw-po">{esc(po_display)}</td></tr>
+        <tr><td>Date</td><td class="prop-info-val" id="vw-date">{prop_date}</td></tr>
+        <tr><td>Status</td><td class="prop-info-val" id="vw-status">{status.upper()}</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="prop-project-title" id="vw-title">{esc((title or client or project_name or 'Project Description').upper())}</div>
+
+  <table class="prop-items-table">
+    <thead><tr><th style="width:140px">Category</th><th style="width:60px">Qty</th><th>Description</th></tr></thead>
+    <tbody id="vw-items">{prop_items_html}</tbody>
+  </table>
+
+  <div class="prop-notes-box" id="vw-notes">{esc(scope)}</div>
+  {excl_block}
+  <div class="prop-terms" id="vw-terms">{esc(terms)}</div>
+
+  <div class="prop-footer">
+    <div class="prop-sig-line">
+      <div>Customer ___________________________ Date ___________</div>
+      <div style="margin-top:8px">Authorized Signature ___________________________ Date ___________</div>
+    </div>
+    <div class="prop-total-box">
+      <div style="font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px">Total</div>
+      <div style="font-size:28px;font-weight:900;color:#1a3c5e" id="vw-total">{fmt_money(total_amt)}</div>
+    </div>
+  </div>
+
+  <div class="prop-page-footer">Page 1 of Proposal # {esc(po_display)}</div>
+
+</div>
+</div>
+
+</div><!-- end scroll container -->
+
 <script>
 const PROP_ID = {pid};
 const CATS = ['materials','labor','equipment','subcontractor','other'];
+
 function fmt(n){{return '$'+(parseFloat(n)||0).toLocaleString('en-US',{{minimumFractionDigits:2,maximumFractionDigits:2}});}}
 async function api(url,data){{const r=await fetch(url,{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(data)}});return r.json();}}
+
+/* ── Tab switching ── */
+function switchTab(t){{
+  document.getElementById('tab-estimate').style.display = (t==='estimate') ? '' : 'none';
+  document.getElementById('tab-proposal').style.display = (t==='proposal') ? '' : 'none';
+  document.getElementById('btn-estimate').classList.toggle('active', t==='estimate');
+  document.getElementById('btn-proposal').classList.toggle('active', t==='proposal');
+  if(t==='proposal') syncProposalView();
+}}
+
+function syncProposalView(){{
+  const client = document.getElementById('pf-client').value;
+  const title  = document.getElementById('pf-title').value;
+  const po     = document.getElementById('po-display').textContent;
+  const date   = document.getElementById('pf-date').value;
+  const status = document.getElementById('pf-status').value;
+  const scope  = document.getElementById('pf-scope').value;
+  const terms  = document.getElementById('pf-terms').value;
+  const grand  = document.getElementById('grand-total').textContent;
+
+  const s = document.getElementById('vw-site');
+  if(s) s.innerHTML = (client||'') + (title ? '<br>'+title : '');
+  const vt = document.getElementById('vw-title');
+  if(vt) vt.textContent = (title||client||'Project Description').toUpperCase();
+  const vpo = document.getElementById('vw-po');
+  if(vpo) vpo.textContent = po;
+  const vd = document.getElementById('vw-date');
+  if(vd) vd.textContent = date;
+  const vs = document.getElementById('vw-status');
+  if(vs) vs.textContent = status.toUpperCase();
+  const vn = document.getElementById('vw-notes');
+  if(vn) vn.textContent = scope;
+  const vterm = document.getElementById('vw-terms');
+  if(vterm) vterm.textContent = terms;
+  const vtot = document.getElementById('vw-total');
+  if(vtot) vtot.textContent = grand;
+}}
+
+/* ── Line item math ── */
 function recalcRow(id){{
   const row=document.getElementById('row-'+id);if(!row)return;
   const n=row.querySelectorAll('input[type=number]');
@@ -28536,18 +28708,45 @@ function recalc(){{
   document.getElementById('tax-amt').textContent=fmt(ta);
   document.getElementById('grand-total').textContent=fmt(sub+ma+ta);
 }}
+
+/* ── Auto-save ── */
 let _st=null;
 function autoSave(){{clearTimeout(_st);_st=setTimeout(saveHeader,1500);}}
-let _pt=null;
+
+/* ── Client change: regen PO + match-job ── */
+let _pt=null, _mt=null, _contJobId=null;
 function onClientChange(v){{
   autoSave();
-  clearTimeout(_pt);
-  if(!v.trim())return;
+  clearTimeout(_pt);clearTimeout(_mt);
+  if(!v.trim()){{document.getElementById('continuation-bar').style.display='none';return;}}
   _pt=setTimeout(async()=>{{
     const d=await api('/installation/api/v2/proposals/regen-po',{{id:PROP_ID,name:v.trim()}});
     if(d.changed&&d.po_number)document.getElementById('po-display').textContent=d.po_number;
   }},900);
+  _mt=setTimeout(async()=>{{
+    const r=await fetch('/installation/api/v2/proposals/match-job?name='+encodeURIComponent(v.trim()));
+    const d=await r.json();
+    const bar=document.getElementById('continuation-bar');
+    if(d.matches&&d.matches.length>0){{
+      const m=d.matches[0];
+      _contJobId=m.id;
+      document.getElementById('cont-job-name').textContent=m.name+(m.client?' ('+m.client+')':'');
+      bar.style.display='flex';
+    }}else{{
+      bar.style.display='none';
+      _contJobId=null;
+    }}
+  }},800);
 }}
+
+async function linkToCont(){{
+  if(!_contJobId)return;
+  if(!confirm('Link this proposal to that job?'))return;
+  await api('/installation/api/v2/proposals/update',{{id:PROP_ID,job_id:_contJobId,standalone:0}});
+  location.href='/installation/job/'+_contJobId+'?tab=proposals';
+}}
+
+/* ── Save / Revise ── */
 async function saveHeader(){{
   const sub=parseFloat(document.getElementById('sub-total').textContent.replace(/[$,]/g,''))||0;
   const mp=parseFloat(document.getElementById('pf-markup').value)||0;
@@ -28570,6 +28769,8 @@ async function saveHeader(){{
   }});
 }}
 async function saveAll(){{await saveHeader();location.reload();}}
+
+/* ── Item CRUD ── */
 async function updateItem(itemId,field,value){{
   const row=document.getElementById('row-'+itemId);if(!row)return;
   const n=row.querySelectorAll('input[type=number]');
@@ -28578,20 +28779,8 @@ async function updateItem(itemId,field,value){{
   autoSave();
 }}
 async function addItem(propId,category){{
-  const d=await api('/installation/api/v2/proposal-items/add',{{proposal_id:propId,category,description:'',quantity:1,unit:'ea',unit_cost:0,total:0}});
-  if(d.item){{
-    const tbody=document.getElementById('items-'+category);
-    if(tbody)tbody.insertAdjacentHTML('beforeend',
-      '<tr id="row-'+d.item.id+'">' +
-      '<td><input value="" onchange="updateItem('+d.item.id+','description',this.value)" style="min-width:160px" autofocus></td>' +
-      '<td style="text-align:right"><input type="number" value="1" onchange="updateItem('+d.item.id+','quantity',this.value)" oninput="recalcRow('+d.item.id+')" style="width:65px;text-align:right"></td>' +
-      '<td><input value="ea" onchange="updateItem('+d.item.id+','unit',this.value)" style="width:55px"></td>' +
-      '<td style="text-align:right"><input type="number" step="0.01" value="0" onchange="updateItem('+d.item.id+','unit_cost',this.value)" oninput="recalcRow('+d.item.id+')" style="width:80px;text-align:right"></td>' +
-      '<td class="td-total" id="row-total-'+d.item.id+'">$0.00</td>' +
-      '<td><button class="del-row" onclick="deleteItem('+d.item.id+',''+category+'')">&times;</button></td>' +
-      '</tr>'
-    );
-  }}
+  await api('/installation/api/v2/proposal-items/add',{{proposal_id:propId,category,description:'',quantity:1,unit:'ea',unit_cost:0,total:0}});
+  location.reload();
 }}
 async function deleteItem(itemId,category){{
   if(!confirm('Remove this line item?'))return;
@@ -28599,12 +28788,16 @@ async function deleteItem(itemId,category){{
   const row=document.getElementById('row-'+itemId);if(row)row.remove();
   recalc();autoSave();
 }}
+
+/* ── Link to job ── */
 async function linkJob(jobId){{
   if(!jobId)return;
   if(!confirm('Link this proposal to that job?')){{document.querySelector('.link-bar select').value='';return;}}
   await api('/installation/api/v2/proposals/update',{{id:PROP_ID,job_id:jobId,standalone:0}});
   location.href='/installation/job/'+jobId+'?tab=proposals';
 }}
+
+/* ── Revise ── */
 async function revise(){{
   if(!confirm('Create a new revision?'))return;
   const d=await api('/installation/api/v2/proposals/revise',{{id:PROP_ID}});
