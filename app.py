@@ -19475,6 +19475,25 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         function applyZoneFormat(lines, startZone) {
             let auto = startZone;
             return lines.map(line => {
+                // When pasting from Excel/Sheets the line arrives tab-separated.
+                // Treat first column as zone identifier, remaining columns as the address.
+                if (line.includes('\t')) {
+                    const parts = line.split('\t');
+                    const firstCol = parts[0].trim();
+                    const rest = parts.slice(1).map(p => p.trim()).filter(Boolean).join(' ');
+                    const zoneNumMatch = firstCol.match(/^ZONE\s*#?\s*(\d+)$/i);
+                    const numOnlyMatch = firstCol.match(/^(\d+)$/);
+                    if (zoneNumMatch) {
+                        return rest ? `ZONE ${zoneNumMatch[1]} - ${rest}` : `ZONE ${zoneNumMatch[1]}`;
+                    }
+                    if (numOnlyMatch) {
+                        return rest ? `ZONE ${numOnlyMatch[1]} - ${rest}` : `ZONE ${numOnlyMatch[1]}`;
+                    }
+                    // First column isn't a zone number — treat whole row as description
+                    const combined = [firstCol, rest].filter(Boolean).join(' ');
+                    return `ZONE ${auto++} - ${combined}`;
+                }
+
                 // Strip leading dash/hyphen + whitespace (e.g. "- Zone#3-" → "Zone#3-")
                 const stripped = line.replace(/^[-–]\s*/, '');
                 const zoneMatch = stripped.match(/^ZONE\s*#?\s*(\d+)\s*([\s\S]*)/i);
