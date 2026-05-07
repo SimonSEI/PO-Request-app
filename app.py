@@ -27436,14 +27436,12 @@ function openCreateJobModal(){
 function closeCreateJobModal(){
   document.getElementById('create-job-modal').style.display='none';
   document.getElementById('cj-name').value='';
-  document.getElementById('cj-year').value=new Date().getFullYear();
-  document.getElementById('cj-value').value='';
+  document.getElementById('cj-year').value='';
   document.getElementById('cj-err').textContent='';
 }
 async function submitCreateJob(){
   const name=document.getElementById('cj-name').value.trim();
   const year=document.getElementById('cj-year').value.trim();
-  const val=document.getElementById('cj-value').value.trim();
   const err=document.getElementById('cj-err');
   if(!name){err.textContent='Job name is required.';document.getElementById('cj-name').focus();return;}
   if(!year||isNaN(parseInt(year))){err.textContent='Valid year is required.';return;}
@@ -27453,7 +27451,6 @@ async function submitCreateJob(){
   const fd=new FormData();
   fd.append('job_name',name);
   fd.append('year',year);
-  fd.append('budget',val||'0');
   fd.append('department','install');
   const d=await fetch('/add_job',{method:'POST',headers:{'X-Requested-With':'XMLHttpRequest'},body:fd}).then(r=>r.json());
   btn.disabled=false;btn.textContent='Create Job';
@@ -27535,17 +27532,10 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeCreateJobModal
         <input id="cj-name" type="text" placeholder="e.g. Verona Walk Phase 3" onkeydown="if(event.key==='Enter')submitCreateJob()"
           style="width:100%;border:1px solid #d1d5db;border-radius:7px;padding:9px 12px;font-size:14px;font-family:inherit;box-sizing:border-box">
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
-        <div>
-          <label style="display:block;font-size:11px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">Year *</label>
-          <input id="cj-year" type="number"
-            style="width:100%;border:1px solid #d1d5db;border-radius:7px;padding:9px 12px;font-size:14px;font-family:inherit;box-sizing:border-box">
-        </div>
-        <div>
-          <label style="display:block;font-size:11px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">Contract Value ($)</label>
-          <input id="cj-value" type="number" step="1000" placeholder="0"
-            style="width:100%;border:1px solid #d1d5db;border-radius:7px;padding:9px 12px;font-size:14px;font-family:inherit;box-sizing:border-box">
-        </div>
+      <div style="margin-bottom:14px">
+        <label style="display:block;font-size:11px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">Year *</label>
+        <input id="cj-year" type="number"
+          style="width:160px;border:1px solid #d1d5db;border-radius:7px;padding:9px 12px;font-size:14px;font-family:inherit;box-sizing:border-box">
       </div>
       <div id="cj-err" style="color:#dc2626;font-size:13px;min-height:18px;margin-bottom:4px"></div>
     </div>
@@ -28854,12 +28844,18 @@ def installation():
                                if w and w not in stop_words and w[0].isalpha())
             return initials[:5] or 'PROP'
 
+        # Sum proposal totals per job (contract value = sum of proposal grand totals incl. margin)
+        proposal_totals = {}
+        for jid, props in props_by_job.items():
+            proposal_totals[jid] = sum(p.total_amount for p in props)
+
         jobs = []
         total_contract = 0.0; total_invoiced = 0.0
         active_count = 0; total_count = 0
         for row in raw_jobs:
-            jid = row[0]; contract = row[7] or 0; inv_total = inv_map.get(jid, 0)
-            if row[3]: active_count += 1; total_contract += contract; total_invoiced += inv_total
+            jid = row[0]; inv_total = inv_map.get(jid, 0)
+            contract = proposal_totals.get(jid, 0)
+            active_count += 1; total_contract += contract; total_invoiced += inv_total
             total_count += 1
             class _J: pass
             j = _J()
