@@ -1398,6 +1398,12 @@ def init_db():
     except sqlite3.OperationalError:
         c.execute("ALTER TABLE users ADD COLUMN preferred_language TEXT DEFAULT 'en'")
 
+    # Migrate: Add install_rate to rate card for labor calculator (units installable per day)
+    try:
+        c.execute("SELECT install_rate FROM install_rate_card LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE install_rate_card ADD COLUMN install_rate REAL DEFAULT 0")
+
     # Migrate: Drop UNIQUE constraint on community_billing_submissions so techs
     # can submit multiple entries for the same community+date.
     c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='community_billing_submissions'")
@@ -30147,10 +30153,11 @@ def v2_rate_card():
     if request.method == 'POST':
         data = request.get_json()
         import datetime as _dt2
-        c.execute("""INSERT INTO install_rate_card (category,description,unit,unit_cost,notes,created_by,created_at)
-                     VALUES (?,?,?,?,?,?,?)""",
+        c.execute("""INSERT INTO install_rate_card (category,description,unit,unit_cost,notes,install_rate,created_by,created_at)
+                     VALUES (?,?,?,?,?,?,?,?)""",
                   (data.get('category','materials'), data.get('description',''), data.get('unit','ea'),
                    float(data.get('unit_cost') or 0), data.get('notes',''),
+                   float(data.get('install_rate') or 0),
                    session.get('username',''), _dt2.datetime.now().isoformat()))
         conn.commit()
         new_id = c.lastrowid
@@ -30159,10 +30166,10 @@ def v2_rate_card():
     else:
         cat = request.args.get('category', '')
         if cat:
-            c.execute("SELECT id,category,description,unit,unit_cost,notes FROM install_rate_card WHERE category=? ORDER BY description", (cat,))
+            c.execute("SELECT id,category,description,unit,unit_cost,notes,install_rate FROM install_rate_card WHERE category=? ORDER BY description", (cat,))
         else:
-            c.execute("SELECT id,category,description,unit,unit_cost,notes FROM install_rate_card ORDER BY category,description")
-        rows = [{'id':r[0],'category':r[1],'description':r[2],'unit':r[3],'unit_cost':r[4],'notes':r[5]} for r in c.fetchall()]
+            c.execute("SELECT id,category,description,unit,unit_cost,notes,install_rate FROM install_rate_card ORDER BY category,description")
+        rows = [{'id':r[0],'category':r[1],'description':r[2],'unit':r[3],'unit_cost':r[4],'notes':r[5],'install_rate':r[6] or 0} for r in c.fetchall()]
         conn.close()
         return jsonify({'items': rows})
 
@@ -30187,11 +30194,12 @@ def v2_rate_card_update():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""UPDATE install_rate_card
-                 SET category=?, description=?, unit=?, unit_cost=?, notes=?
+                 SET category=?, description=?, unit=?, unit_cost=?, notes=?, install_rate=?
                  WHERE id=?""",
               (data.get('category', 'materials'), data.get('description', ''),
                data.get('unit', 'ea'), float(data.get('unit_cost') or 0),
-               data.get('notes', ''), data['id']))
+               data.get('notes', ''), float(data.get('install_rate') or 0),
+               data['id']))
     conn.commit(); conn.close()
     return jsonify({'success': True})
 
@@ -30592,6 +30600,7 @@ body{{background:#eef0f3;margin:0}}
       <button class="btn btn-secondary btn-sm" onclick="openImportModal()">&#128229; Import</button>
       <button class="btn btn-secondary btn-sm" onclick="openRateCardModal()">&#128218; Expense Catalog</button>
       <button class="btn btn-secondary btn-sm" onclick="openLogoModal()">&#128444; Logo</button>
+      <button class="btn btn-secondary btn-sm" onclick="openLaborModal()" style="background:#15803d;color:white;border-color:#15803d">&#9889; Calc Labor</button>
     </div>
   </div>
 
@@ -30889,6 +30898,133 @@ function openImportModal(){{document.getElementById('import-modal').classList.ad
 function closeImportModal(){{document.getElementById('import-modal').classList.remove('open');document.getElementById('imp-preview').innerHTML='';document.getElementById('imp-paste-area').value='';}}
 function openRateCardModal(){{document.getElementById('rc-modal').classList.add('open');loadRateCard('');}}
 function closeRateCardModal(){{document.getElementById('rc-modal').classList.remove('open');}}
+
+/* ═══ LABOR CALCULATOR ═══ */
+let _laborData = null; // {{totalDays, laborCost, crewRate, lineItems}}
+
+async function openLaborModal(){{
+  document.getElementById('labor-modal').classList.add('open');
+  document.getElementById('labor-breakdown').innerHTML='<p style="color:#9ca3af;font-size:13px">Loading catalog...</p>';
+  // Fetch catalog with install_rate
+  const cat = await fetch('/installation/api/v2/rate-card').then(r=>r.json());
+  const catalog = cat.items || [];
+  // Build lookup: description (lowercase) -> install_rate
+  const rateMap = {{}};
+  catalog.forEach(c=>{{ rateMap[c.description.toLowerCase()] = c.install_rate || 0; }});
+  // Read proposal items from DOM
+  const proposalItems = [];
+  document.querySelectorAll('.fm-table tbody tr').forEach(row=>{{
+    const inputs = row.querySelectorAll('input');
+    if(inputs.length < 4) return;
+    const desc = (inputs[0].value || '').trim();
+    const qty = parseFloat(inputs[1].value) || 0;
+    if(!desc || qty <= 0) return;
+    // Find best matching catalog item
+    let bestRate = 0;
+    let bestMatch = '';
+    const dl = desc.toLowerCase();
+    if(rateMap[dl] !== undefined){{
+      bestRate = rateMap[dl];
+      bestMatch = desc;
+    }} else {{
+      // Fuzzy match: find catalog key with highest score
+      let bestScore = 0;
+      Object.keys(rateMap).forEach(k=>{{
+        const score = _fuzzyScore(k, dl);
+        if(score > bestScore){{ bestScore = score; bestRate = rateMap[k]; bestMatch = k; }}
+      }});
+      if(bestScore < 50) {{ bestRate = 0; bestMatch = ''; }}
+    }}
+    proposalItems.push({{desc, qty, rate: bestRate, match: bestMatch}});
+  }});
+  _renderLaborBreakdown(proposalItems);
+}}
+
+function _renderLaborBreakdown(items){{
+  const crewRate = parseFloat(document.getElementById('labor-crew-rate').value) || 1850;
+  let ratedRows = '', unratedRows = '', totalDays = 0;
+  items.forEach(it=>{{
+    if(it.rate > 0){{
+      const days = it.qty / it.rate;
+      totalDays += days;
+      ratedRows += '<tr>' +
+        '<td style="padding:5px 8px;color:#374151">' + _escH(it.desc) + '</td>' +
+        '<td style="padding:5px 8px;text-align:right;color:#374151">' + it.qty + '</td>' +
+        '<td style="padding:5px 8px;text-align:right;color:#15803d;font-weight:600">' + it.rate + '/day</td>' +
+        '<td style="padding:5px 8px;text-align:right;font-weight:700;color:#1a3c5e">' + days.toFixed(2) + ' days</td>' +
+        '</tr>';
+    }} else {{
+      unratedRows += '<tr>' +
+        '<td style="padding:5px 8px;color:#6b7280">' + _escH(it.desc) + '</td>' +
+        '<td style="padding:5px 8px;text-align:right;color:#6b7280">' + it.qty + '</td>' +
+        '<td colspan="2" style="padding:5px 8px;color:#9ca3af;font-size:12px">No install rate set</td>' +
+        '</tr>';
+    }}
+  }});
+  const ceilDays = Math.ceil(totalDays * 10) / 10; // round up to 1 decimal
+  const laborCost = ceilDays * crewRate;
+  _laborData = {{totalDays: ceilDays, laborCost, crewRate, items}};
+  document.getElementById('labor-total-days').textContent = ceilDays.toFixed(1);
+  document.getElementById('labor-cost-display').textContent = '$' + laborCost.toLocaleString('en-US',{{minimumFractionDigits:2,maximumFractionDigits:2}});
+  let html = '';
+  if(ratedRows){{
+    html += '<div style="margin-bottom:14px"><div style="font-size:11px;font-weight:800;color:#15803d;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Rated Items</div>' +
+      '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+      '<thead><tr style="background:#f1f5f9">' +
+      '<th style="padding:5px 8px;text-align:left;font-size:10px;font-weight:800;color:#475569;text-transform:uppercase">Description</th>' +
+      '<th style="padding:5px 8px;text-align:right;font-size:10px;font-weight:800;color:#475569;text-transform:uppercase">Qty</th>' +
+      '<th style="padding:5px 8px;text-align:right;font-size:10px;font-weight:800;color:#475569;text-transform:uppercase">Rate</th>' +
+      '<th style="padding:5px 8px;text-align:right;font-size:10px;font-weight:800;color:#475569;text-transform:uppercase">Days</th>' +
+      '</tr></thead><tbody>' + ratedRows + '</tbody></table></div>';
+  }}
+  if(unratedRows){{
+    html += '<div><div style="font-size:11px;font-weight:800;color:#9ca3af;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Unrated Items (not counted)</div>' +
+      '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+      '<thead><tr style="background:#f8fafc">' +
+      '<th style="padding:5px 8px;text-align:left;font-size:10px;font-weight:800;color:#9ca3af;text-transform:uppercase">Description</th>' +
+      '<th style="padding:5px 8px;text-align:right;font-size:10px;font-weight:800;color:#9ca3af;text-transform:uppercase">Qty</th>' +
+      '<th colspan="2" style="padding:5px 8px;font-size:10px;font-weight:800;color:#9ca3af;text-transform:uppercase"></th>' +
+      '</tr></thead><tbody>' + unratedRows + '</tbody></table></div>';
+  }}
+  if(!ratedRows && !unratedRows){{
+    html = '<p style="color:#9ca3af;font-size:13px;text-align:center;padding:20px">No items found in this proposal.</p>';
+  }}
+  document.getElementById('labor-breakdown').innerHTML = html;
+}}
+
+function recalcLabor(){{
+  if(!_laborData) return;
+  const crewRate = parseFloat(document.getElementById('labor-crew-rate').value) || 1850;
+  const laborCost = _laborData.totalDays * crewRate;
+  _laborData.laborCost = laborCost;
+  _laborData.crewRate = crewRate;
+  document.getElementById('labor-cost-display').textContent = '$' + laborCost.toLocaleString('en-US',{{minimumFractionDigits:2,maximumFractionDigits:2}});
+}}
+
+function closeLaborModal(){{
+  document.getElementById('labor-modal').classList.remove('open');
+}}
+
+function laborUpdateDays(){{
+  if(!_laborData) return;
+  const days = Math.ceil(_laborData.totalDays);
+  document.getElementById('pf-days').value = days;
+  autoSave();
+  closeLaborModal();
+}}
+
+async function laborAddLineItem(){{
+  if(!_laborData) return;
+  const cost = _laborData.laborCost;
+  const days = _laborData.totalDays;
+  const crewRate = _laborData.crewRate;
+  const desc = 'Installation Labor (' + days.toFixed(1) + ' days @ $' + crewRate.toLocaleString('en-US',{{minimumFractionDigits:2,maximumFractionDigits:2}}) + '/day, 3-man crew)';
+  await api('/installation/api/v2/proposal-items/add',{{proposal_id:PROP_ID,category:'labor',description:desc,quantity:1,unit:'ls',unit_cost:cost,total:cost}});
+  closeLaborModal();
+  location.reload();
+}}
+
+function _escH(s){{return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}}
 
 function switchImpTab(t){{
   document.getElementById('imp-paste-pane').style.display=t==='paste'?'':'none';
@@ -31338,6 +31474,39 @@ async function removeLogo(){{
 </div>
 
 <!-- Rate Card Modal -->
+<!-- ═══════════════ LABOR CALCULATOR MODAL ═══════════════ -->
+<div id="labor-modal" class="imp-modal-bg">
+  <div class="imp-modal" style="max-width:760px">
+    <div class="imp-modal-hdr" style="background:#15803d">
+      <span>&#9889; Labor Calculator</span>
+      <button onclick="closeLaborModal()" style="background:none;border:none;color:white;font-size:20px;cursor:pointer">&times;</button>
+    </div>
+    <div class="imp-modal-body" style="padding:20px">
+      <p style="font-size:13px;color:#6b7280;margin:0 0 14px">Based on materials in this proposal and install rates in the Expense Catalog. Set install rates on the <a href="/installation/rate-card" target="_blank" style="color:#2563eb">Expense Catalog</a> page.</p>
+      <div id="labor-breakdown" style="margin-bottom:18px"></div>
+      <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;padding:14px;background:#f0fdf4;border-radius:8px;border:1px solid #bbf7d0;margin-bottom:16px">
+        <div style="font-size:13px;font-weight:700;color:#166534">Total Installation Days:</div>
+        <div id="labor-total-days" style="font-size:28px;font-weight:900;color:#15803d">0</div>
+        <div style="display:flex;gap:8px;align-items:center;margin-left:auto">
+          <label style="font-size:12px;font-weight:700;color:#374151">Crew Rate ($/day):</label>
+          <input id="labor-crew-rate" type="number" step="50" value="1850" min="0"
+            oninput="recalcLabor()"
+            style="width:90px;border:1px solid #d1d5db;border-radius:6px;padding:6px 8px;font-size:14px;font-weight:700;text-align:right">
+        </div>
+        <div>
+          <div style="font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.5px">Est. Labor Cost</div>
+          <div id="labor-cost-display" style="font-size:24px;font-weight:900;color:#1a3c5e">$0.00</div>
+        </div>
+      </div>
+    </div>
+    <div class="imp-modal-footer">
+      <button onclick="closeLaborModal()" style="padding:8px 18px;border:1px solid #d1d5db;background:white;border-radius:6px;cursor:pointer;font-size:13px">Close</button>
+      <button onclick="laborUpdateDays()" style="padding:8px 18px;border:none;background:#2563eb;color:white;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px">&#128197; Set Days Allotted</button>
+      <button onclick="laborAddLineItem()" style="padding:8px 18px;border:none;background:#15803d;color:white;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px">&#43; Add Labor Line Item</button>
+    </div>
+  </div>
+</div>
+
 <div id="rc-modal" class="imp-modal-bg">
   <div class="imp-modal">
     <div class="imp-modal-hdr">
@@ -31385,8 +31554,8 @@ def installation_rate_card_page():
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("SELECT id,category,description,unit,unit_cost,notes FROM install_rate_card ORDER BY category,description")
-        items = [{'id':r[0],'category':r[1],'description':r[2],'unit':r[3],'unit_cost':r[4],'notes':r[5] or ''} for r in c.fetchall()]
+        c.execute("SELECT id,category,description,unit,unit_cost,notes,install_rate FROM install_rate_card ORDER BY category,description")
+        items = [{'id':r[0],'category':r[1],'description':r[2],'unit':r[3],'unit_cost':r[4],'notes':r[5] or '','install_rate':r[6] or 0} for r in c.fetchall()]
         conn.close()
 
         import json as _json
@@ -31401,7 +31570,7 @@ body{background:#f0f2f5}
 .pc-wrap{max-width:1100px;margin:0 auto;padding:20px}
 .pc-add-card{background:white;border-radius:10px;border:1px solid #e5e7eb;padding:20px 24px;margin-bottom:20px;box-shadow:0 1px 6px rgba(0,0,0,.06)}
 .pc-add-card h2{font-size:15px;font-weight:800;color:#1a3c5e;margin-bottom:14px;letter-spacing:.3px}
-.pc-add-grid{display:grid;grid-template-columns:2fr 1fr 0.7fr 1fr 1.5fr auto;gap:10px;align-items:end}
+.pc-add-grid{display:grid;grid-template-columns:2fr 1fr 0.7fr 1fr 1fr 1.5fr auto;gap:10px;align-items:end}
 .pc-add-grid label{font-size:10px;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:3px}
 .pc-add-grid input,.pc-add-grid select{width:100%;border:1px solid #d1d5db;border-radius:6px;padding:7px 10px;font-size:13px;font-family:inherit}
 .pc-add-grid input:focus,.pc-add-grid select:focus{outline:none;border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.12)}
@@ -31467,6 +31636,7 @@ body{background:#f0f2f5}
       </div>
       <div><label>Unit</label><input id="new-unit" placeholder="ea" value="ea"></div>
       <div><label>Unit Cost ($)</label><input id="new-cost" type="number" step="0.01" min="0" placeholder="0.00"></div>
+      <div><label>Install Rate (units/day)</label><input id="new-rate" type="number" step="0.1" min="0" placeholder="0 = unrated"></div>
       <div><label>Notes</label><input id="new-notes" placeholder="Optional notes..."></div>
       <div><label>&nbsp;</label><button onclick="addPart()" style="width:100%;padding:8px 0;background:#1a3c5e;color:white;border:none;border-radius:7px;cursor:pointer;font-weight:700;font-size:13px;white-space:nowrap">&#43; Add Part</button></div>
     </div>
@@ -31490,10 +31660,11 @@ body{background:#f0f2f5}
     <table class="pc-table" id="pc-table">
       <thead>
         <tr>
-          <th style="width:35%">Description</th>
-          <th style="width:120px">Category</th>
-          <th style="width:65px">Unit</th>
-          <th class="th-r" style="width:110px">Unit Cost</th>
+          <th style="width:32%">Description</th>
+          <th style="width:110px">Category</th>
+          <th style="width:55px">Unit</th>
+          <th class="th-r" style="width:100px">Unit Cost</th>
+          <th class="th-r" style="width:120px">Install Rate</th>
           <th>Notes</th>
           <th style="width:130px"></th>
         </tr>
@@ -31525,7 +31696,7 @@ function renderTable(){
   });
   document.getElementById('pc-count').textContent = visible.length + ' item' + (visible.length!==1?'s':'');
   if(!visible.length){
-    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No parts found. Add one above.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No parts found. Add one above.</td></tr>';
     return;
   }
   tbody.innerHTML = visible.map(p=>`
@@ -31534,6 +31705,7 @@ function renderTable(){
       <td>${catBadge(p.category)}</td>
       <td class="pc-unit">${esc(p.unit)}</td>
       <td class="pc-cost">${fmtC(p.unit_cost)}</td>
+      <td class="pc-cost" style="color:${p.install_rate>0?'#15803d':'#9ca3af'}">${p.install_rate>0?p.install_rate+'/day':'—'}</td>
       <td style="color:#6b7280">${esc(p.notes)}</td>
       <td><div class="pc-act">
         <button class="btn-edit" onclick="editRow(${p.id})">&#9998; Edit</button>
@@ -31547,6 +31719,7 @@ function renderTable(){
       </select></td>
       <td><input id="e-unit-${p.id}" value="${esc(p.unit)}"></td>
       <td><input id="e-cost-${p.id}" type="number" step="0.01" value="${p.unit_cost.toFixed(2)}" style="text-align:right"></td>
+      <td><input id="e-rate-${p.id}" type="number" step="0.1" min="0" value="${(p.install_rate||0).toFixed(1)}" placeholder="0" style="text-align:right" title="Units installable per day (0 = unrated)"></td>
       <td><input id="e-notes-${p.id}" value="${esc(p.notes)}" placeholder="Notes..."></td>
       <td><div class="pc-act">
         <button class="btn-save" onclick="savePart(${p.id})">&#10003; Save</button>
@@ -31573,15 +31746,18 @@ async function addPart(){
     category: document.getElementById('new-cat').value,
     unit: document.getElementById('new-unit').value||'ea',
     unit_cost: parseFloat(document.getElementById('new-cost').value)||0,
+    install_rate: parseFloat(document.getElementById('new-rate').value)||0,
     notes: document.getElementById('new-notes').value||''
   })}).then(r=>r.json());
   if(d.success){
     _parts.push({id:d.id, description:desc, category:document.getElementById('new-cat').value,
       unit:document.getElementById('new-unit').value||'ea',
       unit_cost:parseFloat(document.getElementById('new-cost').value)||0,
+      install_rate:parseFloat(document.getElementById('new-rate').value)||0,
       notes:document.getElementById('new-notes').value||''});
     document.getElementById('new-desc').value='';
     document.getElementById('new-cost').value='';
+    document.getElementById('new-rate').value='';
     document.getElementById('new-notes').value='';
     document.getElementById('new-unit').value='ea';
     renderTable();
@@ -31606,6 +31782,7 @@ async function savePart(id){
   const updated={id,description:desc,category:document.getElementById('e-cat-'+id).value,
     unit:document.getElementById('e-unit-'+id).value||'ea',
     unit_cost:parseFloat(document.getElementById('e-cost-'+id).value)||0,
+    install_rate:parseFloat(document.getElementById('e-rate-'+id).value)||0,
     notes:document.getElementById('e-notes-'+id).value||''};
   const d=await fetch('/installation/api/v2/rate-card/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(updated)}).then(r=>r.json());
   if(d.success){
