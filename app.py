@@ -31504,7 +31504,9 @@ body{background:#f0f2f5}
 .pc-wrap{max-width:1100px;margin:0 auto;padding:20px}
 .pc-add-card{background:white;border-radius:10px;border:1px solid #e5e7eb;padding:20px 24px;margin-bottom:20px;box-shadow:0 1px 6px rgba(0,0,0,.06)}
 .pc-add-card h2{font-size:15px;font-weight:800;color:#1a3c5e;margin-bottom:14px;letter-spacing:.3px}
-.pc-add-grid{display:grid;grid-template-columns:2fr 1fr 0.7fr 1fr 1fr 1.5fr auto;gap:10px;align-items:end}
+.pc-add-grid{display:flex;flex-direction:column;gap:10px}
+.pc-add-row1{display:grid;grid-template-columns:2.5fr 1fr 0.55fr 0.9fr 1.1fr;gap:10px;align-items:end}
+.pc-add-row2{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:end}
 .pc-add-grid label{font-size:10px;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:3px}
 .pc-add-grid input,.pc-add-grid select{width:100%;border:1px solid #d1d5db;border-radius:6px;padding:7px 10px;font-size:13px;font-family:inherit}
 .pc-add-grid input:focus,.pc-add-grid select:focus{outline:none;border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.12)}
@@ -31558,22 +31560,26 @@ body{background:#f0f2f5}
   <div class="pc-add-card">
     <h2>&#43; Add New Part / Rate</h2>
     <div class="pc-add-grid">
-      <div><label>Description</label><input id="new-desc" placeholder="e.g. 1&quot; Hunter PGP Rotor" onkeydown="if(event.key==='Enter')addPart()"></div>
-      <div><label>Category</label>
-        <select id="new-cat">
-          <option value="materials">Materials</option>
-          <option value="labor">Labor</option>
-          <option value="equipment">Equipment</option>
-          <option value="travel">Travel</option>
-          <option value="subcontractor">Subcontractor</option>
-          <option value="other">Other</option>
-        </select>
+      <div class="pc-add-row1">
+        <div><label>Description</label><input id="new-desc" placeholder="e.g. 1&quot; Hunter PGP Rotor" onkeydown="if(event.key==='Enter')addPart()"></div>
+        <div><label>Category</label>
+          <select id="new-cat">
+            <option value="materials">Materials</option>
+            <option value="labor">Labor</option>
+            <option value="equipment">Equipment</option>
+            <option value="travel">Travel</option>
+            <option value="subcontractor">Subcontractor</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div><label>Unit</label><input id="new-unit" placeholder="ea" value="ea"></div>
+        <div><label>Unit Cost ($)</label><input id="new-cost" type="number" step="0.01" min="0" placeholder="0.00"></div>
+        <div><label>Install Rate (units/day)</label><input id="new-rate" type="number" step="0.1" min="0" placeholder="0 = unrated"></div>
       </div>
-      <div><label>Unit</label><input id="new-unit" placeholder="ea" value="ea"></div>
-      <div><label>Unit Cost ($)</label><input id="new-cost" type="number" step="0.01" min="0" placeholder="0.00"></div>
-      <div><label>Install Rate (units/day)</label><input id="new-rate" type="number" step="0.1" min="0" placeholder="0 = unrated"></div>
-      <div><label>Notes</label><input id="new-notes" placeholder="Optional notes..."></div>
-      <div><label>&nbsp;</label><button onclick="addPart()" style="width:100%;padding:8px 0;background:#1a3c5e;color:white;border:none;border-radius:7px;cursor:pointer;font-weight:700;font-size:13px;white-space:nowrap">&#43; Add Part</button></div>
+      <div class="pc-add-row2">
+        <div><label>Notes</label><input id="new-notes" placeholder="Optional notes..."></div>
+        <div><label>&nbsp;</label><button onclick="addPart()" style="padding:8px 22px;background:#1a3c5e;color:white;border:none;border-radius:7px;cursor:pointer;font-weight:700;font-size:13px;white-space:nowrap">&#43; Add Part</button></div>
+      </div>
     </div>
   </div>
 
@@ -31822,7 +31828,7 @@ function renderCatPreview(rows){
       +'<td style="padding:4px 6px"><input value="'+esc(unit)+'" style="width:45px;font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:2px 4px"></td>'
       +'<td style="padding:4px 6px"><input type="number" step="0.01" value="'+cost.toFixed(2)+'" style="width:75px;font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:2px 4px;text-align:right"></td>'
       +'<td style="padding:4px 6px"><input type="number" step="0.1" value="'+irate.toFixed(1)+'" style="width:65px;font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:2px 4px;text-align:right" placeholder="0"></td>'
-      +'<td style="padding:4px 6px"><button onclick="this.closest(\'tr\').remove()" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px">&times;</button></td>'
+      +'<td style="padding:4px 6px"><button onclick="this.closest(\\'tr\\').remove()" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px">&times;</button></td>'
       +'</tr>';
   }
   html+='</tbody></table>';
