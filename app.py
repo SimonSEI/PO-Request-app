@@ -27335,8 +27335,9 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
 .prop-chip.chip-rejected{background:#fee2e2;color:#991b1b;border-color:#fca5a5}
 .standalone-section{padding:0 20px 20px}
 .standalone-hdr{font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.6px;margin:20px 0 8px;display:flex;align-items:center;gap:8px}
-.sa-card{background:white;border:1px solid #e5e7eb;border-radius:8px;padding:11px 16px;display:flex;align-items:center;gap:12px;margin-bottom:6px;cursor:pointer;transition:all .15s;text-decoration:none;color:inherit}
+.sa-card{background:white;border:1px solid #e5e7eb;border-radius:8px;padding:11px 16px;display:flex;align-items:center;gap:12px;margin-bottom:6px;transition:all .15s}
 .sa-card:hover{border-color:#1a3c5e;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.sa-card-link{text-decoration:none;color:inherit;display:flex;align-items:center;gap:12px;flex:1;min-width:0}
 .sa-po{font-size:12px;font-weight:800;color:#1a3c5e;min-width:100px}
 .sa-name{font-size:13px;font-weight:600;flex:1}
 .sa-total{font-size:14px;font-weight:700;color:#059669}
@@ -27427,18 +27428,28 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
   <div class="standalone-section" id="standalone-section">
     <div class="standalone-hdr">📄 Standalone Proposals</div>
     {% for p in standalone_proposals %}
-    <a href="/installation/proposal/{{ p.id }}" class="sa-card">
-      <div class="sa-po">{{ p.po_number or '—' }}</div>
-      <div class="sa-name">{{ p.title or p.project_name or 'Untitled' }}<br><span style="font-size:12px;color:#9ca3af">{{ p.client_name_override or '' }}</span></div>
-      <div class="sa-total">${{ "{:,.0f}".format(p.total_amount or 0) }}</div>
-      <span class="sa-status st-{{ p.status or 'draft' }}">{{ (p.status or 'draft').replace('_',' ') }}</span>
-    </a>
+    <div class="sa-card">
+      <a href="/installation/proposal/{{ p.id }}" class="sa-card-link">
+        <div class="sa-po">{{ p.po_number or '—' }}</div>
+        <div class="sa-name">{{ p.title or p.project_name or 'Untitled' }}<br><span style="font-size:12px;color:#9ca3af">{{ p.client_name_override or '' }}</span></div>
+        <div class="sa-total">${{ "{:,.0f}".format(p.total_amount or 0) }}</div>
+        <span class="sa-status st-{{ p.status or 'draft' }}">{{ (p.status or 'draft').replace('_',' ') }}</span>
+      </a>
+      <button onclick="deleteStandaloneProposal({{ p.id }}, this)" style="background:none;border:1px solid #fca5a5;color:#dc2626;border-radius:5px;padding:4px 8px;cursor:pointer;font-size:12px;flex-shrink:0" title="Delete proposal">🗑</button>
+    </div>
     {% endfor %}
   </div>
   {% endif %}
 </div>
 
 <script>
+async function deleteStandaloneProposal(propId, btn){
+  if(!confirm('Delete this proposal? This cannot be undone.')) return;
+  btn.disabled=true;
+  const d=await fetch('/installation/api/v2/proposals/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:propId})}).then(r=>r.json());
+  if(d.success) btn.closest('.sa-card').remove();
+  else{alert('Delete failed');btn.disabled=false;}
+}
 function makeInitials(name){
   if(!name) return '';
   const stop = new Set(['THE','OF','AND','A','AN','IN','AT','FOR','TO','LLC','INC','CORP','CO','GROUP','GRP','&']);
@@ -30677,6 +30688,7 @@ body{{background:#eef0f3;margin:0}}
       <button class="btn btn-secondary btn-sm" onclick="openRateCardModal()">&#128218; Expense Catalog</button>
       <button class="btn btn-secondary btn-sm" onclick="openLogoModal()">&#128444; Logo</button>
       <button class="btn btn-secondary btn-sm" onclick="openLaborModal()" style="background:#15803d;color:white;border-color:#15803d">&#9889; Calc Labor</button>
+      <button class="btn btn-sm" onclick="deleteThisProposal()" style="background:#fee2e2;color:#dc2626;border:1px solid #fca5a5">&#128465; Delete</button>
     </div>
   </div>
 
@@ -30952,6 +30964,14 @@ async function deleteItem(itemId,category){{
   await api('/installation/api/v2/proposal-items/delete',{{id:itemId}});
   const row=document.getElementById('row-'+itemId);if(row)row.remove();
   recalc();autoSave();
+}}
+
+/* ── Delete this proposal ── */
+async function deleteThisProposal(){{
+  if(!confirm('Delete this proposal permanently? This cannot be undone.')) return;
+  const d=await api('/installation/api/v2/proposals/delete',{{id:PROP_ID}});
+  if(d.success) window.location.href='/installation';
+  else alert('Delete failed: '+(d.error||'unknown'));
 }}
 
 /* ── Link to job ── */
