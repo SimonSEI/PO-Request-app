@@ -27340,6 +27340,7 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
 <div class="top-bar">
   <h1>🏗️ Installation</h1>
   <nav>
+    <button onclick="history.back()" style="color:rgba(255,255,255,.85);background:none;border:1px solid rgba(255,255,255,.25);border-radius:5px;padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background='none'">&#8592; Back</button>
     <a href="/installation" class="active">Jobs</a>
     <a href="/installation/schedule">📅 Schedule</a>
     <a href="/installation/crews">👷 Crews</a>
@@ -27470,6 +27471,7 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
 <div class="top-bar">
   <h1>🏗️ {{ job.job_name }}</h1>
   <nav>
+    <button onclick="history.back()" style="color:rgba(255,255,255,.85);background:none;border:1px solid rgba(255,255,255,.25);border-radius:5px;padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background='none'">&#8592; Back</button>
     <a href="/installation">← Jobs</a>
     <a href="/installation/schedule">📅 Schedule</a>
     <a href="/installation/crews">👷 Manage Crews</a>
@@ -28344,6 +28346,7 @@ select:focus,input:focus{outline:none;border-color:#1a3c5e}
 <div class="top-nav no-print">
   <h1>📅 Weekly Schedule</h1>
   <nav>
+    <button onclick="history.back()" style="color:rgba(255,255,255,.85);background:none;border:1px solid rgba(255,255,255,.25);border-radius:5px;padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background='none'">&#8592; Back</button>
     <a href="/installation">← Jobs</a>
     <a href="/installation/crews">👷 Manage Crews</a>
     <a href="/installation/rate-card">📋 Expense Catalog</a>
@@ -28532,6 +28535,7 @@ INSTALLATION_CREWS_TEMPLATE = _INST_CSS + """<!DOCTYPE html>
 <div class="top-bar">
   <h1>👷 Crew Management</h1>
   <nav>
+    <button onclick="history.back()" style="color:rgba(255,255,255,.85);background:none;border:1px solid rgba(255,255,255,.25);border-radius:5px;padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background='none'">&#8592; Back</button>
     <a href="/installation/schedule">← Schedule</a>
     <a href="/installation">Jobs</a>
     <a href="/installation/rate-card">📋 Expense Catalog</a>
@@ -30192,6 +30196,29 @@ def v2_rate_card_update():
     return jsonify({'success': True})
 
 
+@app.route('/installation/api/v2/logo', methods=['GET', 'POST'])
+def v2_proposal_logo():
+    if 'username' not in session:
+        return jsonify({'error': 'Not logged in'}), 401
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    if request.method == 'POST':
+        data = request.get_json()
+        logo_data = data.get('logo', '')  # base64 data URL
+        import datetime as _dt3
+        c.execute("""INSERT INTO app_settings (key, value, updated_at) VALUES (?,?,?)
+                     ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at""",
+                  ('proposal_logo', logo_data, _dt3.datetime.now().isoformat()))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+    else:
+        c.execute("SELECT value FROM app_settings WHERE key='proposal_logo'")
+        row = c.fetchone()
+        conn.close()
+        return jsonify({'logo': row[0] if row else ''})
+
+
 @app.route('/installation/api/v2/proposals/match-job')
 def v2_proposals_match_job():
     if 'username' not in session:
@@ -30502,6 +30529,7 @@ body{{background:#eef0f3;margin:0}}
 <div class="top-bar">
   <h1>&#128203; {esc(po_display)}</h1>
   <nav>
+    <button onclick="history.back()" style="color:rgba(255,255,255,.85);background:none;border:1px solid rgba(255,255,255,.25);border-radius:5px;padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background='none'">&#8592; Back</button>
     <a href="/installation">&#8592; Jobs</a>
     <a href="/installation/schedule">Schedule</a>
     <a href="/installation/rate-card">&#128218; Expense Catalog</a>
@@ -30563,6 +30591,7 @@ body{{background:#eef0f3;margin:0}}
       <button class="btn btn-print btn-sm" onclick="window.print()">Print</button>
       <button class="btn btn-secondary btn-sm" onclick="openImportModal()">&#128229; Import</button>
       <button class="btn btn-secondary btn-sm" onclick="openRateCardModal()">&#128218; Expense Catalog</button>
+      <button class="btn btn-secondary btn-sm" onclick="openLogoModal()">&#128444; Logo</button>
     </div>
   </div>
 
@@ -30601,9 +30630,14 @@ body{{background:#eef0f3;margin:0}}
 
   <div class="prop-header">
     <div class="prop-co-info">
-      <div class="prop-co-name">STAHLMAN-ENGLAND IRRIGATION</div>
-      <div class="prop-co-addr">2063 Trade Center Way &middot; Naples, FL 34109</div>
-      <div class="prop-co-tel">Tel: 239-514-1200</div>
+      <div id="vw-logo-wrap">
+        <img id="vw-logo" src="" alt="" style="display:none;max-height:72px;max-width:200px;object-fit:contain;margin-bottom:6px">
+        <div id="vw-co-text">
+          <div class="prop-co-name">STAHLMAN-ENGLAND IRRIGATION</div>
+          <div class="prop-co-addr">2063 Trade Center Way &middot; Naples, FL 34109</div>
+          <div class="prop-co-tel">Tel: 239-514-1200</div>
+        </div>
+      </div>
     </div>
     <div class="prop-header-center">
       <div class="prop-h-label">Site Details</div>
@@ -31197,8 +31231,78 @@ function _attachAllDescAutocompletes(){{
   }});
 }}
 
-document.addEventListener('DOMContentLoaded',_attachAllDescAutocompletes);
+document.addEventListener('DOMContentLoaded',()=>{{
+  _attachAllDescAutocompletes();
+  _loadLogo();
+}});
+
+/* ── Logo ── */
+async function _loadLogo(){{
+  const d=await fetch('/installation/api/v2/logo').then(r=>r.json());
+  _applyLogo(d.logo||'');
+}}
+function _applyLogo(src){{
+  const img=document.getElementById('vw-logo');
+  const txt=document.getElementById('vw-co-text');
+  if(!img)return;
+  if(src){{
+    img.src=src; img.style.display='block';
+    if(txt) txt.style.display='none';
+  }}else{{
+    img.style.display='none';
+    if(txt) txt.style.display='';
+  }}
+}}
+function openLogoModal(){{
+  document.getElementById('logo-modal').classList.add('open');
+}}
+function closeLogoModal(){{
+  document.getElementById('logo-modal').classList.remove('open');
+}}
+function handleLogoFile(evt){{
+  const file=evt.target.files[0];
+  if(!file)return;
+  if(!file.type.startsWith('image/')){{alert('Please select an image file.');return;}}
+  const reader=new FileReader();
+  reader.onload=function(e){{
+    document.getElementById('logo-preview').src=e.target.result;
+    document.getElementById('logo-preview').style.display='block';
+    document.getElementById('logo-save-btn').dataset.src=e.target.result;
+  }};
+  reader.readAsDataURL(file);
+}}
+async function saveLogo(){{
+  const src=document.getElementById('logo-save-btn').dataset.src||'';
+  await fetch('/installation/api/v2/logo',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{logo:src}})}});
+  _applyLogo(src);
+  closeLogoModal();
+}}
+async function removeLogo(){{
+  await fetch('/installation/api/v2/logo',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{logo:''}})}});
+  _applyLogo('');
+  closeLogoModal();
+}}
 </script>
+
+<!-- Logo Modal -->
+<div id="logo-modal" class="imp-modal-bg">
+  <div class="imp-modal" style="max-width:460px">
+    <div class="imp-modal-hdr">
+      <span>&#128444; Company Logo</span>
+      <button onclick="closeLogoModal()" style="background:none;border:none;color:white;font-size:20px;cursor:pointer">&times;</button>
+    </div>
+    <div class="imp-modal-body" style="text-align:center;padding:24px 20px">
+      <p style="font-size:13px;color:#6b7280;margin-bottom:16px">Upload your logo to display on client proposals in place of the company name text. PNG or SVG with a transparent background works best.</p>
+      <input type="file" accept="image/*" onchange="handleLogoFile(event)" style="font-size:13px;margin-bottom:16px">
+      <div><img id="logo-preview" src="" alt="" style="display:none;max-height:100px;max-width:260px;object-fit:contain;border:1px solid #e5e7eb;border-radius:6px;padding:8px;margin-top:8px"></div>
+    </div>
+    <div class="imp-modal-footer">
+      <button onclick="removeLogo()" style="padding:8px 14px;border:1px solid #fca5a5;background:#fee2e2;color:#dc2626;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">Remove Logo</button>
+      <button onclick="closeLogoModal()" style="padding:8px 18px;border:1px solid #d1d5db;background:white;border-radius:6px;cursor:pointer;font-size:13px">Cancel</button>
+      <button id="logo-save-btn" onclick="saveLogo()" data-src="" style="padding:8px 18px;background:#1a3c5e;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px">Save Logo</button>
+    </div>
+  </div>
+</div>
 
 <!-- Import Modal -->
 <div id="import-modal" class="imp-modal-bg">
@@ -31336,6 +31440,7 @@ body{background:#f0f2f5}
 <div class="top-bar">
   <h1>&#128218; Expense Catalog</h1>
   <nav>
+    <button onclick="history.back()" style="color:rgba(255,255,255,.85);background:none;border:1px solid rgba(255,255,255,.25);border-radius:5px;padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background='none'">&#8592; Back</button>
     <a href="/installation">&#8592; Jobs</a>
     <a href="/installation/schedule">Schedule</a>
     <a href="/installation/rate-card" class="active">Expense Catalog</a>
