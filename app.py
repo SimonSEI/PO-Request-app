@@ -25705,62 +25705,72 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
 .st-approved{background:#d1fae5;color:#065f46}
 .st-rejected{background:#fee2e2;color:#991b1b}
 .st-revised{background:#fef3c7;color:#92400e}
-.prop-detail{overflow-y:auto;display:flex;flex-direction:column}
+.prop-detail{overflow-y:auto;display:flex;flex-direction:column;background:#eef0f3}
 .prop-empty{display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:10px;color:#9ca3af}
 .prop-empty .pe-icon{font-size:48px}
-/* Proposal detail header */
-.pd-hdr{padding:16px 20px;border-bottom:2px solid #e5e7eb;display:flex;align-items:center;gap:10px;flex-wrap:wrap;position:sticky;top:0;background:white;z-index:10}
-.pd-hdr h2{font-size:17px;font-weight:800;color:#1a3c5e;margin:0;flex:1;min-width:120px}
-.pd-actions{display:flex;gap:6px;flex-wrap:wrap}
-/* Meta row */
-.pd-meta{padding:12px 20px;background:#f8f9fa;border-bottom:1px solid #e5e7eb;display:flex;gap:16px;flex-wrap:wrap;font-size:13px}
-.pd-meta .meta-field{display:flex;flex-direction:column;gap:2px}
-.pd-meta .meta-field label{font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase}
-.pd-meta .meta-field input,.pd-meta .meta-field select{border:1px solid #d1d5db;border-radius:5px;padding:4px 8px;font-size:13px;width:auto;min-width:80px;background:white}
-/* Line items */
-.pd-body{padding:16px 20px;flex:1}
-.li-section{margin-bottom:20px}
-.li-section-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;padding-bottom:6px;border-bottom:2px solid #e5e7eb}
-.li-section-hdr h4{font-size:12px;font-weight:800;color:#374151;text-transform:uppercase;letter-spacing:.5px;margin:0}
-.li-table{width:100%;border-collapse:collapse;font-size:13px}
-.li-table th{font-size:11px;font-weight:700;color:#9ca3af;text-transform:uppercase;padding:4px 6px;text-align:left;border-bottom:1px solid #f3f4f6}
-.li-table td{padding:3px 4px;border-bottom:1px solid #f9fafb;vertical-align:middle}
-.li-table td input{border:1px solid transparent;border-radius:4px;padding:4px 6px;font-size:13px;width:100%;background:transparent;font-family:inherit}
-.li-table td input:hover,.li-table td input:focus{border-color:#d1d5db;background:white;outline:none}
-.li-table td.td-del{width:28px;text-align:center}
-.li-table .del-row{background:none;border:none;color:#d1d5db;cursor:pointer;font-size:14px;padding:2px 5px;border-radius:3px;line-height:1}
-.li-table .del-row:hover{background:#fee2e2;color:#dc2626}
-.li-table td.td-total{font-weight:700;color:#1a3c5e;text-align:right;white-space:nowrap;padding-right:8px;width:90px}
-.td-qty{width:65px}.td-unit{width:65px}.td-cost{width:90px}
-/* Totals */
-.prop-totals{padding:16px 20px;border-top:2px solid #e5e7eb;background:#f8f9fa}
-.totals-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:12px}
-.total-input-row{display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:6px}
-.total-input-row label{flex:1;font-weight:600;color:#374151}
-.total-input-row input{width:70px;border:1px solid #d1d5db;border-radius:5px;padding:4px 8px;font-size:13px;text-align:right}
-.grand-total-row{display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:10px;border-top:2px solid #1a3c5e}
-.grand-total-row .gtl{font-size:16px;font-weight:800;color:#1a3c5e;flex:1}
-.grand-total-row .gtv{font-size:22px;font-weight:800;color:#059669}
-/* Scope/Terms */
-.pd-extra{padding:14px 20px;border-top:1px solid #e5e7eb}
-.pd-extra .form-row-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
-.pd-extra textarea{width:100%;border:1px solid #d1d5db;border-radius:6px;padding:8px 10px;font-size:13px;resize:vertical;font-family:inherit;min-height:70px}
-.pd-extra label{font-size:12px;font-weight:700;color:#6b7280;display:block;margin-bottom:4px;text-transform:uppercase}
-/* Proposal crew/schedule bar */
-.prop-sch-bar{padding:10px 20px;border-top:1px solid #e5e7eb;background:#f8f9fa;display:flex;gap:16px;align-items:center;flex-wrap:wrap;font-size:13px}
-.prop-sch-bar .sf{display:flex;align-items:center;gap:6px}
-.prop-sch-bar label{font-weight:700;color:#374151;font-size:12px}
-.prop-sch-bar input,.prop-sch-bar select{border:1px solid #d1d5db;border-radius:5px;padding:4px 8px;font-size:13px;width:auto}
-/* Print styles */
+/* FileMaker-style proposal document */
+.fm-doc{background:white;margin:16px;border-radius:10px;border:1px solid #d1d5db;box-shadow:0 2px 12px rgba(0,0,0,.08);overflow:hidden}
+.fm-doc-topbar{background:#1a3c5e;padding:14px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.fm-doc-topbar .fm-po-block{display:flex;flex-direction:column;align-items:flex-end}
+.fm-doc-topbar .fm-po-label{font-size:10px;font-weight:700;color:rgba(255,255,255,.6);text-transform:uppercase;letter-spacing:.6px}
+.fm-doc-topbar .fm-po-num{font-size:22px;font-weight:900;color:white;letter-spacing:.5px;font-family:monospace}
+.fm-doc-topbar .fm-title-block{color:white}
+.fm-doc-topbar .fm-title-block .fm-word{font-size:13px;font-weight:800;letter-spacing:3px;color:rgba(255,255,255,.5);text-transform:uppercase}
+.fm-doc-topbar .fm-title-block .fm-client-input{font-size:20px;font-weight:700;background:transparent;border:none;border-bottom:2px solid rgba(255,255,255,.3);color:white;padding:2px 0;min-width:260px;max-width:420px}
+.fm-doc-topbar .fm-title-block .fm-client-input::placeholder{color:rgba(255,255,255,.4)}
+.fm-doc-topbar .fm-title-block .fm-client-input:focus{outline:none;border-bottom-color:white}
+.fm-meta-strip{background:#f1f5f9;border-bottom:1px solid #e2e8f0;padding:10px 20px;display:flex;gap:20px;flex-wrap:wrap;align-items:center}
+.fm-meta-strip .fm-mf{display:flex;flex-direction:column;gap:1px}
+.fm-meta-strip .fm-mf label{font-size:10px;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px}
+.fm-meta-strip .fm-mf input,.fm-meta-strip .fm-mf select{border:1px solid #cbd5e1;border-radius:5px;padding:5px 8px;font-size:13px;background:white;min-width:80px}
+.fm-meta-strip .fm-mf input:focus,.fm-meta-strip .fm-mf select:focus{outline:none;border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.15)}
+.fm-actions{display:flex;gap:6px;margin-left:auto;flex-wrap:wrap}
+.fm-section{border-top:1px solid #e5e7eb}
+.fm-section-hdr{background:#f8fafc;padding:8px 20px;display:flex;align-items:center;justify-content:space-between}
+.fm-section-hdr .fm-sh-label{font-size:11px;font-weight:800;color:#475569;text-transform:uppercase;letter-spacing:.7px}
+.fm-section-hdr .fm-sh-sub{font-size:14px;font-weight:800;color:#1a3c5e}
+.fm-table{width:100%;border-collapse:collapse;font-size:13px}
+.fm-table th{font-size:10px;font-weight:800;color:#94a3b8;text-transform:uppercase;padding:6px 8px;text-align:left;border-bottom:2px solid #e2e8f0;background:#f8fafc;letter-spacing:.4px}
+.fm-table th.th-r{text-align:right}
+.fm-table td{padding:4px 6px;border-bottom:1px solid #f1f5f9;vertical-align:middle}
+.fm-table tbody tr:hover td{background:#f8fafc}
+.fm-table td input{border:1px solid transparent;border-radius:4px;padding:5px 7px;font-size:13px;width:100%;background:transparent;font-family:inherit}
+.fm-table td input:hover,.fm-table td input:focus{border-color:#cbd5e1;background:white;outline:none;box-shadow:0 0 0 2px rgba(37,99,235,.1)}
+.fm-table td.td-del{width:28px;text-align:center}
+.fm-table .del-row{background:none;border:none;color:#d1d5db;cursor:pointer;font-size:14px;padding:2px 5px;border-radius:3px;line-height:1}
+.fm-table .del-row:hover{background:#fee2e2;color:#dc2626}
+.fm-table td.td-total{font-weight:700;color:#1a3c5e;text-align:right;white-space:nowrap;padding-right:10px;width:90px}
+.fm-table td.td-qty{width:65px}.fm-table td.td-unit{width:65px}.fm-table td.td-cost{width:95px}
+.fm-add-row{display:block;width:100%;background:none;border:none;border-top:1px dashed #e2e8f0;color:#94a3b8;font-size:12px;padding:7px 20px;cursor:pointer;text-align:left;font-family:inherit}
+.fm-add-row:hover{color:#2563eb;background:#f0f7ff}
+.fm-bottom{display:grid;grid-template-columns:1fr auto;border-top:2px solid #e2e8f0}
+.fm-text-areas{padding:16px 20px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+.fm-text-areas .fm-ta-wrap label{font-size:10px;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px}
+.fm-text-areas textarea{width:100%;border:1px solid #e2e8f0;border-radius:6px;padding:8px 10px;font-size:12px;resize:vertical;font-family:inherit;min-height:80px;box-sizing:border-box}
+.fm-text-areas textarea:focus{outline:none;border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.1)}
+.fm-totals-block{padding:16px 24px;background:#f8fafc;border-left:2px solid #e2e8f0;min-width:220px;display:flex;flex-direction:column;gap:0}
+.fm-total-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:5px 0;font-size:13px;border-bottom:1px solid #f1f5f9}
+.fm-total-row label{font-weight:600;color:#475569}
+.fm-total-row .tr-val{font-weight:700;color:#1a3c5e;min-width:80px;text-align:right}
+.fm-total-row input{width:55px;border:1px solid #cbd5e1;border-radius:4px;padding:3px 6px;font-size:12px;text-align:right}
+.fm-total-row .tr-pct-amt{font-size:11px;color:#94a3b8;min-width:70px;text-align:right}
+.fm-grand{display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:10px;border-top:2px solid #1a3c5e}
+.fm-grand label{font-size:16px;font-weight:900;color:#1a3c5e;letter-spacing:.5px}
+.fm-grand .fg-val{font-size:24px;font-weight:900;color:#059669}
+.fm-schedule-bar{background:#fafafa;border-top:1px solid #e5e7eb;padding:10px 20px;display:flex;gap:20px;align-items:center;flex-wrap:wrap;font-size:13px}
+.fm-schedule-bar .fsf{display:flex;align-items:center;gap:6px}
+.fm-schedule-bar label{font-size:11px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.4px}
+.fm-schedule-bar input{border:1px solid #cbd5e1;border-radius:5px;padding:5px 8px;font-size:13px;width:70px;background:white}
+/* Print */
 @media print{
-  .prop-sidebar,.pd-actions,.del-row,.btn-add-row,.prop-sch-bar .btn{display:none!important}
-  .prop-layout{grid-template-columns:1fr;height:auto;border:none}
-  .pd-hdr{position:static;border:none;padding:0 0 12px}
-  .prop-totals,.pd-extra{background:white}
-  .li-table td input{border:none!important;background:transparent!important}
+  .prop-sidebar,.fm-actions,.del-row,.fm-add-row,.fm-schedule-bar .btn{display:none!important}
+  .prop-layout{grid-template-columns:1fr;height:auto}
+  .fm-doc{margin:0;border:none;box-shadow:none}
+  .fm-doc-topbar{background:#1a3c5e!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .fm-table td input{border:none!important;background:transparent!important}
 }
-.btn-add-row{background:none;border:1px dashed #d1d5db;color:#6b7280;font-size:12px;padding:4px 10px;border-radius:5px;cursor:pointer;width:100%;margin-top:4px;text-align:left}
-.btn-add-row:hover{border-color:#1a3c5e;color:#1a3c5e}
+/* keep old class names for compat */
+.pd-hdr{display:none}.pd-meta{display:none}.pd-body{display:none}.prop-totals{display:none}.pd-extra{display:none}.prop-sch-bar{display:none}
 </style>
 
 <div class="prop-layout" id="prop-layout">
@@ -25855,84 +25865,89 @@ function renderDetail(p, items){
     `<option value="${s}"${p.status===s?' selected':''}>${s.charAt(0).toUpperCase()+s.slice(1)}</option>`
   ).join('');
 
-  // Build line-item sections
-  let itemsHtml = '';
+  let portalsHtml = '';
   for(const cat of CATEGORIES){
     const catItems = items.filter(i=>i.category===cat.key);
     const rows = catItems.map(item=>renderItemRow(item)).join('');
-    itemsHtml += `<div class="li-section" data-cat="${cat.key}">
-      <div class="li-section-hdr">
-        <h4>${cat.icon} ${cat.label}</h4>
-        <span style="font-size:12px;font-weight:700;color:#1a3c5e" id="cat-sub-${cat.key}">${fmt(catItems.reduce((s,i)=>s+(i.total||0),0))}</span>
+    const catTotal = catItems.reduce((s,i)=>s+(i.total||0),0);
+    portalsHtml += `<div class="fm-section" data-cat="${cat.key}">
+      <div class="fm-section-hdr">
+        <span class="fm-sh-label">${cat.icon} ${cat.label}</span>
+        <span class="fm-sh-sub" id="cat-sub-${cat.key}">${fmt(catTotal)}</span>
       </div>
-      <table class="li-table">
-        <thead><tr><th>Description</th><th class="td-qty">Qty</th><th class="td-unit">Unit</th><th class="td-cost">Unit Cost</th><th style="text-align:right;padding-right:8px;width:90px">Total</th><th class="td-del"></th></tr></thead>
+      <table class="fm-table">
+        <thead><tr>
+          <th>Description</th>
+          <th class="th-r" style="width:60px">Qty</th>
+          <th style="width:60px">Unit</th>
+          <th class="th-r" style="width:95px">Unit Cost</th>
+          <th class="th-r" style="width:90px">Total</th>
+          <th style="width:28px"></th>
+        </tr></thead>
         <tbody id="items-${cat.key}">${rows}</tbody>
       </table>
-      <button class="btn-add-row" onclick="addItem(${p.id},'${cat.key}')">+ Add ${cat.label} Item</button>
+      <button class="fm-add-row" onclick="addItem(${p.id},'${cat.key}')">＋ Add ${cat.label} item</button>
     </div>`;
   }
 
-  det.innerHTML = `
-    <div class="pd-hdr">
-      <h2>📋 ${p.proposal_number||'New Proposal'} <span style="font-size:12px;font-weight:400;color:#6b7280">Rev.${p.revision||0}</span></h2>
-      <div class="pd-actions">
+  det.innerHTML = `<div class="fm-doc">
+    <div class="fm-doc-topbar">
+      <div class="fm-title-block">
+        <div class="fm-word">Proposal</div>
+        <input class="fm-client-input" id="pf-title" value="${(p.title||'').replace(/"/g,'&quot;')}" placeholder="Project / Job Title…" onchange="autoSave(${p.id})">
+      </div>
+      <div class="fm-po-block">
+        <span class="fm-po-label">Proposal No.</span>
+        <span class="fm-po-num">${p.po_number||p.proposal_number||'—'}</span>
+        <span style="font-size:10px;color:rgba(255,255,255,.5);text-align:right">Rev. ${p.revision||0}</span>
+      </div>
+    </div>
+    <div class="fm-meta-strip">
+      <div class="fm-mf"><label>Date</label><input id="pf-date" type="date" value="${p.proposal_date||''}" onchange="autoSave(${p.id})"></div>
+      <div class="fm-mf"><label>Valid (days)</label><input id="pf-valid" type="number" value="${p.valid_days||30}" style="width:65px" onchange="autoSave(${p.id})"></div>
+      <div class="fm-mf"><label>Status</label><select id="pf-status" onchange="autoSave(${p.id})">${statusOpts}</select></div>
+      <div class="fm-mf"><label>Days Allotted</label><input id="pf-days" type="number" value="${p.days_allotted||0}" style="width:65px" onchange="autoSave(${p.id})"></div>
+      <div class="fm-mf"><label>Crew Size</label><input id="pf-crew" type="number" value="${p.crew_size||1}" style="width:55px" onchange="autoSave(${p.id})"></div>
+      <div class="fm-actions">
         <button class="btn btn-secondary btn-sm" onclick="saveAll(${p.id})">💾 Save</button>
         <button class="btn btn-secondary btn-sm" onclick="reviseProposal(${p.id})">📝 Revise</button>
         <button class="btn btn-print btn-sm" onclick="window.print()">🖨 Print</button>
         <button class="btn btn-danger btn-sm" onclick="deleteProposal(${p.id})">🗑</button>
       </div>
     </div>
-    <div class="pd-meta">
-      <div class="meta-field"><label>Proposal #</label><input id="pf-num" value="${p.proposal_number||''}" onchange="autoSave(${p.id})"></div>
-      <div class="meta-field"><label>Title / Project</label><input id="pf-title" value="${p.title||''}" style="min-width:180px" onchange="autoSave(${p.id})"></div>
-      <div class="meta-field"><label>Date</label><input id="pf-date" type="date" value="${p.proposal_date||''}" onchange="autoSave(${p.id})"></div>
-      <div class="meta-field"><label>Valid (days)</label><input id="pf-valid" type="number" value="${p.valid_days||30}" style="width:65px" onchange="autoSave(${p.id})"></div>
-      <div class="meta-field"><label>Status</label>
-        <select id="pf-status" onchange="autoSave(${p.id})">${statusOpts}</select>
+    ${portalsHtml}
+    <div class="fm-bottom">
+      <div class="fm-text-areas">
+        <div class="fm-ta-wrap"><label>Scope of Work</label><textarea id="pf-scope" oninput="autoSave(${p.id})">${p.scope_summary||''}</textarea></div>
+        <div class="fm-ta-wrap"><label>Exclusions</label><textarea id="pf-excl" oninput="autoSave(${p.id})">${p.exclusions||''}</textarea></div>
+        <div class="fm-ta-wrap"><label>Terms &amp; Conditions</label><textarea id="pf-terms" oninput="autoSave(${p.id})">${p.terms||'Payment due within 30 days of invoice.'}</textarea></div>
+      </div>
+      <div class="fm-totals-block">
+        <div class="fm-total-row"><label>Subtotal</label><span class="tr-val" id="sub-total">${fmt(p.subtotal)}</span></div>
+        <div class="fm-total-row">
+          <label>Markup</label>
+          <input id="pf-markup" type="number" step="0.1" value="${p.markup_pct||0}" oninput="recalcTotals(${p.id})">
+          <span style="font-size:11px;color:#94a3b8">%</span>
+          <span class="tr-pct-amt" id="markup-amt">${fmt(p.markup_amount)}</span>
+        </div>
+        <div class="fm-total-row">
+          <label>Tax</label>
+          <input id="pf-tax" type="number" step="0.1" value="${p.tax_pct||0}" oninput="recalcTotals(${p.id})">
+          <span style="font-size:11px;color:#94a3b8">%</span>
+          <span class="tr-pct-amt" id="tax-amt">${fmt(p.tax_amount)}</span>
+        </div>
+        <div class="fm-grand"><label>TOTAL</label><span class="fg-val" id="grand-total">${fmt(p.total_amount)}</span></div>
       </div>
     </div>
-    <div class="prop-sch-bar">
-      <div class="sf"><label>Days Allotted:</label><input id="pf-days" type="number" value="${p.days_allotted||0}" style="width:65px" onchange="autoSave(${p.id})"></div>
-      <div class="sf"><label>Crew Size:</label><input id="pf-crew" type="number" value="${p.crew_size||1}" style="width:55px" onchange="autoSave(${p.id})"></div>
-      <div class="sf" style="margin-left:auto">
-        <button class="btn btn-secondary btn-sm" onclick="saveAll(${p.id})">💾 Save All</button>
-      </div>
-    </div>
-    <div class="pd-body">${itemsHtml}</div>
-    <div class="prop-totals">
-      <div class="total-input-row"><label>Subtotal</label><span id="sub-total" style="font-weight:700;color:#1a3c5e;font-size:15px">${fmt(p.subtotal)}</span></div>
-      <div class="total-input-row">
-        <label>Markup %</label>
-        <input id="pf-markup" type="number" step="0.1" value="${p.markup_pct||0}" style="width:70px;border:1px solid #d1d5db;border-radius:5px;padding:4px 8px;text-align:right" oninput="recalcTotals(${p.id})">
-        <span id="markup-amt" style="color:#6b7280;font-size:12px">${fmt(p.markup_amount)}</span>
-      </div>
-      <div class="total-input-row">
-        <label>Tax %</label>
-        <input id="pf-tax" type="number" step="0.1" value="${p.tax_pct||0}" style="width:70px;border:1px solid #d1d5db;border-radius:5px;padding:4px 8px;text-align:right" oninput="recalcTotals(${p.id})">
-        <span id="tax-amt" style="color:#6b7280;font-size:12px">${fmt(p.tax_amount)}</span>
-      </div>
-      <div class="grand-total-row">
-        <span class="gtl">TOTAL</span>
-        <span class="gtv" id="grand-total">${fmt(p.total_amount)}</span>
-      </div>
-    </div>
-    <div class="pd-extra">
-      <div class="form-row-3">
-        <div><label>Scope of Work</label><textarea id="pf-scope" oninput="autoSave(${p.id})">${p.scope_summary||''}</textarea></div>
-        <div><label>Exclusions</label><textarea id="pf-excl" oninput="autoSave(${p.id})">${p.exclusions||''}</textarea></div>
-        <div><label>Terms & Notes</label><textarea id="pf-terms" oninput="autoSave(${p.id})">${p.terms||'Payment due within 30 days of invoice.'}</textarea></div>
-      </div>
-    </div>
-  `;
+  </div>`;
 }
 
 function renderItemRow(item){
   return `<tr id="row-${item.id}">
-    <td><input value="${(item.description||'').replace(/"/g,'&quot;')}" onchange="updateItem(${item.id},'description',this.value)" style="min-width:140px"></td>
-    <td class="td-qty"><input type="number" value="${fmtN(item.quantity)}" onchange="updateItem(${item.id},'quantity',this.value)" oninput="recalcRow(${item.id},this)" class="td-qty"></td>
+    <td><input value="${(item.description||'').replace(/"/g,'&quot;')}" onchange="updateItem(${item.id},'description',this.value)" style="min-width:160px"></td>
+    <td class="td-qty" style="text-align:right"><input type="number" value="${fmtN(item.quantity)}" onchange="updateItem(${item.id},'quantity',this.value)" oninput="recalcRow(${item.id},this)" style="text-align:right"></td>
     <td class="td-unit"><input value="${item.unit||'ea'}" onchange="updateItem(${item.id},'unit',this.value)" style="width:55px"></td>
-    <td class="td-cost"><input type="number" step="0.01" value="${fmtN(item.unit_cost)}" onchange="updateItem(${item.id},'unit_cost',this.value)" oninput="recalcRow(${item.id},this)"></td>
+    <td class="td-cost" style="text-align:right"><input type="number" step="0.01" value="${fmtN(item.unit_cost)}" onchange="updateItem(${item.id},'unit_cost',this.value)" oninput="recalcRow(${item.id},this)" style="text-align:right"></td>
     <td class="td-total" id="row-total-${item.id}">${fmt(item.total)}</td>
     <td class="td-del"><button class="del-row" onclick="deleteItem(${item.id},'${item.category}')">✕</button></td>
   </tr>`;
@@ -28151,6 +28166,44 @@ def installation_crews_move():
         return jsonify({'success': False, 'error': str(e)})
 
 
+
+
+@app.route('/installation/api/v2/proposals/regen-po', methods=['POST'])
+def v2_proposals_regen_po():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    prop_id = data.get('id')
+    name = (data.get('name') or '').strip()
+    if not prop_id or not name:
+        return jsonify({'success': False, 'error': 'Missing id or name'})
+    try:
+        _stop = {'THE','OF','AND','A','AN','IN','AT','FOR','TO','LLC','INC','CORP','CO','GROUP','GRP'}
+        def _pfx(n):
+            return (''.join(w[0] for w in n.upper().split()
+                            if w and w not in _stop and w[0].isalpha())[:5] or 'PROP')
+        code = _pfx(name)
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        # Check if this proposal already has a custom (non-PROP) PO
+        c.execute("SELECT po_number, job_po_prefix FROM install_proposals WHERE id=?", (prop_id,))
+        row = c.fetchone()
+        if row and row[1] and row[1] != 'PROP':
+            conn.close()
+            return jsonify({'success': True, 'po_number': row[0], 'changed': False})
+        c.execute("SELECT COUNT(*)+1 FROM install_proposals WHERE job_po_prefix=?", (code,))
+        n = c.fetchone()[0]
+        po = f"{code}-{n:03d}"
+        while True:
+            c.execute("SELECT id FROM install_proposals WHERE po_number=? AND id!=?", (po, prop_id))
+            if not c.fetchone(): break
+            n += 1; po = f"{code}-{n:03d}"
+        c.execute("UPDATE install_proposals SET po_number=?, proposal_number=?, job_po_prefix=?, client_name_override=? WHERE id=?",
+                  (po, po, code, name, prop_id))
+        conn.commit(); conn.close()
+        return jsonify({'success': True, 'po_number': po, 'changed': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
 
 
 @app.route('/installation/proposal/new')
