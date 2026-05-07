@@ -16914,6 +16914,67 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                 });
                 // Show initial total if any values are already filled in
                 liveCalcTotal();
+
+                // ── Excel-style paste into the spreadsheet table ──────────────────
+                // Column order matches the table (skip zone span, inputs only)
+                const pasteColClasses = ['nozzle','pop_up_6_inch','pop_up_12_inch','rotor_6_inch',
+                                         'new_pop_up_6_inch','new_pop_up_12_inch','riser','solenoid',
+                                         'stat_decoder_1','notes'];
+
+                var tableBody = document.getElementById('tableBody');
+                if (tableBody) {
+                    tableBody.addEventListener('paste', function(e) {
+                        var target = e.target;
+                        if (!target.matches('input')) return;
+
+                        var clipText = (e.clipboardData || window.clipboardData).getData('text');
+                        if (!clipText) return;
+
+                        // Parse TSV rows (Excel copies as tab-separated, newline-delimited)
+                        var pasteRows = clipText.split(/\r?\n/);
+                        // Drop trailing empty row Excel often appends
+                        while (pasteRows.length && pasteRows[pasteRows.length - 1].trim() === '') {
+                            pasteRows.pop();
+                        }
+                        if (pasteRows.length === 0) return;
+
+                        // Single plain-text value with no tabs — let the browser handle it
+                        if (pasteRows.length === 1 && pasteRows[0].indexOf('\t') === -1) return;
+
+                        e.preventDefault();
+
+                        var allRows = Array.from(tableBody.querySelectorAll('.item-row'));
+                        var currentRow = target.closest('.item-row');
+                        var startRowIdx = allRows.indexOf(currentRow);
+                        if (startRowIdx === -1) return;
+
+                        // Find which column the focused input belongs to
+                        var startColIdx = 0;
+                        for (var ci = 0; ci < pasteColClasses.length; ci++) {
+                            if (target.classList.contains(pasteColClasses[ci])) {
+                                startColIdx = ci;
+                                break;
+                            }
+                        }
+
+                        pasteRows.forEach(function(rowData, ri) {
+                            var rowIdx = startRowIdx + ri;
+                            if (rowIdx >= allRows.length) return;
+                            var tableRow = allRows[rowIdx];
+                            var cells = rowData.split('\t');
+                            cells.forEach(function(cellValue, ci) {
+                                var colIdx = startColIdx + ci;
+                                if (colIdx >= pasteColClasses.length) return;
+                                var inp = tableRow.querySelector('.' + pasteColClasses[colIdx]);
+                                if (inp) inp.value = cellValue.trim();
+                            });
+                        });
+
+                        markUnsaved();
+                        liveCalcTotal();
+                    });
+                }
+                // ── End paste handler ─────────────────────────────────────────────
             }
         });
 
