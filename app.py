@@ -4544,10 +4544,11 @@ def add_job():
         c.execute("INSERT INTO jobs (job_name, year, created_date, budget, department, job_code, active) VALUES (?, ?, ?, ?, ?, ?, 1)",
                  (job_name, year, datetime.now().strftime('%Y-%m-%d'), budget, department, job_code or None))
         conn.commit()
+        new_job_id = c.lastrowid
         conn.close()
         print(f"[add_job] Successfully added job: '{job_name}' to {department} department")
         if is_ajax:
-            return jsonify({'success': True, 'message': f'Job "{job_name}" added successfully'})
+            return jsonify({'success': True, 'id': new_job_id, 'message': f'Job "{job_name}" added successfully'})
         flash(f'Job "{job_name}" added successfully!')
 
         # Redirect back to the appropriate department tab
@@ -27355,19 +27356,18 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
     <a href="/dashboard">Dashboard</a>
   </nav>
   <button onclick="openHubLogoModal()" style="color:rgba(255,255,255,.85);background:none;border:1px solid rgba(255,255,255,.25);border-radius:5px;padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background='none'">&#128444; Company Logo</button>
-  <a href="/installation/proposal/new" class="btn btn-primary" style="white-space:nowrap;flex-shrink:0">+ New Proposal</a>
+  <button onclick="openCreateJobModal()" class="btn btn-primary" style="white-space:nowrap;flex-shrink:0">&#43; Create Job</button>
 </div>
 
-<!-- Hero CTA -->
-<div style="background:linear-gradient(135deg,#1a3c5e 0%,#2563eb 100%);padding:28px 24px;display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap">
+<!-- Create Job CTA -->
+<div style="background:linear-gradient(135deg,#1a3c5e 0%,#2563eb 100%);padding:20px 24px;display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap">
   <div>
-    <div style="color:rgba(255,255,255,.7);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px">Ready to start?</div>
-    <div style="color:white;font-size:20px;font-weight:800;margin-bottom:2px">Create a New Proposal</div>
-    <div style="color:rgba(255,255,255,.65);font-size:13px">Link to an existing job or start a standalone proposal</div>
+    <div style="color:rgba(255,255,255,.7);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;margin-bottom:3px">Get started</div>
+    <div style="color:white;font-size:18px;font-weight:800">Create a job, then add proposals inside it</div>
   </div>
-  <a href="/installation/proposal/new" style="display:inline-flex;align-items:center;gap:10px;background:white;color:#1a3c5e;font-size:16px;font-weight:800;padding:14px 28px;border-radius:10px;text-decoration:none;white-space:nowrap;box-shadow:0 4px 16px rgba(0,0,0,.2);letter-spacing:.2px;transition:transform .1s" onmouseover="this.style.transform='scale(1.03)'" onmouseout="this.style.transform='scale(1)'">
-    📋 New Proposal →
-  </a>
+  <button onclick="openCreateJobModal()" style="display:inline-flex;align-items:center;gap:8px;background:white;color:#1a3c5e;font-size:15px;font-weight:800;padding:12px 24px;border-radius:10px;border:none;cursor:pointer;white-space:nowrap;box-shadow:0 4px 16px rgba(0,0,0,.2);transition:transform .1s" onmouseover="this.style.transform='scale(1.03)'" onmouseout="this.style.transform='scale(1)'">
+    &#43; Create Job
+  </button>
 </div>
 
 <div class="search-bar">
@@ -27410,7 +27410,6 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
     </div>
     <div style="display:flex;flex-direction:column;gap:5px;align-items:flex-end;min-width:100px">
       <a href="/installation/job/{{ j.id }}" class="btn btn-primary btn-sm">Open →</a>
-      <button class="btn btn-secondary btn-sm" onclick="openNewPropModal({{ j.id }}, '{{ j.job_name|replace("\'","\\\'") }}')">+ Proposal</button>
       <a href="/installation/job/{{ j.id }}?tab=site-plans" class="btn btn-secondary btn-sm" style="font-size:11px">🗺 Plans</a>
     </div>
   </div>
@@ -27424,46 +27423,52 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
   </div>
   {% endif %}
 
-  {% if standalone_proposals %}
-  <div class="standalone-section" id="standalone-section">
-    <div class="standalone-hdr">📄 Standalone Proposals</div>
-    {% for p in standalone_proposals %}
-    <div class="sa-card">
-      <a href="/installation/proposal/{{ p.id }}" class="sa-card-link">
-        <div class="sa-po">{{ p.po_number or '—' }}</div>
-        <div class="sa-name">{{ p.title or p.project_name or 'Untitled' }}<br><span style="font-size:12px;color:#9ca3af">{{ p.client_name_override or '' }}</span></div>
-        <div class="sa-total">${{ "{:,.0f}".format(p.total_amount or 0) }}</div>
-        <span class="sa-status st-{{ p.status or 'draft' }}">{{ (p.status or 'draft').replace('_',' ') }}</span>
-      </a>
-      <button onclick="deleteStandaloneProposal({{ p.id }}, this)" style="background:none;border:1px solid #fca5a5;color:#dc2626;border-radius:5px;padding:4px 8px;cursor:pointer;font-size:12px;flex-shrink:0" title="Delete proposal">🗑</button>
-    </div>
-    {% endfor %}
-  </div>
-  {% endif %}
 </div>
 
 <script>
-async function deleteStandaloneProposal(propId, btn){
-  if(!confirm('Delete this proposal? This cannot be undone.')) return;
-  btn.disabled=true;
-  const d=await fetch('/installation/api/v2/proposals/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:propId})}).then(r=>r.json());
-  if(d.success) btn.closest('.sa-card').remove();
-  else{alert('Delete failed');btn.disabled=false;}
+/* ── Create Job Modal ── */
+function openCreateJobModal(){
+  document.getElementById('create-job-modal').style.display='flex';
+  if(!document.getElementById('cj-year').value)
+    document.getElementById('cj-year').value=new Date().getFullYear();
+  document.getElementById('cj-name').focus();
 }
+function closeCreateJobModal(){
+  document.getElementById('create-job-modal').style.display='none';
+  document.getElementById('cj-name').value='';
+  document.getElementById('cj-year').value=new Date().getFullYear();
+  document.getElementById('cj-value').value='';
+  document.getElementById('cj-err').textContent='';
+}
+async function submitCreateJob(){
+  const name=document.getElementById('cj-name').value.trim();
+  const year=document.getElementById('cj-year').value.trim();
+  const val=document.getElementById('cj-value').value.trim();
+  const err=document.getElementById('cj-err');
+  if(!name){err.textContent='Job name is required.';document.getElementById('cj-name').focus();return;}
+  if(!year||isNaN(parseInt(year))){err.textContent='Valid year is required.';return;}
+  err.textContent='';
+  const btn=document.getElementById('cj-submit');
+  btn.disabled=true;btn.textContent='Creating...';
+  const fd=new FormData();
+  fd.append('job_name',name);
+  fd.append('year',year);
+  fd.append('budget',val||'0');
+  fd.append('department','install');
+  const d=await fetch('/add_job',{method:'POST',headers:{'X-Requested-With':'XMLHttpRequest'},body:fd}).then(r=>r.json());
+  btn.disabled=false;btn.textContent='Create Job';
+  if(d.success && d.id){
+    closeCreateJobModal();
+    window.location.href='/installation/job/'+d.id;
+  } else {
+    err.textContent=d.error||'Failed to create job.';
+  }
+}
+
 function makeInitials(name){
   if(!name) return '';
   const stop = new Set(['THE','OF','AND','A','AN','IN','AT','FOR','TO','LLC','INC','CORP','CO','GROUP','GRP','&']);
   return name.toUpperCase().split(/[\s&]+/).filter(w=>w&&!stop.has(w)&&/^[A-Z]/i.test(w)).map(w=>w[0]).join('').substring(0,5)||'PROP';
-}
-function openNewPropModal(jobId, jobName){
-  // Per-job shortcut: immediately create a linked proposal
-  if(!jobId){ window.location.href='/installation/proposal/new'; return; }
-  if(!confirm('Create a new proposal for "'+jobName+'"?')) return;
-  fetch('/installation/api/v2/proposals/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:jobId,standalone:0})})
-    .then(r=>r.json()).then(d=>{
-      if(d.id) window.location.href='/installation/job/'+jobId+'?tab=proposals&prop_id='+d.id;
-      else alert('Error: '+(d.error||'Unknown'));
-    });
 }
 function filterCards(){
   const q = document.getElementById('search-input').value.toLowerCase().trim();
@@ -27471,8 +27476,6 @@ function filterCards(){
   let vis=0;
   cards.forEach(c=>{const m=!q||c.dataset.search.includes(q);c.style.display=m?'':'none';if(m)vis++;});
   document.getElementById('search-count').textContent=vis+' job'+(vis===1?'':'s');
-  const sa=document.getElementById('standalone-section');
-  if(sa) sa.style.display=q?'none':'';
 }
 
 /* ── Hub Logo Upload ── */
@@ -27516,7 +27519,42 @@ async function removeHubLogo(){
   await fetch('/installation/api/v2/logo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({logo:''})});
   closeHubLogoModal();
 }
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeCreateJobModal();closeHubLogoModal();}});
 </script>
+
+<!-- Create Job Modal -->
+<div id="create-job-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9000;align-items:center;justify-content:center">
+  <div style="background:white;border-radius:12px;width:440px;max-width:95vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+    <div style="background:#1a3c5e;color:white;padding:16px 20px;display:flex;align-items:center;justify-content:space-between">
+      <span style="font-weight:800;font-size:16px">&#43; Create New Job</span>
+      <button onclick="closeCreateJobModal()" style="background:none;border:none;color:white;font-size:22px;cursor:pointer;line-height:1">&times;</button>
+    </div>
+    <div style="padding:22px 24px">
+      <div style="margin-bottom:14px">
+        <label style="display:block;font-size:11px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">Job Name *</label>
+        <input id="cj-name" type="text" placeholder="e.g. Verona Walk Phase 3" onkeydown="if(event.key==='Enter')submitCreateJob()"
+          style="width:100%;border:1px solid #d1d5db;border-radius:7px;padding:9px 12px;font-size:14px;font-family:inherit;box-sizing:border-box">
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+        <div>
+          <label style="display:block;font-size:11px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">Year *</label>
+          <input id="cj-year" type="number"
+            style="width:100%;border:1px solid #d1d5db;border-radius:7px;padding:9px 12px;font-size:14px;font-family:inherit;box-sizing:border-box">
+        </div>
+        <div>
+          <label style="display:block;font-size:11px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">Contract Value ($)</label>
+          <input id="cj-value" type="number" step="1000" placeholder="0"
+            style="width:100%;border:1px solid #d1d5db;border-radius:7px;padding:9px 12px;font-size:14px;font-family:inherit;box-sizing:border-box">
+        </div>
+      </div>
+      <div id="cj-err" style="color:#dc2626;font-size:13px;min-height:18px;margin-bottom:4px"></div>
+    </div>
+    <div style="padding:12px 24px 20px;display:flex;gap:8px;justify-content:flex-end">
+      <button onclick="closeCreateJobModal()" style="padding:9px 18px;border:1px solid #d1d5db;background:white;border-radius:7px;cursor:pointer;font-size:13px;font-family:inherit">Cancel</button>
+      <button id="cj-submit" onclick="submitCreateJob()" style="padding:9px 22px;border:none;background:#1a3c5e;color:white;border-radius:7px;cursor:pointer;font-weight:700;font-size:14px;font-family:inherit">Create Job</button>
+    </div>
+  </div>
+</div>
 
 <!-- Hub Logo Modal -->
 <div id="hub-logo-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9000;align-items:center;justify-content:center">
@@ -27586,7 +27624,10 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
           {% if job.contract_value %}<span>💰 ${{ "{:,.0f}".format(job.contract_value) }}</span>{% endif %}
         </div>
       </div>
-      <button class="btn btn-secondary btn-sm" onclick="openModal('edit-job-modal')">✏️ Edit</button>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-secondary btn-sm" onclick="openModal('edit-job-modal')">✏️ Edit</button>
+        <button class="btn btn-sm" onclick="closeThisJob()" style="background:#fee2e2;color:#dc2626;border:1px solid #fca5a5;font-size:12px">✕ Close Job</button>
+      </div>
     </div>
   </div>
 
@@ -27782,6 +27823,13 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
 const PROP_JOB_ID = {{ job.id }};
 let activeProposalId = null;
 let allProposals = [];
+
+async function closeThisJob(){
+  if(!confirm('Close this job? It will be removed from the active job list. You can still access it from closed job records.')) return;
+  const d = await fetch('/installation/api/close-job',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:PROP_JOB_ID})}).then(r=>r.json());
+  if(d.success) window.location.href='/installation';
+  else alert('Error closing job: '+(d.error||'unknown'));
+}
 
 const CATEGORIES = [
   {key:'materials',  label:'Materials',       icon:'🪨'},
@@ -28763,8 +28811,8 @@ def installation():
                             COALESCE(j.client_name,''), COALESCE(j.project_address,''),
                             COALESCE(j.inst_status,'planning'), COALESCE(j.contract_value,0),
                             COALESCE(j.job_code,'')
-                     FROM jobs j WHERE COALESCE(j.department,'install')='install'
-                     ORDER BY j.active DESC, j.year DESC, j.job_name ASC""")
+                     FROM jobs j WHERE COALESCE(j.department,'install')='install' AND j.active=1
+                     ORDER BY j.year DESC, j.job_name ASC""")
         raw_jobs = c.fetchall()
 
         c.execute("SELECT job_id, COUNT(*) FROM install_schedules GROUP BY job_id")
@@ -28823,28 +28871,30 @@ def installation():
             j.job_po_prefix=make_prefix(row[1])
             jobs.append(j)
 
-        # Standalone proposals
-        c.execute("""SELECT id, proposal_number, po_number, title, project_name,
-                            client_name_override, status, total_amount
-                     FROM install_proposals WHERE standalone=1 ORDER BY created_at DESC""")
-        class _SP: pass
-        standalone_proposals = []
-        for sr in c.fetchall():
-            p = _SP()
-            p.id=sr[0]; p.proposal_number=sr[1]; p.po_number=sr[2]
-            p.title=sr[3]; p.project_name=sr[4]; p.client_name_override=sr[5]
-            p.status=sr[6] or 'draft'; p.total_amount=sr[7] or 0
-            standalone_proposals.append(p)
-
         conn.close()
         return render_template_string(INSTALLATION_HUB_TEMPLATE,
             jobs=jobs, active_count=active_count, total_count=total_count,
             total_contract=total_contract, total_invoiced=total_invoiced,
-            open_proposals=open_proposals, approved_value=approved_value,
-            standalone_proposals=standalone_proposals)
+            open_proposals=open_proposals, approved_value=approved_value)
     except Exception as e:
         import traceback
         return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre><a href='/dashboard'>Back</a>"
+
+
+@app.route('/installation/api/close-job', methods=['POST'])
+def installation_close_job():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json()
+    job_id = data.get('job_id')
+    if not job_id:
+        return jsonify({'success': False, 'error': 'job_id required'}), 400
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE jobs SET active=0 WHERE id=?", (job_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
 
 
 @app.route('/installation/job/<int:job_id>')
@@ -30336,33 +30386,8 @@ def v2_proposals_match_job():
 
 @app.route('/installation/proposal/new')
 def installation_new_proposal_page():
-    if 'username' not in session:
-        return redirect(url_for('login'))
-    try:
-        import datetime as _dt
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        today = _dt.date.today().isoformat()
-        c.execute("""INSERT INTO install_proposals
-                     (standalone, status, proposal_date, valid_days, crew_size,
-                      terms, created_at, created_by)
-                     VALUES (1,'draft',?,30,1,'Payment due within 30 days of invoice.',?,?)""",
-                  (today, today, session.get('username', '')))
-        prop_id = c.lastrowid
-        c.execute("SELECT COUNT(*)+1 FROM install_proposals WHERE job_po_prefix='PROP'")
-        n = c.fetchone()[0]
-        po = f"PROP-{n:03d}"
-        while True:
-            c.execute("SELECT id FROM install_proposals WHERE po_number=?", (po,))
-            if not c.fetchone(): break
-            n += 1; po = f"PROP-{n:03d}"
-        c.execute("UPDATE install_proposals SET po_number=?, job_po_prefix='PROP' WHERE id=?", (po, prop_id))
-        conn.commit()
-        conn.close()
-        return redirect(f'/installation/proposal/{prop_id}')
-    except Exception as e:
-        import traceback
-        return f"<pre>Error creating proposal:\n{traceback.format_exc()}</pre>", 500
+    # Standalone proposals removed — proposals are created within a job
+    return redirect(url_for('installation'))
 
 
 @app.route('/installation/proposal/<int:prop_id>')
