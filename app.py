@@ -30870,8 +30870,8 @@ function buildCatSelect(sel){{
 function parsePaste(){{
   const raw=document.getElementById('imp-paste-area').value.trim();
   if(!raw){{alert('Paste some data first');return;}}
-  const lines=raw.split('\n').filter(l=>l.trim());
-  const rows=lines.map(l=>l.split('\t').map(s=>s.trim()));
+  const lines=raw.split('\\n').filter(l=>l.trim());
+  const rows=lines.map(l=>l.split('\\t').map(s=>s.trim()));
   renderPreview(rows);
 }}
 
@@ -30881,15 +30881,15 @@ function handleFileUpload(evt){{
   const reader=new FileReader();
   reader.onload=function(e){{
     const text=e.target.result;
-    const sep=text.includes('\t')?'\t':',';
-    const lines=text.split('\n').filter(l=>l.trim());
+    const sep=text.includes('\\t')?'\\t':',';
+    const lines=text.split('\\n').filter(l=>l.trim());
     const rows=lines.map(l=>{{
       if(sep===','){{
         const r=[];let cur='',inq=false;
         for(const ch of l){{if(ch==='"')inq=!inq;else if(ch===','&&!inq){{r.push(cur.trim());cur='';}}else cur+=ch;}}
         r.push(cur.trim());return r;
       }}
-      return l.split('\t').map(s=>s.trim());
+      return l.split('\\t').map(s=>s.trim());
     }});
     renderPreview(rows);
   }};
