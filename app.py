@@ -16959,7 +16959,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
                         if (!clipText) return;
 
                         // Parse TSV rows (Excel copies as tab-separated, newline-delimited)
-                        var pasteRows = clipText.split(/\r?\n/);
+                        var pasteRows = clipText.split(/\\r?\\n/);
                         // Drop trailing empty row Excel often appends
                         while (pasteRows.length && pasteRows[pasteRows.length - 1].trim() === '') {
                             pasteRows.pop();
