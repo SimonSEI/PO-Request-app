@@ -18496,29 +18496,57 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 </div>
 
                                 <!-- Nozzle Pricing -->
-                                <div class="pricing-section" style="margin-top: 20px; border-top: 1px solid #ddd; padding-top: 15px; background: #F8FAFC; border-radius: 8px; padding: 14px;">
-                                    <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
-                                        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-                                            <h4 style="margin:0;">💰 Part Pricing</h4>
-                                            <span id="default-pricing-badge-{{ community.id }}" style="display:none;"></span>
+                                <div class="pricing-section" style="margin-top: 20px; border-top: 1px solid #ddd; padding: 14px; background: #F8FAFC; border-radius: 8px;">
+                                    <!-- Header -->
+                                    <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;">
+                                        <h4 style="margin:0;">💰 Part Pricing</h4>
+                                        <span id="default-pricing-badge-{{ community.id }}" style="display:none;"></span>
+                                    </div>
+
+                                    <!-- Synced view: shown when community uses default pricing -->
+                                    <div id="pricing-synced-{{ community.id }}" style="display:none;">
+                                        <div style="display:flex; align-items:flex-start; gap:10px; background:#EEF2FF; border:1.5px solid #C7D2FE; border-radius:8px; padding:10px 14px; margin-bottom:10px;">
+                                            <span style="font-size:18px; flex-shrink:0;">🔗</span>
+                                            <div>
+                                                <div style="font-weight:700; color:#1B3A6B; font-size:13px;">Using Default Pricing</div>
+                                                <div style="font-size:12px; color:#475569; margin-top:2px;">Prices are managed by the Default Pricing panel and will auto-update when defaults change. No custom prices needed here.</div>
+                                            </div>
                                         </div>
-                                        <button type="button" onclick="applyDefaultPricing({{ community.id }})"
-                                                style="padding: 6px 14px; background: #64748B; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; display:flex; align-items:center; gap:5px;">
-                                            🔗 Link to Default Pricing
+                                        <div id="pricing-synced-chips-{{ community.id }}" style="display:flex; flex-wrap:wrap; gap:6px; font-size:12px; margin-bottom:10px;"></div>
+                                        <button type="button" onclick="switchToCustomPricing({{ community.id }})"
+                                                style="padding:6px 14px; background:#64748B; color:white; border:none; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600;">
+                                            ✏️ Switch to Custom Pricing
                                         </button>
                                     </div>
-                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px;">
-                                        <div><label>Nozzle:</label> $<input type="number" id="price-nozzle-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>6" Pop Up:</label> $<input type="number" id="price-pop_up_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>12" Pop Up:</label> $<input type="number" id="price-pop_up_12_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>6" Rotor:</label> $<input type="number" id="price-rotor_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>NEW 6" Pop Up:</label> $<input type="number" id="price-new_pop_up_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>NEW 12" Pop Up:</label> $<input type="number" id="price-new_pop_up_12_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>Riser:</label> $<input type="number" id="price-riser-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>Solenoid:</label> $<input type="number" id="price-solenoid-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>1 Stat Decoder:</label> $<input type="number" id="price-stat_decoder_1-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+
+                                    <!-- Edit view: shown when community uses custom pricing -->
+                                    <div id="pricing-edit-{{ community.id }}" style="display:none;">
+                                        <div style="display:flex; align-items:center; gap:8px; background:#F1F5F9; border:1.5px solid #D1D5DB; border-radius:8px; padding:8px 12px; margin-bottom:10px;">
+                                            <span style="font-size:15px;">✏️</span>
+                                            <div style="font-size:12px; color:#475569;"><strong style="color:#374151;">Custom Pricing</strong> — prices set independently for this community.</div>
+                                        </div>
+                                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px; margin-bottom:12px;">
+                                            <div><label>Nozzle:</label> $<input type="number" id="price-nozzle-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                            <div><label>6" Pop Up:</label> $<input type="number" id="price-pop_up_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                            <div><label>12" Pop Up:</label> $<input type="number" id="price-pop_up_12_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                            <div><label>6" Rotor:</label> $<input type="number" id="price-rotor_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                            <div><label>NEW 6" Pop Up:</label> $<input type="number" id="price-new_pop_up_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                            <div><label>NEW 12" Pop Up:</label> $<input type="number" id="price-new_pop_up_12_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                            <div><label>Riser:</label> $<input type="number" id="price-riser-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                            <div><label>Solenoid:</label> $<input type="number" id="price-solenoid-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                            <div><label>1 Stat Decoder:</label> $<input type="number" id="price-stat_decoder_1-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        </div>
+                                        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                                            <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="padding: 9px 22px; font-size: 13px; font-weight: 600;">Save Pricing</button>
+                                            <button type="button" onclick="applyDefaultPricing({{ community.id }})"
+                                                    style="padding: 7px 14px; background: #64748B; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">
+                                                🔗 Link to Default Pricing
+                                            </button>
+                                        </div>
                                     </div>
-                                    <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="margin-top: 12px; padding: 10px 24px; font-size: 14px; font-weight: 600;">Save Pricing</button>
+
+                                    <!-- Loading placeholder -->
+                                    <div id="pricing-loading-{{ community.id }}" style="color:#94A3B8; font-size:13px;">Loading pricing…</div>
                                 </div>
                             </div>
                             {% endif %}
@@ -18549,29 +18577,57 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 </div>
 
                                 <!-- Pricing Section for Verona Walk HOA -->
-                                <div class="pricing-section" style="margin-top: 20px; border-top: 1px solid #ddd; padding-top: 15px; background: #F8FAFC; border-radius: 8px; padding: 14px;">
-                                    <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
-                                        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-                                            <h4 style="margin:0;">💰 Part Pricing</h4>
-                                            <span id="default-pricing-badge-{{ community.id }}" style="display:none;"></span>
+                                <div class="pricing-section" style="margin-top: 20px; border-top: 1px solid #ddd; padding: 14px; background: #F8FAFC; border-radius: 8px;">
+                                    <!-- Header -->
+                                    <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;">
+                                        <h4 style="margin:0;">💰 Part Pricing</h4>
+                                        <span id="default-pricing-badge-{{ community.id }}" style="display:none;"></span>
+                                    </div>
+
+                                    <!-- Synced view: shown when community uses default pricing -->
+                                    <div id="pricing-synced-{{ community.id }}" style="display:none;">
+                                        <div style="display:flex; align-items:flex-start; gap:10px; background:#EEF2FF; border:1.5px solid #C7D2FE; border-radius:8px; padding:10px 14px; margin-bottom:10px;">
+                                            <span style="font-size:18px; flex-shrink:0;">🔗</span>
+                                            <div>
+                                                <div style="font-weight:700; color:#1B3A6B; font-size:13px;">Using Default Pricing</div>
+                                                <div style="font-size:12px; color:#475569; margin-top:2px;">Prices are managed by the Default Pricing panel and will auto-update when defaults change. No custom prices needed here.</div>
+                                            </div>
                                         </div>
-                                        <button type="button" onclick="applyDefaultPricing({{ community.id }})"
-                                                style="padding: 6px 14px; background: #64748B; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; display:flex; align-items:center; gap:5px;">
-                                            🔗 Link to Default Pricing
+                                        <div id="pricing-synced-chips-{{ community.id }}" style="display:flex; flex-wrap:wrap; gap:6px; font-size:12px; margin-bottom:10px;"></div>
+                                        <button type="button" onclick="switchToCustomPricing({{ community.id }})"
+                                                style="padding:6px 14px; background:#64748B; color:white; border:none; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600;">
+                                            ✏️ Switch to Custom Pricing
                                         </button>
                                     </div>
-                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px;">
-                                        <div><label>Nozzle:</label> $<input type="number" id="price-nozzle-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>6" Pop Up:</label> $<input type="number" id="price-pop_up_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>12" Pop Up:</label> $<input type="number" id="price-pop_up_12_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>6" Rotor:</label> $<input type="number" id="price-rotor_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>NEW 6" Pop Up:</label> $<input type="number" id="price-new_pop_up_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>NEW 12" Pop Up:</label> $<input type="number" id="price-new_pop_up_12_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>Riser:</label> $<input type="number" id="price-riser-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>Solenoid:</label> $<input type="number" id="price-solenoid-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
-                                        <div><label>1 Stat Decoder:</label> $<input type="number" id="price-stat_decoder_1-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+
+                                    <!-- Edit view: shown when community uses custom pricing -->
+                                    <div id="pricing-edit-{{ community.id }}" style="display:none;">
+                                        <div style="display:flex; align-items:center; gap:8px; background:#F1F5F9; border:1.5px solid #D1D5DB; border-radius:8px; padding:8px 12px; margin-bottom:10px;">
+                                            <span style="font-size:15px;">✏️</span>
+                                            <div style="font-size:12px; color:#475569;"><strong style="color:#374151;">Custom Pricing</strong> — prices set independently for this community.</div>
+                                        </div>
+                                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px; margin-bottom:12px;">
+                                            <div><label>Nozzle:</label> $<input type="number" id="price-nozzle-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                            <div><label>6" Pop Up:</label> $<input type="number" id="price-pop_up_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                            <div><label>12" Pop Up:</label> $<input type="number" id="price-pop_up_12_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                            <div><label>6" Rotor:</label> $<input type="number" id="price-rotor_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                            <div><label>NEW 6" Pop Up:</label> $<input type="number" id="price-new_pop_up_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                            <div><label>NEW 12" Pop Up:</label> $<input type="number" id="price-new_pop_up_12_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                            <div><label>Riser:</label> $<input type="number" id="price-riser-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                            <div><label>Solenoid:</label> $<input type="number" id="price-solenoid-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                            <div><label>1 Stat Decoder:</label> $<input type="number" id="price-stat_decoder_1-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
+                                        </div>
+                                        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                                            <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="padding: 9px 22px; font-size: 13px; font-weight: 600;">Save Pricing</button>
+                                            <button type="button" onclick="applyDefaultPricing({{ community.id }})"
+                                                    style="padding: 7px 14px; background: #64748B; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">
+                                                🔗 Link to Default Pricing
+                                            </button>
+                                        </div>
                                     </div>
-                                    <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="margin-top: 12px; padding: 10px 24px; font-size: 14px; font-weight: 600;">Save Pricing</button>
+
+                                    <!-- Loading placeholder -->
+                                    <div id="pricing-loading-{{ community.id }}" style="color:#94A3B8; font-size:13px;">Loading pricing…</div>
                                 </div>
                             </div>
                             {% endif %}
@@ -20997,17 +21053,56 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 .catch(e => console.error('Error loading default pricing:', e));
         }
 
-        function setDefaultPricingBadge(communityId, isDefault) {
-            const badge = document.getElementById(`default-pricing-badge-${communityId}`);
-            if (!badge) return;
+        function setPricingView(communityId, isDefault, pricing) {
+            const syncedView  = document.getElementById(`pricing-synced-${communityId}`);
+            const editView    = document.getElementById(`pricing-edit-${communityId}`);
+            const loadingView = document.getElementById(`pricing-loading-${communityId}`);
+            const badge       = document.getElementById(`default-pricing-badge-${communityId}`);
+
+            if (loadingView) loadingView.style.display = 'none';
+
             if (isDefault) {
-                badge.textContent = '🔗 Synced to Default';
-                badge.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:#EEF2FF;color:#1B3A6B;border:1.5px solid #C7D2FE;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:700;';
+                if (syncedView)  syncedView.style.display  = 'block';
+                if (editView)    editView.style.display    = 'none';
+                if (badge) {
+                    badge.textContent = '🔗 Synced to Default';
+                    badge.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:#EEF2FF;color:#1B3A6B;border:1.5px solid #C7D2FE;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:700;';
+                }
+                // Populate the chips
+                if (pricing) {
+                    const chips = document.getElementById(`pricing-synced-chips-${communityId}`);
+                    if (chips) {
+                        chips.innerHTML = PRICE_KEYS.map(k =>
+                            `<span style="background:#fff;border:1px solid #C7D2FE;border-radius:5px;padding:3px 8px;color:#1B3A6B;font-size:11px;font-weight:600;">${PRICE_LABELS[k]}: $${parseFloat(pricing[k]||1).toFixed(2)}</span>`
+                        ).join('');
+                    }
+                }
             } else {
-                badge.textContent = '✏️ Custom Pricing';
+                if (syncedView)  syncedView.style.display  = 'none';
+                if (editView)    editView.style.display    = 'block';
+                if (badge) {
+                    badge.textContent = '✏️ Custom';
+                    badge.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:#F1F5F9;color:#64748B;border:1.5px solid #D1D5DB;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:600;';
+                }
+            }
+        }
+
+        // kept for backward compat (called from savePricing / applyDefaultPricing)
+        function setDefaultPricingBadge(communityId, isDefault) {
+            setPricingView(communityId, isDefault, null);
+        }
+
+        function switchToCustomPricing(communityId) {
+            // Just flip the view — actual save happens when user clicks "Save Pricing"
+            const syncedView = document.getElementById(`pricing-synced-${communityId}`);
+            const editView   = document.getElementById(`pricing-edit-${communityId}`);
+            const badge      = document.getElementById(`default-pricing-badge-${communityId}`);
+            if (syncedView) syncedView.style.display = 'none';
+            if (editView)   editView.style.display   = 'block';
+            if (badge) {
+                badge.textContent = '✏️ Custom';
                 badge.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:#F1F5F9;color:#64748B;border:1.5px solid #D1D5DB;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:600;';
             }
-            badge.style.display = 'inline-flex';
         }
 
         function saveDefaultPricing() {
@@ -21033,16 +21128,14 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                         ? `✓ Saved — ${count} communit${count === 1 ? 'y' : 'ies'} auto-updated`
                         : '✓ Saved!';
                     loadDefaultPricing();
-                    // Refresh prices shown for any synced community
-                    if (count > 0) {
-                        document.querySelectorAll('.pricing-section').forEach(section => {
-                            const btn = section.querySelector('button[onclick*="savePricing"]');
-                            if (btn) {
-                                const match = btn.getAttribute('onclick').match(/savePricing\((\d+)\)/);
-                                if (match) loadPricing(parseInt(match[1]));
-                            }
-                        });
-                    }
+                    // Refresh all community pricing views (synced ones will update chips)
+                    document.querySelectorAll('.pricing-section').forEach(section => {
+                        const btn = section.querySelector('button[onclick*="savePricing"]');
+                        if (btn) {
+                            const match = btn.getAttribute('onclick').match(/savePricing\((\d+)\)/);
+                            if (match) loadPricing(parseInt(match[1]));
+                        }
+                    });
                     setTimeout(() => { statusEl.textContent = ''; }, 4000);
                 } else {
                     statusEl.style.color = '#991B1B';
@@ -21067,7 +21160,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                         const el = document.getElementById(`price-${k}-${communityId}`);
                         if (el) el.value = p[k] || 1.0;
                     });
-                    setDefaultPricingBadge(communityId, true);
+                    setPricingView(communityId, true, p);
                     const banner = document.createElement('div');
                     banner.textContent = '🔗 Community linked to Default Pricing — will auto-update when defaults change.';
                     banner.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#1B3A6B;color:white;padding:12px 28px;border-radius:8px;font-weight:600;font-size:14px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.3);max-width:90vw;text-align:center;';
@@ -21082,23 +21175,18 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
         function loadPricing(communityId) {
             fetch(`/community_get_pricing?community_id=${communityId}`)
-                .then(response => response.json())
+                .then(r => r.json())
                 .then(data => {
-                    if (data.success && data.pricing) {
-                        const pricing = data.pricing;
-                        document.getElementById(`price-nozzle-${communityId}`).value = pricing.nozzle || 1.0;
-                        document.getElementById(`price-pop_up_6_inch-${communityId}`).value = pricing.pop_up_6_inch || 1.0;
-                        document.getElementById(`price-pop_up_12_inch-${communityId}`).value = pricing.pop_up_12_inch || 1.0;
-                        document.getElementById(`price-rotor_6_inch-${communityId}`).value = pricing.rotor_6_inch || 1.0;
-                        document.getElementById(`price-new_pop_up_6_inch-${communityId}`).value = pricing.new_pop_up_6_inch || 1.0;
-                        document.getElementById(`price-new_pop_up_12_inch-${communityId}`).value = pricing.new_pop_up_12_inch || 1.0;
-                        document.getElementById(`price-riser-${communityId}`).value = pricing.riser || 1.0;
-                        document.getElementById(`price-solenoid-${communityId}`).value = pricing.solenoid || 1.0;
-                        document.getElementById(`price-stat_decoder_1-${communityId}`).value = pricing.stat_decoder_1 || 1.0;
-                        setDefaultPricingBadge(communityId, data.use_default_pricing);
-                    }
+                    if (!data.success) return;
+                    const p = data.pricing;
+                    // Always populate inputs so savePricing() has values if user switches to custom
+                    PRICE_KEYS.forEach(k => {
+                        const el = document.getElementById(`price-${k}-${communityId}`);
+                        if (el) el.value = p[k] || 1.0;
+                    });
+                    setPricingView(communityId, data.use_default_pricing, p);
                 })
-                .catch(error => console.error('Error loading pricing:', error));
+                .catch(err => console.error('Error loading pricing:', err));
         }
 
         function savePricing(communityId) {
