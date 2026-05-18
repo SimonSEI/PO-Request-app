@@ -26417,25 +26417,30 @@ def community_get_pricing():
                  WHERE community_id = ?""", (community_id,))
 
     pricing = c.fetchone()
-    conn.close()
+    keys = ['nozzle', 'pop_up_6_inch', 'pop_up_12_inch', 'rotor_6_inch',
+            'new_pop_up_6_inch', 'new_pop_up_12_inch', 'riser', 'solenoid', 'stat_decoder_1']
 
     if pricing:
+        conn.close()
         return jsonify({
             'success': True,
             'use_default_pricing': bool(pricing[9]),
-            'pricing': {
-                'nozzle': pricing[0], 'pop_up_6_inch': pricing[1],
-                'pop_up_12_inch': pricing[2], 'rotor_6_inch': pricing[3],
-                'new_pop_up_6_inch': pricing[4], 'new_pop_up_12_inch': pricing[5],
-                'riser': pricing[6], 'solenoid': pricing[7], 'stat_decoder_1': pricing[8]
-            }
+            'has_pricing_row': True,
+            'pricing': dict(zip(keys, pricing[:9]))
         })
     else:
+        # No custom pricing yet — seed inputs with current defaults so the user
+        # starts from a useful baseline rather than all 1.0
+        c.execute("""SELECT nozzle, pop_up_6_inch, pop_up_12_inch, rotor_6_inch,
+                            new_pop_up_6_inch, new_pop_up_12_inch, riser, solenoid, stat_decoder_1
+                     FROM default_part_pricing WHERE id = 1""")
+        defaults = c.fetchone()
+        conn.close()
         return jsonify({
             'success': True,
             'use_default_pricing': False,
-            'pricing': {k: 1.0 for k in ['nozzle','pop_up_6_inch','pop_up_12_inch','rotor_6_inch',
-                                          'new_pop_up_6_inch','new_pop_up_12_inch','riser','solenoid','stat_decoder_1']}
+            'has_pricing_row': False,
+            'pricing': dict(zip(keys, defaults)) if defaults else {k: 1.0 for k in keys}
         })
 
 @app.route('/community_save_pricing', methods=['POST'])
