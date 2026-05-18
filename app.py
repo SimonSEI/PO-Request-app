@@ -21015,7 +21015,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         }
 
         // Pricing management functions
-        // ── Default Pricing ──────────────────────────────────────────────────
+        // -- Default Pricing --
         const PRICE_KEYS = ['nozzle','pop_up_6_inch','pop_up_12_inch','rotor_6_inch',
                             'new_pop_up_6_inch','new_pop_up_12_inch','riser','solenoid','stat_decoder_1'];
         const PRICE_LABELS = {'nozzle':'Nozzle','pop_up_6_inch':'6" Pop Up','pop_up_12_inch':'12" Pop Up',
@@ -21029,7 +21029,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             const isHidden = form.style.display === 'none';
             form.style.display = isHidden ? 'block' : 'none';
             summary.style.display = isHidden ? 'none' : 'flex';
-            btn.textContent = isHidden ? '✕ Close' : '✏️ Edit Default Prices';
+            btn.textContent = isHidden ? 'Close' : 'Edit Default Prices';
         }
 
         function loadDefaultPricing() {
@@ -21065,7 +21065,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 if (syncedView)  syncedView.style.display  = 'block';
                 if (editView)    editView.style.display    = 'none';
                 if (badge) {
-                    badge.textContent = '🔗 Synced to Default';
+                    badge.textContent = 'Synced to Default';
                     badge.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:#EEF2FF;color:#1B3A6B;border:1.5px solid #C7D2FE;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:700;';
                 }
                 // Populate the chips
@@ -21081,7 +21081,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 if (syncedView)  syncedView.style.display  = 'none';
                 if (editView)    editView.style.display    = 'block';
                 if (badge) {
-                    badge.textContent = '✏️ Custom';
+                    badge.textContent = 'Custom';
                     badge.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:#F1F5F9;color:#64748B;border:1.5px solid #D1D5DB;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:600;';
                 }
             }
@@ -21093,14 +21093,14 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         }
 
         function switchToCustomPricing(communityId) {
-            // Just flip the view — actual save happens when user clicks "Save Pricing"
+            // Just flip the view - actual save happens when user clicks "Save Pricing"
             const syncedView = document.getElementById(`pricing-synced-${communityId}`);
             const editView   = document.getElementById(`pricing-edit-${communityId}`);
             const badge      = document.getElementById(`default-pricing-badge-${communityId}`);
             if (syncedView) syncedView.style.display = 'none';
             if (editView)   editView.style.display   = 'block';
             if (badge) {
-                badge.textContent = '✏️ Custom';
+                badge.textContent = 'Custom';
                 badge.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:#F1F5F9;color:#64748B;border:1.5px solid #D1D5DB;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:600;';
             }
         }
@@ -21113,7 +21113,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             });
             const statusEl = document.getElementById('default-pricing-status');
             statusEl.style.color = '#065F46';
-            statusEl.textContent = 'Saving…';
+            statusEl.textContent = 'Saving...';
 
             fetch('/community_save_default_pricing', {
                 method: 'POST',
@@ -21125,8 +21125,8 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 if (data.success) {
                     const count = data.communities_updated || 0;
                     statusEl.textContent = count > 0
-                        ? `✓ Saved — ${count} communit${count === 1 ? 'y' : 'ies'} auto-updated`
-                        : '✓ Saved!';
+                        ? `Saved - ${count} communit${count === 1 ? 'y' : 'ies'} auto-updated`
+                        : 'Saved!';
                     loadDefaultPricing();
                     // Refresh all community pricing views (synced ones will update chips)
                     document.querySelectorAll('.pricing-section').forEach(section => {
@@ -21146,7 +21146,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         }
 
         function applyDefaultPricing(communityId) {
-            if (!confirm('Link this community to Default Pricing?\n\nThis copies the current default values and marks the community as synced — future changes to Default Pricing will automatically update it.')) return;
+            if (!confirm('Link this community to Default Pricing?\n\nThis copies the current default values and marks the community as synced - future changes to Default Pricing will automatically update it.')) return;
             fetch('/community_apply_default_pricing', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -21162,7 +21162,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     });
                     setPricingView(communityId, true, p);
                     const banner = document.createElement('div');
-                    banner.textContent = '🔗 Community linked to Default Pricing — will auto-update when defaults change.';
+                    banner.textContent = 'Community linked to Default Pricing - will auto-update when defaults change.';
                     banner.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#1B3A6B;color:white;padding:12px 28px;border-radius:8px;font-weight:600;font-size:14px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.3);max-width:90vw;text-align:center;';
                     document.body.appendChild(banner);
                     setTimeout(() => banner.remove(), 3500);
@@ -21231,7 +21231,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                         }
                         // Show confirmation banner
                         const banner = document.createElement('div');
-                        banner.textContent = 'Custom pricing saved — community unlinked from defaults.';
+                        banner.textContent = 'Custom pricing saved - community unlinked from defaults.';
                         banner.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#1B3A6B;color:white;padding:12px 24px;border-radius:8px;font-weight:600;font-size:14px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
                         document.body.appendChild(banner);
                         setTimeout(() => banner.remove(), 3000);
