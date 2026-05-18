@@ -21146,7 +21146,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         }
 
         function applyDefaultPricing(communityId) {
-            if (!confirm('Link this community to Default Pricing?\n\nThis copies the current default values and marks the community as synced - future changes to Default Pricing will automatically update it.')) return;
+            if (!confirm('Link this community to Default Pricing?\\n\\nThis copies the current default values and marks the community as synced - future changes to Default Pricing will automatically update it.')) return;
             fetch('/community_apply_default_pricing', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
