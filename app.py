@@ -1141,6 +1141,12 @@ def init_db():
                   FOREIGN KEY (community_id) REFERENCES communities(id) ON DELETE CASCADE,
                   UNIQUE(community_id))''')
 
+    # Migration: add use_default_pricing flag
+    c.execute("PRAGMA table_info(community_nozzle_prices)")
+    _cnp_cols = [col[1] for col in c.fetchall()]
+    if 'use_default_pricing' not in _cnp_cols:
+        c.execute("ALTER TABLE community_nozzle_prices ADD COLUMN use_default_pricing INTEGER DEFAULT 0")
+
     # Default part pricing - singleton row used as template for new communities
     c.execute('''CREATE TABLE IF NOT EXISTS default_part_pricing
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -18492,10 +18498,13 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 <!-- Nozzle Pricing -->
                                 <div class="pricing-section" style="margin-top: 20px; border-top: 1px solid #ddd; padding-top: 15px; background: #F8FAFC; border-radius: 8px; padding: 14px;">
                                     <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
-                                        <h4 style="margin:0;">💰 Part Pricing</h4>
+                                        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                                            <h4 style="margin:0;">💰 Part Pricing</h4>
+                                            <span id="default-pricing-badge-{{ community.id }}" style="display:none;"></span>
+                                        </div>
                                         <button type="button" onclick="applyDefaultPricing({{ community.id }})"
                                                 style="padding: 6px 14px; background: #64748B; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; display:flex; align-items:center; gap:5px;">
-                                            ⬇ Apply Default Pricing
+                                            🔗 Link to Default Pricing
                                         </button>
                                     </div>
                                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px;">
@@ -18542,10 +18551,13 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 <!-- Pricing Section for Verona Walk HOA -->
                                 <div class="pricing-section" style="margin-top: 20px; border-top: 1px solid #ddd; padding-top: 15px; background: #F8FAFC; border-radius: 8px; padding: 14px;">
                                     <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
-                                        <h4 style="margin:0;">💰 Part Pricing</h4>
+                                        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                                            <h4 style="margin:0;">💰 Part Pricing</h4>
+                                            <span id="default-pricing-badge-{{ community.id }}" style="display:none;"></span>
+                                        </div>
                                         <button type="button" onclick="applyDefaultPricing({{ community.id }})"
                                                 style="padding: 6px 14px; background: #64748B; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; display:flex; align-items:center; gap:5px;">
-                                            ⬇ Apply Default Pricing
+                                            🔗 Link to Default Pricing
                                         </button>
                                     </div>
                                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px;">
@@ -20985,6 +20997,19 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 .catch(e => console.error('Error loading default pricing:', e));
         }
 
+        function setDefaultPricingBadge(communityId, isDefault) {
+            const badge = document.getElementById(`default-pricing-badge-${communityId}`);
+            if (!badge) return;
+            if (isDefault) {
+                badge.textContent = '🔗 Synced to Default';
+                badge.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:#EEF2FF;color:#1B3A6B;border:1.5px solid #C7D2FE;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:700;';
+            } else {
+                badge.textContent = '✏️ Custom Pricing';
+                badge.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:#F1F5F9;color:#64748B;border:1.5px solid #D1D5DB;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:600;';
+            }
+            badge.style.display = 'inline-flex';
+        }
+
         function saveDefaultPricing() {
             const payload = {};
             PRICE_KEYS.forEach(k => {
@@ -20992,6 +21017,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 payload[k] = el ? parseFloat(el.value) || 1.0 : 1.0;
             });
             const statusEl = document.getElementById('default-pricing-status');
+            statusEl.style.color = '#065F46';
             statusEl.textContent = 'Saving…';
 
             fetch('/community_save_default_pricing', {
@@ -21002,9 +21028,22 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
-                    statusEl.textContent = '✓ Saved!';
+                    const count = data.communities_updated || 0;
+                    statusEl.textContent = count > 0
+                        ? `✓ Saved — ${count} communit${count === 1 ? 'y' : 'ies'} auto-updated`
+                        : '✓ Saved!';
                     loadDefaultPricing();
-                    setTimeout(() => { statusEl.textContent = ''; }, 3000);
+                    // Refresh prices shown for any synced community
+                    if (count > 0) {
+                        document.querySelectorAll('.pricing-section').forEach(section => {
+                            const btn = section.querySelector('button[onclick*="savePricing"]');
+                            if (btn) {
+                                const match = btn.getAttribute('onclick').match(/savePricing\((\d+)\)/);
+                                if (match) loadPricing(parseInt(match[1]));
+                            }
+                        });
+                    }
+                    setTimeout(() => { statusEl.textContent = ''; }, 4000);
                 } else {
                     statusEl.style.color = '#991B1B';
                     statusEl.textContent = 'Error: ' + data.error;
@@ -21014,7 +21053,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         }
 
         function applyDefaultPricing(communityId) {
-            if (!confirm('Apply default pricing to this community? This will overwrite its current prices.')) return;
+            if (!confirm('Link this community to Default Pricing?\n\nThis copies the current default values and marks the community as synced — future changes to Default Pricing will automatically update it.')) return;
             fetch('/community_apply_default_pricing', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -21028,11 +21067,12 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                         const el = document.getElementById(`price-${k}-${communityId}`);
                         if (el) el.value = p[k] || 1.0;
                     });
+                    setDefaultPricingBadge(communityId, true);
                     const banner = document.createElement('div');
-                    banner.textContent = 'Default pricing applied!';
-                    banner.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#1B3A6B;color:white;padding:12px 24px;border-radius:8px;font-weight:600;font-size:14px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.3);';
+                    banner.textContent = '🔗 Community linked to Default Pricing — will auto-update when defaults change.';
+                    banner.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#1B3A6B;color:white;padding:12px 28px;border-radius:8px;font-weight:600;font-size:14px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.3);max-width:90vw;text-align:center;';
                     document.body.appendChild(banner);
-                    setTimeout(() => banner.remove(), 2500);
+                    setTimeout(() => banner.remove(), 3500);
                 } else {
                     alert('Error: ' + (data.error || 'Unknown error'));
                 }
@@ -21055,6 +21095,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                         document.getElementById(`price-riser-${communityId}`).value = pricing.riser || 1.0;
                         document.getElementById(`price-solenoid-${communityId}`).value = pricing.solenoid || 1.0;
                         document.getElementById(`price-stat_decoder_1-${communityId}`).value = pricing.stat_decoder_1 || 1.0;
+                        setDefaultPricingBadge(communityId, data.use_default_pricing);
                     }
                 })
                 .catch(error => console.error('Error loading pricing:', error));
@@ -21088,6 +21129,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
+                        setDefaultPricingBadge(communityId, false);
                         if (saveBtn) {
                             saveBtn.textContent = 'Saved!';
                             saveBtn.style.background = '#122944';
@@ -21101,7 +21143,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                         }
                         // Show confirmation banner
                         const banner = document.createElement('div');
-                        banner.textContent = 'Pricing saved successfully!';
+                        banner.textContent = 'Custom pricing saved — community unlinked from defaults.';
                         banner.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#1B3A6B;color:white;padding:12px 24px;border-radius:8px;font-weight:600;font-size:14px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
                         document.body.appendChild(banner);
                         setTimeout(() => banner.remove(), 3000);
@@ -26281,7 +26323,8 @@ def community_get_pricing():
     c = conn.cursor()
 
     c.execute("""SELECT nozzle, pop_up_6_inch, pop_up_12_inch, rotor_6_inch,
-                        new_pop_up_6_inch, new_pop_up_12_inch, riser, solenoid, stat_decoder_1
+                        new_pop_up_6_inch, new_pop_up_12_inch, riser, solenoid, stat_decoder_1,
+                        COALESCE(use_default_pricing, 0)
                  FROM community_nozzle_prices
                  WHERE community_id = ?""", (community_id,))
 
@@ -26291,33 +26334,20 @@ def community_get_pricing():
     if pricing:
         return jsonify({
             'success': True,
+            'use_default_pricing': bool(pricing[9]),
             'pricing': {
-                'nozzle': pricing[0],
-                'pop_up_6_inch': pricing[1],
-                'pop_up_12_inch': pricing[2],
-                'rotor_6_inch': pricing[3],
-                'new_pop_up_6_inch': pricing[4],
-                'new_pop_up_12_inch': pricing[5],
-                'riser': pricing[6],
-                'solenoid': pricing[7],
-                'stat_decoder_1': pricing[8]
+                'nozzle': pricing[0], 'pop_up_6_inch': pricing[1],
+                'pop_up_12_inch': pricing[2], 'rotor_6_inch': pricing[3],
+                'new_pop_up_6_inch': pricing[4], 'new_pop_up_12_inch': pricing[5],
+                'riser': pricing[6], 'solenoid': pricing[7], 'stat_decoder_1': pricing[8]
             }
         })
     else:
-        # Return default pricing if not set
         return jsonify({
             'success': True,
-            'pricing': {
-                'nozzle': 1.0,
-                'pop_up_6_inch': 1.0,
-                'pop_up_12_inch': 1.0,
-                'rotor_6_inch': 1.0,
-                'new_pop_up_6_inch': 1.0,
-                'new_pop_up_12_inch': 1.0,
-                'riser': 1.0,
-                'solenoid': 1.0,
-                'stat_decoder_1': 1.0
-            }
+            'use_default_pricing': False,
+            'pricing': {k: 1.0 for k in ['nozzle','pop_up_6_inch','pop_up_12_inch','rotor_6_inch',
+                                          'new_pop_up_6_inch','new_pop_up_12_inch','riser','solenoid','stat_decoder_1']}
         })
 
 @app.route('/community_save_pricing', methods=['POST'])
@@ -26340,44 +26370,32 @@ def community_save_pricing():
         c.execute("SELECT id FROM community_nozzle_prices WHERE community_id = ?", (community_id,))
         exists = c.fetchone()
 
+        vals = (float(data.get('nozzle', 1.0)),
+                float(data.get('pop_up_6_inch', 1.0)),
+                float(data.get('pop_up_12_inch', 1.0)),
+                float(data.get('rotor_6_inch', 1.0)),
+                float(data.get('new_pop_up_6_inch', 1.0)),
+                float(data.get('new_pop_up_12_inch', 1.0)),
+                float(data.get('riser', 1.0)),
+                float(data.get('solenoid', 1.0)),
+                float(data.get('stat_decoder_1', 1.0)))
+
         if exists:
-            # Update existing
             c.execute("""UPDATE community_nozzle_prices
-                         SET nozzle = ?, pop_up_6_inch = ?, pop_up_12_inch = ?,
-                             rotor_6_inch = ?, new_pop_up_6_inch = ?, new_pop_up_12_inch = ?,
-                             riser = ?, solenoid = ?, stat_decoder_1 = ?
-                         WHERE community_id = ?""",
-                     (float(data.get('nozzle', 1.0)),
-                      float(data.get('pop_up_6_inch', 1.0)),
-                      float(data.get('pop_up_12_inch', 1.0)),
-                      float(data.get('rotor_6_inch', 1.0)),
-                      float(data.get('new_pop_up_6_inch', 1.0)),
-                      float(data.get('new_pop_up_12_inch', 1.0)),
-                      float(data.get('riser', 1.0)),
-                      float(data.get('solenoid', 1.0)),
-                      float(data.get('stat_decoder_1', 1.0)),
-                      community_id))
+                         SET nozzle=?, pop_up_6_inch=?, pop_up_12_inch=?,
+                             rotor_6_inch=?, new_pop_up_6_inch=?, new_pop_up_12_inch=?,
+                             riser=?, solenoid=?, stat_decoder_1=?, use_default_pricing=0
+                         WHERE community_id=?""", (*vals, community_id))
         else:
-            # Insert new
             c.execute("""INSERT INTO community_nozzle_prices
                          (community_id, nozzle, pop_up_6_inch, pop_up_12_inch,
                           rotor_6_inch, new_pop_up_6_inch, new_pop_up_12_inch,
-                          riser, solenoid, stat_decoder_1)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                     (community_id,
-                      float(data.get('nozzle', 1.0)),
-                      float(data.get('pop_up_6_inch', 1.0)),
-                      float(data.get('pop_up_12_inch', 1.0)),
-                      float(data.get('rotor_6_inch', 1.0)),
-                      float(data.get('new_pop_up_6_inch', 1.0)),
-                      float(data.get('new_pop_up_12_inch', 1.0)),
-                      float(data.get('riser', 1.0)),
-                      float(data.get('solenoid', 1.0)),
-                      float(data.get('stat_decoder_1', 1.0))))
+                          riser, solenoid, stat_decoder_1, use_default_pricing)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,0)""", (community_id, *vals))
 
         conn.commit()
         conn.close()
-        return jsonify({'success': True, 'message': 'Pricing saved successfully'})
+        return jsonify({'success': True, 'message': 'Pricing saved successfully', 'use_default_pricing': False})
     except Exception as e:
         conn.close()
         return jsonify({'success': False, 'error': str(e)})
@@ -26404,26 +26422,36 @@ def community_get_default_pricing():
 
 @app.route('/community_save_default_pricing', methods=['POST'])
 def community_save_default_pricing():
-    """Save system-wide default pricing"""
+    """Save system-wide default pricing and cascade to all opted-in communities"""
     if 'username' not in session or session.get('role') != 'office':
         return jsonify({'success': False, 'error': 'Access denied'}), 401
 
     data = request.get_json()
+    vals = (float(data.get('nozzle', 1.0)), float(data.get('pop_up_6_inch', 1.0)),
+            float(data.get('pop_up_12_inch', 1.0)), float(data.get('rotor_6_inch', 1.0)),
+            float(data.get('new_pop_up_6_inch', 1.0)), float(data.get('new_pop_up_12_inch', 1.0)),
+            float(data.get('riser', 1.0)), float(data.get('solenoid', 1.0)),
+            float(data.get('stat_decoder_1', 1.0)))
+
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
+        # Update the default pricing table
         c.execute("""UPDATE default_part_pricing SET
                      nozzle=?, pop_up_6_inch=?, pop_up_12_inch=?, rotor_6_inch=?,
                      new_pop_up_6_inch=?, new_pop_up_12_inch=?, riser=?, solenoid=?, stat_decoder_1=?
-                     WHERE id=1""",
-                  (float(data.get('nozzle', 1.0)), float(data.get('pop_up_6_inch', 1.0)),
-                   float(data.get('pop_up_12_inch', 1.0)), float(data.get('rotor_6_inch', 1.0)),
-                   float(data.get('new_pop_up_6_inch', 1.0)), float(data.get('new_pop_up_12_inch', 1.0)),
-                   float(data.get('riser', 1.0)), float(data.get('solenoid', 1.0)),
-                   float(data.get('stat_decoder_1', 1.0))))
+                     WHERE id=1""", vals)
+
+        # Cascade to all communities that use default pricing
+        c.execute("""UPDATE community_nozzle_prices SET
+                     nozzle=?, pop_up_6_inch=?, pop_up_12_inch=?, rotor_6_inch=?,
+                     new_pop_up_6_inch=?, new_pop_up_12_inch=?, riser=?, solenoid=?, stat_decoder_1=?
+                     WHERE use_default_pricing=1""", vals)
+        updated_count = c.rowcount
+
         conn.commit()
         conn.close()
-        return jsonify({'success': True, 'message': 'Default pricing saved'})
+        return jsonify({'success': True, 'message': 'Default pricing saved', 'communities_updated': updated_count})
     except Exception as e:
         conn.close()
         return jsonify({'success': False, 'error': str(e)})
@@ -26454,13 +26482,14 @@ def community_apply_default_pricing():
         if c.fetchone():
             c.execute("""UPDATE community_nozzle_prices SET
                          nozzle=?, pop_up_6_inch=?, pop_up_12_inch=?, rotor_6_inch=?,
-                         new_pop_up_6_inch=?, new_pop_up_12_inch=?, riser=?, solenoid=?, stat_decoder_1=?
+                         new_pop_up_6_inch=?, new_pop_up_12_inch=?, riser=?, solenoid=?, stat_decoder_1=?,
+                         use_default_pricing=1
                          WHERE community_id=?""", (*row, community_id))
         else:
             c.execute("""INSERT INTO community_nozzle_prices
                          (community_id, nozzle, pop_up_6_inch, pop_up_12_inch, rotor_6_inch,
-                          new_pop_up_6_inch, new_pop_up_12_inch, riser, solenoid, stat_decoder_1)
-                         VALUES (?,?,?,?,?,?,?,?,?,?)""", (community_id, *row))
+                          new_pop_up_6_inch, new_pop_up_12_inch, riser, solenoid, stat_decoder_1, use_default_pricing)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,1)""", (community_id, *row))
 
         conn.commit()
         conn.close()
