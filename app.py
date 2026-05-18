@@ -1141,6 +1141,25 @@ def init_db():
                   FOREIGN KEY (community_id) REFERENCES communities(id) ON DELETE CASCADE,
                   UNIQUE(community_id))''')
 
+    # Default part pricing - singleton row used as template for new communities
+    c.execute('''CREATE TABLE IF NOT EXISTS default_part_pricing
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  nozzle REAL DEFAULT 1.0,
+                  pop_up_6_inch REAL DEFAULT 1.0,
+                  pop_up_12_inch REAL DEFAULT 1.0,
+                  rotor_6_inch REAL DEFAULT 1.0,
+                  new_pop_up_6_inch REAL DEFAULT 1.0,
+                  new_pop_up_12_inch REAL DEFAULT 1.0,
+                  riser REAL DEFAULT 1.0,
+                  solenoid REAL DEFAULT 1.0,
+                  stat_decoder_1 REAL DEFAULT 1.0)''')
+    c.execute("SELECT COUNT(*) FROM default_part_pricing")
+    if c.fetchone()[0] == 0:
+        c.execute("""INSERT INTO default_part_pricing
+                     (nozzle, pop_up_6_inch, pop_up_12_inch, rotor_6_inch,
+                      new_pop_up_6_inch, new_pop_up_12_inch, riser, solenoid, stat_decoder_1)
+                     VALUES (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)""")
+
     # Activity log table - THIS WAS MISSING!
     c.execute('''CREATE TABLE IF NOT EXISTS activity_log
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -15367,7 +15386,7 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
         .cm-nav-brand { display:flex; align-items:center; gap:12px; }
         .cm-nav-logo {
             width:36px; height:36px; border-radius:10px;
-            background: linear-gradient(135deg,#14B8A6,#0D9488);
+            background: linear-gradient(135deg,#1B3A6B,#122944);
             display:flex; align-items:center; justify-content:center; font-size:18px; flex-shrink:0;
         }
         .cm-nav-titles { display:flex; flex-direction:column; line-height:1.2; }
@@ -15384,28 +15403,28 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
         }
         .btn-primary  { background:var(--accent); color:#fff; box-shadow:0 2px 8px var(--accent-glow); }
         .btn-primary:hover  { background:var(--accent-dark); transform:translateY(-1px); box-shadow:0 4px 14px var(--accent-glow); }
-        .btn-secondary { background:#F1F5F9; color:var(--text-secondary); border:1.5px solid var(--border); }
-        .btn-secondary:hover { background:#E2E8F0; color:var(--text-primary); }
+        .btn-secondary { background:#E9EDF2; color:var(--text-secondary); border:1.5px solid var(--border); }
+        .btn-secondary:hover { background:#D1D5DB; color:var(--text-primary); }
         .btn-danger  { background:#FEE2E2; color:#991B1B; border:1.5px solid #FECACA; }
         .btn-danger:hover  { background:#DC2626; color:#fff; border-color:#DC2626; }
         .btn-success { background:#D1FAE5; color:#065F46; border:1.5px solid #A7F3D0; }
         .btn-success:hover { background:#059669; color:#fff; border-color:#059669; }
         .btn-ghost { background:transparent; color:var(--text-secondary); border:1.5px solid var(--border); }
-        .btn-ghost:hover { background:#F8FAFC; }
+        .btn-ghost:hover { background:#E9EDF2; }
         .btn-sm { padding:7px 13px; font-size:13px; border-radius:8px; }
         .btn-xs { padding:4px 9px; font-size:12px; border-radius:6px; }
         button:disabled { opacity:.5; cursor:not-allowed; }
-        /* legacy button class overrides */
+        /* ─── Unified navy/grey button theme ─── */
         .btn-next  { background:var(--accent)!important; color:#fff!important; box-shadow:0 2px 8px var(--accent-glow)!important; padding:12px 24px!important; border-radius:10px!important; font-size:15px!important; border:none!important; }
         .btn-next:hover { background:var(--accent-dark)!important; transform:translateY(-1px)!important; }
-        .btn-back  { background:#F1F5F9!important; color:var(--text-secondary)!important; border:1.5px solid var(--border)!important; padding:12px 24px!important; border-radius:10px!important; font-size:15px!important; }
-        .btn-back:hover { background:#E2E8F0!important; color:var(--text-primary)!important; }
-        .btn-search  { background:var(--accent)!important; color:#fff!important; }
+        .btn-back  { background:#64748B!important; color:#fff!important; border:1.5px solid #4B5563!important; padding:12px 24px!important; border-radius:10px!important; font-size:15px!important; }
+        .btn-back:hover { background:#4B5563!important; color:#fff!important; }
+        .btn-search  { background:var(--accent)!important; color:#fff!important; border:none!important; }
         .btn-search:hover { background:var(--accent-dark)!important; }
-        .btn-export  { background:#D1FAE5!important; color:#065F46!important; border:1.5px solid #A7F3D0!important; }
-        .btn-export:hover { background:#059669!important; color:#fff!important; }
-        .btn-save, .btn-add-house { background:#D1FAE5!important; color:#065F46!important; border:1.5px solid #A7F3D0!important; }
-        .btn-save:hover, .btn-add-house:hover { background:#059669!important; color:#fff!important; border-color:#059669!important; }
+        .btn-export  { background:var(--accent)!important; color:#fff!important; border:none!important; }
+        .btn-export:hover { background:var(--accent-dark)!important; color:#fff!important; }
+        .btn-save, .btn-add-house, .btn-add-address { background:var(--accent)!important; color:#fff!important; border:none!important; }
+        .btn-save:hover, .btn-add-house:hover, .btn-add-address:hover { background:var(--accent-dark)!important; color:#fff!important; }
         .btn-delete, .btn-delete-community, .btn-delete-house { background:#FEE2E2!important; color:#991B1B!important; border:1.5px solid #FECACA!important; }
         .btn-delete:hover, .btn-delete-community:hover, .btn-delete-house:hover { background:#DC2626!important; color:#fff!important; border-color:#DC2626!important; }
         /* ─── Badges / Status ─── */
@@ -16223,7 +16242,7 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         .cm-nav-brand { display:flex; align-items:center; gap:12px; }
         .cm-nav-logo {
             width:36px; height:36px; border-radius:10px;
-            background: linear-gradient(135deg,#14B8A6,#0D9488);
+            background: linear-gradient(135deg,#1B3A6B,#122944);
             display:flex; align-items:center; justify-content:center; font-size:18px; flex-shrink:0;
         }
         .cm-nav-titles { display:flex; flex-direction:column; line-height:1.2; }
@@ -16240,28 +16259,28 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         }
         .btn-primary  { background:var(--accent); color:#fff; box-shadow:0 2px 8px var(--accent-glow); }
         .btn-primary:hover  { background:var(--accent-dark); transform:translateY(-1px); box-shadow:0 4px 14px var(--accent-glow); }
-        .btn-secondary { background:#F1F5F9; color:var(--text-secondary); border:1.5px solid var(--border); }
-        .btn-secondary:hover { background:#E2E8F0; color:var(--text-primary); }
+        .btn-secondary { background:#E9EDF2; color:var(--text-secondary); border:1.5px solid var(--border); }
+        .btn-secondary:hover { background:#D1D5DB; color:var(--text-primary); }
         .btn-danger  { background:#FEE2E2; color:#991B1B; border:1.5px solid #FECACA; }
         .btn-danger:hover  { background:#DC2626; color:#fff; border-color:#DC2626; }
         .btn-success { background:#D1FAE5; color:#065F46; border:1.5px solid #A7F3D0; }
         .btn-success:hover { background:#059669; color:#fff; border-color:#059669; }
         .btn-ghost { background:transparent; color:var(--text-secondary); border:1.5px solid var(--border); }
-        .btn-ghost:hover { background:#F8FAFC; }
+        .btn-ghost:hover { background:#E9EDF2; }
         .btn-sm { padding:7px 13px; font-size:13px; border-radius:8px; }
         .btn-xs { padding:4px 9px; font-size:12px; border-radius:6px; }
         button:disabled { opacity:.5; cursor:not-allowed; }
-        /* legacy button class overrides */
+        /* ─── Unified navy/grey button theme ─── */
         .btn-next  { background:var(--accent)!important; color:#fff!important; box-shadow:0 2px 8px var(--accent-glow)!important; padding:12px 24px!important; border-radius:10px!important; font-size:15px!important; border:none!important; }
         .btn-next:hover { background:var(--accent-dark)!important; transform:translateY(-1px)!important; }
-        .btn-back  { background:#F1F5F9!important; color:var(--text-secondary)!important; border:1.5px solid var(--border)!important; padding:12px 24px!important; border-radius:10px!important; font-size:15px!important; }
-        .btn-back:hover { background:#E2E8F0!important; color:var(--text-primary)!important; }
-        .btn-search  { background:var(--accent)!important; color:#fff!important; }
+        .btn-back  { background:#64748B!important; color:#fff!important; border:1.5px solid #4B5563!important; padding:12px 24px!important; border-radius:10px!important; font-size:15px!important; }
+        .btn-back:hover { background:#4B5563!important; color:#fff!important; }
+        .btn-search  { background:var(--accent)!important; color:#fff!important; border:none!important; }
         .btn-search:hover { background:var(--accent-dark)!important; }
-        .btn-export  { background:#D1FAE5!important; color:#065F46!important; border:1.5px solid #A7F3D0!important; }
-        .btn-export:hover { background:#059669!important; color:#fff!important; }
-        .btn-save, .btn-add-house { background:#D1FAE5!important; color:#065F46!important; border:1.5px solid #A7F3D0!important; }
-        .btn-save:hover, .btn-add-house:hover { background:#059669!important; color:#fff!important; border-color:#059669!important; }
+        .btn-export  { background:var(--accent)!important; color:#fff!important; border:none!important; }
+        .btn-export:hover { background:var(--accent-dark)!important; color:#fff!important; }
+        .btn-save, .btn-add-house, .btn-add-address { background:var(--accent)!important; color:#fff!important; border:none!important; }
+        .btn-save:hover, .btn-add-house:hover, .btn-add-address:hover { background:var(--accent-dark)!important; color:#fff!important; }
         .btn-delete, .btn-delete-community, .btn-delete-house { background:#FEE2E2!important; color:#991B1B!important; border:1.5px solid #FECACA!important; }
         .btn-delete:hover, .btn-delete-community:hover, .btn-delete-house:hover { background:#DC2626!important; color:#fff!important; border-color:#DC2626!important; }
         /* ─── Badges / Status ─── */
@@ -17403,23 +17422,23 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
         * { margin: 0; padding: 0; box-sizing: border-box; }
         :root {
-            --accent:        #14B8A6;
-            --accent-dark:   #0D9488;
-            --accent-light:  #F0FDFA;
-            --accent-glow:   rgba(20,184,166,.22);
-            --brand:         #14B8A6;
-            --brand-dark:    #0D9488;
-            --brand-light:   #F0FDFA;
-            --brand-glow:    rgba(20,184,166,.22);
-            --se-green:      #14B8A6;
-            --se-green-dark: #0D9488;
-            --se-bg:         #F1F5F9;
-            --se-border:     #E2E8F0;
+            --accent:        #1B3A6B;
+            --accent-dark:   #122944;
+            --accent-light:  #EEF2FF;
+            --accent-glow:   rgba(27,58,107,.18);
+            --brand:         #1B3A6B;
+            --brand-dark:    #122944;
+            --brand-light:   #EEF2FF;
+            --brand-glow:    rgba(27,58,107,.18);
+            --se-green:      #1B3A6B;
+            --se-green-dark: #122944;
+            --se-bg:         #F0F2F5;
+            --se-border:     #D1D5DB;
             --se-text:       #0F172A;
             --se-muted:      #64748B;
-            --bg-page:       #F1F5F9;
+            --bg-page:       #F0F2F5;
             --bg-card:       #FFFFFF;
-            --border:        #E2E8F0;
+            --border:        #D1D5DB;
             --text-primary:  #0F172A;
             --text-secondary:#475569;
             --text-muted:    #94A3B8;
@@ -17481,11 +17500,11 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         }
         select:focus, input[type="date"]:focus {
             outline: none;
-            border-color: #14B8A6;
+            border-color: #1B3A6B;
         }
         .btn-search {
             padding: 10px 20px;
-            background: #14B8A6;
+            background: #1B3A6B;
             color: white;
             border: none;
             border-radius: 6px;
@@ -17494,11 +17513,11 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             margin-top: 26px;
         }
         .btn-search:hover {
-            background: #0D9488;
+            background: #122944;
         }
         .btn-export {
             padding: 10px 20px;
-            background: #28a745;
+            background: #1B3A6B;
             color: white;
             border: none;
             border-radius: 6px;
@@ -17612,8 +17631,8 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             color: #333;
         }
         .tab-button.active {
-            color: #14B8A6;
-            border-bottom-color: #14B8A6;
+            color: #1B3A6B;
+            border-bottom-color: #1B3A6B;
         }
         .tab-content {
             display: none;
@@ -17626,7 +17645,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             border-radius: 8px;
             padding: 20px;
             margin-bottom: 20px;
-            border-left: 4px solid var(--se-green, #14B8A6);
+            border-left: 4px solid var(--se-green, #1B3A6B);
         }
         .form-group-inline {
             display: flex;
@@ -17864,7 +17883,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             flex: 1;
         }
         .btn-edit-address {
-            background: #007bff;
+            background: #1B3A6B;
             color: white;
             padding: 3px 6px;
             border: none;
@@ -17874,10 +17893,10 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             margin-right: 4px;
         }
         .btn-edit-address:hover {
-            background: #0069d9;
+            background: #122944;
         }
         .btn-insert-address {
-            background: #17a2b8;
+            background: #1B3A6B;
             color: white;
             padding: 3px 6px;
             border: none;
@@ -17887,7 +17906,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             margin-right: 4px;
         }
         .btn-move-address {
-            background: #6f42c1;
+            background: #1B3A6B;
             color: white;
             padding: 3px 6px;
             border: none;
@@ -17897,17 +17916,17 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             margin-right: 4px;
         }
         .btn-move-address:hover {
-            background: #5a32a3;
+            background: #122944;
         }
         .btn-mass-move {
-            background: #6f42c1;
+            background: #1B3A6B;
             color: white;
         }
         .btn-mass-move:hover {
-            background: #5a32a3;
+            background: #122944;
         }
         .btn-insert-address:hover {
-            background: #138496;
+            background: #122944;
         }
         .insert-form {
             background: #e8f4f8;
@@ -17998,7 +18017,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         }
         .btn-smart-paste {
             padding: 6px 12px;
-            background: #007bff;
+            background: #1B3A6B;
             color: white;
             border: none;
             border-radius: 4px;
@@ -18007,7 +18026,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             font-weight: 600;
         }
         .btn-smart-paste:hover {
-            background: #0069d9;
+            background: #122944;
         }
         .btn-delete-address {
             background: #dc3545;
@@ -18081,7 +18100,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         .cm-nav-brand { display:flex; align-items:center; gap:12px; }
         .cm-nav-logo {
             width:36px; height:36px; border-radius:10px;
-            background: linear-gradient(135deg,#14B8A6,#0D9488);
+            background: linear-gradient(135deg,#1B3A6B,#122944);
             display:flex; align-items:center; justify-content:center; font-size:18px; flex-shrink:0;
         }
         .cm-nav-titles { display:flex; flex-direction:column; line-height:1.2; }
@@ -18098,28 +18117,28 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         }
         .btn-primary  { background:var(--accent); color:#fff; box-shadow:0 2px 8px var(--accent-glow); }
         .btn-primary:hover  { background:var(--accent-dark); transform:translateY(-1px); box-shadow:0 4px 14px var(--accent-glow); }
-        .btn-secondary { background:#F1F5F9; color:var(--text-secondary); border:1.5px solid var(--border); }
-        .btn-secondary:hover { background:#E2E8F0; color:var(--text-primary); }
+        .btn-secondary { background:#E9EDF2; color:var(--text-secondary); border:1.5px solid var(--border); }
+        .btn-secondary:hover { background:#D1D5DB; color:var(--text-primary); }
         .btn-danger  { background:#FEE2E2; color:#991B1B; border:1.5px solid #FECACA; }
         .btn-danger:hover  { background:#DC2626; color:#fff; border-color:#DC2626; }
         .btn-success { background:#D1FAE5; color:#065F46; border:1.5px solid #A7F3D0; }
         .btn-success:hover { background:#059669; color:#fff; border-color:#059669; }
         .btn-ghost { background:transparent; color:var(--text-secondary); border:1.5px solid var(--border); }
-        .btn-ghost:hover { background:#F8FAFC; }
+        .btn-ghost:hover { background:#E9EDF2; }
         .btn-sm { padding:7px 13px; font-size:13px; border-radius:8px; }
         .btn-xs { padding:4px 9px; font-size:12px; border-radius:6px; }
         button:disabled { opacity:.5; cursor:not-allowed; }
-        /* legacy button class overrides */
+        /* ─── Unified navy/grey button theme ─── */
         .btn-next  { background:var(--accent)!important; color:#fff!important; box-shadow:0 2px 8px var(--accent-glow)!important; padding:12px 24px!important; border-radius:10px!important; font-size:15px!important; border:none!important; }
         .btn-next:hover { background:var(--accent-dark)!important; transform:translateY(-1px)!important; }
-        .btn-back  { background:#F1F5F9!important; color:var(--text-secondary)!important; border:1.5px solid var(--border)!important; padding:12px 24px!important; border-radius:10px!important; font-size:15px!important; }
-        .btn-back:hover { background:#E2E8F0!important; color:var(--text-primary)!important; }
-        .btn-search  { background:var(--accent)!important; color:#fff!important; }
+        .btn-back  { background:#64748B!important; color:#fff!important; border:1.5px solid #4B5563!important; padding:12px 24px!important; border-radius:10px!important; font-size:15px!important; }
+        .btn-back:hover { background:#4B5563!important; color:#fff!important; }
+        .btn-search  { background:var(--accent)!important; color:#fff!important; border:none!important; }
         .btn-search:hover { background:var(--accent-dark)!important; }
-        .btn-export  { background:#D1FAE5!important; color:#065F46!important; border:1.5px solid #A7F3D0!important; }
-        .btn-export:hover { background:#059669!important; color:#fff!important; }
-        .btn-save, .btn-add-house { background:#D1FAE5!important; color:#065F46!important; border:1.5px solid #A7F3D0!important; }
-        .btn-save:hover, .btn-add-house:hover { background:#059669!important; color:#fff!important; border-color:#059669!important; }
+        .btn-export  { background:var(--accent)!important; color:#fff!important; border:none!important; }
+        .btn-export:hover { background:var(--accent-dark)!important; color:#fff!important; }
+        .btn-save, .btn-add-house, .btn-add-address { background:var(--accent)!important; color:#fff!important; border:none!important; }
+        .btn-save:hover, .btn-add-house:hover, .btn-add-address:hover { background:var(--accent-dark)!important; color:#fff!important; }
         .btn-delete, .btn-delete-community, .btn-delete-house { background:#FEE2E2!important; color:#991B1B!important; border:1.5px solid #FECACA!important; }
         .btn-delete:hover, .btn-delete-community:hover, .btn-delete-house:hover { background:#DC2626!important; color:#fff!important; border-color:#DC2626!important; }
         /* ─── Badges / Status ─── */
@@ -18305,7 +18324,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                         <div class="form-group" style="flex: 0 0 auto;">
                             <label style="display:block; margin-bottom: 6px;">Custom Tabs</label>
                             <button type="button" onclick="addCustomTabToForm()"
-                                    style="padding: 10px 14px; background: #6f42c1; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; white-space: nowrap; font-weight: 600;">+ Add Custom Tab</button>
+                                    style="padding: 10px 14px; background: #1B3A6B; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; white-space: nowrap; font-weight: 600;">+ Add Custom Tab</button>
                         </div>
                         <input type="hidden" name="action" value="add">
                         <button type="submit" class="btn-search">Add Community</button>
@@ -18323,6 +18342,48 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     {% endfor %}
                 {% endif %}
             {% endwith %}
+
+            <!-- ── Default Pricing Panel ── -->
+            <div id="default-pricing-panel" style="margin-bottom: 24px; background: #EEF2FF; border: 1.5px solid #C7D2FE; border-left: 5px solid #1B3A6B; border-radius: 10px; padding: 20px;">
+                <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-bottom:14px;">
+                    <div>
+                        <h3 style="margin:0; color:#1B3A6B; font-size:15px;">🏷️ Default Part Pricing</h3>
+                        <p style="margin:4px 0 0; font-size:12px; color:#475569;">Set the default prices here. Click <strong>⬇ Apply Default Pricing</strong> on any community to copy these values to it.</p>
+                    </div>
+                    <button type="button" id="toggleDefaultPricingBtn" onclick="toggleDefaultPricingForm()"
+                            style="padding:7px 16px; background:#1B3A6B; color:white; border:none; border-radius:7px; cursor:pointer; font-size:13px; font-weight:600;">
+                        ✏️ Edit Default Prices
+                    </button>
+                </div>
+                <div id="default-pricing-form" style="display:none;">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; font-size: 13px; margin-bottom:14px;">
+                        <div><label style="font-size:12px; font-weight:600; color:#1B3A6B;">Nozzle:</label> $<input type="number" id="default-price-nozzle" class="price-input" step="0.01" min="0" value="1.0" style="width: 70px;"></div>
+                        <div><label style="font-size:12px; font-weight:600; color:#1B3A6B;">6" Pop Up:</label> $<input type="number" id="default-price-pop_up_6_inch" class="price-input" step="0.01" min="0" value="1.0" style="width: 70px;"></div>
+                        <div><label style="font-size:12px; font-weight:600; color:#1B3A6B;">12" Pop Up:</label> $<input type="number" id="default-price-pop_up_12_inch" class="price-input" step="0.01" min="0" value="1.0" style="width: 70px;"></div>
+                        <div><label style="font-size:12px; font-weight:600; color:#1B3A6B;">6" Rotor:</label> $<input type="number" id="default-price-rotor_6_inch" class="price-input" step="0.01" min="0" value="1.0" style="width: 70px;"></div>
+                        <div><label style="font-size:12px; font-weight:600; color:#1B3A6B;">NEW 6" Pop Up:</label> $<input type="number" id="default-price-new_pop_up_6_inch" class="price-input" step="0.01" min="0" value="1.0" style="width: 70px;"></div>
+                        <div><label style="font-size:12px; font-weight:600; color:#1B3A6B;">NEW 12" Pop Up:</label> $<input type="number" id="default-price-new_pop_up_12_inch" class="price-input" step="0.01" min="0" value="1.0" style="width: 70px;"></div>
+                        <div><label style="font-size:12px; font-weight:600; color:#1B3A6B;">Riser:</label> $<input type="number" id="default-price-riser" class="price-input" step="0.01" min="0" value="1.0" style="width: 70px;"></div>
+                        <div><label style="font-size:12px; font-weight:600; color:#1B3A6B;">Solenoid:</label> $<input type="number" id="default-price-solenoid" class="price-input" step="0.01" min="0" value="1.0" style="width: 70px;"></div>
+                        <div><label style="font-size:12px; font-weight:600; color:#1B3A6B;">1 Stat Decoder:</label> $<input type="number" id="default-price-stat_decoder_1" class="price-input" step="0.01" min="0" value="1.0" style="width: 70px;"></div>
+                    </div>
+                    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+                        <button type="button" onclick="saveDefaultPricing()"
+                                style="padding:9px 22px; background:#1B3A6B; color:white; border:none; border-radius:7px; cursor:pointer; font-size:13px; font-weight:600;">
+                            💾 Save Default Prices
+                        </button>
+                        <button type="button" onclick="toggleDefaultPricingForm()"
+                                style="padding:9px 18px; background:#64748B; color:white; border:none; border-radius:7px; cursor:pointer; font-size:13px; font-weight:600;">
+                            Cancel
+                        </button>
+                        <span id="default-pricing-status" style="font-size:13px; color:#065F46; font-weight:600;"></span>
+                    </div>
+                </div>
+                <!-- Summary row (visible when form is collapsed) -->
+                <div id="default-pricing-summary" style="display:flex; flex-wrap:wrap; gap:10px; font-size:12px;">
+                    <span style="color:#64748B;">Loading current defaults…</span>
+                </div>
+            </div>
 
             {% if all_communities %}
                 <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px; flex-wrap: wrap;">
@@ -18383,10 +18444,10 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                                onwheel="this.blur()"
                                                onkeypress="if(event.key==='Enter') updateCommunityClockCount({{ community.id }})">
                                         <button type="button" onclick="updateCommunityClockCount({{ community.id }})"
-                                                style="padding: 4px 12px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">Update</button>
+                                                style="padding: 4px 12px; background: #1B3A6B; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">Update</button>
                                         <span id="comm-clock-count-msg-{{ community.id }}" style="font-size: 12px;"></span>
                                         <button type="button" onclick="exportZoneLocate({{ community.id }}, '{{ community.name | e }}')"
-                                                style="padding: 4px 12px; background: #17a2b8; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">📥 Export Excel Zone Locate</button>
+                                                style="padding: 4px 12px; background: #1B3A6B; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">📥 Export Excel Zone Locate</button>
                                     </div>
                                 </div>
 
@@ -18397,7 +18458,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                         <strong style="font-size: 13px;">Import from Excel:</strong>
                                         <input type="file" id="comm-clock-import-{{ community.id }}" accept=".xlsx,.xls" style="font-size: 12px;">
                                         <button type="button" onclick="previewCommunityClockImport({{ community.id }})"
-                                                style="padding: 5px 12px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">Preview Import</button>
+                                                style="padding: 5px 12px; background: #1B3A6B; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">Preview Import</button>
                                     </div>
                                     <div style="font-size: 11px; color: #666; margin-top: 6px;">
                                         Sheets named "CLOCK 1", "CLOCK 2", etc. &nbsp;|&nbsp;
@@ -18421,7 +18482,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                     <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 10px;">
                                         <h4 style="margin: 0; font-size: 14px; color: #333;">📋 Custom Tabs</h4>
                                         <button type="button" onclick="addCustomTabGroup({{ community.id }})"
-                                                style="padding: 4px 12px; background: #6f42c1; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">+ Add Custom Tab</button>
+                                                style="padding: 4px 12px; background: #1B3A6B; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">+ Add Custom Tab</button>
                                     </div>
                                     <div id="comm-custom-tabs-list-{{ community.id }}">
                                         <p style="color: #999; font-size: 13px;">No custom tabs yet.</p>
@@ -18429,8 +18490,14 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 </div>
 
                                 <!-- Nozzle Pricing -->
-                                <div class="pricing-section" style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px;">
-                                    <h4>💰 Nozzle Pricing</h4>
+                                <div class="pricing-section" style="margin-top: 20px; border-top: 1px solid #ddd; padding-top: 15px; background: #F8FAFC; border-radius: 8px; padding: 14px;">
+                                    <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
+                                        <h4 style="margin:0;">💰 Part Pricing</h4>
+                                        <button type="button" onclick="applyDefaultPricing({{ community.id }})"
+                                                style="padding: 6px 14px; background: #64748B; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; display:flex; align-items:center; gap:5px;">
+                                            ⬇ Apply Default Pricing
+                                        </button>
+                                    </div>
                                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px;">
                                         <div><label>Nozzle:</label> $<input type="number" id="price-nozzle-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
                                         <div><label>6" Pop Up:</label> $<input type="number" id="price-pop_up_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
@@ -18442,7 +18509,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                         <div><label>Solenoid:</label> $<input type="number" id="price-solenoid-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
                                         <div><label>1 Stat Decoder:</label> $<input type="number" id="price-stat_decoder_1-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
                                     </div>
-                                    <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="margin-top: 12px; padding: 10px 24px; font-size: 14px; font-weight: 600; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer;">Save Pricing</button>
+                                    <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="margin-top: 12px; padding: 10px 24px; font-size: 14px; font-weight: 600;">Save Pricing</button>
                                 </div>
                             </div>
                             {% endif %}
@@ -18473,8 +18540,14 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 </div>
 
                                 <!-- Pricing Section for Verona Walk HOA -->
-                                <div class="pricing-section" style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px;">
-                                    <h4>💰 Nozzle Pricing</h4>
+                                <div class="pricing-section" style="margin-top: 20px; border-top: 1px solid #ddd; padding-top: 15px; background: #F8FAFC; border-radius: 8px; padding: 14px;">
+                                    <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
+                                        <h4 style="margin:0;">💰 Part Pricing</h4>
+                                        <button type="button" onclick="applyDefaultPricing({{ community.id }})"
+                                                style="padding: 6px 14px; background: #64748B; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; display:flex; align-items:center; gap:5px;">
+                                            ⬇ Apply Default Pricing
+                                        </button>
+                                    </div>
                                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px;">
                                         <div><label>Nozzle:</label> $<input type="number" id="price-nozzle-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
                                         <div><label>6" Pop Up:</label> $<input type="number" id="price-pop_up_6_inch-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
@@ -18486,7 +18559,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                         <div><label>Solenoid:</label> $<input type="number" id="price-solenoid-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
                                         <div><label>1 Stat Decoder:</label> $<input type="number" id="price-stat_decoder_1-{{ community.id }}" class="price-input" step="0.01" min="0" value="1.0" style="width: 60px;"></div>
                                     </div>
-                                    <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="margin-top: 12px; padding: 10px 24px; font-size: 14px; font-weight: 600; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer;">Save Pricing</button>
+                                    <button type="button" class="btn-save" onclick="savePricing({{ community.id }})" style="margin-top: 12px; padding: 10px 24px; font-size: 14px; font-weight: 600;">Save Pricing</button>
                                 </div>
                             </div>
                             {% endif %}
@@ -18539,7 +18612,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     </select>
                 </div>
                 <div style="padding-bottom: 2px;">
-                    <button class="btn-export" id="exportExcelBtn" onclick="exportExcel()" style="display: none; background: #2e7d32; white-space: nowrap;">Export to Excel</button>
+                    <button class="btn-export" id="exportExcelBtn" onclick="exportExcel()" style="display: none; white-space: nowrap;">📊 Export to Excel</button>
                 </div>
             </div>
 
@@ -18648,7 +18721,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#666;">${d.last_modified || ''}</td>
                     <td style="padding:8px 12px;border-bottom:1px solid #eee;">
                         <button onclick="reviewDraft(${d.id}, '${d.community_name.replace(/'/g,"\\'")}', '${d.tech_name.replace(/'/g,"\\'")}', '${d.work_date}')"
-                                style="padding:5px 14px;background:#007bff;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;">
+                                style="padding:5px 14px;background:#1B3A6B;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;">
                             👁 Review
                         </button>
                     </td>
@@ -18776,7 +18849,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     <td style="padding:8px 12px;border-bottom:1px solid #eee;font-weight:600;color:${daysColor};">${daysLeft}d remaining</td>
                     <td style="padding:8px 12px;border-bottom:1px solid #eee;">
                         <button onclick="restoreSubmission(${s.id}, this)"
-                                style="padding:5px 14px;background:#28a745;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;">
+                                style="padding:5px 14px;background:#1B3A6B;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;">
                             ↩ Restore
                         </button>
                     </td>
@@ -19390,7 +19463,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             html += `</div>
                      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
                         <button type="button" onclick="confirmCommunityClockImport(${communityId})"
-                                style="padding:8px 20px;font-size:13px;background:#28a745;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Confirm Import (${totalIncluded} entries)</button>
+                                style="padding:8px 20px;font-size:13px;background:#1B3A6B;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Confirm Import (${totalIncluded} entries)</button>
                         <button type="button" onclick="document.getElementById('comm-clock-preview-${communityId}').style.display='none';delete _importPreviewData['comm-${communityId}'];"
                                 style="padding:8px 20px;font-size:13px;background:#6c757d;color:#fff;border:none;border-radius:4px;cursor:pointer;">Cancel</button>
                      </div>`;
@@ -20435,7 +20508,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
             // Action buttons
             html += `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">`;
-            html += `<button type="button" onclick="confirmExcelImport(${communityId})" style="padding:8px 20px;font-size:13px;background:#28a745;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Confirm Import (${totalIncluded} entries)</button>`;
+            html += `<button type="button" onclick="confirmExcelImport(${communityId})" style="padding:8px 20px;font-size:13px;background:#1B3A6B;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Confirm Import (${totalIncluded} entries)</button>`;
             html += `<button type="button" onclick="document.getElementById('import-preview-${communityId}').style.display='none'; delete _importPreviewData[${communityId}];" style="padding:8px 20px;font-size:13px;background:#6c757d;color:#fff;border:none;border-radius:4px;cursor:pointer;">Cancel</button>`;
             html += `</div>`;
 
@@ -20672,7 +20745,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             html += `</div>
                      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
                         <button type="button" onclick="confirmHouseImport(${communityId})"
-                                style="padding:8px 20px;font-size:13px;background:#28a745;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Confirm Import (${totalIncluded} entries)</button>
+                                style="padding:8px 20px;font-size:13px;background:#1B3A6B;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Confirm Import (${totalIncluded} entries)</button>
                         <button type="button" onclick="document.getElementById('import-preview-houses-${communityId}').style.display='none';delete _houseImportData[${communityId}];"
                                 style="padding:8px 20px;font-size:13px;background:#6c757d;color:#fff;border:none;border-radius:4px;cursor:pointer;">Cancel</button>
                      </div>`;
@@ -20874,6 +20947,99 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         }
 
         // Pricing management functions
+        // ── Default Pricing ──────────────────────────────────────────────────
+        const PRICE_KEYS = ['nozzle','pop_up_6_inch','pop_up_12_inch','rotor_6_inch',
+                            'new_pop_up_6_inch','new_pop_up_12_inch','riser','solenoid','stat_decoder_1'];
+        const PRICE_LABELS = {'nozzle':'Nozzle','pop_up_6_inch':'6" Pop Up','pop_up_12_inch':'12" Pop Up',
+                              'rotor_6_inch':'6" Rotor','new_pop_up_6_inch':'NEW 6" PU','new_pop_up_12_inch':'NEW 12" PU',
+                              'riser':'Riser','solenoid':'Solenoid','stat_decoder_1':'1 Stat Dec.'};
+
+        function toggleDefaultPricingForm() {
+            const form = document.getElementById('default-pricing-form');
+            const summary = document.getElementById('default-pricing-summary');
+            const btn = document.getElementById('toggleDefaultPricingBtn');
+            const isHidden = form.style.display === 'none';
+            form.style.display = isHidden ? 'block' : 'none';
+            summary.style.display = isHidden ? 'none' : 'flex';
+            btn.textContent = isHidden ? '✕ Close' : '✏️ Edit Default Prices';
+        }
+
+        function loadDefaultPricing() {
+            fetch('/community_get_default_pricing')
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.success) return;
+                    const p = data.pricing;
+                    PRICE_KEYS.forEach(k => {
+                        const el = document.getElementById(`default-price-${k}`);
+                        if (el) el.value = p[k] || 1.0;
+                    });
+                    // Update summary chips
+                    const summary = document.getElementById('default-pricing-summary');
+                    if (summary) {
+                        summary.innerHTML = PRICE_KEYS.map(k =>
+                            `<span style="background:#fff;border:1px solid #C7D2FE;border-radius:5px;padding:3px 8px;color:#1B3A6B;font-weight:600;">${PRICE_LABELS[k]}: $${parseFloat(p[k]||1).toFixed(2)}</span>`
+                        ).join('');
+                    }
+                })
+                .catch(e => console.error('Error loading default pricing:', e));
+        }
+
+        function saveDefaultPricing() {
+            const payload = {};
+            PRICE_KEYS.forEach(k => {
+                const el = document.getElementById(`default-price-${k}`);
+                payload[k] = el ? parseFloat(el.value) || 1.0 : 1.0;
+            });
+            const statusEl = document.getElementById('default-pricing-status');
+            statusEl.textContent = 'Saving…';
+
+            fetch('/community_save_default_pricing', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    statusEl.textContent = '✓ Saved!';
+                    loadDefaultPricing();
+                    setTimeout(() => { statusEl.textContent = ''; }, 3000);
+                } else {
+                    statusEl.style.color = '#991B1B';
+                    statusEl.textContent = 'Error: ' + data.error;
+                }
+            })
+            .catch(e => { statusEl.textContent = 'Error saving'; });
+        }
+
+        function applyDefaultPricing(communityId) {
+            if (!confirm('Apply default pricing to this community? This will overwrite its current prices.')) return;
+            fetch('/community_apply_default_pricing', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({community_id: communityId})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success && data.pricing) {
+                    const p = data.pricing;
+                    PRICE_KEYS.forEach(k => {
+                        const el = document.getElementById(`price-${k}-${communityId}`);
+                        if (el) el.value = p[k] || 1.0;
+                    });
+                    const banner = document.createElement('div');
+                    banner.textContent = 'Default pricing applied!';
+                    banner.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#1B3A6B;color:white;padding:12px 24px;border-radius:8px;font-weight:600;font-size:14px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.3);';
+                    document.body.appendChild(banner);
+                    setTimeout(() => banner.remove(), 2500);
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(e => alert('Network error: ' + e));
+        }
+
         function loadPricing(communityId) {
             fetch(`/community_get_pricing?community_id=${communityId}`)
                 .then(response => response.json())
@@ -20924,7 +21090,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     if (data.success) {
                         if (saveBtn) {
                             saveBtn.textContent = 'Saved!';
-                            saveBtn.style.background = '#28a745';
+                            saveBtn.style.background = '#122944';
                             saveBtn.style.color = 'white';
                             setTimeout(() => {
                                 saveBtn.textContent = 'Save Pricing';
@@ -20933,10 +21099,10 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 saveBtn.disabled = false;
                             }, 2000);
                         }
-                        // Show a green confirmation banner
+                        // Show confirmation banner
                         const banner = document.createElement('div');
                         banner.textContent = 'Pricing saved successfully!';
-                        banner.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#28a745;color:white;padding:12px 24px;border-radius:8px;font-weight:600;font-size:14px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
+                        banner.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#1B3A6B;color:white;padding:12px 24px;border-radius:8px;font-weight:600;font-size:14px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
                         document.body.appendChild(banner);
                         setTimeout(() => banner.remove(), 3000);
                     } else {
@@ -20956,8 +21122,9 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 });
         }
 
-        // Load saved pricing for all communities on page load
+        // Load saved pricing for all communities and default pricing on page load
         document.addEventListener('DOMContentLoaded', function() {
+            loadDefaultPricing();
             document.querySelectorAll('.pricing-section').forEach(section => {
                 const btn = section.querySelector('button[onclick*="savePricing"]');
                 if (btn) {
@@ -21393,23 +21560,23 @@ MANAGE_COMMUNITIES_TEMPLATE = '''
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
         * { margin: 0; padding: 0; box-sizing: border-box; }
         :root {
-            --accent:        #14B8A6;
-            --accent-dark:   #0D9488;
-            --accent-light:  #F0FDFA;
-            --accent-glow:   rgba(20,184,166,.22);
-            --brand:         #14B8A6;
-            --brand-dark:    #0D9488;
-            --brand-light:   #F0FDFA;
-            --brand-glow:    rgba(20,184,166,.22);
-            --se-green:      #14B8A6;
-            --se-green-dark: #0D9488;
-            --se-bg:         #F1F5F9;
-            --se-border:     #E2E8F0;
+            --accent:        #1B3A6B;
+            --accent-dark:   #122944;
+            --accent-light:  #EEF2FF;
+            --accent-glow:   rgba(27,58,107,.18);
+            --brand:         #1B3A6B;
+            --brand-dark:    #122944;
+            --brand-light:   #EEF2FF;
+            --brand-glow:    rgba(27,58,107,.18);
+            --se-green:      #1B3A6B;
+            --se-green-dark: #122944;
+            --se-bg:         #F0F2F5;
+            --se-border:     #D1D5DB;
             --se-text:       #0F172A;
             --se-muted:      #64748B;
-            --bg-page:       #F1F5F9;
+            --bg-page:       #F0F2F5;
             --bg-card:       #FFFFFF;
-            --border:        #E2E8F0;
+            --border:        #D1D5DB;
             --text-primary:  #0F172A;
             --text-secondary:#475569;
             --text-muted:    #94A3B8;
@@ -21584,7 +21751,7 @@ MANAGE_COMMUNITIES_TEMPLATE = '''
         .cm-nav-brand { display:flex; align-items:center; gap:12px; }
         .cm-nav-logo {
             width:36px; height:36px; border-radius:10px;
-            background: linear-gradient(135deg,#14B8A6,#0D9488);
+            background: linear-gradient(135deg,#1B3A6B,#122944);
             display:flex; align-items:center; justify-content:center; font-size:18px; flex-shrink:0;
         }
         .cm-nav-titles { display:flex; flex-direction:column; line-height:1.2; }
@@ -21601,28 +21768,28 @@ MANAGE_COMMUNITIES_TEMPLATE = '''
         }
         .btn-primary  { background:var(--accent); color:#fff; box-shadow:0 2px 8px var(--accent-glow); }
         .btn-primary:hover  { background:var(--accent-dark); transform:translateY(-1px); box-shadow:0 4px 14px var(--accent-glow); }
-        .btn-secondary { background:#F1F5F9; color:var(--text-secondary); border:1.5px solid var(--border); }
-        .btn-secondary:hover { background:#E2E8F0; color:var(--text-primary); }
+        .btn-secondary { background:#E9EDF2; color:var(--text-secondary); border:1.5px solid var(--border); }
+        .btn-secondary:hover { background:#D1D5DB; color:var(--text-primary); }
         .btn-danger  { background:#FEE2E2; color:#991B1B; border:1.5px solid #FECACA; }
         .btn-danger:hover  { background:#DC2626; color:#fff; border-color:#DC2626; }
         .btn-success { background:#D1FAE5; color:#065F46; border:1.5px solid #A7F3D0; }
         .btn-success:hover { background:#059669; color:#fff; border-color:#059669; }
         .btn-ghost { background:transparent; color:var(--text-secondary); border:1.5px solid var(--border); }
-        .btn-ghost:hover { background:#F8FAFC; }
+        .btn-ghost:hover { background:#E9EDF2; }
         .btn-sm { padding:7px 13px; font-size:13px; border-radius:8px; }
         .btn-xs { padding:4px 9px; font-size:12px; border-radius:6px; }
         button:disabled { opacity:.5; cursor:not-allowed; }
-        /* legacy button class overrides */
+        /* ─── Unified navy/grey button theme ─── */
         .btn-next  { background:var(--accent)!important; color:#fff!important; box-shadow:0 2px 8px var(--accent-glow)!important; padding:12px 24px!important; border-radius:10px!important; font-size:15px!important; border:none!important; }
         .btn-next:hover { background:var(--accent-dark)!important; transform:translateY(-1px)!important; }
-        .btn-back  { background:#F1F5F9!important; color:var(--text-secondary)!important; border:1.5px solid var(--border)!important; padding:12px 24px!important; border-radius:10px!important; font-size:15px!important; }
-        .btn-back:hover { background:#E2E8F0!important; color:var(--text-primary)!important; }
-        .btn-search  { background:var(--accent)!important; color:#fff!important; }
+        .btn-back  { background:#64748B!important; color:#fff!important; border:1.5px solid #4B5563!important; padding:12px 24px!important; border-radius:10px!important; font-size:15px!important; }
+        .btn-back:hover { background:#4B5563!important; color:#fff!important; }
+        .btn-search  { background:var(--accent)!important; color:#fff!important; border:none!important; }
         .btn-search:hover { background:var(--accent-dark)!important; }
-        .btn-export  { background:#D1FAE5!important; color:#065F46!important; border:1.5px solid #A7F3D0!important; }
-        .btn-export:hover { background:#059669!important; color:#fff!important; }
-        .btn-save, .btn-add-house { background:#D1FAE5!important; color:#065F46!important; border:1.5px solid #A7F3D0!important; }
-        .btn-save:hover, .btn-add-house:hover { background:#059669!important; color:#fff!important; border-color:#059669!important; }
+        .btn-export  { background:var(--accent)!important; color:#fff!important; border:none!important; }
+        .btn-export:hover { background:var(--accent-dark)!important; color:#fff!important; }
+        .btn-save, .btn-add-house, .btn-add-address { background:var(--accent)!important; color:#fff!important; border:none!important; }
+        .btn-save:hover, .btn-add-house:hover, .btn-add-address:hover { background:var(--accent-dark)!important; color:#fff!important; }
         .btn-delete, .btn-delete-community, .btn-delete-house { background:#FEE2E2!important; color:#991B1B!important; border:1.5px solid #FECACA!important; }
         .btn-delete:hover, .btn-delete-community:hover, .btn-delete-house:hover { background:#DC2626!important; color:#fff!important; border-color:#DC2626!important; }
         /* ─── Badges / Status ─── */
@@ -26211,6 +26378,95 @@ def community_save_pricing():
         conn.commit()
         conn.close()
         return jsonify({'success': True, 'message': 'Pricing saved successfully'})
+    except Exception as e:
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/community_get_default_pricing', methods=['GET'])
+def community_get_default_pricing():
+    """Get system-wide default pricing"""
+    if 'username' not in session or session.get('role') not in ['office', 'technician']:
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""SELECT nozzle, pop_up_6_inch, pop_up_12_inch, rotor_6_inch,
+                        new_pop_up_6_inch, new_pop_up_12_inch, riser, solenoid, stat_decoder_1
+                 FROM default_part_pricing WHERE id = 1""")
+    row = c.fetchone()
+    conn.close()
+
+    keys = ['nozzle', 'pop_up_6_inch', 'pop_up_12_inch', 'rotor_6_inch',
+            'new_pop_up_6_inch', 'new_pop_up_12_inch', 'riser', 'solenoid', 'stat_decoder_1']
+    if row:
+        return jsonify({'success': True, 'pricing': dict(zip(keys, row))})
+    return jsonify({'success': True, 'pricing': {k: 1.0 for k in keys}})
+
+@app.route('/community_save_default_pricing', methods=['POST'])
+def community_save_default_pricing():
+    """Save system-wide default pricing"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
+
+    data = request.get_json()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("""UPDATE default_part_pricing SET
+                     nozzle=?, pop_up_6_inch=?, pop_up_12_inch=?, rotor_6_inch=?,
+                     new_pop_up_6_inch=?, new_pop_up_12_inch=?, riser=?, solenoid=?, stat_decoder_1=?
+                     WHERE id=1""",
+                  (float(data.get('nozzle', 1.0)), float(data.get('pop_up_6_inch', 1.0)),
+                   float(data.get('pop_up_12_inch', 1.0)), float(data.get('rotor_6_inch', 1.0)),
+                   float(data.get('new_pop_up_6_inch', 1.0)), float(data.get('new_pop_up_12_inch', 1.0)),
+                   float(data.get('riser', 1.0)), float(data.get('solenoid', 1.0)),
+                   float(data.get('stat_decoder_1', 1.0))))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'message': 'Default pricing saved'})
+    except Exception as e:
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/community_apply_default_pricing', methods=['POST'])
+def community_apply_default_pricing():
+    """Copy default pricing to a specific community"""
+    if 'username' not in session or session.get('role') != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
+
+    data = request.get_json()
+    community_id = data.get('community_id')
+    if not community_id:
+        return jsonify({'success': False, 'error': 'Missing community_id'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("""SELECT nozzle, pop_up_6_inch, pop_up_12_inch, rotor_6_inch,
+                            new_pop_up_6_inch, new_pop_up_12_inch, riser, solenoid, stat_decoder_1
+                     FROM default_part_pricing WHERE id=1""")
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({'success': False, 'error': 'No default pricing configured'})
+
+        c.execute("SELECT id FROM community_nozzle_prices WHERE community_id=?", (community_id,))
+        if c.fetchone():
+            c.execute("""UPDATE community_nozzle_prices SET
+                         nozzle=?, pop_up_6_inch=?, pop_up_12_inch=?, rotor_6_inch=?,
+                         new_pop_up_6_inch=?, new_pop_up_12_inch=?, riser=?, solenoid=?, stat_decoder_1=?
+                         WHERE community_id=?""", (*row, community_id))
+        else:
+            c.execute("""INSERT INTO community_nozzle_prices
+                         (community_id, nozzle, pop_up_6_inch, pop_up_12_inch, rotor_6_inch,
+                          new_pop_up_6_inch, new_pop_up_12_inch, riser, solenoid, stat_decoder_1)
+                         VALUES (?,?,?,?,?,?,?,?,?,?)""", (community_id, *row))
+
+        conn.commit()
+        conn.close()
+        keys = ['nozzle', 'pop_up_6_inch', 'pop_up_12_inch', 'rotor_6_inch',
+                'new_pop_up_6_inch', 'new_pop_up_12_inch', 'riser', 'solenoid', 'stat_decoder_1']
+        return jsonify({'success': True, 'pricing': dict(zip(keys, row))})
     except Exception as e:
         conn.close()
         return jsonify({'success': False, 'error': str(e)})
