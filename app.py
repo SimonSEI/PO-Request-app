@@ -193,6 +193,8 @@ WEBSITE_URL = os.environ.get('WEBSITE_URL', 'http://localhost:5000')
 PO_EMAIL_ADDRESS = os.environ.get('PO_EMAIL_ADDRESS', '')
 PO_EMAIL_PASSWORD = os.environ.get('PO_EMAIL_PASSWORD', '')
 PO_EMAIL_PROVIDER = os.environ.get('PO_EMAIL_PROVIDER', 'outlook')  # 'outlook' or 'gmail'
+JOBBER_API_TOKEN = os.environ.get('JOBBER_API_TOKEN', '')
+CHRISTIAN_EMAIL = os.environ.get('CHRISTIAN_EMAIL', 'christian@stahlman-england.com')
 
 # IMAP configuration based on provider
 # Allow explicit override via env var, otherwise auto-detect
@@ -343,6 +345,44 @@ def send_notification_email(invoice_number, invoice_cost, email_sender, email_su
     except Exception as e:
         print(f"✗ Email notification error: {e}")
         return False
+
+def send_vendor_invoice_paid_email(inv):
+    """Send email to Christian Stahlman when a Jobber invoice is paid"""
+    try:
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = f"✅ Jobber Invoice Paid — {inv.get('sub_contractor','Vendor')} #{inv.get('invoice_number','')}"
+        msg['From'] = EMAIL_ADDRESS
+        msg['To'] = CHRISTIAN_EMAIL
+        html = f"""
+        <html><body style="font-family:Arial,sans-serif;padding:20px">
+        <div style="max-width:600px;margin:0 auto;background:#f0fdf4;padding:28px;border-radius:10px;border-left:5px solid #16a34a">
+          <h2 style="color:#16a34a;margin-top:0">✅ Jobber Invoice Paid</h2>
+          <p style="font-size:15px">The following vendor invoice has been <strong>paid on Jobber</strong>:</p>
+          <table style="width:100%;border-collapse:collapse;font-size:14px;margin:16px 0">
+            <tr><td style="padding:6px 10px;font-weight:700;color:#6b7280;width:180px">Sub Contractor</td><td style="padding:6px 10px">{inv.get('sub_contractor','—')}</td></tr>
+            <tr style="background:#f9fafb"><td style="padding:6px 10px;font-weight:700;color:#6b7280">Invoice #</td><td style="padding:6px 10px">{inv.get('invoice_number','—')}</td></tr>
+            <tr><td style="padding:6px 10px;font-weight:700;color:#6b7280">Invoice Total</td><td style="padding:6px 10px">${inv.get('invoice_total') or 0:,.2f}</td></tr>
+            <tr style="background:#f9fafb"><td style="padding:6px 10px;font-weight:700;color:#6b7280">SEI Proposal #</td><td style="padding:6px 10px">{inv.get('sei_proposal_number','—')}</td></tr>
+            <tr><td style="padding:6px 10px;font-weight:700;color:#6b7280">Jobber Invoice #</td><td style="padding:6px 10px">{inv.get('jobber_invoice_number','—')}</td></tr>
+            <tr style="background:#f9fafb"><td style="padding:6px 10px;font-weight:700;color:#6b7280">Notes</td><td style="padding:6px 10px;font-size:13px">{inv.get('notes','—')}</td></tr>
+          </table>
+          <div style="text-align:center;margin-top:20px">
+            <a href="{WEBSITE_URL}/installation/vendor-invoices" style="background:#1a3c5e;color:white;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:700;display:inline-block">View Vendor Invoices</a>
+          </div>
+          <p style="color:#9ca3af;font-size:12px;margin-top:24px">Automated notification from The Office App.</p>
+        </div></body></html>
+        """
+        msg.attach(MIMEText(html, 'html'))
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+            server.send_message(msg)
+        print(f"✓ Vendor invoice paid email sent to {CHRISTIAN_EMAIL}")
+        return True
+    except Exception as e:
+        print(f"✗ Vendor invoice paid email error: {e}")
+        return False
+
 
 def log_activity(username, action, target_type, target_id, details=''):
     """Log user activity for audit trail"""
@@ -1774,6 +1814,30 @@ def init_db():
         for job_name, year in default_jobs:
             c.execute("INSERT INTO jobs (job_name, year, created_date, active) VALUES (?, ?, ?, 1)",
                      (job_name, year, datetime.now().strftime('%Y-%m-%d')))
+
+    # ── Vendor Invoices Tracker ─────────────────────────────────────────────────
+    c.execute('''CREATE TABLE IF NOT EXISTS vendor_invoices (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  ok_to_process TEXT DEFAULT 'NO',
+                  sub_contractor TEXT,
+                  invoice_date TEXT,
+                  invoice_number TEXT,
+                  invoice_total REAL,
+                  sei_proposal_number TEXT,
+                  date_billed TEXT,
+                  amount_sei_billed REAL,
+                  notes TEXT,
+                  project_mgr TEXT,
+                  invoice_to_christian TEXT,
+                  bill_com TEXT,
+                  expected_payment_date TEXT,
+                  needs_invoice INTEGER DEFAULT 0,
+                  jobber_invoice_number TEXT,
+                  jobber_paid INTEGER DEFAULT 0,
+                  jobber_paid_date TEXT,
+                  jobber_paid_notified INTEGER DEFAULT 0,
+                  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TEXT)''')
 
     conn.commit()
     conn.close()
@@ -27731,6 +27795,7 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
     <a href="/installation/schedule">📅 Schedule</a>
     <a href="/installation/crews">👷 Crews</a>
     <a href="/installation/rate-card">📋 Expense Catalog</a>
+    <a href="/installation/vendor-invoices">📄 Vendor Invoices</a>
     <a href="/dashboard">Dashboard</a>
   </nav>
   <button onclick="openHubLogoModal()" style="color:rgba(255,255,255,.85);background:none;border:1px solid rgba(255,255,255,.25);border-radius:5px;padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background='none'">&#128444; Company Logo</button>
@@ -27952,6 +28017,290 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeCreateJobModal
   </div>
 </div>
 
+</body></html>
+'''
+
+# ── Vendor Invoices Tracker ───────────────────────────────────────────────────
+
+VENDOR_INVOICES_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vendor Invoices — Installation</title>
+<style>
+body{background:#f3f4f6}
+.vi-wrap{padding:16px 20px;max-width:100%;overflow-x:auto}
+.vi-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+.vi-toolbar input[type=text]{border:1px solid #d1d5db;border-radius:7px;padding:7px 12px;font-size:13px;font-family:inherit;width:220px}
+.vi-toolbar input:focus{outline:none;border-color:#1a3c5e}
+.vi-legend{display:flex;align-items:center;gap:6px;font-size:13px;color:#6b7280;margin-left:auto}
+.legend-blue{width:16px;height:16px;background:#bfdbfe;border:1px solid #93c5fd;border-radius:3px;flex-shrink:0}
+.vi-table-wrap{overflow-x:auto;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+table.vi-tbl{border-collapse:collapse;width:100%;min-width:1400px;background:white;font-size:13px}
+table.vi-tbl thead tr th{background:#1a3c5e;color:white;font-weight:700;padding:9px 10px;text-align:left;white-space:nowrap;font-size:12px;letter-spacing:.3px;position:sticky;top:0;z-index:2}
+table.vi-tbl thead tr th:first-child{border-radius:0}
+table.vi-tbl tbody tr{border-bottom:1px solid #f3f4f6;transition:background .1s}
+table.vi-tbl tbody tr:hover{background:#f8fafc}
+table.vi-tbl tbody tr.needs-invoice{background:#dbeafe}
+table.vi-tbl tbody tr.needs-invoice:hover{background:#bfdbfe}
+table.vi-tbl tbody tr.jobber-paid{background:#d1fae5}
+table.vi-tbl tbody tr.jobber-paid:hover{background:#a7f3d0}
+table.vi-tbl td{padding:6px 8px;vertical-align:middle;max-width:220px}
+table.vi-tbl td.tight{white-space:nowrap}
+.vi-cell-edit{width:100%;border:none;background:transparent;font-size:13px;font-family:inherit;color:#111;padding:2px 4px;min-width:60px;box-sizing:border-box}
+.vi-cell-edit:focus{outline:2px solid #2563eb;border-radius:4px;background:white}
+.vi-cell-edit.wide{min-width:180px}
+.vi-cell-edit.notes{min-width:260px}
+select.vi-cell-edit{cursor:pointer}
+.ok-badge{display:inline-block;padding:2px 9px;border-radius:12px;font-size:11px;font-weight:700;letter-spacing:.3px}
+.ok-yes{background:#d1fae5;color:#065f46}
+.ok-no{background:#fee2e2;color:#991b1b}
+.paid-badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:700;background:#d1fae5;color:#065f46}
+.btn-add-row{background:#1a3c5e;color:white;border:none;border-radius:7px;padding:8px 18px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-add-row:hover{background:#2563eb}
+.btn-del{background:none;border:none;cursor:pointer;color:#ef4444;font-size:16px;padding:2px 5px;line-height:1}
+.btn-del:hover{background:#fee2e2;border-radius:4px}
+.btn-jobber{background:#6366f1;color:white;border:none;border-radius:7px;padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-jobber:hover{background:#4f46e5}
+.btn-jobber:disabled{opacity:.5;cursor:default}
+.vi-status-bar{font-size:12px;color:#6b7280;padding:4px 0;min-height:20px}
+.needs-inv-cb{width:16px;height:16px;cursor:pointer;accent-color:#2563eb}
+.summary-row{display:flex;gap:20px;flex-wrap:wrap;margin-bottom:14px}
+.sum-card{background:white;border:1px solid #e5e7eb;border-radius:8px;padding:10px 16px;min-width:140px}
+.sum-card-label{font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px}
+.sum-card-val{font-size:18px;font-weight:800;color:#1a3c5e}
+</style>
+</head>
+<body>
+<div class="top-bar">
+  <h1>📄 Vendor Invoices</h1>
+  <nav>
+    <button onclick="history.back()" style="color:rgba(255,255,255,.85);background:none;border:1px solid rgba(255,255,255,.25);border-radius:5px;padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit" onmouseover="this.style.background=\'rgba(255,255,255,.15)\'" onmouseout="this.style.background=\'none\'">&#8592; Back</button>
+    <a href="/installation">Jobs</a>
+    <a href="/installation/schedule">📅 Schedule</a>
+    <a href="/installation/crews">👷 Crews</a>
+    <a href="/installation/rate-card">📋 Expense Catalog</a>
+    <a href="/installation/vendor-invoices" class="active">📄 Vendor Invoices</a>
+    <a href="/dashboard">Dashboard</a>
+  </nav>
+</div>
+
+<div class="vi-wrap">
+  <div class="summary-row" id="summary-row">
+    <div class="sum-card"><div class="sum-card-label">Total Rows</div><div class="sum-card-val" id="sum-total">—</div></div>
+    <div class="sum-card"><div class="sum-card-label">Needs Invoice</div><div class="sum-card-val" id="sum-needs" style="color:#2563eb">—</div></div>
+    <div class="sum-card"><div class="sum-card-label">Invoice Total</div><div class="sum-card-val" id="sum-inv-total">—</div></div>
+    <div class="sum-card"><div class="sum-card-label">SEI Billed Total</div><div class="sum-card-val" id="sum-sei-total">—</div></div>
+    <div class="sum-card"><div class="sum-card-label">Jobber Paid</div><div class="sum-card-val" id="sum-paid" style="color:#059669">—</div></div>
+  </div>
+
+  <div class="vi-toolbar">
+    <button class="btn-add-row" onclick="addRow()">+ Add Row</button>
+    <input type="text" id="vi-search" placeholder="🔍 Search…" oninput="filterRows()">
+    <button class="btn-jobber" id="jobber-btn" onclick="checkJobber()" title="Sync paid status from Jobber API">🔄 Check Jobber</button>
+    <div class="vi-legend">
+      <div class="legend-blue"></div><span>Needs invoicing (blue)</span>
+    </div>
+  </div>
+  <div class="vi-status-bar" id="vi-status"></div>
+
+  <div class="vi-table-wrap">
+    <table class="vi-tbl" id="vi-table">
+      <thead>
+        <tr>
+          <th style="width:36px"></th>
+          <th>OK TO<br>PROCESS?</th>
+          <th>SUB CONTRACTOR</th>
+          <th>INVOICE DATE</th>
+          <th>INVOICE #</th>
+          <th>INVOICE TOTAL</th>
+          <th>SEI PROPOSAL #</th>
+          <th>DATE BILLED</th>
+          <th>AMOUNT SEI BILLED</th>
+          <th style="min-width:260px">NOTES</th>
+          <th>PROJECT MGR</th>
+          <th>INVOICE TO<br>CHRISTIAN</th>
+          <th>BILL.COM</th>
+          <th>EXPECTED<br>PAYMENT DATE</th>
+          <th>NEEDS<br>INVOICE</th>
+          <th>JOBBER INV #</th>
+          <th>JOBBER PAID</th>
+        </tr>
+      </thead>
+      <tbody id="vi-tbody">
+        <tr><td colspan="17" style="text-align:center;padding:40px;color:#9ca3af">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const MGR_OPTIONS = ['','S.H.','B.R.','J.K.','T.W.','Other'];
+let ALL_ROWS = [];
+let saveTimer = null;
+
+function fmt$(v){if(!v&&v!==0)return '';return '$'+parseFloat(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
+function parseCurrency(s){if(!s)return '';s=String(s).replace(/[$,]/g,'').trim();return isNaN(parseFloat(s))?'':parseFloat(s);}
+
+function buildRow(r){
+  const tr = document.createElement('tr');
+  tr.dataset.id = r.id;
+  if(r.jobber_paid) tr.classList.add('jobber-paid');
+  else if(r.needs_invoice) tr.classList.add('needs-invoice');
+
+  const ok = r.ok_to_process||'NO';
+  tr.innerHTML = `
+    <td class="tight"><button class="btn-del" onclick="deleteRow(${r.id},this)" title="Delete row">&#128465;</button></td>
+    <td class="tight">
+      <select class="vi-cell-edit" onchange="cellChange(${r.id},'ok_to_process',this.value)">
+        <option value="YES" ${ok==='YES'?'selected':''}>YES</option>
+        <option value="NO" ${ok==='NO'?'selected':''}>NO</option>
+      </select>
+    </td>
+    <td><input class="vi-cell-edit wide" value="${esc(r.sub_contractor)}" onchange="cellChange(${r.id},'sub_contractor',this.value)" placeholder="Subcontractor"></td>
+    <td class="tight"><input class="vi-cell-edit" type="date" value="${r.invoice_date||''}" onchange="cellChange(${r.id},'invoice_date',this.value)"></td>
+    <td><input class="vi-cell-edit" value="${esc(r.invoice_number)}" onchange="cellChange(${r.id},'invoice_number',this.value)" placeholder="Inv #"></td>
+    <td class="tight"><input class="vi-cell-edit" value="${r.invoice_total!=null?r.invoice_total:''}" onchange="cellChange(${r.id},'invoice_total',this.value)" placeholder="0.00" style="min-width:80px" type="number" step="0.01"></td>
+    <td><input class="vi-cell-edit" value="${esc(r.sei_proposal_number)}" onchange="cellChange(${r.id},'sei_proposal_number',this.value)" placeholder="Proposal #"></td>
+    <td class="tight"><input class="vi-cell-edit" type="date" value="${r.date_billed||''}" onchange="cellChange(${r.id},'date_billed',this.value)"></td>
+    <td class="tight"><input class="vi-cell-edit" value="${r.amount_sei_billed!=null?r.amount_sei_billed:''}" onchange="cellChange(${r.id},'amount_sei_billed',this.value)" placeholder="0.00" style="min-width:80px" type="number" step="0.01"></td>
+    <td><input class="vi-cell-edit notes" value="${esc(r.notes)}" onchange="cellChange(${r.id},'notes',this.value)" placeholder="Notes"></td>
+    <td class="tight">
+      <select class="vi-cell-edit" onchange="cellChange(${r.id},'project_mgr',this.value)">
+        ${MGR_OPTIONS.map(m=>`<option value="${m}" ${r.project_mgr===m?'selected':''}>${m||'—'}</option>`).join('')}
+      </select>
+    </td>
+    <td class="tight"><input class="vi-cell-edit" type="date" value="${r.invoice_to_christian||''}" onchange="cellChange(${r.id},'invoice_to_christian',this.value)"></td>
+    <td><input class="vi-cell-edit" value="${esc(r.bill_com)}" onchange="cellChange(${r.id},'bill_com',this.value)" placeholder="Bill.com #"></td>
+    <td class="tight"><input class="vi-cell-edit" type="date" value="${r.expected_payment_date||''}" onchange="cellChange(${r.id},'expected_payment_date',this.value)"></td>
+    <td class="tight" style="text-align:center">
+      <input type="checkbox" class="needs-inv-cb" ${r.needs_invoice?'checked':''} onchange="cellChange(${r.id},'needs_invoice',this.checked?1:0);updateRowColor(tr,this.checked,r.jobber_paid)">
+    </td>
+    <td><input class="vi-cell-edit" value="${esc(r.jobber_invoice_number)}" onchange="cellChange(${r.id},'jobber_invoice_number',this.value)" placeholder="INV-XXXXX"></td>
+    <td class="tight" style="text-align:center">${r.jobber_paid?'<span class="paid-badge">✓ Paid</span><br><small style="font-size:11px;color:#6b7280">'+(r.jobber_paid_date||'')+'</small>':'<span style="color:#9ca3af;font-size:12px">Unpaid</span>'}</td>
+  `;
+  return tr;
+}
+
+function updateRowColor(tr, needsInv, jobberPaid){
+  tr.classList.remove('needs-invoice','jobber-paid');
+  if(jobberPaid) tr.classList.add('jobber-paid');
+  else if(needsInv) tr.classList.add('needs-invoice');
+}
+
+function esc(s){if(!s)return '';return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+async function loadRows(){
+  const r = await fetch('/installation/api/vendor-invoices/list').then(x=>x.json());
+  ALL_ROWS = r.rows||[];
+  renderRows(ALL_ROWS);
+  updateSummary(ALL_ROWS);
+}
+
+function renderRows(rows){
+  const tbody = document.getElementById('vi-tbody');
+  tbody.innerHTML='';
+  if(!rows.length){
+    tbody.innerHTML='<tr><td colspan="17" style="text-align:center;padding:40px;color:#9ca3af">No vendor invoices yet. Click <strong>+ Add Row</strong> to start.</td></tr>';
+    return;
+  }
+  rows.forEach(r=>tbody.appendChild(buildRow(r)));
+}
+
+function updateSummary(rows){
+  document.getElementById('sum-total').textContent = rows.length;
+  document.getElementById('sum-needs').textContent = rows.filter(r=>r.needs_invoice).length;
+  let invTotal=0, seiTotal=0, paidCount=0;
+  rows.forEach(r=>{
+    invTotal += parseFloat(r.invoice_total)||0;
+    seiTotal += parseFloat(r.amount_sei_billed)||0;
+    if(r.jobber_paid) paidCount++;
+  });
+  document.getElementById('sum-inv-total').textContent = '$'+invTotal.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  document.getElementById('sum-sei-total').textContent = '$'+seiTotal.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  document.getElementById('sum-paid').textContent = paidCount;
+}
+
+function filterRows(){
+  const q = document.getElementById('vi-search').value.toLowerCase().trim();
+  if(!q){renderRows(ALL_ROWS);updateSummary(ALL_ROWS);return;}
+  const filtered = ALL_ROWS.filter(r=>{
+    return ['sub_contractor','invoice_number','sei_proposal_number','notes','project_mgr','jobber_invoice_number']
+      .some(k=>String(r[k]||'').toLowerCase().includes(q));
+  });
+  renderRows(filtered);
+  updateSummary(filtered);
+}
+
+function cellChange(id, field, value){
+  const row = ALL_ROWS.find(r=>r.id===id);
+  if(row) row[field] = value;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(()=>saveRow(id), 600);
+}
+
+async function saveRow(id){
+  const row = ALL_ROWS.find(r=>r.id===id);
+  if(!row) return;
+  setStatus('Saving…');
+  try{
+    const res = await fetch('/installation/api/vendor-invoices/update',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(row)
+    }).then(x=>x.json());
+    setStatus(res.success ? '✓ Saved' : '✗ '+res.error);
+    setTimeout(()=>setStatus(''),2000);
+  } catch(e){ setStatus('✗ Network error'); }
+}
+
+async function addRow(){
+  setStatus('Adding row…');
+  const res = await fetch('/installation/api/vendor-invoices/add',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ok_to_process:'YES'})
+  }).then(x=>x.json());
+  if(res.success){
+    await loadRows();
+    const tbody = document.getElementById('vi-tbody');
+    const lastRow = tbody.lastElementChild;
+    if(lastRow) lastRow.scrollIntoView({behavior:'smooth',block:'nearest'});
+    setStatus('✓ Row added');
+    setTimeout(()=>setStatus(''),1500);
+  } else { setStatus('✗ '+res.error); }
+}
+
+async function deleteRow(id, btn){
+  if(!confirm('Delete this row?')) return;
+  const res = await fetch('/installation/api/vendor-invoices/delete',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({id})
+  }).then(x=>x.json());
+  if(res.success){ ALL_ROWS=ALL_ROWS.filter(r=>r.id!==id); renderRows(ALL_ROWS); updateSummary(ALL_ROWS); setStatus('✓ Deleted'); setTimeout(()=>setStatus(''),1500);}
+  else alert('Error: '+res.error);
+}
+
+async function checkJobber(){
+  const btn = document.getElementById('jobber-btn');
+  btn.disabled=true; btn.textContent='🔄 Checking…';
+  setStatus('Contacting Jobber API…');
+  try{
+    const res = await fetch('/installation/api/vendor-invoices/check-jobber',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(x=>x.json());
+    if(res.success){
+      setStatus(`✓ ${res.message}`);
+      if(res.newly_paid>0){ alert(`${res.newly_paid} invoice(s) marked as paid! Email sent to Christian Stahlman.`); }
+      await loadRows();
+    } else { setStatus('✗ '+res.error); }
+  } catch(e){ setStatus('✗ Network error'); }
+  btn.disabled=false; btn.textContent='🔄 Check Jobber';
+  setTimeout(()=>setStatus(''),4000);
+}
+
+function setStatus(msg){ document.getElementById('vi-status').textContent=msg; }
+
+loadRows();
+</script>
 </body></html>
 '''
 
@@ -29269,6 +29618,220 @@ def installation_close_job():
     conn.commit()
     conn.close()
     return jsonify({'success': True})
+
+
+# ── Vendor Invoices Tracker Routes ───────────────────────────────────────────
+
+@app.route('/installation/vendor-invoices')
+def vendor_invoices_page():
+    if 'username' not in session:
+        return redirect(url_for('login'))
+    return render_template_string(VENDOR_INVOICES_TEMPLATE)
+
+
+@app.route('/installation/api/vendor-invoices/list')
+def vendor_invoices_list():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""SELECT id, ok_to_process, sub_contractor, invoice_date, invoice_number,
+                        invoice_total, sei_proposal_number, date_billed, amount_sei_billed,
+                        notes, project_mgr, invoice_to_christian, bill_com,
+                        expected_payment_date, needs_invoice, jobber_invoice_number,
+                        jobber_paid, jobber_paid_date, created_at
+                 FROM vendor_invoices ORDER BY created_at ASC""")
+    rows = []
+    for r in c.fetchall():
+        rows.append({
+            'id': r[0], 'ok_to_process': r[1] or 'NO', 'sub_contractor': r[2] or '',
+            'invoice_date': r[3] or '', 'invoice_number': r[4] or '',
+            'invoice_total': r[5], 'sei_proposal_number': r[6] or '',
+            'date_billed': r[7] or '', 'amount_sei_billed': r[8],
+            'notes': r[9] or '', 'project_mgr': r[10] or '',
+            'invoice_to_christian': r[11] or '', 'bill_com': r[12] or '',
+            'expected_payment_date': r[13] or '', 'needs_invoice': bool(r[14]),
+            'jobber_invoice_number': r[15] or '', 'jobber_paid': bool(r[16]),
+            'jobber_paid_date': r[17] or ''
+        })
+    conn.close()
+    return jsonify({'success': True, 'rows': rows})
+
+
+@app.route('/installation/api/vendor-invoices/add', methods=['POST'])
+def vendor_invoices_add():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json() or {}
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""INSERT INTO vendor_invoices (ok_to_process, sub_contractor, invoice_date,
+                   invoice_number, invoice_total, sei_proposal_number, date_billed,
+                   amount_sei_billed, notes, project_mgr, invoice_to_christian, bill_com,
+                   expected_payment_date, needs_invoice, jobber_invoice_number, created_at, updated_at)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+              (data.get('ok_to_process', 'YES'), data.get('sub_contractor', ''),
+               data.get('invoice_date', ''), data.get('invoice_number', ''),
+               data.get('invoice_total'), data.get('sei_proposal_number', ''),
+               data.get('date_billed', ''), data.get('amount_sei_billed'),
+               data.get('notes', ''), data.get('project_mgr', ''),
+               data.get('invoice_to_christian', ''), data.get('bill_com', ''),
+               data.get('expected_payment_date', ''), 1 if data.get('needs_invoice') else 0,
+               data.get('jobber_invoice_number', ''), now, now))
+    new_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True, 'id': new_id})
+
+
+@app.route('/installation/api/vendor-invoices/update', methods=['POST'])
+def vendor_invoices_update():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json() or {}
+    row_id = data.get('id')
+    if not row_id:
+        return jsonify({'success': False, 'error': 'id required'}), 400
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""UPDATE vendor_invoices SET
+                   ok_to_process=?, sub_contractor=?, invoice_date=?, invoice_number=?,
+                   invoice_total=?, sei_proposal_number=?, date_billed=?, amount_sei_billed=?,
+                   notes=?, project_mgr=?, invoice_to_christian=?, bill_com=?,
+                   expected_payment_date=?, needs_invoice=?, jobber_invoice_number=?, updated_at=?
+                 WHERE id=?""",
+              (data.get('ok_to_process', 'NO'), data.get('sub_contractor', ''),
+               data.get('invoice_date', '') or None, data.get('invoice_number', ''),
+               data.get('invoice_total') if data.get('invoice_total') not in ('', None) else None,
+               data.get('sei_proposal_number', ''),
+               data.get('date_billed', '') or None,
+               data.get('amount_sei_billed') if data.get('amount_sei_billed') not in ('', None) else None,
+               data.get('notes', ''), data.get('project_mgr', ''),
+               data.get('invoice_to_christian', '') or None, data.get('bill_com', ''),
+               data.get('expected_payment_date', '') or None,
+               1 if data.get('needs_invoice') else 0,
+               data.get('jobber_invoice_number', ''), now, row_id))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
+
+
+@app.route('/installation/api/vendor-invoices/delete', methods=['POST'])
+def vendor_invoices_delete():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json() or {}
+    row_id = data.get('id')
+    if not row_id:
+        return jsonify({'success': False, 'error': 'id required'}), 400
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM vendor_invoices WHERE id=?", (row_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
+
+
+@app.route('/installation/api/vendor-invoices/check-jobber', methods=['POST'])
+def vendor_invoices_check_jobber():
+    """Query Jobber GraphQL API to check which invoices are now paid, then email Christian."""
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+
+    if not JOBBER_API_TOKEN:
+        return jsonify({'success': False, 'error': 'JOBBER_API_TOKEN not configured. Set this environment variable to enable Jobber sync.'})
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""SELECT id, sub_contractor, invoice_number, invoice_total, sei_proposal_number,
+                        notes, jobber_invoice_number, jobber_paid, jobber_paid_notified,
+                        amount_sei_billed, project_mgr
+                 FROM vendor_invoices
+                 WHERE jobber_invoice_number IS NOT NULL AND jobber_invoice_number != ''
+                   AND (jobber_paid = 0 OR jobber_paid IS NULL)""")
+    pending = c.fetchall()
+
+    if not pending:
+        conn.close()
+        return jsonify({'success': True, 'message': 'No pending Jobber invoices to check.', 'newly_paid': 0})
+
+    # Build Jobber GraphQL query to fetch paid invoices
+    graphql_query = """
+    {
+      invoices(filter: {status: [paid]}) {
+        nodes {
+          id
+          invoiceNumber
+          status
+          amounts { depositAmount outstanding total }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+    """
+    try:
+        resp = http_requests.post(
+            'https://api.getjobber.com/api/graphql',
+            json={'query': graphql_query},
+            headers={
+                'Authorization': f'Bearer {JOBBER_API_TOKEN}',
+                'Content-Type': 'application/json',
+                'X-JOBBER-GRAPHQL-VERSION': '2024-11-15'
+            },
+            timeout=15
+        )
+        resp.raise_for_status()
+        gql_data = resp.json()
+    except Exception as e:
+        conn.close()
+        return jsonify({'success': False, 'error': f'Jobber API error: {str(e)}'})
+
+    paid_invoice_numbers = set()
+    nodes = (gql_data.get('data') or {}).get('invoices', {}).get('nodes', [])
+    for node in nodes:
+        num = str(node.get('invoiceNumber', '')).strip()
+        if num:
+            paid_invoice_numbers.add(num.lower())
+            paid_invoice_numbers.add(num)
+
+    now_str = datetime.now().strftime('%Y-%m-%d')
+    newly_paid = 0
+
+    for row in pending:
+        row_id, sub, inv_num, inv_total, sei_prop, notes, jobber_inv_num, \
+            jobber_paid, jobber_paid_notified, sei_billed, proj_mgr = row
+
+        jobber_ref = str(jobber_inv_num or '').strip()
+        is_paid = (jobber_ref in paid_invoice_numbers or
+                   jobber_ref.lower() in paid_invoice_numbers)
+
+        if is_paid:
+            c.execute("""UPDATE vendor_invoices
+                         SET jobber_paid=1, jobber_paid_date=?, updated_at=?
+                         WHERE id=?""", (now_str, now_str, row_id))
+            newly_paid += 1
+            if not jobber_paid_notified:
+                inv_data = {
+                    'sub_contractor': sub, 'invoice_number': inv_num,
+                    'invoice_total': inv_total, 'sei_proposal_number': sei_prop,
+                    'notes': notes, 'jobber_invoice_number': jobber_inv_num,
+                    'amount_sei_billed': sei_billed, 'project_mgr': proj_mgr
+                }
+                if EMAIL_ENABLED:
+                    sent = send_vendor_invoice_paid_email(inv_data)
+                    if sent:
+                        c.execute("UPDATE vendor_invoices SET jobber_paid_notified=1 WHERE id=?", (row_id,))
+                else:
+                    print(f"[Vendor Invoices] Email disabled — would notify Christian about paid invoice: {jobber_inv_num}")
+                    c.execute("UPDATE vendor_invoices SET jobber_paid_notified=1 WHERE id=?", (row_id,))
+
+    conn.commit()
+    conn.close()
+
+    msg = f'Checked {len(pending)} invoice(s). {newly_paid} newly marked as paid.'
+    return jsonify({'success': True, 'message': msg, 'newly_paid': newly_paid})
 
 
 @app.route('/installation/job/<int:job_id>')
