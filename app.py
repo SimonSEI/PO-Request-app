@@ -28097,11 +28097,39 @@ select.vi-cell-edit{cursor:pointer}
     <button class="btn-add-row" onclick="addRow()">+ Add Row</button>
     <input type="text" id="vi-search" placeholder="🔍 Search…" oninput="filterRows()">
     <button class="btn-jobber" id="jobber-btn" onclick="checkJobber()" title="Sync paid status from Jobber API">🔄 Check Jobber</button>
+    <label style="background:#f59e0b;color:white;border:none;border-radius:7px;padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit" title="Import from Excel (.xlsx)">
+      📥 Import Excel
+      <input type="file" id="excel-import-input" accept=".xlsx,.xls" style="display:none" onchange="importExcel(this)">
+    </label>
     <div class="vi-legend">
       <div class="legend-blue"></div><span>Needs invoicing (blue)</span>
     </div>
   </div>
   <div class="vi-status-bar" id="vi-status"></div>
+
+  <!-- Import preview modal -->
+  <div id="import-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9000;align-items:center;justify-content:center">
+    <div style="background:white;border-radius:12px;width:700px;max-width:96vw;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <div style="background:#1a3c5e;color:white;padding:14px 20px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+        <span style="font-weight:800;font-size:15px">📥 Import Excel Preview</span>
+        <button onclick="closeImportModal()" style="background:none;border:none;color:white;font-size:22px;cursor:pointer;line-height:1">&times;</button>
+      </div>
+      <div style="padding:16px 20px;overflow-y:auto;flex:1">
+        <p id="import-summary" style="font-size:14px;color:#374151;margin:0 0 12px"></p>
+        <div id="import-preview-wrap" style="overflow-x:auto;max-height:340px;border:1px solid #e5e7eb;border-radius:6px">
+          <table id="import-preview-tbl" style="border-collapse:collapse;width:100%;font-size:12px">
+            <thead id="import-preview-head"></thead>
+            <tbody id="import-preview-body"></tbody>
+          </table>
+        </div>
+        <p style="font-size:12px;color:#9ca3af;margin:10px 0 0">Rows highlighted in blue will be imported with "Needs Invoice" checked.</p>
+      </div>
+      <div style="padding:14px 20px;background:#f9fafb;border-top:1px solid #e5e7eb;display:flex;gap:8px;justify-content:flex-end;flex-shrink:0">
+        <button onclick="closeImportModal()" style="padding:9px 18px;border:1px solid #d1d5db;background:white;border-radius:7px;cursor:pointer;font-size:13px;font-family:inherit">Cancel</button>
+        <button id="import-confirm-btn" onclick="confirmImport()" style="padding:9px 22px;border:none;background:#1a3c5e;color:white;border-radius:7px;cursor:pointer;font-weight:700;font-size:14px;font-family:inherit">Import All Rows</button>
+      </div>
+    </div>
+  </div>
 
   <div class="vi-table-wrap">
     <table class="vi-tbl" id="vi-table">
@@ -28298,6 +28326,79 @@ async function checkJobber(){
 }
 
 function setStatus(msg){ document.getElementById('vi-status').textContent=msg; }
+
+// ── Excel Import ──────────────────────────────────────────────────────────────
+let IMPORT_ROWS = [];
+
+async function importExcel(input){
+  const file = input.files[0];
+  if(!file){ return; }
+  input.value=''; // reset so same file can be re-selected
+  setStatus('Reading file…');
+  const fd = new FormData();
+  fd.append('file', file);
+  try{
+    const res = await fetch('/installation/api/vendor-invoices/parse-excel', {method:'POST', body: fd}).then(x=>x.json());
+    if(!res.success){ setStatus('✗ '+res.error); return; }
+    IMPORT_ROWS = res.rows;
+    showImportPreview(res.rows, res.skipped);
+    setStatus('');
+  } catch(e){ setStatus('✗ Network error: '+e); }
+}
+
+function showImportPreview(rows, skipped){
+  const COLS = ['ok_to_process','sub_contractor','invoice_date','invoice_number','invoice_total',
+    'sei_proposal_number','date_billed','amount_sei_billed','notes','project_mgr',
+    'invoice_to_christian','bill_com','expected_payment_date','needs_invoice','jobber_invoice_number'];
+  const LABELS = ['OK?','Sub Contractor','Inv Date','Invoice #','Inv Total','SEI Prop #',
+    'Date Billed','SEI Billed','Notes','Mgr','Inv→Christian','Bill.com','Exp Pay Date','Needs Inv','Jobber #'];
+
+  document.getElementById('import-summary').textContent =
+    `${rows.length} row(s) ready to import${skipped?` · ${skipped} header/empty row(s) skipped`:''}. Review below, then click Import.`;
+
+  const head = document.getElementById('import-preview-head');
+  head.innerHTML = '<tr>'+LABELS.map(l=>`<th style="background:#1a3c5e;color:white;padding:5px 8px;font-size:11px;white-space:nowrap;position:sticky;top:0">${l}</th>`).join('')+'</tr>';
+
+  const tbody = document.getElementById('import-preview-body');
+  tbody.innerHTML = '';
+  rows.forEach(r=>{
+    const tr = document.createElement('tr');
+    if(r.needs_invoice) tr.style.background='#dbeafe';
+    tr.innerHTML = COLS.map(k=>{
+      let v = r[k];
+      if(k==='needs_invoice') v = v ? '✓' : '';
+      if((k==='invoice_total'||k==='amount_sei_billed') && v!=null) v = '$'+parseFloat(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+      return `<td style="padding:4px 8px;border-bottom:1px solid #f3f4f6;font-size:12px;white-space:nowrap;max-width:160px;overflow:hidden;text-overflow:ellipsis" title="${esc(String(v||''))}">${esc(String(v||''))}</td>`;
+    }).join('');
+    tbody.appendChild(tr);
+  });
+  document.getElementById('import-modal').style.display='flex';
+}
+
+function closeImportModal(){
+  document.getElementById('import-modal').style.display='none';
+  IMPORT_ROWS=[];
+}
+
+async function confirmImport(){
+  const btn = document.getElementById('import-confirm-btn');
+  btn.disabled=true; btn.textContent='Importing…';
+  setStatus('Importing…');
+  try{
+    const res = await fetch('/installation/api/vendor-invoices/import', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({rows: IMPORT_ROWS})
+    }).then(x=>x.json());
+    closeImportModal();
+    if(res.success){
+      setStatus(`✓ Imported ${res.imported} row(s)`);
+      setTimeout(()=>setStatus(''),3000);
+      await loadRows();
+    } else { setStatus('✗ '+res.error); }
+  } catch(e){ setStatus('✗ Network error'); }
+  btn.disabled=false; btn.textContent='Import All Rows';
+}
 
 loadRows();
 </script>
@@ -29732,6 +29833,204 @@ def vendor_invoices_delete():
     conn.commit()
     conn.close()
     return jsonify({'success': True})
+
+
+@app.route('/installation/api/vendor-invoices/parse-excel', methods=['POST'])
+def vendor_invoices_parse_excel():
+    """Parse uploaded Excel file and return preview rows without saving."""
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'error': 'No file uploaded'}), 400
+    f = request.files['file']
+    if not f.filename:
+        return jsonify({'success': False, 'error': 'Empty filename'}), 400
+    try:
+        import openpyxl
+        from io import BytesIO
+        wb = openpyxl.load_workbook(BytesIO(f.read()), data_only=True)
+        ws = wb.active
+
+        # Read all rows as raw values
+        all_rows = list(ws.iter_rows(values_only=True))
+        if not all_rows:
+            return jsonify({'success': False, 'error': 'Spreadsheet is empty'})
+
+        # Detect header row — find the row that has recognisable column names
+        header_idx = None
+        header_map = {}  # col_name -> column index (0-based)
+
+        COL_ALIASES = {
+            'ok_to_process':        ['ok to process', 'ok to process?', 'ok'],
+            'sub_contractor':       ['sub contractor', 'subcontractor', 'vendor', 'contractor'],
+            'invoice_date':         ['invoice date'],
+            'invoice_number':       ['invoice #', 'invoice#', 'invoice no', 'inv #', 'inv#'],
+            'invoice_total':        ['invoice total', 'inv total'],
+            'sei_proposal_number':  ['sei proposal #', 'sei proposal', 'proposal #', 'proposal number', 'sei proposal#'],
+            'date_billed':          ['date billed'],
+            'amount_sei_billed':    ['amount sei billed', 'amount billed', 'sei billed'],
+            'notes':                ['notes', 'note'],
+            'project_mgr':          ['project mgr', 'project manager', 'mgr', 'pm'],
+            'invoice_to_christian': ['invoice to christian', 'inv to christian'],
+            'bill_com':             ['bill.com', 'bill com', 'bill'],
+            'expected_payment_date':['expected payment date', 'expected payment', 'exp pay date', 'exp payment date'],
+        }
+
+        for ri, row in enumerate(all_rows[:10]):
+            cells = [str(c).strip().lower() if c is not None else '' for c in row]
+            matches = 0
+            tmp_map = {}
+            for field, aliases in COL_ALIASES.items():
+                for ci, cell in enumerate(cells):
+                    if cell in aliases:
+                        tmp_map[field] = ci
+                        matches += 1
+                        break
+            if matches >= 3:
+                header_idx = ri
+                header_map = tmp_map
+                break
+
+        # Fallback: try positional mapping based on the spreadsheet layout shown
+        # Columns A-K then L-P as in the provided screenshot
+        if header_idx is None:
+            header_idx = -1  # no header found, start from row 0
+            header_map = {
+                'ok_to_process': 0,
+                'sub_contractor': 1,
+                'invoice_date': 2,
+                'invoice_number': 3,
+                'invoice_total': 4,
+                'sei_proposal_number': 5,
+                'date_billed': 6,
+                'amount_sei_billed': 7,
+                'notes': 8,
+                'project_mgr': 9,
+                'invoice_to_christian': 10,
+                'bill_com': 11,
+                'expected_payment_date': 12,
+            }
+
+        def parse_date(v):
+            if v is None: return ''
+            if hasattr(v, 'strftime'): return v.strftime('%Y-%m-%d')
+            s = str(v).strip()
+            for fmt in ('%Y-%m-%d', '%m/%d/%Y', '%m/%d/%y', '%m-%d-%Y', '%-m/%-d/%Y'):
+                try:
+                    return datetime.strptime(s, fmt).strftime('%Y-%m-%d')
+                except ValueError:
+                    continue
+            return s
+
+        def parse_money(v):
+            if v is None: return None
+            if isinstance(v, (int, float)): return round(float(v), 2)
+            s = str(v).replace('$', '').replace(',', '').strip()
+            try: return round(float(s), 2)
+            except ValueError: return None
+
+        def cell_str(v):
+            if v is None: return ''
+            return str(v).strip()
+
+        parsed = []
+        skipped = 0
+        data_start = header_idx + 1 if header_idx is not None and header_idx >= 0 else 0
+
+        for row in all_rows[data_start:]:
+            # Skip completely empty rows
+            if all(c is None or str(c).strip() == '' for c in row):
+                skipped += 1
+                continue
+
+            def get(field):
+                ci = header_map.get(field)
+                return row[ci] if ci is not None and ci < len(row) else None
+
+            # Detect blue fill (needs_invoice) — openpyxl can read cell fill
+            # We do a best-effort: if we can access the worksheet cell, check fill color
+            needs_inv = 0
+
+            r = {
+                'ok_to_process': cell_str(get('ok_to_process')) or 'YES',
+                'sub_contractor': cell_str(get('sub_contractor')),
+                'invoice_date': parse_date(get('invoice_date')),
+                'invoice_number': cell_str(get('invoice_number')),
+                'invoice_total': parse_money(get('invoice_total')),
+                'sei_proposal_number': cell_str(get('sei_proposal_number')),
+                'date_billed': parse_date(get('date_billed')),
+                'amount_sei_billed': parse_money(get('amount_sei_billed')),
+                'notes': cell_str(get('notes')),
+                'project_mgr': cell_str(get('project_mgr')),
+                'invoice_to_christian': parse_date(get('invoice_to_christian')),
+                'bill_com': cell_str(get('bill_com')),
+                'expected_payment_date': parse_date(get('expected_payment_date')),
+                'needs_invoice': needs_inv,
+                'jobber_invoice_number': '',
+            }
+            parsed.append(r)
+
+        # Second pass: detect blue-filled rows using actual cell objects
+        try:
+            data_rows_ws = list(ws.iter_rows(min_row=data_start + 1))
+            for ri, ws_row in enumerate(data_rows_ws):
+                if ri >= len(parsed):
+                    break
+                for cell in ws_row:
+                    if cell.fill and cell.fill.fgColor:
+                        rgb = cell.fill.fgColor.rgb if cell.fill.fgColor.type == 'rgb' else ''
+                        # Cyan (#00B0F0) or light blue (#BDD7EE / #DAEEF3 / #9DC3E6) fills
+                        if rgb and rgb.upper() not in ('00000000', 'FFFFFFFF', ''):
+                            r_hex = rgb[-6:].upper()
+                            b_val = int(r_hex[4:6], 16)
+                            r_val = int(r_hex[0:2], 16)
+                            g_val = int(r_hex[2:4], 16)
+                            # Blue-dominant color (blue > red and blue > green)
+                            if b_val > 150 and b_val > r_val and b_val > g_val:
+                                parsed[ri]['needs_invoice'] = 1
+                                break
+        except Exception:
+            pass  # colour detection is best-effort
+
+        return jsonify({'success': True, 'rows': parsed, 'skipped': skipped})
+    except Exception as e:
+        import traceback
+        return jsonify({'success': False, 'error': str(e), 'trace': traceback.format_exc()})
+
+
+@app.route('/installation/api/vendor-invoices/import', methods=['POST'])
+def vendor_invoices_import():
+    """Bulk-insert pre-parsed rows into the vendor_invoices table."""
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    data = request.get_json() or {}
+    rows = data.get('rows', [])
+    if not rows:
+        return jsonify({'success': False, 'error': 'No rows to import'})
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    imported = 0
+    for r in rows:
+        c.execute("""INSERT INTO vendor_invoices (ok_to_process, sub_contractor, invoice_date,
+                       invoice_number, invoice_total, sei_proposal_number, date_billed,
+                       amount_sei_billed, notes, project_mgr, invoice_to_christian, bill_com,
+                       expected_payment_date, needs_invoice, jobber_invoice_number, created_at, updated_at)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  (r.get('ok_to_process', 'YES'), r.get('sub_contractor', ''),
+                   r.get('invoice_date') or None, r.get('invoice_number', ''),
+                   r.get('invoice_total'), r.get('sei_proposal_number', ''),
+                   r.get('date_billed') or None,
+                   r.get('amount_sei_billed'),
+                   r.get('notes', ''), r.get('project_mgr', ''),
+                   r.get('invoice_to_christian') or None, r.get('bill_com', ''),
+                   r.get('expected_payment_date') or None,
+                   1 if r.get('needs_invoice') else 0,
+                   r.get('jobber_invoice_number', ''), now, now))
+        imported += 1
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True, 'imported': imported})
 
 
 @app.route('/installation/api/vendor-invoices/check-jobber', methods=['POST'])
