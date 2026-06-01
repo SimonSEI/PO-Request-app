@@ -59,7 +59,7 @@ app.secret_key = _secret_key
 APP_VERSION = "1.2.0"
 # Multi-session support - allows up to 80 concurrent users per account
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-app.config['SESSION_COOKIE_SECURE'] = os.environ.get('FLASK_ENV', 'production') != 'development'
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get('SESSION_COOKIE_SECURE', 'true').lower() != 'false'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=24)
 MAX_CONCURRENT_SESSIONS_PER_USER = 80  # Support up to 80 concurrent users per account
