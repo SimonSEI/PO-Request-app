@@ -1,4 +1,6 @@
 from flask import Flask, render_template_string, request, redirect, url_for, session, flash, jsonify, send_from_directory, send_file
+from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
 from datetime import datetime, timedelta
 import uuid
 import sqlite3
@@ -47,13 +49,31 @@ ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 USE_CLAUDE_MATCHING = os.environ.get('USE_CLAUDE_MATCHING', 'true').lower() == 'true'
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'the-office-app-secret-key-2025')
-APP_VERSION = "1.2.0"  # Added API verify endpoint
+_secret_key = os.environ.get('SECRET_KEY')
+if not _secret_key:
+    raise RuntimeError("SECRET_KEY environment variable must be set to a strong random value")
+app.secret_key = _secret_key
+APP_VERSION = "1.2.0"
 # Multi-session support - allows up to 80 concurrent users per account
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get('FLASK_ENV', 'production') != 'development'
+app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=24)
 MAX_CONCURRENT_SESSIONS_PER_USER = 80  # Support up to 80 concurrent users per account
 active_sessions = {}
+
+@app.after_request
+def set_security_headers(response):
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+        "font-src 'self' data:; connect-src 'self'"
+    )
+    return response
 
 def create_session_id():
     return str(uuid.uuid4())
@@ -185,8 +205,8 @@ TELEGRAM_ENABLED = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 EMAIL_ENABLED = False
 SMTP_SERVER = 'smtp.gmail.com'
 SMTP_PORT = 587
-EMAIL_ADDRESS = 'YOUR_EMAIL@gmail.com'
-EMAIL_PASSWORD = 'YOUR_APP_PASSWORD'
+EMAIL_ADDRESS = os.environ.get('SMTP_EMAIL_ADDRESS', '')
+EMAIL_PASSWORD = os.environ.get('SMTP_EMAIL_PASSWORD', '')
 WEBSITE_URL = os.environ.get('WEBSITE_URL', 'http://localhost:5000')
 
 # Email Configuration for PO Invoice Receiving (Gmail/Outlook IMAP)
@@ -194,7 +214,7 @@ PO_EMAIL_ADDRESS = os.environ.get('PO_EMAIL_ADDRESS', '')
 PO_EMAIL_PASSWORD = os.environ.get('PO_EMAIL_PASSWORD', '')
 PO_EMAIL_PROVIDER = os.environ.get('PO_EMAIL_PROVIDER', 'outlook')  # 'outlook' or 'gmail'
 JOBBER_API_TOKEN = os.environ.get('JOBBER_API_TOKEN', '')
-CHRISTIAN_EMAIL = os.environ.get('CHRISTIAN_EMAIL', 'christian@stahlman-england.com')
+CHRISTIAN_EMAIL = os.environ.get('CHRISTIAN_EMAIL', '')
 
 # IMAP configuration based on provider
 # Allow explicit override via env var, otherwise auto-detect
@@ -285,7 +305,7 @@ def send_notification_email(invoice_number, invoice_cost, email_sender, email_su
         return False
 
     try:
-        recipient_email = 'simon@stahlman-england.com'
+        recipient_email = os.environ.get('NOTIFICATION_EMAIL', '')
 
         msg = MIMEMultipart('alternative')
         msg['Subject'] = f'⚠️ Unmatched Invoice Alert - #{invoice_number}'
@@ -1843,64 +1863,6 @@ def init_db():
     conn.close()
     print("✓ Database initialized successfully")
 
-@app.route('/update_database_schema')
-def update_database_schema():
-    """One-time database update to add new columns"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-
-        # Add new columns to users table if they don't exist
-        try:
-            c.execute("ALTER TABLE users ADD COLUMN email TEXT")
-            print("✓ Added email column")
-        except sqlite3.OperationalError:
-            print("Email column already exists")
-
-        try:
-            c.execute("ALTER TABLE users ADD COLUMN full_name TEXT")
-            print("✓ Added full_name column")
-        except sqlite3.OperationalError:
-            print("Full_name column already exists")
-
-        try:
-            c.execute("ALTER TABLE users ADD COLUMN created_date TEXT")
-            print("✓ Added created_date column")
-        except sqlite3.OperationalError:
-            print("Created_date column already exists")
-
-        try:
-            c.execute("ALTER TABLE users ADD COLUMN last_login TEXT")
-            print("✓ Added last_login column")
-        except sqlite3.OperationalError:
-            print("Last_login column already exists")
-
-        # Create activity_log table if it doesn't exist
-        c.execute('''CREATE TABLE IF NOT EXISTS activity_log
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      username TEXT,
-                      user_email TEXT,
-                      action TEXT,
-                      target_type TEXT,
-                      target_id INTEGER,
-                      details TEXT,
-                      timestamp TEXT)''')
-        print("✓ Activity log table created")
-
-        # Add budget (Cost of Materials) column to jobs if it doesn't exist
-        try:
-            c.execute("ALTER TABLE jobs ADD COLUMN budget REAL DEFAULT 0")
-            print("✓ Added budget column to jobs")
-        except sqlite3.OperationalError:
-            print("Budget column already exists")
-
-        conn.commit()
-        conn.close()
-
-        return "Database updated successfully! You can now <a href='/'>login</a>. (You can delete this route now)"
-    except Exception as e:
-        return f"Error: {str(e)}"
-
 def format_po_number(po_id, job_name, job_code=None):
     """Format PO number with department prefix (no leading zeros)
 
@@ -2531,7 +2493,7 @@ def register():
             c.execute("""INSERT INTO users
                          (username, password, role, email, full_name, created_date, last_login)
                          VALUES (?, ?, 'office', ?, ?, ?, NULL)""",
-                     (username, password, email, full_name, datetime.now().strftime('%Y-%m-%d')))
+                     (username, generate_password_hash(password), email, full_name, datetime.now().strftime('%Y-%m-%d')))
             conn.commit()
 
             # Log activity
@@ -2641,7 +2603,7 @@ def reset_password(token):
             return render_template_string(RESET_PASSWORD_TEMPLATE, token=token, email=email)
 
         # Update password
-        c.execute("UPDATE users SET password=? WHERE id=?", (new_password, user_id))
+        c.execute("UPDATE users SET password=? WHERE id=?", (generate_password_hash(new_password), user_id))
 
         # Mark token as used
         c.execute("UPDATE password_reset_tokens SET used=1 WHERE id=?", (token_id,))
@@ -2658,38 +2620,7 @@ def reset_password(token):
     conn.close()
     return render_template_string(RESET_PASSWORD_TEMPLATE, token=token, email=email)
 
-@app.route('/generate_reset_link')
-def generate_reset_link():
-    """Temporary test route"""
-    # Get first office user
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT id, username, email FROM users WHERE role='office' LIMIT 1")
-    user = c.fetchone()
-
-    if not user:
-        return "No office users found"
-
-    user_id, username, email = user
-    reset_token = secrets.token_urlsafe(32)
-
-    from datetime import timedelta
-    created_at = datetime.now()
-    expires_at = created_at + timedelta(hours=1)
-
-    c.execute("""INSERT INTO password_reset_tokens
-                 (user_id, token, created_at, expires_at, used)
-                 VALUES (?, ?, ?, ?, 0)""",
-             (user_id, reset_token,
-              created_at.strftime('%Y-%m-%d %H:%M:%S'),
-              expires_at.strftime('%Y-%m-%d %H:%M:%S')))
-    conn.commit()
-    conn.close()
-
-    reset_link = f"{WEBSITE_URL}/reset_password/{reset_token}"
-    return f"<h2>Test Reset Link Generated</h2><p>User: {username} ({email})</p><p><a href='{reset_link}'>{reset_link}</a></p>"
-
-# ADD THIS NEW ROUTE to validate job names
+# validate job names
 @app.route('/validate_job', methods=['POST'])
 def validate_job():
     """Validate if a job name exists in the database"""
@@ -2798,10 +2729,10 @@ def login():
 
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("SELECT * FROM users WHERE LOWER(username)=? AND password=?", (username, password))
+        c.execute("SELECT * FROM users WHERE LOWER(username)=?", (username,))
         user = c.fetchone()
 
-        if user:
+        if user and check_password_hash(user[2], password):
             actual_username = user[1]
 
             # Update last login
@@ -2926,7 +2857,7 @@ def add_office_admin():
         # Insert new admin
         c.execute("""INSERT INTO users (username, password, full_name, email, role, tech_type, created_date)
                      VALUES (?, ?, ?, ?, 'office', NULL, ?)""",
-                 (username, password, full_name, email, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                 (username, generate_password_hash(password), full_name, email, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
 
         conn.commit()
         conn.close()
@@ -3513,10 +3444,9 @@ def match_invoice_to_po():
         })
 
     except Exception as e:
-        import traceback
-        error_trace = traceback.format_exc()
-        print(f"[match_invoice_to_po] ERROR: {str(e)}\n{error_trace}")
-        return jsonify({'success': False, 'error': f'Error: {str(e)}', 'trace': error_trace})
+        import traceback, logging
+        logging.exception("[match_invoice_to_po] ERROR")
+        return jsonify({'success': False, 'error': 'An internal error occurred'})
 
 @app.route('/upload_invoice/<int:po_id>', methods=['POST'])
 def upload_invoice(po_id):
@@ -3551,7 +3481,7 @@ def upload_invoice(po_id):
                     return jsonify({'success': False, 'error': f'Invalid file type. Allowed: PDF, JPG, PNG'})
 
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                safe_filename = f"PO{po_id:04d}_{timestamp}_{file.filename.replace(' ', '_')}"
+                safe_filename = f"PO{po_id:04d}_{timestamp}_{secure_filename(file.filename)}"
                 file_path = os.path.join(app.config['UPLOAD_FOLDER'], safe_filename)
                 file.save(file_path)
                 invoice_filename = safe_filename
@@ -4115,6 +4045,10 @@ def view_invoice(filename):
 
     if filename == 'MANUAL_ENTRY':
         flash('No file attached - this was a manual entry')
+        return redirect(url_for('office_dashboard'))
+
+    if '..' in filename or '/' in filename or '\\' in filename:
+        flash('Invalid filename')
         return redirect(url_for('office_dashboard'))
 
     try:
@@ -4898,8 +4832,8 @@ def bulk_upload_invoices():
         return jsonify(results)
 
     except Exception as e:
-        import traceback
-        return jsonify({'success': False, 'error': str(e), 'trace': traceback.format_exc()})
+        import logging; logging.exception("Unexpected error")
+        return jsonify({'success': False, 'error': 'An internal error occurred'})
 
 
 # Background email check status tracking
@@ -5199,14 +5133,8 @@ def rescan_all_po_emails():
         return jsonify(all_results)
 
     except Exception as e:
-        import traceback
-        print(f"✗ Rescan error: {e}")
-        traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'trace': traceback.format_exc()
-        })
+        import logging; logging.exception("Rescan error")
+        return jsonify({'success': False, 'error': 'An internal error occurred'})
 
 
 @app.route('/email_processing_logs', methods=['GET'])
@@ -5631,11 +5559,10 @@ def process_bulk_pdf(pdf_path, timestamp):
         results['message'] = f'{icon} {" ".join(msg_parts)}'
 
     except Exception as e:
-        import traceback
+        import logging
+        logging.exception("Invoice processing error")
         results['success'] = False
-        results['error'] = str(e)
-        results['trace'] = traceback.format_exc()
-        print(f"❌ ERROR: {traceback.format_exc()}")
+        results['error'] = 'An internal error occurred'
 
     return results
 
@@ -7618,7 +7545,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
                     });
                     container.innerHTML = html;
                 } else {
-                    container.innerHTML = '<p style="color: #dc3545;">Error: ' + data.error + '</p>';
+                    { var _e=document.createElement('p'); _e.textContent=data.error; container.innerHTML='<p style="color: #dc3545;">Error: '; container.appendChild(_e); }
                 }
             });
         }
@@ -7968,7 +7895,7 @@ JOB_MANAGEMENT_TEMPLATE = '''
                 list.innerHTML = html;
             })
             .catch(err => {
-                list.innerHTML = '<p style="color: #dc3545;">Error loading backups: ' + err + '</p>';
+                { var _e=document.createElement('p'); _e.textContent=err; list.innerHTML='<p style="color: #dc3545;">Error loading backups: '; list.appendChild(_e); }
             });
         }
     </script>
@@ -11280,7 +11207,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
 
                         resultsDiv.innerHTML = html;
                     } else {
-                        resultsDiv.innerHTML = '<p style="color: #ff9800;">⚠️ ' + (data.error || 'No matching POs found') + '</p>';
+                        { var _e=document.createElement('p'); _e.style.color='#ff9800'; _e.textContent='⚠️ ' + (data.error || 'No matching POs found'); resultsDiv.textContent=''; resultsDiv.appendChild(_e); }
                     }
                 } else {
                     let errorMsg = data.error || 'Failed to extract PO from invoice';
@@ -12203,14 +12130,14 @@ OFFICE_DASHBOARD_TEMPLATE = '''
                     html += '</div>';
                     statusDiv.innerHTML = html;
                 } else {
-                    statusDiv.innerHTML = '<div style="background: #f8d7da; color: #721c24; padding: 15px; border-radius: 5px;"><strong>Error:</strong> ' + data.error + '</div>';
+                    { var _e=document.createElement('p'); _e.textContent=data.error; statusDiv.innerHTML='<div style="background: #f8d7da; color: #721c24; padding: 15px; border-radius: 5px;"><strong>Error:</strong> '; statusDiv.appendChild(_e); }
                 }
             })
             .catch(error => {
                 console.error('Fetch error:', error);
                 btn.disabled = false;
                 btn.textContent = '📤 Process PDF';
-                statusDiv.innerHTML = '<div style="background: #f8d7da; color: #721c24; padding: 15px; border-radius: 5px;"><strong>Error:</strong> ' + error + '<br><br>Check browser console (F12) for details.</div>';
+                { var _e=document.createElement('p'); _e.textContent=error; statusDiv.innerHTML='<div style="background: #f8d7da; color: #721c24; padding: 15px; border-radius: 5px;"><strong>Error:</strong> '; statusDiv.appendChild(_e); }
             });
         }
 
@@ -12396,7 +12323,7 @@ function searchInTab(tabId, searchInputId) {
 
                         resultsDiv.innerHTML = html;
                     } else {
-                        resultsDiv.innerHTML = '<p style="color: #ff9800;">⚠️ ' + (data.error || 'No matching POs found') + '</p>';
+                        { var _e=document.createElement('p'); _e.style.color='#ff9800'; _e.textContent='⚠️ ' + (data.error || 'No matching POs found'); resultsDiv.textContent=''; resultsDiv.appendChild(_e); }
                     }
                 } else {
                     let errorMsg = data.error || 'Failed to extract PO from invoice';
@@ -13999,7 +13926,7 @@ def admin_edit_user(user_id):
                 c.execute("""UPDATE users
                            SET username=?, password=?, role=?, email=?, full_name=?
                            WHERE id=?""",
-                         (username, password, role, email, full_name, user_id))
+                         (username, generate_password_hash(password), role, email, full_name, user_id))
             else:
                 c.execute("""UPDATE users
                            SET username=?, role=?, email=?, full_name=?
@@ -14082,7 +14009,7 @@ def admin_create_user():
         try:
             c.execute("""INSERT INTO users (username, password, role, email, full_name, created_date)
                         VALUES (?, ?, ?, ?, ?, ?)""",
-                     (username, password, role, email, full_name,
+                     (username, generate_password_hash(password), role, email, full_name,
                       datetime.now().strftime('%Y-%m-%d')))
             conn.commit()
             user_id = c.lastrowid
@@ -14928,78 +14855,6 @@ ADMIN_CREATE_USER_TEMPLATE = '''
 </body>
 </html>
 '''
-
-@app.route('/debug_check_po')
-def debug_check_po():
-    """Debug: Check if PO 9864 exists and is approved"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
-    # Check PO 9864
-    c.execute("SELECT id, tech_name, job_name, status, estimated_cost FROM po_requests WHERE id=9864")
-    po = c.fetchone()
-
-    # Get all awaiting_invoice POs
-    c.execute("SELECT id, job_name, status FROM po_requests WHERE status='awaiting_invoice' ORDER BY id")
-    all_approved = c.fetchall()
-
-    conn.close()
-
-    html = "<h2>🔍 Debug: PO 9864 Status</h2>"
-
-    if po:
-        html += f"<div style='background: #d4edda; padding: 20px; border-radius: 5px;'>"
-        html += f"<h3>✅ PO 9864 Found!</h3>"
-        html += f"<p><strong>ID:</strong> {po[0]}</p>"
-        html += f"<p><strong>Tech:</strong> {po[1]}</p>"
-        html += f"<p><strong>Job:</strong> {po[2]}</p>"
-        html += f"<p><strong>Status:</strong> {po[3]}</p>"
-        html += f"<p><strong>Estimated Cost:</strong> ${po[4]:.2f}</p>"
-        html += f"</div>"
-    else:
-        html += f"<div style='background: #f8d7da; padding: 20px; border-radius: 5px;'>"
-        html += f"<h3>❌ PO 9864 NOT FOUND!</h3>"
-        html += f"<p>This PO does not exist in the database.</p>"
-        html += f"</div>"
-
-    html += "<br><h3>All Approved POs:</h3><ul>"
-    for approved_po in all_approved:
-        html += f"<li>PO #{approved_po[0]:04d} - {approved_po[1]} - Status: {approved_po[2]}</li>"
-    html += "</ul>"
-
-    return html
-
-@app.route('/debug_pdf_text')
-def debug_pdf_text():
-    """Debug: Show what text is extracted from the uploaded PDF"""
-    try:
-        import pdfplumber
-
-        # Point to your uploaded PDF
-        pdf_path = '/home/simonweardon3/bulk_uploads'
-
-        # Find the most recent PDF
-        import glob
-        pdf_files = glob.glob(f"{pdf_path}/*.pdf")
-        if not pdf_files:
-            return "No PDF files found in bulk_uploads folder"
-
-        latest_pdf = max(pdf_files, key=os.path.getctime)
-
-        html = f"<h2>📄 PDF Text Extraction Debug</h2>"
-        html += f"<p><strong>File:</strong> {os.path.basename(latest_pdf)}</p><hr>"
-
-        with pdfplumber.open(latest_pdf) as pdf:
-            for page_num, page in enumerate(pdf.pages, 1):
-                text = page.extract_text() or ''
-                html += f"<h3>Page {page_num}</h3>"
-                html += f"<pre style='background: #f5f5f5; padding: 15px; border: 1px solid #ddd; white-space: pre-wrap;'>{text}</pre>"
-                html += "<hr>"
-
-        return html
-    except Exception as e:
-        import traceback
-        return f"<h2>Error:</h2><pre>{str(e)}\n\n{traceback.format_exc()}</pre>"
 
 # ============================================================================
 # SETTINGS ROUTES
@@ -18880,7 +18735,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             fetch(`/community_draft_review?submission_id=${submissionId}`)
                 .then(r => r.json())
                 .then(data => {
-                    if (!data.success) { body.innerHTML = `<p style="color:#dc3545;">${data.error}</p>`; return; }
+                    if (!data.success) { { var _e=document.createElement('span'); _e.textContent=data.error; body.innerHTML='<p style="color:#dc3545;">'; body.appendChild(_e); if('</p>') { body.innerHTML += '</p>'; } } return; }
                     const items = data.items.filter(i =>
                         i.nozzle || i.pop_up_6_inch || i.pop_up_12_inch || i.rotor_6_inch ||
                         i.new_pop_up_6_inch || i.new_pop_up_12_inch || i.riser || i.solenoid ||
@@ -18931,7 +18786,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             fetch('/community_active_drafts')
                 .then(r => r.json())
                 .then(data => {
-                    if (!data.success) { container.innerHTML = `<p style="color:#dc3545;">${data.error}</p>`; return; }
+                    if (!data.success) { { var _e=document.createElement('span'); _e.textContent=data.error; container.innerHTML='<p style="color:#dc3545;">'; container.appendChild(_e); if('</p>') { container.innerHTML += '</p>'; } } return; }
                     renderDraftsTable(data.drafts);
                     // Auto-refresh while tab is visible
                     clearTimeout(_draftsRefreshTimer);
@@ -18950,7 +18805,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             fetch('/community_deleted_submissions')
                 .then(r => r.json())
                 .then(data => {
-                    if (!data.success) { container.innerHTML = `<p style="color:#dc3545;">${data.error}</p>`; return; }
+                    if (!data.success) { { var _e=document.createElement('span'); _e.textContent=data.error; container.innerHTML='<p style="color:#dc3545;">'; container.appendChild(_e); if('</p>') { container.innerHTML += '</p>'; } } return; }
                     renderTrashTable(data.submissions);
                 })
                 .catch(() => { container.innerHTML = '<p style="color:#dc3545;">Error loading deleted entries.</p>'; });
@@ -19072,7 +18927,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     if (data.success) {
                         displayCommunityClocks(communityId, data.clocks, openClocksBefore);
                     } else {
-                        container.innerHTML = `<p style="color:#dc3545;font-size:13px;">Error: ${data.error}</p>`;
+                        { var _e=document.createElement('span'); _e.textContent=data.error; container.innerHTML='<p style="color:#dc3545;font-size:13px;">Error: '; container.appendChild(_e); if('</p>') { container.innerHTML += '</p>'; } }
                     }
                 })
                 .catch(() => {
@@ -19276,7 +19131,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 .then(r => r.json())
                 .then(data => {
                     if (data.success) displayCommunityCustomTabs(communityId, data.tabs, openTabsBefore);
-                    else container.innerHTML = `<p style="color:#dc3545;font-size:13px;">Error: ${data.error}</p>`;
+                    else { var _e=document.createElement('span'); _e.textContent=data.error; container.innerHTML='<p style="color:#dc3545;font-size:13px;">Error: '; container.appendChild(_e); if('</p>') { container.innerHTML += '</p>'; } }
                 })
                 .catch(() => { container.innerHTML = '<p style="color:#dc3545;font-size:13px;">Error loading custom tabs.</p>'; });
         }
@@ -19519,7 +19374,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 .then(data => {
                     if (!data) return;
                     if (!data.success) {
-                        previewDiv.innerHTML = `<p style="color:#dc3545;">Error: ${data.error}</p>`;
+                        { var _e=document.createElement('span'); _e.textContent=data.error; previewDiv.innerHTML='<p style="color:#dc3545;">Error: '; previewDiv.appendChild(_e); if('</p>') { previewDiv.innerHTML += '</p>'; } }
                         return;
                     }
                     let entryId = 0;
@@ -19657,7 +19512,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     delete _importPreviewData['comm-' + communityId];
                     loadCommunityClockAddresses(communityId);
                 } else {
-                    previewDiv.innerHTML = `<p style="color:#dc3545;">Import failed: ${data.error}</p>`;
+                    { var _e=document.createElement('span'); _e.textContent=data.error; previewDiv.innerHTML='<p style="color:#dc3545;">Import failed: '; previewDiv.appendChild(_e); if('</p>') { previewDiv.innerHTML += '</p>'; } }
                 }
             })
             .catch(err => { previewDiv.innerHTML = `<p style="color:#dc3545;">Network error: ${err}</p>`; });
@@ -19681,7 +19536,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     loadCommunityClockAddresses(communityId);
                     setTimeout(() => { previewDiv.style.display = 'none'; }, 3000);
                 } else {
-                    previewDiv.innerHTML = `<p style="color:#dc3545;">Undo failed: ${data.error}</p>`;
+                    { var _e=document.createElement('span'); _e.textContent=data.error; previewDiv.innerHTML='<p style="color:#dc3545;">Undo failed: '; previewDiv.appendChild(_e); if('</p>') { previewDiv.innerHTML += '</p>'; } }
                 }
             })
             .catch(() => { previewDiv.innerHTML = '<p style="color:#dc3545;">Network error.</p>'; });
@@ -20541,7 +20396,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             .then(data => {
                 if (!data) return;
                 if (!data.success) {
-                    previewDiv.innerHTML = `<p style="color:#dc3545;">Error: ${data.error}</p>`;
+                    { var _e=document.createElement('span'); _e.textContent=data.error; previewDiv.innerHTML='<p style="color:#dc3545;">Error: '; previewDiv.appendChild(_e); if('</p>') { previewDiv.innerHTML += '</p>'; } }
                     return;
                 }
 
@@ -20726,7 +20581,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     delete _importPreviewData[communityId];
                     loadClockAddresses(communityId, true);
                 } else {
-                    previewDiv.innerHTML = `<p style="color:#dc3545;">Import failed: ${data.error}</p>`;
+                    { var _e=document.createElement('span'); _e.textContent=data.error; previewDiv.innerHTML='<p style="color:#dc3545;">Import failed: '; previewDiv.appendChild(_e); if('</p>') { previewDiv.innerHTML += '</p>'; } }
                 }
             })
             .catch(err => {
@@ -20766,7 +20621,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     }
                     setTimeout(() => { previewDiv.style.display = 'none'; }, 3000);
                 } else {
-                    previewDiv.innerHTML = `<p style="color:#dc3545;">Undo failed: ${data.error}</p>`;
+                    { var _e=document.createElement('span'); _e.textContent=data.error; previewDiv.innerHTML='<p style="color:#dc3545;">Undo failed: '; previewDiv.appendChild(_e); if('</p>') { previewDiv.innerHTML += '</p>'; } }
                 }
             })
             .catch(err => {
@@ -20800,7 +20655,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 .then(data => {
                     if (!data) return;
                     if (!data.success) {
-                        previewDiv.innerHTML = `<p style="color:#dc3545;">Error: ${data.error}</p>`;
+                        { var _e=document.createElement('span'); _e.textContent=data.error; previewDiv.innerHTML='<p style="color:#dc3545;">Error: '; previewDiv.appendChild(_e); if('</p>') { previewDiv.innerHTML += '</p>'; } }
                         return;
                     }
                     let entryId = 0;
@@ -20955,7 +20810,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     delete _houseImportData[communityId];
                     loadHouseNumbers(communityId);
                 } else {
-                    previewDiv.innerHTML = `<p style="color:#dc3545;">Import failed: ${data.error}</p>`;
+                    { var _e=document.createElement('span'); _e.textContent=data.error; previewDiv.innerHTML='<p style="color:#dc3545;">Import failed: '; previewDiv.appendChild(_e); if('</p>') { previewDiv.innerHTML += '</p>'; } }
                 }
             })
             .catch(err => {
@@ -20992,7 +20847,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                     }
                 })
                 .catch(error => {
-                    document.getElementById(`houses-${communityId}`).innerHTML = '<p style="color: #dc3545;">Error: ' + error + '</p>';
+                    { var _ce=document.getElementById(`houses-${communityId}`); var _e=document.createElement('p'); _e.style.color='#dc3545'; _e.textContent='Error: '+error; _ce.textContent=''; _ce.appendChild(_e); }
                 });
         }
 
@@ -21619,7 +21474,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             fetch('/community_recent_submissions')
                 .then(r => r.json())
                 .then(data => {
-                    if (!data.success) { container.innerHTML = `<p style="color:#dc3545;">${data.error}</p>`; return; }
+                    if (!data.success) { { var _e=document.createElement('span'); _e.textContent=data.error; container.innerHTML='<p style="color:#dc3545;">'; container.appendChild(_e); if('</p>') { container.innerHTML += '</p>'; } } return; }
                     _recentData = data.submissions;
                     renderRecentTable();
                 })
@@ -22325,134 +22180,6 @@ def toggle_claude_setting():
 # API VERIFICATION ENDPOINT
 # ============================================================================
 
-@app.route('/api/verify')
-def verify_api_setup():
-    """Public endpoint to verify API and environment configuration.
-    Visit /api/verify to check if everything is set up correctly."""
-    results = {}
-
-    # 1. Check Anthropic package
-    results['anthropic_package_installed'] = ANTHROPIC_AVAILABLE
-
-    # 2. Check API key is set (don't reveal the key)
-    api_key_set = bool(ANTHROPIC_API_KEY)
-    results['anthropic_api_key_set'] = api_key_set
-    if api_key_set:
-        results['anthropic_api_key_preview'] = ANTHROPIC_API_KEY[:7] + '...'
-
-    # 3. Check Claude matching enabled
-    results['claude_matching_enabled'] = is_claude_matching_enabled()
-
-    # 4. Test actual API connectivity
-    results['anthropic_api_connected'] = False
-    if ANTHROPIC_AVAILABLE and api_key_set:
-        try:
-            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-            message = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=10,
-                messages=[{"role": "user", "content": "Reply with OK"}]
-            )
-            results['anthropic_api_connected'] = True
-            results['anthropic_api_response'] = message.content[0].text.strip()
-        except Exception as e:
-            results['anthropic_api_error'] = str(e)
-
-    # 5. Check other environment variables
-    results['secret_key_set'] = bool(os.environ.get('SECRET_KEY'))
-    results['data_dir_set'] = bool(os.environ.get('DATA_DIR'))
-    results['website_url'] = os.environ.get('WEBSITE_URL', 'not set')
-    results['telegram_bot_configured'] = bool(os.environ.get('TELEGRAM_BOT_TOKEN'))
-    results['telegram_chat_configured'] = bool(os.environ.get('TELEGRAM_CHAT_ID'))
-
-    # 6. Check database
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM users")
-        user_count = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM jobs")
-        job_count = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM po_requests")
-        po_count = c.fetchone()[0]
-        conn.close()
-        results['database_connected'] = True
-        results['database_counts'] = {
-            'users': user_count,
-            'jobs': job_count,
-            'po_requests': po_count
-        }
-    except Exception as e:
-        results['database_connected'] = False
-        results['database_error'] = str(e)
-
-    # Overall status
-    all_good = (
-        results['anthropic_package_installed']
-        and results['anthropic_api_key_set']
-        and results['anthropic_api_connected']
-        and results['database_connected']
-        and results['secret_key_set']
-    )
-    results['overall_status'] = 'ALL SYSTEMS GO' if all_good else 'ISSUES DETECTED'
-
-    return jsonify(results)
-
-@app.route('/api/debug_matching')
-def debug_matching():
-    """Debug endpoint to check matching status and logs"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
-    # Get all PO requests with their status
-    c.execute("""SELECT id, tech_name, job_name, status, estimated_cost,
-                        invoice_filename, invoice_number, match_method
-                 FROM po_requests ORDER BY id DESC""")
-    pos = []
-    for row in c.fetchall():
-        pos.append({
-            'id': row[0], 'tech': row[1], 'job': row[2], 'status': row[3],
-            'cost': row[4], 'invoice_file': row[5], 'invoice_num': row[6],
-            'match_method': row[7]
-        })
-
-    # Get awaiting_invoice POs without invoices (what bulk upload would see)
-    c.execute("""SELECT id, job_name FROM po_requests
-                 WHERE status='awaiting_invoice'
-                 AND (invoice_filename IS NULL OR invoice_filename = '')""")
-    available_for_matching = [{'id': r[0], 'job': r[1]} for r in c.fetchall()]
-
-    # Get active jobs
-    c.execute("SELECT job_name FROM jobs WHERE active=1")
-    active_jobs = [r[0] for r in c.fetchall()]
-
-    # Get recent Claude API logs
-    c.execute("""SELECT timestamp, invoice_text_preview, matched_po, matched_job,
-                        confidence, cost_estimate, success
-                 FROM claude_api_log ORDER BY timestamp DESC LIMIT 10""")
-    api_logs = []
-    for row in c.fetchall():
-        api_logs.append({
-            'timestamp': row[0], 'text_preview': row[1], 'matched_po': row[2],
-            'matched_job': row[3], 'confidence': row[4], 'cost': row[5],
-            'success': row[6]
-        })
-
-    # Check Claude status
-    claude_status = {
-        'anthropic_available': ANTHROPIC_AVAILABLE,
-        'api_key_set': bool(ANTHROPIC_API_KEY),
-        'matching_enabled': is_claude_matching_enabled()
-    }
-
-    conn.close()
-    return jsonify({
-        'all_pos': pos,
-        'available_for_matching': available_for_matching,
-        'active_jobs': active_jobs,
-        'claude_status': claude_status,
-        'recent_api_logs': api_logs
-    })
 
 # (Sales App removed - replaced by Job Costing App)
 
@@ -22575,7 +22302,7 @@ def job_costing():
                                      unmatched_count=unmatched_count)
     except Exception as e:
         import traceback
-        return f"<h2>Error loading Job Costing</h2><p>{str(e)}</p><pre>{traceback.format_exc()}</pre><p><a href='/dashboard'>Back</a></p>"
+        import logging; logging.exception('Job Costing load error'); return "<h2>Error loading Job Costing</h2><p>An internal error occurred.</p><p><a href='/dashboard'>Back</a></p>"
 
 
 @app.route('/job_costing/import_proposal', methods=['POST'])
@@ -22752,7 +22479,7 @@ def job_costing_import_proposal():
         })
     except Exception as e:
         import traceback
-        return jsonify({'success': False, 'error': str(e), 'trace': traceback.format_exc()})
+        import logging; logging.exception('Unexpected error'); return jsonify({'success': False, 'error': 'An internal error occurred'})
 
 
 @app.route('/job_costing/api/update_proposal', methods=['POST'])
@@ -22835,7 +22562,7 @@ def install_scheduling():
                                      days_summary=days_summary)
     except Exception as e:
         import traceback
-        return f"<h2>Error loading Install Scheduling</h2><p>{str(e)}</p><pre>{traceback.format_exc()}</pre><p><a href='/dashboard'>Back</a></p>"
+        import logging; logging.exception('Install Scheduling load error'); return "<h2>Error loading Install Scheduling</h2><p>An internal error occurred.</p><p><a href='/dashboard'>Back</a></p>"
 
 
 @app.route('/install_scheduling/add_entry', methods=['POST'])
@@ -29702,7 +29429,7 @@ def installation():
             open_proposals=open_proposals, approved_value=approved_value)
     except Exception as e:
         import traceback
-        return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre><a href='/dashboard'>Back</a>"
+        import logging; logging.exception('Unexpected error'); return "<h2>Error</h2><p>An internal error occurred.</p><a href='/dashboard'>Back</a>"
 
 
 @app.route('/installation/api/close-job', methods=['POST'])
@@ -29995,7 +29722,7 @@ def vendor_invoices_parse_excel():
         return jsonify({'success': True, 'rows': parsed, 'skipped': skipped})
     except Exception as e:
         import traceback
-        return jsonify({'success': False, 'error': str(e), 'trace': traceback.format_exc()})
+        import logging; logging.exception('Unexpected error'); return jsonify({'success': False, 'error': 'An internal error occurred'})
 
 
 @app.route('/installation/api/vendor-invoices/import', methods=['POST'])
@@ -30325,7 +30052,7 @@ def installation_job(job_id):
             role=session.get('role',''), username=session.get('username',''))
     except Exception as e:
         import traceback
-        return f"<h2>Error loading job</h2><pre>{traceback.format_exc()}</pre><a href='/installation'>Back</a>"
+        import logging; logging.exception('Job load error'); return "<h2>Error loading job</h2><p>An internal error occurred.</p><a href='/installation'>Back</a>"
 
 
 @app.route('/installation/api/proposals/add', methods=['POST'])
@@ -30904,7 +30631,7 @@ def installation_co_approve(token):
                                       co=co, job_name=job_name, already_actioned=already_actioned)
     except Exception as e:
         import traceback
-        return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre>"
+        import logging; logging.exception('Unexpected error'); return "<h2>Error</h2><p>An internal error occurred.</p>"
 
 
 @app.route('/installation/api/schedule/log-week', methods=['POST'])
@@ -31106,7 +30833,7 @@ def installation_all_change_orders():
         return html
     except Exception as e:
         import traceback
-        return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre>"
+        import logging; logging.exception('Unexpected error'); return "<h2>Error</h2><p>An internal error occurred.</p>"
 
 
 @app.route('/installation/crew')
@@ -31227,7 +30954,7 @@ def installation_schedule():
                 'id': p[0], 'proposal_number': p[2] or '',
                 'bid_amount': p[3] or 0, 'days_allotted': p[4] or 0
             })
-        proposals_json = _json.dumps(proposals_by_job)
+        proposals_json = _json.dumps(proposals_by_job).replace('<', r'<').replace('>', r'>').replace('&', r'&')
 
         # Crew-day assignments for this week
         week_start_str = week_start.isoformat()
@@ -31289,7 +31016,7 @@ def installation_schedule():
             week_label=week_label, prev_week=prev_week, next_week=next_week)
     except Exception as e:
         import traceback
-        return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre><a href='/installation'>Back</a>"
+        import logging; logging.exception('Unexpected error'); return "<h2>Error</h2><p>An internal error occurred.</p><a href='/installation'>Back</a>"
 
 
 @app.route('/installation/api/crew-day/assign', methods=['POST'])
@@ -31366,7 +31093,7 @@ def installation_crews_page():
         return render_template_string(INSTALLATION_CREWS_TEMPLATE, crews=crews, inactive_crews=inactive_crews)
     except Exception as e:
         import traceback
-        return f"<h2>Error</h2><pre>{traceback.format_exc()}</pre>"
+        import logging; logging.exception('Unexpected error'); return "<h2>Error</h2><p>An internal error occurred.</p>"
 
 
 @app.route('/installation/api/crews/add', methods=['POST'])
@@ -32764,7 +32491,7 @@ async function removeLogo(){{
         return html
     except Exception as e:
         import traceback
-        return f"<pre>{traceback.format_exc()}</pre>"
+        import logging; logging.exception('Unexpected error'); return "<p>An internal error occurred.</p>"
 
 
 @app.route('/installation/rate-card')
@@ -33183,8 +32910,8 @@ async function doCatImport(){
 </body></html>"""
         return html
     except Exception as e:
-        import traceback
-        return f"<pre>Expense Catalog error:\\n{traceback.format_exc()}</pre>", 500
+        import logging; logging.exception("Expense Catalog error")
+        return "<p>An internal error occurred.</p>", 500
 
 
 # ── Redirect old standalone pages into unified Installation ───────────────
