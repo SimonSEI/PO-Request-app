@@ -1,6 +1,9 @@
 from flask import Flask, render_template_string, request, redirect, url_for, session, flash, jsonify, send_from_directory, send_file
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
+from flask_wtf.csrf import CSRFProtect, generate_csrf
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from datetime import datetime, timedelta
 import uuid
 import sqlite3
@@ -62,6 +65,17 @@ app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=24)
 MAX_CONCURRENT_SESSIONS_PER_USER = 80  # Support up to 80 concurrent users per account
 active_sessions = {}
 
+app.config['WTF_CSRF_TIME_LIMIT'] = 3600  # 1 hour token lifetime
+app.config['WTF_CSRF_HEADERS'] = ['X-CSRFToken', 'X-CSRF-Token']
+csrf = CSRFProtect(app)
+
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=[],
+    storage_uri="memory://",
+)
+
 @app.after_request
 def set_security_headers(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
@@ -73,6 +87,10 @@ def set_security_headers(response):
         "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
         "font-src 'self' data:; connect-src 'self'"
     )
+    # Inject CSRF token into a readable cookie for JS to pick up
+    response.set_cookie('csrf_token', generate_csrf(), samesite='Lax',
+                        secure=app.config.get('SESSION_COOKIE_SECURE', True),
+                        httponly=False)
     return response
 
 def create_session_id():
@@ -2717,11 +2735,19 @@ def fuzzy_match_job():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e), 'matches': []})
 
+@app.errorhandler(429)
+def ratelimit_error(e):
+    if request.path == '/login':
+        flash('Too many login attempts. Please wait a minute and try again.')
+        return redirect(url_for('login'))
+    return jsonify({'success': False, 'error': 'Too many requests. Please slow down.'}), 429
+
 @app.route('/')
 def index():
     return redirect(url_for('login'))
 
 @app.route('/login', methods=['GET', 'POST'])
+@limiter.limit("10 per minute")
 def login():
     if request.method == 'POST':
         username = request.form['username'].lower()
@@ -2732,7 +2758,33 @@ def login():
         c.execute("SELECT * FROM users WHERE LOWER(username)=?", (username,))
         user = c.fetchone()
 
-        if user and check_password_hash(user[2], password):
+        # Support legacy plaintext passwords: verify, then rehash on the spot
+        def _passwords_match(stored, supplied):
+            try:
+                return check_password_hash(stored, supplied)
+            except Exception:
+                return False
+
+        def _is_hashed(pw):
+            return pw and (pw.startswith('pbkdf2:') or pw.startswith('scrypt:') or pw.startswith('bcrypt:'))
+
+        password_ok = False
+        if user:
+            stored_pw = user[2]
+            if _is_hashed(stored_pw):
+                password_ok = _passwords_match(stored_pw, password)
+            else:
+                # Legacy plaintext — compare directly then immediately rehash
+                if stored_pw == password:
+                    password_ok = True
+                    try:
+                        c.execute("UPDATE users SET password=? WHERE id=?",
+                                  (generate_password_hash(password), user[0]))
+                        conn.commit()
+                    except Exception:
+                        pass
+
+        if user and password_ok:
             actual_username = user[1]
 
             # Update last login
@@ -6534,6 +6586,40 @@ MANAGE_TECHS_UNIFIED_TEMPLATE = '''
             .columns-container { grid-template-columns: 1fr; }
         }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <div class="header">
@@ -6841,6 +6927,40 @@ MANAGE_TECHS_TEMPLATE = '''
         .btn-install { background: #28a745; color: white; }
         .icon { font-size: 36px; margin-bottom: 10px; }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <div class="header">
@@ -6947,6 +7067,40 @@ MANAGE_SERVICE_TECHS_TEMPLATE = '''
         .no-pos { color: #999; font-style: italic; padding: 10px 0; }
         .tech-stats { font-size: 13px; color: rgba(255,255,255,0.85); }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <div class="header">
@@ -7187,6 +7341,40 @@ MANAGE_INSTALL_TECHS_TEMPLATE = '''
         .no-pos { color: #999; font-style: italic; padding: 10px 0; }
         .tech-stats { font-size: 13px; color: rgba(255,255,255,0.85); }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <div class="header">
@@ -7751,6 +7939,40 @@ JOB_MANAGEMENT_TEMPLATE = '''
         window.addEventListener('DOMContentLoaded', initPage);
         window.addEventListener('pageshow', initPage);
     </script>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <div class="header">
@@ -7775,6 +7997,8 @@ JOB_MANAGEMENT_TEMPLATE = '''
         <h2 style="color: #1A5FA6; margin-bottom: 20px;">Add New Job</h2>
         <p style="color: #888; font-size: 13px; margin-bottom: 15px;">Note: each job name must be unique.</p>
         <form method="POST" action="/add_job">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="form-group">
                 <label>Job Name</label>
                 <input type="text" name="job_name" placeholder="e.g., Chase Bank" required>
@@ -8029,6 +8253,40 @@ LOGIN_TEMPLATE = '''
                 box-shadow: 0 32px 80px rgba(0,0,0,.4); }
         }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
 <button class="lang-btn" id="langToggleBtn" onclick="toggleLanguage()">🇪🇸 Español</button>
@@ -8080,6 +8338,8 @@ LOGIN_TEMPLATE = '''
             {% endfor %}{% endif %}
         {% endwith %}
         <form method="POST">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="fg">
                 <label data-i18n="username_label">Username</label>
                 <input type="text" name="username" required autofocus autocomplete="username" placeholder="Enter your username">
@@ -8238,6 +8498,40 @@ DASHBOARD_MENU_TEMPLATE = '''
             .cards-section{padding:0 16px 48px;}
         }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
 
@@ -8500,6 +8794,40 @@ OFFICE_ADMIN_TEMPLATE = '''
         .se-danger { background: #FEF2F2; color: #B91C1C; border: 1.5px solid #FECACA !important; }
         .se-danger:hover { background: #DC2626; color: #fff; border-color: #DC2626 !important; }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <header class="se-header">
@@ -8678,6 +9006,40 @@ MANAGE_OFFICE_ADMINS_TEMPLATE = '''
         .se-danger { background: #FEF2F2; color: #B91C1C; border: 1.5px solid #FECACA !important; }
         .se-danger:hover { background: #DC2626; color: #fff; border-color: #DC2626 !important; }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <header class="se-header">
@@ -9065,6 +9427,40 @@ TECH_DASHBOARD_TEMPLATE = '''
         .lang-toggle-btn.es-active { background: #c8102e; color: white; border-color: #c8102e; }
         .header-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <header class="se-header">
@@ -9117,6 +9513,8 @@ TECH_DASHBOARD_TEMPLATE = '''
     <div class="card">
         <h2>📝 <span data-i18n="submit_new">Submit New</span> {% if tech_type == 'install' %}<span data-i18n="install_label">Install</span>{% else %}<span data-i18n="service_label">Service</span>{% endif %} <span data-i18n="po_request_label">PO Request</span> <span style="background: #007bff; color: white; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-left: 10px;"><span data-i18n="po_prefix_label">PO Prefix:</span> {% if tech_type == 'install' %}I{% else %}S{% endif %}</span></h2>
         <form method="POST" action="{{ url_for('submit_request') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             {# Auto-populate tech_name from the logged-in user's full_name #}
             <input type="hidden" name="tech_name" value="{{ full_name }}">
 
@@ -9725,6 +10123,40 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         .se-danger { background: #FEF2F2; color: #B91C1C; border: 1.5px solid #FECACA !important; }
         .se-danger:hover { background: #DC2626; color: #fff; border-color: #DC2626 !important; }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <header class="se-header">
@@ -12438,6 +12870,40 @@ function searchInTab(tabId, searchInputId) {
             });
         }
     </script>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <header class="se-header">
@@ -12832,6 +13298,40 @@ REGISTER_TEMPLATE = '''
         .card-footer a:hover { text-decoration:underline; }
         .copyright { text-align:center; color:rgba(255,255,255,0.35); font-size:11px; margin-top:18px; }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <div class="wrap">
@@ -12858,6 +13358,8 @@ REGISTER_TEMPLATE = '''
                     {% endif %}
                 {% endwith %}
                 <form method="POST">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <div class="fg"><label>Full Name</label><input type="text" name="full_name" required placeholder="e.g., Sarah Johnson" autocomplete="name"></div>
                     <div class="fg"><label>Email Address</label><input type="email" name="email" required placeholder="your.email@company.com" autocomplete="email"></div>
                     <div class="fg"><label>Username</label><input type="text" name="username" required placeholder="Choose a username" autocomplete="username"></div>
@@ -12974,6 +13476,40 @@ ACTIVITY_LOG_TEMPLATE = '''
         .se-danger { background: #FEF2F2; color: #B91C1C; border: 1.5px solid #FECACA !important; }
         .se-danger:hover { background: #DC2626; color: #fff; border-color: #DC2626 !important; }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <header class="se-header">
@@ -13076,6 +13612,40 @@ FORGOT_PASSWORD_TEMPLATE = '''
         .card-footer a { color:var(--se-green); text-decoration:none; font-weight:600; }
         .copyright { text-align:center; color:rgba(255,255,255,0.35); font-size:11px; margin-top:16px; }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <div class="wrap">
@@ -13099,6 +13669,8 @@ FORGOT_PASSWORD_TEMPLATE = '''
                     {% endif %}
                 {% endwith %}
                 <form method="POST">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <div class="fg">
                         <label>Email Address</label>
                         <input type="email" name="email" required placeholder="your.email@company.com" autofocus autocomplete="email">
@@ -13209,6 +13781,40 @@ RESET_PASSWORD_TEMPLATE = '''
             font-weight: bold;
         }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <div class="container">
@@ -13223,6 +13829,8 @@ RESET_PASSWORD_TEMPLATE = '''
             {% endif %}
         {% endwith %}
         <form method="POST">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="form-group">
                 <label>New Password</label>
                 <input type="password" name="password" required minlength="6" placeholder="At least 6 characters" autofocus>
@@ -13407,6 +14015,40 @@ ADMIN_USERS_TEMPLATE = '''
             .action-buttons { flex-direction: column; }
         }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <div class="header">
@@ -13467,6 +14109,8 @@ ADMIN_USERS_TEMPLATE = '''
                             <form method="POST" action="{{ url_for('admin_delete_user', user_id=user[0]) }}"
                                   class="delete-form"
                                   onsubmit="return confirm('Are you sure you want to delete user {{ user[1] }}?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                 <button type="submit" class="btn btn-danger">🗑️ Delete</button>
                             </form>
                             {% endif %}
@@ -13602,6 +14246,40 @@ ADMIN_EDIT_USER_TEMPLATE = '''
             margin-top: 5px;
         }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <div class="container">
@@ -13617,6 +14295,8 @@ ADMIN_EDIT_USER_TEMPLATE = '''
         {% endwith %}
 
         <form method="POST">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="form-group">
                 <label>Username</label>
                 <input type="text" name="username" value="{{ user[1] }}" required>
@@ -13768,6 +14448,40 @@ ADMIN_CREATE_USER_TEMPLATE = '''
             border: 1px solid #f5c6cb;
         }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <div class="container">
@@ -13783,6 +14497,8 @@ ADMIN_CREATE_USER_TEMPLATE = '''
         {% endwith %}
 
         <form method="POST">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="form-group">
                 <label>Username *</label>
                 <input type="text" name="username" required autofocus>
@@ -14198,6 +14914,40 @@ ADMIN_DASHBOARD_TEMPLATE = '''
         .se-danger { background: #FEF2F2; color: #B91C1C; border: 1.5px solid #FECACA !important; }
         .se-danger:hover { background: #DC2626; color: #fff; border-color: #DC2626 !important; }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <header class="se-header">
@@ -14443,6 +15193,40 @@ ADMIN_USERS_TEMPLATE = '''
             .action-buttons { flex-direction: column; }
         }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <div class="header">
@@ -14503,6 +15287,8 @@ ADMIN_USERS_TEMPLATE = '''
                             <form method="POST" action="{{ url_for('admin_delete_user', user_id=user[0]) }}"
                                   class="delete-form"
                                   onsubmit="return confirm('Are you sure you want to delete user {{ user[1] }}?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                 <button type="submit" class="btn btn-danger">🗑️ Delete</button>
                             </form>
                             {% endif %}
@@ -14638,6 +15424,40 @@ ADMIN_EDIT_USER_TEMPLATE = '''
             margin-top: 5px;
         }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <div class="container">
@@ -14653,6 +15473,8 @@ ADMIN_EDIT_USER_TEMPLATE = '''
         {% endwith %}
 
         <form method="POST">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="form-group">
                 <label>Username</label>
                 <input type="text" name="username" value="{{ user[1] }}" required>
@@ -14804,6 +15626,40 @@ ADMIN_CREATE_USER_TEMPLATE = '''
             border: 1px solid #f5c6cb;
         }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <div class="container">
@@ -14819,6 +15675,8 @@ ADMIN_CREATE_USER_TEMPLATE = '''
         {% endwith %}
 
         <form method="POST">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="form-group">
                 <label>Username *</label>
                 <input type="text" name="username" required autofocus>
@@ -14988,6 +15846,40 @@ SETTINGS_TEMPLATE = '''
         .se-danger { background: #FEF2F2; color: #B91C1C; border: 1.5px solid #FECACA !important; }
         .se-danger:hover { background: #DC2626; color: #fff; border-color: #DC2626 !important; }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <header class="se-header">
@@ -15461,6 +16353,40 @@ COMMUNITY_BILLING_TECH_TEMPLATE = '''
         /* unsaved */
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <nav class="cm-nav">
@@ -16317,6 +17243,40 @@ COMMUNITY_BILLING_SPREADSHEET_TEMPLATE = '''
         /* unsaved */
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <div class="controls">
@@ -18190,6 +19150,40 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             box-shadow: 0 0 0 2px var(--accent-glow) !important;
         }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <nav class="cm-nav">
@@ -18230,6 +19224,8 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             <div class="add-community-form">
                 <h3 style="margin-bottom: 15px; color: #333;">Add New Community</h3>
                 <form method="POST" action="{{ url_for('community_billing_office') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <div class="form-group-inline">
                         <div class="form-group" style="flex: 2;">
                             <label for="community_name">Community Name</label>
@@ -18347,6 +19343,8 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 {% if community.active %}
                                     <form method="POST" action="{{ url_for('community_billing_office') }}" style="display: inline;"
                                           onsubmit="return confirm('Are you sure you want to deactivate this community?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                         <input type="hidden" name="action" value="delete">
                                         <input type="hidden" name="community_id" value="{{ community.id }}">
                                         <button type="submit" class="btn-delete-community">Deactivate</button>
@@ -21950,6 +22948,40 @@ MANAGE_COMMUNITIES_TEMPLATE = '''
         /* unsaved */
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
     <nav class="cm-nav">
@@ -21986,6 +23018,8 @@ MANAGE_COMMUNITIES_TEMPLATE = '''
         <div class="add-form">
             <h3 style="margin-bottom: 15px; color: #333;">Add New Community</h3>
             <form method="POST" action="{{ url_for('manage_communities') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <div class="form-group">
                     <label for="community_name">Community Name</label>
                     <input type="text" id="community_name" name="community_name" placeholder="Enter community name" required>
@@ -22027,6 +23061,8 @@ MANAGE_COMMUNITIES_TEMPLATE = '''
                                 </button>
                                 <form method="POST" action="{{ url_for('manage_communities') }}" style="display: inline;"
                                       onsubmit="return confirm('Delete this community and all its data?\n\nThis action CANNOT be undone.') && confirm('Are you absolutely sure? This will permanently delete all submissions and addresses for this community.');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                     <input type="hidden" name="action" value="delete">
                                     <input type="hidden" name="community_id" value="{{ community.id }}">
                                     <button type="submit" class="btn-delete">🗑️ Delete</button>
@@ -22037,6 +23073,8 @@ MANAGE_COMMUNITIES_TEMPLATE = '''
                             <form method="POST" action="{{ url_for('manage_communities') }}"
                                   style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;"
                                   onsubmit="return validateRename({{ community.id }});">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                 <input type="hidden" name="action" value="rename">
                                 <input type="hidden" name="community_id" value="{{ community.id }}">
                                 <input type="text" id="rename-input-{{ community.id }}" name="new_name"
@@ -26551,6 +27589,40 @@ JOB_COSTING_TEMPLATE = '''
             .form-row { grid-template-columns: 1fr; }
         }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
 <div class="header">
@@ -27147,6 +28219,40 @@ INSTALL_SCHEDULING_TEMPLATE = '''
             .job-summary-grid { grid-template-columns: 1fr; }
         }
     </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
 <div class="header">
@@ -27512,6 +28618,40 @@ INSTALLATION_HUB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
 .sa-name{font-size:13px;font-weight:600;flex:1}
 .sa-total{font-size:14px;font-weight:700;color:#059669}
 </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
 <div class="top-bar">
@@ -27796,6 +28936,40 @@ select.vi-cell-edit{cursor:pointer}
 .sum-card-label{font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px}
 .sum-card-val{font-size:18px;font-weight:800;color:#1a3c5e}
 </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
 <div class="top-bar">
@@ -28138,6 +29312,40 @@ INSTALLATION_JOB_TEMPLATE = _INST_CSS + '''<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{ job.job_name }} — Installation</title>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
 <div class="top-bar">
@@ -29025,6 +30233,40 @@ select:focus,input:focus{outline:none;border-color:#1a3c5e}
   @page{size:landscape;margin:.4in}
 }
 </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
 <div class="top-nav no-print">
@@ -29215,6 +30457,40 @@ INSTALLATION_CREWS_TEMPLATE = _INST_CSS + """<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Crew Management</title>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
 <div class="top-bar">
@@ -30811,7 +32087,41 @@ def installation_all_change_orders():
         .badge-no_approval_needed{background:#ede9fe;color:#5b21b6}
         a.job-link{color:#1a3c5e;text-decoration:none;font-weight:500}
         a.job-link:hover{text-decoration:underline}
-        </style></head><body>
+        </style><meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
+</head><body>
         <div class="top-bar"><h1>📝 All Change Orders</h1>
         <nav><a href="/installation">← Installation</a><a href="/dashboard">Dashboard</a></nav></div>
         <div class="content"><div class="card">
@@ -31607,6 +32917,40 @@ body{{background:#eef0f3;margin:0}}
 .rc-add-form label{{font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;display:block;margin-bottom:3px}}
 .rc-add-form input,.rc-add-form select{{width:100%;font-size:13px;border:1px solid #d1d5db;border-radius:6px;padding:5px 8px}}
 </style>
+<meta name="csrf-token" content="{{{{ csrf_token() }}}}">
+    <script>
+    (function(){{
+        var _csrfToken = document.cookie.split(';').map(function(c){{return c.trim();}})
+            .filter(function(c){{return c.startsWith('csrf_token=');}})
+            .map(function(c){{return c.split('=')[1];}})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){{
+            opts = opts || {{}};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){{
+                return _origFetch.call(this, url, opts);
+            }}
+            opts.headers = opts.headers || {{}};
+            if(opts.headers instanceof Headers){{
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            }} else {{
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }}
+            return _origFetch.call(this, url, opts);
+        }};
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){{
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        }};
+        XMLHttpRequest.prototype.send = function(){{
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){{
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }}
+            return _origXhrSend.apply(this, arguments);
+        }};
+    }})();
+    </script>
 </head>
 <body>
 <div class="top-bar">
@@ -32553,6 +33897,40 @@ body{background:#f0f2f5}
 .btn-del:hover{background:#fca5a5}
 .empty-state{text-align:center;padding:40px;color:#9ca3af}
 </style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+        var _origXhrOpen = XMLHttpRequest.prototype.open;
+        var _origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method){
+            this._xhrMethod = method;
+            return _origXhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+            if(this._xhrMethod && this._xhrMethod.toUpperCase() !== 'GET'){
+                this.setRequestHeader('X-CSRFToken', _csrfToken);
+            }
+            return _origXhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
 </head>
 <body>
 <div class="top-bar">
