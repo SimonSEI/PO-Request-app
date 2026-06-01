@@ -2698,31 +2698,23 @@ def login():
         c.execute("SELECT * FROM users WHERE LOWER(username)=?", (username,))
         user = c.fetchone()
 
-        # Support legacy plaintext passwords: verify, then rehash on the spot
-        def _passwords_match(stored, supplied):
-            try:
-                return check_password_hash(stored, supplied)
-            except Exception:
-                return False
-
-        def _is_hashed(pw):
-            return pw and (pw.startswith('pbkdf2:') or pw.startswith('scrypt:') or pw.startswith('bcrypt:'))
-
         password_ok = False
         if user:
             stored_pw = user[2]
-            if _is_hashed(stored_pw):
-                password_ok = _passwords_match(stored_pw, password)
-            else:
-                # Legacy plaintext — compare directly then immediately rehash
-                if stored_pw == password:
-                    password_ok = True
-                    try:
-                        c.execute("UPDATE users SET password=? WHERE id=?",
-                                  (generate_password_hash(password), user[0]))
-                        conn.commit()
-                    except Exception:
-                        pass
+            # Try hashed check first, then fall back to plaintext for legacy accounts
+            try:
+                password_ok = check_password_hash(stored_pw, password)
+            except Exception:
+                password_ok = False
+            if not password_ok and stored_pw == password:
+                # Plaintext match — rehash silently so next login uses hash
+                password_ok = True
+                try:
+                    c.execute("UPDATE users SET password=? WHERE id=?",
+                              (generate_password_hash(password), user[0]))
+                    conn.commit()
+                except Exception:
+                    pass
 
         if user and password_ok:
             actual_username = user[1]
