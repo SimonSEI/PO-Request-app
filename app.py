@@ -2463,69 +2463,9 @@ REASONING: [brief explanation of how you matched it]"""
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
-    """Office manager self-registration"""
-    if request.method == 'POST':
-        username = request.form['username'].strip()
-        password = request.form['password']
-        confirm_password = request.form['confirm_password']
-        email = request.form['email'].strip()
-        full_name = request.form['full_name'].strip()
-
-        # Validation
-        if not username or not password or not email or not full_name:
-            flash('All fields are required')
-            return render_template_string(REGISTER_TEMPLATE)
-
-        if password != confirm_password:
-            flash('Passwords do not match')
-            return render_template_string(REGISTER_TEMPLATE)
-
-        if len(password) < 6:
-            flash('Password must be at least 6 characters')
-            return render_template_string(REGISTER_TEMPLATE)
-
-        # Email validation
-        if '@' not in email or '.' not in email:
-            flash('Invalid email address')
-            return render_template_string(REGISTER_TEMPLATE)
-
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-
-        # Check if username exists
-        c.execute("SELECT * FROM users WHERE username=?", (username,))
-        if c.fetchone():
-            flash('Username already exists')
-            conn.close()
-            return render_template_string(REGISTER_TEMPLATE)
-
-        # Check if email exists
-        c.execute("SELECT * FROM users WHERE email=?", (email,))
-        if c.fetchone():
-            flash('Email already registered')
-            conn.close()
-            return render_template_string(REGISTER_TEMPLATE)
-
-        # Create office user account
-        try:
-            c.execute("""INSERT INTO users
-                         (username, password, role, email, full_name, created_date, last_login)
-                         VALUES (?, ?, 'office', ?, ?, ?, NULL)""",
-                     (username, generate_password_hash(password), email, full_name, datetime.now().strftime('%Y-%m-%d')))
-            conn.commit()
-
-            # Log activity
-            log_activity(username, 'REGISTERED', 'user', None, f'New office account created: {email}')
-
-            flash(f'Account created successfully! Please log in.')
-            conn.close()
-            return redirect(url_for('login'))
-        except Exception as e:
-            conn.close()
-            flash(f'Error creating account: {str(e)}')
-            return render_template_string(REGISTER_TEMPLATE)
-
-    return render_template_string(REGISTER_TEMPLATE)
+    """Registration disabled — accounts are created by an administrator."""
+    flash('Account registration is not available. Contact an administrator to create an account.')
+    return redirect(url_for('login'))
 
 @app.route('/forgot_password', methods=['GET', 'POST'])
 def forgot_password():
@@ -8352,8 +8292,6 @@ LOGIN_TEMPLATE = '''
         </form>
         <div class="form-links">
             <a href="{{ url_for('forgot_password') }}" data-i18n="forgot_password">Forgot password?</a>
-            <span class="dot">·</span>
-            <a href="{{ url_for('register') }}" data-i18n="create_account">Create account</a>
         </div>
         <div class="form-footer">&copy; Stahlman-England Irrigation, Inc.</div>
     </div>
