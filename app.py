@@ -369,10 +369,14 @@ def send_notification_email(invoice_number, invoice_cost, email_sender, email_su
 def send_vendor_invoice_paid_email(inv):
     """Send email to Christian Stahlman when a Jobber invoice is paid"""
     try:
+        try:
+            recipient = get_christian_email()
+        except Exception:
+            recipient = CHRISTIAN_EMAIL
         msg = MIMEMultipart('alternative')
         msg['Subject'] = f"✅ Jobber Invoice Paid — {inv.get('sub_contractor','Vendor')} #{inv.get('invoice_number','')}"
         msg['From'] = EMAIL_ADDRESS
-        msg['To'] = CHRISTIAN_EMAIL
+        msg['To'] = recipient
         html = f"""
         <html><body style="font-family:Arial,sans-serif;padding:20px">
         <div style="max-width:600px;margin:0 auto;background:#f0fdf4;padding:28px;border-radius:10px;border-left:5px solid #16a34a">
@@ -402,6 +406,449 @@ def send_vendor_invoice_paid_email(inv):
     except Exception as e:
         print(f"✗ Vendor invoice paid email error: {e}")
         return False
+
+
+def get_christian_email():
+    """Return the configured notification email for Christian Stahlman."""
+    return get_setting('christian_email', CHRISTIAN_EMAIL)
+
+
+def extract_vendor_invoice_from_text(text, email_sender=''):
+    """
+    Extract vendor invoice fields from raw PDF text.
+    Uses Claude API when available; falls back to regex.
+    Returns a dict with keys matching vendor_invoices columns.
+    """
+    result = {
+        'sub_contractor': '', 'invoice_number': '', 'invoice_date': '',
+        'invoice_total': None, 'sei_proposal_number': '', 'notes': '',
+        'ok_to_process': 'YES',
+    }
+
+    if not text or len(text.strip()) < 20:
+        return result
+
+    # ── Claude extraction (preferred) ──────────────────────────────────────
+    if ANTHROPIC_AVAILABLE and ANTHROPIC_API_KEY and is_claude_matching_enabled():
+        try:
+            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            excerpt = text[:3500] if len(text) > 3500 else text
+            prompt = f"""Parse this vendor invoice PDF text and extract fields as JSON.
+
+EMAIL SENDER: {email_sender}
+
+INVOICE TEXT:
+{excerpt}
+
+Return ONLY valid JSON, no explanation:
+{{
+  "sub_contractor": "the vendor/company that issued this invoice (usually the first prominent company name)",
+  "invoice_number": "invoice number or order number",
+  "invoice_date": "date as YYYY-MM-DD or empty string",
+  "invoice_total": <number or null>,
+  "sei_proposal_number": "any job reference, project number, PO number, or 5-6 digit proposal number found",
+  "notes": "one-line summary of what the invoice covers (job site, service type, etc.)"
+}}"""
+            msg = client.messages.create(
+                model='claude-haiku-4-5-20251001',
+                max_tokens=400,
+                messages=[{'role': 'user', 'content': prompt}]
+            )
+            raw = msg.content[0].text.strip()
+            # Strip markdown code fences if present
+            raw = re.sub(r'^```(?:json)?\s*', '', raw, flags=re.MULTILINE)
+            raw = re.sub(r'```\s*$', '', raw, flags=re.MULTILINE)
+            parsed = json.loads(raw)
+            for k in result:
+                if k in parsed and parsed[k] not in (None, ''):
+                    result[k] = parsed[k]
+            # Normalise date
+            if result['invoice_date']:
+                for fmt in ('%Y-%m-%d', '%m/%d/%Y', '%m/%d/%y', '%B %d, %Y', '%b %d, %Y'):
+                    try:
+                        result['invoice_date'] = datetime.strptime(str(result['invoice_date']), fmt).strftime('%Y-%m-%d')
+                        break
+                    except ValueError:
+                        continue
+            print(f"  ✅ Claude extracted vendor invoice: {result['sub_contractor']} #{result['invoice_number']}")
+            return result
+        except Exception as e:
+            print(f"  ⚠ Claude extraction failed, falling back to regex: {e}")
+
+    # ── Regex fallback ──────────────────────────────────────────────────────
+    # Vendor name: first non-empty line that looks like a company name
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if lines:
+        result['sub_contractor'] = lines[0][:80]
+
+    # Invoice number
+    for pat in [r'INVOICE\s*#?\s*:?\s*([A-Z0-9\-]{3,})', r'INV\s*#?\s*:?\s*([A-Z0-9\-]{3,})',
+                r'Invoice\s+No\.?\s*:?\s*([A-Z0-9\-]{3,})']:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            result['invoice_number'] = m.group(1).strip()
+            break
+
+    # Date
+    date_m = re.search(r'(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})', text)
+    if date_m:
+        raw_d = date_m.group(1).replace('-', '/')
+        for fmt in ('%m/%d/%Y', '%m/%d/%y'):
+            try:
+                result['invoice_date'] = datetime.strptime(raw_d, fmt).strftime('%Y-%m-%d')
+                break
+            except ValueError:
+                continue
+
+    # Total
+    for pat in [
+        r'(?:Amount\s*Due|Total\s*Due|Balance\s*Due|Grand\s*Total|TOTAL)\s*[:=]?\s*\$?\s*([\d,]+\.\d{2})',
+        r'\$\s*([\d,]+\.\d{2})'
+    ]:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            try:
+                result['invoice_total'] = float(m.group(1).replace(',', ''))
+                break
+            except ValueError:
+                pass
+
+    # SEI proposal number: look for 5-digit reference numbers
+    m = re.search(r'(?:PO|P\.O\.|Job|Project|Proposal|Quote|Ref)[^\d]*(\d{4,6})', text, re.IGNORECASE)
+    if m:
+        result['sei_proposal_number'] = m.group(1)
+
+    return result
+
+
+def _fetch_emails_for_vi_scan():
+    """
+    Fetch emails for vendor invoice scanning using a SEPARATE log table
+    (vendor_invoice_email_log) so it runs independently of the PO scanner.
+    Returns {'emails': [(uid, msg), ...], 'diagnostics': {...}, 'source': '...'}
+    """
+    if not PO_EMAIL_ADDRESS:
+        return {'emails': [], 'diagnostics': {'error': 'PO_EMAIL_ADDRESS not configured'}, 'source': 'none'}
+
+    # Load already-scanned UIDs from vendor invoice log
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT email_uid FROM vendor_invoice_email_log")
+    scanned_uids = {r[0] for r in c.fetchall()}
+    conn.close()
+
+    emails_out = []
+    diagnostics = {'scanned_uids': len(scanned_uids)}
+
+    if MS_GRAPH_ENABLED:
+        try:
+            token = _get_graph_access_token()
+            headers = {'Authorization': f'Bearer {token}'}
+            url = f'https://graph.microsoft.com/v1.0/users/{PO_EMAIL_ADDRESS}/messages'
+            params = {
+                '$filter': 'hasAttachments eq true',
+                '$top': 100,
+                '$select': 'id,subject,from,receivedDateTime,hasAttachments',
+                '$expand': 'attachments($select=id,name,contentType,size)',
+                '$orderby': 'receivedDateTime desc',
+            }
+            while url:
+                resp = http_requests.get(url, headers=headers, params=params, timeout=30)
+                resp.raise_for_status()
+                data = resp.json()
+                for msg_data in data.get('value', []):
+                    msg_id = msg_data['id']
+                    if msg_id in scanned_uids:
+                        continue
+                    atts = msg_data.get('attachments', [])
+                    if any(a.get('name', '').lower().endswith(('.pdf', '.PDF')) or
+                           a.get('contentType', '') == 'application/pdf' for a in atts):
+                        emails_out.append((msg_id, msg_data))
+                url = data.get('@odata.nextLink')
+                params = None
+            diagnostics['source'] = 'graph_api'
+            diagnostics['found'] = len(emails_out)
+        except Exception as e:
+            diagnostics['error'] = str(e)
+            diagnostics['source'] = 'graph_api'
+    elif PO_EMAIL_PASSWORD:
+        try:
+            mail = imaplib.IMAP4_SSL(PO_EMAIL_IMAP_SERVER, PO_EMAIL_IMAP_PORT)
+            mail.login(PO_EMAIL_ADDRESS, PO_EMAIL_PASSWORD)
+            mail.select('INBOX')
+            status, uid_data = mail.uid('search', None, 'ALL')
+            if status == 'OK':
+                for uid in reversed(uid_data[0].split()):
+                    uid_str = uid.decode()
+                    if uid_str in scanned_uids:
+                        continue
+                    status2, msg_data = mail.uid('fetch', uid, '(RFC822)')
+                    if status2 == 'OK':
+                        msg = email.message_from_bytes(msg_data[0][1])
+                        # Only bother with emails that have PDF attachments
+                        has_pdf = any(
+                            (p.get_content_disposition() == 'attachment' or
+                             p.get_content_maintype() == 'application') and
+                            (p.get_filename() or '').lower().endswith('.pdf')
+                            for p in msg.walk()
+                        )
+                        if has_pdf:
+                            emails_out.append((uid_str, msg))
+            mail.close()
+            mail.logout()
+            diagnostics['source'] = 'imap'
+            diagnostics['found'] = len(emails_out)
+        except Exception as e:
+            diagnostics['error'] = str(e)
+            diagnostics['source'] = 'imap'
+    else:
+        diagnostics['error'] = 'No email credentials configured'
+        diagnostics['source'] = 'none'
+
+    return {'emails': emails_out, 'diagnostics': diagnostics, 'source': diagnostics.get('source', 'none')}
+
+
+def lookup_jobber_invoices_for_sei_proposal(sei_proposal_number):
+    """
+    Query Jobber GraphQL API for invoices associated with a given SEI proposal/job number.
+    Returns list of dicts: [{invoiceNumber, status, paidAt}, ...]
+    """
+    if not JOBBER_API_TOKEN or not sei_proposal_number:
+        return []
+    try:
+        # First try: search invoices by keywords (SEI proposal number as search term)
+        gql = '''query SearchInvoices($q: String!) {
+  invoices(filter: {keywords: $q}) {
+    nodes {
+      id
+      invoiceNumber
+      status
+      amounts { outstanding total }
+    }
+  }
+}'''
+        resp = http_requests.post(
+            'https://api.getjobber.com/api/graphql',
+            json={'query': gql, 'variables': {'q': str(sei_proposal_number)}},
+            headers={'Authorization': f'Bearer {JOBBER_API_TOKEN}', 'Content-Type': 'application/json',
+                     'X-JOBBER-GRAPHQL-VERSION': '2024-11-15'},
+            timeout=12
+        )
+        resp.raise_for_status()
+        nodes = (resp.json().get('data') or {}).get('invoices', {}).get('nodes', [])
+        return [{'invoiceNumber': n.get('invoiceNumber', ''),
+                 'status': n.get('status', ''),
+                 'outstanding': (n.get('amounts') or {}).get('outstanding', 0),
+                 'total': (n.get('amounts') or {}).get('total', 0)} for n in nodes]
+    except Exception as e:
+        print(f"  ⚠ Jobber lookup error for proposal {sei_proposal_number}: {e}")
+        return []
+
+
+def get_jobber_invoice_status(jobber_invoice_number):
+    """
+    Look up the current status of a single Jobber invoice by its invoice number.
+    Returns dict: {invoiceNumber, status, outstanding, total, paid} or None.
+    """
+    if not JOBBER_API_TOKEN or not jobber_invoice_number:
+        return None
+    try:
+        gql = '''query FindInvoice($q: String!) {
+  invoices(filter: {keywords: $q}) {
+    nodes {
+      id
+      invoiceNumber
+      status
+      amounts { outstanding total depositAmount }
+    }
+  }
+}'''
+        resp = http_requests.post(
+            'https://api.getjobber.com/api/graphql',
+            json={'query': gql, 'variables': {'q': str(jobber_invoice_number)}},
+            headers={'Authorization': f'Bearer {JOBBER_API_TOKEN}', 'Content-Type': 'application/json',
+                     'X-JOBBER-GRAPHQL-VERSION': '2024-11-15'},
+            timeout=12
+        )
+        resp.raise_for_status()
+        nodes = (resp.json().get('data') or {}).get('invoices', {}).get('nodes', [])
+        # Find exact match first, then partial
+        target = str(jobber_invoice_number).strip().lower()
+        for n in nodes:
+            if str(n.get('invoiceNumber', '')).strip().lower() == target:
+                amts = n.get('amounts') or {}
+                return {
+                    'invoiceNumber': n.get('invoiceNumber', ''),
+                    'status': n.get('status', 'unknown'),
+                    'outstanding': amts.get('outstanding', 0),
+                    'total': amts.get('total', 0),
+                    'paid': n.get('status', '').lower() == 'paid',
+                }
+        # Return first result if no exact match
+        if nodes:
+            n = nodes[0]
+            amts = n.get('amounts') or {}
+            return {
+                'invoiceNumber': n.get('invoiceNumber', ''),
+                'status': n.get('status', 'unknown'),
+                'outstanding': amts.get('outstanding', 0),
+                'total': amts.get('total', 0),
+                'paid': n.get('status', '').lower() == 'paid',
+            }
+        return {'invoiceNumber': jobber_invoice_number, 'status': 'not_found', 'paid': False}
+    except Exception as e:
+        print(f"  ⚠ Jobber status lookup error for {jobber_invoice_number}: {e}")
+        return None
+
+
+def scan_emails_for_vendor_invoices():
+    """
+    Fetch emails from PO@Stahlman-England.com, extract vendor invoice data from PDF
+    attachments, and insert new rows into vendor_invoices.  Returns a summary dict.
+    """
+    summary = {'emails_checked': 0, 'invoices_added': 0, 'duplicates_skipped': 0,
+               'errors': [], 'added': []}
+
+    fetch_result = _fetch_emails_for_vi_scan()
+    emails = fetch_result.get('emails', [])
+    source = fetch_result.get('source', 'unknown')
+    diag = fetch_result.get('diagnostics', {})
+
+    if diag.get('error') and not emails:
+        summary['errors'].append(diag['error'])
+        return summary
+
+    import pdfplumber
+    import tempfile
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    # Load existing invoice numbers for dedup check
+    c.execute("SELECT LOWER(invoice_number), LOWER(sub_contractor) FROM vendor_invoices WHERE invoice_number != ''")
+    existing = {(r[0], r[1]) for r in c.fetchall()}
+
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    for uid, msg_obj in emails:
+        summary['emails_checked'] += 1
+        email_sender = ''
+        email_subject = ''
+        email_date = ''
+        invoices_found_this_email = 0
+
+        try:
+            # Extract metadata + attachments depending on source
+            if source == 'graph_api':
+                email_sender = (msg_obj.get('from') or {}).get('emailAddress', {}).get('address', '')
+                email_subject = msg_obj.get('subject', '')
+                email_date = msg_obj.get('receivedDateTime', '')
+                try:
+                    token = _get_graph_access_token()
+                    attachments = extract_attachments_from_graph_message(uid, token)
+                except Exception as e:
+                    summary['errors'].append(f'Graph attachment error uid={uid}: {e}')
+                    attachments = []
+            else:
+                email_sender = msg_obj.get('From', '')
+                email_subject = msg_obj.get('Subject', '')
+                email_date = msg_obj.get('Date', '')
+                attachments = extract_attachments_from_email(msg_obj)
+
+            for filename, file_bytes in attachments:
+                if not filename.lower().endswith('.pdf'):
+                    continue
+                try:
+                    with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+                        tmp.write(file_bytes)
+                        tmp_path = tmp.name
+
+                    full_text = ''
+                    with pdfplumber.open(tmp_path) as pdf:
+                        for page in pdf.pages:
+                            full_text += (page.extract_text() or '') + '\n'
+
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+
+                    if not full_text.strip():
+                        continue
+
+                    fields = extract_vendor_invoice_from_text(full_text, email_sender)
+                    inv_num = (fields.get('invoice_number') or '').strip()
+                    sub = (fields.get('sub_contractor') or '').strip()
+
+                    # Dedup check
+                    dedup_key = (inv_num.lower(), sub.lower())
+                    if inv_num and dedup_key in existing:
+                        summary['duplicates_skipped'] += 1
+                        print(f"  ⊘ Duplicate vendor invoice skipped: {sub} #{inv_num}")
+                        continue
+
+                    c.execute("""INSERT INTO vendor_invoices
+                                 (ok_to_process, sub_contractor, invoice_date, invoice_number,
+                                  invoice_total, sei_proposal_number, notes, created_at, updated_at)
+                                 VALUES (?,?,?,?,?,?,?,?,?)""",
+                              (fields.get('ok_to_process', 'YES'),
+                               sub,
+                               fields.get('invoice_date') or None,
+                               inv_num,
+                               fields.get('invoice_total'),
+                               fields.get('sei_proposal_number', ''),
+                               fields.get('notes', ''),
+                               now, now))
+                    new_id = c.lastrowid
+
+                    if inv_num:
+                        existing.add(dedup_key)
+
+                    invoices_found_this_email += 1
+                    summary['invoices_added'] += 1
+                    summary['added'].append({
+                        'id': new_id,
+                        'sub_contractor': sub,
+                        'invoice_number': inv_num,
+                        'invoice_total': fields.get('invoice_total'),
+                        'sei_proposal_number': fields.get('sei_proposal_number', ''),
+                    })
+                    print(f"  ✅ New vendor invoice: {sub} #{inv_num}")
+
+                    # Auto-lookup Jobber invoices for this SEI proposal if we have one
+                    sei_prop = fields.get('sei_proposal_number', '').strip()
+                    if sei_prop and JOBBER_API_TOKEN:
+                        jobber_matches = lookup_jobber_invoices_for_sei_proposal(sei_prop)
+                        if jobber_matches:
+                            # Store the first matching Jobber invoice number
+                            jn = jobber_matches[0].get('invoiceNumber', '')
+                            if jn:
+                                c.execute("UPDATE vendor_invoices SET jobber_invoice_number=? WHERE id=?",
+                                          (jn, new_id))
+                                print(f"    🔗 Linked Jobber invoice: {jn}")
+
+                except Exception as e:
+                    summary['errors'].append(f'PDF error {filename}: {str(e)}')
+                    print(f"  ✗ PDF processing error ({filename}): {e}")
+
+        except Exception as e:
+            summary['errors'].append(f'Email error uid={uid}: {str(e)}')
+            print(f"  ✗ Email processing error uid={uid}: {e}")
+
+        # Log this email as scanned regardless of outcome
+        try:
+            c.execute("""INSERT OR IGNORE INTO vendor_invoice_email_log
+                         (email_uid, email_sender, email_subject, email_date, scanned_at,
+                          invoices_found, results)
+                         VALUES (?,?,?,?,?,?,?)""",
+                      (str(uid), email_sender, email_subject, email_date, now,
+                       invoices_found_this_email, json.dumps({'added': invoices_found_this_email})))
+        except Exception:
+            pass
+
+    conn.commit()
+    conn.close()
+    return summary
 
 
 def log_activity(username, action, target_type, target_id, details=''):
@@ -1834,6 +2281,17 @@ def init_db():
         for job_name, year in default_jobs:
             c.execute("INSERT INTO jobs (job_name, year, created_date, active) VALUES (?, ?, ?, 1)",
                      (job_name, year, datetime.now().strftime('%Y-%m-%d')))
+
+    # ── Vendor Invoice Email Scan Log ───────────────────────────────────────────
+    c.execute('''CREATE TABLE IF NOT EXISTS vendor_invoice_email_log (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  email_uid TEXT UNIQUE,
+                  email_sender TEXT,
+                  email_subject TEXT,
+                  email_date TEXT,
+                  scanned_at TEXT,
+                  invoices_found INTEGER DEFAULT 0,
+                  results TEXT)''')
 
     # ── Vendor Invoices Tracker ─────────────────────────────────────────────────
     c.execute('''CREATE TABLE IF NOT EXISTS vendor_invoices (
@@ -27828,8 +28286,61 @@ select.vi-cell-edit{cursor:pointer}
       📥 Import Excel
       <input type="file" id="excel-import-input" accept=".xlsx,.xls" style="display:none" onchange="importExcel(this)">
     </label>
+    <button class="btn-jobber" id="scan-email-btn" onclick="scanEmail()" style="background:#0891b2" title="Scan PO inbox for vendor invoice PDFs">📧 Scan Email</button>
+    <button onclick="openSettings()" style="background:none;border:1px solid #d1d5db;border-radius:7px;padding:7px 13px;font-size:13px;cursor:pointer;font-family:inherit;color:#374151" title="Settings">⚙ Settings</button>
     <div class="vi-legend">
       <div class="legend-blue"></div><span>Needs invoicing (blue)</span>
+    </div>
+  </div>
+
+  <!-- Scan results modal -->
+  <div id="scan-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9000;align-items:center;justify-content:center">
+    <div style="background:white;border-radius:12px;width:560px;max-width:96vw;max-height:80vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <div style="background:#0891b2;color:white;padding:14px 20px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+        <span style="font-weight:800;font-size:15px">📧 Email Scan Results</span>
+        <button onclick="document.getElementById(\'scan-modal\').style.display=\'none\'" style="background:none;border:none;color:white;font-size:22px;cursor:pointer">&times;</button>
+      </div>
+      <div id="scan-modal-body" style="padding:20px;overflow-y:auto;flex:1;font-size:14px;line-height:1.7"></div>
+      <div style="padding:12px 20px;border-top:1px solid #e5e7eb;text-align:right">
+        <button onclick="document.getElementById(\'scan-modal\').style.display=\'none\'" style="padding:8px 18px;border:1px solid #d1d5db;background:white;border-radius:7px;cursor:pointer;font-size:13px">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings modal -->
+  <div id="settings-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9000;align-items:center;justify-content:center">
+    <div style="background:white;border-radius:12px;width:480px;max-width:96vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <div style="background:#1a3c5e;color:white;padding:14px 20px;display:flex;align-items:center;justify-content:space-between">
+        <span style="font-weight:800;font-size:15px">⚙ Vendor Invoice Settings</span>
+        <button onclick="document.getElementById(\'settings-modal\').style.display=\'none\'" style="background:none;border:none;color:white;font-size:22px;cursor:pointer">&times;</button>
+      </div>
+      <div style="padding:22px">
+        <div style="margin-bottom:16px">
+          <label style="display:block;font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">Notification Email (Paid Invoice Alerts)</label>
+          <input id="settings-christian-email" type="email" placeholder="christian@stahlman-england.com"
+            style="width:100%;border:1px solid #d1d5db;border-radius:7px;padding:9px 12px;font-size:14px;font-family:inherit;box-sizing:border-box">
+          <p style="font-size:12px;color:#9ca3af;margin:5px 0 0">Email that receives a notification whenever a Jobber invoice linked to a vendor invoice is marked paid.</p>
+        </div>
+        <div id="settings-status" style="font-size:13px;color:#059669;min-height:18px;margin-bottom:4px"></div>
+      </div>
+      <div style="padding:12px 20px;border-top:1px solid #e5e7eb;display:flex;gap:8px;justify-content:flex-end">
+        <button onclick="document.getElementById(\'settings-modal\').style.display=\'none\'" style="padding:9px 18px;border:1px solid #d1d5db;background:white;border-radius:7px;cursor:pointer;font-size:13px">Cancel</button>
+        <button onclick="saveSettings()" style="padding:9px 22px;border:none;background:#1a3c5e;color:white;border-radius:7px;cursor:pointer;font-weight:700;font-size:13px">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Jobber status modal -->
+  <div id="jobber-status-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9000;align-items:center;justify-content:center">
+    <div style="background:white;border-radius:12px;width:420px;max-width:96vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <div style="background:#6366f1;color:white;padding:14px 20px;display:flex;align-items:center;justify-content:space-between">
+        <span style="font-weight:800;font-size:15px">🔎 Jobber Invoice Status</span>
+        <button onclick="document.getElementById(\'jobber-status-modal\').style.display=\'none\'" style="background:none;border:none;color:white;font-size:22px;cursor:pointer">&times;</button>
+      </div>
+      <div id="jobber-status-body" style="padding:22px;font-size:14px;line-height:1.7"></div>
+      <div style="padding:12px 20px;border-top:1px solid #e5e7eb;text-align:right">
+        <button onclick="document.getElementById(\'jobber-status-modal\').style.display=\'none\'" style="padding:8px 18px;border:1px solid #d1d5db;background:white;border-radius:7px;cursor:pointer;font-size:13px">Close</button>
+      </div>
     </div>
   </div>
   <div class="vi-status-bar" id="vi-status"></div>
@@ -27879,6 +28390,7 @@ select.vi-cell-edit{cursor:pointer}
           <th>NEEDS<br>INVOICE</th>
           <th>JOBBER INV #</th>
           <th>JOBBER PAID</th>
+          <th>STATUS</th>
         </tr>
       </thead>
       <tbody id="vi-tbody">
@@ -27932,6 +28444,7 @@ function buildRow(r){
     </td>
     <td><input class="vi-cell-edit" value="${esc(r.jobber_invoice_number)}" onchange="cellChange(${r.id},'jobber_invoice_number',this.value)" placeholder="INV-XXXXX"></td>
     <td class="tight" style="text-align:center">${r.jobber_paid?'<span class="paid-badge">✓ Paid</span><br><small style="font-size:11px;color:#6b7280">'+(r.jobber_paid_date||'')+'</small>':'<span style="color:#9ca3af;font-size:12px">Unpaid</span>'}</td>
+    <td class="tight" style="text-align:center">${r.jobber_invoice_number?`<button onclick="checkRowStatus(${r.id},'${esc(r.jobber_invoice_number)}')" style="background:#6366f1;color:white;border:none;border-radius:5px;padding:3px 9px;font-size:11px;cursor:pointer;font-weight:600">🔎 Status</button>`:'<span style="color:#d1d5db;font-size:11px">—</span>'}</td>
   `;
   return tr;
 }
@@ -28053,6 +28566,109 @@ async function checkJobber(){
 }
 
 function setStatus(msg){ document.getElementById('vi-status').textContent=msg; }
+
+// ── Scan Email ────────────────────────────────────────────────────────────────
+async function scanEmail(){
+  const btn = document.getElementById('scan-email-btn');
+  btn.disabled=true; btn.textContent='📧 Scanning…';
+  setStatus('Scanning PO inbox for vendor invoices…');
+  try{
+    const res = await fetch('/installation/api/vendor-invoices/scan-email',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(x=>x.json());
+    const body = document.getElementById('scan-modal-body');
+    if(res.success){
+      let html = `<div style="margin-bottom:12px">
+        <strong style="font-size:16px;color:#0891b2">Scan Complete</strong>
+        <div style="margin-top:8px;display:flex;gap:16px;flex-wrap:wrap">
+          <div style="background:#f0f9ff;padding:10px 16px;border-radius:8px;min-width:100px;text-align:center">
+            <div style="font-size:22px;font-weight:800;color:#0891b2">${res.emails_checked}</div>
+            <div style="font-size:11px;color:#6b7280">Emails Scanned</div>
+          </div>
+          <div style="background:#f0fdf4;padding:10px 16px;border-radius:8px;min-width:100px;text-align:center">
+            <div style="font-size:22px;font-weight:800;color:#059669">${res.invoices_added}</div>
+            <div style="font-size:11px;color:#6b7280">Invoices Added</div>
+          </div>
+          <div style="background:#fff7ed;padding:10px 16px;border-radius:8px;min-width:100px;text-align:center">
+            <div style="font-size:22px;font-weight:800;color:#ea580c">${res.duplicates_skipped}</div>
+            <div style="font-size:11px;color:#6b7280">Duplicates Skipped</div>
+          </div>
+        </div>
+      </div>`;
+      if(res.added && res.added.length){
+        html += '<div style="font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.4px;margin:14px 0 6px">New Rows Added</div><ul style="margin:0;padding-left:18px;font-size:13px">';
+        res.added.forEach(r=>{
+          html += `<li><strong>${esc(r.sub_contractor||'Unknown')}</strong> — #${esc(r.invoice_number||'?')}`;
+          if(r.invoice_total) html += ` · $${parseFloat(r.invoice_total).toLocaleString('en-US',{minimumFractionDigits:2})}`;
+          if(r.sei_proposal_number) html += ` · Proposal: ${esc(r.sei_proposal_number)}`;
+          html += '</li>';
+        });
+        html += '</ul>';
+      }
+      if(res.errors && res.errors.length){
+        html += `<div style="margin-top:12px;font-size:12px;color:#dc2626"><strong>Errors (${res.errors.length}):</strong><ul style="margin:4px 0;padding-left:18px">${res.errors.map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>`;
+      }
+      body.innerHTML = html;
+      if(res.invoices_added > 0){ await loadRows(); }
+      setStatus(`✓ Scan complete — ${res.invoices_added} new invoice(s) found`);
+    } else {
+      body.innerHTML = `<p style="color:#dc2626"><strong>Error:</strong> ${esc(res.error||'Unknown error')}</p>`;
+      setStatus('✗ Scan failed');
+    }
+    document.getElementById('scan-modal').style.display='flex';
+    setTimeout(()=>setStatus(''),4000);
+  } catch(e){ setStatus('✗ Network error: '+e); }
+  btn.disabled=false; btn.textContent='📧 Scan Email';
+}
+
+// ── Per-row Jobber Status ─────────────────────────────────────────────────────
+async function checkRowStatus(rowId, jobberInvNum){
+  const body = document.getElementById('jobber-status-body');
+  body.innerHTML = '<p style="color:#6b7280">Looking up Jobber…</p>';
+  document.getElementById('jobber-status-modal').style.display='flex';
+  const res = await fetch('/installation/api/vendor-invoices/jobber-status',{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({id: rowId, jobber_invoice_number: jobberInvNum})
+  }).then(x=>x.json());
+  if(res.success){
+    const s = res.status;
+    const paid = s.paid || s.status?.toLowerCase()==='paid';
+    const statusColor = paid ? '#059669' : (s.status==='not_found'?'#9ca3af':'#ea580c');
+    body.innerHTML = `
+      <div style="text-align:center;padding:12px 0">
+        <div style="font-size:32px">${paid?'✅':'🔄'}</div>
+        <div style="font-size:20px;font-weight:800;color:${statusColor};margin:8px 0">${esc(s.status||'Unknown').toUpperCase()}</div>
+      </div>
+      <table style="width:100%;font-size:14px;border-collapse:collapse">
+        <tr><td style="padding:5px 8px;color:#6b7280;font-weight:600">Jobber Invoice #</td><td style="padding:5px 8px">${esc(s.invoiceNumber||jobberInvNum)}</td></tr>
+        ${s.total!=null?`<tr style="background:#f9fafb"><td style="padding:5px 8px;color:#6b7280;font-weight:600">Invoice Total</td><td style="padding:5px 8px">$${parseFloat(s.total||0).toLocaleString('en-US',{minimumFractionDigits:2})}</td></tr>`:''}
+        ${s.outstanding!=null?`<tr><td style="padding:5px 8px;color:#6b7280;font-weight:600">Outstanding</td><td style="padding:5px 8px;${s.outstanding>0?'color:#ea580c;font-weight:700':'color:#059669'}">$${parseFloat(s.outstanding||0).toLocaleString('en-US',{minimumFractionDigits:2})}</td></tr>`:''}
+      </table>
+      ${paid?'<p style="color:#059669;font-size:13px;margin-top:12px">✅ This invoice has been paid on Jobber. The row will be updated.</p>':''}
+    `;
+    if(paid){ await loadRows(); }
+  } else {
+    body.innerHTML = `<p style="color:#dc2626"><strong>Error:</strong> ${esc(res.error||'Unknown')}</p>`;
+  }
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+async function openSettings(){
+  const res = await fetch('/installation/api/vendor-invoices/settings').then(x=>x.json());
+  if(res.success){
+    document.getElementById('settings-christian-email').value = res.christian_email || '';
+    document.getElementById('settings-status').textContent = '';
+  }
+  document.getElementById('settings-modal').style.display='flex';
+}
+async function saveSettings(){
+  const email = document.getElementById('settings-christian-email').value.trim();
+  const res = await fetch('/installation/api/vendor-invoices/settings',{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({christian_email: email})
+  }).then(x=>x.json());
+  const el = document.getElementById('settings-status');
+  if(res.success){ el.textContent='✓ Saved'; setTimeout(()=>el.textContent='',2000); }
+  else el.style.color='#dc2626', el.textContent='✗ '+res.error;
+}
 
 // ── Excel Import ──────────────────────────────────────────────────────────────
 let IMPORT_ROWS = [];
@@ -29858,6 +30474,97 @@ def vendor_invoices_check_jobber():
 
     msg = f'Checked {len(pending)} invoice(s). {newly_paid} newly marked as paid.'
     return jsonify({'success': True, 'message': msg, 'newly_paid': newly_paid})
+
+
+@app.route('/installation/api/vendor-invoices/scan-email', methods=['POST'])
+def vendor_invoices_scan_email():
+    """Scan PO inbox for vendor invoice PDFs and auto-populate vendor_invoices table."""
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    if not PO_EMAIL_ADDRESS:
+        return jsonify({'success': False, 'error': 'PO_EMAIL_ADDRESS not configured.'})
+    try:
+        summary = scan_emails_for_vendor_invoices()
+        return jsonify({
+            'success': True,
+            'emails_checked': summary['emails_checked'],
+            'invoices_added': summary['invoices_added'],
+            'duplicates_skipped': summary['duplicates_skipped'],
+            'errors': summary['errors'][:10],
+            'added': summary['added'],
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({'success': False, 'error': str(e), 'trace': traceback.format_exc()})
+
+
+@app.route('/installation/api/vendor-invoices/jobber-status', methods=['POST'])
+def vendor_invoices_jobber_status():
+    """Look up current Jobber status for a specific invoice by its Jobber invoice number."""
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    if not JOBBER_API_TOKEN:
+        return jsonify({'success': False, 'error': 'JOBBER_API_TOKEN not configured.'})
+    data = request.get_json() or {}
+    jobber_inv_num = (data.get('jobber_invoice_number') or '').strip()
+    row_id = data.get('id')
+    if not jobber_inv_num:
+        return jsonify({'success': False, 'error': 'jobber_invoice_number required'})
+
+    status_info = get_jobber_invoice_status(jobber_inv_num)
+    if not status_info:
+        return jsonify({'success': False, 'error': 'Jobber API error or no result.'})
+
+    # If it's paid and we have a row_id, persist the paid status and send email
+    if status_info.get('paid') and row_id:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        now_str = datetime.now().strftime('%Y-%m-%d')
+        c.execute("SELECT jobber_paid, jobber_paid_notified, sub_contractor, invoice_number, "
+                  "invoice_total, sei_proposal_number, notes, amount_sei_billed, project_mgr "
+                  "FROM vendor_invoices WHERE id=?", (row_id,))
+        row = c.fetchone()
+        if row and not row[0]:  # not already marked paid
+            c.execute("UPDATE vendor_invoices SET jobber_paid=1, jobber_paid_date=?, updated_at=? WHERE id=?",
+                      (now_str, now_str, row_id))
+            if not row[1] and EMAIL_ENABLED:  # not yet notified
+                inv_data = {
+                    'sub_contractor': row[2], 'invoice_number': row[3],
+                    'invoice_total': row[4], 'sei_proposal_number': row[5],
+                    'notes': row[6], 'jobber_invoice_number': jobber_inv_num,
+                    'amount_sei_billed': row[7], 'project_mgr': row[8]
+                }
+                # Temporarily override recipient with DB-configured email
+                orig = CHRISTIAN_EMAIL
+                christian = get_christian_email()
+                send_vendor_invoice_paid_email.__globals__['CHRISTIAN_EMAIL'] = christian
+                send_vendor_invoice_paid_email(inv_data)
+                send_vendor_invoice_paid_email.__globals__['CHRISTIAN_EMAIL'] = orig
+                c.execute("UPDATE vendor_invoices SET jobber_paid_notified=1 WHERE id=?", (row_id,))
+        conn.commit()
+        conn.close()
+
+    return jsonify({'success': True, 'status': status_info})
+
+
+@app.route('/installation/api/vendor-invoices/settings', methods=['GET', 'POST'])
+def vendor_invoices_settings():
+    if 'username' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+    if request.method == 'GET':
+        return jsonify({
+            'success': True,
+            'christian_email': get_christian_email(),
+            'jobber_configured': bool(JOBBER_API_TOKEN),
+            'email_configured': bool(PO_EMAIL_ADDRESS),
+        })
+    data = request.get_json() or {}
+    if 'christian_email' in data:
+        ce = data['christian_email'].strip()
+        if ce and '@' not in ce:
+            return jsonify({'success': False, 'error': 'Invalid email address'})
+        set_setting('christian_email', ce or CHRISTIAN_EMAIL)
+    return jsonify({'success': True})
 
 
 @app.route('/installation/job/<int:job_id>')
