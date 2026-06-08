@@ -1,7 +1,7 @@
 from flask import Flask, render_template_string, request, redirect, url_for, session, flash, jsonify, send_from_directory, send_file
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-from flask_wtf.csrf import CSRFProtect, generate_csrf
+from flask_wtf.csrf import CSRFProtect, generate_csrf, CSRFError
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from datetime import datetime, timedelta
@@ -65,7 +65,7 @@ app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=24)
 MAX_CONCURRENT_SESSIONS_PER_USER = 80  # Support up to 80 concurrent users per account
 active_sessions = {}
 
-app.config['WTF_CSRF_TIME_LIMIT'] = 3600  # 1 hour token lifetime
+app.config['WTF_CSRF_TIME_LIMIT'] = 43200  # 12 hour token lifetime
 app.config['WTF_CSRF_HEADERS'] = ['X-CSRFToken', 'X-CSRF-Token']
 csrf = CSRFProtect(app)
 
@@ -3132,6 +3132,11 @@ def fuzzy_match_job():
 
     except Exception as e:
         return jsonify({'success': False, 'error': str(e), 'matches': []})
+
+@app.errorhandler(CSRFError)
+def csrf_error(e):
+    flash('Your session expired. Please try signing in again.')
+    return redirect(url_for('login'))
 
 @app.errorhandler(429)
 def ratelimit_error(e):
