@@ -8729,7 +8729,6 @@ LOGIN_TEMPLATE = '''
         {% endwith %}
         <form method="POST">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="fg">
                 <label data-i18n="username_label">Username</label>
                 <input type="text" name="username" required autofocus autocomplete="username" placeholder="Enter your username">
