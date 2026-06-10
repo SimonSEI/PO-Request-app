@@ -36351,6 +36351,10 @@ WO_PORTAL_TEMPLATE = '''<!DOCTYPE html><html><head>
 .acc b{ color:var(--text); }
 .namewrap{ position:relative; }
 .savedchip{ display:none; font-size:12px; color:#065F46; background:#D1FAE5; padding:3px 9px; border-radius:999px; margin-left:8px; }
+.home-tip{ background:#2563EB; color:#fff; border:none; font-weight:700; font-size:12px;
+    padding:5px 10px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.3); white-space:nowrap; }
+.home-tip:before{ border-top-color:#2563EB !important; }
+.home-ico{ font-size:30px; line-height:30px; text-align:center; filter:drop-shadow(0 2px 3px rgba(0,0,0,.4)); }
 </style></head>
 <body>
 <div class="wo-nav">
@@ -36426,7 +36430,7 @@ WO_PORTAL_TEMPLATE = '''<!DOCTYPE html><html><head>
 <script>''' + _WO_SAT_JS + '''
 var COMM = { {% for c in communities %}{% if c.center_lat is not none and c.center_lng is not none %}"{{ c.id }}":[{{ c.center_lat }},{{ c.center_lng }}],{% endif %}{% endfor %} };
 var START = {% if homeowner and homeowner.center_lat is not none %}[{{ homeowner.center_lat }},{{ homeowner.center_lng }},18]{% else %}[27.95,-82.45,11]{% endif %};
-var pmap=null, pmarker=null, acccircle=null, mecircle=null, watchId=null;
+var pmap=null, pmarker=null, acccircle=null, mecircle=null, meMarker=null, watchId=null;
 
 function initMap(){
   pmap = woMakeMap('pmap', START[0], START[1], START[2]);
@@ -36453,6 +36457,13 @@ function locate(){
     // Show where the device thinks you are with an accuracy circle.
     if(mecircle){ mecircle.setLatLng([lat,lng]).setRadius(acc); }
     else { mecircle=L.circle([lat,lng],{radius:acc,color:'#2563EB',fillColor:'#2563EB',fillOpacity:.12,weight:1}).addTo(pmap); }
+    // Drop a little arrow marker labelled "This is your home".
+    if(meMarker){ meMarker.setLatLng([lat,lng]); }
+    else {
+      var ico=L.divIcon({className:'', html:'<div class="home-ico">📍</div>', iconSize:[30,30], iconAnchor:[15,28]});
+      meMarker=L.marker([lat,lng],{icon:ico, interactive:false, zIndexOffset:1000}).addTo(pmap);
+      meMarker.bindTooltip('This is your home', {permanent:true, direction:'top', offset:[0,-26], className:'home-tip'}).openTooltip();
+    }
     if(acc < best){
       best=acc;
       pmap.setView([lat,lng], acc<30?20:(acc<100?19:17));
