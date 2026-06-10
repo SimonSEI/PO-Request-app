@@ -36407,8 +36407,7 @@ WO_PORTAL_TEMPLATE = '''<!DOCTYPE html><html><head>
 
   <div class="card">
     <h2>Pin the Location</h2>
-    <p class="muted" style="margin-bottom:8px">Tap the satellite map on the exact spot of your home where the issue is, so the technician knows right where to go.</p>
-    <button class="btn ghost sm" type="button" onclick="locate()">📍 Use my current location</button>
+    <p class="muted" style="margin-bottom:8px">We'll place a pin on your home from your address above. Tap the satellite map to fine-tune the exact spot of the issue, so the technician knows right where to go.</p>
     <p class="acc" id="accMsg"></p>
     <div id="pmap" class="map" style="margin-top:8px"></div>
     <input type="hidden" id="p-lat"><input type="hidden" id="p-lng">
@@ -36437,7 +36436,7 @@ WO_PORTAL_TEMPLATE = '''<!DOCTYPE html><html><head>
 <script>''' + _WO_SAT_JS + '''
 var COMM = { {% for c in communities %}{% if c.center_lat is not none and c.center_lng is not none %}"{{ c.id }}":[{{ c.center_lat }},{{ c.center_lng }}],{% endif %}{% endfor %} };
 var START = {% if homeowner and homeowner.center_lat is not none %}[{{ homeowner.center_lat }},{{ homeowner.center_lng }},18]{% else %}[27.95,-82.45,11]{% endif %};
-var pmap=null, pmarker=null, acccircle=null, mecircle=null, meMarker=null, watchId=null;
+var pmap=null, pmarker=null;
 
 function initMap(){
   pmap = woMakeMap('pmap', START[0], START[1], START[2]);
@@ -36482,46 +36481,10 @@ function geocodeAddress(addr, force){
         dropHomePin(parseFloat(rows[0].lat), parseFloat(rows[0].lon));
         setAcc('Showing your home from your address — drag the pin or tap the map to fine-tune the exact spot.');
       } else {
-        setAcc('Couldn\\'t find that address automatically — tap your home on the map, or use the location button.');
+        setAcc('Couldn\\'t find that address automatically — tap your home on the map to place the pin.');
       }
     })
-    .catch(function(){ setAcc('Couldn\\'t look up the address — tap your home on the map, or use the location button.'); });
-}
-function locate(){
-  if(pmap){ pmap.invalidateSize(false); }
-  if(!navigator.geolocation){ setAcc('Location is not available on this device — tap the map to place your pin.'); return; }
-  // Mobile browsers only allow geolocation on secure (https) pages.
-  if(window.isSecureContext===false && location.hostname!=='localhost' && location.hostname!=='127.0.0.1'){
-    setAcc('Your phone blocks location on insecure (http) pages. Open this page with <b>https://</b> — or just tap the map to place your pin.');
-    return;
-  }
-  setAcc('Locating you… <b>please allow location access</b> and hold still for a few seconds for the best accuracy.');
-  if(watchId!==null){ navigator.geolocation.clearWatch(watchId); }
-  var best=Infinity, settled=false;
-  watchId = navigator.geolocation.watchPosition(function(p){
-    var lat=p.coords.latitude, lng=p.coords.longitude, acc=p.coords.accuracy||9999;
-    // Show where the device thinks you are with an accuracy circle.
-    if(mecircle){ mecircle.setLatLng([lat,lng]).setRadius(acc); }
-    else { mecircle=L.circle([lat,lng],{radius:acc,color:'#2563EB',fillColor:'#2563EB',fillOpacity:.12,weight:1}).addTo(pmap); }
-    // Drop a little arrow marker labelled "This is your home".
-    if(meMarker){ meMarker.setLatLng([lat,lng]); }
-    else {
-      var ico=L.divIcon({className:'', html:'<div class="home-ico">📍</div>', iconSize:[30,30], iconAnchor:[15,28]});
-      meMarker=L.marker([lat,lng],{icon:ico, interactive:false, zIndexOffset:1000}).addTo(pmap);
-      meMarker.bindTooltip('This is your home', {permanent:true, direction:'top', offset:[0,-26], className:'home-tip'}).openTooltip();
-    }
-    if(acc < best){
-      best=acc;
-      pmap.setView([lat,lng], acc<30?20:(acc<100?19:17));
-      setAcc('Centered on your location — accuracy about <b>'+Math.round(acc)+' m</b>. Now tap your exact spot on the roof/yard to drop the pin.');
-    }
-    // Stop once we have a solid GPS fix (or after the timeout below).
-    if(acc<=20 && !settled){ settled=true; navigator.geolocation.clearWatch(watchId); watchId=null; }
-  }, function(err){
-    setAcc('Couldn\\'t get your location ('+(err.message||'permission denied')+'). Pick your community above or tap the map to place your pin.');
-  }, {enableHighAccuracy:true, maximumAge:0, timeout:20000});
-  // Don't keep the GPS running forever.
-  setTimeout(function(){ if(watchId!==null){ navigator.geolocation.clearWatch(watchId); watchId=null; } }, 25000);
+    .catch(function(){ setAcc('Couldn\\'t look up the address — tap your home on the map to place the pin.'); });
 }
 async function submitWO(){
   var name=document.getElementById('p-name').value.trim();
