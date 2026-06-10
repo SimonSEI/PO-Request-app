@@ -36362,6 +36362,11 @@ WO_PORTAL_TEMPLATE = '''<!DOCTYPE html><html><head>
     padding:5px 10px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.3); white-space:nowrap; }
 .home-tip:before{ border-top-color:#2563EB !important; }
 .home-ico{ font-size:30px; line-height:30px; text-align:center; filter:drop-shadow(0 2px 3px rgba(0,0,0,.4)); }
+.issue-ico{ font-size:30px; line-height:30px; font-weight:900; color:#DC2626; text-align:center;
+    text-shadow:0 0 3px #fff, 0 0 6px #fff, 0 2px 3px rgba(0,0,0,.5); }
+.issue-tip{ background:#DC2626; color:#fff; border:none; font-weight:700; font-size:12px;
+    padding:5px 10px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.3); white-space:nowrap; }
+.issue-tip:before{ border-top-color:#DC2626 !important; }
 </style></head>
 <body>
 <div class="wo-nav">
@@ -36406,8 +36411,8 @@ WO_PORTAL_TEMPLATE = '''<!DOCTYPE html><html><head>
   </div>
 
   <div class="card">
-    <h2>Pin the Location</h2>
-    <p class="muted" style="margin-bottom:8px">We'll place a pin on your home from your address above. Tap the satellite map to fine-tune the exact spot of the issue, so the technician knows right where to go.</p>
+    <h2>Mark the Problem Spot</h2>
+    <p class="muted" style="margin-bottom:8px">We place a 📍 on your home from the address above. Now <b>tap the map to drop an ✗</b> on the exact spot where the problem is, so the technician knows right where to go.</p>
     <p class="acc" id="accMsg"></p>
     <div id="pmap" class="map" style="margin-top:8px"></div>
     <input type="hidden" id="p-lat"><input type="hidden" id="p-lng">
@@ -36436,39 +36441,49 @@ WO_PORTAL_TEMPLATE = '''<!DOCTYPE html><html><head>
 <script>''' + _WO_SAT_JS + '''
 var COMM = { {% for c in communities %}{% if c.center_lat is not none and c.center_lng is not none %}"{{ c.id }}":[{{ c.center_lat }},{{ c.center_lng }}],{% endif %}{% endfor %} };
 var START = {% if homeowner and homeowner.center_lat is not none %}[{{ homeowner.center_lat }},{{ homeowner.center_lng }},18]{% else %}[27.95,-82.45,11]{% endif %};
-var pmap=null, pmarker=null;
+var pmap=null, homeMarker=null, issueMarker=null, homeLatLng=null, addrGeocoded='';
 
 function initMap(){
   pmap = woMakeMap('pmap', START[0], START[1], START[2]);
-  pmap.on('click', function(e){ setPin(e.latlng.lat, e.latlng.lng); });
+  pmap.on('click', function(e){ setIssue(e.latlng.lat, e.latlng.lng); });
 }
-function setPin(lat,lng){
+// The ✗ the homeowner drops to mark exactly where the problem is.
+function setIssue(lat,lng){
   document.getElementById('p-lat').value=lat; document.getElementById('p-lng').value=lng;
-  if(pmarker){ pmarker.setLatLng([lat,lng]); }
-  else { pmarker=L.marker([lat,lng],{draggable:true}).addTo(pmap);
-         pmarker.on('dragend',function(){ var ll=pmarker.getLatLng(); document.getElementById('p-lat').value=ll.lat; document.getElementById('p-lng').value=ll.lng; }); }
+  if(issueMarker){ issueMarker.setLatLng([lat,lng]); }
+  else {
+    var ico=L.divIcon({className:'', html:'<div class="issue-ico">✕</div>', iconSize:[30,30], iconAnchor:[15,15]});
+    issueMarker=L.marker([lat,lng],{icon:ico, draggable:true, zIndexOffset:1200}).addTo(pmap);
+    issueMarker.bindTooltip('Problem here', {permanent:true, direction:'top', offset:[0,-14], className:'issue-tip'}).openTooltip();
+    issueMarker.on('dragend',function(){ var ll=issueMarker.getLatLng();
+      document.getElementById('p-lat').value=ll.lat; document.getElementById('p-lng').value=ll.lng; });
+  }
+  setAcc('✕ marks where the problem is — tap again or drag the ✕ to adjust.');
 }
 function onCommunity(){
   var id=document.getElementById('p-comm').value;
-  if(COMM[id]){ pmap.setView(COMM[id], 17); }
+  if(COMM[id] && !homeLatLng){ pmap.setView(COMM[id], 17); }
 }
 function setAcc(t){ document.getElementById('accMsg').innerHTML=t; }
 function currentCommunityName(){
   var s=document.getElementById('p-comm');
   return (s && s.value && s.selectedIndex>0) ? s.options[s.selectedIndex].text : '';
 }
-// When we know the homeowner's address, show their home from that address
-// instead of using live GPS tracking.
-var addrGeocoded='';
-function dropHomePin(lat,lng){
-  setPin(lat,lng);
-  if(pmarker){ pmarker.bindTooltip('This is your home', {permanent:true, direction:'top', offset:[0,-12], className:'home-tip'}).openTooltip(); }
+// Place a FIXED (non-movable) "This is your home" marker from the address.
+function dropHome(lat,lng){
+  homeLatLng=[lat,lng];
+  if(homeMarker){ homeMarker.setLatLng([lat,lng]); }
+  else {
+    var ico=L.divIcon({className:'', html:'<div class="home-ico">📍</div>', iconSize:[30,30], iconAnchor:[15,28]});
+    homeMarker=L.marker([lat,lng],{icon:ico, interactive:false, zIndexOffset:1000}).addTo(pmap);
+    homeMarker.bindTooltip('This is your home', {permanent:true, direction:'top', offset:[0,-26], className:'home-tip'}).openTooltip();
+  }
   pmap.setView([lat,lng], 19);
 }
+// We show the home from the address entered — no GPS / location tracking.
 function geocodeAddress(addr, force){
   addr=(addr||'').trim();
   if(addr.length<4) return;
-  if(!force && document.getElementById('p-lat').value) return;   // don't override a pin already placed
   if(addr===addrGeocoded && !force) return;
   addrGeocoded=addr;
   var q=addr; var cn=currentCommunityName(); if(cn) q+=', '+cn;
@@ -36478,25 +36493,28 @@ function geocodeAddress(addr, force){
     .then(function(r){ return r.json(); })
     .then(function(rows){
       if(rows && rows.length){
-        dropHomePin(parseFloat(rows[0].lat), parseFloat(rows[0].lon));
-        setAcc('Showing your home from your address — drag the pin or tap the map to fine-tune the exact spot.');
+        dropHome(parseFloat(rows[0].lat), parseFloat(rows[0].lon));
+        setAcc('📍 Your home is marked from your address. Now <b>tap the map to drop an ✕</b> on the exact spot of the problem.');
       } else {
-        setAcc('Couldn\\'t find that address automatically — tap your home on the map to place the pin.');
+        setAcc('Couldn\\'t find that address automatically — check the address above, then tap the map to drop an ✕ on the problem.');
       }
     })
-    .catch(function(){ setAcc('Couldn\\'t look up the address — tap your home on the map to place the pin.'); });
+    .catch(function(){ setAcc('Couldn\\'t look up the address — tap the map to drop an ✕ on the problem.'); });
 }
 async function submitWO(){
   var name=document.getElementById('p-name').value.trim();
   var problem=document.getElementById('p-problem').value.trim();
   if(!name){ showMsg('err','Please enter your name.'); return; }
   if(!problem){ showMsg('err','Please describe the problem.'); return; }
+  // The ✗ marks the problem; fall back to the home location if none was placed.
+  var lat=document.getElementById('p-lat').value, lng=document.getElementById('p-lng').value;
+  if(!lat && homeLatLng){ lat=homeLatLng[0]; lng=homeLatLng[1]; }
   var r=await fetch('{{ url_for("wo_portal_submit") }}',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({full_name:name, email:document.getElementById('p-email').value,
       phone:document.getElementById('p-phone').value, community_id:document.getElementById('p-comm').value,
       address:document.getElementById('p-addr').value, problem:problem,
       category:document.getElementById('p-cat').value, priority:document.getElementById('p-pri').value,
-      pin_lat:document.getElementById('p-lat').value, pin_lng:document.getElementById('p-lng').value,
+      pin_lat:lat, pin_lng:lng,
       pin_note:document.getElementById('p-note').value})});
   var j=await r.json();
   if(j.success){ sessionStorage.setItem('woThanks','1'); location.href='{{ url_for("wo_portal") }}'; }
