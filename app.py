@@ -2821,6 +2821,8 @@ def init_db():
                   status TEXT DEFAULT 'pending',
                   pin_lat REAL,
                   pin_lng REAL,
+                  issue_lat REAL,
+                  issue_lng REAL,
                   pin_note TEXT DEFAULT '',
                   tech_username TEXT,
                   tech_notes TEXT DEFAULT '',
@@ -2838,6 +2840,17 @@ def init_db():
                   error TEXT,
                   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                   updated_at TEXT)''')
+
+    # Add the separate "issue" pin (where the problem is, distinct from the
+    # permanent home pin) to existing work-order databases.
+    try:
+        c.execute("ALTER TABLE wo_work_orders ADD COLUMN issue_lat REAL")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        c.execute("ALTER TABLE wo_work_orders ADD COLUMN issue_lng REAL")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
 
     conn.commit()
     conn.close()
@@ -36134,7 +36147,8 @@ def wo_load_full(work_order_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''SELECT w.id, w.problem, w.category, w.priority, w.status,
-                        w.pin_lat, w.pin_lng, w.pin_note, w.tech_username, w.tech_notes,
+                        w.pin_lat, w.pin_lng, w.issue_lat, w.issue_lng, w.pin_note,
+                        w.tech_username, w.tech_notes,
                         w.quote_status, w.created_at, w.updated_at,
                         h.full_name, h.email, h.phone, h.address,
                         c2.name, c2.center_lat, c2.center_lng,
@@ -36148,7 +36162,8 @@ def wo_load_full(work_order_id):
     if not r:
         return None
     keys = ['id', 'problem', 'category', 'priority', 'status', 'pin_lat', 'pin_lng',
-            'pin_note', 'tech_username', 'tech_notes', 'quote_status', 'created_at',
+            'issue_lat', 'issue_lng', 'pin_note', 'tech_username', 'tech_notes',
+            'quote_status', 'created_at',
             'updated_at', 'homeowner_name', 'homeowner_email', 'homeowner_phone',
             'address', 'community_name', 'community_center_lat', 'community_center_lng',
             'community_id', 'homeowner_id']
@@ -36168,7 +36183,9 @@ def wo_build_quote_payload(wo):
         'problem': wo.get('problem'),
         'category': wo.get('category'),
         'priority': wo.get('priority'),
-        'location': {'lat': wo.get('pin_lat'), 'lng': wo.get('pin_lng'), 'note': wo.get('pin_note')},
+        'location': {'lat': wo.get('pin_lat'), 'lng': wo.get('pin_lng'),
+                     'issue_lat': wo.get('issue_lat'), 'issue_lng': wo.get('issue_lng'),
+                     'note': wo.get('pin_note')},
         'technician_notes': wo.get('tech_notes'),
     }
 
@@ -36315,6 +36332,14 @@ th{ font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--
 .modal-bg{ display:none; position:fixed; inset:0; background:rgba(15,23,42,.55); z-index:50; }
 .modal-bg.show{ display:flex; align-items:center; justify-content:center; }
 .modal{ background:#fff; border-radius:14px; padding:24px; width:min(560px,94vw); max-height:92vh; overflow:auto; }
+.home-tip{ background:#2563EB; color:#fff; border:none; font-weight:700; font-size:12px;
+    padding:5px 10px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.3); white-space:nowrap; }
+.home-tip:before{ border-top-color:#2563EB !important; }
+.home-ico{ font-size:30px; line-height:30px; text-align:center; filter:drop-shadow(0 2px 3px rgba(0,0,0,.4)); }
+.issue-tip{ background:#DC2626; color:#fff; border:none; font-weight:700; font-size:12px;
+    padding:5px 10px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.3); white-space:nowrap; }
+.issue-tip:before{ border-top-color:#DC2626 !important; }
+.issue-ico{ font-size:30px; line-height:30px; text-align:center; filter:drop-shadow(0 2px 3px rgba(0,0,0,.4)); }
 </style>'''
 
 
@@ -36358,10 +36383,6 @@ WO_PORTAL_TEMPLATE = '''<!DOCTYPE html><html><head>
 .acc b{ color:var(--text); }
 .namewrap{ position:relative; }
 .savedchip{ display:none; font-size:12px; color:#065F46; background:#D1FAE5; padding:3px 9px; border-radius:999px; margin-left:8px; }
-.home-tip{ background:#2563EB; color:#fff; border:none; font-weight:700; font-size:12px;
-    padding:5px 10px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.3); white-space:nowrap; }
-.home-tip:before{ border-top-color:#2563EB !important; }
-.home-ico{ font-size:30px; line-height:30px; text-align:center; filter:drop-shadow(0 2px 3px rgba(0,0,0,.4)); }
 </style></head>
 <body>
 <div class="wo-nav">
@@ -36407,10 +36428,11 @@ WO_PORTAL_TEMPLATE = '''<!DOCTYPE html><html><head>
 
   <div class="card">
     <h2>Pin the Location</h2>
-    <p class="muted" style="margin-bottom:8px">We'll place a pin on your home from your address above. Tap the satellite map to fine-tune the exact spot of the issue, so the technician knows right where to go.</p>
+    <p class="muted" style="margin-bottom:8px">We'll place a fixed <b>🏠 home</b> pin from your address above. Then <b>tap the satellite map</b> to drop a <b>📍 issue</b> pin on the exact spot in your yard where the problem is — you can drag that pin to fine-tune it.</p>
     <p class="acc" id="accMsg"></p>
     <div id="pmap" class="map" style="margin-top:8px"></div>
     <input type="hidden" id="p-lat"><input type="hidden" id="p-lng">
+    <input type="hidden" id="i-lat"><input type="hidden" id="i-lng">
     <label style="margin-top:12px">Note about the location (optional)</label>
     <input id="p-note" placeholder="e.g. back yard, left of the patio">
     <div style="margin-top:16px"><button class="btn green" onclick="submitWO()">Submit Request</button></div>
@@ -36436,17 +36458,29 @@ WO_PORTAL_TEMPLATE = '''<!DOCTYPE html><html><head>
 <script>''' + _WO_SAT_JS + '''
 var COMM = { {% for c in communities %}{% if c.center_lat is not none and c.center_lng is not none %}"{{ c.id }}":[{{ c.center_lat }},{{ c.center_lng }}],{% endif %}{% endfor %} };
 var START = {% if homeowner and homeowner.center_lat is not none %}[{{ homeowner.center_lat }},{{ homeowner.center_lng }},18]{% else %}[27.95,-82.45,11]{% endif %};
-var pmap=null, pmarker=null;
+var pmap=null, homeMarker=null, issueMarker=null;
 
 function initMap(){
   pmap = woMakeMap('pmap', START[0], START[1], START[2]);
-  pmap.on('click', function(e){ setPin(e.latlng.lat, e.latlng.lng); });
+  // Tapping the map drops (or moves) the ISSUE pin — the home pin is fixed.
+  pmap.on('click', function(e){ setIssuePin(e.latlng.lat, e.latlng.lng); });
 }
-function setPin(lat,lng){
+// The home pin comes from the address and cannot be moved.
+function setHomePin(lat,lng){
   document.getElementById('p-lat').value=lat; document.getElementById('p-lng').value=lng;
-  if(pmarker){ pmarker.setLatLng([lat,lng]); }
-  else { pmarker=L.marker([lat,lng],{draggable:true}).addTo(pmap);
-         pmarker.on('dragend',function(){ var ll=pmarker.getLatLng(); document.getElementById('p-lat').value=ll.lat; document.getElementById('p-lng').value=ll.lng; }); }
+  if(homeMarker){ homeMarker.setLatLng([lat,lng]); return; }
+  var ico=L.divIcon({className:'', html:'<div class="home-ico">🏠</div>', iconSize:[30,30], iconAnchor:[15,28]});
+  homeMarker=L.marker([lat,lng],{icon:ico, draggable:false, interactive:false, zIndexOffset:400}).addTo(pmap);
+  homeMarker.bindTooltip('Your home', {permanent:true, direction:'top', offset:[0,-26], className:'home-tip'}).openTooltip();
+}
+// The issue pin marks the exact spot of the problem; it can be dragged.
+function setIssuePin(lat,lng){
+  document.getElementById('i-lat').value=lat; document.getElementById('i-lng').value=lng;
+  if(issueMarker){ issueMarker.setLatLng([lat,lng]); return; }
+  var ico=L.divIcon({className:'', html:'<div class="issue-ico">📍</div>', iconSize:[30,30], iconAnchor:[15,28]});
+  issueMarker=L.marker([lat,lng],{icon:ico, draggable:true, zIndexOffset:1000}).addTo(pmap);
+  issueMarker.bindTooltip('Issue is here', {permanent:true, direction:'top', offset:[0,-26], className:'issue-tip'}).openTooltip();
+  issueMarker.on('dragend',function(){ var ll=issueMarker.getLatLng(); document.getElementById('i-lat').value=ll.lat; document.getElementById('i-lng').value=ll.lng; });
 }
 function onCommunity(){
   var id=document.getElementById('p-comm').value;
@@ -36461,8 +36495,7 @@ function currentCommunityName(){
 // instead of using live GPS tracking.
 var addrGeocoded='';
 function dropHomePin(lat,lng){
-  setPin(lat,lng);
-  if(pmarker){ pmarker.bindTooltip('This is your home', {permanent:true, direction:'top', offset:[0,-12], className:'home-tip'}).openTooltip(); }
+  setHomePin(lat,lng);
   pmap.setView([lat,lng], 19);
 }
 function geocodeAddress(addr, force){
@@ -36479,12 +36512,12 @@ function geocodeAddress(addr, force){
     .then(function(rows){
       if(rows && rows.length){
         dropHomePin(parseFloat(rows[0].lat), parseFloat(rows[0].lon));
-        setAcc('Showing your home from your address — drag the pin or tap the map to fine-tune the exact spot.');
+        setAcc('Placed your 🏠 home pin from your address — now <b>tap the map</b> to drop a 📍 pin on the exact spot of the issue.');
       } else {
-        setAcc('Couldn\\'t find that address automatically — tap your home on the map to place the pin.');
+        setAcc('Couldn\\'t find that address automatically — tap the map to mark where the issue is.');
       }
     })
-    .catch(function(){ setAcc('Couldn\\'t look up the address — tap your home on the map to place the pin.'); });
+    .catch(function(){ setAcc('Couldn\\'t look up the address — tap the map to mark where the issue is.'); });
 }
 async function submitWO(){
   var name=document.getElementById('p-name').value.trim();
@@ -36497,6 +36530,7 @@ async function submitWO(){
       address:document.getElementById('p-addr').value, problem:problem,
       category:document.getElementById('p-cat').value, priority:document.getElementById('p-pri').value,
       pin_lat:document.getElementById('p-lat').value, pin_lng:document.getElementById('p-lng').value,
+      issue_lat:document.getElementById('i-lat').value, issue_lng:document.getElementById('i-lng').value,
       pin_note:document.getElementById('p-note').value})});
   var j=await r.json();
   if(j.success){ sessionStorage.setItem('woThanks','1'); location.href='{{ url_for("wo_portal") }}'; }
@@ -36551,7 +36585,9 @@ function woOpenDetail(id, editable){
   fetch('/workorders/api/work_order/'+id).then(r=>r.json()).then(j=>{
     if(!j.success){ document.getElementById('detailBody').innerHTML='<div class="flash err">'+(j.error||'Error')+'</div>'; return; }
     var w=j.work_order;
-    var hasPin = w.pin_lat!=null && w.pin_lng!=null;
+    var hasHome = w.pin_lat!=null && w.pin_lng!=null;
+    var hasIssue = w.issue_lat!=null && w.issue_lng!=null;
+    var hasPin = hasHome || hasIssue;
     var html='';
     html+='<h2 style="margin-bottom:6px">Work Order #'+w.id+' <span class="badge st-'+w.status+'">'+woLabel(w.status)+'</span></h2>';
     html+='<p class="muted" style="margin-bottom:14px">'+(w.community_name||'—')+' · submitted '+(w.created_at||'').substring(0,16)+'</p>';
@@ -36582,7 +36618,22 @@ function woOpenDetail(id, editable){
         if(act==='quote'){ woQuote(wid); } else { woAct(wid, act); }
       });
     });
-    if(hasPin){ dmap=woMakeMap('dmap', w.pin_lat, w.pin_lng, 19); L.marker([w.pin_lat,w.pin_lng]).addTo(dmap); }
+    if(hasPin){
+      // Center on the issue spot if we have one, otherwise the home.
+      var clat = hasIssue ? w.issue_lat : w.pin_lat;
+      var clng = hasIssue ? w.issue_lng : w.pin_lng;
+      dmap=woMakeMap('dmap', clat, clng, 19);
+      if(hasHome){
+        var homeIco=L.divIcon({className:'', html:'<div class="home-ico">🏠</div>', iconSize:[30,30], iconAnchor:[15,28]});
+        L.marker([w.pin_lat,w.pin_lng],{icon:homeIco, interactive:false, zIndexOffset:400}).addTo(dmap)
+          .bindTooltip('This is your home', {permanent:true, direction:'top', offset:[0,-26], className:'home-tip'}).openTooltip();
+      }
+      if(hasIssue){
+        var issIco=L.divIcon({className:'', html:'<div class="issue-ico">📍</div>', iconSize:[30,30], iconAnchor:[15,28]});
+        L.marker([w.issue_lat,w.issue_lng],{icon:issIco, zIndexOffset:1000}).addTo(dmap)
+          .bindTooltip('Issue is here', {permanent:true, direction:'top', offset:[0,-26], className:'issue-tip'}).openTooltip();
+      }
+    }
   });
 }
 function woCloseDetail(){ document.getElementById('detailBg').classList.remove('show'); dmap=null; }
@@ -36914,6 +36965,7 @@ def _workorders_tech_view():
 def _wo_query_work_orders(c, community_ids):
     """Return work orders (optionally scoped to community_ids) as list of dicts."""
     base = '''SELECT w.id, w.problem, w.category, w.priority, w.status, w.pin_lat, w.pin_lng,
+                     w.issue_lat, w.issue_lng,
                      w.tech_username, w.tech_notes, w.quote_status, w.created_at,
                      h.full_name, h.email, h.phone, h.address, c2.name
               FROM wo_work_orders w
@@ -36928,6 +36980,7 @@ def _wo_query_work_orders(c, community_ids):
     base += " ORDER BY CASE w.status WHEN 'pending' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'needs_quote' THEN 2 ELSE 3 END, w.id DESC"
     c.execute(base, params)
     keys = ['id', 'problem', 'category', 'priority', 'status', 'pin_lat', 'pin_lng',
+            'issue_lat', 'issue_lng',
             'tech_username', 'tech_notes', 'quote_status', 'created_at',
             'homeowner_name', 'homeowner_email', 'homeowner_phone', 'address', 'community_name']
     return [dict(zip(keys, r)) for r in c.fetchall()]
@@ -37291,10 +37344,11 @@ def wo_portal_submit():
 
     c.execute("""INSERT INTO wo_work_orders
                  (homeowner_id, community_id, problem, category, priority, status,
-                  pin_lat, pin_lng, pin_note, created_at, updated_at)
-                 VALUES (?,?,?,?,?,'pending',?,?,?,?,?)""",
+                  pin_lat, pin_lng, issue_lat, issue_lng, pin_note, created_at, updated_at)
+                 VALUES (?,?,?,?,?,'pending',?,?,?,?,?,?,?)""",
               (hid, community_id, problem, d.get('category', ''), d.get('priority', 'normal'),
-               _f(d.get('pin_lat')), _f(d.get('pin_lng')), d.get('pin_note', ''), now, now))
+               _f(d.get('pin_lat')), _f(d.get('pin_lng')),
+               _f(d.get('issue_lat')), _f(d.get('issue_lng')), d.get('pin_note', ''), now, now))
     wo_id = c.lastrowid
     conn.commit()
     conn.close()
