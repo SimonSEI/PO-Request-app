@@ -36454,7 +36454,6 @@ function setIssue(lat,lng){
   else {
     var ico=L.divIcon({className:'', html:'<div class="issue-ico">✕</div>', iconSize:[30,30], iconAnchor:[15,15]});
     issueMarker=L.marker([lat,lng],{icon:ico, draggable:true, zIndexOffset:1200}).addTo(pmap);
-    issueMarker.bindTooltip('Problem here', {permanent:true, direction:'top', offset:[0,-14], className:'issue-tip'}).openTooltip();
     issueMarker.on('dragend',function(){ var ll=issueMarker.getLatLng();
       document.getElementById('p-lat').value=ll.lat; document.getElementById('p-lng').value=ll.lng; });
   }
