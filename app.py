@@ -36362,6 +36362,11 @@ WO_PORTAL_TEMPLATE = '''<!DOCTYPE html><html><head>
     padding:5px 10px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.3); white-space:nowrap; }
 .home-tip:before{ border-top-color:#2563EB !important; }
 .home-ico{ font-size:30px; line-height:30px; text-align:center; filter:drop-shadow(0 2px 3px rgba(0,0,0,.4)); }
+.issue-ico{ font-size:30px; line-height:30px; font-weight:900; color:#DC2626; text-align:center;
+    text-shadow:0 0 3px #fff, 0 0 6px #fff, 0 2px 3px rgba(0,0,0,.5); }
+.issue-tip{ background:#DC2626; color:#fff; border:none; font-weight:700; font-size:12px;
+    padding:5px 10px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.3); white-space:nowrap; }
+.issue-tip:before{ border-top-color:#DC2626 !important; }
 </style></head>
 <body>
 <div class="wo-nav">
@@ -36406,9 +36411,8 @@ WO_PORTAL_TEMPLATE = '''<!DOCTYPE html><html><head>
   </div>
 
   <div class="card">
-    <h2>Pin the Location</h2>
-    <p class="muted" style="margin-bottom:8px">Tap the satellite map on the exact spot of your home where the issue is, so the technician knows right where to go.</p>
-    <button class="btn ghost sm" type="button" onclick="locate()">📍 Use my current location</button>
+    <h2>Mark the Problem Spot</h2>
+    <p class="muted" style="margin-bottom:8px">We place a 📍 on your home from the address above. Now <b>tap the map to drop an ✗</b> on the exact spot where the problem is, so the technician knows right where to go.</p>
     <p class="acc" id="accMsg"></p>
     <div id="pmap" class="map" style="margin-top:8px"></div>
     <input type="hidden" id="p-lat"><input type="hidden" id="p-lng">
@@ -36437,39 +36441,49 @@ WO_PORTAL_TEMPLATE = '''<!DOCTYPE html><html><head>
 <script>''' + _WO_SAT_JS + '''
 var COMM = { {% for c in communities %}{% if c.center_lat is not none and c.center_lng is not none %}"{{ c.id }}":[{{ c.center_lat }},{{ c.center_lng }}],{% endif %}{% endfor %} };
 var START = {% if homeowner and homeowner.center_lat is not none %}[{{ homeowner.center_lat }},{{ homeowner.center_lng }},18]{% else %}[27.95,-82.45,11]{% endif %};
-var pmap=null, pmarker=null, acccircle=null, mecircle=null, meMarker=null, watchId=null;
+var pmap=null, homeMarker=null, issueMarker=null, homeLatLng=null, addrGeocoded='';
 
 function initMap(){
   pmap = woMakeMap('pmap', START[0], START[1], START[2]);
-  pmap.on('click', function(e){ setPin(e.latlng.lat, e.latlng.lng); });
+  pmap.on('click', function(e){ setIssue(e.latlng.lat, e.latlng.lng); });
 }
-function setPin(lat,lng){
+// The ✗ the homeowner drops to mark exactly where the problem is.
+function setIssue(lat,lng){
   document.getElementById('p-lat').value=lat; document.getElementById('p-lng').value=lng;
-  if(pmarker){ pmarker.setLatLng([lat,lng]); }
-  else { pmarker=L.marker([lat,lng],{draggable:true}).addTo(pmap);
-         pmarker.on('dragend',function(){ var ll=pmarker.getLatLng(); document.getElementById('p-lat').value=ll.lat; document.getElementById('p-lng').value=ll.lng; }); }
+  if(issueMarker){ issueMarker.setLatLng([lat,lng]); }
+  else {
+    var ico=L.divIcon({className:'', html:'<div class="issue-ico">✕</div>', iconSize:[30,30], iconAnchor:[15,15]});
+    issueMarker=L.marker([lat,lng],{icon:ico, draggable:true, zIndexOffset:1200}).addTo(pmap);
+    issueMarker.bindTooltip('Problem here', {permanent:true, direction:'top', offset:[0,-14], className:'issue-tip'}).openTooltip();
+    issueMarker.on('dragend',function(){ var ll=issueMarker.getLatLng();
+      document.getElementById('p-lat').value=ll.lat; document.getElementById('p-lng').value=ll.lng; });
+  }
+  setAcc('✕ marks where the problem is — tap again or drag the ✕ to adjust.');
 }
 function onCommunity(){
   var id=document.getElementById('p-comm').value;
-  if(COMM[id]){ pmap.setView(COMM[id], 17); }
+  if(COMM[id] && !homeLatLng){ pmap.setView(COMM[id], 17); }
 }
 function setAcc(t){ document.getElementById('accMsg').innerHTML=t; }
 function currentCommunityName(){
   var s=document.getElementById('p-comm');
   return (s && s.value && s.selectedIndex>0) ? s.options[s.selectedIndex].text : '';
 }
-// When we know the homeowner's address, show their home from that address
-// instead of using live GPS tracking.
-var addrGeocoded='';
-function dropHomePin(lat,lng){
-  setPin(lat,lng);
-  if(pmarker){ pmarker.bindTooltip('This is your home', {permanent:true, direction:'top', offset:[0,-12], className:'home-tip'}).openTooltip(); }
+// Place a FIXED (non-movable) "This is your home" marker from the address.
+function dropHome(lat,lng){
+  homeLatLng=[lat,lng];
+  if(homeMarker){ homeMarker.setLatLng([lat,lng]); }
+  else {
+    var ico=L.divIcon({className:'', html:'<div class="home-ico">📍</div>', iconSize:[30,30], iconAnchor:[15,28]});
+    homeMarker=L.marker([lat,lng],{icon:ico, interactive:false, zIndexOffset:1000}).addTo(pmap);
+    homeMarker.bindTooltip('This is your home', {permanent:true, direction:'top', offset:[0,-26], className:'home-tip'}).openTooltip();
+  }
   pmap.setView([lat,lng], 19);
 }
+// We show the home from the address entered — no GPS / location tracking.
 function geocodeAddress(addr, force){
   addr=(addr||'').trim();
   if(addr.length<4) return;
-  if(!force && document.getElementById('p-lat').value) return;   // don't override a pin already placed
   if(addr===addrGeocoded && !force) return;
   addrGeocoded=addr;
   var q=addr; var cn=currentCommunityName(); if(cn) q+=', '+cn;
@@ -36479,61 +36493,28 @@ function geocodeAddress(addr, force){
     .then(function(r){ return r.json(); })
     .then(function(rows){
       if(rows && rows.length){
-        dropHomePin(parseFloat(rows[0].lat), parseFloat(rows[0].lon));
-        setAcc('Showing your home from your address — drag the pin or tap the map to fine-tune the exact spot.');
+        dropHome(parseFloat(rows[0].lat), parseFloat(rows[0].lon));
+        setAcc('📍 Your home is marked from your address. Now <b>tap the map to drop an ✕</b> on the exact spot of the problem.');
       } else {
-        setAcc('Couldn\\'t find that address automatically — tap your home on the map, or use the location button.');
+        setAcc('Couldn\\'t find that address automatically — check the address above, then tap the map to drop an ✕ on the problem.');
       }
     })
-    .catch(function(){ setAcc('Couldn\\'t look up the address — tap your home on the map, or use the location button.'); });
-}
-function locate(){
-  if(pmap){ pmap.invalidateSize(false); }
-  if(!navigator.geolocation){ setAcc('Location is not available on this device — tap the map to place your pin.'); return; }
-  // Mobile browsers only allow geolocation on secure (https) pages.
-  if(window.isSecureContext===false && location.hostname!=='localhost' && location.hostname!=='127.0.0.1'){
-    setAcc('Your phone blocks location on insecure (http) pages. Open this page with <b>https://</b> — or just tap the map to place your pin.');
-    return;
-  }
-  setAcc('Locating you… <b>please allow location access</b> and hold still for a few seconds for the best accuracy.');
-  if(watchId!==null){ navigator.geolocation.clearWatch(watchId); }
-  var best=Infinity, settled=false;
-  watchId = navigator.geolocation.watchPosition(function(p){
-    var lat=p.coords.latitude, lng=p.coords.longitude, acc=p.coords.accuracy||9999;
-    // Show where the device thinks you are with an accuracy circle.
-    if(mecircle){ mecircle.setLatLng([lat,lng]).setRadius(acc); }
-    else { mecircle=L.circle([lat,lng],{radius:acc,color:'#2563EB',fillColor:'#2563EB',fillOpacity:.12,weight:1}).addTo(pmap); }
-    // Drop a little arrow marker labelled "This is your home".
-    if(meMarker){ meMarker.setLatLng([lat,lng]); }
-    else {
-      var ico=L.divIcon({className:'', html:'<div class="home-ico">📍</div>', iconSize:[30,30], iconAnchor:[15,28]});
-      meMarker=L.marker([lat,lng],{icon:ico, interactive:false, zIndexOffset:1000}).addTo(pmap);
-      meMarker.bindTooltip('This is your home', {permanent:true, direction:'top', offset:[0,-26], className:'home-tip'}).openTooltip();
-    }
-    if(acc < best){
-      best=acc;
-      pmap.setView([lat,lng], acc<30?20:(acc<100?19:17));
-      setAcc('Centered on your location — accuracy about <b>'+Math.round(acc)+' m</b>. Now tap your exact spot on the roof/yard to drop the pin.');
-    }
-    // Stop once we have a solid GPS fix (or after the timeout below).
-    if(acc<=20 && !settled){ settled=true; navigator.geolocation.clearWatch(watchId); watchId=null; }
-  }, function(err){
-    setAcc('Couldn\\'t get your location ('+(err.message||'permission denied')+'). Pick your community above or tap the map to place your pin.');
-  }, {enableHighAccuracy:true, maximumAge:0, timeout:20000});
-  // Don't keep the GPS running forever.
-  setTimeout(function(){ if(watchId!==null){ navigator.geolocation.clearWatch(watchId); watchId=null; } }, 25000);
+    .catch(function(){ setAcc('Couldn\\'t look up the address — tap the map to drop an ✕ on the problem.'); });
 }
 async function submitWO(){
   var name=document.getElementById('p-name').value.trim();
   var problem=document.getElementById('p-problem').value.trim();
   if(!name){ showMsg('err','Please enter your name.'); return; }
   if(!problem){ showMsg('err','Please describe the problem.'); return; }
+  // The ✗ marks the problem; fall back to the home location if none was placed.
+  var lat=document.getElementById('p-lat').value, lng=document.getElementById('p-lng').value;
+  if(!lat && homeLatLng){ lat=homeLatLng[0]; lng=homeLatLng[1]; }
   var r=await fetch('{{ url_for("wo_portal_submit") }}',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({full_name:name, email:document.getElementById('p-email').value,
       phone:document.getElementById('p-phone').value, community_id:document.getElementById('p-comm').value,
       address:document.getElementById('p-addr').value, problem:problem,
       category:document.getElementById('p-cat').value, priority:document.getElementById('p-pri').value,
-      pin_lat:document.getElementById('p-lat').value, pin_lng:document.getElementById('p-lng').value,
+      pin_lat:lat, pin_lng:lng,
       pin_note:document.getElementById('p-note').value})});
   var j=await r.json();
   if(j.success){ sessionStorage.setItem('woThanks','1'); location.href='{{ url_for("wo_portal") }}'; }
