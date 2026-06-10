@@ -9429,7 +9429,7 @@ DASHBOARD_MENU_TEMPLATE = '''
         </a>
         {% endif %}
 
-        {% if role == 'office' or (role == 'technician' and tech_type == 'install') %}
+        {% if role == 'technician' and tech_type == 'install' %}
         <a class="app-card card-teal" href="{{ url_for('installation') }}">
             <div class="card-icon-wrap">🏗️</div>
             <div class="card-title">Installation</div>
@@ -9461,6 +9461,13 @@ DASHBOARD_MENU_TEMPLATE = '''
                 <div class="card-title">Pumps <span class="soon-badge">Coming Soon</span></div>
                 <div class="card-desc">Scans the PO email for pump invoices and tracks them in a monthly spreadsheet, with an AI agent that drafts invoices in Jobber automatically.</div>
                 <button class="card-cta">Open Pumps →</button>
+            </a>
+
+            <a class="app-card card-teal" href="{{ url_for('installation') }}">
+                <div class="card-icon-wrap">🏗️</div>
+                <div class="card-title">Installation <span class="soon-badge">Coming Soon</span></div>
+                <div class="card-desc">Manage install jobs, site plans, crew scheduling, daily logs, and job costing all in one place.</div>
+                <button class="card-cta">Open Installation →</button>
             </a>
 
         </div>
