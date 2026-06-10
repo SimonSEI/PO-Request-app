@@ -21,6 +21,7 @@ import email
 from email.parser import Parser
 from email.header import decode_header
 import base64
+import hmac
 import threading
 import requests as http_requests  # aliased to avoid conflict with flask.request
 
@@ -233,6 +234,10 @@ PO_EMAIL_PASSWORD = os.environ.get('PO_EMAIL_PASSWORD', '')
 PO_EMAIL_PROVIDER = os.environ.get('PO_EMAIL_PROVIDER', 'outlook')  # 'outlook' or 'gmail'
 JOBBER_API_TOKEN = os.environ.get('JOBBER_API_TOKEN', '')
 CHRISTIAN_EMAIL = os.environ.get('CHRISTIAN_EMAIL', '')
+
+# Pumps App: shared secret for the OpenClaw autonomous-intake webhook
+# (/api/openclaw/pumps). Requests must send "Authorization: Bearer <key>".
+OPENCLAW_API_KEY = os.environ.get('OPENCLAW_API_KEY', '')
 
 # IMAP configuration based on provider
 # Allow explicit override via env var, otherwise auto-detect
@@ -539,19 +544,23 @@ Return ONLY valid JSON, no explanation:
     return result
 
 
-def _fetch_emails_for_vi_scan():
+def _fetch_emails_for_vi_scan(log_table='vendor_invoice_email_log'):
     """
     Fetch emails for vendor invoice scanning using a SEPARATE log table
     (vendor_invoice_email_log) so it runs independently of the PO scanner.
+    Pass log_table='pump_email_scan_log' to dedupe against the Pumps scanner's
+    own history instead.
     Returns {'emails': [(uid, msg), ...], 'diagnostics': {...}, 'source': '...'}
     """
+    if log_table not in ('vendor_invoice_email_log', 'pump_email_scan_log'):
+        raise ValueError(f'Unsupported scan log table: {log_table}')
     if not PO_EMAIL_ADDRESS:
         return {'emails': [], 'diagnostics': {'error': 'PO_EMAIL_ADDRESS not configured'}, 'source': 'none'}
 
-    # Load already-scanned UIDs from vendor invoice log
+    # Load already-scanned UIDs from the scanner's own log
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT email_uid FROM vendor_invoice_email_log")
+    c.execute(f"SELECT email_uid FROM {log_table}")
     scanned_uids = {r[0] for r in c.fetchall()}
     conn.close()
 
@@ -867,6 +876,378 @@ def scan_emails_for_vendor_invoices():
     conn.commit()
     conn.close()
     return summary
+
+
+# ============================================================
+# Pumps App — pump invoice tracker + agentic Jobber drafting
+# ============================================================
+
+PUMP_KEYWORDS = [
+    'pump', 'pump station', 'transducer', 'flow meter', 'flowmeter',
+    'check valve', 'vfd', 'impeller', 'booster', 'wetech', 'wettech',
+    'motor starter', 'pressure switch', 'wet well', 'lift station',
+]
+
+
+def is_pump_related(text):
+    """Return True if the text looks like it concerns pump equipment/service."""
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(kw in lowered for kw in PUMP_KEYWORDS)
+
+
+def pump_month_tab(date_str=None):
+    """Month tab label for a tracker row, e.g. 'June 2026' (matches the
+    spreadsheet's monthly sheet tabs). Falls back to the current month."""
+    if date_str:
+        for fmt in ('%Y-%m-%d', '%m/%d/%Y', '%m/%d/%y'):
+            try:
+                return datetime.strptime(str(date_str)[:10], fmt).strftime('%B %Y')
+            except ValueError:
+                continue
+    return datetime.now().strftime('%B %Y')
+
+
+def scan_emails_for_pump_invoices():
+    """
+    Scan the PO inbox for pump-related vendor invoices and add them to the
+    pump_invoices tracker. Reuses the unified Graph/IMAP fetcher with the
+    Pumps app's own scan log so it runs independently of the other scanners.
+    Returns a summary dict.
+    """
+    summary = {'emails_checked': 0, 'invoices_added': 0, 'duplicates_skipped': 0,
+               'not_pump_related': 0, 'errors': [], 'added': []}
+
+    fetch_result = _fetch_emails_for_vi_scan(log_table='pump_email_scan_log')
+    emails = fetch_result.get('emails', [])
+    source = fetch_result.get('source', 'unknown')
+    diag = fetch_result.get('diagnostics', {})
+
+    if diag.get('error') and not emails:
+        summary['errors'].append(diag['error'])
+        return summary
+
+    import pdfplumber
+    import tempfile
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    c.execute("""SELECT LOWER(vendor_invoice_number), LOWER(vendor) FROM pump_invoices
+                 WHERE vendor_invoice_number IS NOT NULL AND vendor_invoice_number != ''""")
+    existing = {(r[0], r[1] or '') for r in c.fetchall()}
+
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    for uid, msg_obj in emails:
+        summary['emails_checked'] += 1
+        email_sender = ''
+        email_subject = ''
+        email_date = ''
+        invoices_found_this_email = 0
+
+        try:
+            if source == 'graph_api':
+                email_sender = (msg_obj.get('from') or {}).get('emailAddress', {}).get('address', '')
+                email_subject = msg_obj.get('subject', '')
+                email_date = msg_obj.get('receivedDateTime', '')
+                try:
+                    token = _get_graph_access_token()
+                    attachments = extract_attachments_from_graph_message(uid, token)
+                except Exception as e:
+                    summary['errors'].append(f'Graph attachment error uid={uid}: {e}')
+                    attachments = []
+            else:
+                email_sender = msg_obj.get('From', '')
+                email_subject = msg_obj.get('Subject', '')
+                email_date = msg_obj.get('Date', '')
+                attachments = extract_attachments_from_email(msg_obj)
+
+            for filename, file_bytes in attachments:
+                if not filename.lower().endswith('.pdf'):
+                    continue
+                try:
+                    with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+                        tmp.write(file_bytes)
+                        tmp_path = tmp.name
+
+                    full_text = ''
+                    with pdfplumber.open(tmp_path) as pdf:
+                        for page in pdf.pages:
+                            full_text += (page.extract_text() or '') + '\n'
+
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+
+                    if not full_text.strip():
+                        continue
+
+                    # Only track invoices that look pump-related
+                    if not is_pump_related(f"{email_subject}\n{email_sender}\n{full_text}"):
+                        summary['not_pump_related'] += 1
+                        continue
+
+                    fields = extract_vendor_invoice_from_text(full_text, email_sender)
+                    inv_num = (fields.get('invoice_number') or '').strip()
+                    vendor = (fields.get('sub_contractor') or '').strip()
+
+                    dedup_key = (inv_num.lower(), vendor.lower())
+                    if inv_num and dedup_key in existing:
+                        summary['duplicates_skipped'] += 1
+                        print(f"  ⊘ Duplicate pump invoice skipped: {vendor} #{inv_num}")
+                        continue
+
+                    inv_date = fields.get('invoice_date') or ''
+                    c.execute("""INSERT INTO pump_invoices
+                                 (po_number, entry_date, vendor, job_name, description,
+                                  vendor_invoice_amount, vendor_invoice_number, notes,
+                                  month_tab, source, email_uid, created_at, updated_at)
+                                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                              ('', inv_date or now[:10], vendor,
+                               fields.get('sei_proposal_number', ''),
+                               fields.get('notes', ''),
+                               fields.get('invoice_total'),
+                               inv_num, '',
+                               pump_month_tab(inv_date), 'email', str(uid), now, now))
+                    new_id = c.lastrowid
+
+                    if inv_num:
+                        existing.add(dedup_key)
+
+                    invoices_found_this_email += 1
+                    summary['invoices_added'] += 1
+                    summary['added'].append({
+                        'id': new_id,
+                        'vendor': vendor,
+                        'vendor_invoice_number': inv_num,
+                        'vendor_invoice_amount': fields.get('invoice_total'),
+                    })
+                    print(f"  ✅ New pump invoice: {vendor} #{inv_num}")
+
+                except Exception as e:
+                    summary['errors'].append(f'PDF error {filename}: {str(e)}')
+                    print(f"  ✗ Pump PDF processing error ({filename}): {e}")
+
+        except Exception as e:
+            summary['errors'].append(f'Email error uid={uid}: {str(e)}')
+            print(f"  ✗ Pump email processing error uid={uid}: {e}")
+
+        try:
+            c.execute("""INSERT OR IGNORE INTO pump_email_scan_log
+                         (email_uid, email_sender, email_subject, email_date, scanned_at,
+                          invoices_found, results)
+                         VALUES (?,?,?,?,?,?,?)""",
+                      (str(uid), email_sender, email_subject, email_date, now,
+                       invoices_found_this_email, json.dumps({'added': invoices_found_this_email})))
+        except Exception:
+            pass
+
+    conn.commit()
+    conn.close()
+    return summary
+
+
+def pump_agent_draft_from_text(request_text):
+    """
+    Agentic step 1: turn a free-text pump work request into a structured
+    Jobber invoice draft using Claude. Returns a draft dict; falls back to a
+    minimal draft when the Claude API is unavailable.
+    """
+    draft = {
+        'client_name': '', 'job_name': '', 'description': request_text.strip(),
+        'line_items': [], 'total': None, 'po_number': '', 'vendor': '',
+        'vendor_invoice_number': '', 'notes': '',
+    }
+    if not request_text or not request_text.strip():
+        return draft
+
+    if ANTHROPIC_AVAILABLE and ANTHROPIC_API_KEY:
+        try:
+            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            prompt = f"""You are the invoicing agent for Stahlman-England Irrigation's Pumps department.
+Turn this work request into a structured Jobber invoice draft as JSON.
+
+REQUEST:
+{request_text[:4000]}
+
+Return ONLY valid JSON, no explanation:
+{{
+  "client_name": "customer/community to bill (e.g. 'Autumn Woods'), or empty string",
+  "job_name": "job name or site address, or empty string",
+  "description": "clean one-paragraph description of the work performed/requested",
+  "line_items": [{{"name": "short line item name", "description": "detail", "quantity": <number>, "unit_price": <number or null>}}],
+  "total": <number or null>,
+  "po_number": "PO number if mentioned, else empty string",
+  "vendor": "vendor that performed/quoted the work (e.g. 'Wetech'), else empty string",
+  "vendor_invoice_number": "vendor invoice number if mentioned, else empty string",
+  "notes": "anything important that doesn't fit the fields above"
+}}"""
+            msg = client.messages.create(
+                model='claude-opus-4-8',
+                max_tokens=1500,
+                messages=[{'role': 'user', 'content': prompt}]
+            )
+            raw = msg.content[0].text.strip()
+            raw = re.sub(r'^```(?:json)?\s*', '', raw, flags=re.MULTILINE)
+            raw = re.sub(r'```\s*$', '', raw, flags=re.MULTILINE)
+            parsed = json.loads(raw)
+            for k in draft:
+                if k in parsed and parsed[k] not in (None, ''):
+                    draft[k] = parsed[k]
+            print(f"  🤖 Pump agent drafted invoice for: {draft.get('client_name') or draft.get('job_name') or 'unknown client'}")
+        except Exception as e:
+            print(f"  ⚠ Pump agent Claude drafting failed, using minimal draft: {e}")
+
+    return draft
+
+
+def create_jobber_invoice_draft(draft):
+    """
+    Agentic step 2: push the draft into Jobber. Finds the client by name and
+    attempts an invoiceCreate mutation. Returns
+    {'created': bool, 'jobber_invoice_number': str, 'detail': str}.
+    Any Jobber error is captured in 'detail' so the draft is never lost —
+    it stays in the tracker for manual entry.
+    """
+    result = {'created': False, 'jobber_invoice_number': '', 'detail': ''}
+    if not JOBBER_API_TOKEN:
+        result['detail'] = 'JOBBER_API_TOKEN not configured — draft saved locally only'
+        return result
+
+    client_name = (draft.get('client_name') or draft.get('job_name') or '').strip()
+    if not client_name:
+        result['detail'] = 'No client/job name in draft — cannot match a Jobber client'
+        return result
+
+    headers = {'Authorization': f'Bearer {JOBBER_API_TOKEN}', 'Content-Type': 'application/json',
+               'X-JOBBER-GRAPHQL-VERSION': '2024-11-15'}
+    try:
+        find_gql = '''query FindClient($q: String!) {
+  clients(searchTerm: $q, first: 1) {
+    nodes { id name }
+  }
+}'''
+        resp = http_requests.post(
+            'https://api.getjobber.com/api/graphql',
+            json={'query': find_gql, 'variables': {'q': client_name}},
+            headers=headers, timeout=12)
+        resp.raise_for_status()
+        nodes = ((resp.json().get('data') or {}).get('clients') or {}).get('nodes', [])
+        if not nodes:
+            result['detail'] = f"No Jobber client found matching '{client_name}'"
+            return result
+        client_id = nodes[0]['id']
+
+        line_items = []
+        for li in (draft.get('line_items') or []):
+            line_items.append({
+                'name': (li.get('name') or 'Pump service')[:255],
+                'description': (li.get('description') or '')[:500],
+                'quantity': li.get('quantity') or 1,
+                'unitPrice': li.get('unit_price') if li.get('unit_price') is not None else 0,
+            })
+        if not line_items:
+            line_items = [{'name': 'Pump service', 'description': (draft.get('description') or '')[:500],
+                           'quantity': 1, 'unitPrice': draft.get('total') or 0}]
+
+        create_gql = '''mutation CreateInvoice($input: InvoiceCreateInput!) {
+  invoiceCreate(input: $input) {
+    invoice { id invoiceNumber }
+    userErrors { message }
+  }
+}'''
+        subject = f"Pump work — {draft.get('job_name') or client_name}"
+        resp = http_requests.post(
+            'https://api.getjobber.com/api/graphql',
+            json={'query': create_gql, 'variables': {'input': {
+                'clientId': client_id,
+                'attributes': {'subject': subject[:255], 'lineItems': line_items},
+            }}},
+            headers=headers, timeout=15)
+        resp.raise_for_status()
+        body = resp.json()
+        if body.get('errors'):
+            result['detail'] = f"Jobber API error: {body['errors'][0].get('message', 'unknown')}"
+            return result
+        payload = (body.get('data') or {}).get('invoiceCreate') or {}
+        user_errors = payload.get('userErrors') or []
+        if user_errors:
+            result['detail'] = f"Jobber rejected draft: {user_errors[0].get('message', 'unknown')}"
+            return result
+        invoice = payload.get('invoice') or {}
+        result['created'] = True
+        result['jobber_invoice_number'] = str(invoice.get('invoiceNumber', ''))
+        result['detail'] = f"Draft invoice created in Jobber for client '{nodes[0]['name']}'"
+        print(f"  ✅ Pump agent created Jobber invoice #{result['jobber_invoice_number']}")
+    except Exception as e:
+        result['detail'] = f'Jobber request failed: {e}'
+        print(f"  ⚠ Pump agent Jobber error: {e}")
+    return result
+
+
+def process_pump_agent_request(request_id):
+    """
+    Run the full agentic pipeline for one pump_agent_requests row:
+    draft with Claude → record in the pump tracker → push draft to Jobber.
+    Designed to run in a background thread; all failures are recorded on the
+    request row rather than raised.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    try:
+        c.execute("SELECT request_text FROM pump_agent_requests WHERE id=?", (request_id,))
+        row = c.fetchone()
+        if not row:
+            return
+        request_text = row[0] or ''
+
+        draft = pump_agent_draft_from_text(request_text)
+        c.execute("UPDATE pump_agent_requests SET status='drafted', draft_json=?, updated_at=? WHERE id=?",
+                  (json.dumps(draft), now, request_id))
+        conn.commit()
+
+        # Record the request in the tracker so nothing slips through
+        c.execute("""INSERT INTO pump_invoices
+                     (po_number, entry_date, vendor, job_name, description,
+                      jobber_request_made, vendor_invoice_number, amount, notes,
+                      month_tab, source, created_at, updated_at)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  (draft.get('po_number', ''), now[:10], draft.get('vendor', ''),
+                   draft.get('job_name') or draft.get('client_name', ''),
+                   draft.get('description', ''), 'Agent draft',
+                   draft.get('vendor_invoice_number', ''), draft.get('total'),
+                   draft.get('notes', ''), pump_month_tab(), 'agent', now, now))
+        invoice_row_id = c.lastrowid
+        c.execute("UPDATE pump_agent_requests SET pump_invoice_id=? WHERE id=?",
+                  (invoice_row_id, request_id))
+        conn.commit()
+
+        jobber = create_jobber_invoice_draft(draft)
+        if jobber['created']:
+            status = 'sent_to_jobber'
+            c.execute("""UPDATE pump_invoices SET jobber_request_made=?, sei_invoice_number=?, updated_at=?
+                         WHERE id=?""",
+                      (f"YES — Jobber #{jobber['jobber_invoice_number']}",
+                       jobber['jobber_invoice_number'], now, invoice_row_id))
+        else:
+            status = 'needs_review'
+        c.execute("UPDATE pump_agent_requests SET status=?, jobber_result=?, updated_at=? WHERE id=?",
+                  (status, json.dumps(jobber), now, request_id))
+        conn.commit()
+    except Exception as e:
+        print(f"  ✗ Pump agent request {request_id} failed: {e}")
+        try:
+            c.execute("UPDATE pump_agent_requests SET status='error', error=?, updated_at=? WHERE id=?",
+                      (str(e), now, request_id))
+            conn.commit()
+        except Exception:
+            pass
+    finally:
+        conn.close()
 
 
 def log_activity(username, action, target_type, target_id, details=''):
@@ -1952,7 +2333,11 @@ def init_db():
     try:
         c.execute("SELECT install_rate FROM install_rate_card LIMIT 1")
     except sqlite3.OperationalError:
-        c.execute("ALTER TABLE install_rate_card ADD COLUMN install_rate REAL DEFAULT 0")
+        try:
+            c.execute("ALTER TABLE install_rate_card ADD COLUMN install_rate REAL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass  # Table not created yet on a fresh DB; CREATE below includes no install_rate,
+                  # so the SELECT/ALTER above will add it on the next startup.
 
     # Migrate: Drop UNIQUE constraint on community_billing_submissions so techs
     # can submit multiple entries for the same community+date.
@@ -2332,6 +2717,51 @@ def init_db():
                   jobber_paid INTEGER DEFAULT 0,
                   jobber_paid_date TEXT,
                   jobber_paid_notified INTEGER DEFAULT 0,
+                  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TEXT)''')
+
+    # ── Pumps App: pump invoice tracker (mirrors the monthly PO spreadsheet) ──
+    c.execute('''CREATE TABLE IF NOT EXISTS pump_invoices (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  po_number TEXT,
+                  entry_date TEXT,
+                  vendor TEXT,
+                  job_name TEXT,
+                  description TEXT,
+                  approved_by TEXT,
+                  jobber_request_made TEXT,
+                  vendor_quote_amount REAL,
+                  vendor_invoice_amount REAL,
+                  vendor_invoice_number TEXT,
+                  sei_invoice_number TEXT,
+                  amount REAL,
+                  notes TEXT,
+                  month_tab TEXT,
+                  source TEXT DEFAULT 'manual',
+                  email_uid TEXT,
+                  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TEXT)''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS pump_email_scan_log (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  email_uid TEXT UNIQUE,
+                  email_sender TEXT,
+                  email_subject TEXT,
+                  email_date TEXT,
+                  scanned_at TEXT,
+                  invoices_found INTEGER DEFAULT 0,
+                  results TEXT)''')
+
+    # ── Pumps App: agentic Jobber invoice drafting requests ──────────────────
+    c.execute('''CREATE TABLE IF NOT EXISTS pump_agent_requests (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  request_text TEXT,
+                  source TEXT DEFAULT 'web',
+                  status TEXT DEFAULT 'received',
+                  draft_json TEXT,
+                  jobber_result TEXT,
+                  error TEXT,
+                  pump_invoice_id INTEGER,
                   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                   updated_at TEXT)''')
 
@@ -8879,6 +9309,21 @@ DASHBOARD_MENU_TEMPLATE = '''
         .card-amber .card-icon-wrap{background:#FFFBEB;} .card-amber .card-cta{background:#D97706;color:#fff;box-shadow:0 3px 10px rgba(217,119,6,.3);}
         .card-amber .card-cta:hover{background:#B45309;box-shadow:0 6px 16px rgba(217,119,6,.4);}
 
+        /* ── COMING SOON FOLDER ── */
+        .folder{margin-top:28px;background:var(--bg-card);border:1px dashed #CBD5E1;border-radius:18px;
+            box-shadow:var(--shadow-sm);overflow:hidden;}
+        .folder summary{list-style:none;display:flex;align-items:center;gap:12px;cursor:pointer;
+            padding:18px 24px;user-select:none;}
+        .folder summary::-webkit-details-marker{display:none;}
+        .folder summary:hover{background:var(--bg);}
+        .folder-icon{font-size:22px;}
+        .folder-name{font-size:15px;font-weight:700;color:var(--text-p);}
+        .folder-hint{font-size:12px;color:var(--text-m);margin-left:auto;}
+        .folder-grid{padding:4px 24px 24px;}
+        .soon-badge{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;
+            background:#FEF3C7;color:#92400E;border:1px solid #FDE68A;padding:2px 8px;border-radius:100px;
+            vertical-align:middle;margin-left:6px;}
+
         /* ── FOOTER ── */
         footer{margin-top:auto;text-align:center;padding:20px;
             font-size:13px;color:var(--text-m);border-top:1px solid var(--border);background:#fff;}
@@ -9001,6 +9446,26 @@ DASHBOARD_MENU_TEMPLATE = '''
         </a>
 
     </div>
+
+    {% if role == 'office' %}
+    <details class="folder">
+        <summary>
+            <span class="folder-icon">📁</span>
+            <span class="folder-name">Features Coming Soon</span>
+            <span class="folder-hint">Preview features in development</span>
+        </summary>
+        <div class="cards-grid folder-grid">
+
+            <a class="app-card card-teal" href="{{ url_for('pumps_app') }}">
+                <div class="card-icon-wrap">⚙️</div>
+                <div class="card-title">Pumps <span class="soon-badge">Coming Soon</span></div>
+                <div class="card-desc">Scans the PO email for pump invoices and tracks them in a monthly spreadsheet, with an AI agent that drafts invoices in Jobber automatically.</div>
+                <button class="card-cta">Open Pumps →</button>
+            </a>
+
+        </div>
+    </details>
+    {% endif %}
 </div>
 
 <footer>&copy; {{ "2025" }} Stahlman-England Irrigation, Inc. &mdash; The Office App</footer>
@@ -34942,6 +35407,583 @@ def job_costing_redirect():
 @app.route('/install_scheduling_redirect')
 def install_scheduling_redirect():
     return redirect(url_for('installation_schedule'))
+
+
+PUMPS_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Pumps — Stahlman-England</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root{--brand:#2563EB;--border:#E2E8F0;--bg:#F8FAFC;--text:#0F172A;--muted:#64748B;
+              --sheet-head:#BDD7EE;--green:#16a34a;--amber:#D97706;--red:#DC2626;}
+        *,*::before,*::after{margin:0;padding:0;box-sizing:border-box;}
+        body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;flex-direction:column;}
+        .topbar{background:#fff;border-bottom:1px solid var(--border);display:flex;align-items:center;
+                justify-content:space-between;padding:0 24px;height:60px;position:sticky;top:0;z-index:50;}
+        .topbar .title{display:flex;align-items:center;gap:12px;font-weight:700;font-size:17px;}
+        .badge-soon{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;
+                    background:#FEF3C7;color:#92400E;border:1px solid #FDE68A;padding:3px 8px;border-radius:100px;}
+        .btn{padding:8px 14px;border-radius:8px;border:1.5px solid var(--border);background:#fff;cursor:pointer;
+             font-family:inherit;font-size:13px;font-weight:600;color:var(--text);text-decoration:none;transition:all .15s;}
+        .btn:hover{background:var(--bg);}
+        .btn-primary{background:var(--brand);border-color:var(--brand);color:#fff;}
+        .btn-primary:hover{background:#1D4ED8;}
+        .btn-primary:disabled{opacity:.6;cursor:wait;}
+        .wrap{flex:1;display:flex;gap:16px;padding:16px 24px;align-items:flex-start;flex-wrap:wrap;}
+        .sheet-panel{flex:1 1 720px;background:#fff;border:1px solid var(--border);border-radius:12px;overflow:hidden;
+                     box-shadow:0 1px 4px rgba(0,0,0,.05);display:flex;flex-direction:column;}
+        .sheet-toolbar{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);flex-wrap:wrap;}
+        .sheet-toolbar .status{font-size:12px;color:var(--muted);}
+        .sheet-scroll{overflow:auto;max-height:62vh;}
+        table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1280px;}
+        .sheet th{background:var(--sheet-head);border:1px solid #9DB9D6;padding:8px 6px;font-size:12px;
+                  font-weight:700;position:sticky;top:0;z-index:1;}
+        .sheet td{border:1px solid var(--border);padding:6px;vertical-align:top;background:#fff;min-width:70px;}
+        .sheet td.desc{min-width:260px;white-space:pre-wrap;}
+        .sheet td.num{text-align:right;font-variant-numeric:tabular-nums;}
+        .sheet td[contenteditable]:focus{outline:2px solid var(--brand);outline-offset:-2px;background:#EFF6FF;}
+        .sheet td.dirty{background:#FFFBEB;}
+        .src-chip{font-size:9px;font-weight:700;text-transform:uppercase;padding:2px 6px;border-radius:100px;}
+        .src-email{background:#DCFCE7;color:#166534;}
+        .src-agent{background:#EDE9FE;color:#5B21B6;}
+        .src-manual{background:#F1F5F9;color:#475569;}
+        .del-btn{border:none;background:none;color:#CBD5E1;cursor:pointer;font-size:14px;}
+        .del-btn:hover{color:var(--red);}
+        .tabs{display:flex;gap:2px;border-top:1px solid var(--border);background:#F1F5F9;padding:6px 10px 0;overflow-x:auto;}
+        .tab{padding:7px 16px;font-size:12.5px;font-weight:600;color:var(--muted);background:#E2E8F0;
+             border:1px solid var(--border);border-bottom:none;border-radius:8px 8px 0 0;cursor:pointer;white-space:nowrap;}
+        .tab.active{background:#fff;color:var(--text);border-bottom:2px solid var(--green);}
+        .sheet-footer{display:flex;gap:24px;padding:8px 14px;font-size:12px;color:var(--muted);border-top:1px solid var(--border);}
+        .agent-panel{flex:0 1 360px;min-width:300px;background:#fff;border:1px solid var(--border);border-radius:12px;
+                     padding:18px;box-shadow:0 1px 4px rgba(0,0,0,.05);}
+        .agent-panel h2{font-size:15px;margin-bottom:4px;display:flex;align-items:center;gap:8px;}
+        .agent-panel p.sub{font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.5;}
+        .agent-panel textarea{width:100%;min-height:90px;border:1.5px solid var(--border);border-radius:8px;
+                              padding:10px;font-family:inherit;font-size:13px;resize:vertical;}
+        .agent-panel textarea:focus{outline:none;border-color:var(--brand);}
+        .agent-reqs{margin-top:14px;max-height:38vh;overflow:auto;display:flex;flex-direction:column;gap:8px;}
+        .agent-req{border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:12px;}
+        .agent-req .txt{color:var(--text);margin-bottom:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+        .st{font-size:10px;font-weight:700;text-transform:uppercase;padding:2px 7px;border-radius:100px;}
+        .st-received,.st-drafted{background:#FEF3C7;color:#92400E;}
+        .st-sent_to_jobber{background:#DCFCE7;color:#166534;}
+        .st-needs_review{background:#FFEDD5;color:#9A3412;}
+        .st-error{background:#FEE2E2;color:#991B1B;}
+        .cfg-note{margin-top:12px;font-size:11px;color:var(--muted);line-height:1.6;background:var(--bg);
+                  border:1px dashed var(--border);border-radius:8px;padding:8px 10px;}
+    </style>
+    <script>
+    (function(){
+        var _csrfToken = document.cookie.split(';').map(function(c){return c.trim();})
+            .filter(function(c){return c.startsWith('csrf_token=');})
+            .map(function(c){return c.split('=')[1];})[0] || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts){
+            opts = opts || {};
+            if(!opts.method || opts.method.toUpperCase() === 'GET' || opts.method.toUpperCase() === 'HEAD'){
+                return _origFetch.call(this, url, opts);
+            }
+            opts.headers = opts.headers || {};
+            if(opts.headers instanceof Headers){
+                if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+            } else {
+                if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken'] = _csrfToken;
+            }
+            return _origFetch.call(this, url, opts);
+        };
+    })();
+    </script>
+</head>
+<body>
+
+<nav class="topbar">
+    <div class="title">
+        <span>⚙️ Pumps</span>
+        <span class="badge-soon">Coming Soon — Preview</span>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;">
+        <span style="font-size:13px;color:var(--muted);">{{ full_name }}</span>
+        <a class="btn" href="{{ url_for('dashboard') }}">← Dashboard</a>
+    </div>
+</nav>
+
+<div class="wrap">
+
+    <!-- TRACKER SHEET -->
+    <div class="sheet-panel">
+        <div class="sheet-toolbar">
+            <button class="btn btn-primary" id="scanBtn" onclick="startScan()"
+                    {% if not email_configured %}disabled title="PO email monitoring is not configured"{% endif %}>
+                📧 Scan PO Email for Pump Invoices
+            </button>
+            <button class="btn" onclick="addRow()">＋ Add Row</button>
+            <span class="status" id="scanStatus">
+                {% if not email_configured %}Email monitoring not configured — rows can still be added manually.{% endif %}
+            </span>
+        </div>
+        <div class="sheet-scroll">
+            <table class="sheet" id="sheet">
+                <thead>
+                <tr>
+                    <th>PO#</th><th>Date</th><th>Vendor</th><th>Job Name /Address</th>
+                    <th>Description of Work</th><th>Approved By</th><th>Jobber Request Made</th>
+                    <th>Vendor Quote Amount</th><th>Vendor Invoice Amount</th><th>Vendor Invoice#</th>
+                    <th>Sei Invoice#</th><th>Amount</th><th>Notes</th><th></th>
+                </tr>
+                </thead>
+                <tbody id="sheetBody"></tbody>
+            </table>
+        </div>
+        <div class="sheet-footer">
+            <span id="footCount">Count: 0</span>
+            <span id="footSum">Sum: $0.00</span>
+        </div>
+        <div class="tabs" id="monthTabs">
+            {% for m in months %}
+            <div class="tab {% if m == current_month %}active{% endif %}" data-month="{{ m }}" onclick="switchMonth(this)">{{ m }}</div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <!-- AGENTIC JOBBER DRAFTING -->
+    <div class="agent-panel">
+        <h2>🤖 Invoice Agent</h2>
+        <p class="sub">Paste or type a pump work request. The agent reads it, logs it in the tracker,
+           and drafts the invoice in Jobber automatically.</p>
+        <textarea id="agentInput" placeholder="e.g. Wetech replaced both pressure transducers at the Autumn Woods pump station, invoice 28414 for $1,504.50 — bill Autumn Woods HOA."></textarea>
+        <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
+            <button class="btn btn-primary" id="agentBtn" onclick="submitAgent()">Draft Invoice →</button>
+            <span class="status" id="agentStatus" style="font-size:12px;color:var(--muted);"></span>
+        </div>
+        <div class="agent-reqs" id="agentReqs"></div>
+        <div class="cfg-note">
+            <strong>Autonomy status:</strong><br>
+            Jobber API: {% if jobber_configured %}✅ connected{% else %}⚠️ not configured (drafts saved locally){% endif %}<br>
+            OpenClaw webhook: {% if openclaw_configured %}✅ enabled at <code>/api/openclaw/pumps</code>{% else %}⚠️ set <code>OPENCLAW_API_KEY</code> to let OpenClaw submit requests with zero input{% endif %}
+        </div>
+    </div>
+
+</div>
+
+<script>
+const COLS = ['po_number','entry_date','vendor','job_name','description','approved_by',
+              'jobber_request_made','vendor_quote_amount','vendor_invoice_amount',
+              'vendor_invoice_number','sei_invoice_number','amount','notes'];
+const MONEY = new Set(['vendor_quote_amount','vendor_invoice_amount','amount']);
+let currentMonth = {{ current_month|tojson }};
+
+function fmtMoney(v){
+    if(v === null || v === undefined || v === '') return '';
+    const n = parseFloat(v); if(isNaN(n)) return v;
+    return '$' + n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+
+function rowHtml(e){
+    const src = e.source || 'manual';
+    let tds = COLS.map(c=>{
+        const v = e[c] === null || e[c] === undefined ? '' : e[c];
+        const cls = (MONEY.has(c) ? 'num' : (c==='description' ? 'desc' : ''));
+        const shown = MONEY.has(c) ? fmtMoney(v) : v;
+        return `<td class="${cls}" data-col="${c}" contenteditable="true">${escapeHtml(String(shown))}</td>`;
+    }).join('');
+    tds += `<td style="text-align:center;white-space:nowrap;">
+              <span class="src-chip src-${src}">${src}</span>
+              <button class="del-btn" title="Delete row" onclick="deleteRow(this)">✕</button>
+            </td>`;
+    return tds;
+}
+
+function escapeHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+function loadEntries(){
+    fetch('/pumps/api/entries?month=' + encodeURIComponent(currentMonth))
+      .then(r=>r.json()).then(d=>{
+        if(!d.success) return;
+        const body = document.getElementById('sheetBody');
+        body.innerHTML = '';
+        d.entries.forEach(e=>{
+            const tr = document.createElement('tr');
+            tr.dataset.id = e.id;
+            tr.innerHTML = rowHtml(e);
+            body.appendChild(tr);
+        });
+        wireEditing();
+        updateFooter();
+      });
+}
+
+function wireEditing(){
+    document.querySelectorAll('#sheetBody td[contenteditable]').forEach(td=>{
+        td.addEventListener('input', ()=>td.classList.add('dirty'));
+        td.addEventListener('blur', ()=>{ if(td.classList.contains('dirty')) saveRow(td.closest('tr')); });
+    });
+}
+
+function collectRow(tr){
+    const data = {month: currentMonth};
+    if(tr.dataset.id) data.id = parseInt(tr.dataset.id);
+    tr.querySelectorAll('td[data-col]').forEach(td=>{ data[td.dataset.col] = td.textContent.trim(); });
+    return data;
+}
+
+function saveRow(tr){
+    fetch('/pumps/api/save_entry', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(collectRow(tr))})
+      .then(r=>r.json()).then(d=>{
+        if(d.success){
+            tr.dataset.id = d.id;
+            tr.querySelectorAll('td.dirty').forEach(td=>td.classList.remove('dirty'));
+            updateFooter();
+        }
+      });
+}
+
+function addRow(){
+    const body = document.getElementById('sheetBody');
+    const tr = document.createElement('tr');
+    const empty = {}; COLS.forEach(c=>empty[c]='');
+    empty.entry_date = new Date().toISOString().slice(0,10);
+    empty.source = 'manual';
+    tr.innerHTML = rowHtml(empty);
+    body.appendChild(tr);
+    wireEditing();
+    tr.querySelector('td')?.focus();
+}
+
+function deleteRow(btn){
+    const tr = btn.closest('tr');
+    if(!tr.dataset.id){ tr.remove(); updateFooter(); return; }
+    if(!confirm('Delete this row?')) return;
+    fetch('/pumps/api/delete_entry', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({id: parseInt(tr.dataset.id)})})
+      .then(r=>r.json()).then(d=>{ if(d.success){ tr.remove(); updateFooter(); }});
+}
+
+function updateFooter(){
+    let count = 0, sum = 0;
+    document.querySelectorAll('#sheetBody td[data-col="vendor_invoice_amount"]').forEach(td=>{
+        const n = parseFloat(td.textContent.replace(/[$,]/g,''));
+        if(!isNaN(n) && td.textContent.trim() !== ''){ count++; sum += n; }
+    });
+    document.getElementById('footCount').textContent = 'Count: ' + count;
+    document.getElementById('footSum').textContent = 'Sum: ' + fmtMoney(sum);
+}
+
+function switchMonth(tab){
+    document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+    tab.classList.add('active');
+    currentMonth = tab.dataset.month;
+    loadEntries();
+}
+
+// ── Email scan ──────────────────────────────────────────
+let scanPoll = null;
+function startScan(){
+    const btn = document.getElementById('scanBtn');
+    btn.disabled = true;
+    document.getElementById('scanStatus').textContent = 'Scanning PO inbox…';
+    fetch('/pumps/scan_emails', {method:'POST'}).then(r=>r.json()).then(d=>{
+        if(!d.success){
+            document.getElementById('scanStatus').textContent = d.error || 'Scan failed to start';
+            btn.disabled = false; return;
+        }
+        scanPoll = setInterval(pollScan, 2500);
+    });
+}
+function pollScan(){
+    fetch('/pumps/scan_status').then(r=>r.json()).then(s=>{
+        if(s.running) return;
+        clearInterval(scanPoll);
+        document.getElementById('scanBtn').disabled = false;
+        const r = s.result || {};
+        document.getElementById('scanStatus').textContent =
+            `Done — ${r.emails_checked||0} emails checked, ${r.invoices_added||0} pump invoices added` +
+            (r.errors && r.errors.length ? ` (${r.errors.length} errors)` : '');
+        loadEntries();
+    });
+}
+
+// ── Invoice agent ───────────────────────────────────────
+function submitAgent(){
+    const txt = document.getElementById('agentInput').value.trim();
+    if(!txt) return;
+    const btn = document.getElementById('agentBtn');
+    btn.disabled = true;
+    document.getElementById('agentStatus').textContent = 'Agent working…';
+    fetch('/pumps/agent/submit', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({request: txt})})
+      .then(r=>r.json()).then(d=>{
+        btn.disabled = false;
+        if(d.success){
+            document.getElementById('agentInput').value = '';
+            document.getElementById('agentStatus').textContent = 'Request queued ✓';
+            setTimeout(loadAgentRequests, 2000);
+            setTimeout(()=>{ loadAgentRequests(); loadEntries(); }, 8000);
+        } else {
+            document.getElementById('agentStatus').textContent = d.error || 'Failed';
+        }
+      });
+}
+
+function loadAgentRequests(){
+    fetch('/pumps/agent/requests').then(r=>r.json()).then(d=>{
+        if(!d.success) return;
+        const box = document.getElementById('agentReqs');
+        box.innerHTML = '';
+        d.requests.forEach(rq=>{
+            const div = document.createElement('div');
+            div.className = 'agent-req';
+            let detail = '';
+            try{ const jr = JSON.parse(rq.jobber_result||'null'); if(jr && jr.detail) detail = jr.detail; }catch(e){}
+            if(rq.error) detail = rq.error;
+            div.innerHTML = `<div class="txt">${escapeHtml(rq.request_text||'')}</div>
+                <span class="st st-${rq.status}">${rq.status.replace(/_/g,' ')}</span>
+                <span style="color:var(--muted);margin-left:6px;">${rq.source} · ${rq.created_at||''}</span>
+                ${detail ? `<div style="color:var(--muted);margin-top:4px;">${escapeHtml(detail)}</div>` : ''}`;
+            box.appendChild(div);
+        });
+    });
+}
+
+loadEntries();
+loadAgentRequests();
+setInterval(loadAgentRequests, 15000);
+</script>
+</body>
+</html>
+'''
+
+
+# ============================================================
+# Pumps App — routes (Features Coming Soon)
+# ============================================================
+
+_pump_scan_lock = threading.Lock()
+_pump_scan_status = {'running': False, 'started_at': None, 'completed_at': None, 'result': None}
+
+PUMP_COLUMNS = ['po_number', 'entry_date', 'vendor', 'job_name', 'description',
+                'approved_by', 'jobber_request_made', 'vendor_quote_amount',
+                'vendor_invoice_amount', 'vendor_invoice_number',
+                'sei_invoice_number', 'amount', 'notes']
+
+
+def _pump_access_ok():
+    return 'username' in session and session.get('role') == 'office'
+
+
+@app.route('/pumps')
+def pumps_app():
+    """Pumps App — pump invoice tracker + agentic Jobber invoice drafting."""
+    if not _pump_access_ok():
+        return redirect(url_for('login'))
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT DISTINCT month_tab FROM pump_invoices WHERE month_tab IS NOT NULL AND month_tab != ''")
+    months = {r[0] for r in c.fetchall()}
+    conn.close()
+    months.add(pump_month_tab())
+
+    def _month_key(m):
+        try:
+            return datetime.strptime(m, '%B %Y')
+        except ValueError:
+            return datetime.min
+    months = sorted(months, key=_month_key)
+
+    return render_template_string(PUMPS_TEMPLATE,
+                                  full_name=session.get('full_name', session.get('username', 'User')),
+                                  months=months,
+                                  current_month=pump_month_tab(),
+                                  jobber_configured=bool(JOBBER_API_TOKEN),
+                                  openclaw_configured=bool(OPENCLAW_API_KEY),
+                                  email_configured=PO_EMAIL_MONITORING_ENABLED)
+
+
+@app.route('/pumps/api/entries', methods=['GET'])
+def pumps_entries():
+    if not _pump_access_ok():
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    month = request.args.get('month') or pump_month_tab()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(f"""SELECT id, {', '.join(PUMP_COLUMNS)}, source FROM pump_invoices
+                  WHERE month_tab=? ORDER BY entry_date, id""", (month,))
+    rows = c.fetchall()
+    conn.close()
+    entries = [dict(zip(['id'] + PUMP_COLUMNS + ['source'], r)) for r in rows]
+    return jsonify({'success': True, 'month': month, 'entries': entries})
+
+
+@app.route('/pumps/api/save_entry', methods=['POST'])
+def pumps_save_entry():
+    if not _pump_access_ok():
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    data = request.get_json(silent=True) or {}
+    entry_id = data.get('id')
+    month = data.get('month') or pump_month_tab()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    values = {}
+    for col in PUMP_COLUMNS:
+        if col in data:
+            v = data[col]
+            if col in ('vendor_quote_amount', 'vendor_invoice_amount', 'amount'):
+                try:
+                    v = float(str(v).replace('$', '').replace(',', '')) if str(v).strip() else None
+                except ValueError:
+                    v = None
+            values[col] = v
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        if entry_id:
+            if values:
+                sets = ', '.join(f"{col}=?" for col in values)
+                c.execute(f"UPDATE pump_invoices SET {sets}, updated_at=? WHERE id=?",
+                          (*values.values(), now, entry_id))
+        else:
+            cols = list(values.keys()) + ['month_tab', 'source', 'created_at', 'updated_at']
+            c.execute(f"""INSERT INTO pump_invoices ({', '.join(cols)})
+                          VALUES ({', '.join('?' * len(cols))})""",
+                      (*values.values(), month, 'manual', now, now))
+            entry_id = c.lastrowid
+        conn.commit()
+        return jsonify({'success': True, 'id': entry_id})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route('/pumps/api/delete_entry', methods=['POST'])
+def pumps_delete_entry():
+    if not _pump_access_ok():
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    data = request.get_json(silent=True) or {}
+    entry_id = data.get('id')
+    if not entry_id:
+        return jsonify({'success': False, 'error': 'Missing id'}), 400
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM pump_invoices WHERE id=?", (entry_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
+
+
+def _run_pump_scan_background():
+    try:
+        result = scan_emails_for_pump_invoices()
+    except Exception as e:
+        result = {'errors': [str(e)], 'invoices_added': 0, 'emails_checked': 0}
+    with _pump_scan_lock:
+        _pump_scan_status['running'] = False
+        _pump_scan_status['completed_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        _pump_scan_status['result'] = result
+
+
+@app.route('/pumps/scan_emails', methods=['POST'])
+def pumps_scan_emails():
+    """Scan the PO inbox for pump invoices (background, like the PO scanner)."""
+    if not _pump_access_ok():
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    if not PO_EMAIL_MONITORING_ENABLED:
+        return jsonify({'success': False, 'error': 'Email monitoring not configured'})
+
+    with _pump_scan_lock:
+        if _pump_scan_status['running']:
+            return jsonify({'success': True, 'status': 'already_running'})
+        _pump_scan_status['running'] = True
+        _pump_scan_status['started_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        _pump_scan_status['completed_at'] = None
+        _pump_scan_status['result'] = None
+
+    threading.Thread(target=_run_pump_scan_background, daemon=True).start()
+    return jsonify({'success': True, 'status': 'started'})
+
+
+@app.route('/pumps/scan_status', methods=['GET'])
+def pumps_scan_status():
+    if not _pump_access_ok():
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    with _pump_scan_lock:
+        return jsonify(dict(_pump_scan_status))
+
+
+@app.route('/pumps/agent/submit', methods=['POST'])
+def pumps_agent_submit():
+    """Take in a free-text request and draft a Jobber invoice for it (agentic)."""
+    if not _pump_access_ok():
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    data = request.get_json(silent=True) or {}
+    request_text = (data.get('request') or '').strip()
+    if not request_text:
+        return jsonify({'success': False, 'error': 'Empty request'}), 400
+
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""INSERT INTO pump_agent_requests (request_text, source, status, created_at, updated_at)
+                 VALUES (?,?,?,?,?)""", (request_text, 'web', 'received', now, now))
+    request_id = c.lastrowid
+    conn.commit()
+    conn.close()
+
+    threading.Thread(target=process_pump_agent_request, args=(request_id,), daemon=True).start()
+    return jsonify({'success': True, 'request_id': request_id})
+
+
+@app.route('/pumps/agent/requests', methods=['GET'])
+def pumps_agent_requests():
+    if not _pump_access_ok():
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""SELECT id, request_text, source, status, draft_json, jobber_result, error, created_at
+                 FROM pump_agent_requests ORDER BY id DESC LIMIT 50""")
+    rows = c.fetchall()
+    conn.close()
+    keys = ['id', 'request_text', 'source', 'status', 'draft_json', 'jobber_result', 'error', 'created_at']
+    return jsonify({'success': True, 'requests': [dict(zip(keys, r)) for r in rows]})
+
+
+@app.route('/api/openclaw/pumps', methods=['POST'])
+@csrf.exempt
+def openclaw_pumps_webhook():
+    """
+    OpenClaw intake webhook for fully autonomous operation: OpenClaw POSTs
+    {"request": "..."} with "Authorization: Bearer <OPENCLAW_API_KEY>" and the
+    Pumps agent drafts the Jobber invoice with no human input.
+    """
+    if not OPENCLAW_API_KEY:
+        return jsonify({'success': False, 'error': 'OpenClaw integration not configured'}), 503
+    auth = request.headers.get('Authorization', '')
+    if not hmac.compare_digest(auth, f'Bearer {OPENCLAW_API_KEY}'):
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+
+    data = request.get_json(silent=True) or {}
+    request_text = (data.get('request') or data.get('text') or '').strip()
+    if not request_text:
+        return jsonify({'success': False, 'error': 'Missing "request" field'}), 400
+
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""INSERT INTO pump_agent_requests (request_text, source, status, created_at, updated_at)
+                 VALUES (?,?,?,?,?)""", (request_text, 'openclaw', 'received', now, now))
+    request_id = c.lastrowid
+    conn.commit()
+    conn.close()
+
+    threading.Thread(target=process_pump_agent_request, args=(request_id,), daemon=True).start()
+    return jsonify({'success': True, 'request_id': request_id, 'status': 'processing'})
 
 
 init_db()
