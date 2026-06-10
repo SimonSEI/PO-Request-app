@@ -36331,12 +36331,19 @@ def _wo_status_label_filter(s):
 
 _WO_SAT_JS = '''
 function woMakeMap(elId, lat, lng, zoom){
-    var map = L.map(elId).setView([lat, lng], zoom);
+    var map = L.map(elId, {zoomControl:true, tap:false}).setView([lat, lng], zoom);
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
         {maxZoom:21, attribution:'Imagery © Esri'}).addTo(map);
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
         {maxZoom:21, opacity:0.9}).addTo(map);
-    setTimeout(function(){ map.invalidateSize(); }, 200);
+    // Mobile browsers often lay the container out after JS runs (and again when
+    // the address bar shows/hides), leaving the map grey — re-measure a few times
+    // and on every resize / orientation change.
+    function fix(){ try{ map.invalidateSize(false); }catch(e){} }
+    [60, 250, 600, 1200, 2500].forEach(function(ms){ setTimeout(fix, ms); });
+    window.addEventListener('resize', fix);
+    window.addEventListener('orientationchange', function(){ setTimeout(fix, 350); });
+    map.whenReady(fix);
     return map;
 }'''
 
@@ -36448,7 +36455,13 @@ function onCommunity(){
 }
 function setAcc(t){ document.getElementById('accMsg').innerHTML=t; }
 function locate(){
+  if(pmap){ pmap.invalidateSize(false); }
   if(!navigator.geolocation){ setAcc('Location is not available on this device — tap the map to place your pin.'); return; }
+  // Mobile browsers only allow geolocation on secure (https) pages.
+  if(window.isSecureContext===false && location.hostname!=='localhost' && location.hostname!=='127.0.0.1'){
+    setAcc('Your phone blocks location on insecure (http) pages. Open this page with <b>https://</b> — or just tap the map to place your pin.');
+    return;
+  }
   setAcc('Locating you… <b>please allow location access</b> and hold still for a few seconds for the best accuracy.');
   if(watchId!==null){ navigator.geolocation.clearWatch(watchId); }
   var best=Infinity, settled=false;
@@ -36512,11 +36525,16 @@ document.getElementById('p-name').addEventListener('input', function(){
     }).catch(function(){});
   }, 350);
 });
-window.addEventListener('load', function(){
+function woStart(){
+  if(pmap) return;
   initMap();
   if(sessionStorage.getItem('woThanks')){ sessionStorage.removeItem('woThanks');
     showMsg('ok','✅ Your work order was submitted! A technician will review it shortly. You can see its status below.'); }
-});
+}
+// Run as soon as the DOM is ready (the 'load' event may already have fired on mobile).
+if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', woStart); }
+else { woStart(); }
+window.addEventListener('load', woStart);
 </script></body></html>'''
 
 
