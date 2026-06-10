@@ -36454,6 +36454,39 @@ function onCommunity(){
   if(COMM[id]){ pmap.setView(COMM[id], 17); }
 }
 function setAcc(t){ document.getElementById('accMsg').innerHTML=t; }
+function currentCommunityName(){
+  var s=document.getElementById('p-comm');
+  return (s && s.value && s.selectedIndex>0) ? s.options[s.selectedIndex].text : '';
+}
+// When we know the homeowner's address, show their home from that address
+// instead of using live GPS tracking.
+var addrGeocoded='';
+function dropHomePin(lat,lng){
+  setPin(lat,lng);
+  if(pmarker){ pmarker.bindTooltip('This is your home', {permanent:true, direction:'top', offset:[0,-12], className:'home-tip'}).openTooltip(); }
+  pmap.setView([lat,lng], 19);
+}
+function geocodeAddress(addr, force){
+  addr=(addr||'').trim();
+  if(addr.length<4) return;
+  if(!force && document.getElementById('p-lat').value) return;   // don't override a pin already placed
+  if(addr===addrGeocoded && !force) return;
+  addrGeocoded=addr;
+  var q=addr; var cn=currentCommunityName(); if(cn) q+=', '+cn;
+  setAcc('Finding your home from your address…');
+  fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&addressdetails=0&q='+encodeURIComponent(q),
+        {headers:{'Accept':'application/json'}})
+    .then(function(r){ return r.json(); })
+    .then(function(rows){
+      if(rows && rows.length){
+        dropHomePin(parseFloat(rows[0].lat), parseFloat(rows[0].lon));
+        setAcc('Showing your home from your address — drag the pin or tap the map to fine-tune the exact spot.');
+      } else {
+        setAcc('Couldn\\'t find that address automatically — tap your home on the map, or use the location button.');
+      }
+    })
+    .catch(function(){ setAcc('Couldn\\'t look up the address — tap your home on the map, or use the location button.'); });
+}
 function locate(){
   if(pmap){ pmap.invalidateSize(false); }
   if(!navigator.geolocation){ setAcc('Location is not available on this device — tap the map to place your pin.'); return; }
@@ -36522,12 +36555,20 @@ document.getElementById('p-name').addEventListener('input', function(){
       fill('p-email',h.email); fill('p-phone',h.phone); fill('p-addr',h.address);
       if(h.community_id){ var s=document.getElementById('p-comm'); if(!s.value){ s.value=String(h.community_id); onCommunity(); } }
       document.getElementById('savedChip').style.display='inline-block';
+      // Auto-filled address → show their home from it (not GPS).
+      var a=document.getElementById('p-addr').value; if(a){ geocodeAddress(a); }
     }).catch(function(){});
   }, 350);
 });
 function woStart(){
   if(pmap) return;
   initMap();
+  // If we already have the homeowner's address (remembered), place the pin from
+  // it rather than tracking their phone's GPS.
+  var addr=document.getElementById('p-addr').value;
+  if(addr){ geocodeAddress(addr); }
+  // Geocode an address the homeowner types/edits when they leave the field.
+  document.getElementById('p-addr').addEventListener('blur', function(){ geocodeAddress(this.value); });
   if(sessionStorage.getItem('woThanks')){ sessionStorage.removeItem('woThanks');
     showMsg('ok','✅ Your work order was submitted! A technician will review it shortly. You can see its status below.'); }
 }
