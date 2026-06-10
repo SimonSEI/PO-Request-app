@@ -36341,96 +36341,74 @@ function woMakeMap(elId, lat, lng, zoom){
 }'''
 
 # ── Homeowner portal: sign in / create account ───────────────────────────────
-WO_PORTAL_LOGIN_TEMPLATE = '''<!DOCTYPE html><html><head>
-<title>Work Order Portal</title>
+WO_PORTAL_TEMPLATE = '''<!DOCTYPE html><html><head>
+<title>Submit a Work Order</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-''' + _WO_CSRF_JS + _WO_CSS + '''
+''' + _WO_CSRF_JS + _WO_LEAFLET + _WO_CSS + '''
 <style>
-.portal-hero{ min-height:100vh; display:flex; align-items:center; justify-content:center;
-    background:linear-gradient(135deg,#1D4ED8,#0B2C66); padding:24px; }
-.portal-box{ width:min(460px,96vw); }
-.portal-box .logo{ color:#fff; text-align:center; margin-bottom:18px; }
-.portal-box .logo .t{ font-weight:700; font-size:24px; } .portal-box .logo .s{ opacity:.8; font-size:14px; }
-.ptabs{ display:flex; margin-bottom:16px; background:#EEF2F7; border-radius:10px; padding:4px; }
-.ptab{ flex:1; text-align:center; padding:9px; border-radius:8px; cursor:pointer; font-weight:600; font-size:14px; color:var(--muted); }
-.ptab.active{ background:#fff; color:var(--brand); box-shadow:0 1px 3px rgba(0,0,0,.1); }
+.acc{ font-size:12px; color:var(--muted); margin:6px 0 0; }
+.acc b{ color:var(--text); }
+.namewrap{ position:relative; }
+.savedchip{ display:none; font-size:12px; color:#065F46; background:#D1FAE5; padding:3px 9px; border-radius:999px; margin-left:8px; }
 </style></head>
-<body><div class="portal-hero"><div class="portal-box">
-  <div class="logo"><div class="t">🛠️ Work Order Portal</div><div class="s">Stahlman-England Irrigation</div></div>
-  <div class="card">
-    <div class="ptabs">
-      <div class="ptab active" id="tab-login" onclick="pswitch('login')">Sign In</div>
-      <div class="ptab" id="tab-reg" onclick="pswitch('reg')">Create Account</div>
-    </div>
-    <div id="msg"></div>
-    <div id="form-login">
-      <label>Email</label><input type="email" id="li-email" placeholder="you@email.com">
-      <label>Password</label><input type="password" id="li-pass">
-      <button class="btn" style="width:100%" onclick="doLogin()">Sign In</button>
-    </div>
-    <div id="form-reg" style="display:none">
-      <p class="muted" style="margin-bottom:12px">We'll save your details so you never have to type them again.</p>
-      <label>Full Name</label><input id="r-name">
-      <div class="grid2"><div><label>Email</label><input type="email" id="r-email"></div>
-        <div><label>Phone</label><input id="r-phone"></div></div>
-      <label>Community</label>
-      <select id="r-comm"><option value="">— Select your community —</option>
-        {% for c in communities %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}</select>
-      <label>Home Address</label><input id="r-addr" placeholder="123 Palm Ct">
-      <label>Password</label><input type="password" id="r-pass" placeholder="At least 6 characters">
-      <button class="btn green" style="width:100%" onclick="doReg()">Create Account</button>
-    </div>
-  </div>
-</div></div>
-<script>
-function pswitch(w){
-  document.getElementById('tab-login').classList.toggle('active', w==='login');
-  document.getElementById('tab-reg').classList.toggle('active', w==='reg');
-  document.getElementById('form-login').style.display = w==='login'?'block':'none';
-  document.getElementById('form-reg').style.display = w==='reg'?'block':'none';
-  document.getElementById('msg').innerHTML='';
-}
-function showErr(t){ document.getElementById('msg').innerHTML='<div class="flash err">'+t+'</div>'; }
-async function post(url,body){
-  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  return r.json();
-}
-async function doLogin(){
-  const j=await post('{{ url_for("wo_portal_login") }}',{email:document.getElementById('li-email').value,password:document.getElementById('li-pass').value});
-  if(j.success){ location.href='{{ url_for("wo_portal_home") }}'; } else { showErr(j.error||'Login failed'); }
-}
-async function doReg(){
-  const j=await post('{{ url_for("wo_portal_register") }}',{
-    full_name:document.getElementById('r-name').value, email:document.getElementById('r-email').value,
-    phone:document.getElementById('r-phone').value, community_id:document.getElementById('r-comm').value,
-    address:document.getElementById('r-addr').value, password:document.getElementById('r-pass').value});
-  if(j.success){ location.href='{{ url_for("wo_portal_home") }}'; } else { showErr(j.error||'Could not create account'); }
-}
-</script></body></html>'''
-
-
-# ── Homeowner portal: home + new request with satellite pin drop ─────────────
-WO_PORTAL_HOME_TEMPLATE = '''<!DOCTYPE html><html><head>
-<title>My Work Orders</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-''' + _WO_CSRF_JS + _WO_LEAFLET + _WO_CSS + '''</head>
 <body>
 <div class="wo-nav">
   <div class="brand">🛠️ Work Order Portal</div>
-  <div class="right"><span class="wo-chip">{{ homeowner.full_name }}</span>
-    <a href="{{ url_for('wo_portal_logout') }}">Sign Out</a></div>
+  <div class="right"><span class="wo-chip">Stahlman-England Irrigation</span></div>
 </div>
 <div class="wrap">
-  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:8px">
-    <div><h1 style="font-size:22px">Welcome back, {{ homeowner.full_name.split(' ')[0] }}</h1>
-      <p class="muted">{{ homeowner.community_name or 'No community selected' }}{% if homeowner.address %} · {{ homeowner.address }}{% endif %}</p></div>
-    <button class="btn green" onclick="openNew()">+ New Work Order</button>
-  </div>
+  <h1 style="font-size:22px;margin-bottom:4px">Submit a Work Order</h1>
+  <p class="muted" style="margin-bottom:18px">Tell us what's wrong and pin the exact spot on your home. Just type your name — we'll remember your details for next time, no account needed.</p>
+
+  <div id="msg"></div>
+
   <div class="card">
-    <h2>Your Requests</h2>
-    {% if orders %}
+    <h2>Your Information</h2>
+    <label>Your Name <span id="savedChip" class="savedchip">✓ Details remembered</span></label>
+    <div class="namewrap"><input id="p-name" placeholder="First and last name" autocomplete="name"
+        value="{{ homeowner.full_name if homeowner else '' }}"></div>
+    <div class="grid2">
+      <div><label>Email</label><input type="email" id="p-email" autocomplete="email"
+          value="{{ homeowner.email if homeowner else '' }}"></div>
+      <div><label>Phone</label><input id="p-phone" autocomplete="tel"
+          value="{{ homeowner.phone if homeowner else '' }}"></div>
+    </div>
+    <label>Community</label>
+    <select id="p-comm" onchange="onCommunity()"><option value="">— Select your community —</option>
+      {% for c in communities %}<option value="{{ c.id }}" {% if homeowner and homeowner.community_id==c.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select>
+    <label>Home Address</label><input id="p-addr" placeholder="123 Palm Ct"
+        value="{{ homeowner.address if homeowner else '' }}">
+  </div>
+
+  <div class="card">
+    <h2>The Problem</h2>
+    <label>What's wrong?</label>
+    <textarea id="p-problem" placeholder="Describe the issue (e.g. sprinkler head broken, flooding near driveway)"></textarea>
+    <div class="grid2">
+      <div><label>Category</label><select id="p-cat">
+        <option value="">General</option><option>Irrigation / Sprinkler</option>
+        <option>Landscaping</option><option>Lighting</option><option>Drainage / Flooding</option><option>Other</option></select></div>
+      <div><label>Priority</label><select id="p-pri"><option value="normal">Normal</option>
+        <option value="high">High / Urgent</option><option value="low">Low</option></select></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Pin the Location</h2>
+    <p class="muted" style="margin-bottom:8px">Tap the satellite map on the exact spot of your home where the issue is, so the technician knows right where to go.</p>
+    <button class="btn ghost sm" type="button" onclick="locate()">📍 Use my current location</button>
+    <p class="acc" id="accMsg"></p>
+    <div id="pmap" class="map" style="margin-top:8px"></div>
+    <input type="hidden" id="p-lat"><input type="hidden" id="p-lng">
+    <label style="margin-top:12px">Note about the location (optional)</label>
+    <input id="p-note" placeholder="e.g. back yard, left of the patio">
+    <div style="margin-top:16px"><button class="btn green" onclick="submitWO()">Submit Request</button></div>
+  </div>
+
+  {% if orders %}
+  <div class="card">
+    <h2>Your Recent Requests</h2>
     <table><thead><tr><th>#</th><th>Problem</th><th>Status</th><th>Technician Notes</th><th>Submitted</th></tr></thead><tbody>
       {% for o in orders %}<tr>
         <td>#{{ o.id }}</td>
@@ -36441,69 +36419,93 @@ WO_PORTAL_HOME_TEMPLATE = '''<!DOCTYPE html><html><head>
         <td class="muted">{{ o.created_at[:10] }}</td>
       </tr>{% endfor %}
     </tbody></table>
-    {% else %}<div class="empty">No work orders yet. Click “New Work Order” to submit your first request.</div>{% endif %}
   </div>
+  {% endif %}
 </div>
 
-<div class="modal-bg" id="newBg"><div class="modal">
-  <h2 style="margin-bottom:14px">New Work Order</h2>
-  <div id="nmsg"></div>
-  <label>What's the problem?</label>
-  <textarea id="n-problem" placeholder="Describe the issue (e.g. sprinkler head broken, flooding near driveway)"></textarea>
-  <div class="grid2">
-    <div><label>Category</label><select id="n-cat">
-      <option value="">General</option><option>Irrigation / Sprinkler</option>
-      <option>Landscaping</option><option>Lighting</option><option>Drainage / Flooding</option><option>Other</option></select></div>
-    <div><label>Priority</label><select id="n-pri"><option value="normal">Normal</option>
-      <option value="high">High / Urgent</option><option value="low">Low</option></select></div>
-  </div>
-  <label>Pin the exact spot on your home where the issue is</label>
-  <p class="muted" style="margin:-6px 0 8px">Click the satellite map to drop a pin so the technician knows exactly where to go.</p>
-  <button class="btn ghost sm" style="margin-bottom:8px" onclick="locate()">📍 Use my current location</button>
-  <div id="nmap" class="map"></div>
-  <input type="hidden" id="n-lat"><input type="hidden" id="n-lng">
-  <label style="margin-top:12px">Note about the location (optional)</label>
-  <input id="n-note" placeholder="e.g. back yard, left of the patio">
-  <div class="right-align" style="margin-top:14px">
-    <button class="btn ghost" onclick="closeNew()">Cancel</button>
-    <button class="btn green" onclick="submitWO()">Submit Request</button>
-  </div>
-</div></div>
-
 <script>''' + _WO_SAT_JS + '''
-var nmap=null, nmarker=null;
-var startLat={{ homeowner.center_lat if homeowner.center_lat is not none else 27.95 }};
-var startLng={{ homeowner.center_lng if homeowner.center_lng is not none else -82.45 }};
-var startZoom={{ 18 if homeowner.center_lat is not none else 12 }};
-function openNew(){
-  document.getElementById('newBg').classList.add('show');
-  if(!nmap){
-    nmap=woMakeMap('nmap', startLat, startLng, startZoom);
-    nmap.on('click', function(e){ setPin(e.latlng.lat, e.latlng.lng); });
-    locate();
-  }
+var COMM = { {% for c in communities %}{% if c.center_lat is not none and c.center_lng is not none %}"{{ c.id }}":[{{ c.center_lat }},{{ c.center_lng }}],{% endif %}{% endfor %} };
+var START = {% if homeowner and homeowner.center_lat is not none %}[{{ homeowner.center_lat }},{{ homeowner.center_lng }},18]{% else %}[27.95,-82.45,11]{% endif %};
+var pmap=null, pmarker=null, acccircle=null, mecircle=null, watchId=null;
+
+function initMap(){
+  pmap = woMakeMap('pmap', START[0], START[1], START[2]);
+  pmap.on('click', function(e){ setPin(e.latlng.lat, e.latlng.lng); });
 }
-function closeNew(){ document.getElementById('newBg').classList.remove('show'); }
 function setPin(lat,lng){
-  document.getElementById('n-lat').value=lat; document.getElementById('n-lng').value=lng;
-  if(nmarker){ nmarker.setLatLng([lat,lng]); } else { nmarker=L.marker([lat,lng]).addTo(nmap); }
+  document.getElementById('p-lat').value=lat; document.getElementById('p-lng').value=lng;
+  if(pmarker){ pmarker.setLatLng([lat,lng]); }
+  else { pmarker=L.marker([lat,lng],{draggable:true}).addTo(pmap);
+         pmarker.on('dragend',function(){ var ll=pmarker.getLatLng(); document.getElementById('p-lat').value=ll.lat; document.getElementById('p-lng').value=ll.lng; }); }
 }
+function onCommunity(){
+  var id=document.getElementById('p-comm').value;
+  if(COMM[id]){ pmap.setView(COMM[id], 17); }
+}
+function setAcc(t){ document.getElementById('accMsg').innerHTML=t; }
 function locate(){
-  if(!navigator.geolocation || !nmap) return;
-  navigator.geolocation.getCurrentPosition(function(p){
-    nmap.setView([p.coords.latitude,p.coords.longitude], 19);
-  }, function(){}, {enableHighAccuracy:true, timeout:8000});
+  if(!navigator.geolocation){ setAcc('Location is not available on this device — tap the map to place your pin.'); return; }
+  setAcc('Locating you… <b>please allow location access</b> and hold still for a few seconds for the best accuracy.');
+  if(watchId!==null){ navigator.geolocation.clearWatch(watchId); }
+  var best=Infinity, settled=false;
+  watchId = navigator.geolocation.watchPosition(function(p){
+    var lat=p.coords.latitude, lng=p.coords.longitude, acc=p.coords.accuracy||9999;
+    // Show where the device thinks you are with an accuracy circle.
+    if(mecircle){ mecircle.setLatLng([lat,lng]).setRadius(acc); }
+    else { mecircle=L.circle([lat,lng],{radius:acc,color:'#2563EB',fillColor:'#2563EB',fillOpacity:.12,weight:1}).addTo(pmap); }
+    if(acc < best){
+      best=acc;
+      pmap.setView([lat,lng], acc<30?20:(acc<100?19:17));
+      setAcc('Centered on your location — accuracy about <b>'+Math.round(acc)+' m</b>. Now tap your exact spot on the roof/yard to drop the pin.');
+    }
+    // Stop once we have a solid GPS fix (or after the timeout below).
+    if(acc<=20 && !settled){ settled=true; navigator.geolocation.clearWatch(watchId); watchId=null; }
+  }, function(err){
+    setAcc('Couldn\\'t get your location ('+(err.message||'permission denied')+'). Pick your community above or tap the map to place your pin.');
+  }, {enableHighAccuracy:true, maximumAge:0, timeout:20000});
+  // Don't keep the GPS running forever.
+  setTimeout(function(){ if(watchId!==null){ navigator.geolocation.clearWatch(watchId); watchId=null; } }, 25000);
 }
 async function submitWO(){
-  var problem=document.getElementById('n-problem').value.trim();
-  if(!problem){ document.getElementById('nmsg').innerHTML='<div class="flash err">Please describe the problem.</div>'; return; }
+  var name=document.getElementById('p-name').value.trim();
+  var problem=document.getElementById('p-problem').value.trim();
+  if(!name){ showMsg('err','Please enter your name.'); return; }
+  if(!problem){ showMsg('err','Please describe the problem.'); return; }
   var r=await fetch('{{ url_for("wo_portal_submit") }}',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({problem:problem, category:document.getElementById('n-cat').value,
-      priority:document.getElementById('n-pri').value, pin_lat:document.getElementById('n-lat').value,
-      pin_lng:document.getElementById('n-lng').value, pin_note:document.getElementById('n-note').value})});
+    body:JSON.stringify({full_name:name, email:document.getElementById('p-email').value,
+      phone:document.getElementById('p-phone').value, community_id:document.getElementById('p-comm').value,
+      address:document.getElementById('p-addr').value, problem:problem,
+      category:document.getElementById('p-cat').value, priority:document.getElementById('p-pri').value,
+      pin_lat:document.getElementById('p-lat').value, pin_lng:document.getElementById('p-lng').value,
+      pin_note:document.getElementById('p-note').value})});
   var j=await r.json();
-  if(j.success){ location.reload(); } else { document.getElementById('nmsg').innerHTML='<div class="flash err">'+(j.error||'Could not submit')+'</div>'; }
+  if(j.success){ sessionStorage.setItem('woThanks','1'); location.href='{{ url_for("wo_portal") }}'; }
+  else { showMsg('err', j.error||'Could not submit your request'); }
 }
+function showMsg(kind,t){ document.getElementById('msg').innerHTML='<div class="flash '+kind+'">'+t+'</div>'; window.scrollTo(0,0); }
+// As the homeowner types their name, fetch and fill their saved details.
+var lookupTimer=null;
+document.getElementById('p-name').addEventListener('input', function(){
+  clearTimeout(lookupTimer);
+  var name=this.value.trim();
+  document.getElementById('savedChip').style.display='none';
+  if(name.length<2) return;
+  lookupTimer=setTimeout(function(){
+    fetch('{{ url_for("wo_portal_lookup") }}?name='+encodeURIComponent(name)).then(r=>r.json()).then(j=>{
+      if(!j.found) return;
+      var h=j.homeowner;
+      function fill(id,v){ var el=document.getElementById(id); if(el && !el.value && v) el.value=v; }
+      fill('p-email',h.email); fill('p-phone',h.phone); fill('p-addr',h.address);
+      if(h.community_id){ var s=document.getElementById('p-comm'); if(!s.value){ s.value=String(h.community_id); onCommunity(); } }
+      document.getElementById('savedChip').style.display='inline-block';
+    }).catch(function(){});
+  }, 350);
+});
+window.addEventListener('load', function(){
+  initMap();
+  if(sessionStorage.getItem('woThanks')){ sessionStorage.removeItem('woThanks');
+    showMsg('ok','✅ Your work order was submitted! A technician will review it shortly. You can see its status below.'); }
+});
 </script></body></html>'''
 
 
@@ -37127,121 +37129,91 @@ def openclaw_workorders_quote_webhook():
 
 
 # ── Homeowner public portal ──────────────────────────────────────────────────
-@app.route('/workorders/portal')
-def wo_portal():
-    if session.get('wo_homeowner_id'):
-        return redirect(url_for('wo_portal_home'))
+def _wo_load_homeowner(hid):
+    """Load a homeowner + their community as a dict, or None."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT id, name FROM wo_communities WHERE active=1 ORDER BY name")
-    communities = [{'id': r[0], 'name': r[1]} for r in c.fetchall()]
-    conn.close()
-    return render_template_string(WO_PORTAL_LOGIN_TEMPLATE, communities=communities)
-
-
-@app.route('/workorders/portal/register', methods=['POST'])
-@limiter.limit("8 per minute")
-def wo_portal_register():
-    d = request.get_json(silent=True) or {}
-    full_name = (d.get('full_name') or '').strip()
-    email = (d.get('email') or '').strip().lower()
-    phone = (d.get('phone') or '').strip()
-    password = (d.get('password') or '').strip()
-    community_id = d.get('community_id')
-    address = (d.get('address') or '').strip()
-    if not all([full_name, email, phone, password]):
-        return jsonify({'success': False, 'error': 'Name, email, phone and password are required'}), 400
-    if len(password) < 6:
-        return jsonify({'success': False, 'error': 'Password must be at least 6 characters'}), 400
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT id FROM wo_homeowners WHERE email=?", (email,))
-    if c.fetchone():
-        conn.close()
-        return jsonify({'success': False, 'error': 'An account with that email already exists — please sign in.'}), 400
-    c.execute("""INSERT INTO wo_homeowners (full_name, email, phone, password, community_id, address, created_at)
-                 VALUES (?,?,?,?,?,?,?)""",
-              (full_name, email, phone, generate_password_hash(password),
-               int(community_id) if community_id else None, address,
-               datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
-    hid = c.lastrowid
-    conn.commit()
-    conn.close()
-    session['wo_homeowner_id'] = hid
-    session['wo_homeowner_name'] = full_name
-    return jsonify({'success': True})
-
-
-@app.route('/workorders/portal/login', methods=['POST'])
-@limiter.limit("10 per minute")
-def wo_portal_login():
-    d = request.get_json(silent=True) or {}
-    email = (d.get('email') or '').strip().lower()
-    password = (d.get('password') or '').strip()
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT id, full_name, password FROM wo_homeowners WHERE email=?", (email,))
-    row = c.fetchone()
-    ok = False
-    if row:
-        try:
-            ok = check_password_hash(row[2], password)
-        except Exception:
-            ok = False
-    if not (row and ok):
-        conn.close()
-        return jsonify({'success': False, 'error': 'Invalid email or password'}), 401
-    c.execute("UPDATE wo_homeowners SET last_login=? WHERE id=?",
-              (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), row[0]))
-    conn.commit()
-    conn.close()
-    session['wo_homeowner_id'] = row[0]
-    session['wo_homeowner_name'] = row[1]
-    return jsonify({'success': True})
-
-
-@app.route('/workorders/portal/logout')
-def wo_portal_logout():
-    session.pop('wo_homeowner_id', None)
-    session.pop('wo_homeowner_name', None)
-    return redirect(url_for('wo_portal'))
-
-
-@app.route('/workorders/portal/home')
-def wo_portal_home():
-    hid = session.get('wo_homeowner_id')
-    if not hid:
-        return redirect(url_for('wo_portal'))
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""SELECT h.full_name, h.email, h.phone, h.address, h.community_id,
+    c.execute("""SELECT h.id, h.full_name, h.email, h.phone, h.address, h.community_id,
                         c2.name, c2.center_lat, c2.center_lng
                  FROM wo_homeowners h LEFT JOIN wo_communities c2 ON c2.id=h.community_id
                  WHERE h.id=?""", (hid,))
-    hr = c.fetchone()
-    if not hr:
-        conn.close()
-        session.pop('wo_homeowner_id', None)
-        return redirect(url_for('wo_portal'))
-    homeowner = dict(zip(['full_name', 'email', 'phone', 'address', 'community_id',
-                          'community_name', 'center_lat', 'center_lng'], hr))
-    c.execute("""SELECT id, problem, category, priority, status, quote_status, tech_notes, created_at
-                 FROM wo_work_orders WHERE homeowner_id=? ORDER BY id DESC""", (hid,))
-    keys = ['id', 'problem', 'category', 'priority', 'status', 'quote_status', 'tech_notes', 'created_at']
-    orders = [dict(zip(keys, r)) for r in c.fetchall()]
+    r = c.fetchone()
     conn.close()
-    return render_template_string(WO_PORTAL_HOME_TEMPLATE, homeowner=homeowner, orders=orders)
+    if not r:
+        return None
+    return dict(zip(['id', 'full_name', 'email', 'phone', 'address', 'community_id',
+                     'community_name', 'center_lat', 'center_lng'], r))
+
+
+@app.route('/workorders/portal')
+def wo_portal():
+    """Homeowner request portal — no sign-in. We remember details by name."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, name, center_lat, center_lng FROM wo_communities WHERE active=1 ORDER BY name")
+    communities = [{'id': r[0], 'name': r[1], 'center_lat': r[2], 'center_lng': r[3]} for r in c.fetchall()]
+    conn.close()
+
+    # Pre-fill from the last person who used this device, if we know them.
+    homeowner = None
+    orders = []
+    hid = session.get('wo_homeowner_id')
+    if hid:
+        homeowner = _wo_load_homeowner(hid)
+        if homeowner:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("""SELECT id, problem, category, priority, status, quote_status, tech_notes, created_at
+                         FROM wo_work_orders WHERE homeowner_id=? ORDER BY id DESC LIMIT 25""", (hid,))
+            keys = ['id', 'problem', 'category', 'priority', 'status', 'quote_status', 'tech_notes', 'created_at']
+            orders = [dict(zip(keys, r)) for r in c.fetchall()]
+            conn.close()
+        else:
+            session.pop('wo_homeowner_id', None)
+    return render_template_string(WO_PORTAL_TEMPLATE, communities=communities,
+                                  homeowner=homeowner, orders=orders)
+
+
+@app.route('/workorders/portal/lookup')
+def wo_portal_lookup():
+    """As a homeowner types their name, return their saved details so they
+    never have to re-enter email/phone/community/address."""
+    name = (request.args.get('name') or '').strip()
+    if len(name) < 2:
+        return jsonify({'found': False})
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""SELECT id, full_name, email, phone, community_id, address
+                 FROM wo_homeowners WHERE LOWER(full_name)=LOWER(?) ORDER BY last_login DESC, id DESC LIMIT 1""",
+              (name,))
+    r = c.fetchone()
+    conn.close()
+    if not r:
+        return jsonify({'found': False})
+    return jsonify({'found': True, 'homeowner': dict(zip(
+        ['id', 'full_name', 'email', 'phone', 'community_id', 'address'], r))})
 
 
 @app.route('/workorders/portal/api/submit', methods=['POST'])
+@limiter.limit("20 per minute")
 def wo_portal_submit():
-    hid = session.get('wo_homeowner_id')
-    if not hid:
-        return jsonify({'success': False, 'error': 'Not signed in'}), 403
+    """Create a work order, remembering the homeowner's details by name/email."""
     d = request.get_json(silent=True) or {}
+    full_name = (d.get('full_name') or '').strip()
     problem = (d.get('problem') or '').strip()
+    if not full_name:
+        return jsonify({'success': False, 'error': 'Please enter your name'}), 400
     if not problem:
         return jsonify({'success': False, 'error': 'Please describe the problem'}), 400
+
+    email = (d.get('email') or '').strip().lower()
+    phone = (d.get('phone') or '').strip()
+    address = (d.get('address') or '').strip()
+    community_id = d.get('community_id')
+    try:
+        community_id = int(community_id) if community_id else None
+    except (ValueError, TypeError):
+        community_id = None
 
     def _f(v):
         try:
@@ -37249,12 +37221,41 @@ def wo_portal_submit():
         except (ValueError, TypeError):
             return None
 
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT community_id FROM wo_homeowners WHERE id=?", (hid,))
-    row = c.fetchone()
-    community_id = row[0] if row else None
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    # Find an existing record by email, otherwise by name — then keep it current.
+    hid = None
+    if email:
+        c.execute("SELECT id FROM wo_homeowners WHERE email=?", (email,))
+        row = c.fetchone()
+        if row:
+            hid = row[0]
+    if hid is None:
+        c.execute("SELECT id FROM wo_homeowners WHERE LOWER(full_name)=LOWER(?) ORDER BY id DESC LIMIT 1", (full_name,))
+        row = c.fetchone()
+        if row:
+            hid = row[0]
+
+    if hid is not None:
+        c.execute("""UPDATE wo_homeowners SET full_name=?, email=COALESCE(NULLIF(?, ''), email),
+                     phone=COALESCE(NULLIF(?, ''), phone),
+                     community_id=COALESCE(?, community_id),
+                     address=COALESCE(NULLIF(?, ''), address), last_login=? WHERE id=?""",
+                  (full_name, email, phone, community_id, address, now, hid))
+    else:
+        c.execute("""INSERT INTO wo_homeowners (full_name, email, phone, password, community_id, address, created_at, last_login)
+                     VALUES (?,?,?,?,?,?,?,?)""",
+                  (full_name, email, phone, '', community_id, address, now, now))
+        hid = c.lastrowid
+
+    # Use the homeowner's saved community when they didn't pick one this time.
+    if community_id is None:
+        c.execute("SELECT community_id FROM wo_homeowners WHERE id=?", (hid,))
+        row = c.fetchone()
+        community_id = row[0] if row else None
+
     c.execute("""INSERT INTO wo_work_orders
                  (homeowner_id, community_id, problem, category, priority, status,
                   pin_lat, pin_lng, pin_note, created_at, updated_at)
@@ -37264,6 +37265,10 @@ def wo_portal_submit():
     wo_id = c.lastrowid
     conn.commit()
     conn.close()
+
+    # Remember this person on this device so the form is pre-filled next time.
+    session['wo_homeowner_id'] = hid
+    session['wo_homeowner_name'] = full_name
     return jsonify({'success': True, 'id': wo_id})
 
 
