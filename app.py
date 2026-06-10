@@ -239,6 +239,14 @@ CHRISTIAN_EMAIL = os.environ.get('CHRISTIAN_EMAIL', '')
 # (/api/openclaw/pumps). Requests must send "Authorization: Bearer <key>".
 OPENCLAW_API_KEY = os.environ.get('OPENCLAW_API_KEY', '')
 
+# Work Orders App (Features Coming Soon): when a technician flags a work order
+# as needing a quote, the app can ping OpenClaw to draft a quote for the client.
+# This pipeline is fully wired but OFF by default ("ready to turn on") — set
+# WORKORDERS_OPENCLAW_QUOTES=true (and OPENCLAW_API_KEY + OPENCLAW_QUOTE_URL) to
+# activate it.
+WORKORDERS_OPENCLAW_QUOTES_ENABLED = os.environ.get('WORKORDERS_OPENCLAW_QUOTES', '').lower() in ('1', 'true', 'yes', 'on')
+OPENCLAW_QUOTE_URL = os.environ.get('OPENCLAW_QUOTE_URL', 'https://api.openclaw.ai/v1/quotes/draft')
+
 # IMAP configuration based on provider
 # Allow explicit override via env var, otherwise auto-detect
 PO_EMAIL_IMAP_SERVER = os.environ.get('PO_EMAIL_IMAP_SERVER', '')
@@ -2762,6 +2770,72 @@ def init_db():
                   jobber_result TEXT,
                   error TEXT,
                   pump_invoice_id INTEGER,
+                  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TEXT)''')
+
+    # ── Work Orders App (Features Coming Soon) ───────────────────────────────
+    # Communities the office sets up; each has its own property manager(s).
+    c.execute('''CREATE TABLE IF NOT EXISTS wo_communities (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  name TEXT NOT NULL,
+                  address TEXT DEFAULT '',
+                  city TEXT DEFAULT '',
+                  state TEXT DEFAULT '',
+                  zip TEXT DEFAULT '',
+                  center_lat REAL,
+                  center_lng REAL,
+                  notes TEXT DEFAULT '',
+                  active INTEGER DEFAULT 1,
+                  created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
+
+    # Property managers are users (role='property_manager'); this links each
+    # manager to one or more communities they oversee.
+    c.execute('''CREATE TABLE IF NOT EXISTS wo_pm_communities (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER NOT NULL,
+                  community_id INTEGER NOT NULL,
+                  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE(user_id, community_id))''')
+
+    # Homeowner accounts for the public request portal — saved so they don't
+    # have to re-enter their name/email/phone on every request.
+    c.execute('''CREATE TABLE IF NOT EXISTS wo_homeowners (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  full_name TEXT NOT NULL,
+                  email TEXT UNIQUE NOT NULL,
+                  phone TEXT DEFAULT '',
+                  password TEXT NOT NULL,
+                  community_id INTEGER,
+                  address TEXT DEFAULT '',
+                  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                  last_login TEXT)''')
+
+    # The work orders themselves, including the map pin the homeowner drops.
+    c.execute('''CREATE TABLE IF NOT EXISTS wo_work_orders (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  homeowner_id INTEGER NOT NULL,
+                  community_id INTEGER,
+                  problem TEXT NOT NULL,
+                  category TEXT DEFAULT '',
+                  priority TEXT DEFAULT 'normal',
+                  status TEXT DEFAULT 'pending',
+                  pin_lat REAL,
+                  pin_lng REAL,
+                  pin_note TEXT DEFAULT '',
+                  tech_username TEXT,
+                  tech_notes TEXT DEFAULT '',
+                  quote_status TEXT DEFAULT '',
+                  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TEXT)''')
+
+    # Quote-draft requests handed to OpenClaw when a tech flags "needs quote".
+    c.execute('''CREATE TABLE IF NOT EXISTS wo_quote_requests (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  work_order_id INTEGER NOT NULL,
+                  status TEXT DEFAULT 'ready',
+                  draft_json TEXT,
+                  openclaw_result TEXT,
+                  error TEXT,
                   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                   updated_at TEXT)''')
 
@@ -9308,6 +9382,8 @@ DASHBOARD_MENU_TEMPLATE = '''
         .card-teal .card-cta:hover{background:#0F766E;box-shadow:0 6px 16px rgba(13,148,136,.4);}
         .card-amber .card-icon-wrap{background:#FFFBEB;} .card-amber .card-cta{background:#D97706;color:#fff;box-shadow:0 3px 10px rgba(217,119,6,.3);}
         .card-amber .card-cta:hover{background:#B45309;box-shadow:0 6px 16px rgba(217,119,6,.4);}
+        .card-green .card-icon-wrap{background:#ECFDF5;} .card-green .card-cta{background:#059669;color:#fff;box-shadow:0 3px 10px rgba(5,150,105,.3);}
+        .card-green .card-cta:hover{background:#047857;box-shadow:0 6px 16px rgba(5,150,105,.4);}
 
         /* ── COMING SOON FOLDER ── */
         .folder{margin-top:28px;background:var(--bg-card);border:1px dashed #CBD5E1;border-radius:18px;
@@ -9412,6 +9488,7 @@ DASHBOARD_MENU_TEMPLATE = '''
     <p class="section-label" data-i18n="section_label">Your Applications</p>
     <div class="cards-grid">
 
+        {% if role != 'property_manager' %}
         <a class="app-card card-blue"
            href="{% if role=='technician' %}{{ url_for('tech_dashboard') }}{% elif role=='admin' %}{{ url_for('admin_dashboard') }}{% else %}{{ url_for('office_dashboard') }}{% endif %}">
             <div class="card-icon-wrap">📋</div>
@@ -9419,6 +9496,16 @@ DASHBOARD_MENU_TEMPLATE = '''
             <div class="card-desc" data-i18n="po_desc">Submit and manage purchase orders, track invoices, and monitor project costs in real time.</div>
             <button class="card-cta" data-i18n="po_cta">Open PO App →</button>
         </a>
+        {% endif %}
+
+        {% if role == 'property_manager' or role == 'technician' %}
+        <a class="app-card card-green" href="{{ url_for('workorders_app') }}">
+            <div class="card-icon-wrap">🛠️</div>
+            <div class="card-title">Work Orders</div>
+            <div class="card-desc">{% if role == 'technician' %}See pending homeowner work orders on a satellite map, add your notes, and close them out or request a quote.{% else %}Track every homeowner work order across your communities — see status, location pins, and technician notes in real time.{% endif %}</div>
+            <button class="card-cta">Open Work Orders →</button>
+        </a>
+        {% endif %}
 
         {% if role == 'office' %}
         <a class="app-card card-purple" href="{{ url_for('office_admin') }}">
@@ -9438,12 +9525,14 @@ DASHBOARD_MENU_TEMPLATE = '''
         </a>
         {% endif %}
 
+        {% if role != 'property_manager' %}
         <a class="app-card card-amber" href="{{ url_for('community_billing') }}">
             <div class="card-icon-wrap">💰</div>
             <div class="card-title" data-i18n="cm_title">Community Maintenance</div>
             <div class="card-desc" data-i18n="cm_desc">Enter and review equipment installation data, billing, and community records.</div>
             <button class="card-cta" data-i18n="cm_cta">Open Community →</button>
         </a>
+        {% endif %}
 
     </div>
 
@@ -9455,6 +9544,13 @@ DASHBOARD_MENU_TEMPLATE = '''
             <span class="folder-hint">Preview features in development</span>
         </summary>
         <div class="cards-grid folder-grid">
+
+            <a class="app-card card-green" href="{{ url_for('workorders_app') }}">
+                <div class="card-icon-wrap">🛠️</div>
+                <div class="card-title">Work Orders <span class="soon-badge">Coming Soon</span></div>
+                <div class="card-desc">Homeowners submit requests and pin the problem on a satellite map; property managers track status across communities and techs close them out or trigger an OpenClaw quote.</div>
+                <button class="card-cta">Open Work Orders →</button>
+            </a>
 
             <a class="app-card card-teal" href="{{ url_for('pumps_app') }}">
                 <div class="card-icon-wrap">⚙️</div>
@@ -35991,6 +36087,1184 @@ def openclaw_pumps_webhook():
 
     threading.Thread(target=process_pump_agent_request, args=(request_id,), daemon=True).start()
     return jsonify({'success': True, 'request_id': request_id, 'status': 'processing'})
+
+
+# ============================================================
+# Work Orders App — homeowner requests, satellite map pins,
+# property-manager oversight, technician closeout + OpenClaw
+# quote drafting (Features Coming Soon)
+# ============================================================
+
+WO_STATUSES = ['pending', 'in_progress', 'needs_quote', 'completed']
+
+
+def _wo_office():
+    return 'username' in session and session.get('role') == 'office'
+
+
+def _wo_pm():
+    return 'username' in session and session.get('role') == 'property_manager'
+
+
+def _wo_tech():
+    return 'username' in session and session.get('role') == 'technician'
+
+
+def wo_pm_community_ids(user_id):
+    """Communities a property manager oversees."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT community_id FROM wo_pm_communities WHERE user_id=?", (user_id,))
+    ids = [r[0] for r in c.fetchall()]
+    conn.close()
+    return ids
+
+
+def wo_current_user_id():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id FROM users WHERE username=?", (session.get('username'),))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def wo_load_full(work_order_id):
+    """Load one work order joined with its homeowner + community as a dict."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''SELECT w.id, w.problem, w.category, w.priority, w.status,
+                        w.pin_lat, w.pin_lng, w.pin_note, w.tech_username, w.tech_notes,
+                        w.quote_status, w.created_at, w.updated_at,
+                        h.full_name, h.email, h.phone, h.address,
+                        c2.name, c2.center_lat, c2.center_lng,
+                        w.community_id, w.homeowner_id
+                 FROM wo_work_orders w
+                 LEFT JOIN wo_homeowners h ON h.id = w.homeowner_id
+                 LEFT JOIN wo_communities c2 ON c2.id = w.community_id
+                 WHERE w.id=?''', (work_order_id,))
+    r = c.fetchone()
+    conn.close()
+    if not r:
+        return None
+    keys = ['id', 'problem', 'category', 'priority', 'status', 'pin_lat', 'pin_lng',
+            'pin_note', 'tech_username', 'tech_notes', 'quote_status', 'created_at',
+            'updated_at', 'homeowner_name', 'homeowner_email', 'homeowner_phone',
+            'address', 'community_name', 'community_center_lat', 'community_center_lng',
+            'community_id', 'homeowner_id']
+    return dict(zip(keys, r))
+
+
+def wo_build_quote_payload(wo):
+    return {
+        'work_order_id': wo['id'],
+        'client': {
+            'name': wo.get('homeowner_name'),
+            'email': wo.get('homeowner_email'),
+            'phone': wo.get('homeowner_phone'),
+            'address': wo.get('address'),
+        },
+        'community': wo.get('community_name'),
+        'problem': wo.get('problem'),
+        'category': wo.get('category'),
+        'priority': wo.get('priority'),
+        'location': {'lat': wo.get('pin_lat'), 'lng': wo.get('pin_lng'), 'note': wo.get('pin_note')},
+        'technician_notes': wo.get('tech_notes'),
+    }
+
+
+def draft_workorder_quote_via_openclaw(wo):
+    """
+    Hand a work order to OpenClaw so it can draft a quote for the client.
+
+    WIRED BUT INACTIVE by default — gated behind WORKORDERS_OPENCLAW_QUOTES_ENABLED
+    ("ready to turn on"). Never raises; returns a result dict.
+    """
+    result = {'queued': False, 'detail': '', 'reference': ''}
+    if not WORKORDERS_OPENCLAW_QUOTES_ENABLED:
+        result['detail'] = ('OpenClaw quote drafting is wired up but not active. '
+                            'Set WORKORDERS_OPENCLAW_QUOTES=true (with OPENCLAW_API_KEY) to turn it on.')
+        return result
+    if not OPENCLAW_API_KEY:
+        result['detail'] = 'OPENCLAW_API_KEY not configured — cannot reach OpenClaw.'
+        return result
+    try:
+        resp = http_requests.post(
+            OPENCLAW_QUOTE_URL,
+            json=wo_build_quote_payload(wo),
+            headers={'Authorization': f'Bearer {OPENCLAW_API_KEY}', 'Content-Type': 'application/json'},
+            timeout=15)
+        resp.raise_for_status()
+        body = {}
+        try:
+            body = resp.json()
+        except Exception:
+            pass
+        result['queued'] = True
+        result['reference'] = str(body.get('id') or body.get('reference') or '')
+        result['detail'] = 'Quote draft requested from OpenClaw.'
+        print(f"  🤖 Work order #{wo['id']} sent to OpenClaw for a quote draft")
+    except Exception as e:
+        result['detail'] = f'OpenClaw request failed: {e}'
+        print(f"  ⚠ Work order OpenClaw quote error: {e}")
+    return result
+
+
+def process_workorder_quote_request(quote_id):
+    """Background pipeline: hand a flagged work order to OpenClaw for a quote draft."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    try:
+        c.execute("SELECT work_order_id FROM wo_quote_requests WHERE id=?", (quote_id,))
+        row = c.fetchone()
+        if not row:
+            return
+        wo = wo_load_full(row[0])
+        if not wo:
+            return
+        res = draft_workorder_quote_via_openclaw(wo)
+        status = 'requested' if res['queued'] else ('inactive' if not WORKORDERS_OPENCLAW_QUOTES_ENABLED else 'error')
+        wo_status = 'Quote requested from OpenClaw' if res['queued'] else ('Quote ready — OpenClaw not active yet' if not WORKORDERS_OPENCLAW_QUOTES_ENABLED else 'Quote request failed')
+        c.execute("""UPDATE wo_quote_requests SET status=?, draft_json=?, openclaw_result=?, updated_at=? WHERE id=?""",
+                  (status, json.dumps(wo_build_quote_payload(wo)), json.dumps(res), now, quote_id))
+        c.execute("UPDATE wo_work_orders SET quote_status=?, updated_at=? WHERE id=?",
+                  (wo_status, now, row[0]))
+        conn.commit()
+    except Exception as e:
+        print(f"  ✗ Work order quote request {quote_id} failed: {e}")
+        try:
+            c.execute("UPDATE wo_quote_requests SET status='error', error=?, updated_at=? WHERE id=?",
+                      (str(e), now, quote_id))
+            conn.commit()
+        except Exception:
+            pass
+    finally:
+        conn.close()
+
+
+# ── Shared front-end snippets ────────────────────────────────────────────────
+_WO_CSRF_JS = '''<meta name="csrf-token" content="{{ csrf_token() }}">
+<script>
+(function(){
+    var _t = document.cookie.split(';').map(function(c){return c.trim();})
+        .filter(function(c){return c.startsWith('csrf_token=');})
+        .map(function(c){return c.split('=')[1];})[0] || '';
+    var _f = window.fetch;
+    window.fetch = function(url, opts){
+        opts = opts || {};
+        if(!opts.method || opts.method.toUpperCase()==='GET' || opts.method.toUpperCase()==='HEAD') return _f.call(this,url,opts);
+        opts.headers = opts.headers || {};
+        if(opts.headers instanceof Headers){ if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken',_t); }
+        else { if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken']=_t; }
+        return _f.call(this,url,opts);
+    };
+})();
+</script>'''
+
+_WO_LEAFLET = '''<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>'''
+
+_WO_CSS = '''<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+:root{ --brand:#2563EB; --brand-dark:#1D4ED8; --green:#059669; --amber:#D97706; --red:#DC2626;
+       --bg:#F1F5F9; --card:#FFFFFF; --border:#E2E8F0; --text:#0F172A; --muted:#64748B; }
+body{ font-family:'Inter',Arial,sans-serif; background:var(--bg); color:var(--text); }
+.wo-nav{ background:linear-gradient(135deg,#1D4ED8,#0B2C66); color:#fff; padding:14px 22px;
+         display:flex; align-items:center; justify-content:space-between; }
+.wo-nav .brand{ font-weight:700; font-size:18px; display:flex; align-items:center; gap:10px; }
+.wo-nav .right{ display:flex; align-items:center; gap:14px; font-size:14px; }
+.wo-nav a{ color:#fff; text-decoration:none; opacity:.9; } .wo-nav a:hover{ opacity:1; }
+.wo-chip{ background:rgba(255,255,255,.16); padding:5px 12px; border-radius:999px; font-size:13px; }
+.wrap{ max-width:1180px; margin:0 auto; padding:24px 18px 60px; }
+.tabs{ display:flex; gap:8px; margin:18px 0 22px; flex-wrap:wrap; }
+.tab{ background:#fff; border:1px solid var(--border); padding:9px 18px; border-radius:10px;
+      cursor:pointer; font-weight:600; font-size:14px; color:var(--muted); }
+.tab.active{ background:var(--brand); color:#fff; border-color:var(--brand); }
+.panel{ display:none; } .panel.active{ display:block; }
+.card{ background:var(--card); border:1px solid var(--border); border-radius:14px; padding:20px;
+       box-shadow:0 1px 3px rgba(0,0,0,.05); margin-bottom:18px; }
+.card h2{ font-size:16px; margin-bottom:14px; } .card h3{ font-size:14px; margin-bottom:8px; }
+.grid2{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+@media(max-width:760px){ .grid2{ grid-template-columns:1fr; } }
+label{ display:block; font-size:12px; font-weight:600; color:var(--muted); margin:0 0 5px; }
+input,select,textarea{ width:100%; padding:10px 12px; border:1px solid var(--border);
+       border-radius:9px; font-size:14px; font-family:inherit; margin-bottom:12px; }
+textarea{ min-height:90px; resize:vertical; }
+.btn{ background:var(--brand); color:#fff; border:none; padding:11px 18px; border-radius:9px;
+      font-weight:600; font-size:14px; cursor:pointer; }
+.btn:hover{ background:var(--brand-dark); } .btn.green{ background:var(--green); } .btn.amber{ background:var(--amber); }
+.btn.red{ background:var(--red); } .btn.ghost{ background:#fff; color:var(--text); border:1px solid var(--border); }
+.btn.sm{ padding:6px 12px; font-size:13px; }
+table{ width:100%; border-collapse:collapse; font-size:14px; }
+th,td{ text-align:left; padding:11px 10px; border-bottom:1px solid var(--border); vertical-align:top; }
+th{ font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+.badge{ display:inline-block; padding:3px 10px; border-radius:999px; font-size:12px; font-weight:600; }
+.st-pending{ background:#FEF3C7; color:#92400E; } .st-in_progress{ background:#DBEAFE; color:#1E40AF; }
+.st-needs_quote{ background:#EDE9FE; color:#5B21B6; } .st-completed{ background:#D1FAE5; color:#065F46; }
+.map{ width:100%; height:360px; border-radius:12px; border:1px solid var(--border); }
+.map.sm{ height:240px; }
+.muted{ color:var(--muted); font-size:13px; } .right-align{ text-align:right; }
+.empty{ text-align:center; color:var(--muted); padding:34px; }
+.flash{ padding:10px 14px; border-radius:9px; margin-bottom:14px; font-size:14px; }
+.flash.ok{ background:#D1FAE5; color:#065F46; } .flash.err{ background:#FEE2E2; color:#991B1B; }
+.banner{ background:#EFF6FF; border:1px solid #BFDBFE; color:#1E40AF; padding:12px 16px;
+         border-radius:10px; font-size:13px; margin-bottom:18px; }
+.pill{ font-size:11px; font-weight:700; padding:2px 8px; border-radius:6px; background:#E2E8F0; color:#475569; }
+.row-actions{ display:flex; gap:6px; flex-wrap:wrap; }
+.modal-bg{ display:none; position:fixed; inset:0; background:rgba(15,23,42,.55); z-index:50; }
+.modal-bg.show{ display:flex; align-items:center; justify-content:center; }
+.modal{ background:#fff; border-radius:14px; padding:24px; width:min(560px,94vw); max-height:92vh; overflow:auto; }
+</style>'''
+
+
+def _wo_status_badge(s):
+    labels = {'pending': 'Pending', 'in_progress': 'In Progress',
+              'needs_quote': 'Needs Quote', 'completed': 'Completed'}
+    return labels.get(s, s or 'Pending')
+
+
+@app.template_filter('wo_status_label')
+def _wo_status_label_filter(s):
+    return _wo_status_badge(s)
+
+
+_WO_SAT_JS = '''
+function woMakeMap(elId, lat, lng, zoom){
+    var map = L.map(elId).setView([lat, lng], zoom);
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        {maxZoom:21, attribution:'Imagery © Esri'}).addTo(map);
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+        {maxZoom:21, opacity:0.9}).addTo(map);
+    setTimeout(function(){ map.invalidateSize(); }, 200);
+    return map;
+}'''
+
+# ── Homeowner portal: sign in / create account ───────────────────────────────
+WO_PORTAL_LOGIN_TEMPLATE = '''<!DOCTYPE html><html><head>
+<title>Work Order Portal</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+''' + _WO_CSRF_JS + _WO_CSS + '''
+<style>
+.portal-hero{ min-height:100vh; display:flex; align-items:center; justify-content:center;
+    background:linear-gradient(135deg,#1D4ED8,#0B2C66); padding:24px; }
+.portal-box{ width:min(460px,96vw); }
+.portal-box .logo{ color:#fff; text-align:center; margin-bottom:18px; }
+.portal-box .logo .t{ font-weight:700; font-size:24px; } .portal-box .logo .s{ opacity:.8; font-size:14px; }
+.ptabs{ display:flex; margin-bottom:16px; background:#EEF2F7; border-radius:10px; padding:4px; }
+.ptab{ flex:1; text-align:center; padding:9px; border-radius:8px; cursor:pointer; font-weight:600; font-size:14px; color:var(--muted); }
+.ptab.active{ background:#fff; color:var(--brand); box-shadow:0 1px 3px rgba(0,0,0,.1); }
+</style></head>
+<body><div class="portal-hero"><div class="portal-box">
+  <div class="logo"><div class="t">🛠️ Work Order Portal</div><div class="s">Stahlman-England Irrigation</div></div>
+  <div class="card">
+    <div class="ptabs">
+      <div class="ptab active" id="tab-login" onclick="pswitch('login')">Sign In</div>
+      <div class="ptab" id="tab-reg" onclick="pswitch('reg')">Create Account</div>
+    </div>
+    <div id="msg"></div>
+    <div id="form-login">
+      <label>Email</label><input type="email" id="li-email" placeholder="you@email.com">
+      <label>Password</label><input type="password" id="li-pass">
+      <button class="btn" style="width:100%" onclick="doLogin()">Sign In</button>
+    </div>
+    <div id="form-reg" style="display:none">
+      <p class="muted" style="margin-bottom:12px">We'll save your details so you never have to type them again.</p>
+      <label>Full Name</label><input id="r-name">
+      <div class="grid2"><div><label>Email</label><input type="email" id="r-email"></div>
+        <div><label>Phone</label><input id="r-phone"></div></div>
+      <label>Community</label>
+      <select id="r-comm"><option value="">— Select your community —</option>
+        {% for c in communities %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}</select>
+      <label>Home Address</label><input id="r-addr" placeholder="123 Palm Ct">
+      <label>Password</label><input type="password" id="r-pass" placeholder="At least 6 characters">
+      <button class="btn green" style="width:100%" onclick="doReg()">Create Account</button>
+    </div>
+  </div>
+</div></div>
+<script>
+function pswitch(w){
+  document.getElementById('tab-login').classList.toggle('active', w==='login');
+  document.getElementById('tab-reg').classList.toggle('active', w==='reg');
+  document.getElementById('form-login').style.display = w==='login'?'block':'none';
+  document.getElementById('form-reg').style.display = w==='reg'?'block':'none';
+  document.getElementById('msg').innerHTML='';
+}
+function showErr(t){ document.getElementById('msg').innerHTML='<div class="flash err">'+t+'</div>'; }
+async function post(url,body){
+  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  return r.json();
+}
+async function doLogin(){
+  const j=await post('{{ url_for("wo_portal_login") }}',{email:document.getElementById('li-email').value,password:document.getElementById('li-pass').value});
+  if(j.success){ location.href='{{ url_for("wo_portal_home") }}'; } else { showErr(j.error||'Login failed'); }
+}
+async function doReg(){
+  const j=await post('{{ url_for("wo_portal_register") }}',{
+    full_name:document.getElementById('r-name').value, email:document.getElementById('r-email').value,
+    phone:document.getElementById('r-phone').value, community_id:document.getElementById('r-comm').value,
+    address:document.getElementById('r-addr').value, password:document.getElementById('r-pass').value});
+  if(j.success){ location.href='{{ url_for("wo_portal_home") }}'; } else { showErr(j.error||'Could not create account'); }
+}
+</script></body></html>'''
+
+
+# ── Homeowner portal: home + new request with satellite pin drop ─────────────
+WO_PORTAL_HOME_TEMPLATE = '''<!DOCTYPE html><html><head>
+<title>My Work Orders</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+''' + _WO_CSRF_JS + _WO_LEAFLET + _WO_CSS + '''</head>
+<body>
+<div class="wo-nav">
+  <div class="brand">🛠️ Work Order Portal</div>
+  <div class="right"><span class="wo-chip">{{ homeowner.full_name }}</span>
+    <a href="{{ url_for('wo_portal_logout') }}">Sign Out</a></div>
+</div>
+<div class="wrap">
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:8px">
+    <div><h1 style="font-size:22px">Welcome back, {{ homeowner.full_name.split(' ')[0] }}</h1>
+      <p class="muted">{{ homeowner.community_name or 'No community selected' }}{% if homeowner.address %} · {{ homeowner.address }}{% endif %}</p></div>
+    <button class="btn green" onclick="openNew()">+ New Work Order</button>
+  </div>
+  <div class="card">
+    <h2>Your Requests</h2>
+    {% if orders %}
+    <table><thead><tr><th>#</th><th>Problem</th><th>Status</th><th>Technician Notes</th><th>Submitted</th></tr></thead><tbody>
+      {% for o in orders %}<tr>
+        <td>#{{ o.id }}</td>
+        <td>{{ o.problem }}{% if o.category %}<br><span class="pill">{{ o.category }}</span>{% endif %}</td>
+        <td><span class="badge st-{{ o.status }}">{{ o.status|wo_status_label }}</span>
+            {% if o.quote_status %}<br><span class="muted">{{ o.quote_status }}</span>{% endif %}</td>
+        <td class="muted">{{ o.tech_notes or '—' }}</td>
+        <td class="muted">{{ o.created_at[:10] }}</td>
+      </tr>{% endfor %}
+    </tbody></table>
+    {% else %}<div class="empty">No work orders yet. Click “New Work Order” to submit your first request.</div>{% endif %}
+  </div>
+</div>
+
+<div class="modal-bg" id="newBg"><div class="modal">
+  <h2 style="margin-bottom:14px">New Work Order</h2>
+  <div id="nmsg"></div>
+  <label>What's the problem?</label>
+  <textarea id="n-problem" placeholder="Describe the issue (e.g. sprinkler head broken, flooding near driveway)"></textarea>
+  <div class="grid2">
+    <div><label>Category</label><select id="n-cat">
+      <option value="">General</option><option>Irrigation / Sprinkler</option>
+      <option>Landscaping</option><option>Lighting</option><option>Drainage / Flooding</option><option>Other</option></select></div>
+    <div><label>Priority</label><select id="n-pri"><option value="normal">Normal</option>
+      <option value="high">High / Urgent</option><option value="low">Low</option></select></div>
+  </div>
+  <label>Pin the exact spot on your home where the issue is</label>
+  <p class="muted" style="margin:-6px 0 8px">Click the satellite map to drop a pin so the technician knows exactly where to go.</p>
+  <button class="btn ghost sm" style="margin-bottom:8px" onclick="locate()">📍 Use my current location</button>
+  <div id="nmap" class="map"></div>
+  <input type="hidden" id="n-lat"><input type="hidden" id="n-lng">
+  <label style="margin-top:12px">Note about the location (optional)</label>
+  <input id="n-note" placeholder="e.g. back yard, left of the patio">
+  <div class="right-align" style="margin-top:14px">
+    <button class="btn ghost" onclick="closeNew()">Cancel</button>
+    <button class="btn green" onclick="submitWO()">Submit Request</button>
+  </div>
+</div></div>
+
+<script>''' + _WO_SAT_JS + '''
+var nmap=null, nmarker=null;
+var startLat={{ homeowner.center_lat if homeowner.center_lat is not none else 27.95 }};
+var startLng={{ homeowner.center_lng if homeowner.center_lng is not none else -82.45 }};
+var startZoom={{ 18 if homeowner.center_lat is not none else 12 }};
+function openNew(){
+  document.getElementById('newBg').classList.add('show');
+  if(!nmap){
+    nmap=woMakeMap('nmap', startLat, startLng, startZoom);
+    nmap.on('click', function(e){ setPin(e.latlng.lat, e.latlng.lng); });
+    locate();
+  }
+}
+function closeNew(){ document.getElementById('newBg').classList.remove('show'); }
+function setPin(lat,lng){
+  document.getElementById('n-lat').value=lat; document.getElementById('n-lng').value=lng;
+  if(nmarker){ nmarker.setLatLng([lat,lng]); } else { nmarker=L.marker([lat,lng]).addTo(nmap); }
+}
+function locate(){
+  if(!navigator.geolocation || !nmap) return;
+  navigator.geolocation.getCurrentPosition(function(p){
+    nmap.setView([p.coords.latitude,p.coords.longitude], 19);
+  }, function(){}, {enableHighAccuracy:true, timeout:8000});
+}
+async function submitWO(){
+  var problem=document.getElementById('n-problem').value.trim();
+  if(!problem){ document.getElementById('nmsg').innerHTML='<div class="flash err">Please describe the problem.</div>'; return; }
+  var r=await fetch('{{ url_for("wo_portal_submit") }}',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({problem:problem, category:document.getElementById('n-cat').value,
+      priority:document.getElementById('n-pri').value, pin_lat:document.getElementById('n-lat').value,
+      pin_lng:document.getElementById('n-lng').value, pin_note:document.getElementById('n-note').value})});
+  var j=await r.json();
+  if(j.success){ location.reload(); } else { document.getElementById('nmsg').innerHTML='<div class="flash err">'+(j.error||'Could not submit')+'</div>'; }
+}
+</script></body></html>'''
+
+
+# ── Shared staff detail-modal JS (office / pm / tech) ────────────────────────
+_WO_DETAIL_JS = '''
+var dmap=null;
+function woOpenDetail(id, editable){
+  document.getElementById('detailBg').classList.add('show');
+  document.getElementById('detailBody').innerHTML='<p class="muted">Loading…</p>';
+  fetch('/workorders/api/work_order/'+id).then(r=>r.json()).then(j=>{
+    if(!j.success){ document.getElementById('detailBody').innerHTML='<div class="flash err">'+(j.error||'Error')+'</div>'; return; }
+    var w=j.work_order;
+    var hasPin = w.pin_lat!=null && w.pin_lng!=null;
+    var html='';
+    html+='<h2 style="margin-bottom:6px">Work Order #'+w.id+' <span class="badge st-'+w.status+'">'+woLabel(w.status)+'</span></h2>';
+    html+='<p class="muted" style="margin-bottom:14px">'+(w.community_name||'—')+' · submitted '+(w.created_at||'').substring(0,16)+'</p>';
+    html+='<div class="grid2"><div><h3>Homeowner</h3><p>'+(w.homeowner_name||'')+'</p>'+
+          '<p class="muted">'+(w.homeowner_email||'')+'<br>'+(w.homeowner_phone||'')+'<br>'+(w.address||'')+'</p></div>'+
+          '<div><h3>Request</h3><p>'+(w.problem||'')+'</p>'+
+          (w.category?'<p><span class="pill">'+w.category+'</span></p>':'')+
+          (w.pin_note?'<p class="muted">Location note: '+w.pin_note+'</p>':'')+'</div></div>';
+    html+='<h3 style="margin-top:14px">Location</h3>';
+    if(hasPin){ html+='<div id="dmap" class="map sm"></div>'; }
+    else { html+='<p class="muted">No map pin was dropped for this request.</p>'; }
+    html+='<h3 style="margin-top:14px">Technician Notes</h3>';
+    if(editable){
+      html+='<textarea id="d-notes">'+(w.tech_notes||'')+'</textarea>';
+      if(w.quote_status){ html+='<div class="banner">Quote: '+w.quote_status+'</div>'; }
+      html+='<div class="row-actions" style="margin-top:6px">'+
+            '<button class="btn sm" data-act="in_progress" data-id="'+w.id+'">Mark In Progress</button>'+
+            '<button class="btn green sm" data-act="completed" data-id="'+w.id+'">Mark Completed</button>'+
+            '<button class="btn amber sm" data-act="quote" data-id="'+w.id+'">Needs Quote</button></div>';
+    } else {
+      html+='<p>'+(w.tech_notes||'<span class="muted">No notes yet.</span>')+'</p>';
+      if(w.quote_status){ html+='<div class="banner">Quote: '+w.quote_status+'</div>'; }
+    }
+    document.getElementById('detailBody').innerHTML=html;
+    document.querySelectorAll('#detailBody [data-act]').forEach(function(b){
+      b.addEventListener('click', function(){
+        var act=b.getAttribute('data-act'), wid=parseInt(b.getAttribute('data-id'),10);
+        if(act==='quote'){ woQuote(wid); } else { woAct(wid, act); }
+      });
+    });
+    if(hasPin){ dmap=woMakeMap('dmap', w.pin_lat, w.pin_lng, 19); L.marker([w.pin_lat,w.pin_lng]).addTo(dmap); }
+  });
+}
+function woCloseDetail(){ document.getElementById('detailBg').classList.remove('show'); dmap=null; }
+function woLabel(s){ return {pending:'Pending',in_progress:'In Progress',needs_quote:'Needs Quote',completed:'Completed'}[s]||s; }
+async function woAct(id, status){
+  var notes=(document.getElementById('d-notes')||{}).value||'';
+  var r=await fetch('/workorders/api/work_order/update',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({id:id, status:status, tech_notes:notes})});
+  var j=await r.json(); if(j.success){ location.reload(); } else { alert(j.error||'Error'); }
+}
+async function woQuote(id){
+  var notes=(document.getElementById('d-notes')||{}).value||'';
+  var r=await fetch('/workorders/api/work_order/update',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({id:id, request_quote:true, tech_notes:notes})});
+  var j=await r.json();
+  if(j.success){
+    var active=j.quote && j.quote.openclaw_active;
+    alert(active ? 'Quote request sent to OpenClaw to draft for the client.'
+                 : 'Work order flagged as Needs Quote. OpenClaw quote drafting is wired up and ready — it will draft automatically once the feature is turned on.');
+    location.reload();
+  } else { alert(j.error||'Error'); }
+}
+'''
+
+_WO_DETAIL_MODAL = '''<div class="modal-bg" id="detailBg"><div class="modal">
+  <div class="right-align"><button class="btn ghost sm" onclick="woCloseDetail()">Close ✕</button></div>
+  <div id="detailBody"></div>
+</div></div>'''
+
+
+# ── Office view ──────────────────────────────────────────────────────────────
+WORKORDERS_OFFICE_TEMPLATE = '''<!DOCTYPE html><html><head>
+<title>Work Orders — Office</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+''' + _WO_CSRF_JS + _WO_LEAFLET + _WO_CSS + '''</head>
+<body>
+<div class="wo-nav">
+  <div class="brand">🛠️ Work Orders <span class="pill">Office</span></div>
+  <div class="right"><a href="{{ url_for('dashboard') }}">← Dashboard</a>
+    <span class="wo-chip">{{ full_name }}</span><a href="{{ url_for('logout') }}">Sign Out</a></div>
+</div>
+<div class="wrap">
+  <div class="banner">Homeowner request portal: <a href="{{ portal_url }}" target="_blank">{{ portal_url }}</a>
+    &nbsp;·&nbsp; OpenClaw quote drafting:
+    <strong>{% if openclaw_active %}Active{% else %}Wired &amp; ready (turn on with WORKORDERS_OPENCLAW_QUOTES=true){% endif %}</strong></div>
+
+  <div class="tabs">
+    <div class="tab active" onclick="tab('wo')">Work Orders</div>
+    <div class="tab" onclick="tab('comm')">Communities</div>
+    <div class="tab" onclick="tab('pm')">Property Managers</div>
+  </div>
+
+  <div class="panel active" id="p-wo">
+    <div class="card">
+      <h2>All Work Orders
+        <span class="muted">— {{ counts.pending }} pending · {{ counts.in_progress }} in progress · {{ counts.needs_quote }} needs quote · {{ counts.completed }} completed</span></h2>
+      {% if work_orders %}
+      <table><thead><tr><th>#</th><th>Community</th><th>Homeowner</th><th>Problem</th><th>Status</th><th>Tech</th><th></th></tr></thead><tbody>
+      {% for w in work_orders %}<tr>
+        <td>#{{ w.id }}</td><td>{{ w.community_name or '—' }}</td><td>{{ w.homeowner_name or '—' }}</td>
+        <td>{{ w.problem[:60] }}{% if w.problem|length > 60 %}…{% endif %}</td>
+        <td><span class="badge st-{{ w.status }}">{{ w.status|wo_status_label }}</span></td>
+        <td class="muted">{{ w.tech_username or '—' }}</td>
+        <td><button class="btn ghost sm" onclick="woOpenDetail({{ w.id }}, false)">View</button></td>
+      </tr>{% endfor %}</tbody></table>
+      {% else %}<div class="empty">No work orders submitted yet.</div>{% endif %}
+    </div>
+  </div>
+
+  <div class="panel" id="p-comm">
+    <div class="card">
+      <h2 id="comm-form-title">Add Community</h2>
+      <div id="comm-msg"></div>
+      <input type="hidden" id="c-id">
+      <label>Community Name</label><input id="c-name">
+      <div class="grid2"><div><label>Address</label><input id="c-addr"></div><div><label>City</label><input id="c-city"></div></div>
+      <div class="grid2"><div><label>State</label><input id="c-state"></div><div><label>ZIP</label><input id="c-zip"></div></div>
+      <div class="grid2"><div><label>Map Center Latitude (optional)</label><input id="c-lat" placeholder="27.95"></div>
+        <div><label>Map Center Longitude (optional)</label><input id="c-lng" placeholder="-82.45"></div></div>
+      <label>Notes</label><input id="c-notes">
+      <button class="btn" onclick="saveComm()">Save Community</button>
+      <button class="btn ghost" onclick="resetComm()">Clear</button>
+    </div>
+    <div class="card">
+      <h2>Communities</h2>
+      {% if communities %}
+      <table><thead><tr><th>Name</th><th>Location</th><th></th></tr></thead><tbody>
+      {% for c in communities %}<tr>
+        <td>{{ c.name }}</td><td class="muted">{{ c.city }}{% if c.state %}, {{ c.state }}{% endif %}</td>
+        <td class="row-actions">
+          <button class="btn ghost sm" onclick='editComm({{ c|tojson }})'>Edit</button>
+          <button class="btn red sm" onclick="delComm({{ c.id }})">Delete</button></td>
+      </tr>{% endfor %}</tbody></table>
+      {% else %}<div class="empty">No communities yet.</div>{% endif %}
+    </div>
+  </div>
+
+  <div class="panel" id="p-pm">
+    <div class="card">
+      <h2 id="pm-form-title">Add Property Manager</h2>
+      <p class="muted" style="margin-bottom:12px">Property managers sign in to this same interface but only see the Work Orders app for their assigned communities.</p>
+      <div id="pm-msg"></div>
+      <input type="hidden" id="pm-id">
+      <div class="grid2"><div><label>Full Name</label><input id="pm-name"></div>
+        <div><label>Email</label><input type="email" id="pm-email"></div></div>
+      <div class="grid2"><div><label>Login Username</label><input id="pm-username"></div>
+        <div><label>Password</label><input type="password" id="pm-pass" placeholder="At least 6 characters"></div></div>
+      <label>Communities Managed</label>
+      <select id="pm-comms" multiple size="4">
+        {% for c in communities %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}</select>
+      <div style="margin-top:10px">
+        <button class="btn" onclick="savePM()">Save Property Manager</button>
+        <button class="btn ghost" onclick="resetPM()">Clear</button></div>
+    </div>
+    <div class="card">
+      <h2>Property Managers</h2>
+      {% if pms %}
+      <table><thead><tr><th>Name</th><th>Username</th><th>Communities</th><th></th></tr></thead><tbody>
+      {% for p in pms %}<tr>
+        <td>{{ p.full_name }}<br><span class="muted">{{ p.email }}</span></td>
+        <td>{{ p.username }}</td>
+        <td>{% for c in p.communities %}<span class="pill">{{ c.name }}</span> {% endfor %}{% if not p.communities %}<span class="muted">none</span>{% endif %}</td>
+        <td class="row-actions">
+          <button class="btn ghost sm" onclick='editPM({{ p|tojson }})'>Edit</button>
+          <button class="btn red sm" onclick="delPM({{ p.id }})">Delete</button></td>
+      </tr>{% endfor %}</tbody></table>
+      {% else %}<div class="empty">No property managers yet.</div>{% endif %}
+    </div>
+  </div>
+</div>
+''' + _WO_DETAIL_MODAL + '''
+<script>''' + _WO_SAT_JS + _WO_DETAIL_JS + '''
+function tab(w){
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active', ['wo','comm','pm'][i]===w));
+  ['wo','comm','pm'].forEach(p=>document.getElementById('p-'+p).classList.toggle('active', p===w));
+}
+// Communities
+function resetComm(){ ['c-id','c-name','c-addr','c-city','c-state','c-zip','c-lat','c-lng','c-notes'].forEach(i=>document.getElementById(i).value='');
+  document.getElementById('comm-form-title').textContent='Add Community'; document.getElementById('comm-msg').innerHTML=''; }
+function editComm(c){ tab('comm'); document.getElementById('c-id').value=c.id; document.getElementById('c-name').value=c.name||'';
+  document.getElementById('c-addr').value=c.address||''; document.getElementById('c-city').value=c.city||'';
+  document.getElementById('c-state').value=c.state||''; document.getElementById('c-zip').value=c.zip||'';
+  document.getElementById('c-lat').value=c.center_lat==null?'':c.center_lat; document.getElementById('c-lng').value=c.center_lng==null?'':c.center_lng;
+  document.getElementById('c-notes').value=c.notes||''; document.getElementById('comm-form-title').textContent='Edit Community'; }
+async function saveComm(){
+  var body={id:document.getElementById('c-id').value||null, name:document.getElementById('c-name').value,
+    address:document.getElementById('c-addr').value, city:document.getElementById('c-city').value,
+    state:document.getElementById('c-state').value, zip:document.getElementById('c-zip').value,
+    center_lat:document.getElementById('c-lat').value, center_lng:document.getElementById('c-lng').value,
+    notes:document.getElementById('c-notes').value};
+  var j=await (await fetch('{{ url_for("wo_community_save") }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
+  if(j.success){ location.reload(); } else { document.getElementById('comm-msg').innerHTML='<div class="flash err">'+(j.error||'Error')+'</div>'; }
+}
+async function delComm(id){ if(!confirm('Delete this community?')) return;
+  var j=await (await fetch('{{ url_for("wo_community_delete") }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})})).json();
+  if(j.success){ location.reload(); } else { alert(j.error||'Error'); } }
+// Property managers
+function resetPM(){ ['pm-id','pm-name','pm-email','pm-username','pm-pass'].forEach(i=>document.getElementById(i).value='');
+  Array.from(document.getElementById('pm-comms').options).forEach(o=>o.selected=false);
+  document.getElementById('pm-username').disabled=false;
+  document.getElementById('pm-form-title').textContent='Add Property Manager'; document.getElementById('pm-msg').innerHTML=''; }
+function editPM(p){ tab('pm'); document.getElementById('pm-id').value=p.id; document.getElementById('pm-name').value=p.full_name||'';
+  document.getElementById('pm-email').value=p.email||''; document.getElementById('pm-username').value=p.username||'';
+  document.getElementById('pm-username').disabled=true; document.getElementById('pm-pass').value='';
+  document.getElementById('pm-pass').placeholder='Leave blank to keep current password';
+  var ids=(p.communities||[]).map(c=>String(c.id));
+  Array.from(document.getElementById('pm-comms').options).forEach(o=>o.selected=ids.includes(o.value));
+  document.getElementById('pm-form-title').textContent='Edit Property Manager'; }
+async function savePM(){
+  var comms=Array.from(document.getElementById('pm-comms').selectedOptions).map(o=>o.value);
+  var body={id:document.getElementById('pm-id').value||null, full_name:document.getElementById('pm-name').value,
+    email:document.getElementById('pm-email').value, username:document.getElementById('pm-username').value,
+    password:document.getElementById('pm-pass').value, community_ids:comms};
+  var j=await (await fetch('{{ url_for("wo_pm_save") }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
+  if(j.success){ location.reload(); } else { document.getElementById('pm-msg').innerHTML='<div class="flash err">'+(j.error||'Error')+'</div>'; }
+}
+async function delPM(id){ if(!confirm('Delete this property manager account?')) return;
+  var j=await (await fetch('{{ url_for("wo_pm_delete") }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})})).json();
+  if(j.success){ location.reload(); } else { alert(j.error||'Error'); } }
+</script></body></html>'''
+
+
+# ── Property manager view ────────────────────────────────────────────────────
+WORKORDERS_PM_TEMPLATE = '''<!DOCTYPE html><html><head>
+<title>Work Orders</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+''' + _WO_CSRF_JS + _WO_LEAFLET + _WO_CSS + '''</head>
+<body>
+<div class="wo-nav">
+  <div class="brand">🛠️ Work Orders <span class="pill">Property Manager</span></div>
+  <div class="right"><span class="wo-chip">{{ full_name }}</span><a href="{{ url_for('logout') }}">Sign Out</a></div>
+</div>
+<div class="wrap">
+  <div class="card">
+    <h2>Work Order Status
+      <span class="muted">— {{ counts.pending }} pending · {{ counts.in_progress }} in progress · {{ counts.needs_quote }} needs quote · {{ counts.completed }} completed</span></h2>
+    <p class="muted" style="margin-bottom:12px">Communities you manage:
+      {% for c in communities %}<span class="pill">{{ c.name }}</span> {% endfor %}{% if not communities %}<span class="pill">none assigned</span>{% endif %}</p>
+    {% if work_orders %}
+    <div style="margin-bottom:10px"><select id="fStatus" onchange="filterRows()">
+      <option value="">All statuses</option><option value="pending">Pending</option>
+      <option value="in_progress">In Progress</option><option value="needs_quote">Needs Quote</option>
+      <option value="completed">Completed</option></select></div>
+    <table><thead><tr><th>#</th><th>Community</th><th>Homeowner</th><th>Problem</th><th>Status</th><th>Tech</th><th></th></tr></thead><tbody id="rows">
+    {% for w in work_orders %}<tr data-status="{{ w.status }}">
+      <td>#{{ w.id }}</td><td>{{ w.community_name or '—' }}</td><td>{{ w.homeowner_name or '—' }}</td>
+      <td>{{ w.problem[:60] }}{% if w.problem|length > 60 %}…{% endif %}</td>
+      <td><span class="badge st-{{ w.status }}">{{ w.status|wo_status_label }}</span></td>
+      <td class="muted">{{ w.tech_username or '—' }}</td>
+      <td><button class="btn ghost sm" onclick="woOpenDetail({{ w.id }}, false)">View</button></td>
+    </tr>{% endfor %}</tbody></table>
+    {% else %}<div class="empty">No work orders in your communities yet.</div>{% endif %}
+  </div>
+</div>
+''' + _WO_DETAIL_MODAL + '''
+<script>''' + _WO_SAT_JS + _WO_DETAIL_JS + '''
+function filterRows(){ var v=document.getElementById('fStatus').value;
+  document.querySelectorAll('#rows tr').forEach(r=>{ r.style.display=(!v||r.dataset.status===v)?'':'none'; }); }
+</script></body></html>'''
+
+
+# ── Technician view ──────────────────────────────────────────────────────────
+WORKORDERS_TECH_TEMPLATE = '''<!DOCTYPE html><html><head>
+<title>Work Orders — Technician</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+''' + _WO_CSRF_JS + _WO_LEAFLET + _WO_CSS + '''</head>
+<body>
+<div class="wo-nav">
+  <div class="brand">🛠️ Work Orders <span class="pill">Technician</span></div>
+  <div class="right"><a href="{{ url_for('dashboard') }}">← Dashboard</a>
+    <span class="wo-chip">{{ full_name }}</span><a href="{{ url_for('logout') }}">Sign Out</a></div>
+</div>
+<div class="wrap">
+  {% if not openclaw_active %}<div class="banner">Tip: flagging a work order as <strong>Needs Quote</strong> is ready to ping OpenClaw to draft a client quote. The integration is wired up and will activate once turned on.</div>{% endif %}
+  <div class="card">
+    <h2>Pending &amp; Active Work Orders
+      <span class="muted">— {{ counts.pending }} pending · {{ counts.in_progress }} in progress · {{ counts.needs_quote }} needs quote · {{ counts.completed }} completed</span></h2>
+    {% if work_orders %}
+    <table><thead><tr><th>#</th><th>Community</th><th>Homeowner</th><th>Problem</th><th>Priority</th><th>Status</th><th></th></tr></thead><tbody>
+    {% for w in work_orders %}<tr>
+      <td>#{{ w.id }}</td><td>{{ w.community_name or '—' }}</td><td>{{ w.homeowner_name or '—' }}</td>
+      <td>{{ w.problem[:60] }}{% if w.problem|length > 60 %}…{% endif %}</td>
+      <td>{% if w.priority=='high' %}<span class="pill" style="background:#FEE2E2;color:#991B1B">High</span>{% else %}{{ w.priority or 'normal' }}{% endif %}</td>
+      <td><span class="badge st-{{ w.status }}">{{ w.status|wo_status_label }}</span></td>
+      <td><button class="btn sm" onclick="woOpenDetail({{ w.id }}, true)">Open</button></td>
+    </tr>{% endfor %}</tbody></table>
+    {% else %}<div class="empty">No work orders right now.</div>{% endif %}
+  </div>
+</div>
+''' + _WO_DETAIL_MODAL + '''
+<script>''' + _WO_SAT_JS + _WO_DETAIL_JS + '''</script></body></html>'''
+
+
+# ── Entry point — dispatch by role ───────────────────────────────────────────
+@app.route('/workorders')
+def workorders_app():
+    if _wo_office():
+        return _workorders_office_view()
+    if _wo_pm():
+        return _workorders_pm_view()
+    if _wo_tech():
+        return _workorders_tech_view()
+    return redirect(url_for('login'))
+
+
+def _workorders_office_view():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, name, address, city, state, zip, notes, active, center_lat, center_lng FROM wo_communities ORDER BY name")
+    communities = [dict(zip(['id', 'name', 'address', 'city', 'state', 'zip', 'notes', 'active', 'center_lat', 'center_lng'], r)) for r in c.fetchall()]
+
+    c.execute("""SELECT u.id, u.username, u.full_name, u.email
+                 FROM users u WHERE u.role='property_manager' ORDER BY u.full_name""")
+    pms = []
+    for r in c.fetchall():
+        c.execute("""SELECT c2.id, c2.name FROM wo_pm_communities pc
+                     JOIN wo_communities c2 ON c2.id = pc.community_id WHERE pc.user_id=?""", (r[0],))
+        comms = [{'id': x[0], 'name': x[1]} for x in c.fetchall()]
+        pms.append({'id': r[0], 'username': r[1], 'full_name': r[2], 'email': r[3], 'communities': comms})
+
+    work_orders = _wo_query_work_orders(c, None)
+    conn.close()
+
+    counts = {s: sum(1 for w in work_orders if w['status'] == s) for s in WO_STATUSES}
+    return render_template_string(
+        WORKORDERS_OFFICE_TEMPLATE,
+        full_name=session.get('full_name', session.get('username', 'User')),
+        communities=communities, pms=pms, work_orders=work_orders, counts=counts,
+        portal_url=url_for('wo_portal', _external=True),
+        openclaw_active=WORKORDERS_OPENCLAW_QUOTES_ENABLED)
+
+
+def _workorders_pm_view():
+    user_id = wo_current_user_id()
+    comm_ids = wo_pm_community_ids(user_id)
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    work_orders = _wo_query_work_orders(c, comm_ids)
+    if comm_ids:
+        c.execute("SELECT id, name FROM wo_communities WHERE id IN (%s) ORDER BY name" %
+                  ','.join('?' * len(comm_ids)), comm_ids)
+        my_comms = [{'id': r[0], 'name': r[1]} for r in c.fetchall()]
+    else:
+        my_comms = []
+    conn.close()
+    counts = {s: sum(1 for w in work_orders if w['status'] == s) for s in WO_STATUSES}
+    return render_template_string(
+        WORKORDERS_PM_TEMPLATE,
+        full_name=session.get('full_name', session.get('username', 'User')),
+        work_orders=work_orders, communities=my_comms, counts=counts)
+
+
+def _workorders_tech_view():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    work_orders = _wo_query_work_orders(c, None)
+    conn.close()
+    counts = {s: sum(1 for w in work_orders if w['status'] == s) for s in WO_STATUSES}
+    return render_template_string(
+        WORKORDERS_TECH_TEMPLATE,
+        full_name=session.get('full_name', session.get('username', 'User')),
+        work_orders=work_orders, counts=counts,
+        openclaw_active=WORKORDERS_OPENCLAW_QUOTES_ENABLED)
+
+
+def _wo_query_work_orders(c, community_ids):
+    """Return work orders (optionally scoped to community_ids) as list of dicts."""
+    base = '''SELECT w.id, w.problem, w.category, w.priority, w.status, w.pin_lat, w.pin_lng,
+                     w.tech_username, w.tech_notes, w.quote_status, w.created_at,
+                     h.full_name, h.email, h.phone, h.address, c2.name
+              FROM wo_work_orders w
+              LEFT JOIN wo_homeowners h ON h.id = w.homeowner_id
+              LEFT JOIN wo_communities c2 ON c2.id = w.community_id'''
+    params = []
+    if community_ids is not None:
+        if not community_ids:
+            return []
+        base += " WHERE w.community_id IN (%s)" % ','.join('?' * len(community_ids))
+        params = list(community_ids)
+    base += " ORDER BY CASE w.status WHEN 'pending' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'needs_quote' THEN 2 ELSE 3 END, w.id DESC"
+    c.execute(base, params)
+    keys = ['id', 'problem', 'category', 'priority', 'status', 'pin_lat', 'pin_lng',
+            'tech_username', 'tech_notes', 'quote_status', 'created_at',
+            'homeowner_name', 'homeowner_email', 'homeowner_phone', 'address', 'community_name']
+    return [dict(zip(keys, r)) for r in c.fetchall()]
+
+
+# ── Office: community management ─────────────────────────────────────────────
+@app.route('/workorders/api/community/save', methods=['POST'])
+def wo_community_save():
+    if not _wo_office():
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    d = request.get_json(silent=True) or {}
+    name = (d.get('name') or '').strip()
+    if not name:
+        return jsonify({'success': False, 'error': 'Community name is required'}), 400
+
+    def _f(v):
+        try:
+            return float(v) if str(v).strip() != '' else None
+        except (ValueError, TypeError):
+            return None
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    if d.get('id'):
+        c.execute("""UPDATE wo_communities SET name=?, address=?, city=?, state=?, zip=?,
+                     notes=?, center_lat=?, center_lng=? WHERE id=?""",
+                  (name, d.get('address', ''), d.get('city', ''), d.get('state', ''),
+                   d.get('zip', ''), d.get('notes', ''), _f(d.get('center_lat')),
+                   _f(d.get('center_lng')), d['id']))
+        cid = d['id']
+    else:
+        c.execute("""INSERT INTO wo_communities (name, address, city, state, zip, notes, center_lat, center_lng)
+                     VALUES (?,?,?,?,?,?,?,?)""",
+                  (name, d.get('address', ''), d.get('city', ''), d.get('state', ''),
+                   d.get('zip', ''), d.get('notes', ''), _f(d.get('center_lat')), _f(d.get('center_lng'))))
+        cid = c.lastrowid
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True, 'id': cid})
+
+
+@app.route('/workorders/api/community/delete', methods=['POST'])
+def wo_community_delete():
+    if not _wo_office():
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    cid = (request.get_json(silent=True) or {}).get('id')
+    if not cid:
+        return jsonify({'success': False, 'error': 'Missing id'}), 400
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM wo_work_orders WHERE community_id=?", (cid,))
+    if c.fetchone()[0] > 0:
+        conn.close()
+        return jsonify({'success': False, 'error': 'Cannot delete a community that still has work orders.'}), 400
+    c.execute("DELETE FROM wo_pm_communities WHERE community_id=?", (cid,))
+    c.execute("DELETE FROM wo_communities WHERE id=?", (cid,))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
+
+
+# ── Office: property-manager account management ──────────────────────────────
+@app.route('/workorders/api/pm/save', methods=['POST'])
+def wo_pm_save():
+    if not _wo_office():
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    d = request.get_json(silent=True) or {}
+    full_name = (d.get('full_name') or '').strip()
+    username = (d.get('username') or '').strip().lower()
+    email = (d.get('email') or '').strip()
+    password = (d.get('password') or '').strip()
+    community_ids = d.get('community_ids') or []
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        if d.get('id'):
+            user_id = d['id']
+            c.execute("SELECT username FROM users WHERE id=? AND role='property_manager'", (user_id,))
+            if not c.fetchone():
+                return jsonify({'success': False, 'error': 'Property manager not found'}), 404
+            c.execute("UPDATE users SET full_name=?, email=? WHERE id=?", (full_name, email, user_id))
+            if password:
+                if len(password) < 6:
+                    return jsonify({'success': False, 'error': 'Password must be at least 6 characters'}), 400
+                c.execute("UPDATE users SET password=? WHERE id=?", (generate_password_hash(password), user_id))
+        else:
+            if not all([full_name, username, password]):
+                return jsonify({'success': False, 'error': 'Name, username and password are required'}), 400
+            if len(password) < 6:
+                return jsonify({'success': False, 'error': 'Password must be at least 6 characters'}), 400
+            c.execute("SELECT id FROM users WHERE LOWER(username)=?", (username,))
+            if c.fetchone():
+                return jsonify({'success': False, 'error': 'Username already exists'}), 400
+            c.execute("""INSERT INTO users (username, password, full_name, email, role, created_date)
+                         VALUES (?,?,?,?,'property_manager',?)""",
+                      (username, generate_password_hash(password), full_name, email,
+                       datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+            user_id = c.lastrowid
+
+        # Reset community assignments
+        c.execute("DELETE FROM wo_pm_communities WHERE user_id=?", (user_id,))
+        for cid in community_ids:
+            try:
+                c.execute("INSERT OR IGNORE INTO wo_pm_communities (user_id, community_id) VALUES (?,?)",
+                          (user_id, int(cid)))
+            except (ValueError, TypeError):
+                pass
+        conn.commit()
+        return jsonify({'success': True, 'id': user_id})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route('/workorders/api/pm/delete', methods=['POST'])
+def wo_pm_delete():
+    if not _wo_office():
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    pid = (request.get_json(silent=True) or {}).get('id')
+    if not pid:
+        return jsonify({'success': False, 'error': 'Missing id'}), 400
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM wo_pm_communities WHERE user_id=?", (pid,))
+    c.execute("DELETE FROM users WHERE id=? AND role='property_manager'", (pid,))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
+
+
+# ── Work order detail + technician/office actions ────────────────────────────
+def _wo_can_see(wo):
+    if _wo_office() or _wo_tech():
+        return True
+    if _wo_pm():
+        return wo['community_id'] in wo_pm_community_ids(wo_current_user_id())
+    return False
+
+
+@app.route('/workorders/api/work_order/<int:wo_id>', methods=['GET'])
+def wo_detail(wo_id):
+    if not (_wo_office() or _wo_pm() or _wo_tech()):
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    wo = wo_load_full(wo_id)
+    if not wo:
+        return jsonify({'success': False, 'error': 'Not found'}), 404
+    if not _wo_can_see(wo):
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    return jsonify({'success': True, 'work_order': wo})
+
+
+@app.route('/workorders/api/work_order/update', methods=['POST'])
+def wo_update():
+    """Technician (or office) closeout: notes, status, and quote requests."""
+    if not (_wo_tech() or _wo_office()):
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    d = request.get_json(silent=True) or {}
+    wo_id = d.get('id')
+    if not wo_id:
+        return jsonify({'success': False, 'error': 'Missing id'}), 400
+    wo = wo_load_full(wo_id)
+    if not wo:
+        return jsonify({'success': False, 'error': 'Not found'}), 404
+
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    new_status = d.get('status')
+    if new_status and new_status not in WO_STATUSES:
+        return jsonify({'success': False, 'error': 'Invalid status'}), 400
+    request_quote = bool(d.get('request_quote'))
+    if request_quote:
+        new_status = 'needs_quote'
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    sets, vals = [], []
+    if 'tech_notes' in d:
+        sets.append("tech_notes=?"); vals.append(d.get('tech_notes', ''))
+    if new_status:
+        sets.append("status=?"); vals.append(new_status)
+    sets.append("tech_username=?"); vals.append(session.get('username'))
+    sets.append("updated_at=?"); vals.append(now)
+    vals.append(wo_id)
+    c.execute(f"UPDATE wo_work_orders SET {', '.join(sets)} WHERE id=?", vals)
+    conn.commit()
+
+    quote_info = None
+    if request_quote:
+        c.execute("""INSERT INTO wo_quote_requests (work_order_id, status, created_at, updated_at)
+                     VALUES (?,?,?,?)""", (wo_id, 'ready', now, now))
+        quote_id = c.lastrowid
+        conn.commit()
+        conn.close()
+        # Fire the OpenClaw pipeline (no-op detail when the feature is turned off)
+        threading.Thread(target=process_workorder_quote_request, args=(quote_id,), daemon=True).start()
+        quote_info = {'quote_id': quote_id, 'openclaw_active': WORKORDERS_OPENCLAW_QUOTES_ENABLED}
+    else:
+        conn.close()
+    return jsonify({'success': True, 'quote': quote_info})
+
+
+# ── OpenClaw inbound webhook: receive a drafted quote result ─────────────────
+@app.route('/api/openclaw/workorders/quote', methods=['POST'])
+@csrf.exempt
+def openclaw_workorders_quote_webhook():
+    """
+    Optional inbound webhook so OpenClaw can post a drafted-quote result back
+    against a work order. Authenticated with the shared OPENCLAW_API_KEY.
+    Wired and ready; nothing calls it until the feature is turned on.
+    """
+    if not OPENCLAW_API_KEY:
+        return jsonify({'success': False, 'error': 'OpenClaw integration not configured'}), 503
+    auth = request.headers.get('Authorization', '')
+    if not hmac.compare_digest(auth, f'Bearer {OPENCLAW_API_KEY}'):
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+    d = request.get_json(silent=True) or {}
+    wo_id = d.get('work_order_id')
+    if not wo_id:
+        return jsonify({'success': False, 'error': 'Missing work_order_id'}), 400
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    label = d.get('quote_status') or 'Quote draft received from OpenClaw'
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE wo_work_orders SET quote_status=?, updated_at=? WHERE id=?", (label, now, wo_id))
+    c.execute("""UPDATE wo_quote_requests SET status='drafted', openclaw_result=?, updated_at=?
+                 WHERE work_order_id=? AND id=(SELECT MAX(id) FROM wo_quote_requests WHERE work_order_id=?)""",
+              (json.dumps(d), now, wo_id, wo_id))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
+
+
+# ── Homeowner public portal ──────────────────────────────────────────────────
+@app.route('/workorders/portal')
+def wo_portal():
+    if session.get('wo_homeowner_id'):
+        return redirect(url_for('wo_portal_home'))
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, name FROM wo_communities WHERE active=1 ORDER BY name")
+    communities = [{'id': r[0], 'name': r[1]} for r in c.fetchall()]
+    conn.close()
+    return render_template_string(WO_PORTAL_LOGIN_TEMPLATE, communities=communities)
+
+
+@app.route('/workorders/portal/register', methods=['POST'])
+@limiter.limit("8 per minute")
+def wo_portal_register():
+    d = request.get_json(silent=True) or {}
+    full_name = (d.get('full_name') or '').strip()
+    email = (d.get('email') or '').strip().lower()
+    phone = (d.get('phone') or '').strip()
+    password = (d.get('password') or '').strip()
+    community_id = d.get('community_id')
+    address = (d.get('address') or '').strip()
+    if not all([full_name, email, phone, password]):
+        return jsonify({'success': False, 'error': 'Name, email, phone and password are required'}), 400
+    if len(password) < 6:
+        return jsonify({'success': False, 'error': 'Password must be at least 6 characters'}), 400
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id FROM wo_homeowners WHERE email=?", (email,))
+    if c.fetchone():
+        conn.close()
+        return jsonify({'success': False, 'error': 'An account with that email already exists — please sign in.'}), 400
+    c.execute("""INSERT INTO wo_homeowners (full_name, email, phone, password, community_id, address, created_at)
+                 VALUES (?,?,?,?,?,?,?)""",
+              (full_name, email, phone, generate_password_hash(password),
+               int(community_id) if community_id else None, address,
+               datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+    hid = c.lastrowid
+    conn.commit()
+    conn.close()
+    session['wo_homeowner_id'] = hid
+    session['wo_homeowner_name'] = full_name
+    return jsonify({'success': True})
+
+
+@app.route('/workorders/portal/login', methods=['POST'])
+@limiter.limit("10 per minute")
+def wo_portal_login():
+    d = request.get_json(silent=True) or {}
+    email = (d.get('email') or '').strip().lower()
+    password = (d.get('password') or '').strip()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, full_name, password FROM wo_homeowners WHERE email=?", (email,))
+    row = c.fetchone()
+    ok = False
+    if row:
+        try:
+            ok = check_password_hash(row[2], password)
+        except Exception:
+            ok = False
+    if not (row and ok):
+        conn.close()
+        return jsonify({'success': False, 'error': 'Invalid email or password'}), 401
+    c.execute("UPDATE wo_homeowners SET last_login=? WHERE id=?",
+              (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), row[0]))
+    conn.commit()
+    conn.close()
+    session['wo_homeowner_id'] = row[0]
+    session['wo_homeowner_name'] = row[1]
+    return jsonify({'success': True})
+
+
+@app.route('/workorders/portal/logout')
+def wo_portal_logout():
+    session.pop('wo_homeowner_id', None)
+    session.pop('wo_homeowner_name', None)
+    return redirect(url_for('wo_portal'))
+
+
+@app.route('/workorders/portal/home')
+def wo_portal_home():
+    hid = session.get('wo_homeowner_id')
+    if not hid:
+        return redirect(url_for('wo_portal'))
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""SELECT h.full_name, h.email, h.phone, h.address, h.community_id,
+                        c2.name, c2.center_lat, c2.center_lng
+                 FROM wo_homeowners h LEFT JOIN wo_communities c2 ON c2.id=h.community_id
+                 WHERE h.id=?""", (hid,))
+    hr = c.fetchone()
+    if not hr:
+        conn.close()
+        session.pop('wo_homeowner_id', None)
+        return redirect(url_for('wo_portal'))
+    homeowner = dict(zip(['full_name', 'email', 'phone', 'address', 'community_id',
+                          'community_name', 'center_lat', 'center_lng'], hr))
+    c.execute("""SELECT id, problem, category, priority, status, quote_status, tech_notes, created_at
+                 FROM wo_work_orders WHERE homeowner_id=? ORDER BY id DESC""", (hid,))
+    keys = ['id', 'problem', 'category', 'priority', 'status', 'quote_status', 'tech_notes', 'created_at']
+    orders = [dict(zip(keys, r)) for r in c.fetchall()]
+    conn.close()
+    return render_template_string(WO_PORTAL_HOME_TEMPLATE, homeowner=homeowner, orders=orders)
+
+
+@app.route('/workorders/portal/api/submit', methods=['POST'])
+def wo_portal_submit():
+    hid = session.get('wo_homeowner_id')
+    if not hid:
+        return jsonify({'success': False, 'error': 'Not signed in'}), 403
+    d = request.get_json(silent=True) or {}
+    problem = (d.get('problem') or '').strip()
+    if not problem:
+        return jsonify({'success': False, 'error': 'Please describe the problem'}), 400
+
+    def _f(v):
+        try:
+            return float(v) if str(v).strip() != '' else None
+        except (ValueError, TypeError):
+            return None
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT community_id FROM wo_homeowners WHERE id=?", (hid,))
+    row = c.fetchone()
+    community_id = row[0] if row else None
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    c.execute("""INSERT INTO wo_work_orders
+                 (homeowner_id, community_id, problem, category, priority, status,
+                  pin_lat, pin_lng, pin_note, created_at, updated_at)
+                 VALUES (?,?,?,?,?,'pending',?,?,?,?,?)""",
+              (hid, community_id, problem, d.get('category', ''), d.get('priority', 'normal'),
+               _f(d.get('pin_lat')), _f(d.get('pin_lng')), d.get('pin_note', ''), now, now))
+    wo_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True, 'id': wo_id})
 
 
 init_db()
