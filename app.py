@@ -11212,8 +11212,7 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         <div style="margin-bottom: 20px;">
             <h2>📋 Service POs</h2>
             <div style="display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; align-items: center;">
-                <input type="text" id="service-po-client-search" placeholder="Search by client..." style="flex: 1; min-width: 200px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
-                <input type="text" id="service-po-keyword-search" placeholder="Search by keyword..." style="flex: 1; min-width: 200px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                <input type="text" id="service-po-search" placeholder="Search by client, keyword, PO #, job name or store..." onkeyup="if(event.key==='Enter'){filterServicePOs()}" style="flex: 1; min-width: 260px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
                 <button onclick="filterServicePOs()" style="background: #1A5FA6; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">🔍 Search</button>
                 <button onclick="clearServicePOSearch()" style="background: #999; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">Clear</button>
             </div>
@@ -11656,16 +11655,18 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
             });
         }
 
-        function renderServicePOs() {
-            const resultsDiv = document.getElementById('service-po-results');
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Tech</th><th>Client</th><th>Store</th><th>Status</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
-            let totalPOs = 0;
+        // Collect all service POs into a flat list, sorted by most recent first.
+        // Optionally filter by a single search term that matches across
+        // client, keyword/description, tech, PO #, job name or store.
+        function getServicePORows(searchTerm) {
+            const term = (searchTerm || '').toLowerCase().trim();
+            const rows = [];
 
-            // Get all service POs from serviceJobs and jobAllPOs
             serviceJobs.forEach(job => {
                 const jobId = job[0];
+                const jobName = job[1] || '';
+                const jobCode = job[11] || '';
                 const pos = jobAllPOs[String(jobId)] || [];
-                const jobCode = job[11];
 
                 pos.forEach(po => {
                     const poId = po[0];
@@ -11674,39 +11675,67 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
                     const poDisplay = `S-${poId} ${clientName}`;
                     const techName = getTechName(po[2]);
                     const status = po[3];
-                    const estimated = po[4] || 0;
                     const invoiced = po[5] || 0;
                     const date = po[6] || '';
-                    const invoiceCount = (poInvoices[poId] || []).length;
+                    const description = po[7] || '';
 
-                    const invoiceDisplay = invoiceCount > 0
-                        ? `<button onclick="showInvoicesModal(${poId}, '${poDisplay.replace(/'/g, "\\'")}', event)" style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold; border: none; cursor: pointer;">${invoiceCount}</button>`
-                        : '<span style="color: #999;">-</span>';
+                    if (term) {
+                        const haystack = [
+                            poDisplay, String(poId), 'S-' + poId,
+                            clientName, storeName, techName,
+                            jobName, jobCode, description
+                        ].join(' ').toLowerCase();
+                        if (!haystack.includes(term)) return;
+                    }
 
-                    html += `
-                        <tr>
-                            <td><strong>${escapeHtml(poDisplay)}</strong></td>
-                            <td>${escapeHtml(techName)}</td>
-                            <td>${escapeHtml(clientName)}</td>
-                            <td>${escapeHtml(storeName)}</td>
-                            <td><span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span></td>
-                            <td>${formatCurrency(invoiced)}</td>
-                            <td>${invoiceDisplay}</td>
-                            <td>${date}</td>
-                        </tr>
-                    `;
-
-                    totalPOs++;
+                    rows.push({
+                        poId, clientName, storeName, poDisplay,
+                        techName, status, invoiced, date
+                    });
                 });
             });
 
-            html += '</tbody></table>';
+            // Sort by most recent first (date string is ISO-like and sorts lexically)
+            rows.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+            return rows;
+        }
 
-            if (totalPOs === 0) {
-                resultsDiv.innerHTML = '<p style="text-align: center; color: #999;">No service POs to display.</p>';
-            } else {
-                resultsDiv.innerHTML = html;
+        function renderServicePORows(rows, emptyMessage) {
+            const resultsDiv = document.getElementById('service-po-results');
+
+            if (!rows.length) {
+                resultsDiv.innerHTML = `<p style="text-align: center; color: #999;">${emptyMessage}</p>`;
+                return;
             }
+
+            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Tech</th><th>Client</th><th>Store</th><th>Status</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
+
+            rows.forEach(row => {
+                const invoiceCount = (poInvoices[row.poId] || []).length;
+                const invoiceDisplay = invoiceCount > 0
+                    ? `<button onclick="showInvoicesModal(${row.poId}, '${row.poDisplay.replace(/'/g, "\\'")}', event)" style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold; border: none; cursor: pointer;">${invoiceCount}</button>`
+                    : '<span style="color: #999;">-</span>';
+
+                html += `
+                    <tr>
+                        <td><strong>${escapeHtml(row.poDisplay)}</strong></td>
+                        <td>${escapeHtml(row.techName)}</td>
+                        <td>${escapeHtml(row.clientName)}</td>
+                        <td>${escapeHtml(row.storeName)}</td>
+                        <td><span class="po-status ${row.status === 'matched' ? 'matched' : row.status === 'approved' ? 'approved' : 'awaiting'}">${row.status === 'matched' ? 'Matched' : row.status === 'awaiting_invoice' ? 'awaiting_invoice' : row.status}</span></td>
+                        <td>${formatCurrency(row.invoiced)}</td>
+                        <td>${invoiceDisplay}</td>
+                        <td>${row.date}</td>
+                    </tr>
+                `;
+            });
+
+            html += '</tbody></table>';
+            resultsDiv.innerHTML = html;
+        }
+
+        function renderServicePOs() {
+            renderServicePORows(getServicePORows(''), 'No service POs to display.');
         }
 
         function renderInstallJobs() {
@@ -11931,69 +11960,12 @@ UNIFIED_DEPARTMENT_DASHBOARD_TEMPLATE = '''
         }
 
         function filterServicePOs() {
-            const clientSearch = document.getElementById('service-po-client-search').value.toLowerCase().trim();
-            const keywordSearch = document.getElementById('service-po-keyword-search').value.toLowerCase().trim();
-
-            const resultsDiv = document.getElementById('service-po-results');
-            let html = '<table class="all-pos-table"><thead><tr><th>PO #</th><th>Tech</th><th>Client</th><th>Status</th><th>Invoiced</th><th>Invoices</th><th>Date</th></tr></thead><tbody>';
-            let found = 0;
-
-            // Get all service POs from serviceJobs and jobAllPOs
-            serviceJobs.forEach(job => {
-                const jobId = job[0];
-                const pos = jobAllPOs[String(jobId)] || [];
-                const jobCode = job[11];
-                const jobName = job[1];
-
-                pos.forEach(po => {
-                    const poId = po[0];
-                    const clientName = po[8] || 'N/A';
-                    const poDisplay = `S-${poId} ${clientName}`;
-                    const techName = getTechName(po[2]);
-                    const status = po[3];
-                    const estimated = po[4] || 0;
-                    const invoiced = po[5] || 0;
-                    const date = po[6] || '';
-                    const description = po[7] || '';
-                    const invoiceCount = (poInvoices[poId] || []).length;
-
-                    // Filter by client and keyword
-                    const matchesClient = !clientSearch || clientName.toLowerCase().includes(clientSearch);
-                    const matchesKeyword = !keywordSearch || description.toLowerCase().includes(keywordSearch) || techName.toLowerCase().includes(keywordSearch);
-
-                    if (matchesClient && matchesKeyword) {
-                        const invoiceDisplay = invoiceCount > 0
-                            ? `<button onclick="showInvoicesModal(${poId}, '${poDisplay.replace(/'/g, "\\'")}', event)" style="background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold; border: none; cursor: pointer;">${invoiceCount}</button>`
-                            : '<span style="color: #999;">-</span>';
-
-                        html += `
-                            <tr>
-                                <td><strong>${escapeHtml(poDisplay)}</strong></td>
-                                <td>${escapeHtml(techName)}</td>
-                                <td>${escapeHtml(clientName)}</td>
-                                <td><span class="po-status ${status === 'matched' ? 'matched' : status === 'approved' ? 'approved' : 'awaiting'}">${status === 'matched' ? 'Matched' : status === 'awaiting_invoice' ? 'awaiting_invoice' : status}</span></td>
-                                <td>${formatCurrency(invoiced)}</td>
-                                <td>${invoiceDisplay}</td>
-                                <td>${date}</td>
-                            </tr>
-                        `;
-                        found++;
-                    }
-                });
-            });
-
-            html += '</tbody></table>';
-
-            if (found === 0) {
-                resultsDiv.innerHTML = '<p style="text-align: center; color: #999;">No POs found matching your search.</p>';
-            } else {
-                resultsDiv.innerHTML = html;
-            }
+            const term = document.getElementById('service-po-search').value;
+            renderServicePORows(getServicePORows(term), 'No POs found matching your search.');
         }
 
         function clearServicePOSearch() {
-            document.getElementById('service-po-client-search').value = '';
-            document.getElementById('service-po-keyword-search').value = '';
+            document.getElementById('service-po-search').value = '';
             renderServicePOs();
         }
 
