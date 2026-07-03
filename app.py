@@ -10509,10 +10509,12 @@ TECH_DASHBOARD_TEMPLATE = '''
                 <input type="text" name="store_name" required placeholder="e.g., Home Depot, Lowe's, Grainger" data-i18n-placeholder="store_name_placeholder">
             </div>
 
+            {% if tech_type != 'install' %}
             <div class="form-group">
                 <label data-i18n="description_label">Description / Items Needed</label>
                 <textarea name="description" required placeholder="List what you need to purchase..." data-i18n-placeholder="description_placeholder"></textarea>
             </div>
+            {% endif %}
 
             <button type="submit" data-i18n="submit_request">Submit Request</button>
         </form>
