@@ -14,3 +14,7 @@ invoice_uploads/
 bulk_uploads/
 .pytest_cache/
 .vscode/
+
+# Rendered demo video — regenerate with demo/render-video.py
+demo/*.mp4
+demo/*.render.html

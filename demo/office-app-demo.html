@@ -295,6 +295,56 @@ button{font-family:inherit; cursor:pointer;}
 .ch.agent[aria-current="true"]{background:var(--signal); border-color:var(--signal); color:#20120A;}
 .ch.agent:hover{border-color:var(--signal); color:var(--signal);}
 
+/* ─────────────────────────────────────────────────────────────
+   VIDEO MODE  (#video)
+   The reel fills the window as one 16:9 frame with the narration
+   burned in as a lower third. This is what gets recorded to MP4,
+   and it doubles as a full-screen presentation mode.
+   ───────────────────────────────────────────────────────────── */
+.video-mode, .video-mode body{overflow:hidden; background:var(--stage-ink);}
+.video-mode .mast,
+.video-mode .transport,
+.video-mode .script,
+.video-mode footer{display:none;}
+.video-mode .wrap{max-width:none; height:100vh; padding:0; gap:0;}
+.video-mode .stage{
+  height:100vh; width:100vw; aspect-ratio:auto;
+  border:none; border-radius:0; box-shadow:none;
+}
+.video-mode .shot{padding-bottom:calc(var(--shot-pad) + 172px);}
+
+.video-mode .narration{
+  position:fixed; left:0; right:0; bottom:0; height:auto; z-index:5;
+  display:block; padding:0 0 30px; border:none; border-radius:0;
+  background:linear-gradient(to bottom, transparent, rgba(6,26,30,.94) 26%);
+  color:var(--stage-text);
+}
+.video-mode .narration .tc{display:none;}
+.video-mode #caption{
+  margin:0 var(--shot-pad) 20px; max-width:74ch;
+  font-size:clamp(17px,1.62cqw,25px); line-height:1.45; min-height:3.6em;
+  color:var(--stage-text);
+}
+.video-mode .vm-bar{
+  display:flex; align-items:center; gap:18px; margin:0 var(--shot-pad);
+}
+.video-mode .vm-ch{
+  font-family:var(--mono); font-size:clamp(10px,.85cqw,13px); letter-spacing:.18em;
+  text-transform:uppercase; color:var(--stage-mute); flex:0 0 auto; min-width:15ch;
+}
+.video-mode .vm-line{flex:1 1 auto; height:2px; background:rgba(228,240,239,.14); overflow:hidden;}
+.video-mode .vm-line i{display:block; height:100%; width:0; background:var(--water);}
+.video-mode .vm-mark{
+  font-family:var(--mono); font-size:clamp(10px,.85cqw,13px); letter-spacing:.14em;
+  color:var(--stage-mute); flex:0 0 auto; font-variant-numeric:tabular-nums;
+}
+.vm-bar{display:none;}
+.video-mode .vm-bar{display:flex;}
+
+/* Offline MP4 render (#render): the exporter drives every frame, so wall-clock
+   transitions are replaced by per-frame values. */
+.render-mode *{transition:none !important; animation:none !important;}
+
 /* ── SCRIPT ── */
 .script{border-top:1px solid var(--page-line); padding-top:28px; display:flex; flex-direction:column; gap:20px;}
 .script h3{margin:0; font-size:20px; font-weight:750; letter-spacing:-.02em;}
@@ -620,6 +670,11 @@ footer{font-family:var(--mono); font-size:11px; color:var(--page-mute); letter-s
   <div class="narration">
     <span class="tc" id="timecode" aria-hidden="true">0:00 / 0:00</span>
     <p id="caption" aria-live="polite">Press play to run the reel — or read the full script below.</p>
+    <div class="vm-bar" aria-hidden="true">
+      <span class="vm-ch" id="vmChapter">Cold open</span>
+      <span class="vm-line"><i id="vmLine"></i></span>
+      <span class="vm-mark" id="vmMark">0:00</span>
+    </div>
   </div>
 
   <!-- ══════════════════════ TRANSPORT ══════════════════════ -->
@@ -755,6 +810,16 @@ var playBtn   = document.getElementById("play");
 var voBtn     = document.getElementById("vo");
 var chapWrap  = document.getElementById("chapters");
 var rings     = document.getElementById("rings");
+var vmChapter = document.getElementById("vmChapter");
+var vmLine    = document.getElementById("vmLine");
+var vmMark    = document.getElementById("vmMark");
+
+// #video (or ?video) fills the window as one frame — presentation + MP4 render
+var HASH  = location.hash + location.search;
+var RENDER = /(^|[#?&])render\b/.test(HASH);
+var VIDEO  = RENDER || /(^|[#?&])video\b/.test(HASH);
+if (VIDEO)  document.documentElement.classList.add("video-mode");
+if (RENDER) document.documentElement.classList.add("render-mode");
 
 /* ── Chapter rail + segmented scrub ── */
 var segs = [];
@@ -857,6 +922,69 @@ function render(){
 
   timecode.textContent = fmt(t) + " / " + fmt(total);
   scrub.setAttribute("aria-valuenow", Math.round((t / total) * 100));
+
+  if (VIDEO){
+    vmChapter.textContent = SCENES[f.s].ch;
+    vmLine.style.width = ((t / total) * 100) + "%";
+    vmMark.textContent = fmt(t) + " / " + fmt(total);
+  }
+}
+
+/* ── Offline frame export ───────────────────────────────────────────────
+   window.__reel.frame(seconds) paints one exact frame: scene, reveal fades,
+   caption and progress, with nothing left to the wall clock. */
+if (RENDER){
+  window.__reel = {
+    total: total,
+    frame: function(time){
+      t = Math.max(0, Math.min(time, total - 0.001));
+      var prev = curScene;
+      render();
+      var f = flat[beatAt(t)];
+
+      // element reveals: ramp instead of transition
+      var sig = f.s + ":" + f.b;
+      shots[f.s].querySelectorAll("[data-r]").forEach(function(el){
+        var r = parseInt(el.getAttribute("data-r"), 10);
+        var appear = sceneStart[f.s];
+        for (var k = 0; k < r; k++) appear += SCENES[f.s].beats[k].d;
+        var pr = Math.max(0, Math.min(1, (t - appear) / 0.45));
+        el.style.opacity = pr;
+        el.style.transform = "translateY(" + ((1 - pr) * 9).toFixed(2) + "px)";
+        if (pr > 0 && pr < 1) sig += "/" + r + pr.toFixed(3);
+      });
+
+      // scene change: cross-dissolve the outgoing shot over 0.5s
+      var sp = Math.max(0, Math.min(1, (t - sceneStart[f.s]) / 0.5));
+      shots.forEach(function(el, k){
+        if (k === f.s){
+          el.style.visibility = "visible";
+          el.style.opacity = sp;
+          el.style.transform = "translateY(" + ((1 - sp) * 10).toFixed(2) + "px)";
+        } else if (k === prev && sp < 1){
+          el.style.visibility = "visible";
+          el.style.opacity = 1 - sp;
+          el.style.transform = "none";
+        } else {
+          el.style.visibility = "hidden";
+          el.style.opacity = 0;
+        }
+      });
+
+      // ambient rings run off the timeline, not accumulated deltas
+      var showRings = (f.s === 0 || f.s === SCENES.length - 1);
+      rings.style.opacity = showRings ? 1 : 0;
+      if (showRings){ ringT = t; drawRings(0); }
+
+      // A signature of everything visible, so the exporter can skip
+      // re-capturing frames that are pixel-identical to the one before.
+      if (sp < 1) sig += "|x" + sp.toFixed(3);
+      if (showRings) sig += "|o" + t.toFixed(2);
+      return sig + "|w" + Math.round(vmLine.getBoundingClientRect().width)
+                 + "|" + vmMark.textContent;
+    }
+  };
+  document.documentElement.setAttribute("data-reel", "render-ready");
 }
 
 function tick(now){
@@ -866,7 +994,11 @@ function tick(now){
     // when voiceover is on, hold at a beat boundary until the line finishes
     var holding = voOn && speaking && t >= flat[curBeat].end - 0.05;
     if (!holding) t += Math.min(dt, 0.25);
-    if (t >= total){ t = total - 0.01; pause(); }
+    if (t >= total){
+      t = total - 0.01; pause();
+      // the recorder watches for this
+      if (VIDEO) document.documentElement.setAttribute("data-reel", "done");
+    }
     if (rings.classList.contains("on")) drawRings(dt);
     render();
   }
@@ -921,5 +1053,16 @@ SCENES.forEach(function(s, i){
 });
 
 render();
+
+// In video mode the reel is the whole page — start it as soon as fonts settle
+if (VIDEO){
+  document.documentElement.setAttribute("data-reel", "ready");
+  if (!RENDER) window.addEventListener("load", function(){
+    setTimeout(function(){
+      document.documentElement.setAttribute("data-reel", "playing");
+      play();
+    }, 900);
+  });
+}
 })();
 </script>

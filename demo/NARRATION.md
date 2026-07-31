@@ -3,12 +3,45 @@
 Companion to `demo/office-app-demo.html`. Read straight through for a voiceover;
 timecodes are chapter starts at the reel's built-in pacing (6:11 total).
 
-To export a real MP4: open the demo, press **Play**, and screen-record the stage
-(QuickTime on Mac, Xbox Game Bar on Windows, or OBS). The stage is a 16:9 frame,
-so a crop of just that rectangle gives a clean video. The **Voiceover** button
-reads the script aloud with the browser's own speech synthesis and holds each
-scene until the line finishes — useful for a rough cut, but a human read will
-sound better.
+## Watching it
+
+- **In a browser** — open `demo/office-app-demo.html`. Play/pause with Space,
+  skip chapters with the arrow keys, click the timeline to scrub.
+- **Full screen, no chrome** — add `#video` to the URL. The reel fills the
+  window as one frame with the narration burned in as a lower third. Good for
+  playing on a TV or in a meeting.
+- **As a video file** — `demo/office-app-demo.mp4`, 1920×1080, 30fps, silent
+  with the narration on screen.
+
+## Re-rendering the MP4
+
+The video is not committed (it is in `.gitignore`); regenerate it whenever the
+reel changes:
+
+```
+pip install playwright imageio-ffmpeg
+python3 demo/render-video.py --out demo/office-app-demo.mp4
+```
+
+The reel exposes `window.__reel.frame(seconds)` in `#render` mode, which paints
+one exact frame with nothing left to the wall clock. The script walks the
+timeline at a fixed frame rate and pipes frames straight into ffmpeg, so the
+output is frame-accurate rather than a screen recording. Flags: `--fps`,
+`--scale` (device pixel ratio, 1.5 → 1080p, 3 → 4K), `--crf`, `--quality`.
+
+## Adding a voiceover
+
+The MP4 has no audio track. To narrate it, record this script against the
+timecodes below and mux the result in:
+
+```
+ffmpeg -i office-app-demo.mp4 -i voiceover.wav \
+       -c:v copy -c:a aac -shortest office-app-demo-narrated.mp4
+```
+
+The reel's **Voiceover** button (browser mode only) reads the script aloud with
+the browser's own speech synthesis and holds each scene until the line
+finishes — useful for timing a read, but a human voice will sound better.
 
 ---
 
