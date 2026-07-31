@@ -77,7 +77,14 @@ def main():
                 const kids = [...s.children].filter(k => getComputedStyle(k).display !== 'none');
                 const top = Math.min(...kids.map(k => k.getBoundingClientRect().top));
                 const bot = Math.max(...kids.map(k => k.getBoundingClientRect().bottom));
-                if (top < 0 || bot > cap.top + 18) out.push({i, top: Math.round(top), bot: Math.round(bot)});
+                if (top < 0 || bot > cap.top + 18)
+                  out.push({i, reason: 'outside frame', top: Math.round(top), bot: Math.round(bot)});
+                // scrollable panes (board/sheet/term/map) must not be hiding rows
+                s.querySelectorAll('*').forEach(el => {
+                  if (el.scrollHeight > el.clientHeight + 2 || el.scrollWidth > el.clientWidth + 2)
+                    out.push({i, reason: 'clipped ' + (el.className || el.tagName),
+                              need: el.scrollHeight, got: el.clientHeight});
+                });
                 s.style.visibility = vis; s.style.opacity = op;
               });
               return out; })()""")

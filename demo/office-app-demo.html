@@ -94,6 +94,10 @@ body{
   z-index:1;
 }
 .shot.live{opacity:1; visibility:visible; transform:none;}
+/* An overflow:hidden flex item gets min-height:0, so .board/.sheet/.term would
+   quietly shrink and clip rows instead of overflowing. Never shrink them —
+   overflow has to be visible so the render preflight can catch it. */
+.shot > *{flex-shrink:0;}
 
 .shot-head{display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;}
 .chip-num{
