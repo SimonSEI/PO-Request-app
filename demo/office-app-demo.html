@@ -1,0 +1,925 @@
+<title>The Office App — Demo Reel</title>
+
+<style>
+/* ─────────────────────────────────────────────────────────────
+   TOKENS
+   Stage stays night-dark in both themes (a player letterbox);
+   the chrome around it adapts.
+   ───────────────────────────────────────────────────────────── */
+:root{
+  --stage-ink:   #061A1E;
+  --stage-panel: #0C282D;
+  --stage-line:  #17454C;
+  --stage-text:  #E4F0EF;
+  --stage-mute:  #86A6A9;
+
+  --water:  #3FC9DC;
+  --turf:   #7FBF5E;
+  --signal: #F0913B;
+
+  --page-bg:    #E9EEEC;
+  --page-panel: #FFFFFF;
+  --page-line:  #C8D6D3;
+  --page-text:  #0B2226;
+  --page-mute:  #55716F;
+  --page-accent:#0B7A8C;
+
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --shot-pad: clamp(20px, 4.2cqw, 60px);
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --page-bg:    #041215;
+    --page-panel: #0A2126;
+    --page-line:  #17393F;
+    --page-text:  #DCEAE9;
+    --page-mute:  #7E9C9E;
+    --page-accent:#3FC9DC;
+  }
+}
+:root[data-theme="dark"]{
+  --page-bg:#041215; --page-panel:#0A2126; --page-line:#17393F;
+  --page-text:#DCEAE9; --page-mute:#7E9C9E; --page-accent:#3FC9DC;
+}
+:root[data-theme="light"]{
+  --page-bg:#E9EEEC; --page-panel:#FFFFFF; --page-line:#C8D6D3;
+  --page-text:#0B2226; --page-mute:#55716F; --page-accent:#0B7A8C;
+}
+
+*{box-sizing:border-box;}
+body{
+  margin:0; background:var(--page-bg); color:var(--page-text);
+  font-family:var(--sans); -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1120px; margin:0 auto; padding:clamp(20px,4vw,44px) clamp(14px,3vw,28px) 80px; display:flex; flex-direction:column; gap:22px;}
+
+/* ── MASTHEAD ── */
+.mast{display:flex; align-items:flex-end; justify-content:space-between; gap:20px; flex-wrap:wrap;}
+.mast-id{display:flex; flex-direction:column; gap:6px;}
+.eyebrow{
+  font-family:var(--mono); font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--page-mute);
+}
+.mast h1{
+  margin:0; max-width:25ch; font-size:clamp(25px,3.4vw,37px); font-weight:800; letter-spacing:-.03em;
+  text-wrap:balance; line-height:1.02;
+}
+.mast-meta{font-family:var(--mono); font-size:12px; color:var(--page-mute); text-align:right; line-height:1.9;}
+.mast-meta b{color:var(--page-text); font-weight:600;}
+
+/* ─────────────────────────────────────────────────────────────
+   STAGE
+   ───────────────────────────────────────────────────────────── */
+.stage{
+  position:relative; aspect-ratio:16/9; width:100%;
+  background:var(--stage-ink); color:var(--stage-text);
+  border-radius:14px; overflow:hidden; border:1px solid rgba(228,240,239,.09);
+  box-shadow:0 24px 60px rgba(2,20,24,.34), 0 2px 0 rgba(255,255,255,.05) inset;
+  container-type:inline-size;
+}
+.stage::after{
+  content:""; position:absolute; inset:0; pointer-events:none;
+  background:radial-gradient(120% 90% at 50% -20%, rgba(63,201,220,.10), transparent 62%);
+}
+#rings{position:absolute; inset:0; width:100%; height:100%; opacity:0; transition:opacity .8s ease;}
+#rings.on{opacity:1;}
+
+.shot{
+  position:absolute; inset:0; padding:var(--shot-pad);
+  display:flex; flex-direction:column; justify-content:center; gap:clamp(12px,2.1cqw,27px);
+  opacity:0; visibility:hidden; transform:translateY(10px);
+  transition:opacity .5s ease, transform .5s ease, visibility .5s;
+  z-index:1;
+}
+.shot.live{opacity:1; visibility:visible; transform:none;}
+
+.shot-head{display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;}
+.chip-num{
+  font-family:var(--mono); font-size:clamp(10px,1.12cqw,14px); letter-spacing:.16em;
+  color:var(--water); text-transform:uppercase;
+}
+.chip-num.sig{color:var(--signal);}
+.shot h2{
+  margin:0; font-size:clamp(22px,3.7cqw,53px); font-weight:800; letter-spacing:-.032em;
+  line-height:1.03; text-wrap:balance;
+}
+.shot .lede{
+  margin:0; font-size:clamp(13px,1.52cqw,21px); color:var(--stage-mute);
+  max-width:60ch; line-height:1.5;
+}
+
+/* reveal */
+[data-r]{opacity:0; transform:translateY(9px); transition:opacity .45s ease, transform .45s ease;}
+[data-r].in{opacity:1; transform:none;}
+
+/* ── stage primitives ── */
+.grid{display:grid; gap:clamp(8px,1.15cqw,16px);}
+.g2{grid-template-columns:repeat(2,1fr);}
+.g3{grid-template-columns:repeat(3,1fr);}
+.g4{grid-template-columns:repeat(4,1fr);}
+.g5{grid-template-columns:repeat(5,1fr);}
+
+.tile{
+  background:var(--stage-panel); border:1px solid var(--stage-line);
+  border-radius:10px; padding:clamp(10px,1.4cqw,20px);
+  display:flex; flex-direction:column; gap:6px; min-width:0;
+}
+.tile .k{
+  font-family:var(--mono); font-size:clamp(9px,.97cqw,13px); letter-spacing:.13em;
+  text-transform:uppercase; color:var(--water);
+}
+.tile .k.sig{color:var(--signal);}
+.tile .k.turf{color:var(--turf);}
+.tile .v{font-size:clamp(12px,1.42cqw,19.5px); font-weight:650; letter-spacing:-.015em; line-height:1.25;}
+.tile .d{font-size:clamp(10.5px,1.16cqw,16px); color:var(--stage-mute); line-height:1.45;}
+
+.pill{
+  display:inline-flex; align-items:center; gap:6px; align-self:flex-start;
+  font-family:var(--mono); font-size:clamp(9px,.97cqw,13px); letter-spacing:.1em;
+  text-transform:uppercase; padding:4px 11px; border-radius:100px;
+  border:1px solid currentColor;
+}
+.pill.live{color:var(--turf);}
+.pill.wired{color:var(--water);}
+.pill.hold{color:var(--signal);}
+.dot{width:6px; height:6px; border-radius:50%; background:currentColor;}
+
+/* pipeline */
+.flow{display:flex; align-items:stretch; gap:clamp(6px,.85cqw,13px); flex-wrap:nowrap;}
+.flow .node{
+  flex:1 1 0; min-width:0; background:var(--stage-panel); border:1px solid var(--stage-line);
+  border-radius:10px; padding:clamp(9px,1.3cqw,19px); display:flex; flex-direction:column; gap:6px;
+}
+.flow .node .n{font-family:var(--mono); font-size:clamp(9px,.95cqw,12.5px); letter-spacing:.13em; color:var(--water); text-transform:uppercase;}
+.flow .node .t{font-size:clamp(11.5px,1.32cqw,18px); font-weight:650; letter-spacing:-.015em; line-height:1.2;}
+.flow .node .s{font-size:clamp(10.5px,1.12cqw,15px); color:var(--stage-mute); line-height:1.45;}
+.flow .arw{align-self:center; color:var(--stage-line); font-size:clamp(13px,1.5cqw,21px); flex:0 0 auto;}
+
+/* terminal / log */
+.term{
+  background:#04161A; border:1px solid var(--stage-line); border-radius:9px;
+  padding:clamp(11px,1.5cqw,21px); font-family:var(--mono);
+  font-size:clamp(9.5px,1.05cqw,14.5px); line-height:2.1; overflow:hidden;
+}
+.term .ln{display:flex; gap:10px; white-space:nowrap;}
+.term .ts{color:#3C5C61; flex:0 0 auto;}
+.term .ok{color:var(--turf);}
+.term .aq{color:var(--water);}
+.term .sg{color:var(--signal);}
+.term .mt{color:var(--stage-mute); overflow:hidden; text-overflow:ellipsis;}
+
+/* ledger bars */
+.bar-row{display:grid; grid-template-columns:minmax(0,1.1fr) 3.2fr auto; align-items:center; gap:clamp(8px,1.2cqw,16px);}
+.bar-row .nm{font-size:clamp(11px,1.24cqw,17px); font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.track{height:clamp(11px,1.4cqw,19px); border-radius:100px; background:var(--stage-panel); border:1px solid var(--stage-line); overflow:hidden; display:flex;}
+.track i{display:block; height:100%;}
+.track .spent{background:var(--water);}
+.track .cmt{background:rgba(63,201,220,.28);}
+.track .over{background:var(--signal);}
+.bar-row .amt{font-family:var(--mono); font-size:clamp(9.5px,1.05cqw,14px); color:var(--stage-mute); font-variant-numeric:tabular-nums;}
+
+/* sheet */
+.sheet{border:1px solid var(--stage-line); border-radius:10px; overflow:hidden; font-family:var(--mono); font-size:clamp(9.5px,1.05cqw,14.5px);}
+.sheet .r{display:grid; grid-template-columns:1.7fr repeat(5, minmax(0,1fr)); }
+.sheet .r>span{padding:clamp(6px,.86cqw,12px) clamp(7px,1cqw,14px); border-top:1px solid var(--stage-line); border-right:1px solid var(--stage-line); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-variant-numeric:tabular-nums;}
+.sheet .r>span:last-child{border-right:none;}
+.sheet .r:first-child>span{border-top:none; color:var(--water); letter-spacing:.1em; text-transform:uppercase; background:var(--stage-panel);}
+.sheet .r>span.z{color:var(--stage-mute);}
+
+/* map */
+.map{
+  position:relative; aspect-ratio:5/3; border:1px solid var(--stage-line); border-radius:9px; overflow:hidden;
+  background:
+    radial-gradient(70% 55% at 22% 30%, rgba(127,191,94,.20), transparent 60%),
+    radial-gradient(60% 50% at 78% 70%, rgba(63,201,220,.13), transparent 62%),
+    #072026;
+  min-height:0;
+}
+.map .roads{position:absolute; inset:0; opacity:.5;
+  background-image:linear-gradient(var(--stage-line) 1px, transparent 1px),
+                   linear-gradient(90deg, var(--stage-line) 1px, transparent 1px);
+  background-size:11% 19%;}
+.pin{position:absolute; transform:translate(-50%,-50%); display:flex; flex-direction:column; align-items:center; gap:4px;}
+.pin .bead{width:11px; height:11px; border-radius:50%; background:var(--signal); box-shadow:0 0 0 4px rgba(240,145,59,.22), 0 0 0 9px rgba(240,145,59,.09);}
+.pin .lbl{font-family:var(--mono); font-size:clamp(9px,.95cqw,12.5px); letter-spacing:.08em; background:rgba(4,22,26,.86); border:1px solid var(--stage-line); padding:2px 6px; border-radius:4px; white-space:nowrap;}
+
+/* steps (a real sequence — numbering carries order) */
+.steps{display:grid; grid-template-columns:repeat(3,1fr); gap:clamp(8px,1.15cqw,16px);}
+.step{background:var(--stage-panel); border:1px solid var(--stage-line); border-left:2px solid var(--signal); border-radius:0 10px 10px 0; padding:clamp(9px,1.3cqw,19px); display:flex; flex-direction:column; gap:6px;}
+.step .no{font-family:var(--mono); font-size:clamp(9px,.97cqw,13px); letter-spacing:.14em; color:var(--signal);}
+.step .h{font-size:clamp(12px,1.38cqw,19px); font-weight:650; letter-spacing:-.015em; line-height:1.2;}
+.step .b{font-size:clamp(10.5px,1.14cqw,15.5px); color:var(--stage-mute); line-height:1.48;}
+
+/* guardrails */
+.no-card{background:rgba(240,145,59,.06); border:1px solid rgba(240,145,59,.32); border-radius:10px; padding:clamp(11px,1.5cqw,21px); display:flex; gap:11px; align-items:flex-start;}
+.no-card .x{font-family:var(--mono); color:var(--signal); font-size:clamp(13px,1.4cqw,19px); line-height:1.25; flex:0 0 auto;}
+.no-card .tx{font-size:clamp(11.5px,1.3cqw,18px); line-height:1.35; font-weight:550;}
+
+/* quote card */
+.qcard{background:var(--stage-panel); border:1px solid var(--stage-line); border-radius:10px; padding:clamp(12px,1.6cqw,23px); display:flex; flex-direction:column; gap:10px;}
+.qcard .qh{display:flex; justify-content:space-between; align-items:baseline; gap:10px;}
+.qcard .qn{font-family:var(--mono); font-size:clamp(9.5px,1.02cqw,14px); letter-spacing:.12em; color:var(--stage-mute);}
+.qcard .qt{font-size:clamp(14px,1.7cqw,25px); font-weight:750; letter-spacing:-.022em; line-height:1.15;}
+.qcard .qt.dim{color:var(--stage-mute); font-weight:600; text-decoration:line-through; text-decoration-color:rgba(240,145,59,.6);}
+.qcard .qli{display:flex; justify-content:space-between; gap:14px; font-size:clamp(10.5px,1.16cqw,16px); color:var(--stage-mute); padding-top:9px; border-top:1px solid var(--stage-line);}
+.qcard .qli b{color:var(--stage-text); font-weight:600;}
+
+.wo-split{grid-template-columns:1.15fr 1fr; align-items:stretch;}
+.wo-side{align-content:stretch; gap:clamp(6px,.9cqw,11px);}
+.ledger{gap:clamp(6px,.9cqw,11px);}
+.qsplit{align-items:start;}
+
+/* wordmark */
+.cold{justify-content:center; align-items:flex-start;}
+.wordmark{font-size:clamp(30px,6.4cqw,84px); font-weight:850; letter-spacing:-.045em; line-height:.94; margin:0; text-wrap:balance;}
+.wordmark em{font-style:normal; color:var(--water);}
+.rule{height:1px; background:var(--stage-line); width:100%;}
+.cold-meta{display:flex; gap:clamp(18px,3cqw,52px); flex-wrap:wrap;}
+.cold-meta div{display:flex; flex-direction:column; gap:3px;}
+.cold-meta .n{font-family:var(--mono); font-size:clamp(18px,2.5cqw,36px); font-weight:600; letter-spacing:-.02em; font-variant-numeric:tabular-nums;}
+.cold-meta .l{font-family:var(--mono); font-size:clamp(9px,.97cqw,13px); letter-spacing:.14em; text-transform:uppercase; color:var(--stage-mute);}
+
+/* status board */
+.board{border:1px solid var(--stage-line); border-radius:9px; overflow:hidden;}
+.board .br{display:grid; grid-template-columns:1.5fr 1fr 1.9fr; gap:0; border-top:1px solid var(--stage-line);}
+.board .br:first-child{border-top:none;}
+.board .br>span{padding:clamp(8px,1.05cqw,15px) clamp(10px,1.3cqw,19px); font-size:clamp(10.5px,1.14cqw,16px); display:flex; align-items:center; gap:7px; min-width:0;}
+.board .br>span:nth-child(1){font-weight:650;}
+.board .br>span:nth-child(3){color:var(--stage-mute); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.board .hd>span{font-family:var(--mono); font-size:clamp(9px,.97cqw,13px); letter-spacing:.13em; text-transform:uppercase; color:var(--water); background:var(--stage-panel);}
+
+/* ─────────────────────────────────────────────────────────────
+   NARRATION + TRANSPORT
+   ───────────────────────────────────────────────────────────── */
+.narration{
+  background:var(--page-panel); border:1px solid var(--page-line); border-radius:12px;
+  padding:clamp(14px,2vw,20px) clamp(15px,2.2vw,24px);
+  display:grid; grid-template-columns:auto 1fr; gap:16px; align-items:center; height:132px;
+}
+.narration .tc{
+  font-family:var(--mono); font-size:12px; color:var(--page-mute);
+  letter-spacing:.06em; font-variant-numeric:tabular-nums;
+}
+#caption{margin:0; font-size:clamp(15px,1.9vw,19px); line-height:1.5; max-width:66ch; text-wrap:pretty;}
+
+.transport{display:flex; flex-direction:column; gap:12px;}
+.scrub{display:flex; gap:3px; height:8px; cursor:pointer; align-items:stretch;}
+.scrub .seg{flex:1 1 0; background:var(--page-line); border-radius:100px; overflow:hidden; position:relative; transition:background .2s;}
+.scrub .seg i{position:absolute; inset:0 auto 0 0; width:0; background:var(--page-accent); border-radius:100px;}
+.scrub:hover .seg{background:color-mix(in srgb, var(--page-line) 70%, var(--page-accent));}
+
+.ctrls{display:flex; align-items:center; gap:10px; flex-wrap:wrap;}
+button{font-family:inherit; cursor:pointer;}
+.btn{
+  background:var(--page-panel); color:var(--page-text); border:1px solid var(--page-line);
+  border-radius:8px; padding:8px 13px; font-size:13px; font-weight:600;
+  display:inline-flex; align-items:center; gap:7px; transition:border-color .18s, color .18s, background .18s;
+}
+.btn:hover{border-color:var(--page-accent); color:var(--page-accent);}
+.btn:focus-visible, .scrub:focus-visible, .ch:focus-visible{outline:2px solid var(--page-accent); outline-offset:2px;}
+.btn.primary{background:var(--page-accent); border-color:var(--page-accent); color:var(--page-bg);}
+.btn.primary:hover{filter:brightness(1.08); color:var(--page-bg);}
+.btn[aria-pressed="true"]{border-color:var(--page-accent); color:var(--page-accent);}
+.ctrl-note{font-family:var(--mono); font-size:11px; color:var(--page-mute); letter-spacing:.05em; margin-left:auto;}
+
+.chapters{display:flex; flex-wrap:wrap; gap:6px;}
+.ch{
+  background:transparent; border:1px solid var(--page-line); color:var(--page-mute);
+  border-radius:100px; padding:5px 11px; font-family:var(--mono); font-size:10.5px;
+  letter-spacing:.1em; text-transform:uppercase; transition:all .18s;
+}
+.ch:hover{border-color:var(--page-accent); color:var(--page-accent);}
+.ch[aria-current="true"]{background:var(--page-accent); border-color:var(--page-accent); color:var(--page-bg);}
+.ch.agent[aria-current="true"]{background:var(--signal); border-color:var(--signal); color:#20120A;}
+.ch.agent:hover{border-color:var(--signal); color:var(--signal);}
+
+/* ── SCRIPT ── */
+.script{border-top:1px solid var(--page-line); padding-top:28px; display:flex; flex-direction:column; gap:20px;}
+.script h3{margin:0; font-size:20px; font-weight:750; letter-spacing:-.02em;}
+.script .intro{margin:0; color:var(--page-mute); font-size:15px; line-height:1.6; max-width:68ch;}
+.sc-list{display:flex; flex-direction:column; gap:14px;}
+.sc{display:grid; grid-template-columns:88px 1fr; gap:16px; padding-bottom:14px; border-bottom:1px solid var(--page-line);}
+.sc:last-child{border-bottom:none;}
+.sc .sc-t{font-family:var(--mono); font-size:11.5px; color:var(--page-mute); letter-spacing:.06em; font-variant-numeric:tabular-nums; padding-top:3px;}
+.sc .sc-b{display:flex; flex-direction:column; gap:5px;}
+.sc .sc-h{font-size:14px; font-weight:700; letter-spacing:-.01em;}
+.sc .sc-h.agent{color:var(--signal);}
+.sc p{margin:0; font-size:14.5px; line-height:1.6; color:var(--page-mute); max-width:70ch;}
+
+footer{font-family:var(--mono); font-size:11px; color:var(--page-mute); letter-spacing:.05em; padding-top:8px;}
+
+@media (max-width:760px){
+  /* A 16:9 letterbox can't hold these shots at phone width — let the frame
+     size to the live shot and stack the columns instead of clipping. */
+  .stage{aspect-ratio:auto;}
+  .shot{position:relative; inset:auto; display:none; padding:22px 18px 26px;}
+  .shot.live{display:flex;}
+  #rings{display:none;}
+
+  .g5,.g4,.g3{grid-template-columns:repeat(2,1fr);}
+  .g2,.wo-split,.steps{grid-template-columns:1fr;}
+  .flow{flex-direction:column;}
+  .flow .arw{transform:rotate(90deg); align-self:flex-start; margin-left:14px;}
+  .bar-row{grid-template-columns:1fr auto; gap:5px 10px;}
+  .bar-row .track{grid-column:1 / -1;}
+  .board .br{grid-template-columns:1fr;}
+  .board .hd{display:none;}
+  .board .br>span{padding-block:5px;}
+  .board .br>span:nth-child(1){padding-top:12px;}
+  .board .br>span:nth-child(3){padding-bottom:12px; white-space:normal;}
+  .sheet{font-size:9.5px;}
+  .term{font-size:9.5px; line-height:1.85;}
+  .term .ln{display:block; white-space:normal;}
+  .term .ln>span{margin-right:7px;}
+  .map{aspect-ratio:4/3;}
+
+  .narration{grid-template-columns:1fr; gap:8px; height:auto; min-height:112px;}
+  .narration .tc{justify-self:start;}
+  .sc{grid-template-columns:1fr; gap:5px;}
+  .ctrl-note{display:none;}
+  .mast h1{max-width:none;}
+  .mast-meta{text-align:left;}
+}
+@media (prefers-reduced-motion: reduce){
+  *{transition-duration:.01ms !important; animation-duration:.01ms !important;}
+}
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <div class="mast-id">
+      <span class="eyebrow">Stahlman-England Irrigation · Demo Reel</span>
+      <h1>The Office App, and what OpenClaw is doing in it</h1>
+    </div>
+    <div class="mast-meta">
+      <b>15</b> chapters · <b>~6 min</b><br>
+      Press <b>Play</b> · Space to pause · ← → to skip
+    </div>
+  </header>
+
+  <!-- ══════════════════════ STAGE ══════════════════════ -->
+  <div class="stage" id="stage">
+    <canvas id="rings"></canvas>
+
+    <!-- 1 · COLD OPEN -->
+    <section class="shot cold" data-scene="0">
+      <p class="eyebrow" data-r="0" style="color:var(--stage-mute)">Stahlman-England Irrigation, Inc. · Southwest Florida</p>
+      <h2 class="wordmark" data-r="0">The <em>Office</em> App</h2>
+      <p class="lede" data-r="1">One login. Six applications. Every purchase order, invoice, install job, community route, work order and pump ticket the company runs on — in one place.</p>
+      <div class="rule" data-r="2"></div>
+      <div class="cold-meta" data-r="2">
+        <div><span class="n">6</span><span class="l">Applications</span></div>
+        <div><span class="n">216</span><span class="l">Routes</span></div>
+        <div><span class="n">45+</span><span class="l">Tables</span></div>
+        <div><span class="n">3</span><span class="l">AI seams</span></div>
+      </div>
+    </section>
+
+    <!-- 2 · ROLES -->
+    <section class="shot" data-scene="1">
+      <div class="shot-head"><span class="chip-num">01 · Who signs in</span></div>
+      <h2 data-r="0">Five roles, one door</h2>
+      <p class="lede" data-r="0">Sign in once and the app shows you only your work. The dashboard is built from your role, so nobody navigates around features they'll never use.</p>
+      <div class="grid g5" data-r="0">
+        <div class="tile"><span class="k">Technician</span><span class="v">Service &amp; Install</span><span class="d">Raise POs, log community work, close work orders</span></div>
+        <div class="tile"><span class="k">Office</span><span class="v">The hub</span><span class="d">Match invoices, cost jobs, review billing, run admin</span></div>
+        <div class="tile"><span class="k">Admin</span><span class="v">Accounts</span><span class="d">Users, roles, passwords, system settings</span></div>
+        <div class="tile"><span class="k">Property mgr</span><span class="v">Oversight</span><span class="d">Work orders across their own communities only</span></div>
+        <div class="tile"><span class="k">Homeowner</span><span class="v">Public portal</span><span class="d">Submit a request, pin the problem, track status</span></div>
+      </div>
+      <p class="lede" data-r="2">Every screen speaks English or Spanish — the crews toggle it themselves, and the choice sticks to their account.</p>
+    </section>
+
+    <!-- 3 · PO REQUESTS -->
+    <section class="shot" data-scene="2">
+      <div class="shot-head"><span class="chip-num">02 · PO Requests</span></div>
+      <h2 data-r="0">A purchase order in about fifteen seconds</h2>
+      <div class="grid g3" data-r="0">
+        <div class="tile"><span class="k">Tech types</span><span class="v">Job + description</span><span class="d">Misspell the job and it fuzzy-matches back to the real one at 70% confidence, rather than failing</span></div>
+        <div class="tile"><span class="k">App assigns</span><span class="v">I-142 HERONS</span><span class="d">Auto-numbered with an S / I department prefix and the job code appended</span></div>
+        <div class="tile"><span class="k">Status</span><span class="v">Awaiting invoice</span><span class="d">The PO now sits open, waiting for paperwork to arrive on its own</span></div>
+      </div>
+      <p class="lede" data-r="2">Inactive or deleted jobs are refused at the door, so a PO can never be raised against a job that's closed. Every action lands in an audit log with the user, the target and a timestamp.</p>
+    </section>
+
+    <!-- 4 · EMAIL → INVOICE -->
+    <section class="shot" data-scene="3">
+      <div class="shot-head"><span class="chip-num">03 · The inbox worker</span></div>
+      <h2 data-r="0">Invoices match themselves to POs</h2>
+      <div class="flow" data-r="0">
+        <div class="node"><span class="n">Every hour</span><span class="t">PO@ inbox</span><span class="s">Microsoft Graph, or IMAP as a fallback</span></div>
+        <span class="arw">→</span>
+        <div class="node"><span class="n">Read</span><span class="t">PDF + OCR</span><span class="s">pdfplumber first, Tesseract for scans</span></div>
+        <span class="arw">→</span>
+        <div class="node"><span class="n">Extract</span><span class="t">Claude Haiku</span><span class="s">Vendor, invoice number, totals</span></div>
+        <span class="arw">→</span>
+        <div class="node"><span class="n">Match</span><span class="t">Three passes</span><span class="s">PO number → fuzzy → Claude, ≥60% to commit</span></div>
+      </div>
+      <div class="term" data-r="3">
+        <div class="ln"><span class="ts">08:00:14</span><span class="mt">4 attachments · 3 PDF · 1 scan</span></div>
+        <div class="ln"><span class="ts">08:00:31</span><span class="ok">✓ matched</span><span class="mt">SiteOne #4471998 → PO I-138 · exact PO number</span></div>
+        <div class="ln"><span class="ts">08:00:44</span><span class="ok">✓ matched</span><span class="mt">Ewing #90-221 → PO S-77 · Claude, 0.91 confidence</span></div>
+        <div class="ln"><span class="ts">08:00:52</span><span class="sg">! review</span><span class="mt">Unknown vendor → held as a notification for the office</span></div>
+      </div>
+      <p class="lede" data-r="4">Anything it can't place becomes a notification instead of a guess — the office matches it by hand in two clicks, and any match can be undone. Token spend and match confidence are logged on a settings page, and the whole AI layer has an off switch that falls back to plain pattern matching.</p>
+    </section>
+
+    <!-- 5 · JOB COSTING -->
+    <section class="shot" data-scene="4">
+      <div class="shot-head"><span class="chip-num">04 · Job Costing</span></div>
+      <h2 data-r="0">Budget against reality, per job, live</h2>
+      <p class="lede" data-r="0">Import the proposal — materials, labor, travel, hotel, subs, rental, permit, as-built, days allotted — and every PO and invoice that lands afterwards is scored against it.</p>
+      <div class="grid ledger" data-r="0">
+        <div class="bar-row"><span class="nm">Herons Glen Phase 2</span><span class="track"><i class="spent" style="width:58%"></i><i class="cmt" style="width:14%"></i></span><span class="amt">$186,400 / $320,000</span></div>
+        <div class="bar-row"><span class="nm">Verona Walk Renovation</span><span class="track"><i class="spent" style="width:41%"></i><i class="cmt" style="width:22%"></i></span><span class="amt">$92,700 / $226,000</span></div>
+        <div class="bar-row"><span class="nm">Pelican Preserve</span><span class="track"><i class="spent" style="width:79%"></i><i class="over" style="width:9%"></i></span><span class="amt">$141,900 / $161,000</span></div>
+      </div>
+      <p class="lede" data-r="2">Solid is invoiced, faded is committed but not yet billed, amber is over. The office can see a job going the wrong way while there's still time to do something about it.</p>
+    </section>
+
+    <!-- 6 · INSTALLATION -->
+    <section class="shot" data-scene="5">
+      <div class="shot-head"><span class="chip-num">05 · Installation</span></div>
+      <h2 data-r="0">The whole install job, front to back</h2>
+      <div class="grid g4" data-r="0">
+        <div class="tile"><span class="k">Proposals</span><span class="v">Versioned</span><span class="d">Revise a proposal and it keeps the history; a PO number is generated from it</span></div>
+        <div class="tile"><span class="k">Rate card</span><span class="v">Priced once</span><span class="d">Shared line items so two estimators quote the same work the same way</span></div>
+        <div class="tile"><span class="k">Site plans</span><span class="v">Marked current</span><span class="d">Upload revisions; the crew always opens the one that's live</span></div>
+        <div class="tile"><span class="k">Crews</span><span class="v">Week grid</span><span class="d">Assign crews to jobs by day and log the week</span></div>
+        <div class="tile"><span class="k">Daily logs</span><span class="v">With photos</span><span class="d">What happened on site, captured from the field</span></div>
+        <div class="tile"><span class="k">Expenses</span><span class="v">Receipts</span><span class="d">Job-charged spend with the receipt attached</span></div>
+        <div class="tile"><span class="k">Change orders</span><span class="v">Client approves</span><span class="d">Emailed a private link — they approve without an account</span></div>
+        <div class="tile"><span class="k">RFIs</span><span class="v">Tracked</span><span class="d">Questions raised against a job, answered in one thread</span></div>
+      </div>
+      <p class="lede" data-r="3">Vendor invoices get parsed from spreadsheets, checked against Jobber by SEI proposal number, and when Jobber marks one paid, Christian gets the email automatically.</p>
+    </section>
+
+    <!-- 7 · COMMUNITY -->
+    <section class="shot" data-scene="6">
+      <div class="shot-head"><span class="chip-num">06 · Community Maintenance</span></div>
+      <h2 data-r="0">The clipboard, replaced</h2>
+      <p class="lede" data-r="0">A tech picks a community and a date and fills in a spreadsheet built from that community's own clock and address list — Verona Walk's clocks, Herons' house numbers, imported from Excel.</p>
+      <div class="sheet" data-r="0">
+        <div class="r"><span>Zone / address</span><span>Nozzle</span><span>6" pop</span><span>12" pop</span><span>Rotor</span><span>Solenoid</span></div>
+        <div class="r"><span>Clock 2 · Z6 · 8412 Bella</span><span>4</span><span>2</span><span class="z">—</span><span>1</span><span class="z">—</span></div>
+        <div class="r"><span>Clock 2 · Z7 · 8418 Bella</span><span>2</span><span class="z">—</span><span>1</span><span class="z">—</span><span>1</span></div>
+        <div class="r"><span>Clock 3 · Z1 · 8501 Milano</span><span>6</span><span>3</span><span class="z">—</span><span>2</span><span class="z">—</span></div>
+      </div>
+      <p class="lede" data-r="2">It saves as a draft on the truck, takes photos, and submits when the day's done. The office reviews it, prices it from that community's rate sheet, and exports the month to Excel. Deleted submissions are recoverable, and a bad import can be undone in one action.</p>
+    </section>
+
+    <!-- 8 · WORK ORDERS -->
+    <section class="shot" data-scene="7">
+      <div class="shot-head"><span class="chip-num">07 · Work Orders</span></div>
+      <h2 data-r="0">The homeowner points at the problem</h2>
+      <div class="grid wo-split" data-r="0">
+        <div class="map">
+          <div class="roads"></div>
+          <div class="pin" style="left:34%; top:44%"><span class="bead"></span><span class="lbl">Head spraying the driveway</span></div>
+          <div class="pin" style="left:69%; top:66%"><span class="bead" style="background:var(--water); box-shadow:0 0 0 4px rgba(63,201,220,.2)"></span><span class="lbl">8412 Bella Ct</span></div>
+        </div>
+        <div class="grid wo-side">
+          <div class="tile"><span class="k">Homeowner</span><span class="v">Drops a pin</span><span class="d">On a satellite view of their own street — no address guessing</span></div>
+          <div class="tile"><span class="k">Property manager</span><span class="v">Sees their communities</span><span class="d">Status, pins and tech notes, scoped to the communities they oversee</span></div>
+          <div class="tile"><span class="k">Technician</span><span class="v">Closes it out</span><span class="d">Adds notes and completes — or flags it Needs Quote</span></div>
+        </div>
+      </div>
+      <p class="lede" data-r="2">That last flag is the interesting one. It's the seam where OpenClaw picks the job up.</p>
+    </section>
+
+    <!-- 9 · PUMPS -->
+    <section class="shot" data-scene="8">
+      <div class="shot-head"><span class="chip-num">08 · Pumps</span></div>
+      <h2 data-r="0">Pump work bills itself</h2>
+      <div class="flow" data-r="0">
+        <div class="node"><span class="n">Filter</span><span class="t">Pump keywords</span><span class="s">Transducer, VFD, wet well, flow meter, impeller…</span></div>
+        <span class="arw">→</span>
+        <div class="node"><span class="n">Track</span><span class="t">Monthly tab</span><span class="s">Rows land in "July 2026", matching the old spreadsheet</span></div>
+        <span class="arw">→</span>
+        <div class="node"><span class="n">Draft</span><span class="t">Claude → Jobber</span><span class="s">Client matched, invoice drafted, number written back</span></div>
+      </div>
+      <p class="lede" data-r="2">The same scanner that reads PO invoices runs a second pass for pump equipment, on its own log, so the two never collide. If Jobber refuses a draft, the row is kept and marked <em>needs review</em> — a draft is never lost.</p>
+      <div class="term" data-r="3">
+        <div class="ln"><span class="ts">POST</span><span class="aq">/api/openclaw/pumps</span><span class="mt">— OpenClaw can file a pump request with no human in the loop</span></div>
+        <div class="ln"><span class="ts">auth</span><span class="ok">Bearer ✓</span><span class="mt">shared-secret, compared in constant time</span></div>
+      </div>
+    </section>
+
+    <!-- 10 · UNDER THE HOOD -->
+    <section class="shot" data-scene="9">
+      <div class="shot-head"><span class="chip-num">09 · Under the hood</span></div>
+      <h2 data-r="0">Boring where it should be boring</h2>
+      <div class="grid g3" data-r="0">
+        <div class="tile"><span class="k">Stack</span><span class="v">Flask + SQLite</span><span class="d">Gunicorn on Railway, two workers, four threads</span></div>
+        <div class="tile"><span class="k">Auth</span><span class="v">Role-gated</span><span class="d">Every route checks the session role before it does anything</span></div>
+        <div class="tile"><span class="k">Forms</span><span class="v">CSRF everywhere</span><span class="d">Tokens injected into fetch and XHR automatically</span></div>
+        <div class="tile"><span class="k">Login</span><span class="v">Rate limited</span><span class="d">Ten attempts a minute, plus token password resets</span></div>
+        <div class="tile"><span class="k">Audit</span><span class="v">Activity log</span><span class="d">Who did what, to which record, when</span></div>
+        <div class="tile"><span class="k">Backups</span><span class="v">On demand</span><span class="d">Snapshot the database and download it from the browser</span></div>
+      </div>
+      <p class="lede" data-r="1">Nothing exotic. It has to run on a phone, in the sun, on a job site, on whatever signal the truck has.</p>
+    </section>
+
+    <!-- 11 · OPENCLAW SEAMS -->
+    <section class="shot" data-scene="10">
+      <div class="shot-head"><span class="chip-num sig">10 · OpenClaw</span></div>
+      <h2 data-r="0">Three places the agent touches the business</h2>
+      <div class="grid g3" data-r="0">
+        <div class="tile">
+          <span class="pill hold"><span class="dot"></span>Running today</span>
+          <span class="v">Quoting in Jobber</span>
+          <span class="d">Turning technicians' notes into titled, itemised draft quotes, every day, outside this app</span>
+        </div>
+        <div class="tile">
+          <span class="pill live"><span class="dot"></span>Live endpoint</span>
+          <span class="v">Pump intake</span>
+          <span class="d">Posts a pump request straight into the tracker and the Jobber drafting pipeline</span>
+        </div>
+        <div class="tile">
+          <span class="pill wired"><span class="dot"></span>Wired, switch off</span>
+          <span class="v">Work-order quotes</span>
+          <span class="d">A "Needs Quote" flag sends the job, client, pin and tech notes over — one env flag from being on</span>
+        </div>
+      </div>
+      <p class="lede" data-r="2">The plumbing is already built and authenticated in both directions: the app can hand work out, and OpenClaw can post its result back against the same work order.</p>
+    </section>
+
+    <!-- 12 · QUOTING LOOP -->
+    <section class="shot" data-scene="11">
+      <div class="shot-head"><span class="chip-num sig">11 · What it's doing right now</span></div>
+      <h2 data-r="0">The quoting loop, step by step</h2>
+      <div class="steps" data-r="0">
+        <div class="step"><span class="no">Step 1</span><span class="h">Discovery</span><span class="b">Pulls every quote sitting in <em>draft</em> status in Jobber</span></div>
+        <div class="step"><span class="no">Step 2</span><span class="h">Triage</span><span class="b">Reads the internal notes. Materials and scope from a technician? Process it. Nothing there? Skip it — untouched</span></div>
+        <div class="step"><span class="no">Step 3</span><span class="h">Title</span><span class="b">"ESTIMATE - IRRIGATION" becomes "Bermad Solenoid Installation"</span></div>
+      </div>
+      <div class="steps" data-r="3">
+        <div class="step"><span class="no">Step 4</span><span class="h">Build the lines</span><span class="b">Materials with quantities, crew labor converted to the right unit, and a scope paragraph — batched to Jobber's catalog matcher, which links each item to Products &amp; Services and pulls pricing</span></div>
+        <div class="step"><span class="no">Step 5</span><span class="h">Clean up</span><span class="b">Drops the placeholder "PROPOSAL AMOUNT SERVICE" line and leaves an internal note recording exactly what it changed</span></div>
+        <div class="step"><span class="no">Step 6</span><span class="h">Hand off</span><span class="b">Posts a summary in #quotes-review so Beatriz knows which quotes are ready to price</span></div>
+      </div>
+    </section>
+
+    <!-- 13 · GUARDRAILS -->
+    <section class="shot" data-scene="12">
+      <div class="shot-head"><span class="chip-num sig">12 · Guardrails</span></div>
+      <h2 data-r="0">Where it deliberately stops</h2>
+      <p class="lede" data-r="0">The agent does the assembly. It does not do the judgement, and it does not touch the client.</p>
+      <div class="grid g2" data-r="0">
+        <div class="no-card"><span class="x">✕</span><span class="tx">Doesn't set final prices — that stays with Beatriz and the office</span></div>
+        <div class="no-card"><span class="x">✕</span><span class="tx">Doesn't send anything to a client</span></div>
+        <div class="no-card"><span class="x">✕</span><span class="tx">Won't touch a quote that has no technician notes</span></div>
+        <div class="no-card"><span class="x">✕</span><span class="tx">Never invents materials — every line comes off the tech's list</span></div>
+      </div>
+      <p class="lede" data-r="2">The work it hands over is a quote that's been read, named, itemised and documented. A person still decides what it's worth.</p>
+    </section>
+
+    <!-- 14 · #8899 -->
+    <section class="shot" data-scene="13">
+      <div class="shot-head"><span class="chip-num sig">13 · From today</span></div>
+      <h2 data-r="0">Quote #8899</h2>
+      <div class="grid g2 qsplit" data-r="0">
+        <div class="qcard">
+          <div class="qh"><span class="qn">Before · draft</span></div>
+          <span class="qt dim">ESTIMATE - IRRIGATION</span>
+          <span class="qli"><span>Line items</span><b>PROPOSAL AMOUNT SERVICE</b></span>
+          <span class="qli"><span>Internal note</span><b>Jimmie: troubleshoot Zone 6 at Clock 2…</b></span>
+        </div>
+        <div class="qcard" style="border-left:2px solid var(--signal)">
+          <div class="qh"><span class="qn" style="color:var(--signal)">After · ready to price</span></div>
+          <span class="qt">Zone 6 Troubleshooting — Clock 2</span>
+          <span class="qli"><span>Scope</span><b>Written from Jimmie's notes</b></span>
+          <span class="qli"><span>Placeholder line</span><b>Removed</b></span>
+          <span class="qli"><span>Flagged for office as</span><b>Time &amp; material</b></span>
+        </div>
+      </div>
+      <p class="lede" data-r="2">Jimmie wrote what he found. The agent turned it into something the office can price. Nobody retyped anything.</p>
+    </section>
+
+    <!-- 15 · CLOSE -->
+    <section class="shot" data-scene="14">
+      <div class="shot-head"><span class="chip-num">14 · Where things stand</span></div>
+      <h2 data-r="0">Live, and one switch away</h2>
+      <div class="board" data-r="0">
+        <div class="br hd"><span>Capability</span><span>Status</span><span>What it depends on</span></div>
+        <div class="br"><span>PO requests, invoices, job costing</span><span><span class="pill live"><span class="dot"></span>In use</span></span><span>Daily, by the office and both tech crews</span></div>
+        <div class="br"><span>Community maintenance billing</span><span><span class="pill live"><span class="dot"></span>In use</span></span><span>Per community, exported monthly to Excel</span></div>
+        <div class="br"><span>Installation &amp; change orders</span><span><span class="pill live"><span class="dot"></span>In use</span></span><span>Install crews and the office</span></div>
+        <div class="br"><span>OpenClaw quoting in Jobber</span><span><span class="pill hold"><span class="dot"></span>Running</span></span><span>Draft quotes with technician notes</span></div>
+        <div class="br"><span>Pumps tracker + Jobber agent</span><span><span class="pill wired"><span class="dot"></span>Preview</span></span><span>Jobber token + OpenClaw key</span></div>
+        <div class="br"><span>Work-order quote drafting</span><span><span class="pill wired"><span class="dot"></span>Wired</span></span><span>One flag: WORKORDERS_OPENCLAW_QUOTES</span></div>
+      </div>
+      <p class="lede" data-r="1">Everything the field already does now leaves a record. Everything the office repeats is being handed, one seam at a time, to something that doesn't mind repeating it.</p>
+    </section>
+  </div>
+
+  <!-- ══════════════════════ NARRATION ══════════════════════ -->
+  <div class="narration">
+    <span class="tc" id="timecode" aria-hidden="true">0:00 / 0:00</span>
+    <p id="caption" aria-live="polite">Press play to run the reel — or read the full script below.</p>
+  </div>
+
+  <!-- ══════════════════════ TRANSPORT ══════════════════════ -->
+  <div class="transport">
+    <div class="scrub" id="scrub" role="slider" tabindex="0" aria-label="Timeline"
+         aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+
+    <div class="ctrls">
+      <button class="btn primary" id="play" aria-label="Play">▶&nbsp; Play</button>
+      <button class="btn" id="prev" aria-label="Previous chapter">↤ Prev</button>
+      <button class="btn" id="next" aria-label="Next chapter">Next ↦</button>
+      <button class="btn" id="vo" aria-pressed="false" hidden>🔊 Voiceover</button>
+      <button class="btn" id="restart">↻ Restart</button>
+      <span class="ctrl-note">Screen-record this stage to export an MP4</span>
+    </div>
+
+    <div class="chapters" id="chapters"></div>
+  </div>
+
+  <!-- ══════════════════════ SCRIPT ══════════════════════ -->
+  <section class="script">
+    <h3>Narration script</h3>
+    <p class="intro">Every line the reel speaks, with its chapter timecode — read it straight for a voiceover, or use it as the written version of the walkthrough.</p>
+    <div class="sc-list" id="scriptList"></div>
+  </section>
+
+  <footer>Stahlman-England Irrigation, Inc. · The Office App</footer>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+/* ── Timeline: scenes → beats. Beat text is the narration. ── */
+var SCENES = [
+ {ch:"Cold open", agent:false, title:"The Office App", beats:[
+   {d:7.5, t:"This is the Office App — the system Stahlman-England Irrigation runs its whole operation on."},
+   {d:8.5, t:"Six applications behind one login: purchase orders, invoices, install jobs, community maintenance routes, homeowner work orders, and pumps."},
+   {d:8, t:"Two hundred and sixteen routes, forty-five tables, and three places where an AI agent does work a person used to do."}
+ ]},
+ {ch:"Roles", agent:false, title:"Five roles, one door", beats:[
+   {d:7, t:"It starts with who you are. Sign in once, and the app shows you only the work that belongs to you."},
+   {d:9, t:"Technicians raise POs and log field work. The office matches invoices and costs jobs. Admins manage accounts. Property managers see only their own communities. Homeowners get a public portal of their own."},
+   {d:6.5, t:"And every screen speaks English or Spanish — the crews toggle it themselves, and it sticks to their account."}
+ ]},
+ {ch:"PO Requests", agent:false, title:"Purchase orders", beats:[
+   {d:8, t:"Start with the thing the field does most: raising a purchase order. A tech picks the job, types what they're buying, and submits."},
+   {d:9, t:"If they misspell the job name, the app fuzzy-matches it back to the real one rather than rejecting it. It assigns the PO number itself — an S or I prefix for service or install, with the job code appended. Status: awaiting invoice."},
+   {d:7.5, t:"Closed jobs are refused outright, so a PO can't be raised against work that's finished. And every action is written to an audit log."}
+ ]},
+ {ch:"Invoices", agent:false, title:"The inbox worker", beats:[
+   {d:7, t:"Then the PO sits open and waits — because the invoice arrives on its own."},
+   {d:6.5, t:"Every hour, the app checks the PO inbox over Microsoft Graph, reads each PDF, runs OCR on anything scanned, and asks Claude to pull out the vendor and invoice number."},
+   {d:6, t:"Then it matches: exact PO number first, fuzzy second, and Claude last — committing only above sixty percent confidence."},
+   {d:8.5, t:"Here's a real morning. Two invoices matched themselves. One was uncertain, so it became a notification instead of a guess."},
+   {d:9, t:"That's the rule throughout: when it isn't sure, it hands the decision back. The office resolves it in two clicks, any match can be undone, token spend is logged, and the whole AI layer has an off switch."}
+ ]},
+ {ch:"Job Costing", agent:false, title:"Job costing", beats:[
+   {d:8.5, t:"All of that feeds job costing. Import the proposal — materials, labor, travel, subs, rental, permits, days allotted — and every PO and invoice after it is scored against that budget."},
+   {d:8, t:"Solid is what's been invoiced. Faded is committed but not yet billed. Amber is over budget."},
+   {d:6.5, t:"Which means the office sees a job going the wrong way while there's still time to do something about it."}
+ ]},
+ {ch:"Installation", agent:false, title:"Installation", beats:[
+   {d:6.5, t:"The installation side carries a whole install job front to back."},
+   {d:6, t:"Versioned proposals with a shared rate card. Site plans where one revision is marked current. Crew scheduling by the week."},
+   {d:6.5, t:"Daily logs with photos. Expenses with receipts. Change orders the client approves from an emailed link, with no account. And RFIs tracked against the job."},
+   {d:8, t:"Vendor invoices get parsed out of spreadsheets, checked against Jobber by proposal number — and when Jobber marks one paid, the email goes out automatically."}
+ ]},
+ {ch:"Community", agent:false, title:"Community maintenance", beats:[
+   {d:8.5, t:"Community maintenance replaced a clipboard. A tech picks a community and a date, and gets a sheet built from that community's own clocks and addresses — imported from the spreadsheets the office already had."},
+   {d:8, t:"Counts per zone: nozzles, pop-ups, rotors, solenoids. It saves as a draft on the truck, takes photos, and submits at the end of the day."},
+   {d:8.5, t:"The office reviews it, prices it from that community's rate sheet, and exports the month to Excel. Deleted submissions come back, and a bad import undoes in one action."}
+ ]},
+ {ch:"Work Orders", agent:false, title:"Work orders", beats:[
+   {d:8, t:"Work orders open the system up to the people the company actually works for. A homeowner logs in, describes the problem, and drops a pin on a satellite view of their own street."},
+   {d:8.5, t:"Their property manager sees every request across the communities they oversee — status, pins, technician notes. The tech in the field adds notes and closes it out, or flags it as needing a quote."},
+   {d:6, t:"That last flag is the interesting one. It's the seam where OpenClaw picks the job up."}
+ ]},
+ {ch:"Pumps", agent:false, title:"Pumps", beats:[
+   {d:7.5, t:"Pumps is the smallest app and the most automated. The same inbox scanner runs a second pass, filtering for pump equipment — transducers, VFDs, wet wells, flow meters."},
+   {d:8, t:"Matches land in a monthly tracker tab that mirrors the old spreadsheet, and an agent drafts the invoice in Jobber, matches the client, and writes the invoice number back."},
+   {d:7.5, t:"If Jobber refuses a draft, the row is kept and marked needs review. A draft is never lost."},
+   {d:7, t:"And there's a live authenticated endpoint where OpenClaw can file a pump request itself, with nobody in the loop at all."}
+ ]},
+ {ch:"Under the hood", agent:false, title:"Under the hood", beats:[
+   {d:9, t:"Underneath, it's deliberately boring. Flask and SQLite on Railway. Every route checks your role. CSRF tokens on every form. Login rate limited. A full audit log, and one-click database backups."},
+   {d:6.5, t:"Because it has to run on a phone, in the sun, on a job site, on whatever signal the truck has."}
+ ]},
+ {ch:"OpenClaw", agent:true, title:"Three seams", beats:[
+   {d:7, t:"Which brings us to OpenClaw, and what it's actually doing right now."},
+   {d:10, t:"There are three seams. One is running today: drafting quotes in Jobber. One is a live endpoint: pump intake. And one is fully wired but switched off — work-order quote drafting, which is a single environment flag away from being on."},
+   {d:7.5, t:"The plumbing is authenticated in both directions. The app can hand work out, and OpenClaw can post its result back against the same work order."}
+ ]},
+ {ch:"The loop", agent:true, title:"The quoting loop", beats:[
+   {d:5.5, t:"The quoting work is a loop it runs every day, in six steps."},
+   {d:7.5, t:"First, discovery: it pulls every quote sitting in draft status in Jobber. Second, triage: it reads the internal notes — materials and a scope of work from a technician means it processes the quote; nothing there and it skips it, untouched."},
+   {d:5, t:"Third, it titles the quote: \"ESTIMATE - IRRIGATION\" becomes \"Bermad Solenoid Installation\"."},
+   {d:8, t:"Fourth, it builds the line items — materials with quantities, crew labor converted to the right unit, and a scope paragraph for the client — batched to Jobber's catalog matcher, which links each item to Products and Services and pulls pricing."},
+   {d:7, t:"Fifth, it cleans up: it drops the placeholder line and leaves an internal note recording exactly what it changed. And sixth, it posts a summary in the quotes-review channel so Beatriz knows what's ready to price."}
+ ]},
+ {ch:"Guardrails", agent:true, title:"Guardrails", beats:[
+   {d:6, t:"What matters just as much is where it stops."},
+   {d:9.5, t:"It doesn't set final prices — that stays with Beatriz and the office. It doesn't send anything to a client. It won't touch a quote with no technician notes. And it never invents materials: every line comes off the tech's list."},
+   {d:7, t:"It does the assembly. A person still decides what the work is worth."}
+ ]},
+ {ch:"#8899", agent:true, title:"Quote #8899", beats:[
+   {d:8, t:"Here's one from today. Quote 8899 came in as \"ESTIMATE - IRRIGATION\", with a placeholder line item and a note from Jimmie about troubleshooting Zone 6 at Clock 2."},
+   {d:8, t:"It came out titled, with a scope description written from those notes, the placeholder removed, and flagged for the office to price as time and material."},
+   {d:6, t:"Jimmie wrote what he found. Nobody retyped anything."}
+ ]},
+ {ch:"Where we are", agent:false, title:"Status", beats:[
+   {d:9, t:"So — where things stand. POs, invoices, job costing, community billing and installation are in daily use. OpenClaw's Jobber quoting is running now. Pumps and work orders are in preview, and work-order quote drafting is one flag from live."},
+   {d:9, t:"Everything the field does now leaves a record. And everything the office repeats is being handed, one seam at a time, to something that doesn't mind repeating it."}
+ ]}
+];
+
+/* ── Flatten ── */
+var flat = [], total = 0, sceneStart = [];
+SCENES.forEach(function(s, si){
+  sceneStart[si] = total;
+  s.beats.forEach(function(b, bi){
+    flat.push({s:si, b:bi, start:total, end:total + b.d, text:b.t});
+    total += b.d;
+  });
+  s.dur = total - sceneStart[si];
+});
+
+var shots     = Array.prototype.slice.call(document.querySelectorAll(".shot"));
+var caption   = document.getElementById("caption");
+var timecode  = document.getElementById("timecode");
+var scrub     = document.getElementById("scrub");
+var playBtn   = document.getElementById("play");
+var voBtn     = document.getElementById("vo");
+var chapWrap  = document.getElementById("chapters");
+var rings     = document.getElementById("rings");
+
+/* ── Chapter rail + segmented scrub ── */
+var segs = [];
+SCENES.forEach(function(s, i){
+  var seg = document.createElement("div");
+  seg.className = "seg";
+  seg.style.flexGrow = s.dur;
+  seg.innerHTML = "<i></i>";
+  scrub.appendChild(seg);
+  segs.push(seg.firstChild);
+
+  var b = document.createElement("button");
+  b.className = "ch" + (s.agent ? " agent" : "");
+  b.textContent = s.ch;
+  b.setAttribute("aria-current", "false");
+  b.addEventListener("click", function(){ seek(sceneStart[i] + 0.01); play(); });
+  chapWrap.appendChild(b);
+});
+var chips = Array.prototype.slice.call(chapWrap.children);
+
+/* ── Ambient sprinkler rings (cold open + close only) ── */
+var ctx = rings.getContext("2d"), ringT = 0, dpr = Math.min(window.devicePixelRatio || 1, 2);
+function sizeCanvas(){
+  var r = rings.getBoundingClientRect();
+  rings.width = r.width * dpr; rings.height = r.height * dpr;
+}
+window.addEventListener("resize", sizeCanvas); sizeCanvas();
+function drawRings(dt){
+  ringT += dt;
+  var w = rings.width, h = rings.height;
+  ctx.clearRect(0, 0, w, h);
+  var cx = w * 0.80, cy = h * 0.30, max = Math.max(w, h) * 0.62;
+  for (var i = 0; i < 5; i++){
+    var p = ((ringT * 0.09) + i / 5) % 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, p * max, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(63,201,220," + (0.20 * (1 - p)).toFixed(3) + ")";
+    ctx.lineWidth = 1.4 * dpr;
+    ctx.stroke();
+  }
+}
+
+/* ── Voiceover (browser speech synthesis, optional) ── */
+var voOn = false, speaking = false, voiceReady = ("speechSynthesis" in window);
+if (voiceReady) voBtn.hidden = false;
+voBtn.addEventListener("click", function(){
+  voOn = !voOn;
+  voBtn.setAttribute("aria-pressed", String(voOn));
+  voBtn.textContent = voOn ? "🔊 Voiceover on" : "🔊 Voiceover";
+  if (!voOn){ window.speechSynthesis.cancel(); speaking = false; }
+  else if (playing) speak(flat[curBeat].text);
+});
+function speak(text){
+  if (!voOn || !voiceReady) return;
+  window.speechSynthesis.cancel();
+  var u = new SpeechSynthesisUtterance(text);
+  u.rate = 1.02; u.pitch = 1;
+  speaking = true;
+  u.onend = u.onerror = function(){ speaking = false; };
+  window.speechSynthesis.speak(u);
+}
+
+/* ── Clock ── */
+var t = 0, playing = false, curBeat = -1, curScene = -1, last = 0;
+
+function fmt(sec){
+  sec = Math.max(0, Math.floor(sec));
+  return Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0");
+}
+function beatAt(time){
+  for (var i = 0; i < flat.length; i++) if (time < flat[i].end) return i;
+  return flat.length - 1;
+}
+
+function render(){
+  var i = beatAt(t), f = flat[i];
+
+  if (i !== curBeat){
+    curBeat = i;
+    caption.textContent = f.text;
+    if (playing) speak(f.text);
+  }
+
+  if (f.s !== curScene){
+    curScene = f.s;
+    shots.forEach(function(el, k){ el.classList.toggle("live", k === f.s); });
+    chips.forEach(function(c, k){ c.setAttribute("aria-current", String(k === f.s)); });
+    rings.classList.toggle("on", f.s === 0 || f.s === SCENES.length - 1);
+  }
+
+  // reveal elements up to the current beat index within the scene
+  shots[f.s].querySelectorAll("[data-r]").forEach(function(el){
+    el.classList.toggle("in", parseInt(el.getAttribute("data-r"), 10) <= f.b);
+  });
+
+  segs.forEach(function(bar, k){
+    var s = sceneStart[k], d = SCENES[k].dur;
+    bar.style.width = (Math.min(1, Math.max(0, (t - s) / d)) * 100) + "%";
+  });
+
+  timecode.textContent = fmt(t) + " / " + fmt(total);
+  scrub.setAttribute("aria-valuenow", Math.round((t / total) * 100));
+}
+
+function tick(now){
+  var dt = last ? (now - last) / 1000 : 0;
+  last = now;
+  if (playing){
+    // when voiceover is on, hold at a beat boundary until the line finishes
+    var holding = voOn && speaking && t >= flat[curBeat].end - 0.05;
+    if (!holding) t += Math.min(dt, 0.25);
+    if (t >= total){ t = total - 0.01; pause(); }
+    if (rings.classList.contains("on")) drawRings(dt);
+    render();
+  }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+function play(){ playing = true; playBtn.innerHTML = "❚❚&nbsp; Pause"; playBtn.setAttribute("aria-label","Pause"); if (voOn) speak(flat[beatAt(t)].text); }
+function pause(){ playing = false; playBtn.innerHTML = "▶&nbsp; Play"; playBtn.setAttribute("aria-label","Play"); if (voiceReady) window.speechSynthesis.cancel(); speaking = false; }
+function toggle(){ playing ? pause() : play(); }
+function seek(time){ t = Math.max(0, Math.min(total - 0.01, time)); curBeat = -1; if (voiceReady) window.speechSynthesis.cancel(); speaking = false; render(); }
+
+playBtn.addEventListener("click", toggle);
+document.getElementById("restart").addEventListener("click", function(){ seek(0); play(); });
+document.getElementById("prev").addEventListener("click", function(){
+  var s = flat[beatAt(t)].s;
+  var target = (t - sceneStart[s] < 1.2 && s > 0) ? s - 1 : s;
+  seek(sceneStart[target] + 0.01);
+});
+document.getElementById("next").addEventListener("click", function(){
+  var s = flat[beatAt(t)].s;
+  seek(s < SCENES.length - 1 ? sceneStart[s + 1] + 0.01 : total - 0.01);
+});
+
+function scrubTo(e){
+  var r = scrub.getBoundingClientRect();
+  seek(((e.clientX - r.left) / r.width) * total);
+}
+scrub.addEventListener("click", scrubTo);
+scrub.addEventListener("keydown", function(e){
+  if (e.key === "ArrowRight"){ seek(t + 5); e.preventDefault(); }
+  if (e.key === "ArrowLeft"){ seek(t - 5); e.preventDefault(); }
+});
+
+document.addEventListener("keydown", function(e){
+  if (/^(INPUT|TEXTAREA|BUTTON)$/.test(e.target.tagName) && e.key === " ") return;
+  if (e.key === " "){ e.preventDefault(); toggle(); }
+  if (e.key === "ArrowRight"){ e.preventDefault(); document.getElementById("next").click(); }
+  if (e.key === "ArrowLeft"){ e.preventDefault(); document.getElementById("prev").click(); }
+});
+
+/* ── Written script below the player ── */
+var list = document.getElementById("scriptList");
+SCENES.forEach(function(s, i){
+  var row = document.createElement("div");
+  row.className = "sc";
+  var body = s.beats.map(function(b){ return "<p>" + b.t.replace(/</g,"&lt;") + "</p>"; }).join("");
+  row.innerHTML =
+    '<span class="sc-t">' + fmt(sceneStart[i]) + '</span>' +
+    '<div class="sc-b"><span class="sc-h' + (s.agent ? " agent" : "") + '">' + s.ch + " — " + s.title + '</span>' + body + '</div>';
+  list.appendChild(row);
+});
+
+render();
+})();
+</script>
