@@ -65,6 +65,25 @@ def main():
             pg.wait_for_function("window.__reel && window.__reel.total > 0", timeout=30000)
             pg.wait_for_timeout(700)          # let fonts and first paint settle
             total = pg.evaluate("window.__reel.total")
+
+            # Preflight: at this viewport every shot must sit clear of the
+            # burned-in caption band. Catches a scene silently clipping.
+            bad = pg.evaluate("""(() => {
+              const cap = document.querySelector('.narration').getBoundingClientRect();
+              const out = [];
+              document.querySelectorAll('.shot').forEach((s, i) => {
+                const vis = s.style.visibility, op = s.style.opacity;
+                s.style.visibility = 'visible'; s.style.opacity = 1;
+                const kids = [...s.children].filter(k => getComputedStyle(k).display !== 'none');
+                const top = Math.min(...kids.map(k => k.getBoundingClientRect().top));
+                const bot = Math.max(...kids.map(k => k.getBoundingClientRect().bottom));
+                if (top < 0 || bot > cap.top + 18) out.push({i, top: Math.round(top), bot: Math.round(bot)});
+                s.style.visibility = vis; s.style.opacity = op;
+              });
+              return out; })()""")
+            if bad:
+                sys.exit(f"shots clipped at {BASE_W}x{BASE_H}: {bad}\n"
+                         "Shrink the content or raise the viewport before rendering.")
             frames = int((a.lead + total + a.tail) * a.fps)
             print(f"reel {total:.0f}s → {frames} frames at {a.fps}fps, {out_w}x{out_h}",
                   flush=True)
