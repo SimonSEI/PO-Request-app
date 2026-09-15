@@ -119,6 +119,15 @@ hist_aadt <- if (file.exists("data/collier_hist_aadt.csv")) {
   read_csv("data/collier_hist_aadt.csv", show_col_types = FALSE)
 } else NULL
 
+# RSW airport monthly passengers - the ONLY current-year indicator we have.
+# Road counts stop at 2024; this runs to within about six weeks of today.
+rsw_monthly <- if (file.exists("data/rsw_monthly_passengers.csv")) {
+  read_csv("data/rsw_monthly_passengers.csv", show_col_types = FALSE)
+} else NULL
+
+MONTH_ABB <- c("Jan","Feb","Mar","Apr","May","Jun",
+               "Jul","Aug","Sep","Oct","Nov","Dec")
+
 all_states <- state_temps %>%
   distinct(state, people) %>%
   arrange(desc(people)) %>%
@@ -317,6 +326,82 @@ ui <- page_sidebar(
               textOutput("vb_swing_sub"))
   ),
 
+  # One dropdown per headline number, explaining how it was arrived at.
+  # A date with no reasoning behind it is just an assertion.
+  accordion(
+    open = FALSE, class = "mb-3",
+    accordion_panel(
+      "Why this trough date?", icon = icon("arrow-trend-down"),
+      div(style = "font-size:0.9rem; line-height:1.55;",
+          p(strong("The quietest point of the year."), "Late September is after",
+            "the summer holiday visitors have gone home and before the snowbirds",
+            "arrive - and it sits in the thick of hurricane season, which",
+            "suppresses travel on its own."),
+          p(strong("How we got the date:"), "we fit a smooth repeating curve to",
+            "every day of 2024 traffic and take its lowest point. The date shown",
+            "is the next time that day of the year comes round."),
+          p(strong("How confident:"), "the 90% range is 17-26 September - a",
+            "nine-day window. That is the tightest of the four dates, because",
+            "the curve drops steeply into the trough, so its bottom is easy to",
+            "locate."),
+          p(class = "text-muted",
+            strong("Caveat: "), "one station (0094) troughs in June instead.",
+            "Not every road is a snowbird road."))
+    ),
+    accordion_panel(
+      "Why this season-start date?", icon = icon("arrow-right-to-bracket"),
+      div(style = "font-size:0.9rem; line-height:1.55;",
+          p(strong("The day traffic first climbs above an ordinary day."),
+            "Defined as the moment the smoothed curve crosses 1.0 on the way up",
+            "in autumn."),
+          p(strong("Why mid-November and not October:"), "the temperature gap",
+            "reaches its 'worth going' level around 16 October, but traffic",
+            "does not follow for another 25 days. People travel around",
+            "Thanksgiving and the holidays, not around the thermometer."),
+          p(strong("How confident:"), "10 November to 7 December, 90%. This is",
+            "the widest of the four, because the autumn climb is gradual - a",
+            "shallow slope means the crossing point is genuinely uncertain."),
+          p(class = "text-muted",
+            strong("Also: "), "this date moves if you change the curve",
+            "flexibility slider. At 1 wave it reads 2 December; at 4 it reads",
+            "17 November. The modelling choice is worth about two weeks."))
+    ),
+    accordion_panel(
+      "Why this peak date?", icon = icon("arrow-trend-up"),
+      div(style = "font-size:0.9rem; line-height:1.55;",
+          p(strong("The busiest stretch of the year."), "Early March, when the",
+            "snowbird population is at its fullest and spring-break traffic has",
+            "started arriving on top of it."),
+          p(strong("Read it as a window, not a day:"), "the curve is almost flat",
+            "across 20 February to 26 March - 35 days within 1% of the maximum.",
+            "Picking a single date implies a precision that is not there."),
+          p(strong("How confident:"), "25 February to 21 March, 90%."),
+          p(class = "text-muted",
+            strong("Cross-check: "), "March is also the busiest month at the",
+            "airport in almost every year on record - March 2026 set an",
+            "all-time monthly record. Two independent datasets agreeing on the",
+            "month is more persuasive than either alone."))
+    ),
+    accordion_panel(
+      "Why this peak-to-trough swing?", icon = icon("arrows-up-down"),
+      div(style = "font-size:0.9rem; line-height:1.55;",
+          p(strong("Two ways of describing the same gap."), "Traffic falls 24%",
+            "from the March peak down to the September trough. Coming back the",
+            "other way it rises 32%, because the starting point is smaller.",
+            "Both are correct; neither is 'the' number."),
+          p(strong("How we got it:"), "each station is converted to an index",
+            "against its own average day, so a quiet rural road and a stretch of",
+            "I-75 can be compared. We then take the high and low of the fitted",
+            "curve."),
+          p(strong("The spread between roads is large:"), "rural Everglades",
+            "swings 34%, urban Naples 28%, and one station only 17%. If you care",
+            "about a specific road, the county average will mislead you."),
+          p(class = "text-muted",
+            strong("Caveat: "), "this is traffic, not population. A visitor who",
+            "drives twice a day counts twice."))
+    )
+  ),
+
   # card_body(fillable = FALSE) per panel is what finally made the plots the
   # size they are told to be. bslib's default flex layout stretches content to
   # the card and ignores plotOutput(height=), which left a 440px chart drawn
@@ -324,6 +409,51 @@ ui <- page_sidebar(
   # the page level, which collapsed the width to zero) respects explicit
   # heights and keeps the full width. The panel then scrolls if it needs to.
   navset_card_tab(
+
+    # -------------------------------------------------------------------------
+    nav_panel(
+      "This year so far",
+      chart_panel(
+        heading = "How is this year actually tracking?",
+        plain = tagList(
+          p("Everything else on this dashboard is a forecast or a study of the",
+            "past. This tab is the only one showing", strong("what is happening now"), "."),
+          p(strong("Why it has to be airport data: "),
+            "the road counters are the better measure, but FDOT publish them",
+            "once a year and the newest we have is 2024. Airport passengers are",
+            "published monthly, about four weeks after each month ends - so this",
+            "is current to within about six weeks, rather than two years."),
+          p(strong("How to read it: "),
+            "the thick line is this year. The grey band is the range of the last",
+            "five years, so anywhere inside it is an ordinary year. Outside the",
+            "band is genuinely unusual."),
+          textOutput("ytd_summary")
+        ),
+        chart = spinner(plotOutput("p_ytd", height = "440px"), "440px"),
+        footer = spinner(tableOutput("tbl_ytd"), "300px"),
+        method = tagList(
+          p("Monthly passenger totals for Southwest Florida International (RSW)",
+            "in Fort Myers - the airport Naples flies through - published by Lee",
+            "County Port Authority. The series runs back to 1983."),
+          tags$ul(
+            tags$li("The annual statistics PDF only rebuilds each January, so it",
+                    "stops at last December. The current year is filled in from",
+                    "the monthly news releases, each of which states that",
+                    "month's count in its opening paragraph."),
+            tags$li("The comparison band is the minimum to maximum of the",
+                    "previous five years for each month, which is why it widens",
+                    "in the winter months - those vary more."),
+            tags$li("Year-to-date percentages compare the same months only. With",
+                    "seven months published, 2026 is compared against",
+                    "January-July of each previous year, not their full totals.")
+          ),
+          p(strong("What this is not:"), "passengers are not the same as road",
+            "traffic. People who drive down are invisible here, and a single",
+            "snowbird staying five months counts as two passengers, not 150",
+            "days of presence. It is a timing indicator, not a population count.")
+        )
+      )
+    ),
 
     # -------------------------------------------------------------------------
     nav_panel(
@@ -836,6 +966,97 @@ server <- function(input, output, session) {
            x = NULL, colour = NULL) +
       theme(legend.position = "top")
   })
+
+  # --- This year so far -----------------------------------------------------
+  ytd <- reactive({
+    shiny::validate(shiny::need(!is.null(rsw_monthly),
+                                "Run R/11_are_they_coming_earlier.R first."))
+
+    this_year <- max(rsw_monthly$year)
+    cur <- rsw_monthly %>% filter(year == this_year) %>% arrange(month)
+    months_have <- cur$month
+
+    # Compare like with like: only the months this year has actually reported.
+    same <- rsw_monthly %>%
+      filter(month %in% months_have) %>%
+      group_by(year) %>%
+      filter(n() == length(months_have)) %>%
+      summarise(ytd = sum(passengers), .groups = "drop")
+
+    band <- rsw_monthly %>%
+      filter(year >= this_year - 5, year < this_year) %>%
+      group_by(month) %>%
+      summarise(lo = min(passengers), hi = max(passengers),
+                mid = median(passengers), .groups = "drop")
+
+    list(year = this_year, cur = cur, months = months_have,
+         same = same, band = band,
+         prev = rsw_monthly %>% filter(year == this_year - 1) %>% arrange(month))
+  })
+
+  output$ytd_summary <- renderText({
+    y <- ytd()
+    s <- y$same
+    now  <- s$ytd[s$year == y$year]
+    last <- s$ytd[s$year == y$year - 1]
+    if (length(now) == 0 || length(last) == 0) return("")
+    pct <- 100 * (now / last - 1)
+    # Show enough decimals that a genuinely tiny change doesn't print as
+    # "-0.0%", which reads like a rounding artefact rather than a real result.
+    # The airport's own release quotes this as "down 0.04 percent".
+    fmt <- if (abs(pct) < 0.5) "%+.2f%%" else "%+.1f%%"
+    sprintf("Through %s, %d is running %s against the same months of %d (%s vs %s passengers).",
+            MONTH_ABB[max(y$months)], y$year, sprintf(fmt, pct), y$year - 1,
+            comma(now), comma(last))
+  })
+
+  output$p_ytd <- renderPlot({
+    sized("p_ytd")
+    y <- ytd()
+
+    ggplot() +
+      geom_ribbon(data = y$band, aes(month, ymin = lo, ymax = hi,
+                                     fill = paste0("range ", y$year - 5, "-", y$year - 1)),
+                  alpha = 0.3) +
+      geom_line(data = y$prev, aes(month, passengers,
+                                   colour = as.character(y$year - 1)),
+                linewidth = 0.9, linetype = "dashed") +
+      geom_line(data = y$cur, aes(month, passengers, colour = as.character(y$year)),
+                linewidth = 1.4) +
+      geom_point(data = y$cur, aes(month, passengers, colour = as.character(y$year)),
+                 size = 2.6) +
+      scale_x_continuous(breaks = 1:12, labels = MONTH_ABB, limits = c(1, 12)) +
+      scale_y_continuous(labels = comma) +
+      scale_colour_manual(values = setNames(c("#c1121f", "#3d5a80"),
+                                            c(as.character(y$year),
+                                              as.character(y$year - 1))),
+                          name = NULL) +
+      scale_fill_manual(values = setNames("grey65",
+                                          paste0("range ", y$year - 5, "-", y$year - 1)),
+                        name = NULL) +
+      labs(title = paste0("RSW passengers, ", y$year, " against recent years"),
+           subtitle = paste0("Solid = ", y$year, " (", length(y$months),
+                             " months published). Dashed = ", y$year - 1,
+                             ". Band = range of the previous five years."),
+           x = NULL, y = "Passengers per month") +
+      theme(legend.position = "top")
+  })
+
+  output$tbl_ytd <- renderTable({
+    y <- ytd()
+    prev <- y$prev %>% select(month, last_year = passengers)
+
+    y$cur %>%
+      left_join(prev, by = "month") %>%
+      left_join(y$band %>% select(month, mid), by = "month") %>%
+      transmute(
+        Month = MONTH_ABB[month],
+        `This year` = comma(passengers),
+        `Last year` = comma(last_year),
+        `vs last year` = sprintf("%+.1f%%", 100 * (passengers / last_year - 1)),
+        `vs 5-yr median` = sprintf("%+.1f%%", 100 * (passengers / mid - 1))
+      )
+  }, striped = TRUE, hover = TRUE, width = "100%")
 
   # --- Season forecast ------------------------------------------------------
   # The whole fit runs live, so moving the flexibility slider refits it.
