@@ -561,9 +561,21 @@ trend_of <- function(w, column) {
 # =============================================================================
 # UI
 # =============================================================================
-ui <- page_sidebar(
+ui <- page_fluid(
 
-  title = "Naples Snowbird Migration",
+    title = "Naples Snowbird Migration",
+
+  # page_fluid does not render a title bar of its own the way page_sidebar
+  # does, so the heading is drawn explicitly. Without this the page opens
+  # straight onto the settings strip with nothing saying what it is.
+  div(
+    class = "d-flex align-items-baseline gap-3 mb-3 pb-2",
+    style = "border-bottom:2px solid #2a6f97;",
+    tags$h4("Naples Snowbird Migration", class = "mb-0 fw-bold",
+            style = "color:#1d3f5a;"),
+    tags$span(class = "text-muted small",
+              "Collier + Lee County, Florida - when the season starts, peaks and ends")
+  ),
 
   tags$head(tags$style(WHY_CSS)),
 
@@ -578,52 +590,57 @@ ui <- page_sidebar(
   theme = bs_theme(bootswatch = "flatly",
                    base_font = font_google("Inter", local = FALSE)),
 
-  sidebar = sidebar(
-    width = 340,
-
-    h5("Attack the assumptions"),
-    p(class = "text-muted small",
-      "Every control here was a judgement call in the original analysis.",
-      "If a finding survives you moving them, it might be real."),
-
-    sliderInput("threshold", "Migration threshold (°F warmer than home)",
-                min = 10, max = 40, value = 25, step = 1),
-
-    radioButtons(
-      "weighting", "How to combine their home states",
-      choices = c("Weighted by migrants sent" = "weighted",
-                  "All states counted equally" = "equal"),
-      selected = "weighted"
-    ),
-    p(class = "text-muted small",
-      "Weights come from IRS records of who actually moved to Collier County."),
-
-    hr(),
-
-    sliderInput("harmonics", "Seasonal curve flexibility",
-                min = 1, max = 8, value = 4, step = 1),
-    p(class = "text-muted small",
-      "Used by the Season forecast tab. 1 is a single smooth wave; 8 chases",
-      "individual weeks. Watch the fit go from too stiff to overfitted."),
-
-    hr(),
-
-    checkboxGroupInput("states", "Northern home states",
-                       choices = all_states, selected = all_states),
-    actionLink("all_on", "all"), " / ", actionLink("all_off", "none"),
-
-    hr(),
-    p(class = "text-muted small",
-      strong("Caveats: "),
-      "IRS data tracks permanent address changes, not seasonal stays - ",
-      "many snowbirds keep their northern domicile. Canadians are missing ",
-      "entirely. 2020-21 is distorted by COVID.")
-  ),
 
   # The headline is the FORECAST, not the temperature trend. The temperature
   # trend turned out not to survive a threshold sweep (see the Robustness tab),
   # so it has no business being the first thing anyone reads. These four are
   # the numbers you would actually act on.
+  accordion(
+    open = FALSE, class = "mb-3",
+    accordion_panel(
+      "Analysis settings", icon = icon("sliders"),
+      div(class = "text-muted small mb-3",
+          strong("Every control here was a judgement call in the analysis. "),
+          "If a finding survives you moving them, it might be real. Defaults are",
+          "what the write-up used."),
+      layout_columns(
+        col_widths = c(4, 4, 4),
+        div(
+          sliderInput("threshold", "Migration threshold (°F warmer than home)",
+                      min = 10, max = 40, value = 25, step = 1, width = "100%"),
+          p(class = "text-muted small",
+            "How much warmer Naples must be before the trip is 'worth it'.",
+            "Used by the temperature tabs and the Simulation.")
+        ),
+        div(
+          radioButtons(
+            "weighting", "How to combine their home states",
+            choices = c("Weighted by migrants sent" = "weighted",
+                        "All states counted equally" = "equal"),
+            selected = "weighted"
+          ),
+          sliderInput("harmonics", "Seasonal curve flexibility",
+                      min = 1, max = 8, value = 4, step = 1, width = "100%"),
+          p(class = "text-muted small",
+            "Flexibility drives the Season forecast. 1 is a single smooth wave;",
+            "8 chases individual weeks.")
+        ),
+        div(
+          checkboxGroupInput("states", "Northern home states",
+                             choices = all_states, selected = all_states,
+                             inline = TRUE),
+          actionLink("all_on", "select all"), " / ",
+          actionLink("all_off", "none"),
+          p(class = "text-muted small mt-2",
+            strong("Caveats: "),
+            "IRS data tracks permanent address changes, not seasonal stays - ",
+            "many snowbirds keep their northern domicile. Canadians are missing",
+            "entirely. 2020-21 is distorted by COVID.")
+        )
+      )
+    )
+  ),
+
   layout_columns(
     fill = FALSE,
 
@@ -788,61 +805,6 @@ ui <- page_sidebar(
             "traffic. People who drive down are invisible here, and a single",
             "snowbird staying five months counts as two passengers, not 150",
             "days of presence. It is a timing indicator, not a population count.")
-        )
-      )
-    ),
-
-    # -------------------------------------------------------------------------
-    nav_panel(
-      "Becoming permanent?",
-      chart_panel(
-        heading = "Are snowbirds turning into full-time residents?",
-        plain = tagList(
-          p("Two different questions here, and they have different answers."),
-          p(strong("1. Are more people moving here for good? "),
-            "The top chart counts people who changed their tax address to",
-            "Collier County - which is not a proxy for moving permanently, it",
-            strong(" is "), "moving permanently. Northern arrivals went from",
-            "6,600 a year in 2012 to a peak of 11,600 in 2021."),
-          p(strong("2. Are the ones who still come seasonally staying longer? "),
-            "The bottom chart watches the shoulder months - October, April,",
-            "May - against the December-to-March core. If stays were",
-            "lengthening, people would arrive before the rush and leave after",
-            "it, and the shoulders would fatten."),
-          p(class = "text-muted mb-0",
-            strong("The short answer: "), "there was a big jump in permanent",
-            "moves, but it was the pandemic rather than a gradual conversion -",
-            "take 2020-22 out and the trend all but disappears. Meanwhile the",
-            "people who still come seasonally are ", strong("not"), " staying",
-            "longer; if anything the season is tightening around its core.")
-        ),
-        chart = tagList(
-          spinner(plotOutput("p_permanent", height = "400px"), "400px"),
-          div(class = "mt-4"),
-          spinner(plotOutput("p_longer", height = "400px"), "400px")
-        ),
-        footer = uiOutput("permanent_verdict"),
-        method = tagList(
-          p(strong("Permanent moves."), "IRS county-to-county migration, twelve",
-            "editions from 2011-12 to 2022-23. Each counts households whose tax",
-            "address changed into Collier County, and where from. Filtered to",
-            "24 northern states with a real winter, so people moving up from",
-            "Miami are not counted as snowbirds."),
-          p(strong("A trap in this data worth knowing about: "),
-            "FIPS county codes are zero-padded in most editions ('021') but not",
-            "in the 2020-21 and 2021-22 files ('21'). Matching on the string",
-            "silently drops those two years - no error, just a shorter trend.",
-            "Correcting it changed the headline from 'no clear trend' to",
-            "significant, which is how much two missing points can matter."),
-          p(strong("Staying longer."), "RSW monthly passengers, ratio of",
-            "(Oct + Apr + May) to (Dec + Jan + Feb + Mar). A ratio is used",
-            "rather than raw numbers so airport growth cannot masquerade as",
-            "longer stays. Storm and COVID seasons are excluded."),
-          p(class = "text-muted mb-0",
-            strong("What neither can see: "), "a snowbird who keeps their",
-            "northern tax address, which is most of them and often deliberate.",
-            "Question 1 measures the flow of people CONVERTING to permanent,",
-            "not the stock of seasonal residents.")
         )
       )
     ),
@@ -1226,9 +1188,9 @@ ui <- page_sidebar(
 
     # -------------------------------------------------------------------------
     nav_panel(
-      "The numbers",
+      "Raw data",
       chart_panel(
-        heading = "The raw dates behind the charts",
+        heading = "The raw data behind the charts",
         plain = p("One row per season: the date the temperature gap crossed your",
                   "threshold going up, the date it fell back, and how many days",
                   "that left in between. Everything on the Window shift tab is",
@@ -1237,6 +1199,62 @@ ui <- page_sidebar(
         method = p("Produced by the same crossing calculation described on the",
                    "Window shift tab. Change the threshold or the selected",
                    "states and every row here recalculates.")
+      )
+    )
+,
+
+    # -------------------------------------------------------------------------
+    nav_panel(
+      "Future trends",
+      chart_panel(
+        heading = "Where is this heading? Are snowbirds turning into full-time residents?",
+        plain = tagList(
+          p("Two different questions here, and they have different answers."),
+          p(strong("1. Are more people moving here for good? "),
+            "The top chart counts people who changed their tax address to",
+            "Collier County - which is not a proxy for moving permanently, it",
+            strong(" is "), "moving permanently. Northern arrivals went from",
+            "6,600 a year in 2012 to a peak of 11,600 in 2021."),
+          p(strong("2. Are the ones who still come seasonally staying longer? "),
+            "The bottom chart watches the shoulder months - October, April,",
+            "May - against the December-to-March core. If stays were",
+            "lengthening, people would arrive before the rush and leave after",
+            "it, and the shoulders would fatten."),
+          p(class = "text-muted mb-0",
+            strong("The short answer: "), "there was a big jump in permanent",
+            "moves, but it was the pandemic rather than a gradual conversion -",
+            "take 2020-22 out and the trend all but disappears. Meanwhile the",
+            "people who still come seasonally are ", strong("not"), " staying",
+            "longer; if anything the season is tightening around its core.")
+        ),
+        chart = tagList(
+          spinner(plotOutput("p_permanent", height = "400px"), "400px"),
+          div(class = "mt-4"),
+          spinner(plotOutput("p_longer", height = "400px"), "400px")
+        ),
+        footer = uiOutput("permanent_verdict"),
+        method = tagList(
+          p(strong("Permanent moves."), "IRS county-to-county migration, twelve",
+            "editions from 2011-12 to 2022-23. Each counts households whose tax",
+            "address changed into Collier County, and where from. Filtered to",
+            "24 northern states with a real winter, so people moving up from",
+            "Miami are not counted as snowbirds."),
+          p(strong("A trap in this data worth knowing about: "),
+            "FIPS county codes are zero-padded in most editions ('021') but not",
+            "in the 2020-21 and 2021-22 files ('21'). Matching on the string",
+            "silently drops those two years - no error, just a shorter trend.",
+            "Correcting it changed the headline from 'no clear trend' to",
+            "significant, which is how much two missing points can matter."),
+          p(strong("Staying longer."), "RSW monthly passengers, ratio of",
+            "(Oct + Apr + May) to (Dec + Jan + Feb + Mar). A ratio is used",
+            "rather than raw numbers so airport growth cannot masquerade as",
+            "longer stays. Storm and COVID seasons are excluded."),
+          p(class = "text-muted mb-0",
+            strong("What neither can see: "), "a snowbird who keeps their",
+            "northern tax address, which is most of them and often deliberate.",
+            "Question 1 measures the flow of people CONVERTING to permanent,",
+            "not the stock of seasonal residents.")
+        )
       )
     )
   )
