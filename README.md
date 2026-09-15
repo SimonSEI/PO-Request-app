@@ -87,6 +87,62 @@ Two further reasons for caution:
 
 ---
 
+## What the real traffic says (2024)
+
+Script 05 finally measures **people** rather than weather, using FDOT's
+hour-by-hour counts from Collier County's continuous stations.
+
+**The season is real.** March is the busiest month at 1.12× a normal day;
+September the quietest at 0.83×. Peak is **35% above the trough**. Per station:
+
+| Station | Peak | Low | Swing |
+|---|---|---|---|
+| 0094 (Naples urban) | 1.23 | 0.92 | 34% |
+| 0270 (Everglades, rural) | 1.15 | 0.74 | **55%** |
+| 0351 | 1.12 | 0.85 | 32% |
+
+**But people lag the thermometer by about 25 days — at both ends.**
+
+| | Thermometer | Traffic | Lag |
+|---|---|---|---|
+| Season starts | 16 Oct | 10 Nov | **+25 days** |
+| Season ends | 8 Apr | 2 May | **+24 days** |
+
+Correlation is moderate (r = 0.66, r² = 0.44) — temperature explains under half
+the day-to-day variation.
+
+A symmetric ~25-day lag at both ends is not what you'd see if people were
+responding to weather; they'd arrive as soon as it paid to and leave as soon as
+it stopped. It is exactly what you'd see from a **calendar**: come after
+Thanksgiving, leave after Easter. The thermometer sets the backdrop; the
+diary picks the date.
+
+### The hurricanes nearly ruined this
+
+2024 hit southwest Florida with three storms, and the first run of script 05
+reported the quietest stretch of the year as "29 Sep" — a plausible-sounding
+late-summer lull. It was **Hurricane Helene**.
+
+The signature is unmistakable once you look at daily values:
+
+| Date | Index | |
+|---|---|---|
+| 7 Oct | 1.24 | evacuation begins |
+| 8 Oct | **1.53** | everyone leaving at once |
+| 9 Oct | **0.30** | Milton landfall, roads empty |
+| 26 Sep | 0.39 | Helene |
+| 4 Aug | 0.54 | Debby |
+
+Removing the storm windows **flipped the autumn result**: traffic went from
+appearing to *lead* the thermometer by 11 days to *lagging* it by 25. A storm
+looks like a seasonal signal to any code that hasn't been told otherwise.
+
+Two lessons baked into the script: exclude known events explicitly, and report
+**monthly medians rather than min/max** — extremes are precisely what a storm,
+a sensor fault, or a road closure produce.
+
+---
+
 ## Data sources (all free, no API keys)
 
 **Temperature — [Open-Meteo Historical API](https://open-meteo.com/en/docs/historical-weather-api)**
