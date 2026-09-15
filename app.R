@@ -217,7 +217,13 @@ live_trough <- function() {
         "That matters because the 2024 data this model was fitted to had ",
         strong("three"), " storms in it. Milton's landfall alone ran at 30% of",
         "normal traffic. With a quiet season, expect this September to dip",
-        strong(" less deeply "), "than the model's average year suggests.")))
+        strong(" less deeply "), "than the model's average year suggests."),
+        p(class = "text-muted",
+          strong("But not earlier. "), "Tested across 36 seasons, how quiet the",
+          "hurricane season is does ", strong("not"), " predict when people",
+          "arrive (r = -0.13, p = 0.45). Nobody knows a season was quiet until",
+          "it already is, and flights are booked months ahead. A quiet year",
+          "changes the ", strong("depth"), " of this trough, not its date.")))
     } else if (!is.na(cnum("oni_value")) && cnum("oni_value") <= -0.5) {
       bits <- c(bits, list(p(
         strong("Raised disruption risk. "),
