@@ -73,6 +73,55 @@ monthly <- map_dfr(rows, parse_row)
 message("Parsed ", n_distinct(monthly$year), " complete years: ",
         min(monthly$year), "-", max(monthly$year))
 
+# -----------------------------------------------------------------------------
+# 1b. Extend into the current year from the monthly news releases
+# -----------------------------------------------------------------------------
+# The big statistics PDF is only rebuilt in January, so it stops at the end of
+# the previous year. But LCPA publish a news release every month, and each one
+# states that month's passenger count in its first paragraph. Pulling those in
+# completes the most recent season instead of waiting a year for it.
+#
+# TO UPDATE: the URLs are date-stamped and unguessable, so they are listed
+# here. Find new ones at https://www.flylcpa.com/news/ - look for
+# "Airport Statistics" releases - and add a row.
+RELEASES <- tribble(
+  ~year, ~month, ~url,
+  2026,  1,  "https://s3.wasabisys.com/cdn.flylcpa.com/app/uploads/2026/02/23201647/26-08-January-2026-Airport-Statistics.pdf",
+  2026,  2,  "https://s3.wasabisys.com/cdn.flylcpa.com/app/uploads/2026/03/24145650/26-11-February-2026-Airport-Statistics.pdf",
+  2026,  3,  "https://s3.wasabisys.com/cdn.flylcpa.com/app/uploads/2026/04/22152257/26-12-March-2026-Airport-Statistics.pdf",
+  2026,  4,  "https://s3.wasabisys.com/cdn.flylcpa.com/app/uploads/2026/05/21152501/26-13-April-2026-Airport-Statistics.pdf",
+  2026,  5,  "https://www.flylcpa.com/app/uploads/2026/06/26-14-May-2026-Airport-Statistics.pdf",
+  2026,  6,  "https://www.flylcpa.com/app/uploads/2026/07/26-15-June-2026-Airport-Statistics.pdf",
+  2026,  7,  "https://www.flylcpa.com/app/uploads/2024/11/26-17-July-2026-Airport-Statistics.pdf"
+)
+
+fetch_release <- function(year, month, url) {
+  cache <- file.path("data", "raw", sprintf("rsw_%d_%02d.pdf", year, month))
+  if (!file.exists(cache)) {
+    ok <- try(download.file(url, cache, mode = "wb", quiet = TRUE), silent = TRUE)
+    if (inherits(ok, "try-error")) {
+      message("  could not fetch ", year, "-", month); return(NULL)
+    }
+  }
+  txt <- pdf_text(cache)[1]
+  # "During July, 680,168 passengers traveled through..."
+  m <- str_match(txt, "During\\s+\\w+,?\\s+([0-9][0-9,]*)\\s+passengers")
+  if (is.na(m[1, 2])) { message("  no count found for ", year, "-", month); return(NULL) }
+  tibble(year = year, month = month,
+         passengers = as.numeric(str_remove_all(m[1, 2], ",")))
+}
+
+extra <- pmap_dfr(RELEASES, fetch_release)
+
+if (nrow(extra) > 0) {
+  message("Added ", nrow(extra), " months from news releases: ",
+          min(extra$year), "-", sprintf("%02d", min(extra$month)), " to ",
+          max(extra$year), "-", sprintf("%02d", max(extra$month)))
+  # anti_join so the PDF table always wins if both have a month
+  monthly <- bind_rows(monthly, anti_join(extra, monthly, by = c("year", "month")))
+}
+
+monthly <- monthly %>% arrange(year, month)
 write_csv(monthly, "data/rsw_monthly_passengers.csv")
 
 # -----------------------------------------------------------------------------

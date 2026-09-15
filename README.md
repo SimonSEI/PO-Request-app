@@ -114,10 +114,41 @@ Over 35 clean seasons, arrivals really have shifted earlier. This is the
 strongest, most robust result in the whole project — far better evidenced than
 anything the temperature data produced.
 
-### Autumn 2025 specifically: suggestive, not proven
+### The 2025-26 season: complete, and it leans earlier
 
-The newest *complete* season (2024-25) was hurricane-hit and useless. But we
-have all of autumn 2025, so the script adds two measures that need only that:
+The big statistics PDF is only rebuilt each January, so it stops at Dec 2025.
+But LCPA publish a **news release every month**, each stating that month's
+count. `R/11` pulls those in, which completes the 2025-26 season now rather
+than waiting a year:
+
+| Month | Passengers |
+|---|---|
+| Jan 2026 | 1,063,645 |
+| Feb 2026 | 1,190,070 |
+| Mar 2026 | 1,521,149 |
+| Apr 2026 | 1,152,669 |
+
+**Result for 2025-26:**
+
+| Measure | Value | vs typical | z |
+|---|---|---|---|
+| Autumn share | **36.4%** | 34.6% | **+1.14** |
+| Arrival centroid | **4.31** | — | **−1.16** (earlier) |
+| October share | **27.5%** | 25.9% | **+1.55** |
+
+**All three measures point the same way.** 36.4% is the highest autumn share of
+any clean season on record. Each is individually short of the conventional
+2-SD bar, but they are not independent restatements of luck — they agree, and
+they agree with the decades-long trend.
+
+**Verdict: your instinct was right.** The 2025-26 season did run earlier than
+normal, by roughly 1 to 1.5 standard deviations depending on the measure.
+Suggestive and consistent rather than conclusive.
+
+### Autumn 2025 in isolation
+
+Two measures that need only the autumn months, so they work before a season
+completes:
 
 | Autumn | Oct share | Lift vs summer | |
 |---|---|---|---|

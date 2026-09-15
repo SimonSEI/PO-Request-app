@@ -230,17 +230,24 @@ ui <- page_sidebar(
       "entirely. 2020-21 is distorted by COVID.")
   ),
 
+  # The headline is the FORECAST, not the temperature trend. The temperature
+  # trend turned out not to survive a threshold sweep (see the Robustness tab),
+  # so it has no business being the first thing anyone reads. These four are
+  # the numbers you would actually act on.
   layout_columns(
     fill = FALSE,
-    value_box(title = "Season opens, per decade", value = textOutput("vb_opens"),
-              showcase = icon("arrow-right-to-bracket"), theme = "primary",
-              textOutput("vb_opens_p")),
-    value_box(title = "Season closes, per decade", value = textOutput("vb_closes"),
-              showcase = icon("arrow-right-from-bracket"), theme = "secondary",
-              textOutput("vb_closes_p")),
-    value_box(title = "Window length, per decade", value = textOutput("vb_len"),
-              showcase = icon("arrows-left-right"), theme = "info",
-              textOutput("vb_len_p"))
+    value_box(title = "Next trough",  value = textOutput("vb_trough"),
+              showcase = icon("arrow-trend-down"), theme = "secondary",
+              textOutput("vb_trough_sub")),
+    value_box(title = "Season starts", value = textOutput("vb_start"),
+              showcase = icon("arrow-right-to-bracket"), theme = "info",
+              textOutput("vb_start_sub")),
+    value_box(title = "Next peak",    value = textOutput("vb_peak"),
+              showcase = icon("arrow-trend-up"), theme = "primary",
+              textOutput("vb_peak_sub")),
+    value_box(title = "Peak vs trough", value = textOutput("vb_swing"),
+              showcase = icon("arrows-up-down"), theme = "success",
+              textOutput("vb_swing_sub"))
   ),
 
   # card_body(fillable = FALSE) per panel is what finally made the plots the
@@ -252,7 +259,12 @@ ui <- page_sidebar(
   navset_card_tab(
     nav_panel("Window shift",
               card_body(fillable = FALSE,
-                        plotOutput("p_shift", height = "460px"))),
+                        plotOutput("p_shift", height = "460px"),
+                        p(class = "text-muted small", textOutput("trend_note")),
+                        p(class = "text-muted small",
+                          strong("Read this with the Robustness tab. "),
+                          "This trend is significant at only 2 of 25 thresholds,",
+                          "which is what chance alone produces."))),
     nav_panel("Shape of a year",
               card_body(fillable = FALSE,
                         plotOutput("p_year", height = "460px"))),
@@ -334,12 +346,54 @@ server <- function(input, output, session) {
 
   fmt <- function(x) if (is.na(x)) "-" else sprintf("%+.1f days", x)
 
-  output$vb_opens    <- renderText(fmt(t_opens()$per_decade))
-  output$vb_opens_p  <- renderText(t_opens()$label)
-  output$vb_closes   <- renderText(fmt(t_closes()$per_decade))
-  output$vb_closes_p <- renderText(t_closes()$label)
-  output$vb_len      <- renderText(fmt(t_len()$per_decade))
-  output$vb_len_p    <- renderText(t_len()$label)
+  # The temperature trend now lives under the Window shift chart rather than
+  # in the headline, because it does not survive the Robustness tab.
+  output$trend_note <- renderText({
+    paste0("Trend at this threshold: opens ", fmt(t_opens()$per_decade),
+           "/decade (", t_opens()$label, "), closes ", fmt(t_closes()$per_decade),
+           "/decade (", t_closes()$label, "), window length ",
+           fmt(t_len()$per_decade), "/decade (", t_len()$label, ").")
+  })
+
+  # ---------------------------------------------------------------------------
+  # HEADLINE: the next peak and trough, as real calendar dates
+  # ---------------------------------------------------------------------------
+  # Turn a day-of-year into the next time that day comes round.
+  next_occurrence <- function(doy, from = Sys.Date()) {
+    if (is.na(doy)) return(as.Date(NA))
+    d <- as.Date(paste0(format(from, "%Y"), "-01-01")) + (doy - 1)
+    if (d < from) d <- as.Date(paste0(as.integer(format(from, "%Y")) + 1, "-01-01")) + (doy - 1)
+    d
+  }
+
+  fmt_date <- function(d) if (is.na(d)) "-" else format(d, "%d %b %Y")
+  days_off <- function(d) {
+    if (is.na(d)) return("")
+    n <- as.numeric(d - Sys.Date())
+    if (n == 0) "today" else if (n == 1) "tomorrow" else paste(n, "days away")
+  }
+
+  nxt <- reactive({
+    s <- forecast_fit()$stats
+    list(
+      trough = next_occurrence(s$trough_doy),
+      peak   = next_occurrence(s$peak_doy),
+      start  = next_occurrence(s$start_doy),
+      end    = next_occurrence(s$end_doy),
+      stats  = s
+    )
+  })
+
+  output$vb_trough     <- renderText(fmt_date(nxt()$trough))
+  output$vb_trough_sub <- renderText(days_off(nxt()$trough))
+  output$vb_peak       <- renderText(fmt_date(nxt()$peak))
+  output$vb_peak_sub   <- renderText(days_off(nxt()$peak))
+  output$vb_start      <- renderText(fmt_date(nxt()$start))
+  output$vb_start_sub  <- renderText(paste("season ends", fmt_date(nxt()$end)))
+
+  output$vb_swing <- renderText(sprintf("+%.0f%%", nxt()$stats$increase_pct))
+  output$vb_swing_sub <- renderText(
+    sprintf("rise from trough; %.0f%% fall from peak", nxt()$stats$decline_pct))
 
   # --- Window shift ---------------------------------------------------------
   output$p_shift <- renderPlot({
