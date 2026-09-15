@@ -12,7 +12,11 @@ data/raw/
 
 # Analysis pipeline and generated artefacts - the app reads none of these.
 R/
-output/
+# output/ is excluded, EXCEPT the two files the running app actually reads.
+# Order matters here: the exclusion must come before the negations.
+output/*
+!output/season_forecast.csv
+!output/seasonal_curve.csv
 *.Rproj
 README.md
 run_watcher.bat

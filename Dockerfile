@@ -25,6 +25,21 @@ COPY data/origin_states.csv           data/origin_states.csv
 COPY data/collier_daily_traffic.csv   data/collier_daily_traffic.csv
 COPY data/collier_hist_aadt.csv       data/collier_hist_aadt.csv
 COPY data/rsw_monthly_passengers.csv  data/rsw_monthly_passengers.csv
+COPY data/current_conditions.csv      data/current_conditions.csv
+COPY data/permanent_moves.csv         data/permanent_moves.csv
+COPY data/season_shape.csv            data/season_shape.csv
+
+# These two live in output/ because the analysis scripts write them there, but
+# the RUNNING APP reads them: season_forecast.csv supplies the four headline
+# dates (rendered into the initial HTML so they appear instantly), and
+# seasonal_curve.csv is the baseline curve the Simulation tab shifts.
+#
+# Verified by diffing every read_csv() path in app.R against this file. Without
+# them the container builds cleanly and then serves a dashboard with no dates
+# in the header - which is exactly the kind of failure that only shows up in
+# production.
+COPY output/season_forecast.csv       output/season_forecast.csv
+COPY output/seasonal_curve.csv        output/seasonal_curve.csv
 
 # Railway injects PORT at runtime and it is NOT always 3838. Reading the env
 # var (with a sane fallback for local runs) is what makes this portable.
