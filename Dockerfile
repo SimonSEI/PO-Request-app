@@ -44,6 +44,18 @@ COPY output/seasonal_curve.csv        output/seasonal_curve.csv
 # Railway injects PORT at runtime and it is NOT always 3838. Reading the env
 # var (with a sane fallback for local runs) is what makes this portable.
 #
+# DEPLOYMENT NOTE. The first deploy built cleanly and then returned 502. The
+# app was fine - the logs said "Listening on http://0.0.0.0:8080", because
+# Railway had injected PORT=8080 and the app correctly honoured it. The fault
+# was the DOMAIN, which had been created pointing at 3838. Railway was routing
+# to a port nothing was listening on.
+#
+# Fixed by setting PORT=3838 as a service variable so the app and the domain
+# agree. The better habit is to let Railway pick the port and not pass an
+# explicit targetPort when generating the domain - then the two cannot drift
+# apart. Worth knowing that "build succeeded" and "app reachable" are entirely
+# separate claims.
+#
 # Binding to 0.0.0.0 rather than 127.0.0.1 is essential - localhost inside a
 # container is unreachable from outside it, which is the single most common
 # reason a containerised web app "starts fine" and still returns 502.
