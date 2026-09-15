@@ -91,6 +91,69 @@ once the data is downloaded.
 
 ---
 
+## Are snowbirds arriving earlier? (`R/11`)
+
+**The road data cannot answer this** — FDOT's daily counts cover 2024 only, and
+no newer FTI edition exists. One year cannot show change over time.
+
+So this uses **RSW airport monthly passengers, 1983–2025** (43 seasons) from
+Lee County Port Authority. Two scale-free timing measures, because raw autumn
+numbers rise whenever the airport grows — and it has, hugely:
+
+- **Autumn share** — of the Oct–Apr season, what fraction arrives Oct–Dec
+- **Arrival centroid** — the passenger-weighted average month of the season
+
+### The long-run answer: yes, clearly
+
+| Measure | Change per decade | p |
+|---|---|---|
+| Autumn share | **+0.91 percentage points** | **< 0.001** |
+| Arrival centroid | **−0.039 months earlier** | **< 0.001** |
+
+Over 35 clean seasons, arrivals really have shifted earlier. This is the
+strongest, most robust result in the whole project — far better evidenced than
+anything the temperature data produced.
+
+### Autumn 2025 specifically: suggestive, not proven
+
+The newest *complete* season (2024-25) was hurricane-hit and useless. But we
+have all of autumn 2025, so the script adds two measures that need only that:
+
+| Autumn | Oct share | Lift vs summer | |
+|---|---|---|---|
+| 2021 | 27.1% | 1.412 | |
+| 2022 | 20.5% | 1.166 | hurricane Ian |
+| 2023 | 26.5% | 1.520 | |
+| 2024 | 24.4% | 1.487 | Helene + Milton |
+| **2025** | **27.5%** | 1.468 | |
+
+**October 2025 was the most front-loaded autumn in the clean record** — 27.5%
+of autumn arrivals landed in October, against a typical 25.9%. That is
+**z = +1.55**: leaning earlier, but still inside normal year-to-year variation.
+
+Meanwhile the *autumn lift* (1.468 vs typical 1.536, z = −0.86) was slightly
+**below** normal. So the autumn wasn't unusually busy overall — but the
+arrivals within it came sooner. That is a timing shift, not a volume one,
+which is exactly what "people came back sooner" describes.
+
+**Verdict: the theory is supported directionally and strongly over decades,
+and weakly for 2025 specifically.** Not proof for one year — z = 1.55 is the
+kind of number that turns out to be nothing about a third of the time.
+
+### The trap this nearly fell into
+
+The first run reported the 2019-20 season at **z = +15.9** — apparently the
+most dramatic early arrival ever recorded. It was COVID. Autumn 2019 was
+perfectly normal; then **April 2020 collapsed from ~1.1m passengers to
+53,379**. The autumn *share* exploded because the denominator vanished.
+
+A z-score of +15.9 is not a discovery, it is a broken denominator. It was also
+sitting inside the trend fit, inflating it. COVID seasons are now excluded
+alongside hurricanes, and both are drawn in their own colour so the exclusions
+stay visible rather than quietly dropped.
+
+---
+
 ## Next season — actual dates
 
 From `R/10_next_season_dates.R`, run 15 Sep 2026:
