@@ -1,0 +1,2 @@
+peak_doy,trough_doy,start_doy,end_doy,peak_val,trough_val,decline_pct,increase_pct,season_days,model_r2
+68,265,321,127,1.1195976894529711,0.8504095318037515,24.04329342451068,31.653944080125875,171,0.7622229235543148

@@ -91,6 +91,74 @@ once the data is downloaded.
 
 ---
 
+## The season forecast
+
+`R/09_predict_season.R` fits a **harmonic (Fourier) regression** to 2024 daily
+counts — sin/cos pairs at 1–4 cycles per year, plus day-of-week terms, on
+log(index) so effects are multiplicative. Intervals come from a
+**moving-block bootstrap** (14-day blocks, 600 runs), which preserves the fact
+that a busy Tuesday implies a busy Wednesday. Model R² = 0.76.
+
+### Key dates
+
+| | Estimate | 90% CI |
+|---|---|---|
+| **Season starts** | 17 Nov | 10 Nov – 7 Dec |
+| **Peak** | 9 Mar | 25 Feb – 21 Mar |
+| **Season ends** | 7 May | 1 May – 12 May |
+| **Trough** | 22 Sep | 17 Sep – 26 Sep |
+| Season length | 171 days | 149 – 180 |
+
+**Practical ranges** (within 1% of the extreme — more honest than a single day,
+since the curve is flat at the top):
+
+- **Peak period: 20 Feb – 26 Mar** (35 days)
+- **Trough period: 12 Sep – 1 Oct** (20 days)
+
+### Magnitude
+
+| | Estimate | 90% CI |
+|---|---|---|
+| Peak level | 1.120× average day | 1.103 – 1.143 |
+| Trough level | 0.850× average day | 0.830 – 0.866 |
+| **Decline from peak** | **24.0%** | 22.2 – 26.3% |
+| **Increase from trough** | **31.7%** | 28.6 – 35.6% |
+
+(The two differ because they use different bases: falling 24% from the peak and
+rising 32% from the trough describe the same gap.)
+
+### By station — the roads are not alike
+
+| Station | Peak | Trough | Starts | Ends | Decline |
+|---|---|---|---|---|---|
+| 0094 (Naples urban) | 19 Feb | 27 Jun | 28 Oct | 7 May | 27.7% |
+| 0270 (Everglades, rural) | 7 Mar | 30 Sep | 19 Dec | 3 May | **34.1%** |
+| 0351 | 22 Mar | 18 Sep | 10 Nov | 28 Apr | 17.1% |
+
+Spread of two months in peak timing and a 2× spread in amplitude. A
+county-wide number hides a lot — forecast the road you care about.
+
+### The double dip
+
+The fitted curve isn't a simple wave. It falls to a **June low (~0.92)**, rises
+again through **July–August (~0.96)**, then drops to the true **September
+trough (0.85)**. That mid-summer bump is family holiday traffic; September is
+the genuine dead month — after the tourists, before the snowbirds, in the thick
+of hurricane season. Station 0094 troughs in June rather than September because
+its mix tilts the other way.
+
+### What these intervals do and do not mean
+
+The model is fitted to **one season**. The confidence intervals say *"how
+precisely do we know the shape of 2024"* — **not** *"how much does the season
+move from year to year"*, which is unmeasurable here because there is no second
+year of daily data.
+
+Treat them as a **floor** on the true forecasting uncertainty. Getting prior-year
+FTI editions from FDOT would be the single highest-value next step.
+
+---
+
 ## Where snowbirds actually come from
 
 The original six "northern origin cities" were a guess. `R/06` replaces them
