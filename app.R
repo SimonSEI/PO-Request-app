@@ -9,7 +9,7 @@
 #   shinyApp(ui, server) - glues them together and runs it
 #
 # The magic word is REACTIVE. You never write "when the slider moves, redraw
-# the chart". You write "this chart depends on input$threshold" and Shiny works
+# the chart". You write "this chart depends on THRESHOLD" and Shiny works
 # out what to redraw. Everything downstream updates on its own.
 #
 # TO RUN: open this file in RStudio and click "Run App" (top right),
@@ -215,6 +215,37 @@ seasonal_curve_static <- if (file.exists("output/seasonal_curve.csv")) {
 
 MONTH_ABB <- c("Jan","Feb","Mar","Apr","May","Jun",
                "Jul","Aug","Sep","Oct","Nov","Dec")
+
+# =============================================================================
+# ANALYSIS SETTINGS - fixed here, deliberately not on the dashboard
+# =============================================================================
+# These four were sliders once. They are constants now because the dashboard is
+# something you READ, and a reader who nudges a threshold is not testing
+# robustness, they are just looking at a different answer with no way to know
+# which one to believe.
+#
+# The Robustness tab still sweeps every threshold from 12 to 36 and shows the
+# whole surface, so the evidence about whether the choice matters is all still
+# there. It just is not adjustable from the page any more.
+#
+# The Simulation tab keeps its own controls. That is the intended place to ask
+# "what if this year is different" - it varies CONDITIONS, not analysis
+# parameters, which is a different question and a legitimate one.
+
+THRESHOLD <- 25    # deg F. How much warmer Naples must be to be "worth it".
+                   # The value the write-up quotes. Note the Robustness tab
+                   # shows this result is only significant in a narrow band
+                   # around here - which is exactly why nobody should be
+                   # quietly moving it.
+
+WEIGHTED  <- TRUE  # Weight northern home states by how many people they
+                   # actually send, from IRS records, rather than counting
+                   # Montana the same as Illinois.
+
+HARMONICS <- 4     # Sine/cosine pairs per year in the seasonal fit. R2 = 0.76.
+                   # 1 is too stiff to catch the summer double dip; 8 starts
+                   # chasing individual weeks. Matches R/09, so the dashboard
+                   # and the stored forecast cannot disagree.
 
 # =============================================================================
 # CURRENT CONDITIONS -> reasoning written from live data
@@ -492,10 +523,15 @@ live_swing <- function() {
   bits
 }
 
+# Every northern home state, weighted. No longer a user choice.
+ALL_STATES <- NULL   # assigned just below, once state_temps is read
+
 all_states <- state_temps %>%
   distinct(state, people) %>%
   arrange(desc(people)) %>%
   pull(state)
+
+ALL_STATES <- all_states
 
 # Hurricanes hit southwest Florida in 2024 and are all over the traffic data.
 # See R/05 for what they look like and why they must come out.
@@ -771,6 +807,12 @@ ui <- page_fluid(
 
     # -------------------------------------------------------------------------
     nav_panel(
+      "Current report",
+      card_body(fillable = FALSE, uiOutput("report"))
+    ),
+
+    # -------------------------------------------------------------------------
+    nav_panel(
       "This year so far",
       chart_panel(
         heading = "How is this year actually tracking?",
@@ -939,18 +981,7 @@ ui <- page_fluid(
             "these are the dates that decide when demand arrives and when it",
             "disappears.")
         ),
-        chart = tagList(
-          div(class = "p-3 mb-3",
-              style = "background:#f8f9fa; border:1px solid #dee2e6; border-radius:4px;",
-              sliderInput("harmonics", "Seasonal curve flexibility",
-                          min = 1, max = 8, value = 4, step = 1, width = "100%"),
-              p(class = "text-muted small mb-0",
-                "1 is a single smooth wave; 8 chases individual weeks. Watch the",
-                "fit go from too stiff to overfitted - and note the season-start",
-                "date move about two weeks as you do.")
-          ),
-          spinner(plotOutput("p_forecast", height = "440px"), "440px")
-        ),
+        chart = spinner(plotOutput("p_forecast", height = "440px"), "440px"),
         footer = spinner(tableOutput("tbl_forecast"), "260px"),
         method = tagList(
           p(strong("Fitting waves to a season."),
@@ -1042,32 +1073,7 @@ ui <- page_fluid(
             "the most important chart here, because it is the one that says",
             strong("don't believe the other one"), ".")
         ),
-        chart = tagList(
-          div(class = "p-3 mb-3",
-              style = "background:#f8f9fa; border:1px solid #dee2e6; border-radius:4px;",
-              div(class = "small fw-semibold mb-2", "Controls for the temperature tabs"),
-              layout_columns(
-                col_widths = c(4, 4, 4),
-                sliderInput("threshold", "Migration threshold (°F warmer than home)",
-                            min = 10, max = 40, value = 25, step = 1, width = "100%"),
-                radioButtons("weighting", "Combining their home states",
-                             choices = c("Weighted by migrants sent" = "weighted",
-                                         "All states counted equally" = "equal"),
-                             selected = "weighted"),
-                div(
-                  checkboxGroupInput("states", "Northern home states",
-                                     choices = all_states, selected = all_states,
-                                     inline = TRUE),
-                  actionLink("all_on", "all"), " / ", actionLink("all_off", "none")
-                )
-              ),
-              p(class = "text-muted small mb-0",
-                "These three feed every temperature-based tab. The sweep below",
-                "runs across all thresholds regardless of the slider - the slider",
-                "only marks where you are standing.")
-          ),
-          spinner(plotOutput("p_sweep", height = "620px"), "620px")
-        ),
+        chart = spinner(plotOutput("p_sweep", height = "620px"), "620px"),
         method = tagList(
           p("The whole pipeline is re-run at every threshold from 12 to 36",
             "degrees F. For each one we find the season's start and end dates",
@@ -1151,8 +1157,9 @@ ui <- page_fluid(
             "home got cold. The red dashed line is your threshold - the point",
             "you've decided the difference is big enough to be worth the trip."),
           p(class = "text-muted small mb-0",
-            strong("Controls: "), "the threshold and state selection that drive this "
-            , "chart live on the ", strong("Robustness"), " tab.")
+            strong("Fixed at "), "25 °F, all northern home states, weighted by ",
+            "migrants sent. Set in code rather than on the page - the Robustness ",
+            "tab shows what every other threshold would have given.")
         ),
         chart = spinner(plotOutput("p_year", height = "460px"), "460px"),
         method = tagList(
@@ -1310,11 +1317,6 @@ ui <- page_fluid(
 # =============================================================================
 server <- function(input, output, session) {
 
-  observeEvent(input$all_on,
-               updateCheckboxGroupInput(session, "states", selected = all_states))
-  observeEvent(input$all_off,
-               updateCheckboxGroupInput(session, "states", selected = character(0)))
-
   # ---------------------------------------------------------------------------
   # Wait until the browser has actually laid the plot out
   # ---------------------------------------------------------------------------
@@ -1338,11 +1340,10 @@ server <- function(input, output, session) {
   # exports validate() and whichever loads last wins. The symptom is a baffling
   # "is.character(txt) is not TRUE".
   gap <- reactive({
-    shiny::validate(shiny::need(length(input$states) > 0, "Pick at least one state."))
-    build_gap(input$states, input$weighting == "weighted")
+    build_gap(ALL_STATES, WEIGHTED)
   })
 
-  windows <- reactive(find_windows(gap(), input$threshold))
+  windows <- reactive(find_windows(gap(), THRESHOLD))
 
   t_opens  <- reactive(trend_of(windows(), "opens_d"))
   t_closes <- reactive(trend_of(windows(), "closes_d"))
@@ -1393,7 +1394,7 @@ server <- function(input, output, session) {
   DEFAULT_K <- 4
 
   nxt <- reactive({
-    s <- if (!is.null(fc_static) && isTRUE(input$harmonics == DEFAULT_K)) {
+    s <- if (!is.null(fc_static) && isTRUE(HARMONICS == DEFAULT_K)) {
       fc_static
     } else {
       forecast_fit()$stats
@@ -1437,8 +1438,8 @@ server <- function(input, output, session) {
       scale_y_continuous(breaks = c(92, 153, 214, 275, 336),
                          labels = c("1 Oct", "1 Dec", "1 Feb", "1 Apr", "1 Jun")) +
       labs(title = "When does the migration window open and close?",
-           subtitle = paste0(input$threshold, "°F threshold · ",
-                             length(input$states), " states"),
+           subtitle = paste0(THRESHOLD, "°F threshold · ",
+                             length(ALL_STATES), " states"),
            x = "Season (year it began)", y = NULL, colour = NULL) +
       theme(legend.position = "top")
   })
@@ -1454,10 +1455,10 @@ server <- function(input, output, session) {
       ggplot(aes(doy, g)) +
       geom_area(fill = "#2a6f97", alpha = 0.15) +
       geom_line(colour = "#2a6f97", linewidth = 1.3) +
-      geom_hline(yintercept = input$threshold, linetype = "dashed",
+      geom_hline(yintercept = THRESHOLD, linetype = "dashed",
                  colour = "#c1121f", linewidth = 0.8) +
-      annotate("text", x = 183, y = input$threshold + 1.6,
-               label = paste0("threshold: ", input$threshold, "°F"),
+      annotate("text", x = 183, y = THRESHOLD + 1.6,
+               label = paste0("threshold: ", THRESHOLD, "°F"),
                colour = "#c1121f", hjust = 0, size = LBL) +
       scale_x_continuous(breaks = c(1, 60, 121, 182, 244, 305),
                          labels = c("Jan", "Mar", "May", "Jul", "Sep", "Nov")) +
@@ -1492,7 +1493,7 @@ server <- function(input, output, session) {
       geom_hline(yintercept = 0, colour = "grey30") +
       geom_line(colour = "grey75") +
       geom_point(aes(colour = sig), size = 2.8) +
-      geom_vline(xintercept = input$threshold, linetype = "dotted",
+      geom_vline(xintercept = THRESHOLD, linetype = "dotted",
                  colour = "#2a6f97", linewidth = 0.8) +
       facet_wrap(~measure, ncol = 1, scales = "free_y") +
       scale_colour_manual(values = c("p < 0.05" = "#c1121f",
@@ -1545,6 +1546,105 @@ server <- function(input, output, session) {
                              "Hurricanes removed. r = ", round(r, 2)),
            x = NULL, colour = NULL) +
       theme(legend.position = "top")
+  })
+
+  # --- Current report -------------------------------------------------------
+  # Written from the live objects rather than pasted in as prose, so it
+  # regenerates itself whenever the pipeline rewrites its outputs. Re-run
+  # R/09 with a second year of traffic and every figure below moves with it;
+  # nothing here has to be edited by hand.
+  output$report <- renderUI({
+    s      <- HEAD
+    trough <- head_date(s$trough); start <- head_date(s$start)
+    peak   <- head_date(s$peak);   endd  <- head_date(s$end)
+
+    # Where this year departs from a normal one
+    n_anom <- cnum("north_anom"); g_anom <- cnum("gap_anom")
+    oni    <- cnum("oni_value");  ytd    <- cnum("rsw_ytd_change")
+
+    winter <- if (is.na(n_anom)) "unknown"
+              else if (n_anom <= -1.5) "early"
+              else if (n_anom <= -0.5) "slightly early"
+              else if (n_anom >=  1.5) "late"
+              else if (n_anom >=  0.5) "slightly late"
+              else "on time"
+
+    h <- function(t) tags$h5(t, class = "fw-bold mt-4 mb-2",
+                             style = "color:#1d3f5a; font-size:1.05rem;")
+
+    div(
+      style = "max-width:76ch; font-size:0.97rem; line-height:1.62;",
+
+      div(class = "pb-2 mb-3", style = "border-bottom:2px solid #2a6f97;",
+          tags$h4("Snowbird Season Report", class = "mb-1 fw-bold",
+                  style = "color:#1d3f5a;"),
+          tags$div(class = "text-muted small",
+                   sprintf("Collier + Lee County, Florida · generated %s · conditions measured %s",
+                           format(Sys.Date(), "%d %B %Y"), ctxt("updated")))),
+
+      h("The forecast"),
+      tags$ul(
+        tags$li(strong("Trough "), trough, " — the quietest point of the year"),
+        tags$li(strong("Season opens "), start, " — traffic first exceeds an ordinary day"),
+        tags$li(strong("Peak "), peak, " — flat across a five-week window, so treat it as a period"),
+        tags$li(strong("Season ends "), endd),
+        tags$li(sprintf("Peak runs %.0f%% above the trough; traffic falls %.0f%% coming back down",
+                        s$increase, s$decline))
+      ),
+
+      h("How it is built"),
+      p("A harmonic regression on ", strong("2024 daily traffic counts"), " from six ",
+        "continuous stations across Collier and Lee counties — machines in the ",
+        "road counting vehicles every day of the year. Sine and cosine pairs at one ",
+        "to four cycles per year describe the seasonal shape without anyone having ",
+        "to say where the peak sits; day-of-week terms keep quiet Sundays from ",
+        "being read as a seasonal dip. The model is fitted to the logarithm of a ",
+        "traffic index, so effects come out as percentages and a rural road on ",
+        "3,660 vehicles a day can be averaged with a stretch of I-75 on 125,228."),
+      p("Confidence intervals come from a ", strong("moving-block bootstrap"),
+        " — contiguous 14-day blocks of residuals, resampled 600 times, because ",
+        "a busy Tuesday implies a busy Wednesday and pretending otherwise would ",
+        "make the intervals far too narrow. Hurricane windows are excluded: 2024 ",
+        "had three storms, and Milton's landfall alone ran at 30% of normal traffic."),
+
+      h("Conditions entering this season"),
+      tags$ul(
+        if (!is.na(oni)) tags$li(sprintf("El Niño index %+.2f — %s, %s Atlantic hurricane activity",
+                                         oni, ctxt("oni_state"), ctxt("hurricane_outlook"))) else NULL,
+        if (!is.na(n_anom)) tags$li(sprintf("Northern home states running %+.1f °F against normal — winter arriving %s",
+                                            n_anom, winter)) else NULL,
+        if (!is.na(g_anom)) tags$li(sprintf("The migration gap is %+.1f °F against its own normal — %s",
+                                            g_anom,
+                                            if (g_anom < -0.4) "a weaker pull south than usual"
+                                            else if (g_anom > 0.4) "a stronger pull than usual"
+                                            else "about as usual")) else NULL,
+        if (!is.na(ytd)) tags$li(sprintf("Airport arrivals %+.2f%% year to date against last year", ytd)) else NULL
+      ),
+      p(sprintf("On that basis the trough is estimated at %s, the season opening around %s, and the peak around %s. ",
+                trough, start, peak),
+        if (!is.na(oni) && oni >= 0.5)
+          "With hurricanes suppressed this year, expect the trough to be shallower than the model's average year — the date should hold, the depth should not."
+        else ""),
+
+      h("What this cannot do"),
+      p("The seasonal shape rests on ", strong("one year"), " of daily counts, because ",
+        "FDOT overwrite the detailed tables with each annual edition rather than ",
+        "accumulating them. The intervals therefore say how precisely we know 2024, ",
+        "not how much the season varies between years. Treat them as a floor."),
+      p("Weather forecasting cannot fill that gap, and this was tested rather than ",
+        "assumed: beyond 60 days NOAA's seasonal ensemble is 1.12× the spread of ",
+        "plain climatology — wider than simply knowing what month it is. And the ",
+        "roads disagree with each other, with peak timing spanning two months and ",
+        "amplitude varying twofold across stations."),
+
+      div(class = "mt-4 pt-3", style = "border-top:1px solid #dee2e6;",
+          p(class = "text-muted small mb-0",
+            strong("This report regenerates itself. "),
+            "Every figure above is read from the analysis outputs at load, so ",
+            "re-running the pipeline updates it — nothing here is typed by hand. ",
+            "The watcher checks all sources daily and raises an alert if a ",
+            "headline date moves."))
+    )
   })
 
   # --- Becoming permanent? --------------------------------------------------
@@ -1642,7 +1742,7 @@ server <- function(input, output, session) {
 
     thermal <- function(delta) {
       find_windows(mutate(SIM_BASE_GAP, gap_smooth = gap_smooth + delta),
-                   input$threshold)
+                   THRESHOLD)
     }
 
     med <- function(w, col) if (nrow(w) == 0) NA_real_ else median(w[[col]], na.rm = TRUE)
@@ -1841,7 +1941,7 @@ server <- function(input, output, session) {
     shiny::validate(shiny::need(!is.null(traffic_daily),
                                 "Run R/04_fetch_fti.R to get the traffic data."))
 
-    K  <- input$harmonics
+    K  <- HARMONICS
     tr <- traffic_daily %>% filter(!date %in% STORM_DAYS)
     good <- tr %>% count(site) %>% filter(n >= 330) %>% pull(site)
 
@@ -1919,7 +2019,7 @@ server <- function(input, output, session) {
     list(county = county, curve = curve, boot = boot,
          stats = describe_curve(curve), r2 = summary(fit)$r.squared)
   })
-  # NOTE: this used to be wrapped in bindCache(input$harmonics). That was added
+  # NOTE: this used to be wrapped in bindCache(HARMONICS). That was added
   # when the bootstrap took 4.7 seconds. Once the qr() rewrite brought it to
   # 0.16s the cache stopped earning its place - and it turned out to deadlock:
   # calling a cached reactive from inside ANOTHER reactive (the Simulation tab
@@ -1955,7 +2055,7 @@ server <- function(input, output, session) {
       scale_x_continuous(breaks = c(1, 60, 121, 182, 244, 305, 365),
                          labels = c("Jan", "Mar", "May", "Jul", "Sep", "Nov", "Dec")) +
       labs(title = "Predicted southwest Florida traffic season",
-           subtitle = paste0(input$harmonics, " harmonics · R² = ", round(f$r2, 3),
+           subtitle = paste0(HARMONICS, " harmonics · R² = ", round(f$r2, 3),
                              " · grey = actual 2024 days, band = 90% bootstrap"),
            x = NULL, y = "Traffic (1.0 = average day)")
   })
@@ -1980,17 +2080,14 @@ server <- function(input, output, session) {
     sized("p_states")
     origin_states %>%
       slice_head(n = 15) %>%
-      mutate(state = fct_reorder(state, people),
-             picked = state %in% input$states) %>%
-      ggplot(aes(people, state, fill = picked)) +
-      geom_col(alpha = 0.9) +
+      mutate(state = fct_reorder(state, people)) %>%
+      ggplot(aes(people, state)) +
+      geom_col(fill = "#3d5a80", alpha = 0.9) +
       geom_text(aes(label = paste0(round(100 * share, 1), "%")),
                 hjust = -0.15, size = LBL - 0.6) +
-      scale_fill_manual(values = c("TRUE" = "#3d5a80", "FALSE" = "grey80"),
-                        guide = "none") +
       scale_x_continuous(labels = comma, expand = expansion(c(0, 0.14))) +
       labs(title = "Northern home states of Naples arrivals",
-           subtitle = "Northern home states of people moving into Collier County (IRS, 2022-23). Grey = excluded.",
+           subtitle = "Northern home states of people moving into Collier County (IRS, 2022-23).",
            x = "People", y = NULL)
   })
 
