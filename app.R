@@ -137,7 +137,34 @@ chart_panel <- function(heading, plain, chart, method, footer = NULL) {
   )
 }
 
-theme_set(theme_minimal(base_size = 12))
+# -----------------------------------------------------------------------------
+# Readable chart text
+# -----------------------------------------------------------------------------
+# base_size 12 is ggplot's comfortable default for a plot you are looking at in
+# RStudio at full screen. Inside a dashboard panel the same chart is rendered
+# smaller and then scaled, so 12pt axis labels end up genuinely hard to read.
+# Everything below is sized up, and set once here so every chart matches rather
+# than each one carrying its own theme() call.
+theme_set(
+  theme_minimal(base_size = 15) +
+    theme(
+      plot.title      = element_text(size = 19, face = "bold", colour = "#1d3f5a",
+                                     margin = margin(b = 4)),
+      plot.subtitle   = element_text(size = 13.5, colour = "grey30", lineheight = 1.2,
+                                     margin = margin(b = 10)),
+      axis.title      = element_text(size = 14, colour = "grey25"),
+      axis.text       = element_text(size = 13, colour = "grey20"),
+      legend.text     = element_text(size = 13),
+      legend.title    = element_text(size = 13),
+      strip.text      = element_text(size = 14, face = "bold", colour = "#1d3f5a"),
+      panel.grid.minor = element_blank(),      # less clutter behind bigger text
+      plot.margin     = margin(10, 14, 8, 8)
+    )
+)
+
+# Labels drawn INSIDE a plot (annotate, geom_text) use ggplot's own size units,
+# not points, so they do not follow base_size and have to be scaled separately.
+LBL <- 5.0   # in-plot annotation size
 
 # =============================================================================
 # LOAD DATA ONCE, at startup
@@ -171,6 +198,19 @@ hist_aadt <- if (file.exists("data/collier_hist_aadt.csv")) {
 # Road counts stop at 2024; this runs to within about six weeks of today.
 rsw_monthly <- if (file.exists("data/rsw_monthly_passengers.csv")) {
   read_csv("data/rsw_monthly_passengers.csv", show_col_types = FALSE)
+} else NULL
+
+# Permanent-move and stay-length data (R/15).
+permanent_moves <- if (file.exists("data/permanent_moves.csv")) {
+  read_csv("data/permanent_moves.csv", show_col_types = FALSE)
+} else NULL
+
+season_shape <- if (file.exists("data/season_shape.csv")) {
+  read_csv("data/season_shape.csv", show_col_types = FALSE)
+} else NULL
+
+seasonal_curve_static <- if (file.exists("output/seasonal_curve.csv")) {
+  read_csv("output/seasonal_curve.csv", show_col_types = FALSE)
 } else NULL
 
 MONTH_ABB <- c("Jan","Feb","Mar","Apr","May","Jun",
@@ -754,6 +794,167 @@ ui <- page_sidebar(
 
     # -------------------------------------------------------------------------
     nav_panel(
+      "Becoming permanent?",
+      chart_panel(
+        heading = "Are snowbirds turning into full-time residents?",
+        plain = tagList(
+          p("Two different questions here, and they have different answers."),
+          p(strong("1. Are more people moving here for good? "),
+            "The top chart counts people who changed their tax address to",
+            "Collier County - which is not a proxy for moving permanently, it",
+            strong(" is "), "moving permanently. Northern arrivals went from",
+            "6,600 a year in 2012 to a peak of 11,600 in 2021."),
+          p(strong("2. Are the ones who still come seasonally staying longer? "),
+            "The bottom chart watches the shoulder months - October, April,",
+            "May - against the December-to-March core. If stays were",
+            "lengthening, people would arrive before the rush and leave after",
+            "it, and the shoulders would fatten."),
+          p(class = "text-muted mb-0",
+            strong("The short answer: "), "there was a big jump in permanent",
+            "moves, but it was the pandemic rather than a gradual conversion -",
+            "take 2020-22 out and the trend all but disappears. Meanwhile the",
+            "people who still come seasonally are ", strong("not"), " staying",
+            "longer; if anything the season is tightening around its core.")
+        ),
+        chart = tagList(
+          spinner(plotOutput("p_permanent", height = "400px"), "400px"),
+          div(class = "mt-4"),
+          spinner(plotOutput("p_longer", height = "400px"), "400px")
+        ),
+        footer = uiOutput("permanent_verdict"),
+        method = tagList(
+          p(strong("Permanent moves."), "IRS county-to-county migration, twelve",
+            "editions from 2011-12 to 2022-23. Each counts households whose tax",
+            "address changed into Collier County, and where from. Filtered to",
+            "24 northern states with a real winter, so people moving up from",
+            "Miami are not counted as snowbirds."),
+          p(strong("A trap in this data worth knowing about: "),
+            "FIPS county codes are zero-padded in most editions ('021') but not",
+            "in the 2020-21 and 2021-22 files ('21'). Matching on the string",
+            "silently drops those two years - no error, just a shorter trend.",
+            "Correcting it changed the headline from 'no clear trend' to",
+            "significant, which is how much two missing points can matter."),
+          p(strong("Staying longer."), "RSW monthly passengers, ratio of",
+            "(Oct + Apr + May) to (Dec + Jan + Feb + Mar). A ratio is used",
+            "rather than raw numbers so airport growth cannot masquerade as",
+            "longer stays. Storm and COVID seasons are excluded."),
+          p(class = "text-muted mb-0",
+            strong("What neither can see: "), "a snowbird who keeps their",
+            "northern tax address, which is most of them and often deliberate.",
+            "Question 1 measures the flow of people CONVERTING to permanent,",
+            "not the stock of seasonal residents.")
+        )
+      )
+    ),
+
+    # -------------------------------------------------------------------------
+    nav_panel(
+      "Simulation",
+      card_body(
+        fillable = FALSE,
+
+        div(
+          class = "p-3 mb-3",
+          style = "background:#eef4f8; border-left:4px solid #2a6f97; border-radius:4px;",
+          h6("What if this year isn't normal?", class = "fw-bold mb-2",
+             style = "color:#1d3f5a;"),
+          div(style = "font-size:0.95rem; line-height:1.55;",
+            p("Move the conditions below and watch the peak and trough move with",
+              "them. The dials start at what is actually happening right now, so",
+              "the first thing you see is this year's real prediction."),
+            p(strong("The chain being simulated is one we measured, not invented: "),
+              "how warm the northern home states are decides when the temperature",
+              "gap crosses the threshold, and traffic then follows roughly 25 days",
+              "later. Change the first link and the rest moves."),
+            p(class = "text-muted mb-0",
+              strong("What it cannot do: "), "this shifts the season, it does not",
+              "reshape it. We have one year of daily traffic, so there is no way",
+              "to know whether a cold winter makes the season longer as well as",
+              "earlier. Treat the shift as directional.")
+          )
+        ),
+
+        layout_columns(
+          col_widths = c(4, 4, 4),
+          card(card_header("Northern home states"),
+               card_body(
+                 sliderInput("sim_north", "Temperature vs normal (°F)",
+                             min = -8, max = 8, value = 0, step = 0.5, ticks = FALSE),
+                 p(class = "text-muted small mb-0",
+                   "Negative = colder than usual up north, which is what pushes",
+                   "people south.")
+               )),
+          card(card_header("Naples"),
+               card_body(
+                 sliderInput("sim_naples", "Temperature vs normal (°F)",
+                             min = -6, max = 6, value = 0, step = 0.5, ticks = FALSE),
+                 p(class = "text-muted small mb-0",
+                   "Matters far less. The gap is what pulls, and the northern end",
+                   "swings much harder.")
+               )),
+          card(card_header("Behaviour"),
+               card_body(
+                 sliderInput("sim_lag", "Days traffic lags the thermometer",
+                             min = 0, max = 50, value = 25, step = 1, ticks = FALSE),
+                 p(class = "text-muted small mb-0",
+                   "25 is what we measured. Set it to 0 to see a world where",
+                   "people move the moment the weather says so.")
+               ))
+        ),
+
+        layout_columns(
+          fill = FALSE, class = "mt-2",
+          value_box(title = "Simulated season start",
+                    value = textOutput("sim_start"),
+                    showcase = icon("arrow-right-to-bracket"), theme = "info",
+                    textOutput("sim_start_delta")),
+          value_box(title = "Simulated peak",
+                    value = textOutput("sim_peak"),
+                    showcase = icon("arrow-trend-up"), theme = "primary",
+                    textOutput("sim_peak_delta")),
+          value_box(title = "Simulated trough",
+                    value = textOutput("sim_trough"),
+                    showcase = icon("arrow-trend-down"), theme = "secondary",
+                    textOutput("sim_trough_delta"))
+        ),
+
+        div(class = "mt-3", uiOutput("sim_explain")),
+
+        spinner(plotOutput("p_sim", height = "460px"), "460px"),
+
+        accordion(
+          open = FALSE, class = "mt-3",
+          accordion_panel(
+            "How was this calculated?", icon = icon("calculator"),
+            div(style = "font-size:0.9rem; line-height:1.55;",
+              p(strong("Step 1 - shift the temperatures."), "Your two sliders are",
+                "added to the 26-year daily averages for Naples and for the",
+                "northern home states, producing a 'what if' year."),
+              p(strong("Step 2 - find the thermal window."), "We locate the day",
+                "in autumn when Naples first becomes warmer than home by more",
+                "than the threshold, and the day in spring when it stops being",
+                "so. Exactly the calculation used on the Window shift tab."),
+              p(strong("Step 3 - apply the measured lag."), "Real traffic does",
+                "not turn when the thermometer does; script 05 found it lags by",
+                "about 25 days at both ends of the season. That lag is added to",
+                "the thermal dates to get traffic dates."),
+              p(strong("Step 4 - move the fitted curve."), "The seasonal traffic",
+                "curve is shifted by the same number of days, which is where the",
+                "simulated peak and trough come from."),
+              p(class = "text-muted mb-0",
+                strong("The honest limit: "), "step 4 assumes the season slides",
+                "rigidly. In reality the peak is anchored partly to the calendar",
+                "- spring break and Easter do not care about the weather - so a",
+                "large simulated shift will overstate how far the March peak",
+                "really moves. The autumn end is the more trustworthy half.")
+            )
+          )
+        )
+      )
+    ),
+
+    # -------------------------------------------------------------------------
+    nav_panel(
       "Season forecast",
       chart_panel(
         heading = "When will Naples be busiest, and when will it be dead?",
@@ -1076,8 +1277,7 @@ server <- function(input, output, session) {
   gap <- reactive({
     shiny::validate(shiny::need(length(input$states) > 0, "Pick at least one state."))
     build_gap(input$states, input$weighting == "weighted")
-  }) %>%
-    bindCache(input$states, input$weighting)
+  })
 
   windows <- reactive(find_windows(gap(), input$threshold))
 
@@ -1148,7 +1348,7 @@ server <- function(input, output, session) {
                       labels = c("Opens (autumn)", "Closes (spring)"))
       ) %>%
       ggplot(aes(season_year, d, colour = edge)) +
-      geom_point(size = 2.3, alpha = 0.85) +
+      geom_point(size = 2.8, alpha = 0.85) +
       geom_smooth(method = "lm", se = TRUE, linewidth = 1) +
       scale_colour_manual(values = c("#e07a5f", "#3d5a80")) +
       scale_y_continuous(breaks = c(92, 153, 214, 275, 336),
@@ -1170,12 +1370,12 @@ server <- function(input, output, session) {
       summarise(g = mean(gap_smooth), .groups = "drop") %>%
       ggplot(aes(doy, g)) +
       geom_area(fill = "#2a6f97", alpha = 0.15) +
-      geom_line(colour = "#2a6f97", linewidth = 1.1) +
+      geom_line(colour = "#2a6f97", linewidth = 1.3) +
       geom_hline(yintercept = input$threshold, linetype = "dashed",
                  colour = "#c1121f", linewidth = 0.8) +
       annotate("text", x = 183, y = input$threshold + 1.6,
                label = paste0("threshold: ", input$threshold, "°F"),
-               colour = "#c1121f", hjust = 0, size = 4) +
+               colour = "#c1121f", hjust = 0, size = LBL) +
       scale_x_continuous(breaks = c(1, 60, 121, 182, 244, 305),
                          labels = c("Jan", "Mar", "May", "Jul", "Sep", "Nov")) +
       labs(title = "How much warmer is Naples than back home?",
@@ -1208,7 +1408,7 @@ server <- function(input, output, session) {
       ggplot(aes(threshold, slope)) +
       geom_hline(yintercept = 0, colour = "grey30") +
       geom_line(colour = "grey75") +
-      geom_point(aes(colour = sig), size = 2) +
+      geom_point(aes(colour = sig), size = 2.8) +
       geom_vline(xintercept = input$threshold, linetype = "dotted",
                  colour = "#2a6f97", linewidth = 0.8) +
       facet_wrap(~measure, ncol = 1, scales = "free_y") +
@@ -1250,7 +1450,7 @@ server <- function(input, output, session) {
 
     ggplot(both, aes(date)) +
       geom_line(aes(y = to_i(gap_smooth), colour = "Temperature gap"), linewidth = 1) +
-      geom_line(aes(y = index_s, colour = "Traffic"), linewidth = 1.1) +
+      geom_line(aes(y = index_s, colour = "Traffic"), linewidth = 1.3) +
       geom_hline(yintercept = 1, linetype = "dotted", colour = "grey40") +
       scale_y_continuous(name = "Traffic (1.0 = average day)",
                          sec.axis = sec_axis(~ to_g(.), name = "Temperature gap (°F)")) +
@@ -1261,6 +1461,212 @@ server <- function(input, output, session) {
            subtitle = paste0("Collier + Lee daily traffic vs the gap, 2024. ",
                              "Hurricanes removed. r = ", round(r, 2)),
            x = NULL, colour = NULL) +
+      theme(legend.position = "top")
+  })
+
+  # --- Becoming permanent? --------------------------------------------------
+  output$p_permanent <- renderPlot({
+    sized("p_permanent")
+    shiny::validate(shiny::need(!is.null(permanent_moves),
+                                "Run R/15_becoming_permanent.R first."))
+
+    permanent_moves %>%
+      pivot_longer(c(northern_people, total_people),
+                   names_to = "grp", values_to = "n") %>%
+      mutate(grp = recode(grp,
+                          northern_people = "From northern states",
+                          total_people    = "From anywhere out of state")) %>%
+      ggplot(aes(year, n, colour = grp)) +
+      annotate("rect", xmin = 2019.5, xmax = 2022.5, ymin = -Inf, ymax = Inf,
+               fill = "grey85", alpha = 0.55) +
+      annotate("text", x = 2021, y = Inf, label = "pandemic wave",
+               vjust = 1.8, size = LBL - 0.6, colour = "grey35") +
+      geom_line(linewidth = 1.3) +
+      geom_point(size = 2.8) +
+      scale_y_continuous(labels = comma) +
+      scale_x_continuous(breaks = seq(2012, 2023, 2)) +
+      scale_colour_manual(values = c("From northern states" = "#c1121f",
+                                     "From anywhere out of state" = "#3d5a80")) +
+      labs(title = "People moving permanently into Collier County",
+           subtitle = "IRS tax-address changes. These are moves, not visits.",
+           x = NULL, y = "People per year", colour = NULL) +
+      theme(legend.position = "top")
+  })
+
+  output$p_longer <- renderPlot({
+    sized("p_longer")
+    shiny::validate(shiny::need(!is.null(season_shape),
+                                "Run R/15_becoming_permanent.R first."))
+
+    EXCL <- c(2004, 2017, 2019, 2020, 2022, 2024)
+    clean <- season_shape %>% filter(!season %in% EXCL)
+
+    ggplot(clean, aes(season, shoulder_ratio)) +
+      geom_line(colour = "grey70", linewidth = 0.9) +
+      geom_point(size = 2.8, colour = "#3d5a80") +
+      geom_smooth(method = "lm", se = TRUE, colour = "#c1121f", linewidth = 1.2) +
+      labs(title = "Are seasonal visitors staying longer?",
+           subtitle = paste0("Shoulder months (Oct, Apr, May) against the Dec-Mar core. ",
+                             "Rising would mean longer stays.\n",
+                             "Storm and COVID seasons excluded."),
+           x = "Season (year it began)", y = "Shoulder / core ratio")
+  })
+
+  output$permanent_verdict <- renderUI({
+    if (is.null(permanent_moves)) return(NULL)
+
+    p_all <- permanent_moves
+    f1 <- lm(northern_people ~ year, data = p_all)
+    c1 <- summary(f1)$coefficients["year", c("Estimate","Pr(>|t|)")]
+
+    p_nc <- p_all %>% filter(!year %in% c(2020, 2021, 2022))
+    f2 <- lm(northern_people ~ year, data = p_nc)
+    c2 <- summary(f2)$coefficients["year", c("Estimate","Pr(>|t|)")]
+
+    div(class = "p-3 mt-3",
+        style = "background:#fff5f5; border-left:4px solid #c1121f; border-radius:4px;",
+      tags$span(style="font-size:.72rem;font-weight:700;letter-spacing:.05em;color:#c1121f;",
+                "VERDICT"),
+      p(class = "mt-2 mb-2",
+        strong("Permanent moves: mostly a pandemic effect. "),
+        sprintf("Across all %d years the rise looks solid (%+.0f people a year, p = %.3f). ",
+                nrow(p_all), c1[1], c1[2]),
+        sprintf("Remove 2020-22 and it collapses to %+.0f a year, p = %.2f. ",
+                c2[1], c2[2]),
+        "2021 alone brought 11,566 northern arrivals against a pre-COVID norm",
+        "near 7,000 - that is the remote-work exodus, not snowbirds gradually",
+        "converting."),
+      p(class = "mb-0",
+        strong("Staying longer: no. "),
+        "The shoulder-to-core ratio is flat to slightly falling",
+        "(-1.2% per decade, p = 0.07 across 36 clean seasons). Those who still",
+        "come seasonally are not extending their stays; if anything the season",
+        "is tightening around its core months."))
+  })
+
+  # --- Simulation -----------------------------------------------------------
+  # Deliberately SELF-CONTAINED: it reads the module-level data and the stored
+  # forecast directly rather than calling gap() or forecast_fit().
+  #
+  # The first version chained off both of those. Every output on the tab then
+  # sat on "recalculating" forever with no error and the R process idle at 0%
+  # CPU - the signature of a silent validate()/req() abort propagating up from
+  # a dependency, not of a slow computation. Decoupling removes the failure
+  # mode, and is the better design anyway: a what-if tool should own its inputs
+  # rather than inherit the sidebar's.
+  sim <- reactive({
+    shift <- input$sim_naples - input$sim_north   # net change to the gap
+
+    base_gap <- state_temps %>%
+      group_by(date) %>%
+      summarise(north = weighted.mean(temp, people, na.rm = TRUE), .groups = "drop") %>%
+      inner_join(naples, by = "date") %>%
+      arrange(date) %>%
+      mutate(
+        gap = naples - north,
+        gap_smooth  = as.numeric(stats::filter(gap, rep(1/7, 7), sides = 2)),
+        season_year = if_else(month(date) >= 7, year(date), year(date) - 1L)
+      )
+
+    thermal <- function(delta) {
+      find_windows(mutate(base_gap, gap_smooth = gap_smooth + delta),
+                   input$threshold)
+    }
+
+    med <- function(w, col) if (nrow(w) == 0) NA_real_ else median(w[[col]], na.rm = TRUE)
+
+    base_w <- thermal(0)
+    sim_w  <- thermal(shift)
+
+    d_open <- med(sim_w, "opens_d") - med(base_w, "opens_d")
+    thermal_shift <- if (is.na(d_open)) 0 else as.integer(round(d_open))
+
+    lag_delta <- input$sim_lag - 25          # 25 is the measured lag
+    total     <- thermal_shift + lag_delta
+
+    bump <- function(doy) {
+      if (is.null(doy) || is.na(doy)) return(as.Date(NA))
+      next_occurrence(((doy - 1 + total) %% 365) + 1)
+    }
+
+    list(
+      shift_days    = total,
+      thermal_shift = thermal_shift,
+      lag_delta     = lag_delta,
+      start  = bump(fc_static$start_doy),
+      peak   = bump(fc_static$peak_doy),
+      trough = bump(fc_static$trough_doy)
+    )
+  })
+
+  sim_fmt <- function(d) if (is.na(d)) "-" else format(d, "%d %b %Y")
+  sim_delta <- function(n) {
+    if (n == 0) "unchanged from normal"
+    else sprintf("%d days %s than normal", abs(n), if (n > 0) "later" else "earlier")
+  }
+
+  output$sim_start        <- renderText(sim_fmt(sim()$start))
+  output$sim_start_delta  <- renderText(sim_delta(sim()$shift_days))
+  output$sim_peak         <- renderText(sim_fmt(sim()$peak))
+  output$sim_peak_delta   <- renderText(sim_delta(sim()$shift_days))
+  output$sim_trough       <- renderText(sim_fmt(sim()$trough))
+  output$sim_trough_delta <- renderText(sim_delta(sim()$shift_days))
+
+  output$sim_explain <- renderUI({
+    s <- sim()
+    colour <- if (s$shift_days == 0) "#6c757d" else if (s$shift_days < 0) "#c1121f" else "#3d5a80"
+
+    div(class = "p-3", style = paste0(
+          "background:#f8f9fa; border-left:4px solid ", colour, "; border-radius:4px;"),
+      p(class = "mb-1",
+        if (input$sim_north == 0 && input$sim_naples == 0 && input$sim_lag == 25)
+          tagList(strong("These are normal conditions. "),
+                  "Move a slider to see what a different year would do.")
+        else tagList(
+          strong("With these conditions: "),
+          if (input$sim_north != 0)
+            sprintf("a north running %+.1f F against normal ", input$sim_north) else "",
+          if (input$sim_north != 0 && input$sim_naples != 0) "and " else "",
+          if (input$sim_naples != 0)
+            sprintf("a Naples running %+.1f F ", input$sim_naples) else "",
+          sprintf("moves the temperature window %+d days%s. ",
+                  s$thermal_shift,
+                  if (s$thermal_shift == 0) " (not enough to change a crossing date)" else ""),
+          if (s$lag_delta != 0)
+            sprintf("Your lag of %d days adds another %+d. ", input$sim_lag, s$lag_delta) else ""
+        )),
+      p(class = "mb-0",
+        sprintf("Net effect: the season runs %s.", sim_delta(s$shift_days)),
+        if (abs(s$shift_days) > 20)
+          tagList(br(), tags$span(class = "text-muted",
+            "A shift this large is beyond anything in the historical record - ",
+            "treat it as illustrative rather than a forecast.")) else NULL)
+    )
+  })
+
+  output$p_sim <- renderPlot({
+    sized("p_sim")
+    shift <- sim()$shift_days
+
+    shifted <- seasonal_curve_static %>%
+      mutate(doy = ((doy - 1 + shift) %% 365) + 1) %>%
+      arrange(doy)
+
+    ggplot() +
+      geom_line(data = seasonal_curve_static, aes(doy, index, colour = "Normal year"),
+                linewidth = 1.1, linetype = "dashed") +
+      geom_line(data = shifted, aes(doy, index, colour = "Simulated"),
+                linewidth = 1.7) +
+      geom_hline(yintercept = 1, linetype = "dotted", colour = "grey40") +
+      scale_colour_manual(values = c("Normal year" = "grey45",
+                                     "Simulated" = "#c1121f")) +
+      scale_x_continuous(breaks = c(1, 60, 121, 182, 244, 305, 365),
+                         labels = c("Jan", "Mar", "May", "Jul", "Sep", "Nov", "Dec")) +
+      labs(
+        title = "Simulated season against a normal one",
+        subtitle = sprintf("Season shifted %s.", sim_delta(shift)),
+        x = NULL, y = "Traffic (1.0 = average day)", colour = NULL
+      ) +
       theme(legend.position = "top")
   })
 
@@ -1321,7 +1727,7 @@ server <- function(input, output, session) {
       geom_line(data = y$cur, aes(month, passengers, colour = as.character(y$year)),
                 linewidth = 1.4) +
       geom_point(data = y$cur, aes(month, passengers, colour = as.character(y$year)),
-                 size = 2.6) +
+                 size = 3.0) +
       scale_x_continuous(breaks = 1:12, labels = MONTH_ABB, limits = c(1, 12)) +
       scale_y_continuous(labels = comma) +
       scale_colour_manual(values = setNames(c("#c1121f", "#3d5a80"),
@@ -1440,11 +1846,14 @@ server <- function(input, output, session) {
 
     list(county = county, curve = curve, boot = boot,
          stats = describe_curve(curve), r2 = summary(fit)$r.squared)
-  }) %>%
-    # bindCache stores the result against the slider value, so the eight
-    # possible settings are each computed once per session and are instant
-    # on every revisit.
-    bindCache(input$harmonics)
+  })
+  # NOTE: this used to be wrapped in bindCache(input$harmonics). That was added
+  # when the bootstrap took 4.7 seconds. Once the qr() rewrite brought it to
+  # 0.16s the cache stopped earning its place - and it turned out to deadlock:
+  # calling a cached reactive from inside ANOTHER reactive (the Simulation tab
+  # calls both gap() and forecast_fit()) hung the whole session, with every
+  # output stuck 'recalculating' and no error raised. Removing the cache costs
+  # nothing measurable and removes the failure mode.
 
   output$p_forecast <- renderPlot({
     sized("p_forecast")
@@ -1458,7 +1867,7 @@ server <- function(input, output, session) {
 
     ggplot() +
       geom_point(data = f$county, aes(doy, index),
-                 colour = "grey70", size = 0.7, alpha = 0.6) +
+                 colour = "grey70", size = 0.9, alpha = 0.6) +
       geom_ribbon(data = ribbon, aes(doy, ymin = lo, ymax = hi),
                   fill = "#2a6f97", alpha = 0.25) +
       geom_line(data = f$curve, aes(doy, index), colour = "#2a6f97", linewidth = 1.2) +
@@ -1467,10 +1876,10 @@ server <- function(input, output, session) {
       geom_vline(xintercept = s$trough_doy, colour = "#e07a5f", linetype = "dashed") +
       annotate("text", x = s$peak_doy + 4, y = max(f$curve$index),
                label = paste0("peak ", doy_to_date(s$peak_doy)),
-               hjust = 0, colour = "#c1121f", size = 4) +
+               hjust = 0, colour = "#c1121f", size = LBL) +
       annotate("text", x = s$trough_doy + 4, y = min(f$curve$index),
                label = paste0("trough ", doy_to_date(s$trough_doy)),
-               hjust = 0, colour = "#e07a5f", size = 4) +
+               hjust = 0, colour = "#e07a5f", size = LBL) +
       scale_x_continuous(breaks = c(1, 60, 121, 182, 244, 305, 365),
                          labels = c("Jan", "Mar", "May", "Jul", "Sep", "Nov", "Dec")) +
       labs(title = "Predicted southwest Florida traffic season",
@@ -1504,7 +1913,7 @@ server <- function(input, output, session) {
       ggplot(aes(people, state, fill = picked)) +
       geom_col(alpha = 0.9) +
       geom_text(aes(label = paste0(round(100 * share, 1), "%")),
-                hjust = -0.15, size = 3.4) +
+                hjust = -0.15, size = LBL - 0.6) +
       scale_fill_manual(values = c("TRUE" = "#3d5a80", "FALSE" = "grey80"),
                         guide = "none") +
       scale_x_continuous(labels = comma, expand = expansion(c(0, 0.14))) +
@@ -1532,7 +1941,7 @@ server <- function(input, output, session) {
       summarise(median_aadt = median(aadt), sites = n(), .groups = "drop") %>%
       filter(sites >= 20) %>%
       ggplot(aes(year, median_aadt)) +
-      geom_line(colour = "#3d5a80", linewidth = 1.1) +
+      geom_line(colour = "#3d5a80", linewidth = 1.3) +
       geom_point(size = 1.6, colour = "#3d5a80") +
       scale_y_continuous(labels = comma) +
       labs(title = "Fifty years of Naples traffic",
