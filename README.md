@@ -44,6 +44,47 @@ calendar (Thanksgiving, Easter) regardless of the thermometer.
 Charts land in `output/`. Downloads are cached in `data/raw/`, so re-running
 step 1 is instant and doesn't re-hammer a free API.
 
+### The interactive dashboard
+
+Once step 1 has run, launch the Shiny app:
+
+- **In RStudio:** open `app.R` and click **Run App** (top-right of the editor)
+- **Or:** open `run_app.R` and press Ctrl+Shift+Enter
+- **Or from a terminal:** `Rscript run_app.R`
+
+It opens at <http://127.0.0.1:7788>. Stop it with Escape (RStudio) or Ctrl+C.
+
+The two sidebar controls are the two weakest assumptions in the analysis,
+deliberately exposed so you can attack them.
+
+---
+
+## What it found (and why you shouldn't trust it yet)
+
+The headline looked good: the migration window **opens 4.7 days later per
+decade** (p = 0.037), while the closing date hasn't moved. Autumn is arriving
+later; spring isn't leaving later.
+
+Then the dashboard killed it. Dragging the threshold slider:
+
+| Threshold | Season opens | Evidence |
+|---|---|---|
+| 15 °F | **−2.2** days/decade | none |
+| 25 °F | **+4.7** days/decade | some (p < 0.05) |
+| 36 °F | **+1.6** days/decade | none |
+
+The trend is only significant at 25 °F — the value that was picked by hand —
+and the **sign flips** across the plausible range. That is not a finding. It is
+a coincidence that would have shipped with a confident chart attached.
+
+Two further reasons for caution:
+
+- Three trends were tested and the one that passed is being quoted. Correct for
+  that (Bonferroni: 0.05 ÷ 3 = 0.0167) and p = 0.037 doesn't survive either.
+- This measures **thermometers, not people**. It shows the thermal *case* for
+  migrating has shifted. Whether anyone changed their travel plans is what the
+  traffic data is for — which makes the monthly counts essential, not optional.
+
 ---
 
 ## Data sources (all free, no API keys)
@@ -118,6 +159,27 @@ dir.create(user_lib, recursive = TRUE, showWarnings = FALSE)
 ```
 
 Once that folder exists, R finds it automatically in every future session.
+
+**`Error: is.character(txt) is not TRUE` in the Shiny app**
+
+A masked function. `jsonlite` also exports `validate()`, and whichever package
+loads last wins — so `validate()` was calling `jsonlite::validate()`, which
+wants a JSON string, not a Shiny condition. Write `shiny::validate()` in full.
+
+Same root cause as `dplyr::filter()` masking `stats::filter()`. When an error
+message makes no sense for the function you think you called, suspect a
+collision first — R lists them at startup, in the noise everyone scrolls past.
+
+**`Error in graphics::plot.new: figure margins too large`**
+
+bslib's `fillable = TRUE` (the default) squeezes content to fit the window
+height, overriding `plotOutput(height = "460px")`. On first load the height can
+briefly be near zero, Shiny renders into that, and the error sticks because
+nothing re-triggers the render. Resizing the window appears to "fix" it, which
+makes the bug look intermittent.
+
+Set `fillable = FALSE` on `page_sidebar()` to respect explicit heights and let
+the page scroll instead.
 
 ---
 

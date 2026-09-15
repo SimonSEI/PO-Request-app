@@ -112,6 +112,17 @@ trend_of <- function(df, column) {
 ui <- page_sidebar(
 
   title = "Naples Snowbird Migration",
+
+  # fillable = FALSE is load-bearing, not cosmetic.
+  # By default bslib squeezes everything to fit the window height, which
+  # overrode our plotOutput(height = "460px") and left the chart 272px tall.
+  # Worse, on first load the height can momentarily be near zero, and Shiny
+  # renders the plot BEFORE the layout settles - giving
+  #     Error in graphics::plot.new: figure margins too large
+  # which then sticks, because nothing re-triggers the render.
+  # (Resizing the window "fixed" it, which is what made this confusing.)
+  # FALSE means: respect explicit heights and let the page scroll.
+  fillable = FALSE,
   # local = FALSE serves the font from Google's CDN rather than downloading it
   # into the container at startup. One less thing to fail in a fresh deploy.
   theme = bs_theme(bootswatch = "flatly",
@@ -255,7 +266,7 @@ server <- function(input, output, session) {
         x = "Season (year it began)", y = NULL, colour = NULL
       ) +
       theme(legend.position = "top")
-  }, res = 96)
+  })
 
   # --- Chart: the average shape of a year -----------------------------------
   output$p_year <- renderPlot({
@@ -277,7 +288,7 @@ server <- function(input, output, session) {
       labs(title = "How much warmer is Naples than back home?",
            subtitle = "Averaged across 2000-2026",
            x = NULL, y = "Temperature gap (°F)")
-  }, res = 96)
+  })
 
   # --- Chart: season length --------------------------------------------------
   output$p_len <- renderPlot({
@@ -287,7 +298,7 @@ server <- function(input, output, session) {
       labs(title = "Length of the thermal snowbird season",
            subtitle = "Days per year Naples is meaningfully warmer than home",
            x = "Season (year it began)", y = "Days")
-  }, res = 96)
+  })
 
   # --- Chart: actual traffic -------------------------------------------------
   output$p_aadt <- renderPlot({
@@ -307,7 +318,7 @@ server <- function(input, output, session) {
                          "\nNote: AADT is an ANNUAL average - it cannot show seasonal timing."),
         x = NULL, y = "Total AADT"
       )
-  }, res = 96)
+  })
 
   # --- The underlying table --------------------------------------------------
   output$tbl <- renderTable({
