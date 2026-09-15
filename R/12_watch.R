@@ -271,6 +271,20 @@ if (length(new_rsw_months) > 0) {
   if (inherits(r, "try-error")) say("  R/11 failed:", conditionMessage(attr(r, "condition")))
 }
 
+# Current conditions refresh EVERY run, not only when something else changed.
+# The dashboard explains each date in terms of El Nino state, storm activity
+# and how warm the origin states are running - and all of those move
+# continuously. Stale conditions would produce confident reasoning about last
+# month's weather, which is worse than none.
+say("refreshing current conditions (R/13)...")
+r <- try(source("R/13_current_conditions.R", local = new.env(), echo = FALSE),
+         silent = TRUE)
+if (inherits(r, "try-error")) {
+  say("  R/13 failed:", conditionMessage(attr(r, "condition")))
+} else {
+  say("  conditions updated")
+}
+
 # =============================================================================
 # CURRENT PREDICTIONS
 # =============================================================================

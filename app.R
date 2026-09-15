@@ -53,6 +53,54 @@ spinner <- function(ui_element, height = "460px") {
 }
 
 # -----------------------------------------------------------------------------
+# A small "why?" tab that lives INSIDE a value box
+# -----------------------------------------------------------------------------
+# These explanations were originally a row of accordions under the boxes, which
+# separated each answer from the number it explained. Attaching a compact tab to
+# the box itself keeps them together.
+#
+# A popover rather than an inline expander, deliberately: the text runs to
+# several paragraphs, and expanding it in place would both wreck the four-across
+# layout and print body copy over a saturated colour. The popover opens on a
+# white panel where it is actually readable.
+why_tab <- function(label, ...) {
+  popover(
+    tags$span(class = "why-tab", icon("circle-question"), " ", label),
+    ...,
+    title = label,
+    placement = "bottom"
+  )
+}
+
+WHY_CSS <- HTML("
+.why-tab {
+  display: inline-block;
+  margin-top: .55rem;
+  padding: .18rem .65rem;
+  font-size: .76rem;
+  font-weight: 500;
+  background: rgba(255,255,255,.20);
+  border: 1px solid rgba(255,255,255,.38);
+  border-radius: 999px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: background .15s ease;
+}
+.why-tab:hover { background: rgba(255,255,255,.38); }
+.popover { max-width: 430px; }
+.popover-header { font-weight: 600; font-size: .92rem; }
+.popover-body {
+  font-size: .86rem;
+  line-height: 1.55;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.popover-body p { margin-bottom: .6rem; }
+.popover-body p:last-child { margin-bottom: 0; }
+")
+
+# -----------------------------------------------------------------------------
 # One consistent layout for every tab
 # -----------------------------------------------------------------------------
 # Each chart gets the same three parts, in the same order:
@@ -127,6 +175,134 @@ rsw_monthly <- if (file.exists("data/rsw_monthly_passengers.csv")) {
 
 MONTH_ABB <- c("Jan","Feb","Mar","Apr","May","Jun",
                "Jul","Aug","Sep","Oct","Nov","Dec")
+
+# =============================================================================
+# CURRENT CONDITIONS -> reasoning written from live data
+# =============================================================================
+# The headline dates come from a model fitted to 2024, so on their own they
+# describe a NORMAL year. What makes this year differ is measured separately by
+# R/13_current_conditions.R, and turned into sentences here.
+#
+# The rule throughout: only claim what the numbers support, and say which way
+# each condition pushes rather than pretending to a revised date. A strong El
+# Nino makes a quiet hurricane season likely - it does not tell you the trough
+# will be on the 24th instead of the 22nd.
+cond <- if (file.exists("data/current_conditions.csv")) {
+  x <- read_csv("data/current_conditions.csv", show_col_types = FALSE)
+  setNames(as.list(x$value), x$key)
+} else list()
+
+cnum <- function(k) suppressWarnings(as.numeric(cond[[k]] %||% NA))
+ctxt <- function(k) cond[[k]] %||% NA_character_
+
+# Human phrasing for a temperature anomaly.
+warm_phrase <- function(x) {
+  if (is.na(x)) return("unmeasured")
+  if (abs(x) < 0.4) return(sprintf("about normal (%+.1f F)", x))
+  sprintf("%.1f F %s than normal", abs(x), if (x > 0) "warmer" else "colder")
+}
+
+# Each of these returns a list of <p> tags describing what this year's
+# conditions do to that particular date.
+live_trough <- function() {
+  bits <- list()
+
+  if (!is.na(ctxt("oni_state"))) {
+    if (!is.na(cnum("oni_value")) && cnum("oni_value") >= 0.5) {
+      bits <- c(bits, list(p(
+        strong("Hurricanes look unlikely to deepen it this year. "),
+        sprintf("NOAA's index is at %+.2f (%s), which suppresses Atlantic activity, and there are %s Atlantic storms active right now. ",
+                cnum("oni_value"), ctxt("oni_state"),
+                if (identical(ctxt("storms_atlantic"), "0")) "no" else ctxt("storms_atlantic")),
+        "That matters because the 2024 data this model was fitted to had ",
+        strong("three"), " storms in it. Milton's landfall alone ran at 30% of",
+        "normal traffic. With a quiet season, expect this September to dip",
+        strong(" less deeply "), "than the model's average year suggests.")))
+    } else if (!is.na(cnum("oni_value")) && cnum("oni_value") <= -0.5) {
+      bits <- c(bits, list(p(
+        strong("Raised disruption risk. "),
+        sprintf("NOAA's index is at %+.2f (%s), which enhances Atlantic activity. ",
+                cnum("oni_value"), ctxt("oni_state")),
+        "A storm in the arrival window would deepen and distort this trough,",
+        "as Helene and Milton did in 2024.")))
+    }
+  }
+
+  if (!is.na(cnum("north_anom"))) {
+    bits <- c(bits, list(p(
+      strong("The north is not pushing anyone out yet. "),
+      sprintf("The origin states have been running %s over the last month. ",
+              warm_phrase(cnum("north_anom"))),
+      if (cnum("north_anom") > 0.4)
+        "Warm northern weather removes the reason to leave, which tends to hold the trough open a little longer."
+      else if (cnum("north_anom") < -0.4)
+        "A cold north brings the reason to travel forward, which can shorten the trough."
+      else
+        "With the north close to normal, nothing is pulling this date either way.")))
+  }
+
+  bits
+}
+
+live_start <- function() {
+  bits <- list()
+
+  if (!is.na(cnum("gap_anom"))) {
+    g <- cnum("gap_anom")
+    bits <- c(bits, list(p(
+      strong("The pull south is currently "),
+      strong(if (g < -0.4) "weaker than normal." else if (g > 0.4) "stronger than normal." else "about normal."),
+      sprintf(" Naples is %s and the origin states are %s, so the gap between them is running %+.1f F against its own average. ",
+              warm_phrase(cnum("naples_anom")), warm_phrase(cnum("north_anom")), g),
+      if (g < -0.4)
+        "A narrower gap is a weaker invitation, which leans this date later rather than earlier."
+      else if (g > 0.4)
+        "A wider gap is a stronger invitation, which leans this date earlier."
+      else
+        "Nothing in the current gap argues for moving this date.")))
+  }
+
+  if (!is.na(cnum("rsw_ytd_change"))) {
+    r <- cnum("rsw_ytd_change")
+    bits <- c(bits, list(p(
+      strong("Arrivals are not signalling a surge. "),
+      sprintf("Airport passengers through month %s of %s are running %+.2f%% against the same months last year. ",
+              ctxt("rsw_months"), ctxt("rsw_year"), r),
+      if (abs(r) < 1)
+        "Essentially flat - this year is tracking a normal one, so the modelled date stands."
+      else if (r > 0)
+        "Running ahead of last year, which would support an earlier or busier season."
+      else
+        "Running behind last year, which leans towards a later or lighter season.")))
+  }
+
+  bits
+}
+
+live_peak <- function() {
+  list(p(
+    strong("Current conditions say little about a date this far out. "),
+    "The peak is months away, and nothing measurable today constrains it - ",
+    "weather forecasting has no skill beyond about two weeks, and the",
+    "Robustness tab shows the seasonal ensemble is no better than climatology",
+    "past 60 days. ",
+    if (!is.na(cnum("oni_value")) && cnum("oni_value") >= 0.5)
+      sprintf("The current %s (%+.2f) is also likely to have decayed by March, as El Nino events typically do through late winter.",
+              ctxt("oni_state"), cnum("oni_value")) else ""
+  ))
+}
+
+live_swing <- function() {
+  bits <- list()
+  if (!is.na(cnum("oni_value")) && cnum("oni_value") >= 0.5) {
+    bits <- c(bits, list(p(
+      strong("This year's swing will probably be smaller than the figure shown. "),
+      "The 24% was measured on 2024, whose September was flattened by two",
+      "hurricanes. With storms suppressed this year, the trough should be",
+      "shallower - and a shallower trough means a smaller peak-to-trough gap.")))
+  }
+  bits
+}
 
 all_states <- state_temps %>%
   distinct(state, people) %>%
@@ -253,6 +429,8 @@ ui <- page_sidebar(
 
   title = "Naples Snowbird Migration",
 
+  tags$head(tags$style(WHY_CSS)),
+
   # Layout note, learned the hard way.
   # fillable = FALSE looked like the fix for bslib squeezing plots flat, but it
   # made the plot element 440px tall and ZERO pixels WIDE inside the flex
@@ -312,102 +490,124 @@ ui <- page_sidebar(
   # the numbers you would actually act on.
   layout_columns(
     fill = FALSE,
-    value_box(title = "Next trough",  value = textOutput("vb_trough"),
-              showcase = icon("arrow-trend-down"), theme = "secondary",
-              textOutput("vb_trough_sub")),
-    value_box(title = "Season starts", value = textOutput("vb_start"),
-              showcase = icon("arrow-right-to-bracket"), theme = "info",
-              textOutput("vb_start_sub")),
-    value_box(title = "Next peak",    value = textOutput("vb_peak"),
-              showcase = icon("arrow-trend-up"), theme = "primary",
-              textOutput("vb_peak_sub")),
-    value_box(title = "Peak vs trough", value = textOutput("vb_swing"),
-              showcase = icon("arrows-up-down"), theme = "success",
-              textOutput("vb_swing_sub"))
-  ),
 
-  # One dropdown per headline number, explaining how it was arrived at.
-  # A date with no reasoning behind it is just an assertion.
-  accordion(
-    open = FALSE, class = "mb-3",
-    accordion_panel(
-      "Why this trough date?", icon = icon("arrow-trend-down"),
-      div(style = "font-size:0.9rem; line-height:1.55;",
-          p(strong("The quietest point of the year."), "Late September is after",
-            "the summer holiday visitors have gone home and before the snowbirds",
-            "arrive - and it sits in the thick of hurricane season, which",
-            "suppresses travel on its own."),
-          p(strong("How we got the date:"), "we fit a smooth repeating curve to",
-            "every day of 2024 traffic and take its lowest point. The date shown",
-            "is the next time that day of the year comes round."),
-          p(strong("How confident:"), "the 90% range is 17-26 September - a",
-            "nine-day window. That is the tightest of the four dates, because",
-            "the curve drops steeply into the trough, so its bottom is easy to",
-            "locate."),
-          p(class = "text-muted",
-            strong("Caveat: "), "one station (0094) troughs in June instead.",
-            "Not every road is a snowbird road."))
+    value_box(
+      title = "Next trough", value = textOutput("vb_trough"),
+      showcase = icon("arrow-trend-down"), theme = "secondary",
+      textOutput("vb_trough_sub"),
+      why_tab(
+        "Why this date?",
+        tags$div(class="mb-2 pb-2", style="border-bottom:1px solid #dee2e6;",
+          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#c1121f;",
+                    "THIS YEAR")),
+        live_trough(),
+        tags$div(class="mt-3 mb-2 pt-2", style="border-top:1px solid #dee2e6;",
+          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#6c757d;",
+                    "IN A NORMAL YEAR")),
+        p(strong("The quietest point of the year."), "Late September is after",
+          "the summer visitors have gone and before the snowbirds arrive - and",
+          "it sits in the thick of hurricane season, which suppresses travel",
+          "on its own."),
+        p(strong("How we got it:"), "we fit a smooth repeating curve to every",
+          "day of 2024 traffic and take its lowest point. The date shown is the",
+          "next time that day of the year comes round."),
+        p(strong("Confidence:"), "17-26 September, 90%. The tightest of the",
+          "four dates - the curve drops steeply into the trough, so the bottom",
+          "is easy to locate."),
+        p(class = "text-muted mb-0",
+          strong("Caveat: "), "one station (0094) troughs in June instead. Not",
+          "every road is a snowbird road.")
+      )
     ),
-    accordion_panel(
-      "Why this season-start date?", icon = icon("arrow-right-to-bracket"),
-      div(style = "font-size:0.9rem; line-height:1.55;",
-          p(strong("The day traffic first climbs above an ordinary day."),
-            "Defined as the moment the smoothed curve crosses 1.0 on the way up",
-            "in autumn."),
-          p(strong("Why mid-November and not October:"), "the temperature gap",
-            "reaches its 'worth going' level around 16 October, but traffic",
-            "does not follow for another 25 days. People travel around",
-            "Thanksgiving and the holidays, not around the thermometer."),
-          p(strong("How confident:"), "10 November to 7 December, 90%. This is",
-            "the widest of the four, because the autumn climb is gradual - a",
-            "shallow slope means the crossing point is genuinely uncertain."),
-          p(class = "text-muted",
-            strong("Also: "), "this date moves if you change the curve",
-            "flexibility slider. At 1 wave it reads 2 December; at 4 it reads",
-            "17 November. The modelling choice is worth about two weeks."))
+
+    value_box(
+      title = "Season starts", value = textOutput("vb_start"),
+      showcase = icon("arrow-right-to-bracket"), theme = "info",
+      textOutput("vb_start_sub"),
+      why_tab(
+        "Why this date?",
+        tags$div(class="mb-2 pb-2", style="border-bottom:1px solid #dee2e6;",
+          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#c1121f;",
+                    "THIS YEAR")),
+        live_start(),
+        tags$div(class="mt-3 mb-2 pt-2", style="border-top:1px solid #dee2e6;",
+          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#6c757d;",
+                    "IN A NORMAL YEAR")),
+        p(strong("The day traffic first climbs above an ordinary day"), "-",
+          "where the smoothed curve crosses 1.0 going up in autumn."),
+        p(strong("Why mid-November, not October:"), "the temperature gap reaches",
+          "its 'worth going' level around 16 October, but traffic does not",
+          "follow for another 25 days. People travel around Thanksgiving and",
+          "the holidays, not around the thermometer."),
+        p(strong("Confidence:"), "10 November to 7 December, 90%. The widest of",
+          "the four - the autumn climb is gradual, and a shallow slope makes",
+          "the crossing point genuinely uncertain."),
+        p(class = "text-muted mb-0",
+          strong("Also: "), "this moves with the curve-flexibility slider. At 1",
+          "wave it reads 2 December; at 4 it reads 17 November. The modelling",
+          "choice is worth about two weeks.")
+      )
     ),
-    accordion_panel(
-      "Why this peak date?", icon = icon("arrow-trend-up"),
-      div(style = "font-size:0.9rem; line-height:1.55;",
-          p(strong("The busiest stretch of the year."), "Early March, when the",
-            "snowbird population is at its fullest and spring-break traffic has",
-            "started arriving on top of it."),
-          p(strong("Read it as a window, not a day:"), "the curve is almost flat",
-            "across 20 February to 26 March - 35 days within 1% of the maximum.",
-            "Picking a single date implies a precision that is not there."),
-          p(strong("How confident:"), "25 February to 21 March, 90%."),
-          p(class = "text-muted",
-            strong("Cross-check: "), "March is also the busiest month at the",
-            "airport in almost every year on record - March 2026 set an",
-            "all-time monthly record. Two independent datasets agreeing on the",
-            "month is more persuasive than either alone."))
+
+    value_box(
+      title = "Next peak", value = textOutput("vb_peak"),
+      showcase = icon("arrow-trend-up"), theme = "primary",
+      textOutput("vb_peak_sub"),
+      why_tab(
+        "Why this date?",
+        tags$div(class="mb-2 pb-2", style="border-bottom:1px solid #dee2e6;",
+          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#c1121f;",
+                    "THIS YEAR")),
+        live_peak(),
+        tags$div(class="mt-3 mb-2 pt-2", style="border-top:1px solid #dee2e6;",
+          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#6c757d;",
+                    "IN A NORMAL YEAR")),
+        p(strong("The busiest stretch of the year."), "Early March, when the",
+          "snowbird population is fullest and spring-break traffic has started",
+          "arriving on top of it."),
+        p(strong("Read it as a window, not a day:"), "the curve is almost flat",
+          "from 20 February to 26 March - 35 days within 1% of the maximum.",
+          "A single date implies precision that is not there."),
+        p(strong("Confidence:"), "25 February to 21 March, 90%."),
+        p(class = "text-muted mb-0",
+          strong("Cross-check: "), "March is also the busiest month at the",
+          "airport in almost every year on record, and March 2026 set an",
+          "all-time monthly record. Two independent datasets agreeing on the",
+          "month is more persuasive than either alone.")
+      )
     ),
-    accordion_panel(
-      "Why this peak-to-trough swing?", icon = icon("arrows-up-down"),
-      div(style = "font-size:0.9rem; line-height:1.55;",
-          p(strong("Two ways of describing the same gap."), "Traffic falls 24%",
-            "from the March peak down to the September trough. Coming back the",
-            "other way it rises 32%, because the starting point is smaller.",
-            "Both are correct; neither is 'the' number."),
-          p(strong("How we got it:"), "each station is converted to an index",
-            "against its own average day, so a quiet rural road and a stretch of",
-            "I-75 can be compared. We then take the high and low of the fitted",
-            "curve."),
-          p(strong("The spread between roads is large:"), "rural Everglades",
-            "swings 34%, urban Naples 28%, and one station only 17%. If you care",
-            "about a specific road, the county average will mislead you."),
-          p(class = "text-muted",
-            strong("Caveat: "), "this is traffic, not population. A visitor who",
-            "drives twice a day counts twice."))
+
+    value_box(
+      title = "Peak vs trough", value = textOutput("vb_swing"),
+      showcase = icon("arrows-up-down"), theme = "success",
+      textOutput("vb_swing_sub"),
+      why_tab(
+        "Why these numbers?",
+        tags$div(class="mb-2 pb-2", style="border-bottom:1px solid #dee2e6;",
+          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#c1121f;",
+                    "THIS YEAR")),
+        live_swing(),
+        tags$div(class="mt-3 mb-2 pt-2", style="border-top:1px solid #dee2e6;",
+          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#6c757d;",
+                    "IN A NORMAL YEAR")),
+        p(strong("Two ways of describing one gap."), "Traffic falls 24% from the",
+          "March peak to the September trough. Coming back the other way it",
+          "rises 32%, because the starting point is smaller. Both are correct;",
+          "neither is 'the' number."),
+        p(strong("How we got it:"), "each station is converted to an index",
+          "against its own average day, so a quiet rural road and a stretch of",
+          "I-75 can be compared. We then take the high and low of the fitted",
+          "curve."),
+        p(strong("The spread between roads is large:"), "rural Everglades swings",
+          "34%, urban Naples 28%, one station only 17%. If you care about a",
+          "specific road, the county average will mislead you."),
+        p(class = "text-muted mb-0",
+          strong("Caveat: "), "this is traffic, not population. A visitor who",
+          "drives twice a day counts twice.")
+      )
     )
   ),
 
-  # card_body(fillable = FALSE) per panel is what finally made the plots the
-  # size they are told to be. bslib's default flex layout stretches content to
-  # the card and ignores plotOutput(height=), which left a 440px chart drawn
-  # into about 90 pixels. Turning fill OFF at the PANEL level (rather than at
-  # the page level, which collapsed the width to zero) respects explicit
-  # heights and keeps the full width. The panel then scrolls if it needs to.
   navset_card_tab(
 
     # -------------------------------------------------------------------------
