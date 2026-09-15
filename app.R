@@ -647,52 +647,6 @@ ui <- page_fluid(
   # trend turned out not to survive a threshold sweep (see the Robustness tab),
   # so it has no business being the first thing anyone reads. These four are
   # the numbers you would actually act on.
-  accordion(
-    open = FALSE, class = "mb-3",
-    accordion_panel(
-      "Analysis settings", icon = icon("sliders"),
-      div(class = "text-muted small mb-3",
-          strong("Every control here was a judgement call in the analysis. "),
-          "If a finding survives you moving them, it might be real. Defaults are",
-          "what the write-up used."),
-      layout_columns(
-        col_widths = c(4, 4, 4),
-        div(
-          sliderInput("threshold", "Migration threshold (°F warmer than home)",
-                      min = 10, max = 40, value = 25, step = 1, width = "100%"),
-          p(class = "text-muted small",
-            "How much warmer Naples must be before the trip is 'worth it'.",
-            "Used by the temperature tabs and the Simulation.")
-        ),
-        div(
-          radioButtons(
-            "weighting", "How to combine their home states",
-            choices = c("Weighted by migrants sent" = "weighted",
-                        "All states counted equally" = "equal"),
-            selected = "weighted"
-          ),
-          sliderInput("harmonics", "Seasonal curve flexibility",
-                      min = 1, max = 8, value = 4, step = 1, width = "100%"),
-          p(class = "text-muted small",
-            "Flexibility drives the Season forecast. 1 is a single smooth wave;",
-            "8 chases individual weeks.")
-        ),
-        div(
-          checkboxGroupInput("states", "Northern home states",
-                             choices = all_states, selected = all_states,
-                             inline = TRUE),
-          actionLink("all_on", "select all"), " / ",
-          actionLink("all_off", "none"),
-          p(class = "text-muted small mt-2",
-            strong("Caveats: "),
-            "IRS data tracks permanent address changes, not seasonal stays - ",
-            "many snowbirds keep their northern domicile. Canadians are missing",
-            "entirely. 2020-21 is distorted by COVID.")
-        )
-      )
-    )
-  ),
-
   layout_columns(
     fill = FALSE,
 
@@ -985,7 +939,18 @@ ui <- page_fluid(
             "these are the dates that decide when demand arrives and when it",
             "disappears.")
         ),
-        chart = spinner(plotOutput("p_forecast", height = "440px"), "440px"),
+        chart = tagList(
+          div(class = "p-3 mb-3",
+              style = "background:#f8f9fa; border:1px solid #dee2e6; border-radius:4px;",
+              sliderInput("harmonics", "Seasonal curve flexibility",
+                          min = 1, max = 8, value = 4, step = 1, width = "100%"),
+              p(class = "text-muted small mb-0",
+                "1 is a single smooth wave; 8 chases individual weeks. Watch the",
+                "fit go from too stiff to overfitted - and note the season-start",
+                "date move about two weeks as you do.")
+          ),
+          spinner(plotOutput("p_forecast", height = "440px"), "440px")
+        ),
         footer = spinner(tableOutput("tbl_forecast"), "260px"),
         method = tagList(
           p(strong("Fitting waves to a season."),
@@ -1077,7 +1042,32 @@ ui <- page_fluid(
             "the most important chart here, because it is the one that says",
             strong("don't believe the other one"), ".")
         ),
-        chart = spinner(plotOutput("p_sweep", height = "620px"), "620px"),
+        chart = tagList(
+          div(class = "p-3 mb-3",
+              style = "background:#f8f9fa; border:1px solid #dee2e6; border-radius:4px;",
+              div(class = "small fw-semibold mb-2", "Controls for the temperature tabs"),
+              layout_columns(
+                col_widths = c(4, 4, 4),
+                sliderInput("threshold", "Migration threshold (°F warmer than home)",
+                            min = 10, max = 40, value = 25, step = 1, width = "100%"),
+                radioButtons("weighting", "Combining their home states",
+                             choices = c("Weighted by migrants sent" = "weighted",
+                                         "All states counted equally" = "equal"),
+                             selected = "weighted"),
+                div(
+                  checkboxGroupInput("states", "Northern home states",
+                                     choices = all_states, selected = all_states,
+                                     inline = TRUE),
+                  actionLink("all_on", "all"), " / ", actionLink("all_off", "none")
+                )
+              ),
+              p(class = "text-muted small mb-0",
+                "These three feed every temperature-based tab. The sweep below",
+                "runs across all thresholds regardless of the slider - the slider",
+                "only marks where you are standing.")
+          ),
+          spinner(plotOutput("p_sweep", height = "620px"), "620px")
+        ),
         method = tagList(
           p("The whole pipeline is re-run at every threshold from 12 to 36",
             "degrees F. For each one we find the season's start and end dates",
@@ -1159,7 +1149,10 @@ ui <- page_fluid(
           p(strong("Why it matters: "),
             "nobody moves south because Naples got warm. They move because",
             "home got cold. The red dashed line is your threshold - the point",
-            "you've decided the difference is big enough to be worth the trip.")
+            "you've decided the difference is big enough to be worth the trip."),
+          p(class = "text-muted small mb-0",
+            strong("Controls: "), "the threshold and state selection that drive this "
+            , "chart live on the ", strong("Robustness"), " tab.")
         ),
         chart = spinner(plotOutput("p_year", height = "460px"), "460px"),
         method = tagList(
