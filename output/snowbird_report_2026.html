@@ -1,0 +1,708 @@
+<title>Snowbird Season 2026</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+  /* ── Palette ────────────────────────────────────────────────────────────
+     Two poles, because the whole analysis is a gap between two places:
+     NORTH is cold steel, SOUTH is Gulf amber. Neutrals carry a slight cyan
+     bias so they belong to the same family rather than sitting inert.      */
+  :root {
+    --ground:      #F4F7F8;
+    --surface:     #FFFFFF;
+    --ink:         #16212A;
+    --ink-soft:    #43555F;
+    --muted:       #6E7F89;
+    --rule:        #D8E1E6;
+    --rule-strong: #B6C4CC;
+    --north:       #2E5C7A;
+    --north-wash:  #E3ECF2;
+    --south:       #BC5B27;
+    --south-wash:  #F7E9DF;
+    --flag:        #8A6A1F;
+    --shadow:      0 1px 2px rgba(22,33,42,.06), 0 8px 24px rgba(22,33,42,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #11171C;
+      --surface:     #182029;
+      --ink:         #E6EDF1;
+      --ink-soft:    #B3C2CB;
+      --muted:       #8496A1;
+      --rule:        #2A353E;
+      --rule-strong: #3C4A55;
+      --north:       #79AACB;
+      --north-wash:  #1C2A35;
+      --south:       #E08A50;
+      --south-wash:  #2E2119;
+      --flag:        #D0AC5A;
+      --shadow:      0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:      #11171C;
+    --surface:     #182029;
+    --ink:         #E6EDF1;
+    --ink-soft:    #B3C2CB;
+    --muted:       #8496A1;
+    --rule:        #2A353E;
+    --rule-strong: #3C4A55;
+    --north:       #79AACB;
+    --north-wash:  #1C2A35;
+    --south:       #E08A50;
+    --south-wash:  #2E2119;
+    --flag:        #D0AC5A;
+    --shadow:      0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 16.5px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 28px 96px; }
+
+  /* ── Masthead ───────────────────────────────────────────────────────── */
+  .masthead {
+    border-bottom: 2px solid var(--ink);
+    padding: 40px 0 18px;
+    margin-bottom: 34px;
+  }
+  .kicker {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11.5px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 18px;
+  }
+  h1 {
+    font-family: "Newsreader", Georgia, serif;
+    font-weight: 700; font-size: clamp(2.6rem, 6vw, 4.1rem);
+    line-height: 1.02; letter-spacing: -.022em;
+    margin: 14px 0 10px; text-wrap: balance;
+  }
+  .standfirst {
+    font-family: "Newsreader", Georgia, serif;
+    font-size: clamp(1.1rem, 2.1vw, 1.32rem); line-height: 1.5;
+    color: var(--ink-soft); max-width: 64ch; margin: 0;
+  }
+  .standfirst em { color: var(--south); font-style: italic; }
+
+  /* ── Instrument plate: the four headline readings ───────────────────── */
+  .plate {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    border: 1px solid var(--rule-strong); background: var(--surface);
+    border-radius: 3px; overflow: hidden; margin: 30px 0 14px;
+    box-shadow: var(--shadow);
+  }
+  .reading { padding: 20px 22px 18px; border-right: 1px solid var(--rule); }
+  .reading:last-child { border-right: 0; }
+  .reading .lab {
+    font-family: "IBM Plex Mono", monospace; font-size: 10.5px;
+    letter-spacing: .13em; text-transform: uppercase; color: var(--muted);
+  }
+  .reading .val {
+    font-family: "Newsreader", Georgia, serif; font-weight: 600;
+    font-size: 1.95rem; line-height: 1.12; margin: 7px 0 3px;
+    letter-spacing: -.015em; font-variant-numeric: tabular-nums;
+  }
+  .reading .sub { font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+  .reading.is-trough .val { color: var(--north); }
+  .reading.is-peak   .val { color: var(--south); }
+  .plate-note {
+    font-family: "IBM Plex Mono", monospace; font-size: 11px;
+    color: var(--muted); margin: 0 0 42px; letter-spacing: .02em;
+  }
+
+  /* ── Hero chart ─────────────────────────────────────────────────────── */
+  figure { margin: 0 0 40px; }
+  .chart-frame {
+    background: var(--surface); border: 1px solid var(--rule);
+    border-radius: 3px; padding: 22px 20px 14px; overflow-x: auto;
+  }
+  .chart-title {
+    font-family: "Newsreader", Georgia, serif; font-weight: 600;
+    font-size: 1.16rem; margin: 0 0 3px;
+  }
+  .chart-sub { font-size: 13px; color: var(--muted); margin: 0 0 16px; }
+  svg { display: block; width: 100%; height: auto; }
+  .ax { font-family: "IBM Plex Mono", monospace; font-size: 12px; fill: var(--muted); }
+  .mk { font-family: "IBM Plex Mono", monospace; font-size: 12px; font-weight: 500; }
+  figcaption {
+    font-size: 13px; color: var(--muted); margin-top: 11px;
+    padding-left: 13px; border-left: 2px solid var(--rule-strong);
+    max-width: 70ch;
+  }
+
+  /* ── Body / rail ────────────────────────────────────────────────────── */
+  section { display: grid; grid-template-columns: 64px minmax(0,1fr); gap: 26px;
+            margin-bottom: 54px; align-items: start; }
+  .num {
+    font-family: "IBM Plex Mono", monospace; font-size: 12px; font-weight: 600;
+    color: var(--south); letter-spacing: .08em; padding-top: 12px;
+    border-top: 2px solid var(--south);
+  }
+  .body { max-width: 68ch; }
+  h2 {
+    font-family: "Newsreader", Georgia, serif; font-weight: 600;
+    font-size: clamp(1.5rem, 3vw, 1.85rem); line-height: 1.2;
+    letter-spacing: -.016em; margin: 0 0 14px; text-wrap: balance;
+  }
+  h3 {
+    font-family: "IBM Plex Sans", sans-serif; font-weight: 600;
+    font-size: 1rem; margin: 30px 0 8px; color: var(--ink);
+  }
+  p { margin: 0 0 16px; }
+  strong { font-weight: 600; }
+  .lede::first-letter {
+    font-family: "Newsreader", Georgia, serif; font-weight: 700;
+    font-size: 3.3rem; float: left; line-height: .84;
+    padding: 6px 10px 0 0; color: var(--south);
+  }
+
+  /* ── Margin note ────────────────────────────────────────────────────── */
+  .note {
+    background: var(--north-wash); border-left: 3px solid var(--north);
+    padding: 15px 18px; margin: 22px 0; border-radius: 0 3px 3px 0;
+    font-size: 14.5px; line-height: 1.55;
+  }
+  .note .tag {
+    display: block; font-family: "IBM Plex Mono", monospace; font-size: 10.5px;
+    letter-spacing: .13em; text-transform: uppercase; color: var(--north);
+    margin-bottom: 5px; font-weight: 600;
+  }
+  .note.warn { background: var(--south-wash); border-left-color: var(--south); }
+  .note.warn .tag { color: var(--south); }
+  .note p:last-child { margin-bottom: 0; }
+
+  /* ── Tables ─────────────────────────────────────────────────────────── */
+  .tw { overflow-x: auto; margin: 20px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; min-width: 420px; }
+  caption {
+    text-align: left; font-family: "IBM Plex Mono", monospace; font-size: 10.5px;
+    letter-spacing: .13em; text-transform: uppercase; color: var(--muted);
+    padding-bottom: 8px;
+  }
+  th {
+    text-align: left; font-family: "IBM Plex Mono", monospace; font-weight: 500;
+    font-size: 11px; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--muted); border-bottom: 1px solid var(--rule-strong);
+    padding: 7px 12px 7px 0;
+  }
+  td {
+    padding: 9px 12px 9px 0; border-bottom: 1px solid var(--rule);
+    font-variant-numeric: tabular-nums; vertical-align: top;
+  }
+  td.n, th.n { text-align: right; padding-right: 0; }
+  tr:last-child td { border-bottom: 0; }
+  .mono { font-family: "IBM Plex Mono", monospace; font-size: 13px; }
+  .dead { color: var(--muted); }
+  .live { color: var(--south); font-weight: 600; }
+
+  /* ── Verdict strip ──────────────────────────────────────────────────── */
+  .verdicts { display: grid; gap: 1px; background: var(--rule);
+              border: 1px solid var(--rule); border-radius: 3px; overflow: hidden;
+              margin: 22px 0; }
+  .v { background: var(--surface); padding: 14px 18px;
+       display: grid; grid-template-columns: 1fr auto; gap: 14px; align-items: baseline; }
+  .v .q { font-size: 14.5px; }
+  .v .a {
+    font-family: "IBM Plex Mono", monospace; font-size: 11.5px; font-weight: 600;
+    letter-spacing: .08em; text-transform: uppercase; white-space: nowrap;
+  }
+  .v .a.no  { color: var(--muted); }
+  .v .a.yes { color: var(--south); }
+  .v .a.part{ color: var(--flag); }
+
+  footer {
+    border-top: 2px solid var(--ink); margin-top: 20px; padding-top: 22px;
+    font-size: 13.5px; color: var(--muted); max-width: 78ch;
+  }
+  footer a { color: var(--north); }
+  .src { display: grid; grid-template-columns: repeat(auto-fit,minmax(230px,1fr));
+         gap: 18px 30px; margin-top: 16px; }
+  .src div { font-size: 13px; line-height: 1.5; }
+  .src b { display: block; font-family: "IBM Plex Mono", monospace;
+           font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+           color: var(--ink-soft); margin-bottom: 3px; }
+
+  @media (max-width: 720px) {
+    section { grid-template-columns: 1fr; gap: 10px; }
+    .num { border-top: 0; padding-top: 0; }
+    .reading { border-right: 0; border-bottom: 1px solid var(--rule); }
+  }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="kicker">
+      <span>Collier &amp; Lee County, Florida</span>
+      <span>Seasonal traffic forecast</span>
+      <span>Issued 15 September 2026</span>
+    </div>
+    <h1>Snowbird Season 2026</h1>
+    <p class="standfirst">
+      Every winter southwest Florida fills up and then empties again. This report
+      predicts when the 2026&ndash;27 season turns, explains how the forecast was
+      built, and is candid about the findings along the way that
+      <em>did not survive being checked</em>.
+    </p>
+  </header>
+
+  <div class="plate">
+    <div class="reading is-trough">
+      <div class="lab">Trough</div>
+      <div class="val">19 Sep 2026</div>
+      <div class="sub">90% CI 15&ndash;23 Sep &middot; 4 days out</div>
+    </div>
+    <div class="reading">
+      <div class="lab">Season opens</div>
+      <div class="val">4 Nov 2026</div>
+      <div class="sub">Traffic first exceeds an average day</div>
+    </div>
+    <div class="reading is-peak">
+      <div class="lab">Peak</div>
+      <div class="val">8 Mar 2027</div>
+      <div class="sub">Flat window 20 Feb &ndash; 26 Mar</div>
+    </div>
+    <div class="reading">
+      <div class="lab">Amplitude</div>
+      <div class="val">+23%</div>
+      <div class="sub">Rise trough&rarr;peak; 18.9% fall back</div>
+    </div>
+  </div>
+  <p class="plate-note">
+    Harmonic model, 4 harmonics, R&sup2; = 0.76 &middot; fitted to 2024 daily counts from
+    six continuous stations &middot; intervals from 600 moving-block bootstrap replicates
+  </p>
+
+  <figure>
+    <div class="chart-frame">
+      <p class="chart-title">The shape of a southwest Florida year</p>
+      <p class="chart-sub">Traffic index across all six stations. 1.0 is an ordinary day.</p>
+      <svg viewBox="-46 -10 1046 348" role="img"
+           aria-label="Seasonal traffic curve peaking in early March at 1.10 and troughing in mid-September at 0.89.">
+        <!-- gridlines -->
+        <line x1="0" y1="24.6"  x2="980" y2="24.6"  stroke="var(--rule)" stroke-width="1"/>
+        <line x1="0" y1="139.8" x2="980" y2="139.8" stroke="var(--rule-strong)" stroke-width="1" stroke-dasharray="4 4"/>
+        <line x1="0" y1="255"   x2="980" y2="255"   stroke="var(--rule)" stroke-width="1"/>
+        <text class="ax" x="-10" y="28.6"  text-anchor="end">1.10</text>
+        <text class="ax" x="-10" y="143.8" text-anchor="end">1.00</text>
+        <text class="ax" x="-10" y="259"   text-anchor="end">0.90</text>
+
+        <!-- season band: 4 Nov -> 6 May, wrapping the year end -->
+        <rect x="826.5" y="0" width="153.5" height="282" fill="var(--south-wash)"/>
+        <rect x="0" y="0" width="336.5" height="282" fill="var(--south-wash)"/>
+
+        <path fill="var(--north)" fill-opacity=".10" stroke="none"
+              d="M0.0,129.8 L48.5,110.2 L96.9,73.5 L145.4,45.4 L177.7,39.7 L226.2,50.8 L274.6,80.1 L323.1,124.6 L371.5,175.1 L420.0,211.4 L452.3,218.3 L500.8,204.0 L549.2,183.9 L565.4,182.1 L613.8,199.7 L662.3,235.3 L702.7,250.0 L735.0,240.1 L783.5,192.2 L831.9,136.3 L880.4,111.8 L888.5,111.6 L936.9,123.4 L980.0,130.1 L980,282 L0,282 Z"/>
+        <path fill="none" stroke="var(--north)" stroke-width="2.6"
+              stroke-linejoin="round" stroke-linecap="round"
+              d="M0.0,129.8 L24.2,123.4 L48.5,110.2 L72.7,92.5 L96.9,73.5 L121.2,57.0 L145.4,45.4 L169.6,40.1 L177.7,39.7 L193.8,41.0 L218.1,47.5 L242.3,58.7 L266.5,74.1 L290.8,93.5 L315.0,116.4 L339.2,141.6 L363.5,167.1 L387.7,190.0 L411.9,207.3 L436.2,216.8 L452.3,218.3 L476.5,214.0 L500.8,204.0 L525.0,192.3 L549.2,183.9 L565.4,182.1 L589.6,186.7 L613.8,199.7 L638.1,217.7 L662.3,235.3 L686.5,247.3 L702.7,250.0 L718.8,247.7 L743.1,234.5 L767.3,211.2 L791.5,182.1 L815.8,152.9 L840.0,129.3 L864.2,115.3 L888.5,111.6 L912.7,115.9 L936.9,123.4 L961.2,129.3 L980.0,130.1"/>
+
+        <!-- peak -->
+        <line x1="177.7" y1="39.7" x2="177.7" y2="282" stroke="var(--south)" stroke-width="1.4" stroke-dasharray="3 3"/>
+        <circle cx="177.7" cy="39.7" r="5" fill="var(--south)"/>
+        <text class="mk" x="190" y="36" fill="var(--south)">PEAK &middot; 8 Mar &middot; 1.10&times;</text>
+
+        <!-- trough -->
+        <line x1="702.7" y1="250" x2="702.7" y2="282" stroke="var(--north)" stroke-width="1.4" stroke-dasharray="3 3"/>
+        <circle cx="702.7" cy="250" r="5" fill="var(--north)"/>
+        <text class="mk" x="690" y="240" fill="var(--north)" text-anchor="end">TROUGH &middot; 19 Sep &middot; 0.89&times;</text>
+
+        <!-- season opens -->
+        <line x1="826.5" y1="0" x2="826.5" y2="282" stroke="var(--south)" stroke-width="1.4"/>
+        <text class="mk" x="818" y="16" fill="var(--south)" text-anchor="end">SEASON OPENS 4 Nov</text>
+
+        <!-- x axis -->
+        <line x1="0" y1="282" x2="980" y2="282" stroke="var(--rule-strong)" stroke-width="1"/>
+        <text class="ax" x="0"     y="302">Jan</text>
+        <text class="ax" x="158.8" y="302">Mar</text>
+        <text class="ax" x="323.1" y="302">May</text>
+        <text class="ax" x="487.3" y="302">Jul</text>
+        <text class="ax" x="654.2" y="302">Sep</text>
+        <text class="ax" x="818.5" y="302">Nov</text>
+      </svg>
+    </div>
+    <figcaption>
+      The shaded band is the season as defined here &mdash; the stretch when traffic
+      runs above an ordinary day. Note the double dip: a June low, a July&ndash;August
+      recovery on family holiday traffic, then the true September trough after the
+      tourists have gone and before the snowbirds arrive.
+    </figcaption>
+  </figure>
+
+  <section>
+    <div class="num">01</div>
+    <div class="body">
+      <h2>What is actually being measured</h2>
+      <p class="lede">
+        Nobody moves south because Naples got warm. They move because Cleveland got
+        cold. That distinction sets up the whole analysis: the quantity that should
+        drive migration is not a temperature but a <strong>gap</strong> &mdash; how
+        much warmer Naples is than the place someone keeps their other house.
+      </p>
+      <p>
+        So the project tracks two ends of a journey. Daily temperatures for Naples,
+        and daily temperatures for the northern states that actually send people
+        here, each weighted by how many they send. The difference between them is
+        the invitation. When it is wide, the trip is worth making; when it closes,
+        people go home.
+      </p>
+      <p>
+        That framing produced a tidy first result, and then the tidy first result
+        fell apart. What follows is the order it happened in, because the order is
+        the argument.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="num">02</div>
+    <div class="body">
+      <h2>The finding that did not survive</h2>
+      <p>
+        Defining a &ldquo;migration window&rdquo; as the period when the gap exceeds
+        25&nbsp;&deg;F gave a clean answer across 26 seasons: the window was opening
+        <strong>4.7 days later per decade</strong>, p&nbsp;=&nbsp;0.037. The autumn
+        edge had drifted roughly twelve days since 2000 while the spring edge had not
+        moved. A real asymmetry, apparently.
+      </p>
+      <p>
+        The trouble is that 25&nbsp;&deg;F was chosen by hand. So the analysis was
+        re-run at every threshold from 12&nbsp;&deg;F to 36&nbsp;&deg;F, under two
+        different weighting schemes, and the result was put on a chart rather than
+        in a sentence.
+      </p>
+      <div class="tw">
+        <table>
+          <caption>Threshold sweep &mdash; 25 values, three measures, two weightings</caption>
+          <thead><tr><th>Weighting</th><th class="n">Thresholds</th><th class="n">Significant at p&lt;0.05</th><th class="n">Expected by chance</th></tr></thead>
+          <tbody>
+            <tr><td>States counted equally</td><td class="n">25</td><td class="n">2</td><td class="n dead">1.25</td></tr>
+            <tr><td>Weighted by migrants sent</td><td class="n">25</td><td class="n">2</td><td class="n dead">1.25</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        Two hits out of twenty-five is what pure chance delivers. The significant
+        results clustered in a narrow band around 21&ndash;25&nbsp;&deg;F and appeared
+        nowhere else &mdash; and that band happens to contain the number originally
+        picked. The effect was an artefact of where the line was drawn.
+      </p>
+      <div class="note warn">
+        <span class="tag">Correction</span>
+        <p>
+          The temperature data does <strong>not</strong> show the migration window
+          shifting. Weighting states by real migration figures did not rescue it. The
+          headline result of the first three scripts was discarded, and the dashboard
+          now leads with the forecast instead.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="num">03</div>
+    <div class="body">
+      <h2>Measuring people instead of thermometers</h2>
+      <p>
+        Everything above measures weather and calls it migration. The fix was FDOT&rsquo;s
+        traffic database &mdash; a 1.55&nbsp;GB Access file containing hour-by-hour counts
+        from machines embedded in the road. For 2024 it gives every day of the year at
+        fourteen stations across Collier and Lee.
+      </p>
+      <p>
+        Put real traffic against the temperature gap and the two curves do move
+        together, but not in step. Traffic turns up about <strong>25 days after</strong>
+        the thermometer says it should, and leaves about 25 days after the weather stops
+        justifying it. Temperature explains under half the daily variation
+        (r&nbsp;=&nbsp;0.66).
+      </p>
+      <p>
+        A lag at <em>both</em> ends is the informative part. If people were responding to
+        weather they would arrive when it started paying and leave when it stopped.
+        Arriving late and leaving late is what a <strong>calendar</strong> looks like:
+        after Thanksgiving, after Easter. Weather sets the backdrop; the diary picks
+        the date.
+      </p>
+      <div class="note warn">
+        <span class="tag">Near miss</span>
+        <p>
+          The first run reported the quietest stretch of 2024 as 29 September &mdash; a
+          plausible late-summer lull. It was <strong>Hurricane Helene</strong>. Three
+          storms hit that year, and the signature is unmistakable: traffic at
+          <span class="mono">1.53&times;</span> normal on 8 October as people evacuated,
+          then <span class="mono">0.30&times;</span> on Milton&rsquo;s landfall.
+          Removing the storm windows <em>flipped the sign</em> of the autumn result,
+          from traffic appearing to lead the thermometer by 11 days to lagging it by 25.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="num">04</div>
+    <div class="body">
+      <h2>The models, and why each one</h2>
+
+      <h3>Harmonic regression &mdash; the seasonal shape</h3>
+      <p>
+        A season is a wave, so waves are fitted to it: sine and cosine pairs at one,
+        two, three and four cycles per year, plus day-of-week terms so quiet Sundays
+        are not mistaken for a seasonal dip. The model is fitted to the
+        <em>logarithm</em> of the traffic index, which makes effects multiplicative
+        &mdash; a coefficient means &ldquo;+12%&rdquo;, not &ldquo;+12 cars&rdquo;.
+        R&sup2;&nbsp;=&nbsp;0.76.
+      </p>
+      <p>
+        Each station is first converted to an index against its own average day. That
+        is what lets a rural Everglades road on 3,660 vehicles a day be averaged with
+        <span class="mono">12-0184</span> on 125,228.
+      </p>
+
+      <h3>Moving-block bootstrap &mdash; the intervals</h3>
+      <p>
+        An ordinary bootstrap assumes every day is independent, which is nonsense for
+        traffic: a busy Tuesday implies a busy Wednesday. Resampling contiguous
+        <strong>14-day blocks</strong> of the residuals preserves that stickiness, so
+        the confidence intervals are not fantasy. 600 replicates.
+      </p>
+
+      <h3>Linear trend fits &mdash; the year-over-year questions</h3>
+      <p>
+        Ordinary least squares, used only where the question is genuinely
+        &ldquo;is this drifting?&rdquo;, and always reported with the sweep or the
+        exclusion test that shows whether the answer holds up.
+      </p>
+
+      <div class="note">
+        <span class="tag">Engineering note</span>
+        <p>
+          The bootstrap originally refitted the model from scratch 200 times when only
+          the response vector changed. Factoring the design matrix once with a QR
+          decomposition turned each replicate into a back-substitution:
+          <strong>4.61&nbsp;s to 0.16&nbsp;s</strong>. Verifying the fast path against
+          the slow one caught a real bug &mdash; <span class="mono">wday()</span> returns
+          an <em>ordered</em> factor, which R codes with polynomial contrasts, so a
+          rebuilt design matrix silently paired coefficients with the wrong basis. The
+          curve still looked plausible, and was wrong by 0.5%.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="num">05</div>
+    <div class="body">
+      <h2>Where they come from</h2>
+      <p>
+        The origin states began as a guess: Chicago, Detroit, Cleveland, New York,
+        Boston, Toronto. Two better instruments replaced it.
+      </p>
+      <p>
+        <strong>IRS county-to-county migration</strong> records every household that
+        changed its tax address into Collier County. That corrected the guess: New
+        Jersey is a top-four source and had been left out entirely, while Ohio is
+        minor and its migration-weighted centre sits in mid-Ohio, nowhere near
+        Cleveland.
+      </p>
+      <p>
+        But IRS data can only see people who <em>stopped</em> being northerners, and a
+        classic snowbird deliberately does not. So the second instrument is
+        <strong>Florida property tax rolls</strong>: a residential parcel whose owner
+        gets mail out of state and claims no homestead exemption is a second home, by
+        definition rather than by proxy. There are <strong>62,572</strong> of them
+        &mdash; 28% of every home in Collier County.
+      </p>
+      <div class="tw">
+        <table>
+          <caption>Northern home states &mdash; two instruments disagree systematically</caption>
+          <thead><tr><th>State</th><th class="n">Property records</th><th class="n">IRS migration</th><th class="n">Difference</th></tr></thead>
+          <tbody>
+            <tr><td>Michigan</td><td class="n">8.9%</td><td class="n">4.6%</td><td class="n live">+4.3</td></tr>
+            <tr><td>Ohio</td><td class="n">8.3%</td><td class="n">4.8%</td><td class="n live">+3.5</td></tr>
+            <tr><td>Pennsylvania</td><td class="n">7.2%</td><td class="n">4.9%</td><td class="n live">+2.3</td></tr>
+            <tr><td>New Jersey</td><td class="n">7.0%</td><td class="n">10.8%</td><td class="n dead">&minus;3.9</td></tr>
+            <tr><td>Illinois</td><td class="n">11.4%</td><td class="n">13.8%</td><td class="n dead">&minus;2.5</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        The disagreement is not noise, it is a pattern. Midwesterners keep their
+        northern domicile; high-tax north-easterners make the move permanent. The two
+        datasets are measuring two different behaviours, and the gap between them is
+        itself the finding.
+      </p>
+      <div class="note">
+        <span class="tag">What IRS data cannot see</span>
+        <p>
+          <strong>Ontario owns 3,959 Naples homes</strong> &mdash; enough to rank seventh
+          if it were a US state. Canadians file no US return, so migration records put
+          it at zero. The original guess of &ldquo;Toronto&rdquo; was right; the
+          correction that removed it was wrong.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="num">06</div>
+    <div class="body">
+      <h2>Three plausible theories, tested</h2>
+      <div class="verdicts">
+        <div class="v">
+          <div class="q">Is the migration window shifting later, as temperatures suggested?</div>
+          <div class="a no">No &middot; 2 of 25</div>
+        </div>
+        <div class="v">
+          <div class="q">Do quiet hurricane seasons bring people back sooner?</div>
+          <div class="a no">No &middot; r = &minus;0.13</div>
+        </div>
+        <div class="v">
+          <div class="q">Are snowbirds converting into permanent residents?</div>
+          <div class="a part">Mostly COVID</div>
+        </div>
+        <div class="v">
+          <div class="q">Are seasonal visitors staying longer?</div>
+          <div class="a no">No &middot; p = 0.07</div>
+        </div>
+        <div class="v">
+          <div class="q">Did the 2025&ndash;26 season run earlier than normal?</div>
+          <div class="a yes">Weakly &middot; z &asymp; +1.2</div>
+        </div>
+      </div>
+
+      <h3>Hurricanes and timing</h3>
+      <p>
+        Tested across 36 clean seasons using the autumn El Ni&ntilde;o index as an
+        instrument &mdash; it is the main driver of Atlantic activity, it is exogenous,
+        and it runs back to 1950. No relationship (r&nbsp;=&nbsp;&minus;0.13,
+        p&nbsp;=&nbsp;0.45), and the sign runs backwards from the intuition. Two reasons:
+        El Ni&ntilde;o also warms northern winters, so the pathways partly cancel; and
+        hurricane risk is priced in before the season, so the <em>absence</em> of a storm
+        cannot pull anyone earlier. Nobody knows October was quiet until it is over.
+      </p>
+
+      <h3>Becoming permanent</h3>
+      <p>
+        Across twelve years of IRS records the rise looks solid &mdash; +360 people a
+        year, p&nbsp;=&nbsp;0.013. Remove 2020&ndash;22 and it collapses to +140 a year,
+        p&nbsp;=&nbsp;0.19. 2021 alone brought <strong>11,566</strong> northern arrivals
+        against a pre-COVID norm near 7,000. That is the remote-work exodus, not a
+        gradual conversion.
+      </p>
+      <div class="note warn">
+        <span class="tag">Data trap</span>
+        <p>
+          IRS FIPS codes are zero-padded in most editions
+          (<span class="mono">&ldquo;021&rdquo;</span>) but not in the 2020&ndash;21 and
+          2021&ndash;22 files (<span class="mono">&ldquo;21&rdquo;</span>). Matching on
+          the string silently dropped two years &mdash; no error, no warning. Correcting it
+          changed the headline from &ldquo;no clear trend&rdquo; to significant. Two
+          missing points.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="num">07</div>
+    <div class="body">
+      <h2>Conditions entering this season</h2>
+      <p>
+        The dates above describe a normal year. Four measured conditions say how
+        2026&ndash;27 differs, and they do not all point the same way.
+      </p>
+      <div class="tw">
+        <table>
+          <caption>Measured 15 September 2026</caption>
+          <thead><tr><th>Indicator</th><th class="n">Reading</th><th>Effect on the forecast</th></tr></thead>
+          <tbody>
+            <tr><td>El Ni&ntilde;o index (ONI, ASO)</td><td class="n mono">+1.80</td><td>Strong. Suppresses Atlantic hurricanes</td></tr>
+            <tr><td>Active Atlantic storms</td><td class="n mono">0</td><td>No disruption in the arrival window</td></tr>
+            <tr><td>Northern states vs normal</td><td class="n mono">+1.1&thinsp;&deg;F</td><td>Warm. Weakens the push south</td></tr>
+            <tr><td>Naples vs normal</td><td class="n mono">+0.8&thinsp;&deg;F</td><td>Slightly warm</td></tr>
+            <tr><td>Migration gap vs normal</td><td class="n mono">&minus;0.4&thinsp;&deg;F</td><td>Narrower. Leans dates <em>later</em></td></tr>
+            <tr><td>Airport arrivals, year to date</td><td class="n mono">&minus;0.04%</td><td>Flat against 2025</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        Winter is arriving <strong>slightly late</strong> up north, which leans the
+        dates marginally later rather than earlier. Meanwhile a strong El&nbsp;Ni&ntilde;o
+        is holding the hurricane season quiet.
+      </p>
+      <p>
+        That second point matters in a specific and limited way. The model was fitted
+        to 2024 &mdash; a year with three storms in it. A quiet season should therefore
+        make this September&rsquo;s trough <strong>shallower</strong> than the model
+        suggests. It should not move it: the test in section&nbsp;06 found no
+        relationship between storm activity and arrival <em>timing</em>. The date should
+        hold; the depth should not.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="num">08</div>
+    <div class="body">
+      <h2>What this forecast cannot do</h2>
+      <p>
+        The binding constraint is not the method, it is the data. The seasonal shape is
+        fitted to <strong>one year</strong> of daily counts, because FDOT overwrite the
+        detailed tables with each annual edition rather than accumulating them. The
+        confidence intervals therefore say how precisely we know 2024 &mdash; not how
+        much the season moves between years, which one year cannot tell you. Treat them
+        as a floor.
+      </p>
+      <p>
+        Weather forecasting cannot fill the gap, and this was tested rather than assumed.
+        NOAA&rsquo;s 50-member seasonal ensemble was compared against 26 years of plain
+        climatology for the same dates. Beyond 60 days the ensemble spread is
+        <strong>1.12&times;</strong> climatology &mdash; it is <em>wider</em> than simply
+        knowing what month it is. For a March peak it carries no information at all.
+        Deterministic models hit a hard skill horizon around 10&ndash;15 days; that is
+        chaos, not compute.
+      </p>
+      <p>
+        Two other limits worth stating plainly. Traffic counts vehicles, not people
+        &mdash; a resident who drives twice a day counts twice. And the roads disagree
+        with each other: peak timing spans two months across stations, and amplitude
+        varies twofold, from 17% at one station to 34% in the rural Everglades. If you
+        care about a specific road, the county average will mislead you.
+      </p>
+      <p>
+        The single highest-value improvement would be obtaining prior-year FTI editions
+        from FDOT&rsquo;s Transportation Data &amp; Analytics office. A second year of
+        daily counts would, for the first time, allow the year-to-year variation in the
+        season to be measured instead of assumed.
+      </p>
+    </div>
+  </section>
+
+  <footer>
+    <p>
+      Built in R. Analysis in fifteen scripts; forecast from a harmonic regression with
+      moving-block bootstrap intervals; a scheduled watcher re-checks every source daily
+      and raises an alert if a headline date moves, naming the source that caused it.
+    </p>
+    <div class="src">
+      <div><b>Traffic</b>FDOT Florida Traffic Information database &mdash; 1970&ndash;2025 annual AADT, 2024 hourly counts, Collier and Lee counties</div>
+      <div><b>Temperature</b>Open-Meteo historical archive &mdash; daily, 2000&ndash;2026, Naples and twelve northern home states</div>
+      <div><b>Arrivals</b>Lee County Port Authority &mdash; RSW monthly passengers, 1983&ndash;2026</div>
+      <div><b>Migration</b>IRS SOI county-to-county migration, 2011&ndash;2023 &middot; US Census county gazetteer</div>
+      <div><b>Property</b>Collier County Property Appraiser &mdash; 298,248 parcels, 2026 preliminary roll</div>
+      <div><b>Climate</b>NOAA CPC Oceanic Ni&ntilde;o Index &middot; National Hurricane Center active-storm feed</div>
+    </div>
+  </footer>
+
+</div>
