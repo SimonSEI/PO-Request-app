@@ -355,6 +355,58 @@ next_occ_static <- function(doy) {
   d
 }
 
+# -----------------------------------------------------------------------------
+# Headline dates, resolved at startup
+# -----------------------------------------------------------------------------
+# These are rendered as plain text straight into the page rather than as Shiny
+# outputs, and the reason is measurable: Shiny computes its whole first batch of
+# outputs and flushes them TOGETHER. Even a trivial output waited ~1 second
+# behind the slowest one, so the page opened with four blank boxes.
+#
+# The dates come from output/season_forecast.csv, which R/09 has already
+# written, so there is nothing to compute at request time. Rendering them into
+# the initial HTML means they are on screen the instant the page paints, with
+# no server round-trip at all.
+#
+# The cost is that they no longer follow the flexibility slider. That is the
+# right trade: this row is the PUBLISHED prediction and should be stable. The
+# Season forecast tab is where the model is varied.
+# -----------------------------------------------------------------------------
+# Simulation baseline, built once
+# -----------------------------------------------------------------------------
+# The simulation rebuilt this 116,880-row gap series from scratch on EVERY
+# slider movement, which put a visible pause between moving a dial and seeing
+# the chart. None of it depends on any input, so it belongs here, computed once
+# at startup. Dragging a slider now only has to add a constant and re-find two
+# crossing dates.
+SIM_BASE_GAP <- state_temps %>%
+  group_by(date) %>%
+  summarise(north = weighted.mean(temp, people, na.rm = TRUE), .groups = "drop") %>%
+  inner_join(naples, by = "date") %>%
+  arrange(date) %>%
+  mutate(
+    gap         = naples - north,
+    gap_smooth  = as.numeric(stats::filter(gap, rep(1/7, 7), sides = 2)),
+    season_year = if_else(month(date) >= 7, year(date), year(date) - 1L)
+  )
+
+HEAD <- if (!is.null(fc_static)) list(
+  trough   = next_occ_static(fc_static$trough_doy),
+  start    = next_occ_static(fc_static$start_doy),
+  peak     = next_occ_static(fc_static$peak_doy),
+  end      = next_occ_static(fc_static$end_doy),
+  decline  = fc_static$decline_pct,
+  increase = fc_static$increase_pct
+) else NULL
+
+head_date <- function(d) if (is.null(d) || is.na(d)) "-" else format(d, "%d %b %Y")
+
+head_away <- function(d) {
+  if (is.null(d) || is.na(d)) return("")
+  n <- as.numeric(d - Sys.Date())
+  if (n == 0) "today" else if (n == 1) "tomorrow" else paste(n, "days away")
+}
+
 live_prediction <- function() {
   if (is.null(fc_static)) return(NULL)
 
@@ -645,9 +697,9 @@ ui <- page_fluid(
     fill = FALSE,
 
     value_box(
-      title = "Next trough", value = textOutput("vb_trough"),
+      title = "Next trough", value = head_date(HEAD$trough),
       showcase = icon("arrow-trend-down"), theme = "secondary",
-      textOutput("vb_trough_sub"),
+      head_away(HEAD$trough),
       why_tab(
         "Why this date?",
         tags$div(class="mb-2 pb-2", style="border-bottom:1px solid #dee2e6;",
@@ -674,9 +726,9 @@ ui <- page_fluid(
     ),
 
     value_box(
-      title = "Season starts", value = textOutput("vb_start"),
+      title = "Season starts", value = head_date(HEAD$start),
       showcase = icon("arrow-right-to-bracket"), theme = "info",
-      textOutput("vb_start_sub"),
+      paste("season ends", head_date(HEAD$end)),
       why_tab(
         "Why this date?",
         tags$div(class="mb-2 pb-2", style="border-bottom:1px solid #dee2e6;",
@@ -703,9 +755,9 @@ ui <- page_fluid(
     ),
 
     value_box(
-      title = "Next peak", value = textOutput("vb_peak"),
+      title = "Next peak", value = head_date(HEAD$peak),
       showcase = icon("arrow-trend-up"), theme = "primary",
-      textOutput("vb_peak_sub"),
+      head_away(HEAD$peak),
       why_tab(
         "Why this date?",
         tags$div(class="mb-2 pb-2", style="border-bottom:1px solid #dee2e6;",
@@ -731,9 +783,9 @@ ui <- page_fluid(
     ),
 
     value_box(
-      title = "Peak vs trough", value = textOutput("vb_swing"),
+      title = "Peak vs trough", value = sprintf("+%.0f%%", HEAD$increase),
       showcase = icon("arrows-up-down"), theme = "success",
-      textOutput("vb_swing_sub"),
+      sprintf("rise from trough; %.0f%% fall from peak", HEAD$decline),
       why_tab(
         "Why these numbers?",
         tags$div(class="mb-2 pb-2", style="border-bottom:1px solid #dee2e6;",
@@ -882,7 +934,7 @@ ui <- page_fluid(
 
         div(class = "mt-3", uiOutput("sim_explain")),
 
-        spinner(plotOutput("p_sim", height = "460px"), "460px"),
+        plotOutput("p_sim", height = "460px"),
 
         accordion(
           open = FALSE, class = "mt-3",
@@ -1332,8 +1384,28 @@ server <- function(input, output, session) {
     if (n == 0) "today" else if (n == 1) "tomorrow" else paste(n, "days away")
   }
 
+  # The headline dates were taking 1.5 seconds to appear, because every one of
+  # them waited on forecast_fit() - which refits the harmonic model and runs
+  # 200 bootstrap replicates before it can produce a single date. The page
+  # therefore opened with four blank boxes.
+  #
+  # But R/09 has already done that work and written the answer to
+  # output/season_forecast.csv, using 600 replicates rather than 200. At the
+  # default flexibility there is nothing to recompute: read the stored answer
+  # and the boxes fill instantly.
+  #
+  # Only when the flexibility slider is moved away from its default does this
+  # fall through to the live fit, so the numbers still respond to the control -
+  # they just do not make everyone wait for a result that was already on disk.
+  DEFAULT_K <- 4
+
   nxt <- reactive({
-    s <- forecast_fit()$stats
+    s <- if (!is.null(fc_static) && isTRUE(input$harmonics == DEFAULT_K)) {
+      fc_static
+    } else {
+      forecast_fit()$stats
+    }
+
     list(
       trough = next_occurrence(s$trough_doy),
       peak   = next_occurrence(s$peak_doy),
@@ -1575,19 +1647,8 @@ server <- function(input, output, session) {
   sim <- reactive({
     shift <- input$sim_naples - input$sim_north   # net change to the gap
 
-    base_gap <- state_temps %>%
-      group_by(date) %>%
-      summarise(north = weighted.mean(temp, people, na.rm = TRUE), .groups = "drop") %>%
-      inner_join(naples, by = "date") %>%
-      arrange(date) %>%
-      mutate(
-        gap = naples - north,
-        gap_smooth  = as.numeric(stats::filter(gap, rep(1/7, 7), sides = 2)),
-        season_year = if_else(month(date) >= 7, year(date), year(date) - 1L)
-      )
-
     thermal <- function(delta) {
-      find_windows(mutate(base_gap, gap_smooth = gap_smooth + delta),
+      find_windows(mutate(SIM_BASE_GAP, gap_smooth = gap_smooth + delta),
                    input$threshold)
     }
 
