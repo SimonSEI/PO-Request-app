@@ -73,31 +73,166 @@ why_tab <- function(label, ...) {
 }
 
 WHY_CSS <- HTML("
+@import url(\"https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap\");
+
+/* ===========================================================================
+   Visual system
+   ---------------------------------------------------------------------------
+   Restraint over decoration. Near-white grounds, ONE accent (#0071E3), soft
+   radii, and generous whitespace doing the work that borders and saturated
+   fills were doing before. Type carries the hierarchy.
+   =========================================================================== */
+
+:root {
+  --ink:        #1D1D1F;
+  --ink-2:      #424245;
+  --ink-3:      #6E6E73;
+  --hair:       #E8E8ED;
+  --ground:     #F5F5F7;
+  --surface:    #FFFFFF;
+  --accent:     #0071E3;
+  --accent-sub: #EAF3FE;
+  --warm-sub:   #FDF1E8;
+  --lift:       0 1px 2px rgba(0,0,0,.03), 0 8px 28px rgba(0,0,0,.055);
+}
+
+body { background: var(--ground) !important; color: var(--ink); letter-spacing: -.011em; }
+h1,h2,h3,h4,h5,h6 { letter-spacing: -.022em; font-weight: 600; color: var(--ink); }
+
+/* Masthead */
+.d-flex.align-items-baseline { border-bottom: none !important; padding-bottom: 0 !important; }
+.d-flex.align-items-baseline h4 {
+  font-size: 1.95rem; font-weight: 700; letter-spacing: -.03em; color: var(--ink) !important;
+}
+.d-flex.align-items-baseline span { color: var(--ink-3) !important; font-size: .95rem; }
+
+/* Cards: no borders, soft lift, real breathing room */
+.card, .bslib-card {
+  background: var(--surface) !important;
+  border: none !important;
+  border-radius: 18px !important;
+  box-shadow: var(--lift);
+}
+.card-body { padding: 26px 30px 30px !important; }
+
+/* Value boxes: flat white, accent carried by the icon and label */
+.bslib-value-box, .bslib-value-box .card-body, .value-box-area {
+  background: var(--surface) !important; color: var(--ink) !important;
+}
+.bslib-value-box { border-radius: 18px !important; box-shadow: var(--lift); overflow: hidden; }
+.bslib-value-box .value-box-title {
+  font-size: .78rem !important; font-weight: 600 !important;
+  letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3) !important;
+  margin-bottom: 6px !important;
+}
+.bslib-value-box .value-box-value {
+  font-size: 2.05rem !important; font-weight: 600 !important;
+  letter-spacing: -.035em; color: var(--ink) !important; line-height: 1.1 !important;
+}
+.bslib-value-box p, .bslib-value-box .shiny-text-output {
+  color: var(--ink-3) !important; font-size: .84rem;
+}
+.bslib-value-box .value-box-showcase, .bslib-value-box .value-box-showcase * {
+  color: var(--accent) !important; opacity: .92;
+}
+.bslib-value-box .value-box-showcase svg { width: 30px !important; height: 30px !important; }
+
+/* The \"why this date\" chip */
 .why-tab {
-  display: inline-block;
-  margin-top: .55rem;
-  padding: .18rem .65rem;
-  font-size: .76rem;
-  font-weight: 500;
-  background: rgba(255,255,255,.20);
-  border: 1px solid rgba(255,255,255,.38);
-  border-radius: 999px;
-  cursor: pointer;
-  user-select: none;
-  white-space: nowrap;
-  transition: background .15s ease;
+  display: inline-block; margin-top: .6rem; padding: .26rem .7rem;
+  font-size: .76rem; font-weight: 500; color: var(--accent);
+  background: var(--accent-sub); border: none; border-radius: 999px;
+  cursor: pointer; user-select: none; white-space: nowrap;
+  transition: background .18s ease;
 }
-.why-tab:hover { background: rgba(255,255,255,.38); }
-.popover { max-width: 430px; }
-.popover-header { font-weight: 600; font-size: .92rem; }
-.popover-body {
-  font-size: .86rem;
-  line-height: 1.55;
-  max-height: 60vh;
-  overflow-y: auto;
-}
-.popover-body p { margin-bottom: .6rem; }
+.why-tab:hover { background: #DCEAFD; }
+
+.popover { max-width: 440px; border: none !important; border-radius: 16px !important;
+           box-shadow: 0 10px 40px rgba(0,0,0,.14) !important; }
+.popover-header { font-weight: 600; font-size: .95rem; background: transparent !important;
+                  border-bottom: 1px solid var(--hair) !important; padding: 14px 18px 10px; }
+.popover-body { font-size: .875rem; line-height: 1.6; max-height: 60vh; overflow-y: auto;
+                padding: 14px 18px 16px; color: var(--ink-2); }
+.popover-body p { margin-bottom: .7rem; }
 .popover-body p:last-child { margin-bottom: 0; }
+
+/* Tabs as a segmented control.
+   Bootstrap pulls each tab down 1px so the active one sits on the container
+   border. That assumes ONE row - with eleven tabs the strip wraps and the
+   negative margin drags row two up into row one, which was the overlap.
+   Dropping the border entirely and using pills removes the mechanism. */
+.nav-tabs, .nav.nav-tabs {
+  border-bottom: none !important;
+  gap: .3rem; row-gap: .4rem;
+  padding: 5px; margin-bottom: 20px !important;
+  background: rgba(0,0,0,.045); border-radius: 13px;
+}
+.nav-tabs .nav-item { margin-bottom: 0 !important; }
+.nav-tabs .nav-link {
+  margin-bottom: 0 !important; border: none !important;
+  border-radius: 9px !important; padding: .42rem .82rem !important;
+  font-size: .855rem; font-weight: 500; white-space: nowrap;
+  color: var(--ink-2) !important; background: transparent !important;
+  transition: background .15s ease, color .15s ease;
+}
+.nav-tabs .nav-link:hover { background: rgba(0,0,0,.05) !important; color: var(--ink) !important; }
+.nav-tabs .nav-link.active {
+  background: var(--surface) !important; color: var(--ink) !important;
+  font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.09);
+}
+
+/* Explainer panels: tint instead of a coloured rail */
+div[style*=\"background:#eef4f8\"] {
+  background: var(--ground) !important; border-left: none !important;
+  border-radius: 14px !important; padding: 22px 26px !important;
+}
+div[style*=\"background:#eef4f8\"] h6 {
+  font-size: 1.12rem !important; font-weight: 600; letter-spacing: -.02em;
+  color: var(--ink) !important; margin-bottom: 10px !important;
+}
+div[style*=\"background:#fff5f5\"] {
+  background: var(--warm-sub) !important; border-left: none !important;
+  border-radius: 14px !important; padding: 20px 24px !important;
+}
+div[style*=\"background:#f8f9fa\"] {
+  background: var(--ground) !important; border-left: none !important;
+  border-radius: 14px !important;
+}
+
+/* Accordions */
+.accordion, .accordion-item { border: none !important; background: transparent !important; }
+.accordion-item { border-top: 1px solid var(--hair) !important; border-radius: 0 !important; }
+.accordion-button {
+  background: transparent !important; box-shadow: none !important;
+  font-weight: 500; font-size: .9rem; color: var(--ink-2) !important;
+  padding: 16px 4px !important;
+}
+.accordion-button:not(.collapsed) { color: var(--accent) !important; }
+.accordion-body { padding: 0 4px 18px !important; color: var(--ink-2); }
+
+/* Tables */
+table { font-size: .88rem; }
+table th {
+  font-weight: 600 !important; font-size: .72rem !important;
+  letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3) !important;
+  border-bottom: 1px solid var(--hair) !important; padding: 9px 14px 9px 0 !important;
+}
+table td {
+  border-bottom: 1px solid var(--hair) !important; padding: 11px 14px 11px 0 !important;
+  font-variant-numeric: tabular-nums; color: var(--ink-2);
+}
+table tr:last-child td { border-bottom: none !important; }
+.table-striped > tbody > tr:nth-of-type(odd) > * { background: transparent !important; }
+
+/* Sliders */
+.irs--shiny .irs-bar { background: var(--accent) !important; border: none !important; }
+.irs--shiny .irs-handle { border: none !important; box-shadow: 0 1px 4px rgba(0,0,0,.25) !important; }
+.irs--shiny .irs-single { background: var(--ink) !important; border-radius: 6px !important; }
+.irs--shiny .irs-line { background: rgba(0,0,0,.08) !important; border: none !important; }
+
+p { color: var(--ink-2); }
+strong { font-weight: 600; color: var(--ink); }
+.text-muted { color: var(--ink-3) !important; }
 ")
 
 # -----------------------------------------------------------------------------
@@ -675,8 +810,20 @@ ui <- page_fluid(
   # in both directions. The sized() guard in server() handles the brief moment
   # before the browser has measured anything.
 
-  theme = bs_theme(bootswatch = "flatly",
-                   base_font = font_google("Inter", local = FALSE)),
+  # Apple's actual palette: #1D1D1F text, #F5F5F7 ground, #0071E3 accent.
+  # The body stack reaches for SF Pro on Apple hardware first - the real thing -
+  # and falls back to DM Sans elsewhere, loaded in the style block below.
+  theme = bs_theme(
+    version = 5,
+    bg = "#FFFFFF", fg = "#1D1D1F",
+    primary = "#0071E3",
+    base_font = c("-apple-system", "BlinkMacSystemFont", "SF Pro Text",
+                  "Segoe UI Variable Text", "DM Sans", "Segoe UI", "sans-serif"),
+    heading_font = c("-apple-system", "BlinkMacSystemFont", "SF Pro Display",
+                     "Segoe UI Variable Display", "DM Sans", "Segoe UI", "sans-serif"),
+    "border-radius" = "14px",
+    "card-border-width" = "0"
+  ),
 
 
   # The headline is the FORECAST, not the temperature trend. The temperature
@@ -807,12 +954,6 @@ ui <- page_fluid(
 
     # -------------------------------------------------------------------------
     nav_panel(
-      "Current report",
-      card_body(fillable = FALSE, uiOutput("report"))
-    ),
-
-    # -------------------------------------------------------------------------
-    nav_panel(
       "This year so far",
       chart_panel(
         heading = "How is this year actually tracking?",
@@ -832,7 +973,13 @@ ui <- page_fluid(
           live_prediction()
         ),
         chart = spinner(plotOutput("p_ytd", height = "440px"), "440px"),
-        footer = spinner(tableOutput("tbl_ytd"), "300px"),
+        footer = tagList(
+          spinner(tableOutput("tbl_ytd"), "300px"),
+          # The report sits below the chart and the table, so the tab reads
+          # top to bottom as: what is happening -> the numbers -> what it means.
+          div(class = "mt-4 pt-4", style = "border-top:2px solid #2a6f97;",
+              uiOutput("report"))
+        ),
         method = tagList(
           p("Monthly passenger totals for Southwest Florida International (RSW)",
             "in Fort Myers - the airport Naples flies through - published by Lee",
