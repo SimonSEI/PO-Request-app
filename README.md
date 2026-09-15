@@ -40,22 +40,119 @@ calendar (Thanksgiving, Easter) regardless of the thermometer.
 | 1 | `R/01_fetch_weather.R` | Downloads daily temps, 7 cities, 2000–2026 |
 | 2 | `R/02_fetch_traffic.R` | Downloads Collier County traffic counts from FDOT |
 | 3 | `R/03_migration_window.R` | The analysis + three charts |
+| 4 | `R/04_fetch_fti.R` | Reads FDOT's Access database (needs manual download) |
+| 5 | `R/05_traffic_vs_temperature.R` | Real traffic vs the thermometer, 2024 |
+| 6 | `R/06_origin_states.R` | IRS migration data → where people really come from |
+| 7 | `R/07_origin_charts.R` | The threshold sweep — the robustness check |
+
+Steps 4–7 need two manual downloads (both free, no signup):
+
+- **FDOT FTI database** — <https://www.fdot.gov/statistics/trafficinfo/> → "FTI Database"
+  (97 MB zip → 1.55 GB `.mdb`). Needs the 64-bit Microsoft Access ODBC driver.
+- **IRS migration** — `countyinflow2223.csv` from
+  <https://www.irs.gov/statistics/soi-tax-stats-migration-data-2022-2023>
+- **Census county centroids** — `2023_Gaz_counties_national.zip` from
+  <https://www2.census.gov/geo/docs/maps-data/data/gazetteer/2023_Gazetteer/>
+
+Set the paths at the top of `R/04` and `R/06`.
 
 Charts land in `output/`. Downloads are cached in `data/raw/`, so re-running
 step 1 is instant and doesn't re-hammer a free API.
 
 ### The interactive dashboard
 
-Once step 1 has run, launch the Shiny app:
+Run scripts 1–7 first, then launch the app:
 
 - **In RStudio:** open `app.R` and click **Run App** (top-right of the editor)
 - **Or:** open `run_app.R` and press Ctrl+Shift+Enter
 - **Or from a terminal:** `Rscript run_app.R`
 
 It opens at <http://127.0.0.1:7788>. Stop it with Escape (RStudio) or Ctrl+C.
+Everything runs on your machine — no server, no account, no internet needed
+once the data is downloaded.
 
-The two sidebar controls are the two weakest assumptions in the analysis,
-deliberately exposed so you can attack them.
+**Seven tabs:**
+
+| Tab | What it shows |
+|---|---|
+| Window shift | Open/close dates per season, with trend |
+| Shape of a year | The average temperature gap through the year |
+| **Robustness** | **The most important one** — refits the trend at every threshold |
+| Traffic vs temperature | Real 2024 traffic against the thermometer |
+| Origin states | Where people actually come from (IRS data) |
+| 50 years | Naples traffic growth, 1970–2025 |
+| The numbers | The underlying table |
+
+**Three controls**, each one an assumption you can attack:
+
+- **Threshold slider** — the number the whole finding hangs on
+- **Weighting** — migrants-sent vs all states equal
+- **Origin states** — untick any state and watch everything recompute
+
+---
+
+## Where snowbirds actually come from
+
+The original six "northern origin cities" were a guess. `R/06` replaces them
+with IRS county-to-county migration records — every household that moved into
+Collier County, and where from. 112 origin counties, 9,662 people.
+
+| State | Share | | State | Share |
+|---|---|---|---|---|
+| Illinois | 13.8% | | Ohio | 4.8% |
+| New York | 13.0% | | Michigan | 4.6% |
+| Massachusetts | 11.0% | | Connecticut | 4.5% |
+| **New Jersey** | **10.8%** | | Minnesota | 3.9% |
+| Pennsylvania | 4.9% | | California | 3.5% |
+
+The top 12 states cover 80% of out-of-state arrivals.
+
+**What my guesses got wrong:**
+
+- **New Jersey (10.8%)** — a top-four source, and I had omitted it entirely
+- **Cleveland** — Ohio sends only 4.8%, and its migration-weighted centre sits
+  in mid-Ohio, nowhere near Cleveland
+- **Toronto** — invisible to IRS data (no US tax return), despite Ontario being
+  a genuine source of Naples snowbirds
+
+Each state is placed at the **migration-weighted centre of its origin
+counties**, so Illinois sits on Chicago, where the migrants are, rather than on
+a cornfield in the geometric middle.
+
+Weighting by migrants raises the mean temperature gap from 20.9 °F to 22.1 °F —
+a real change, but a small one.
+
+> **The caveat that matters most:** IRS data tracks people who *change their tax
+> address*. Classic snowbirds specifically don't — they keep the northern house
+> and often the northern domicile, deliberately. So this measures **permanent
+> relocation** and we are using it as a proxy for **seasonal movement**. They
+> are related but not the same, and that gap is the single biggest weakness in
+> this project.
+
+---
+
+## The verdict: the temperature finding does not hold up
+
+`R/07` refits the trend at **every** threshold from 12 °F to 36 °F, under both
+weightings, instead of picking one and reporting it.
+
+| Weighting | Thresholds tested | Significant at p<0.05 |
+|---|---|---|
+| States equal | 25 | **2** |
+| Weighted by migrants | 25 | **2** |
+
+Two hits in 25 tests is precisely what chance delivers (25 × 0.05 ≈ 1.25). The
+red points in `output/08_threshold_sweep.png` cluster in a narrow band around
+21–25 °F and appear nowhere else — and 25 is the number originally chosen by
+hand.
+
+Proper migration weighting did **not** rescue the effect. There is a weak lean
+toward "later" (19 of 25 thresholds have a positive slope, median ≈ +1.4 to
++1.9 days/decade), but those 25 fits share the same data and are not
+independent, so that tally is not a test either.
+
+**Conclusion: the temperature data does not show the migration window shifting.**
+The real signal in this project is the ~25-day traffic lag below.
 
 ---
 
