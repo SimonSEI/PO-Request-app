@@ -91,6 +91,67 @@ once the data is downloaded.
 
 ---
 
+## Next season — actual dates
+
+From `R/10_next_season_dates.R`, run 15 Sep 2026:
+
+| Event | Date | Days away |
+|---|---|---|
+| **Trough** | **Tue 22 Sep 2026** | 7 |
+| **Season starts** | **Tue 17 Nov 2026** | 63 |
+| **Peak** | **Tue 09 Mar 2027** | 175 |
+| **Season ends** | **Fri 07 May 2027** | 234 |
+
+- **Peak window: 20 Feb – 26 Mar 2027**
+- **Trough window: 12 Sep – 1 Oct 2026** (we are inside it now)
+- Peak runs **1.12×** an average day, trough **0.85×** — a **24% fall** from
+  peak to trough, or a **32% rise** from trough to peak.
+
+The 22 Sep 2026 trough is a week away, which makes it the first genuinely
+falsifiable claim this project has produced. Worth checking.
+
+---
+
+## Can weather models predict the peak?
+
+Short answer: **no, and it isn't a software problem.**
+
+Deterministic weather forecasting — Google DeepMind's GraphCast/GenCast,
+ECMWF, GFS — has a hard skill horizon of roughly **10–15 days**. That is chaos,
+not compute. No model beats it, and March is 175 days away.
+
+What *does* run months ahead is a **seasonal** forecast (NOAA CFSv2, ECMWF
+SEAS5), predicting slow things like ocean state and El Niño. So rather than
+assume, `R/10` measures it: pull the 50-member CFSv2 ensemble for Naples and
+compare its spread against 26 years of plain climatology.
+
+**spread ratio = ensemble SD ÷ climatology SD.** Below 1 means the forecast
+knows something climatology doesn't.
+
+| Month | Ensemble SD | Climatology SD | Ratio |
+|---|---|---|---|
+| Sep 2026 | 2.56 | 2.65 | 1.01 |
+| Oct 2026 | 3.27 | 3.55 | 0.97 |
+| Nov 2026 | 5.34 | 4.32 | **1.28** |
+| Dec 2026 | 6.30 | 5.67 | 1.15 |
+| Jan 2027 | 6.26 | 6.34 | 1.02 |
+| Feb 2027 | 5.92 | 5.83 | 1.04 |
+| Mar 2027 | 5.72 | 5.38 | 1.10 |
+
+Beyond 60 days the mean ratio is **1.12** — the ensemble is *wider* than simply
+knowing what month it is. It carries no usable information at this range.
+
+**And even a perfect forecast wouldn't help much.** Script 05 showed traffic
+lags temperature by ~25 days with r² = 0.44. Temperature explains under half
+the daily variation, and with a lag. People move on the **calendar** —
+Thanksgiving, Easter, school terms — not the thermometer.
+
+So the harmonic model, which uses no weather forecast at all, is the better
+instrument. Adding a weather API here would have looked sophisticated and made
+the forecast worse.
+
+---
+
 ## The season forecast
 
 `R/09_predict_season.R` fits a **harmonic (Fourier) regression** to 2024 daily
