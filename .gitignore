@@ -1,0 +1,8 @@
+# Cached per-city API downloads - regenerate with R/01_fetch_weather.R
+data/raw/
+
+# R session cruft
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
