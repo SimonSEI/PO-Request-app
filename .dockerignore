@@ -1,7 +1,20 @@
-.git
+# Build context exclusions.
+# .Rlib is the project package library - hundreds of MB, and irrelevant to the
+# container, which installs its own Linux binaries from the base image.
+.Rlib/
+.Rproj.user/
+.git/
 .gitignore
-output/
+
+# Raw downloads: a 1.55GB Access database, 168MB of parcel records, cached PDFs.
+# These feed the analysis scripts, not the running dashboard.
 data/raw/
+
+# Analysis pipeline and generated artefacts - the app reads none of these.
 R/
+output/
 *.Rproj
 README.md
+run_watcher.bat
+setup_project_library.R
+run_app.R

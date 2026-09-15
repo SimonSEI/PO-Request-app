@@ -6,3 +6,7 @@ data/raw/
 .Rhistory
 .RData
 .Ruserdata
+
+# Project package library (large, machine-specific; recreate with
+# setup_project_library.R)
+.Rlib/

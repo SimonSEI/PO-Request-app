@@ -27,6 +27,26 @@
 # are too sensitive, not that the watcher is working hard.
 # =============================================================================
 
+# -----------------------------------------------------------------------------
+# Find the package library before anything else
+# -----------------------------------------------------------------------------
+# .Rprofile normally does this, but only when R starts IN the project folder.
+# A Scheduled Task is not guaranteed to, so belt and braces: name the project
+# library explicitly relative to this script.
+#
+# This mattered. Run from the task scheduler, the script failed instantly with
+#     Error in library(tidyverse) : there is no package called 'tidyverse'
+# while running perfectly from a terminal - because the packages had been
+# installed under a redirected LOCALAPPDATA that only one environment could
+# see. Anything meant to run unattended must assume a bare environment.
+local({
+  here <- tryCatch(dirname(dirname(normalizePath(sys.frame(1)$ofile))),
+                   error = function(e) getwd())
+  for (cand in unique(c(file.path(getwd(), ".Rlib"), file.path(here, ".Rlib")))) {
+    if (dir.exists(cand)) .libPaths(c(cand, .libPaths()))
+  }
+})
+
 suppressPackageStartupMessages({
   library(tidyverse)
   library(lubridate)
