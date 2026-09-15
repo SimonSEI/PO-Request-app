@@ -231,7 +231,7 @@ live_trough <- function() {
   if (!is.na(cnum("north_anom"))) {
     bits <- c(bits, list(p(
       strong("The north is not pushing anyone out yet. "),
-      sprintf("The origin states have been running %s over the last month. ",
+      sprintf("Their northern home states have been running %s over the last month. ",
               warm_phrase(cnum("north_anom"))),
       if (cnum("north_anom") > 0.4)
         "Warm northern weather removes the reason to leave, which tends to hold the trough open a little longer."
@@ -252,7 +252,7 @@ live_start <- function() {
     bits <- c(bits, list(p(
       strong("The pull south is currently "),
       strong(if (g < -0.4) "weaker than normal." else if (g > 0.4) "stronger than normal." else "about normal."),
-      sprintf(" Naples is %s and the origin states are %s, so the gap between them is running %+.1f F against its own average. ",
+      sprintf(" Naples is %s and their northern home states are %s, so the gap between them is running %+.1f F against its own average. ",
               warm_phrase(cnum("naples_anom")), warm_phrase(cnum("north_anom")), g),
       if (g < -0.4)
         "A narrower gap is a weaker invitation, which leans this date later rather than earlier."
@@ -292,6 +292,96 @@ live_peak <- function() {
   ))
 }
 
+# -----------------------------------------------------------------------------
+# The headline prediction, in one paragraph
+# -----------------------------------------------------------------------------
+# Reads the model's dates, then states plainly whether current conditions argue
+# for them being early, late or on time. Written from the numbers, so it
+# rewrites itself when the watcher refreshes conditions.
+fc_static <- if (file.exists("output/season_forecast.csv")) {
+  read_csv("output/season_forecast.csv", show_col_types = FALSE)
+} else NULL
+
+next_occ_static <- function(doy) {
+  if (is.null(doy) || is.na(doy)) return(as.Date(NA))
+  d <- as.Date(paste0(format(Sys.Date(), "%Y"), "-01-01")) + (doy - 1)
+  if (d < Sys.Date()) d <- as.Date(paste0(as.integer(format(Sys.Date(), "%Y")) + 1, "-01-01")) + (doy - 1)
+  d
+}
+
+live_prediction <- function() {
+  if (is.null(fc_static)) return(NULL)
+
+  trough <- next_occ_static(fc_static$trough_doy)
+  start  <- next_occ_static(fc_static$start_doy)
+  peak   <- next_occ_static(fc_static$peak_doy)
+
+  n <- cnum("north_anom")
+  g <- cnum("gap_anom")
+
+  # "Is winter coming early?" is a question about the NORTH, not about Naples.
+  # A cold north is what starts the migration; Naples being warm does nothing
+  # on its own.
+  winter <- if (is.na(n)) "unknown"
+            else if (n <= -1.5) "early"
+            else if (n <= -0.5) "slightly early"
+            else if (n >=  1.5) "late"
+            else if (n >=  0.5) "slightly late"
+            else "on time"
+
+  lean <- switch(winter,
+    "early"          = "which argues for these dates arriving EARLIER than shown",
+    "slightly early" = "which leans these dates slightly earlier",
+    "late"           = "which argues for these dates arriving LATER than shown",
+    "slightly late"  = "which leans these dates slightly later",
+    "on time"        = "so the modelled dates stand as they are",
+    "with no current read on timing")
+
+  div(
+    class = "p-3 mt-3",
+    style = "background:#fff5f5; border-left:4px solid #c1121f; border-radius:4px;",
+
+    tags$span(style = "font-size:.72rem;font-weight:700;letter-spacing:.05em;color:#c1121f;",
+              "PREDICTION FOR THIS SEASON"),
+
+    p(class = "mt-2 mb-2",
+      if (is.na(n)) "Current northern temperatures are unavailable, so this is the model's average year: "
+      else sprintf("Winter is arriving %s up north - their northern home states have been running %s over the last month, %s. ",
+                   winter, warm_phrase(n), lean),
+      if (!is.na(g))
+        sprintf("The temperature gap that actually drives migration is running %+.1f F against its own normal. ", g)
+      else ""),
+
+    p(class = "mb-2",
+      "On that basis the data estimates the ",
+      strong("trough"), " of this season at ",
+      strong(style = "color:#c1121f;", format(trough, "%d %b %Y")),
+      ", the season ", strong("starting"), " around ",
+      strong(style = "color:#c1121f;", format(start, "%d %b %Y")),
+      ", and the ", strong("peak"), " around ",
+      strong(style = "color:#c1121f;", format(peak, "%d %b %Y")), "."),
+
+    if (!is.na(cnum("oni_value")) && cnum("oni_value") >= 0.5)
+      p(class = "mb-0",
+        sprintf("A %s (index %+.2f) is suppressing Atlantic hurricanes, and none are active. ",
+                ctxt("oni_state"), cnum("oni_value")),
+        "The 2024 season this model was built on had three storms in it, so expect this",
+        "year's trough to be ", strong("shallower"), " than the model's - the date should hold,",
+        "the depth should not.")
+    else if (!is.na(cnum("oni_value")) && cnum("oni_value") <= -0.5)
+      p(class = "mb-0",
+        sprintf("A %s (index %+.2f) enhances Atlantic hurricane activity. ",
+                ctxt("oni_state"), cnum("oni_value")),
+        "A storm landing in the arrival window would deepen this trough and distort the dates.")
+    else NULL,
+
+    p(class = "text-muted small mb-0 mt-2",
+      "Dates from a harmonic model of 2024 daily traffic; conditions measured ",
+      ctxt("updated"), ". Conditions indicate direction, not a revised date - ",
+      "a warm October does not move a March peak.")
+  )
+}
+
 live_swing <- function() {
   bits <- list()
   if (!is.na(cnum("oni_value")) && cnum("oni_value") >= 0.5) {
@@ -324,7 +414,7 @@ STORM_DAYS <- c(
 # you can test it at the console and the app just calls it. Never bury your
 # analysis inside server().
 
-# Daily temperature gap: Naples minus the chosen origin states.
+# Daily temperature gap: Naples minus the chosen northern home states.
 build_gap <- function(chosen_states, weighted) {
   state_temps %>%
     filter(state %in% chosen_states) %>%
@@ -454,7 +544,7 @@ ui <- page_sidebar(
                 min = 10, max = 40, value = 25, step = 1),
 
     radioButtons(
-      "weighting", "How to combine origin states",
+      "weighting", "How to combine their home states",
       choices = c("Weighted by migrants sent" = "weighted",
                   "All states counted equally" = "equal"),
       selected = "weighted"
@@ -472,7 +562,7 @@ ui <- page_sidebar(
 
     hr(),
 
-    checkboxGroupInput("states", "Origin states",
+    checkboxGroupInput("states", "Northern home states",
                        choices = all_states, selected = all_states),
     actionLink("all_on", "all"), " / ", actionLink("all_off", "none"),
 
@@ -627,7 +717,8 @@ ui <- page_sidebar(
             "the thick line is this year. The grey band is the range of the last",
             "five years, so anywhere inside it is an ordinary year. Outside the",
             "band is genuinely unusual."),
-          textOutput("ytd_summary")
+          textOutput("ytd_summary"),
+          live_prediction()
         ),
         chart = spinner(plotOutput("p_ytd", height = "440px"), "440px"),
         footer = spinner(tableOutput("tbl_ytd"), "300px"),
@@ -726,8 +817,8 @@ ui <- page_sidebar(
         chart = spinner(plotOutput("p_traffic", height = "460px"), "460px"),
         method = tagList(
           tags$ul(
-            tags$li("Traffic: daily counts from Collier County's continuous",
-                    "counting stations - machines in the road counting cars",
+            tags$li("Traffic: daily counts from the continuous counting stations in",
+                    "Collier AND Lee counties - machines in the road counting cars",
                     "24/7 - for every day of 2024, with hurricane days removed."),
             tags$li("Only stations that ran nearly the whole year are used. A",
                     "sensor that broke in July would fake a summer collapse."),
@@ -840,7 +931,7 @@ ui <- page_sidebar(
         plain = tagList(
           p("This is the whole reason snowbirds exist, in one line. It shows the",
             "average temperature difference between Naples and the northern",
-            "states people come from, across the year."),
+            "states where these residents keep their other home."),
           p(strong("In midwinter Naples runs about 40 degrees F warmer. "),
             "By July the difference nearly vanishes - a summer day in Michigan",
             "is much like a summer day in Florida, minus the humidity."),
@@ -864,13 +955,13 @@ ui <- page_sidebar(
 
     # -------------------------------------------------------------------------
     nav_panel(
-      "Origin states",
+      "Northern home states",
       chart_panel(
-        heading = "Where do Naples newcomers actually come from?",
+        heading = "Where are their northern homes?",
         plain = tagList(
-          p("Each bar is a US state, sized by how many people moved from there",
-            "into Collier County. This is measured from tax records, not",
-            "guessed."),
+          p("Each bar is a northern state where Naples snowbirds keep a home,",
+            "sized by how many came from there. Measured from tax records,",
+            "not guessed."),
           p(strong("Illinois, New York, Massachusetts and New Jersey "),
             "supply nearly half of all out-of-state arrivals between them."),
           p(strong("Why it matters: "),
@@ -903,7 +994,7 @@ ui <- page_sidebar(
       chart_panel(
         heading = "Is Naples just getting busier?",
         plain = tagList(
-          p("Traffic on a typical Collier County road, every year back to 1970."),
+          p("Traffic on a typical Collier or Lee County road, every year back to 1970."),
           p(strong("Why it's here: "),
             "it separates two things that are easy to confuse. Roads getting",
             "busier every year is ", strong("growth"), ". Roads getting busier",
@@ -914,7 +1005,7 @@ ui <- page_sidebar(
         chart = spinner(plotOutput("p_hist", height = "460px"), "460px"),
         method = tagList(
           p("From FDOT's historical traffic database: 5,339 site-years of",
-            "Annual Average Daily Traffic for Collier County, 1970 to 2025."),
+            "Annual Average Daily Traffic for Collier and Lee counties, 1970 to 2025."),
           p(strong("AADT"), "is the average number of vehicles passing a point",
             "per day across a whole year. We plot the median across all sites,",
             "not the mean, so one enormous stretch of I-75 doesn't dominate.",
@@ -1161,7 +1252,7 @@ server <- function(input, output, session) {
       scale_colour_manual(values = c("Traffic" = "#c1121f",
                                      "Temperature gap" = "#2a6f97")) +
       labs(title = "Do snowbirds follow the thermometer?",
-           subtitle = paste0("Collier County daily traffic vs the gap, 2024. ",
+           subtitle = paste0("Collier + Lee daily traffic vs the gap, 2024. ",
                              "Hurricanes removed. r = ", round(r, 2)),
            x = NULL, colour = NULL) +
       theme(legend.position = "top")
@@ -1376,7 +1467,7 @@ server <- function(input, output, session) {
                hjust = 0, colour = "#e07a5f", size = 4) +
       scale_x_continuous(breaks = c(1, 60, 121, 182, 244, 305, 365),
                          labels = c("Jan", "Mar", "May", "Jul", "Sep", "Nov", "Dec")) +
-      labs(title = "Predicted Naples traffic season",
+      labs(title = "Predicted southwest Florida traffic season",
            subtitle = paste0(input$harmonics, " harmonics · R² = ", round(f$r2, 3),
                              " · grey = actual 2024 days, band = 90% bootstrap"),
            x = NULL, y = "Traffic (1.0 = average day)")
@@ -1411,8 +1502,8 @@ server <- function(input, output, session) {
       scale_fill_manual(values = c("TRUE" = "#3d5a80", "FALSE" = "grey80"),
                         guide = "none") +
       scale_x_continuous(labels = comma, expand = expansion(c(0, 0.14))) +
-      labs(title = "Where Naples newcomers come from",
-           subtitle = "People moving into Collier County from out of state (IRS, 2022-23). Grey = excluded.",
+      labs(title = "Northern home states of Naples arrivals",
+           subtitle = "Northern home states of people moving into Collier County (IRS, 2022-23). Grey = excluded.",
            x = "People", y = NULL)
   })
 
@@ -1439,7 +1530,7 @@ server <- function(input, output, session) {
       geom_point(size = 1.6, colour = "#3d5a80") +
       scale_y_continuous(labels = comma) +
       labs(title = "Fifty years of Naples traffic",
-           subtitle = "Median AADT across Collier County counting sites",
+           subtitle = "Median AADT across Collier + Lee counting sites",
            x = NULL, y = "Median AADT")
   })
 

@@ -63,7 +63,7 @@ dates <- tibble(
   arrange(date)
 
 cat("=====================================================================\n")
-cat("  NEXT SEASON - Collier County (Naples).  Today is ", format(TODAY, "%d %b %Y"), "\n", sep = "")
+cat("  NEXT SEASON - Collier + Lee County (Naples & Fort Myers).  Today is ", format(TODAY, "%d %b %Y"), "\n", sep = "")
 cat("=====================================================================\n\n")
 
 dates %>%

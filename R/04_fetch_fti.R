@@ -27,7 +27,10 @@ library(DBI)
 library(odbc)
 
 FTI_PATH <- "C:/Users/SWeardon/AppData/Local/Temp/claude/C--Users-SWeardon-Desktop-Coding-in-R/56267a43-4d94-42e8-8b39-eef1ca5d0ec4/scratchpad/fti/fti_2025.mdb"
-COLLIER  <- "03"   # FDOT county code for Collier County (Naples)
+# FDOT county codes. Collier is Naples; Lee is Fort Myers / Cape Coral and is
+# where RSW airport actually sits - so including it lets the road data and the
+# arrivals data describe the same region instead of two different ones.
+COUNTIES <- c(Collier = "03", Lee = "12")
 
 stopifnot(file.exists(FTI_PATH))
 
@@ -48,17 +51,20 @@ con <- dbConnect(
 # -----------------------------------------------------------------------------
 # A) Historical AADT - every year FDOT has, for Collier County
 # -----------------------------------------------------------------------------
-message("Pulling historical AADT for Collier County...")
+message("Pulling historical AADT for ", paste(names(COUNTIES), collapse = " + "), "...")
+
+county_list <- paste0("'", paste(COUNTIES, collapse = "','"), "'")
 
 hist_aadt <- dbGetQuery(con, paste0("
   SELECT COUNTY, SITE, [YEAR] AS yr, PTADTADJ, ASCADTADJ, DSCADTADJ
   FROM [HISTAADT]
-  WHERE COUNTY = '", COLLIER, "'
+  WHERE COUNTY IN (", county_list, ")
 ")) %>%
   as_tibble() %>%
   # PTADTADJ is the site's AADT; the two direction columns sum to it.
   transmute(
     county = COUNTY,
+    county_name = names(COUNTIES)[match(COUNTY, COUNTIES)],
     site   = SITE,
     year   = as.integer(yr),
     aadt   = as.numeric(PTADTADJ)
@@ -78,16 +84,18 @@ message("  ", format(nrow(hist_aadt), big.mark = ","), " site-years, ",
 # This is the one that actually answers the question. TMSCNT holds hour-by-hour
 # volumes (HR1..HR24) per site per direction per day. TOTVOL is the day's total.
 # Summing the directions gives daily two-way traffic past that point.
-message("Pulling daily counts for Collier County...")
+message("Pulling daily counts for ", paste(names(COUNTIES), collapse = " + "), "...")
 
 daily <- dbGetQuery(con, paste0("
   SELECT COUNTY, SITE, BEGDATE, DIR, TOTVOL
   FROM [TMSCNT]
-  WHERE COUNTY = '", COLLIER, "'
+  WHERE COUNTY IN (", county_list, ")
 ")) %>%
   as_tibble() %>%
   transmute(
-    site   = SITE,
+    county = COUNTY,
+    county_name = names(COUNTIES)[match(COUNTY, COUNTIES)],
+    site   = paste0(COUNTY, "-", SITE),   # site numbers repeat across counties
     date   = as.Date(BEGDATE),
     dir    = DIR,
     volume = as.numeric(TOTVOL)
@@ -95,7 +103,7 @@ daily <- dbGetQuery(con, paste0("
   filter(!is.na(volume), volume > 0)
 
 daily_site <- daily %>%
-  group_by(site, date) %>%
+  group_by(county_name, site, date) %>%
   summarise(volume = sum(volume), .groups = "drop") %>%
   arrange(site, date)
 
