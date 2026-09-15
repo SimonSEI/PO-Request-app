@@ -18,9 +18,76 @@
 
 library(shiny)
 library(bslib)
+library(shinycssloaders)
 library(tidyverse)
 library(lubridate)
 library(scales)
+
+# -----------------------------------------------------------------------------
+# Loading spinner
+# -----------------------------------------------------------------------------
+# Two different ways a chart can be missing, and this covers both:
+#
+#   1. RECALCULATING - Shiny stamps class "recalculating" on an output while
+#      the server is rebuilding it. The bootstrap on the forecast tab is the
+#      slow one.
+#   2. NOT YET COMPUTED - the sized() guard in server() deliberately refuses to
+#      render until the browser reports real dimensions. That leaves a panel
+#      genuinely empty with nothing recalculating, which is the case that
+#      looked most like the app had hung.
+#
+# withSpinner() keeps the spinner up until the output actually has content, so
+# it covers both rather than only the first.
+#
+# proxy.height reserves the space before anything arrives, otherwise the page
+# jumps as each chart lands.
+spinner <- function(ui_element, height = "460px") {
+  withSpinner(
+    ui_element,
+    type    = 4,
+    color   = "#2a6f97",
+    size    = 0.8,
+    caption = "Please wait, graph is loading...",
+    proxy.height = height
+  )
+}
+
+# -----------------------------------------------------------------------------
+# One consistent layout for every tab
+# -----------------------------------------------------------------------------
+# Each chart gets the same three parts, in the same order:
+#   1. WHAT THIS SHOWS  - plain English, no jargon, above the chart where it
+#      will actually be read
+#   2. the chart
+#   3. HOW WAS THIS CALCULATED - collapsed by default, so the method is always
+#      available but never in the way
+#
+# A chart nobody can interpret is decoration. Putting the explanation below the
+# fold, or in a caption nobody reads, is the same as not writing it.
+chart_panel <- function(heading, plain, chart, method, footer = NULL) {
+  card_body(
+    fillable = FALSE,
+
+    div(
+      class = "p-3 mb-3",
+      style = "background:#eef4f8; border-left:4px solid #2a6f97; border-radius:4px;",
+      h6(heading, class = "fw-bold mb-2", style = "color:#1d3f5a;"),
+      div(plain, style = "font-size:0.95rem; line-height:1.55;")
+    ),
+
+    chart,
+    footer,
+
+    accordion(
+      open = FALSE, class = "mt-3",
+      accordion_panel(
+        "How was this calculated?",
+        icon = icon("calculator"),
+        div(method, style = "font-size:0.9rem; line-height:1.55;")
+      )
+    )
+  )
+}
 
 theme_set(theme_minimal(base_size = 12))
 
@@ -257,46 +324,293 @@ ui <- page_sidebar(
   # the page level, which collapsed the width to zero) respects explicit
   # heights and keeps the full width. The panel then scrolls if it needs to.
   navset_card_tab(
-    nav_panel("Window shift",
-              card_body(fillable = FALSE,
-                        plotOutput("p_shift", height = "460px"),
-                        p(class = "text-muted small", textOutput("trend_note")),
-                        p(class = "text-muted small",
-                          strong("Read this with the Robustness tab. "),
-                          "This trend is significant at only 2 of 25 thresholds,",
-                          "which is what chance alone produces."))),
-    nav_panel("Shape of a year",
-              card_body(fillable = FALSE,
-                        plotOutput("p_year", height = "460px"))),
-    nav_panel("Robustness",
-              card_body(fillable = FALSE,
-                        p(class = "text-muted small",
-                          "The single most important chart here. It refits the trend at",
-                          "every plausible threshold. If red points appear only in a",
-                          "narrow band, the 'finding' is an artefact of where the line",
-                          "was drawn."),
-                        plotOutput("p_sweep", height = "620px"))),
-    nav_panel("Season forecast",
-              card_body(fillable = FALSE,
-                        p(class = "text-muted small",
-                          "Harmonic regression on 2024 daily counts, with a",
-                          "moving-block bootstrap for the band. These intervals say",
-                          "how precisely we know 2024 - NOT how much the season moves",
-                          "between years, which one year of data cannot tell us."),
-                        plotOutput("p_forecast", height = "440px"),
-                        tableOutput("tbl_forecast"))),
-    nav_panel("Traffic vs temperature",
-              card_body(fillable = FALSE,
-                        plotOutput("p_traffic", height = "460px"))),
-    nav_panel("Origin states",
-              card_body(fillable = FALSE,
-                        plotOutput("p_states", height = "420px"),
-                        tableOutput("tbl_states"))),
-    nav_panel("50 years",
-              card_body(fillable = FALSE,
-                        plotOutput("p_hist", height = "460px"))),
-    nav_panel("The numbers",
-              card_body(fillable = FALSE, tableOutput("tbl")))
+
+    # -------------------------------------------------------------------------
+    nav_panel(
+      "Season forecast",
+      chart_panel(
+        heading = "When will Naples be busiest, and when will it be dead?",
+        plain = tagList(
+          p("Every grey dot is one real day in 2024. The blue line is the",
+            "underlying pattern once you ignore the day-to-day noise, and the",
+            "shaded band is how sure we are about that line."),
+          p(strong("The short version: "),
+            "traffic bottoms out in late September, climbs through the autumn,",
+            "peaks in early March, then falls away through May. The gap between",
+            "the busiest and quietest stretch is about a quarter of all traffic."),
+          p(strong("Why you'd care: "),
+            "if you staff a business, schedule roadworks, or buy advertising,",
+            "these are the dates that decide when demand arrives and when it",
+            "disappears.")
+        ),
+        chart = spinner(plotOutput("p_forecast", height = "440px"), "440px"),
+        footer = spinner(tableOutput("tbl_forecast"), "260px"),
+        method = tagList(
+          p(strong("Fitting waves to a season."),
+            "A season repeats every year, so it can be described by sine waves.",
+            "We fit 1 to 4 waves per year (the 'flexibility' slider) and let the",
+            "maths decide where the peak sits, rather than eyeballing it."),
+          tags$ul(
+            tags$li("Traffic is converted to an index first: 1.0 = a normal day",
+                    "at that counting station. That lets a 3,600-cars-a-day rural",
+                    "road be averaged with a 109,000-a-day stretch of I-75."),
+            tags$li("Day-of-week terms are included so quiet Sundays don't get",
+                    "mistaken for a seasonal dip."),
+            tags$li("We model the logarithm of the index, so effects come out as",
+                    "percentages rather than absolute car counts."),
+            tags$li(strong("The band:"), "a moving-block bootstrap. We rebuild the",
+                    "dataset 200 times by reshuffling 14-day chunks of the",
+                    "leftover variation, refit each time, and see how much the",
+                    "answer wobbles. Whole chunks, not single days, because a busy",
+                    "Tuesday implies a busy Wednesday."),
+            tags$li("Hurricanes Debby, Helene and Milton are cut out. Milton's",
+                    "landfall day ran at 30% of normal traffic and would",
+                    "otherwise read as a seasonal collapse.")
+          ),
+          p(strong("The catch:"), "this is fitted to one year. The band tells you",
+            "how well we know 2024 - not how much the season shifts between",
+            "years, which one year cannot tell you.")
+        )
+      )
+    ),
+
+    # -------------------------------------------------------------------------
+    nav_panel(
+      "Traffic vs temperature",
+      chart_panel(
+        heading = "Do people actually move when the weather tells them to?",
+        plain = tagList(
+          p("Red is real traffic on Naples roads. Blue is how much warmer Naples",
+            "is than the places people come from. If people simply followed the",
+            "weather, the two lines would rise and fall together."),
+          p(strong("They don't quite. "),
+            "Blue peaks in mid-January; red doesn't peak until late February.",
+            "Traffic turns up about 25 days after the weather says it should -",
+            "and leaves about 25 days after the weather stops justifying it."),
+          p(strong("Why that matters: "),
+            "a lag at both ends is what a ", strong("calendar"), " looks like, not",
+            "a thermometer. People arrive after Thanksgiving and leave after",
+            "Easter. Weather sets the backdrop; the diary picks the date. So",
+            "forecasting the season from a weather forecast would not work well.")
+        ),
+        chart = spinner(plotOutput("p_traffic", height = "460px"), "460px"),
+        method = tagList(
+          tags$ul(
+            tags$li("Traffic: daily counts from Collier County's continuous",
+                    "counting stations - machines in the road counting cars",
+                    "24/7 - for every day of 2024, with hurricane days removed."),
+            tags$li("Only stations that ran nearly the whole year are used. A",
+                    "sensor that broke in July would fake a summer collapse."),
+            tags$li("Temperature: the daily gap between Naples and the origin",
+                    "states you have selected, smoothed over 7 days."),
+            tags$li("Both are drawn on their own scales so the shapes can be",
+                    "compared; the correlation (r) in the subtitle is the real",
+                    "measure of how closely they track.")
+          ),
+          p("r near 1 would mean they move together perfectly. It comes out",
+            "around 0.66, so temperature explains under half of the day-to-day",
+            "variation - and with that 25-day delay on top.")
+        )
+      )
+    ),
+
+    # -------------------------------------------------------------------------
+    nav_panel(
+      "Robustness",
+      chart_panel(
+        heading = "Would this finding survive if we'd picked a different number?",
+        plain = tagList(
+          p("The temperature analysis needs a judgement call: how much warmer",
+            "does Naples have to be before the trip is 'worth it'? That number",
+            "was chosen by hand. This chart redoes the entire analysis at every",
+            "sensible value and shows what answer each one gives."),
+          p(strong("Red dots are 'statistically significant' results. "),
+            "If they appeared everywhere, the finding would be solid. They",
+            "appear in one narrow band and nowhere else - and that band happens",
+            "to contain the number originally picked."),
+          p(strong("What it means: "),
+            "the apparent finding that the season is shifting is an accident of",
+            "where the line was drawn. Out of 25 attempts, 2 came out",
+            "significant - which is exactly what pure chance produces. This is",
+            "the most important chart here, because it is the one that says",
+            strong("don't believe the other one"), ".")
+        ),
+        chart = spinner(plotOutput("p_sweep", height = "620px"), "620px"),
+        method = tagList(
+          p("The whole pipeline is re-run at every threshold from 12 to 36",
+            "degrees F. For each one we find the season's start and end dates",
+            "in all 26 years, fit a straight line through them, and record both",
+            "the slope and the p-value."),
+          tags$ul(
+            tags$li(strong("p-value:"), "roughly, the chance of seeing a trend",
+                    "this strong if nothing were really happening. Below 0.05 is",
+                    "the usual (crude) bar for 'probably real'."),
+            tags$li(strong("Why 2 out of 25 is nothing:"), "at a 1-in-20",
+                    "threshold, testing 25 times should produce about 1 false",
+                    "positive by luck alone. Getting 2 is unremarkable."),
+            tags$li("The dotted blue line marks your current slider setting, so",
+                    "you can see whether you happen to be standing in the lucky",
+                    "band.")
+          )
+        )
+      )
+    ),
+
+    # -------------------------------------------------------------------------
+    nav_panel(
+      "Window shift",
+      chart_panel(
+        heading = "Has the weather's invitation been arriving later each year?",
+        plain = tagList(
+          p("Each dot is one year. Orange marks the autumn date when Naples",
+            "first became much warmer than back home. Blue marks the spring date",
+            "when that advantage disappeared. The straight lines show whether",
+            "those dates have been drifting over 26 years."),
+          p(strong("What it looks like: "),
+            "a slight drift towards a later start. What it actually is: ",
+            strong("probably nothing"), " - see the Robustness tab, where this",
+            "result falls apart the moment you change the threshold."),
+          p(strong("Worth knowing: "),
+            "this measures thermometers, not people. It shows when the weather",
+            "made the trip worthwhile, not when anyone actually travelled.")
+        ),
+        chart = spinner(plotOutput("p_shift", height = "460px"), "460px"),
+        footer = tagList(
+          p(class = "text-muted small mt-2", textOutput("trend_note")),
+          div(class = "alert alert-warning py-2 px-3 small mt-2",
+              strong("Health warning. "),
+              "This trend is significant at only 2 of 25 thresholds - what",
+              "chance alone produces. Check the Robustness tab before believing",
+              "anything here.")
+        ),
+        method = tagList(
+          tags$ul(
+            tags$li("For every day since 2000 we take Naples' average",
+                    "temperature and subtract the average across the origin",
+                    "states. That difference is 'the gap'."),
+            tags$li("The gap is smoothed over 7 days, so a single cold Tuesday",
+                    "in Chicago doesn't count as the season starting."),
+            tags$li("A season runs July to June, because a winter season",
+                    "straddles New Year and calendar years would cut it in half."),
+            tags$li("Within each season we find the first autumn day the gap",
+                    "rises past your threshold, and the first spring day it",
+                    "falls back below."),
+            tags$li("A straight line is fitted through those dates against year.",
+                    "The slope is the drift in days per decade.")
+          )
+        )
+      )
+    ),
+
+    # -------------------------------------------------------------------------
+    nav_panel(
+      "Shape of a year",
+      chart_panel(
+        heading = "How much warmer is Naples than back home?",
+        plain = tagList(
+          p("This is the whole reason snowbirds exist, in one line. It shows the",
+            "average temperature difference between Naples and the northern",
+            "states people come from, across the year."),
+          p(strong("In midwinter Naples runs about 40 degrees F warmer. "),
+            "By July the difference nearly vanishes - a summer day in Michigan",
+            "is much like a summer day in Florida, minus the humidity."),
+          p(strong("Why it matters: "),
+            "nobody moves south because Naples got warm. They move because",
+            "home got cold. The red dashed line is your threshold - the point",
+            "you've decided the difference is big enough to be worth the trip.")
+        ),
+        chart = spinner(plotOutput("p_year", height = "460px"), "460px"),
+        method = tagList(
+          p("Daily temperatures from 2000 to 2026 for Naples and for each origin",
+            "state, from the Open-Meteo historical archive. For each of the 365",
+            "days of the year we average that day across all 26 years, giving",
+            "the typical shape of a year rather than any single one."),
+          p("Each state sits at the point where its migrants actually live -",
+            "weighted by the counties they came from - so Illinois is placed on",
+            "Chicago rather than in the middle of a cornfield.")
+        )
+      )
+    ),
+
+    # -------------------------------------------------------------------------
+    nav_panel(
+      "Origin states",
+      chart_panel(
+        heading = "Where do Naples newcomers actually come from?",
+        plain = tagList(
+          p("Each bar is a US state, sized by how many people moved from there",
+            "into Collier County. This is measured from tax records, not",
+            "guessed."),
+          p(strong("Illinois, New York, Massachusetts and New Jersey "),
+            "supply nearly half of all out-of-state arrivals between them."),
+          p(strong("Why it matters: "),
+            "it decides whose winter counts. Weighting by real numbers beats",
+            "assuming - the first version of this analysis guessed Cleveland and",
+            "Toronto, and the data says Ohio is minor while New Jersey, which",
+            "had been left out entirely, is top four.")
+        ),
+        chart = spinner(plotOutput("p_states", height = "420px"), "420px"),
+        footer = tableOutput("tbl_states"),
+        method = tagList(
+          p("The IRS publishes county-to-county migration every year, built from",
+            "address changes between tax returns. We take every inflow into",
+            "Collier County, attach each origin county's geographic centre from",
+            "the Census gazetteer, then collapse to states at the",
+            "migration-weighted centre of their origin counties."),
+          p(strong("The big caveat:"), "this only sees people who CHANGED THEIR",
+            "TAX ADDRESS. A classic snowbird deliberately doesn't - they keep",
+            "the northern house and the northern domicile. So this measures",
+            "permanent relocation and we're using it as a stand-in for seasonal",
+            "movement. It also misses Canadians entirely, who file no US return,",
+            "even though Ontario owns roughly 4,000 Naples homes.")
+        )
+      )
+    ),
+
+    # -------------------------------------------------------------------------
+    nav_panel(
+      "50 years",
+      chart_panel(
+        heading = "Is Naples just getting busier?",
+        plain = tagList(
+          p("Traffic on a typical Collier County road, every year back to 1970."),
+          p(strong("Why it's here: "),
+            "it separates two things that are easy to confuse. Roads getting",
+            "busier every year is ", strong("growth"), ". Roads getting busier",
+            "every winter is ", strong("seasonality"), ". This project is about",
+            "the second, and you need the first in view to avoid mistaking one",
+            "for the other.")
+        ),
+        chart = spinner(plotOutput("p_hist", height = "460px"), "460px"),
+        method = tagList(
+          p("From FDOT's historical traffic database: 5,339 site-years of",
+            "Annual Average Daily Traffic for Collier County, 1970 to 2025."),
+          p(strong("AADT"), "is the average number of vehicles passing a point",
+            "per day across a whole year. We plot the median across all sites,",
+            "not the mean, so one enormous stretch of I-75 doesn't dominate.",
+            "Years with fewer than 20 reporting sites are dropped as too thin."),
+          p("Note that AADT is an annual average by construction - it",
+            "deliberately flattens the seasonal swing, which is why it cannot",
+            "answer the timing questions on the other tabs.")
+        )
+      )
+    ),
+
+    # -------------------------------------------------------------------------
+    nav_panel(
+      "The numbers",
+      chart_panel(
+        heading = "The raw dates behind the charts",
+        plain = p("One row per season: the date the temperature gap crossed your",
+                  "threshold going up, the date it fell back, and how many days",
+                  "that left in between. Everything on the Window shift tab is",
+                  "drawn from this table."),
+        chart = tableOutput("tbl"),
+        method = p("Produced by the same crossing calculation described on the",
+                   "Window shift tab. Change the threshold or the selected",
+                   "states and every row here recalculates.")
+      )
+    )
   )
 )
 
