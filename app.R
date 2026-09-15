@@ -117,6 +117,43 @@ find_windows <- function(gap_df, threshold) {
     )
 }
 
+# -----------------------------------------------------------------------------
+# Season forecasting (see R/09 for the full version with bootstrap intervals)
+# -----------------------------------------------------------------------------
+# A season is a wave, so fit waves to it: sin/cos pairs at 1..K cycles per year.
+# K controls how wiggly the curve is allowed to be, and it is exposed as a
+# slider so you can watch underfitting and overfitting happen.
+harmonics <- function(doy, K) {
+  map_dfc(1:K, function(k) {
+    tibble(!!paste0("sin", k) := sin(2 * pi * k * doy / 365.25),
+           !!paste0("cos", k) := cos(2 * pi * k * doy / 365.25))
+  })
+}
+
+# Pull the operational numbers out of a fitted seasonal curve.
+describe_curve <- function(cv) {
+  above <- cv$index >= 1
+  cross_down <- which(above[-length(above)] & !above[-1])
+  cross_up   <- which(!above[-length(above)] & above[-1])
+  end_doy   <- cross_down[cross_down > 60 & cross_down < 240][1]
+  start_doy <- cross_up[cross_up > 240][1]
+
+  tibble(
+    peak_doy   = cv$doy[which.max(cv$index)],
+    trough_doy = cv$doy[which.min(cv$index)],
+    start_doy, end_doy,
+    peak_val   = max(cv$index),
+    trough_val = min(cv$index),
+    decline_pct  = 100 * (1 - min(cv$index) / max(cv$index)),
+    increase_pct = 100 * (max(cv$index) / min(cv$index) - 1)
+  )
+}
+
+doy_to_date <- function(d) {
+  if (is.na(d)) return("-")
+  format(as.Date(d - 1, origin = "2025-01-01"), "%d %b")
+}
+
 # Fit a trend, reported per decade and in plain English.
 trend_of <- function(w, column) {
   if (nrow(w) < 8) return(list(per_decade = NA, p = NA, label = "not enough data"))
@@ -173,6 +210,14 @@ ui <- page_sidebar(
 
     hr(),
 
+    sliderInput("harmonics", "Seasonal curve flexibility",
+                min = 1, max = 8, value = 4, step = 1),
+    p(class = "text-muted small",
+      "Used by the Season forecast tab. 1 is a single smooth wave; 8 chases",
+      "individual weeks. Watch the fit go from too stiff to overfitted."),
+
+    hr(),
+
     checkboxGroupInput("states", "Origin states",
                        choices = all_states, selected = all_states),
     actionLink("all_on", "all"), " / ", actionLink("all_off", "none"),
@@ -219,6 +264,15 @@ ui <- page_sidebar(
                           "narrow band, the 'finding' is an artefact of where the line",
                           "was drawn."),
                         plotOutput("p_sweep", height = "620px"))),
+    nav_panel("Season forecast",
+              card_body(fillable = FALSE,
+                        p(class = "text-muted small",
+                          "Harmonic regression on 2024 daily counts, with a",
+                          "moving-block bootstrap for the band. These intervals say",
+                          "how precisely we know 2024 - NOT how much the season moves",
+                          "between years, which one year of data cannot tell us."),
+                        plotOutput("p_forecast", height = "440px"),
+                        tableOutput("tbl_forecast"))),
     nav_panel("Traffic vs temperature",
               card_body(fillable = FALSE,
                         plotOutput("p_traffic", height = "460px"))),
@@ -413,6 +467,105 @@ server <- function(input, output, session) {
            x = NULL, colour = NULL) +
       theme(legend.position = "top")
   })
+
+  # --- Season forecast ------------------------------------------------------
+  # The whole fit runs live, so moving the flexibility slider refits it.
+  # Only the model is recomputed here; the bootstrap band is 150 runs, which is
+  # fewer than R/09 uses (600) purely to keep the app responsive.
+  forecast_fit <- reactive({
+    shiny::validate(shiny::need(!is.null(traffic_daily),
+                                "Run R/04_fetch_fti.R to get the traffic data."))
+
+    K  <- input$harmonics
+    tr <- traffic_daily %>% filter(!date %in% STORM_DAYS)
+    good <- tr %>% count(site) %>% filter(n >= 330) %>% pull(site)
+
+    county <- tr %>%
+      filter(site %in% good) %>%
+      group_by(site) %>% mutate(index = volume / mean(volume)) %>% ungroup() %>%
+      group_by(date) %>% summarise(index = mean(index), .groups = "drop") %>%
+      arrange(date) %>%
+      mutate(doy = yday(date), dow = wday(date, label = TRUE), y = log(index))
+
+    md <- bind_cols(county, harmonics(county$doy, K))
+    hn <- setdiff(names(md), names(county))
+    form <- as.formula(paste("y ~ dow +", paste(hn, collapse = " + ")))
+    fit <- lm(form, data = md)
+
+    dows <- levels(county$dow)
+    curve_of <- function(model) {
+      grid <- tibble(doy = 1:365) %>% bind_cols(harmonics(1:365, K))
+      preds <- map_dfc(dows, function(d) {
+        tibble(!!d := predict(model, newdata = mutate(grid, dow = factor(d, levels = dows))))
+      })
+      tibble(doy = 1:365, index = exp(rowMeans(as.matrix(preds))))
+    }
+
+    curve <- curve_of(fit)
+
+    # Moving-block bootstrap: resample CONTIGUOUS runs of residuals so the
+    # day-to-day stickiness of traffic survives into the interval.
+    res <- residuals(fit); fitv <- fitted(fit); n <- length(res); BLOCK <- 14
+    boot <- map_dfr(1:150, function(b) {
+      st <- sample(seq_len(n - BLOCK + 1), ceiling(n / BLOCK), replace = TRUE)
+      r  <- unlist(map(st, ~ res[.x:(.x + BLOCK - 1)]))[1:n]
+      d  <- md; d$y <- fitv + r
+      f  <- try(lm(form, data = d), silent = TRUE)
+      if (inherits(f, "try-error")) return(NULL)
+      curve_of(f) %>% mutate(rep = b)
+    })
+
+    list(county = county, curve = curve, boot = boot,
+         stats = describe_curve(curve), r2 = summary(fit)$r.squared)
+  })
+
+  output$p_forecast <- renderPlot({
+    sized("p_forecast")
+    f <- forecast_fit()
+
+    ribbon <- f$boot %>%
+      group_by(doy) %>%
+      summarise(lo = quantile(index, 0.05), hi = quantile(index, 0.95), .groups = "drop")
+
+    s <- f$stats
+
+    ggplot() +
+      geom_point(data = f$county, aes(doy, index),
+                 colour = "grey70", size = 0.7, alpha = 0.6) +
+      geom_ribbon(data = ribbon, aes(doy, ymin = lo, ymax = hi),
+                  fill = "#2a6f97", alpha = 0.25) +
+      geom_line(data = f$curve, aes(doy, index), colour = "#2a6f97", linewidth = 1.2) +
+      geom_hline(yintercept = 1, linetype = "dotted", colour = "grey35") +
+      geom_vline(xintercept = s$peak_doy,   colour = "#c1121f", linetype = "dashed") +
+      geom_vline(xintercept = s$trough_doy, colour = "#e07a5f", linetype = "dashed") +
+      annotate("text", x = s$peak_doy + 4, y = max(f$curve$index),
+               label = paste0("peak ", doy_to_date(s$peak_doy)),
+               hjust = 0, colour = "#c1121f", size = 4) +
+      annotate("text", x = s$trough_doy + 4, y = min(f$curve$index),
+               label = paste0("trough ", doy_to_date(s$trough_doy)),
+               hjust = 0, colour = "#e07a5f", size = 4) +
+      scale_x_continuous(breaks = c(1, 60, 121, 182, 244, 305, 365),
+                         labels = c("Jan", "Mar", "May", "Jul", "Sep", "Nov", "Dec")) +
+      labs(title = "Predicted Naples traffic season",
+           subtitle = paste0(input$harmonics, " harmonics · R² = ", round(f$r2, 3),
+                             " · grey = actual 2024 days, band = 90% bootstrap"),
+           x = NULL, y = "Traffic (1.0 = average day)")
+  })
+
+  output$tbl_forecast <- renderTable({
+    s <- forecast_fit()$stats
+    tibble(
+      Measure = c("Season starts", "Peak", "Season ends", "Trough",
+                  "Peak level", "Trough level",
+                  "Decline from peak", "Increase from trough"),
+      Value = c(doy_to_date(s$start_doy), doy_to_date(s$peak_doy),
+                doy_to_date(s$end_doy),   doy_to_date(s$trough_doy),
+                paste0(round(s$peak_val, 3), "x average"),
+                paste0(round(s$trough_val, 3), "x average"),
+                paste0(round(s$decline_pct, 1), "%"),
+                paste0(round(s$increase_pct, 1), "%"))
+    )
+  }, striped = TRUE, hover = TRUE, width = "100%")
 
   # --- Origin states --------------------------------------------------------
   output$p_states <- renderPlot({

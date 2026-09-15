@@ -147,6 +147,20 @@ the genuine dead month — after the tourists, before the snowbirds, in the thic
 of hurricane season. Station 0094 troughs in June rather than September because
 its mix tilts the other way.
 
+### A third researcher degree of freedom
+
+The dashboard exposes the harmonic count as a slider, and it matters:
+
+| Harmonics | R² | "Season starts" |
+|---|---|---|
+| 1 | 0.708 | **2 Dec** |
+| 4 | 0.762 | **17 Nov** |
+
+A 15-day swing from a modelling choice, not from the data. Same lesson as the
+temperature threshold: report the number *and* how much it moves when you
+choose differently. Four harmonics is defensible — it captures the summer
+double dip that one harmonic smooths away — but it is still a choice.
+
 ### What these intervals do and do not mean
 
 The model is fitted to **one season**. The confidence intervals say *"how
