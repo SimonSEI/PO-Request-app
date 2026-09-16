@@ -28,6 +28,7 @@ COPY data/rsw_monthly_passengers.csv  data/rsw_monthly_passengers.csv
 COPY data/current_conditions.csv      data/current_conditions.csv
 COPY data/permanent_moves.csv         data/permanent_moves.csv
 COPY data/season_shape.csv            data/season_shape.csv
+COPY data/snowbird_origins.csv        data/snowbird_origins.csv
 
 # These two live in output/ because the analysis scripts write them there, but
 # the RUNNING APP reads them: season_forecast.csv supplies the four headline

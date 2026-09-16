@@ -45,7 +45,7 @@ spinner <- function(ui_element, height = "460px") {
   withSpinner(
     ui_element,
     type    = 4,
-    color   = "#2a6f97",
+    color   = "#007AFF",
     size    = 0.8,
     caption = "Please wait, graph is loading...",
     proxy.height = height
@@ -233,6 +233,108 @@ table tr:last-child td { border-bottom: none !important; }
 p { color: var(--ink-2); }
 strong { font-weight: 600; color: var(--ink); }
 .text-muted { color: var(--ink-3) !important; }
+
+/* ===========================================================================
+   Dashboard ground and overview grid
+   ---------------------------------------------------------------------------
+   The earlier pass put huge white cards on a near-white page, which glared.
+   The fix is the same one a macOS app window uses: a mid-grey ground, and
+   white kept to small, dense cards so bright surface is broken up by grey.
+   =========================================================================== */
+
+body { background: #E6E6EB !important; }
+body > .container-fluid { max-width: 1480px; margin-left: auto; margin-right: auto; }
+
+.card, .bslib-card {
+  border-radius: 14px !important;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.05), 0 1px 3px rgba(0,0,0,.06) !important;
+}
+
+div[style*='background:#eef4f8'], div[style*='background:#f8f9fa'] { background: #F2F2F7 !important; }
+div[style*='background:#fff5f5'] { background: #FFF3E6 !important; }
+
+.nav-tabs, .nav.nav-tabs { background: rgba(0,0,0,.065) !important; }
+
+/* header bar */
+.ov-top {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 20px 4px 14px;
+}
+.ov-top-title { font-size: 1.4rem; font-weight: 700; letter-spacing: -.028em; color: #1D1D1F; line-height: 1.15; }
+.ov-top-sub   { font-size: .83rem; color: #6E6E73; margin-top: 2px; }
+.ov-top-meta  {
+  font-size: .75rem; font-weight: 500; color: #515154; white-space: nowrap;
+  background: rgba(0,0,0,.06); padding: 5px 12px; border-radius: 999px;
+}
+
+/* grid of columns */
+.ov-grid {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px; align-items: start; margin-bottom: 22px;
+}
+@media (max-width: 1180px) { .ov-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 620px)  { .ov-grid { grid-template-columns: minmax(0, 1fr); } }
+
+.ov-col     { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.ov-colhead {
+  text-align: center; font-size: .8rem; font-weight: 600; color: #3A3A3C;
+  padding: 2px 0 2px; letter-spacing: -.005em;
+}
+
+/* the card */
+.ov-card {
+  background: #FFFFFF; border-radius: 14px; padding: 13px 15px 14px;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.045), 0 1px 3px rgba(0,0,0,.055);
+  min-width: 0;
+}
+.ov-title { font-size: .8rem; font-weight: 500; color: #3A3A3C; margin-bottom: 5px; }
+.ov-num {
+  font-size: 1.85rem; font-weight: 700; letter-spacing: -.035em; color: #1D1D1F;
+  line-height: 1.08; font-variant-numeric: tabular-nums;
+}
+.ov-unit {
+  font-size: .72rem; font-weight: 500; color: #8E8E93; letter-spacing: 0;
+  margin-left: 6px; vertical-align: .35em;
+}
+.ov-sub   { font-size: .775rem; color: #8E8E93; margin-top: 3px; line-height: 1.35; }
+.ov-foot  { font-size: .7rem; color: #AEAEB2; margin-top: 8px; line-height: 1.35; }
+.ov-delta { font-size: .78rem; font-weight: 600; margin-top: 3px; }
+.ov-delta.up   { color: #28A745; }
+.ov-delta.down { color: #FF3B30; }
+.ov-delta.flat { color: #8E8E93; }
+.ov-delta.warm { color: #E08600; }
+.ov-delta.cool { color: #007AFF; }
+
+.ov-side { display: flex; justify-content: space-between; align-items: flex-end; gap: 10px; }
+.ov-mini { font-size: .72rem; color: #8E8E93; text-align: right; line-height: 1.45; white-space: nowrap; }
+.ov-mini b { color: #1D1D1F; font-weight: 600; }
+
+/* sparklines */
+.ov-spark { display: block; width: 100%; height: auto; margin-top: 10px; overflow: visible; }
+.ov-axis  { display: flex; justify-content: space-between; font-size: .68rem; color: #AEAEB2; margin-top: 3px; }
+
+/* bars */
+.ov-bar-row  { display: flex; align-items: center; gap: 8px; margin: 8px 0; min-width: 0; }
+.ov-bar      { height: 11px; border-radius: 3px; flex: none; }
+.ov-bar-name { font-size: .76rem; font-weight: 600; color: #1D1D1F; line-height: 1.15; white-space: nowrap; }
+.ov-bar-val  { font-size: .72rem; color: #8E8E93; line-height: 1.15; white-space: nowrap; }
+
+/* donut */
+.ov-donut-wrap { display: flex; justify-content: center; padding: 6px 0 12px; }
+.ov-donut      { width: 60%; max-width: 168px; height: auto; }
+.ov-legend     { display: grid; grid-template-columns: 1fr 1fr; gap: 9px 10px; }
+.ov-leg        { display: flex; align-items: flex-start; gap: 7px; min-width: 0; }
+.ov-ring       { width: 13px; height: 13px; border-radius: 50%; border: 3px solid; flex: none; margin-top: 1px; }
+.ov-leg-name   { font-size: .75rem; font-weight: 600; color: #1D1D1F; line-height: 1.15; }
+.ov-leg-val    { font-size: .7rem; color: #8E8E93; line-height: 1.15; }
+
+/* gauge */
+.ov-gauge      { position: relative; height: 8px; border-radius: 4px; background: #E5E5EA; margin: 12px 0 2px; }
+.ov-gauge-fill { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
+.ov-gauge-zero { position: absolute; top: -3px; bottom: -3px; width: 2px; background: #8E8E93; border-radius: 1px; }
+
+.ov-card .why-tab { margin-top: .7rem; }
+
 ")
 
 # -----------------------------------------------------------------------------
@@ -283,15 +385,16 @@ chart_panel <- function(heading, plain, chart, method, footer = NULL) {
 theme_set(
   theme_minimal(base_size = 15) +
     theme(
-      plot.title      = element_text(size = 19, face = "bold", colour = "#1d3f5a",
+      plot.title      = element_text(size = 19, face = "bold", colour = "#1D1D1F",
                                      margin = margin(b = 4)),
-      plot.subtitle   = element_text(size = 13.5, colour = "grey30", lineheight = 1.2,
+      plot.subtitle   = element_text(size = 13.5, colour = "#6E6E73", lineheight = 1.2,
                                      margin = margin(b = 10)),
-      axis.title      = element_text(size = 14, colour = "grey25"),
-      axis.text       = element_text(size = 13, colour = "grey20"),
+      axis.title      = element_text(size = 14, colour = "#6E6E73"),
+      axis.text       = element_text(size = 13, colour = "#6E6E73"),
       legend.text     = element_text(size = 13),
       legend.title    = element_text(size = 13),
-      strip.text      = element_text(size = 14, face = "bold", colour = "#1d3f5a"),
+      strip.text      = element_text(size = 14, face = "bold", colour = "#1D1D1F"),
+      panel.grid.major = element_line(colour = "#ECECEF", linewidth = .4),
       panel.grid.minor = element_blank(),      # less clutter behind bigger text
       plot.margin     = margin(10, 14, 8, 8)
     )
@@ -781,24 +884,484 @@ trend_of <- function(w, column) {
   )
 }
 
+# -----------------------------------------------------------------------------
+# The 'why this date?' popovers
+# -----------------------------------------------------------------------------
+# Lifted out of the old value boxes so the overview cards can carry them.
+# Functions rather than objects, because live_trough() and friends read the
+# current conditions and should do so each time the page is built.
+why_trough <- function() {
+  why_tab(
+        "Why this date?",
+        tags$div(class="mb-2 pb-2", style="border-bottom:1px solid #dee2e6;",
+          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#c1121f;",
+                    "THIS YEAR")),
+        live_trough(),
+        tags$div(class="mt-3 mb-2 pt-2", style="border-top:1px solid #dee2e6;",
+          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#6c757d;",
+                    "IN A NORMAL YEAR")),
+        p(strong("The quietest point of the year."), "Late September is after",
+          "the summer visitors have gone and before the snowbirds arrive - and",
+          "it sits in the thick of hurricane season, which suppresses travel",
+          "on its own."),
+        p(strong("How we got it:"), "we fit a smooth repeating curve to every",
+          "day of 2024 traffic and take its lowest point. The date shown is the",
+          "next time that day of the year comes round."),
+        p(strong("Confidence:"), "17-26 September, 90%. The tightest of the",
+          "four dates - the curve drops steeply into the trough, so the bottom",
+          "is easy to locate."),
+        p(class = "text-muted mb-0",
+          strong("Caveat: "), "one station (0094) troughs in June instead. Not",
+          "every road is a snowbird road.")
+      )
+}
+
+why_start <- function() {
+  why_tab(
+        "Why this date?",
+        tags$div(class="mb-2 pb-2", style="border-bottom:1px solid #dee2e6;",
+          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#c1121f;",
+                    "THIS YEAR")),
+        live_start(),
+        tags$div(class="mt-3 mb-2 pt-2", style="border-top:1px solid #dee2e6;",
+          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#6c757d;",
+                    "IN A NORMAL YEAR")),
+        p(strong("The day traffic first climbs above an ordinary day"), "-",
+          "where the smoothed curve crosses 1.0 going up in autumn."),
+        p(strong("Why mid-November, not October:"), "the temperature gap reaches",
+          "its 'worth going' level around 16 October, but traffic does not",
+          "follow for another 25 days. People travel around Thanksgiving and",
+          "the holidays, not around the thermometer."),
+        p(strong("Confidence:"), "10 November to 7 December, 90%. The widest of",
+          "the four - the autumn climb is gradual, and a shallow slope makes",
+          "the crossing point genuinely uncertain."),
+        p(class = "text-muted mb-0",
+          strong("Also: "), "this moves with the curve-flexibility slider. At 1",
+          "wave it reads 2 December; at 4 it reads 17 November. The modelling",
+          "choice is worth about two weeks.")
+      )
+}
+
+why_peak <- function() {
+  why_tab(
+        "Why this date?",
+        tags$div(class="mb-2 pb-2", style="border-bottom:1px solid #dee2e6;",
+          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#c1121f;",
+                    "THIS YEAR")),
+        live_peak(),
+        tags$div(class="mt-3 mb-2 pt-2", style="border-top:1px solid #dee2e6;",
+          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#6c757d;",
+                    "IN A NORMAL YEAR")),
+        p(strong("The busiest stretch of the year."), "Early March, when the",
+          "snowbird population is fullest and spring-break traffic has started",
+          "arriving on top of it."),
+        p(strong("Read it as a window, not a day:"), "the curve is almost flat",
+          "from 20 February to 26 March - 35 days within 1% of the maximum.",
+          "A single date implies precision that is not there."),
+        p(strong("Confidence:"), "25 February to 21 March, 90%."),
+        p(class = "text-muted mb-0",
+          strong("Cross-check: "), "March is also the busiest month at the",
+          "airport in almost every year on record, and March 2026 set an",
+          "all-time monthly record. Two independent datasets agreeing on the",
+          "month is more persuasive than either alone.")
+      )
+}
+
+why_swing <- function() {
+  why_tab(
+        "Why these numbers?",
+        tags$div(class="mb-2 pb-2", style="border-bottom:1px solid #dee2e6;",
+          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#c1121f;",
+                    "THIS YEAR")),
+        live_swing(),
+        tags$div(class="mt-3 mb-2 pt-2", style="border-top:1px solid #dee2e6;",
+          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#6c757d;",
+                    "IN A NORMAL YEAR")),
+        p(strong("Two ways of describing one gap."), "Traffic falls 24% from the",
+          "March peak to the September trough. Coming back the other way it",
+          "rises 32%, because the starting point is smaller. Both are correct;",
+          "neither is 'the' number."),
+        p(strong("How we got it:"), "each station is converted to an index",
+          "against its own average day, so a quiet rural road and a stretch of",
+          "I-75 can be compared. We then take the high and low of the fitted",
+          "curve."),
+        p(strong("The spread between roads is large:"), "rural Everglades swings",
+          "34%, urban Naples 28%, one station only 17%. If you care about a",
+          "specific road, the county average will mislead you."),
+        p(class = "text-muted mb-0",
+          strong("Caveat: "), "this is traffic, not population. A visitor who",
+          "drives twice a day counts twice.")
+      )
+}
+
+# =============================================================================
+# OVERVIEW GRID
+# =============================================================================
+# The landing view: a dense grid of small cards, each carrying one number with
+# its unit and at most one small chart, grouped into four labelled columns. It
+# replaces the row of four large value boxes, which put a lot of bright surface
+# on screen to say very little.
+#
+# Everything here is plain HTML and inline SVG built in R, not plotOutput().
+# That is deliberate: it arrives with the page itself, so there is no batch
+# flush to wait on and no spinner, and the small charts stay crisp at any size.
+#
+# The page UI is a function of the request, so dates and "days away" are worked
+# out fresh on every load rather than frozen when the server started - which
+# matters on Railway, where one container can run for weeks.
+
+SYS <- list(blue = "#007AFF", green = "#34C759", orange = "#FF9500",
+            red = "#FF3B30", purple = "#AF52DE", teal = "#30B0C7",
+            indigo = "#5856D6", grey = "#8E8E93", faint = "#C7C7CC")
+
+COLLIER_HOMES <- 221970   # residential parcels in the 2026 Collier roll (R/08)
+
+STATE_NAMES <- c(NY = "New York", IL = "Illinois", MA = "Massachusetts",
+                 MI = "Michigan", OH = "Ohio", PA = "Pennsylvania",
+                 NJ = "New Jersey", IN = "Indiana", MN = "Minnesota",
+                 WI = "Wisconsin", CT = "Connecticut", "CANADA:ON" = "Ontario")
+
+snowbird_origins <- if (file.exists("data/snowbird_origins.csv")) {
+  read_csv("data/snowbird_origins.csv", show_col_types = FALSE)
+} else NULL
+
+# Busiest continuous stations. Part-year sensors are dropped because a station
+# that only ran through the winter would flatter its own average.
+STATION_TOP <- if (!is.null(traffic_daily)) {
+  traffic_daily %>%
+    group_by(county_name, site) %>%
+    summarise(days = n(), mean = mean(volume), .groups = "drop") %>%
+    filter(days >= 150) %>%
+    arrange(desc(mean)) %>%
+    slice_head(n = 5)
+} else NULL
+
+# Headline dates resolved at call time, so they never go stale.
+head_now <- function() {
+  if (is.null(fc_static)) return(NULL)
+  list(
+    trough     = next_occ_static(fc_static$trough_doy),
+    start      = next_occ_static(fc_static$start_doy),
+    peak       = next_occ_static(fc_static$peak_doy),
+    end        = next_occ_static(fc_static$end_doy),
+    decline    = fc_static$decline_pct,
+    increase   = fc_static$increase_pct,
+    peak_val   = fc_static$peak_val,
+    trough_val = fc_static$trough_val,
+    r2         = fc_static$model_r2
+  )
+}
+
+fmt_int   <- function(x) formatC(round(x), format = "d", big.mark = ",")
+day_month <- function(d) sub("^0", "", format(d, "%d %b"))
+
+days_away <- function(d) {
+  if (is.null(d) || is.na(d)) return("")
+  n <- as.numeric(d - Sys.Date())
+  if (n == 0) "today" else if (n == 1) "tomorrow" else paste(n, "days away")
+}
+
+# --- card parts ---------------------------------------------------------------
+ov_card <- function(title, ...) {
+  div(class = "ov-card", div(class = "ov-title", title), ...)
+}
+
+ov_num <- function(value, unit = NULL) {
+  div(class = "ov-num", value, if (!is.null(unit)) span(class = "ov-unit", unit))
+}
+
+ov_sub <- function(...) div(class = "ov-sub", ...)
+
+ov_delta <- function(text, direction = "flat", tone = direction) {
+  arrow <- switch(direction, up = "↑", down = "↓", "→")
+  div(class = paste("ov-delta", tone), paste(arrow, text))
+}
+
+# --- the seasonal curve, as a sparkline ----------------------------------------
+ov_season_spark <- function() {
+  cv <- seasonal_curve_static
+  if (is.null(cv) || is.null(fc_static)) return(NULL)
+
+  W <- 300; H <- 92; px <- 4; py <- 9
+  lo <- min(cv$index); hi <- max(cv$index)
+  sx <- function(d) px + (d - 1) / 364 * (W - 2 * px)
+  sy <- function(v) py + (hi - v) / (hi - lo) * (H - 2 * py)
+
+  s    <- cv[seq(1, nrow(cv), by = 3), ]
+  line <- paste0("M", paste(sprintf("%.1f,%.1f", sx(s$doy), sy(s$index)), collapse = " L"))
+  area <- sprintf("%s L%.1f,%d L%.1f,%d Z", line, sx(max(s$doy)), H, sx(min(s$doy)), H)
+  today <- min(as.numeric(format(Sys.Date(), "%j")), 365)
+
+  dot <- function(d, colour) {
+    v <- cv$index[cv$doy == d][1]
+    sprintf('<circle cx="%.1f" cy="%.1f" r="4.2" fill="%s" stroke="#fff" stroke-width="1.6"/>',
+            sx(d), sy(v), colour)
+  }
+
+  svg <- paste0(
+    sprintf('<svg class="ov-spark" viewBox="0 0 %d %d" role="img" aria-label="Seasonal traffic curve: busiest in early March, quietest in mid-September">', W, H),
+    '<defs><linearGradient id="ovSeason" x1="0" y1="0" x2="0" y2="1">',
+    sprintf('<stop offset="0" stop-color="%s" stop-opacity=".25"/><stop offset="1" stop-color="%s" stop-opacity="0"/>', SYS$blue, SYS$blue),
+    '</linearGradient></defs>',
+    sprintf('<path d="%s" fill="url(#ovSeason)"/>', area),
+    sprintf('<line x1="%.1f" y1="2" x2="%.1f" y2="%d" stroke="%s" stroke-width="1" stroke-dasharray="2 3"/>',
+            sx(today), sx(today), H, SYS$grey),
+    sprintf('<path d="%s" fill="none" stroke="%s" stroke-width="2.3" stroke-linejoin="round" stroke-linecap="round"/>',
+            line, SYS$blue),
+    dot(fc_static$peak_doy, SYS$green),
+    dot(fc_static$trough_doy, SYS$red),
+    '</svg>'
+  )
+
+  tagList(HTML(svg),
+          div(class = "ov-axis", span("Jan"), span("Apr"), span("Jul"), span("Oct"), span("Dec")),
+          div(class = "ov-foot", "Green peak · red trough · dashed line is today"))
+}
+
+# --- busiest stations, as horizontal bars --------------------------------------
+ov_bars <- function() {
+  st <- STATION_TOP
+  if (is.null(st) || nrow(st) == 0) return(NULL)
+  mx <- max(st$mean)
+
+  tagList(lapply(seq_len(nrow(st)), function(i) {
+    colour <- if (identical(st$county_name[i], "Lee")) SYS$purple else SYS$blue
+    div(class = "ov-bar-row",
+        div(class = "ov-bar",
+            style = sprintf("width:%.0f%%; background:%s;", 8 + 48 * st$mean[i] / mx, colour)),
+        div(div(class = "ov-bar-name",
+                paste0(st$county_name[i], " · station ", sub("^[0-9]+-", "", st$site[i]))),
+            div(class = "ov-bar-val", paste(fmt_int(st$mean[i]), "vehicles a day"))))
+  }))
+}
+
+# --- northern home states, as a donut -----------------------------------------
+ov_home_states <- function() {
+  o <- snowbird_origins
+  if (is.null(o) || nrow(o) == 0) return(NULL)
+  o <- arrange(o, desc(homes))
+
+  top  <- slice_head(o, n = 7)
+  vals <- c(top$homes, sum(o$homes) - sum(top$homes))
+  nm   <- unname(STATE_NAMES[top$origin])
+  labs <- c(ifelse(is.na(nm), top$origin, nm), "Everywhere else")
+  cols <- c(SYS$blue, SYS$green, SYS$orange, SYS$red, SYS$purple,
+            SYS$teal, SYS$indigo, SYS$faint)
+
+  tot <- sum(vals); r <- 38; C <- 2 * pi * r; gap <- 1.4; off <- 0
+  segs <- character()
+  for (i in seq_along(vals)) {
+    frac <- vals[i] / tot
+    len  <- max(C * frac - gap, 0.5)
+    segs <- c(segs, sprintf(
+      '<circle cx="50" cy="50" r="%.1f" fill="none" stroke="%s" stroke-width="15" stroke-dasharray="%.2f %.2f" stroke-dashoffset="%.2f" transform="rotate(-90 50 50)"/>',
+      r, cols[i], len, C - len, -off))
+    off <- off + C * frac
+  }
+
+  donut <- HTML(sprintf(
+    '<svg class="ov-donut" viewBox="0 0 100 100" role="img" aria-label="Share of snowbird-owned homes by northern home state">%s</svg>',
+    paste(segs, collapse = "")))
+
+  tagList(
+    div(class = "ov-donut-wrap", donut),
+    div(class = "ov-legend",
+        lapply(seq_along(vals), function(i) {
+          div(class = "ov-leg",
+              span(class = "ov-ring", style = sprintf("border-color:%s;", cols[i])),
+              div(div(class = "ov-leg-name", labs[i]),
+                  div(class = "ov-leg-val", sprintf("%.1f%%", 100 * vals[i] / tot))))
+        })),
+    div(class = "ov-foot", "Owner mail out of state, no homestead exemption · Collier property roll")
+  )
+}
+
+# --- airport arrivals this year against last ------------------------------------
+ov_arrivals_spark <- function() {
+  r <- rsw_monthly
+  if (is.null(r)) return(NULL)
+  yr  <- max(r$year)
+  cur <- r %>% filter(year == yr) %>% arrange(month)
+  prv <- r %>% filter(year == yr - 1) %>% arrange(month)
+  if (nrow(cur) < 2 || nrow(prv) < 2) return(NULL)
+
+  W <- 300; H <- 88; px <- 6; py <- 9
+  v  <- c(cur$passengers, prv$passengers); lo <- min(v); hi <- max(v)
+  sx <- function(m) px + (m - 1) / 11 * (W - 2 * px)
+  sy <- function(p) py + (hi - p) / (hi - lo) * (H - 2 * py)
+  path <- function(d) paste0("M", paste(sprintf("%.1f,%.1f", sx(d$month), sy(d$passengers)), collapse = " L"))
+
+  n <- nrow(cur)
+  dots <- paste(sprintf('<circle cx="%.1f" cy="%.1f" r="3.2" fill="#fff" stroke="%s" stroke-width="2"/>',
+                        sx(cur$month[-n]), sy(cur$passengers[-n]), SYS$blue), collapse = "")
+
+  svg <- paste0(
+    sprintf('<svg class="ov-spark" viewBox="0 0 %d %d" role="img" aria-label="Monthly airport passengers this year, with last year dashed">', W, H),
+    sprintf('<path d="%s" fill="none" stroke="%s" stroke-width="1.7" stroke-dasharray="3 3"/>', path(prv), SYS$faint),
+    sprintf('<path d="%s" fill="none" stroke="%s" stroke-width="2.3" stroke-linejoin="round"/>', path(cur), SYS$blue),
+    dots,
+    sprintf('<circle cx="%.1f" cy="%.1f" r="4.6" fill="%s"/>', sx(cur$month[n]), sy(cur$passengers[n]), SYS$blue),
+    '</svg>'
+  )
+
+  tagList(HTML(svg),
+          div(class = "ov-axis", span("Jan"), span("Jul"), span("Dec")),
+          div(class = "ov-foot", sprintf("RSW monthly · %d solid, %d dashed", yr, yr - 1)))
+}
+
+# --- El Nino, as a centred gauge -----------------------------------------------
+ov_gauge <- function(v) {
+  lo <- -2.5; hi <- 2.5
+  pos <- function(x) 100 * (min(max(x, lo), hi) - lo) / (hi - lo)
+  z <- pos(0); p <- pos(v)
+  colour <- if (v >= 0) SYS$orange else SYS$blue
+  tagList(
+    div(class = "ov-gauge",
+        div(class = "ov-gauge-fill",
+            style = sprintf("left:%.1f%%; width:%.1f%%; background:%s;", min(z, p), abs(p - z), colour)),
+        div(class = "ov-gauge-zero", style = sprintf("left:calc(%.1f%% - 1px);", z))),
+    div(class = "ov-axis", span("La Niña"), span("neutral"), span("El Niño"))
+  )
+}
+
+# --- header bar -----------------------------------------------------------------
+top_bar <- function() {
+  upd <- suppressWarnings(as.Date(substr(ctxt("updated"), 1, 10)))
+  div(class = "ov-top",
+      div(div(class = "ov-top-title", "Naples Snowbird Forecast"),
+          div(class = "ov-top-sub", "Collier + Lee County, Florida")),
+      div(class = "ov-top-meta",
+          paste("Conditions as of",
+                if (is.na(upd)) "-" else paste(day_month(upd), format(upd, "%Y")))))
+}
+
+# --- the grid -------------------------------------------------------------------
+overview_ui <- function() {
+  h <- head_now()
+  if (is.null(h)) return(NULL)
+
+  oni    <- cnum("oni_value");  north <- cnum("north_anom")
+  gapa   <- cnum("gap_anom");   ytd   <- cnum("rsw_ytd_change")
+  storms <- cnum("storms_atlantic")
+
+  winter <- if (is.na(north)) "unmeasured"
+            else if (north <= -1.5) "early"
+            else if (north <= -0.5) "slightly early"
+            else if (north >=  1.5) "late"
+            else if (north >=  0.5) "slightly late"
+            else "on time"
+
+  ytd_total <- if (!is.null(rsw_monthly)) {
+    yr <- max(rsw_monthly$year)
+    sum(rsw_monthly$passengers[rsw_monthly$year == yr])
+  } else NA
+
+  o <- snowbird_origins
+  sb_homes <- if (!is.null(o)) sum(o$homes) else NA
+  on <- if (!is.null(o)) o[o$origin == "CANADA:ON", ] else NULL
+  on_rank <- if (!is.null(on) && nrow(on) > 0) {
+    sum(o$homes[o$country == "USA"] > on$homes) + 1
+  } else NA
+
+  col <- function(head, ...) div(class = "ov-col", div(class = "ov-colhead", head), ...)
+
+  div(class = "ov-grid",
+
+    col("Season",
+      ov_card("Next trough",
+              ov_num(day_month(h$trough), format(h$trough, "%Y")),
+              ov_sub(days_away(h$trough)),
+              why_trough()),
+      ov_card("Season opens",
+              ov_num(day_month(h$start), format(h$start, "%Y")),
+              ov_sub(days_away(h$start), " · ends ", day_month(h$end)),
+              why_start()),
+      ov_card("Next peak",
+              div(class = "ov-side",
+                  ov_num(day_month(h$peak), format(h$peak, "%Y")),
+                  div(class = "ov-mini",
+                      div("↑ ", tags$b(sprintf("%.2f×", h$peak_val)), " busiest"),
+                      div("↓ ", tags$b(sprintf("%.2f×", h$trough_val)), " quietest"))),
+              ov_sub(days_away(h$peak)),
+              ov_season_spark(),
+              why_peak())
+    ),
+
+    col("Traffic",
+      ov_card("Peak vs trough",
+              ov_num(sprintf("+%.0f%%", h$increase), "at peak"),
+              ov_sub(sprintf("rise from the trough · %.0f%% fall back", h$decline)),
+              why_swing()),
+      ov_card("Busiest counting stations",
+              ov_bars(),
+              div(class = "ov-foot", "2024 daily counts · blue Collier, purple Lee")),
+      ov_card("Forecast model",
+              ov_num(sprintf("%.2f", h$r2), "R²"),
+              ov_sub("Harmonic regression · 600-run block bootstrap"))
+    ),
+
+    col("Northern homes",
+      ov_card("Snowbird homes by home state", ov_home_states()),
+      if (!is.na(sb_homes))
+        ov_card("Snowbird-owned homes",
+                ov_num(fmt_int(sb_homes), "homes"),
+                ov_sub(sprintf("%.0f%% of every home in Collier County",
+                               100 * sb_homes / COLLIER_HOMES))),
+      if (!is.null(on) && nrow(on) > 0)
+        ov_card("Ontario",
+                ov_num(fmt_int(on$homes), "homes"),
+                ov_sub(sprintf("would rank #%d as a US state · invisible to IRS data", on_rank)))
+    ),
+
+    col("Conditions",
+      if (!is.na(oni))
+        ov_card("El Niño index",
+                ov_num(sprintf("%+.2f", oni), "ONI"),
+                ov_gauge(oni),
+                ov_sub(sprintf("%s · %s Atlantic storms active",
+                               tools::toTitleCase(ctxt("oni_state")),
+                               if (is.na(storms)) "?" else format(storms)))),
+      if (!is.na(north))
+        ov_card("Northern home states",
+                ov_num(sprintf("%+.1f", north), "°F vs normal"),
+                ov_delta(paste("winter arriving", winter),
+                         direction = if (north >= 0) "up" else "down",
+                         tone = if (north >= 0) "warm" else "cool")),
+      if (!is.na(gapa))
+        ov_card("Migration gap",
+                ov_num(sprintf("%+.1f", gapa), "°F vs normal"),
+                ov_delta(if (gapa < -0.4) "weaker pull south than usual"
+                         else if (gapa > 0.4) "stronger pull south than usual"
+                         else "about a normal pull south",
+                         direction = if (gapa >= 0) "up" else "down",
+                         tone = if (gapa >= 0) "warm" else "cool")),
+      if (!is.na(ytd_total))
+        ov_card("Airport arrivals this year",
+                ov_num(sprintf("%.2f", ytd_total / 1e6), "M passengers"),
+                ov_delta(sprintf("%+.2f%% vs last year", ytd),
+                         direction = if (abs(ytd) < 0.5) "flat" else if (ytd > 0) "up" else "down"),
+                ov_arrivals_spark())
+    )
+  )
+}
+
+
 # =============================================================================
 # UI
 # =============================================================================
-ui <- page_fluid(
+# A function of the request, not a fixed object, so the overview's dates and
+# 'days away' are computed on every page load instead of when the server started.
+ui <- function(req) page_fluid(
 
     title = "Naples Snowbird Migration",
 
   # page_fluid does not render a title bar of its own the way page_sidebar
   # does, so the heading is drawn explicitly. Without this the page opens
   # straight onto the settings strip with nothing saying what it is.
-  div(
-    class = "d-flex align-items-baseline gap-3 mb-3 pb-2",
-    style = "border-bottom:2px solid #2a6f97;",
-    tags$h4("Naples Snowbird Migration", class = "mb-0 fw-bold",
-            style = "color:#1d3f5a;"),
-    tags$span(class = "text-muted small",
-              "Collier + Lee County, Florida - when the season starts, peaks and ends")
-  ),
+  top_bar(),
+
+  overview_ui(),
+
 
   tags$head(tags$style(WHY_CSS)),
 
@@ -830,126 +1393,6 @@ ui <- page_fluid(
   # trend turned out not to survive a threshold sweep (see the Robustness tab),
   # so it has no business being the first thing anyone reads. These four are
   # the numbers you would actually act on.
-  layout_columns(
-    fill = FALSE,
-
-    value_box(
-      title = "Next trough", value = head_date(HEAD$trough),
-      showcase = icon("arrow-trend-down"), theme = "secondary",
-      head_away(HEAD$trough),
-      why_tab(
-        "Why this date?",
-        tags$div(class="mb-2 pb-2", style="border-bottom:1px solid #dee2e6;",
-          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#c1121f;",
-                    "THIS YEAR")),
-        live_trough(),
-        tags$div(class="mt-3 mb-2 pt-2", style="border-top:1px solid #dee2e6;",
-          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#6c757d;",
-                    "IN A NORMAL YEAR")),
-        p(strong("The quietest point of the year."), "Late September is after",
-          "the summer visitors have gone and before the snowbirds arrive - and",
-          "it sits in the thick of hurricane season, which suppresses travel",
-          "on its own."),
-        p(strong("How we got it:"), "we fit a smooth repeating curve to every",
-          "day of 2024 traffic and take its lowest point. The date shown is the",
-          "next time that day of the year comes round."),
-        p(strong("Confidence:"), "17-26 September, 90%. The tightest of the",
-          "four dates - the curve drops steeply into the trough, so the bottom",
-          "is easy to locate."),
-        p(class = "text-muted mb-0",
-          strong("Caveat: "), "one station (0094) troughs in June instead. Not",
-          "every road is a snowbird road.")
-      )
-    ),
-
-    value_box(
-      title = "Season starts", value = head_date(HEAD$start),
-      showcase = icon("arrow-right-to-bracket"), theme = "info",
-      paste("season ends", head_date(HEAD$end)),
-      why_tab(
-        "Why this date?",
-        tags$div(class="mb-2 pb-2", style="border-bottom:1px solid #dee2e6;",
-          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#c1121f;",
-                    "THIS YEAR")),
-        live_start(),
-        tags$div(class="mt-3 mb-2 pt-2", style="border-top:1px solid #dee2e6;",
-          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#6c757d;",
-                    "IN A NORMAL YEAR")),
-        p(strong("The day traffic first climbs above an ordinary day"), "-",
-          "where the smoothed curve crosses 1.0 going up in autumn."),
-        p(strong("Why mid-November, not October:"), "the temperature gap reaches",
-          "its 'worth going' level around 16 October, but traffic does not",
-          "follow for another 25 days. People travel around Thanksgiving and",
-          "the holidays, not around the thermometer."),
-        p(strong("Confidence:"), "10 November to 7 December, 90%. The widest of",
-          "the four - the autumn climb is gradual, and a shallow slope makes",
-          "the crossing point genuinely uncertain."),
-        p(class = "text-muted mb-0",
-          strong("Also: "), "this moves with the curve-flexibility slider. At 1",
-          "wave it reads 2 December; at 4 it reads 17 November. The modelling",
-          "choice is worth about two weeks.")
-      )
-    ),
-
-    value_box(
-      title = "Next peak", value = head_date(HEAD$peak),
-      showcase = icon("arrow-trend-up"), theme = "primary",
-      head_away(HEAD$peak),
-      why_tab(
-        "Why this date?",
-        tags$div(class="mb-2 pb-2", style="border-bottom:1px solid #dee2e6;",
-          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#c1121f;",
-                    "THIS YEAR")),
-        live_peak(),
-        tags$div(class="mt-3 mb-2 pt-2", style="border-top:1px solid #dee2e6;",
-          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#6c757d;",
-                    "IN A NORMAL YEAR")),
-        p(strong("The busiest stretch of the year."), "Early March, when the",
-          "snowbird population is fullest and spring-break traffic has started",
-          "arriving on top of it."),
-        p(strong("Read it as a window, not a day:"), "the curve is almost flat",
-          "from 20 February to 26 March - 35 days within 1% of the maximum.",
-          "A single date implies precision that is not there."),
-        p(strong("Confidence:"), "25 February to 21 March, 90%."),
-        p(class = "text-muted mb-0",
-          strong("Cross-check: "), "March is also the busiest month at the",
-          "airport in almost every year on record, and March 2026 set an",
-          "all-time monthly record. Two independent datasets agreeing on the",
-          "month is more persuasive than either alone.")
-      )
-    ),
-
-    value_box(
-      title = "Peak vs trough", value = sprintf("+%.0f%%", HEAD$increase),
-      showcase = icon("arrows-up-down"), theme = "success",
-      sprintf("rise from trough; %.0f%% fall from peak", HEAD$decline),
-      why_tab(
-        "Why these numbers?",
-        tags$div(class="mb-2 pb-2", style="border-bottom:1px solid #dee2e6;",
-          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#c1121f;",
-                    "THIS YEAR")),
-        live_swing(),
-        tags$div(class="mt-3 mb-2 pt-2", style="border-top:1px solid #dee2e6;",
-          tags$span(style="font-size:.72rem;font-weight:600;letter-spacing:.04em;color:#6c757d;",
-                    "IN A NORMAL YEAR")),
-        p(strong("Two ways of describing one gap."), "Traffic falls 24% from the",
-          "March peak to the September trough. Coming back the other way it",
-          "rises 32%, because the starting point is smaller. Both are correct;",
-          "neither is 'the' number."),
-        p(strong("How we got it:"), "each station is converted to an index",
-          "against its own average day, so a quiet rural road and a stretch of",
-          "I-75 can be compared. We then take the high and low of the fitted",
-          "curve."),
-        p(strong("The spread between roads is large:"), "rural Everglades swings",
-          "34%, urban Naples 28%, one station only 17%. If you care about a",
-          "specific road, the county average will mislead you."),
-        p(class = "text-muted mb-0",
-          strong("Caveat: "), "this is traffic, not population. A visitor who",
-          "drives twice a day counts twice.")
-      )
-    )
-  ),
-
   navset_card_tab(
 
     # -------------------------------------------------------------------------
@@ -1581,7 +2024,7 @@ server <- function(input, output, session) {
       ggplot(aes(season_year, d, colour = edge)) +
       geom_point(size = 2.8, alpha = 0.85) +
       geom_smooth(method = "lm", se = TRUE, linewidth = 1) +
-      scale_colour_manual(values = c("#e07a5f", "#3d5a80")) +
+      scale_colour_manual(values = c("#FF9500", "#5856D6")) +
       scale_y_continuous(breaks = c(92, 153, 214, 275, 336),
                          labels = c("1 Oct", "1 Dec", "1 Feb", "1 Apr", "1 Jun")) +
       labs(title = "When does the migration window open and close?",
@@ -1600,13 +2043,13 @@ server <- function(input, output, session) {
       group_by(doy) %>%
       summarise(g = mean(gap_smooth), .groups = "drop") %>%
       ggplot(aes(doy, g)) +
-      geom_area(fill = "#2a6f97", alpha = 0.15) +
-      geom_line(colour = "#2a6f97", linewidth = 1.3) +
+      geom_area(fill = "#007AFF", alpha = 0.15) +
+      geom_line(colour = "#007AFF", linewidth = 1.3) +
       geom_hline(yintercept = THRESHOLD, linetype = "dashed",
-                 colour = "#c1121f", linewidth = 0.8) +
+                 colour = "#FF3B30", linewidth = 0.8) +
       annotate("text", x = 183, y = THRESHOLD + 1.6,
                label = paste0("threshold: ", THRESHOLD, "°F"),
-               colour = "#c1121f", hjust = 0, size = LBL) +
+               colour = "#FF3B30", hjust = 0, size = LBL) +
       scale_x_continuous(breaks = c(1, 60, 121, 182, 244, 305),
                          labels = c("Jan", "Mar", "May", "Jul", "Sep", "Nov")) +
       labs(title = "How much warmer is Naples than back home?",
@@ -1641,9 +2084,9 @@ server <- function(input, output, session) {
       geom_line(colour = "grey75") +
       geom_point(aes(colour = sig), size = 2.8) +
       geom_vline(xintercept = THRESHOLD, linetype = "dotted",
-                 colour = "#2a6f97", linewidth = 0.8) +
+                 colour = "#007AFF", linewidth = 0.8) +
       facet_wrap(~measure, ncol = 1, scales = "free_y") +
-      scale_colour_manual(values = c("p < 0.05" = "#c1121f",
+      scale_colour_manual(values = c("p < 0.05" = "#FF3B30",
                                      "not significant" = "grey55")) +
       labs(title = "Does the finding survive a different threshold?",
            subtitle = "Blue dotted line = your current setting. Above zero = later.",
@@ -1686,8 +2129,8 @@ server <- function(input, output, session) {
       scale_y_continuous(name = "Traffic (1.0 = average day)",
                          sec.axis = sec_axis(~ to_g(.), name = "Temperature gap (°F)")) +
       scale_x_date(date_labels = "%b", date_breaks = "1 month") +
-      scale_colour_manual(values = c("Traffic" = "#c1121f",
-                                     "Temperature gap" = "#2a6f97")) +
+      scale_colour_manual(values = c("Traffic" = "#FF3B30",
+                                     "Temperature gap" = "#007AFF")) +
       labs(title = "Do snowbirds follow the thermometer?",
            subtitle = paste0("Collier + Lee daily traffic vs the gap, 2024. ",
                              "Hurricanes removed. r = ", round(r, 2)),
@@ -1701,7 +2144,7 @@ server <- function(input, output, session) {
   # R/09 with a second year of traffic and every figure below moves with it;
   # nothing here has to be edited by hand.
   output$report <- renderUI({
-    s      <- HEAD
+    s      <- head_now()
     trough <- head_date(s$trough); start <- head_date(s$start)
     peak   <- head_date(s$peak);   endd  <- head_date(s$end)
 
@@ -1815,8 +2258,8 @@ server <- function(input, output, session) {
       geom_point(size = 2.8) +
       scale_y_continuous(labels = comma) +
       scale_x_continuous(breaks = seq(2012, 2023, 2)) +
-      scale_colour_manual(values = c("From northern states" = "#c1121f",
-                                     "From anywhere out of state" = "#3d5a80")) +
+      scale_colour_manual(values = c("From northern states" = "#FF3B30",
+                                     "From anywhere out of state" = "#5856D6")) +
       labs(title = "People moving permanently into Collier County",
            subtitle = "IRS tax-address changes. These are moves, not visits.",
            x = NULL, y = "People per year", colour = NULL) +
@@ -1833,8 +2276,8 @@ server <- function(input, output, session) {
 
     ggplot(clean, aes(season, shoulder_ratio)) +
       geom_line(colour = "grey70", linewidth = 0.9) +
-      geom_point(size = 2.8, colour = "#3d5a80") +
-      geom_smooth(method = "lm", se = TRUE, colour = "#c1121f", linewidth = 1.2) +
+      geom_point(size = 2.8, colour = "#5856D6") +
+      geom_smooth(method = "lm", se = TRUE, colour = "#FF3B30", linewidth = 1.2) +
       labs(title = "Are seasonal visitors staying longer?",
            subtitle = paste0("Shoulder months (Oct, Apr, May) against the Dec-Mar core. ",
                              "Rising would mean longer stays.\n",
@@ -1933,7 +2376,7 @@ server <- function(input, output, session) {
 
   output$sim_explain <- renderUI({
     s <- sim()
-    colour <- if (s$shift_days == 0) "#6c757d" else if (s$shift_days < 0) "#c1121f" else "#3d5a80"
+    colour <- if (s$shift_days == 0) "#6c757d" else if (s$shift_days < 0) "#FF3B30" else "#5856D6"
 
     div(class = "p-3", style = paste0(
           "background:#f8f9fa; border-left:4px solid ", colour, "; border-radius:4px;"),
@@ -1978,7 +2421,7 @@ server <- function(input, output, session) {
                 linewidth = 1.7) +
       geom_hline(yintercept = 1, linetype = "dotted", colour = "grey40") +
       scale_colour_manual(values = c("Normal year" = "grey45",
-                                     "Simulated" = "#c1121f")) +
+                                     "Simulated" = "#FF3B30")) +
       scale_x_continuous(breaks = c(1, 60, 121, 182, 244, 305, 365),
                          labels = c("Jan", "Mar", "May", "Jul", "Sep", "Nov", "Dec")) +
       labs(
@@ -2049,7 +2492,7 @@ server <- function(input, output, session) {
                  size = 3.0) +
       scale_x_continuous(breaks = 1:12, labels = MONTH_ABB, limits = c(1, 12)) +
       scale_y_continuous(labels = comma) +
-      scale_colour_manual(values = setNames(c("#c1121f", "#3d5a80"),
+      scale_colour_manual(values = setNames(c("#FF3B30", "#5856D6"),
                                             c(as.character(y$year),
                                               as.character(y$year - 1))),
                           name = NULL) +
@@ -2188,17 +2631,17 @@ server <- function(input, output, session) {
       geom_point(data = f$county, aes(doy, index),
                  colour = "grey70", size = 0.9, alpha = 0.6) +
       geom_ribbon(data = ribbon, aes(doy, ymin = lo, ymax = hi),
-                  fill = "#2a6f97", alpha = 0.25) +
-      geom_line(data = f$curve, aes(doy, index), colour = "#2a6f97", linewidth = 1.2) +
+                  fill = "#007AFF", alpha = 0.25) +
+      geom_line(data = f$curve, aes(doy, index), colour = "#007AFF", linewidth = 1.2) +
       geom_hline(yintercept = 1, linetype = "dotted", colour = "grey35") +
-      geom_vline(xintercept = s$peak_doy,   colour = "#c1121f", linetype = "dashed") +
-      geom_vline(xintercept = s$trough_doy, colour = "#e07a5f", linetype = "dashed") +
+      geom_vline(xintercept = s$peak_doy,   colour = "#FF3B30", linetype = "dashed") +
+      geom_vline(xintercept = s$trough_doy, colour = "#FF9500", linetype = "dashed") +
       annotate("text", x = s$peak_doy + 4, y = max(f$curve$index),
                label = paste0("peak ", doy_to_date(s$peak_doy)),
-               hjust = 0, colour = "#c1121f", size = LBL) +
+               hjust = 0, colour = "#FF3B30", size = LBL) +
       annotate("text", x = s$trough_doy + 4, y = min(f$curve$index),
                label = paste0("trough ", doy_to_date(s$trough_doy)),
-               hjust = 0, colour = "#e07a5f", size = LBL) +
+               hjust = 0, colour = "#FF9500", size = LBL) +
       scale_x_continuous(breaks = c(1, 60, 121, 182, 244, 305, 365),
                          labels = c("Jan", "Mar", "May", "Jul", "Sep", "Nov", "Dec")) +
       labs(title = "Predicted southwest Florida traffic season",
@@ -2229,7 +2672,7 @@ server <- function(input, output, session) {
       slice_head(n = 15) %>%
       mutate(state = fct_reorder(state, people)) %>%
       ggplot(aes(people, state)) +
-      geom_col(fill = "#3d5a80", alpha = 0.9) +
+      geom_col(fill = "#5856D6", alpha = 0.9) +
       geom_text(aes(label = paste0(round(100 * share, 1), "%")),
                 hjust = -0.15, size = LBL - 0.6) +
       scale_x_continuous(labels = comma, expand = expansion(c(0, 0.14))) +
@@ -2257,8 +2700,8 @@ server <- function(input, output, session) {
       summarise(median_aadt = median(aadt), sites = n(), .groups = "drop") %>%
       filter(sites >= 20) %>%
       ggplot(aes(year, median_aadt)) +
-      geom_line(colour = "#3d5a80", linewidth = 1.3) +
-      geom_point(size = 1.6, colour = "#3d5a80") +
+      geom_line(colour = "#5856D6", linewidth = 1.3) +
+      geom_point(size = 1.6, colour = "#5856D6") +
       scale_y_continuous(labels = comma) +
       labs(title = "Fifty years of Naples traffic",
            subtitle = "Median AADT across Collier + Lee counting sites",
