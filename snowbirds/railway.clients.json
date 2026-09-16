@@ -1,0 +1,19 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "clients/Dockerfile",
+    "watchPatterns": [
+      "/snowbirds/clients/**",
+      "/snowbirds/R/jobber_api.R",
+      "/snowbirds/R/17_jobber_pull.R",
+      "/snowbirds/R/18_client_second_homes.R",
+      "/snowbirds/output/season_forecast.csv",
+      "/snowbirds/data/current_conditions.csv"
+    ]
+  },
+  "deploy": {
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 5
+  }
+}

@@ -1,9 +1,10 @@
 # =============================================================================
-# SNOWBIRD CLIENTS - private Railway service
+# SNOWBIRD CLIENTS - the clients tool inside the Office App's Snowbirds app
 # =============================================================================
-# A separate app from the public forecast dashboard, on purpose: this one holds
-# client names, addresses and quote values, so it sits behind a password and
-# keeps everything on its own Railway volume. Nothing here is in GitHub.
+# Part of the Office App: people open it from the Snowbirds card, and the
+# Office App's own login and roles decide who gets in (admin and office only).
+# It holds client names, addresses and quote values, so it keeps everything on
+# its own Railway volume. Nothing here is in GitHub.
 #
 #   - Connect Jobber   read-only OAuth; the admin approves on Jobber's own page
 #   - Every day 7am ET pull quotes, refresh the property roll monthly, rebuild
@@ -14,7 +15,8 @@
 # It never writes to Jobber and never sends anything to anyone.
 #
 # Railway variables (set in the Railway dashboard, never in code):
-#   CLIENTS_PASSWORD, JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET, JOBBER_CALLBACK_URL
+#   SNOWBIRDS_SSO_SECRET (shared with the Office App), OFFICE_APP_URL,
+#   JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET, JOBBER_CALLBACK_URL
 # =============================================================================
 
 # The pipeline scripts use paths from the project root. Shiny runs button
@@ -40,8 +42,57 @@ OUT_DIR  <- Sys.getenv("SNOWBIRD_CLIENT_OUT", "output/clients")
 PLAN_CSV <- file.path(OUT_DIR, "quote_resend_plan.csv")
 DB_CSV   <- file.path(OUT_DIR, "client_second_homes.csv")
 LOG_FILE <- file.path(JOBBER_DIR, "refresh_log.txt")
-PASSWORD <- Sys.getenv("CLIENTS_PASSWORD")
 TZ       <- "America/New_York"
+OFFICE_URL <- sub("/+$", "", Sys.getenv("OFFICE_APP_URL", "https://web-production-01609.up.railway.app"))
+
+# -----------------------------------------------------------------------------
+# Sign-in from the Office App
+# -----------------------------------------------------------------------------
+# The Office App (Python) checks its own login and role, then sends the browser
+# here with a short-lived signed ticket:  base64url("sso|user|role|expiry").hmac
+# signed with SNOWBIRDS_SSO_SECRET, which both services share and nobody types.
+# A valid ticket becomes a 12-hour signed cookie so a page reload does not bounce
+# people back to the Office App. Same format, purpose "session".
+SSO_SECRET    <- Sys.getenv("SNOWBIRDS_SSO_SECRET")
+ALLOWED_ROLES <- c("admin", "office")
+SESSION_HOURS <- 12
+
+b64url_decode <- function(s) {
+  s <- chartr("-_", "+/", s)
+  s <- paste0(s, strrep("=", (4 - nchar(s) %% 4) %% 4))
+  rawToChar(openssl::base64_decode(s))
+}
+
+sign_ticket <- function(purpose, user, role, expires) {
+  payload <- paste(purpose, user, role, as.integer(expires), sep = "|")
+  sig <- as.character(openssl::sha256(payload, key = SSO_SECRET))
+  paste0(b64url(charToRaw(payload)), ".", sig)
+}
+
+# Returns list(user, role) for a valid, unexpired ticket of that purpose; else NULL.
+verify_ticket <- function(ticket, purpose) {
+  if (!nzchar(SSO_SECRET) || is.null(ticket) || !nzchar(ticket)) return(NULL)
+  parts <- strsplit(ticket, ".", fixed = TRUE)[[1]]
+  if (length(parts) != 2) return(NULL)
+  payload <- tryCatch(b64url_decode(parts[1]), error = function(e) NA_character_)
+  if (is.na(payload)) return(NULL)
+  expected <- as.character(openssl::sha256(payload, key = SSO_SECRET))
+  # Compare digests of the two signatures so the comparison time does not leak
+  # how many leading characters matched.
+  if (!identical(as.character(openssl::sha256(parts[2])), as.character(openssl::sha256(expected)))) return(NULL)
+  f <- strsplit(payload, "|", fixed = TRUE)[[1]]
+  if (length(f) != 4 || f[1] != purpose) return(NULL)
+  if (suppressWarnings(as.numeric(f[4])) < as.numeric(Sys.time())) return(NULL)
+  if (!(f[3] %in% ALLOWED_ROLES)) return(NULL)
+  list(user = f[2], role = f[3])
+}
+
+read_cookie <- function(cookie_header, name) {
+  if (is.null(cookie_header) || !nzchar(cookie_header)) return(NULL)
+  kv <- strsplit(strsplit(cookie_header, ";\\s*")[[1]], "=", fixed = FALSE)
+  for (p in kv) if (length(p) >= 2 && p[1] == name) return(paste(p[-1], collapse = "="))
+  NULL
+}
 dir.create(OUT_DIR, showWarnings = FALSE, recursive = TRUE)
 
 log_line <- function(...) {
@@ -118,6 +169,13 @@ ui <- page_fluid(
     tags$script(HTML("
       Shiny.addCustomMessageHandler('go', function(url) { window.location.href = url; });
       Shiny.addCustomMessageHandler('cleanUrl', function(x) { history.replaceState(null, '', location.pathname); });
+      Shiny.addCustomMessageHandler('setSession', function(x) {
+        document.cookie = 'sb_session=' + x.value + '; path=/; max-age=' + x.maxAge + '; secure; samesite=lax';
+      });
+      Shiny.addCustomMessageHandler('clearSession', function(x) {
+        document.cookie = 'sb_session=; path=/; max-age=0; secure; samesite=lax';
+        window.location.href = x;
+      });
     "))
   ),
   uiOutput("page")
@@ -128,44 +186,47 @@ ui <- page_fluid(
 # -----------------------------------------------------------------------------
 server <- function(input, output, session) {
 
-  authed  <- reactiveVal(FALSE)
-  fails   <- 0
+  # Signed in already? A still-valid session cookie from an earlier visit.
+  who     <- reactiveVal(verify_ticket(read_cookie(session$request$HTTP_COOKIE, "sb_session"), "session"))
+  authed  <- reactive(!is.null(who()))
   flash   <- reactiveVal(NULL)
   tick    <- reactiveVal(0)          # bumped after a manual refresh or connect
 
-  # --- Jobber redirect lands here (?code=...&state=...) -----------------------
-  # Handled before login: the state value was created by a logged-in user when
-  # they clicked Connect, so a match is the proof this sign-in is ours.
   observeEvent(session$clientData$url_search, once = TRUE, {
     qs <- parseQueryString(session$clientData$url_search)
+
+    # --- Arriving from the Office App's Snowbirds card (?sso=...) -------------
+    if (!is.null(qs$sso)) {
+      session$sendCustomMessage("cleanUrl", TRUE)
+      w <- verify_ticket(qs$sso, "sso")
+      if (is.null(w)) {
+        flash(list(type = "warning", text = "That sign-in link has expired. Open Snowbirds from the Office App again."))
+        return()
+      }
+      expires <- Sys.time() + SESSION_HOURS * 3600
+      session$sendCustomMessage("setSession", list(value = sign_ticket("session", w$user, w$role, expires),
+                                                   maxAge = SESSION_HOURS * 3600))
+      who(w)
+      return()
+    }
+
+    # --- Jobber redirect lands here (?code=...&state=...) ---------------------
+    # The state value was created by a signed-in user when they clicked
+    # Connect, so a match is the proof this sign-in is ours.
     if (is.null(qs$code) && is.null(qs$error)) return()
     session$sendCustomMessage("cleanUrl", TRUE)
     if (!is.null(qs$error)) {
       flash(list(type = "warning", text = paste("Jobber did not connect:", qs$error)))
       return()
     }
-    res <- tryCatch(paste0("Connected to Jobber account “", jobber_auth_finish(qs$code, qs$state),
-                           "”. Log in to pull quotes."),
+    res <- tryCatch(paste0("Connected to Jobber account “", jobber_auth_finish(qs$code, qs$state), "”."),
                     error = function(e) paste("Jobber did not connect:", conditionMessage(e)))
     flash(list(type = if (startsWith(res, "Connected")) "success" else "warning", text = res))
     tick(tick() + 1)
   })
 
-  observeEvent(input$login, {
-    if (!nzchar(PASSWORD)) {
-      flash(list(type = "danger", text = "CLIENTS_PASSWORD is not set on this Railway service, so nobody can log in yet."))
-      return()
-    }
-    if (fails >= 5) {
-      flash(list(type = "danger", text = "Too many attempts. Reload the page to try again."))
-      return()
-    }
-    ok <- identical(as.character(openssl::sha256(input$pw %||% "")), as.character(openssl::sha256(PASSWORD)))
-    if (ok) { authed(TRUE); flash(NULL) } else {
-      fails <<- fails + 1
-      Sys.sleep(1)
-      flash(list(type = "danger", text = "Wrong password."))
-    }
+  observeEvent(input$signout, {
+    session$sendCustomMessage("clearSession", paste0(OFFICE_URL, "/dashboard"))
   })
 
   observeEvent(input$connect, {
@@ -206,12 +267,12 @@ server <- function(input, output, session) {
     if (!authed()) {
       return(div(class = "login",
         div(class = "tile",
-          div(class = "top-title mb-1", "Snowbird Clients"),
-          div(class = "top-sub mb-3", "Private. Client data from Jobber."),
+          div(class = "top-title mb-1", "Snowbirds"),
+          div(class = "top-sub mb-3", "Part of the Office App. Admin and office users only."),
           flash_ui(),
-          passwordInput("pw", NULL, placeholder = "Password", width = "100%"),
-          actionButton("login", "Log in", class = "btn-primary w-100"),
-          tags$script(HTML("$(document).on('keyup', '#pw', function(e){ if(e.key==='Enter') $('#login').click(); });"))
+          if (!nzchar(SSO_SECRET)) div(class = "alert alert-warning py-2",
+            "SNOWBIRDS_SSO_SECRET is not set on this service, so sign-in from the Office App cannot work yet."),
+          tags$a(class = "btn btn-primary w-100", href = paste0(OFFICE_URL, "/snowbirds"), "Open from the Office App")
         )))
     }
 
@@ -237,7 +298,9 @@ server <- function(input, output, session) {
                        class = if (connected) "btn-outline-secondary btn-sm" else "btn-primary btn-sm",
                        disabled = !has_creds),
           actionButton("refresh", "Refresh now", class = "btn-outline-primary btn-sm",
-                       disabled = !connected))),
+                       disabled = !connected),
+          tags$a(class = "btn btn-outline-secondary btn-sm", href = paste0(OFFICE_URL, "/dashboard"), "← Office App"),
+          actionButton("signout", paste("Sign out", who()$user), class = "btn-link btn-sm text-secondary"))),
 
       flash_ui(),
       if (!has_creds) div(class = "alert alert-warning py-2",
@@ -321,7 +384,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$switch_off, {
     req(authed())
-    set_switch(FALSE)
+    set_switch(FALSE, who()$user)
     sw_tick(sw_tick() + 1)
     flash(list(type = "success", text = "Automatic resends are OFF. Nothing will be sent."))
   })
@@ -340,7 +403,7 @@ server <- function(input, output, session) {
   observeEvent(input$switch_on_confirm, {
     req(authed())
     removeModal()
-    set_switch(TRUE)
+    set_switch(TRUE, who()$user)
     sw_tick(sw_tick() + 1)
     flash(list(type = "warning", text = "Automatic resends are ON."))
   })

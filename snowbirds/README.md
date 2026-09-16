@@ -519,14 +519,18 @@ The FTI database is the unlock for deep monthly history. That's phase 2.
 
 ## Jobber: which clients are snowbirds, and when to resend their quotes
 
-A **private Railway service** (`clients/`), separate from the public dashboard, connects to Jobber (read-only). It works out which clients have a home up north, predicts when each one comes back, and schedules each outstanding quote for a resend with 10% off. **Nothing is sent and nothing in Jobber is changed.** The output is a list for a person to act on.
+**Part of the Office App.** Admin and office users open the **Snowbirds** card on the Office App dashboard. The Office App's own login and roles decide who gets in; `/snowbirds/clients` hands the clients service a signed 2-minute ticket (HMAC with `SNOWBIRDS_SSO_SECRET`), which becomes a 12-hour session cookie. Technicians and property managers never see the card and are refused if they try the link.
 
-**How it runs.** `clients/Dockerfile` builds from the repo root and reuses `R/jobber_api.R`, `R/17_jobber_pull.R` and `R/18_client_second_homes.R`. A Railway volume at `/data` holds the Jobber tokens, pulled quotes, the property roll and the plan, so they survive redeploys. Every day at 7:00 am Eastern (and on **Refresh now**) the service pulls quotes, re-downloads the Collier roll if it is over a month old, and rebuilds the plan.
+The clients service (`clients/`) connects to Jobber, works out which clients have a home up north, predicts when each one comes back, and schedules each outstanding quote for a resend with 10% off. Automatic sending sits behind an on-page **kill switch** that starts OFF, and only *awaiting response* quotes are ever eligible.
 
-**Setup, once:**
-1. In the Jobber developer app ([developer.getjobber.com](https://developer.getjobber.com)), set the callback URL to the clients service's Railway address. Scopes: **read** Clients, Quotes and Jobs only.
-2. On the Railway clients service, add the variables `JOBBER_CLIENT_ID`, `JOBBER_CLIENT_SECRET` and `CLIENTS_PASSWORD`. `JOBBER_CALLBACK_URL` is already set to the service's address.
-3. Open the service, log in, click **Connect Jobber**. A Jobber admin approves on Jobber's page, then clicks **Refresh now**.
+**How it runs.** In Railway (project *po request app*), two services build from this repo with root directory `snowbirds`: the forecast (`railway.forecast.json`, `Dockerfile`) and the clients tool (`railway.clients.json`, `clients/Dockerfile`). Each names its own config file, so neither picks up the Office App's `railway.json`. A volume at `/data` on the clients service holds the Jobber tokens, pulled quotes, the property roll, the kill switch and the send history, so they survive redeploys. Every day at 7:00 am Eastern (and on **Refresh now**) it pulls quotes, re-downloads the Collier roll if it is over a month old, and rebuilds the plan. Only the 7am run can send.
+
+**Railway variables.**
+- Shared (project level): `SNOWBIRDS_SSO_SECRET`, referenced by both the Office App and the clients service.
+- Office App: `SNOWBIRDS_CLIENTS_URL`, `SNOWBIRDS_FORECAST_URL`.
+- Clients service: `JOBBER_CLIENT_ID`, `JOBBER_CLIENT_SECRET`, `JOBBER_CALLBACK_URL` (its own address, with trailing slash), `OFFICE_APP_URL`.
+
+**Setup, once:** set the Jobber app's callback URL to the clients service address, open Snowbirds from the Office App, click **Connect Jobber** (a Jobber admin approves), then **Refresh now**.
 
 **How a client counts as a snowbird.** There are two independent checks:
 - **Property roll.** The job address has no homestead exemption and the tax mail goes out of state. This is the same test R/08 uses.
@@ -536,7 +540,7 @@ Both checks agree → *confirmed*. Only one → *likely*. A homestead exemption 
 
 **When they're back.** If a client has two or more past seasons on file, we use their own habit: the date of their first autumn quote or job. With one season, we take the earlier of that date and the area forecast. With none, the area forecast's season opening. **Resend** 14 days before that. If the date has passed and the season is still on, the plan says send now.
 
-**Privacy.** Client data lives only on the clients service's Railway volume, behind a password. None of it is in GitHub or in either Docker image, and the public dashboard never sees it. Credentials are Railway variables, never code.
+**Privacy.** Client data lives only on the clients service's Railway volume, behind the Office App login. None of it is in GitHub or in either Docker image, and the public dashboard never sees it. Credentials are Railway variables, never code.
 
 Outputs, on screen and as CSV downloads: the **resend plan** (outstanding snowbird quotes in the order to send them) and **all clients** (every client with the evidence).
 
