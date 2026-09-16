@@ -25,7 +25,8 @@ suppressPackageStartupMessages({
 JOBBER_GQL     <- "https://api.getjobber.com/api/graphql"
 JOBBER_TOKEN   <- "https://api.getjobber.com/api/oauth/token"
 JOBBER_AUTH    <- "https://api.getjobber.com/api/oauth/authorize"
-JOBBER_DIR     <- "data/jobber"
+# On Railway this points at the persistent volume, so tokens survive redeploys.
+JOBBER_DIR     <- Sys.getenv("JOBBER_DATA_DIR", "data/jobber")
 TOKEN_FILE     <- file.path(JOBBER_DIR, "tokens.rds")
 
 # Jobber dates its API versions and supports each for 12+ months. If this one
@@ -33,11 +34,10 @@ TOKEN_FILE     <- file.path(JOBBER_DIR, "tokens.rds")
 # prints it. Override without editing code via JOBBER_API_VERSION in .Renviron.
 JOBBER_VERSION <- Sys.getenv("JOBBER_API_VERSION", "2025-04-16")
 
-# The redirect Jobber sends the browser to after the admin clicks Allow. It must
-# match the "OAuth Callback URL" set on the app in Jobber's Developer Center
-# character for character.
-JOBBER_PORT     <- 8765L
-JOBBER_CALLBACK <- sprintf("http://localhost:%d/callback", JOBBER_PORT)
+# The page Jobber sends the browser back to after the admin clicks Allow. It
+# must match the "OAuth Callback URL" on the app in Jobber's Developer Center
+# character for character. On Railway it is the clients service's own address.
+JOBBER_CALLBACK <- Sys.getenv("JOBBER_CALLBACK_URL", "http://localhost:3838/")
 
 dir.create(JOBBER_DIR, showWarnings = FALSE, recursive = TRUE)
 
@@ -45,10 +45,8 @@ jobber_creds <- function() {
   id  <- Sys.getenv("JOBBER_CLIENT_ID")
   sec <- Sys.getenv("JOBBER_CLIENT_SECRET")
   if (!nzchar(id) || !nzchar(sec))
-    stop("JOBBER_CLIENT_ID / JOBBER_CLIENT_SECRET are not set.\n",
-         "Copy jobber.Renviron.example to .Renviron in the project folder, fill in\n",
-         "the two values from Jobber's Developer Center, then RESTART R.",
-         call. = FALSE)
+    stop("JOBBER_CLIENT_ID / JOBBER_CLIENT_SECRET are not set. On Railway, add them ",
+         "as variables on the clients service.", call. = FALSE)
   list(id = id, secret = sec)
 }
 
@@ -217,3 +215,51 @@ g <- function(x, ...) {
 }
 
 address_spec <- list("street1", "street2", "city", "province", "postalCode", "country")
+
+# -----------------------------------------------------------------------------
+# Connecting an account from a web page (the clients app on Railway)
+# -----------------------------------------------------------------------------
+# state  - a random value that must come back unchanged, so a stray or forged
+#          redirect cannot slip tokens in. It is only created after someone has
+#          logged in to the clients app, so a matching state proves the flow was
+#          started by an authorised user.
+# PKCE   - a random 'verifier' whose hash goes in the link and the original in
+#          the token swap, so an intercepted code is useless on its own.
+# Both are kept on disk between the two page loads; codes expire in 10 minutes.
+PENDING_FILE <- file.path(JOBBER_DIR, "pending_auth.rds")
+
+b64url <- function(raw) gsub("=+$", "", chartr("+/", "-_", openssl::base64_encode(raw)))
+
+jobber_auth_start <- function() {
+  cr       <- jobber_creds()
+  verifier <- b64url(openssl::rand_bytes(48))
+  state    <- b64url(openssl::rand_bytes(24))
+  saveRDS(list(state = state, verifier = verifier, created = Sys.time()), PENDING_FILE)
+  paste0(JOBBER_AUTH,
+         "?response_type=code",
+         "&client_id=",      URLencode(cr$id, reserved = TRUE),
+         "&redirect_uri=",   URLencode(JOBBER_CALLBACK, reserved = TRUE),
+         "&state=",          state,
+         "&code_challenge=", b64url(openssl::sha256(charToRaw(verifier))),
+         "&code_challenge_method=S256")
+}
+
+# Returns the connected account's name, or stops with a plain reason.
+jobber_auth_finish <- function(code, state) {
+  if (!file.exists(PENDING_FILE)) stop("No connection was started from this app.", call. = FALSE)
+  pend <- readRDS(PENDING_FILE)
+  if (!identical(state, pend$state)) stop("This sign-in does not match the one started here.", call. = FALSE)
+  unlink(PENDING_FILE)   # single use, whatever happens next
+  if (difftime(Sys.time(), pend$created, units = "mins") > 10)
+    stop("The sign-in took longer than 10 minutes. Start it again.", call. = FALSE)
+
+  cr  <- jobber_creds()
+  tok <- token_request(list(client_id = cr$id, client_secret = cr$secret,
+                            grant_type = "authorization_code", code = code,
+                            redirect_uri = JOBBER_CALLBACK, code_verifier = pend$verifier))
+  save_tokens(tok)
+  acct <- jobber_gql("{ account { id name } }")$account
+  saveRDS(list(id = acct$id, name = acct$name, connected_at = Sys.time()),
+          file.path(JOBBER_DIR, "account.rds"))
+  acct$name
+}

@@ -1,0 +1,302 @@
+# =============================================================================
+# SNOWBIRD CLIENTS - private Railway service
+# =============================================================================
+# A separate app from the public forecast dashboard, on purpose: this one holds
+# client names, addresses and quote values, so it sits behind a password and
+# keeps everything on its own Railway volume. Nothing here is in GitHub.
+#
+#   - Connect Jobber   read-only OAuth; the admin approves on Jobber's own page
+#   - Every day 7am ET pull quotes, refresh the property roll monthly, rebuild
+#                      the resend plan (R/17 + R/18)
+#   - Resend plan      outstanding snowbird quotes in the order to resend them
+#   - All clients      every client with the second-home evidence
+#
+# It never writes to Jobber and never sends anything to anyone.
+#
+# Railway variables (set in the Railway dashboard, never in code):
+#   CLIENTS_PASSWORD, JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET, JOBBER_CALLBACK_URL
+# =============================================================================
+
+# runApp() moves into clients/; the pipeline scripts use paths from the root.
+setwd(Sys.getenv("APP_ROOT", normalizePath("..")))
+
+suppressPackageStartupMessages({
+  library(shiny); library(bslib); library(DT); library(tidyverse); library(later)
+})
+source("R/jobber_api.R")
+source("clients/fetch_roll.R")
+
+OUT_DIR  <- Sys.getenv("SNOWBIRD_CLIENT_OUT", "output/clients")
+PLAN_CSV <- file.path(OUT_DIR, "quote_resend_plan.csv")
+DB_CSV   <- file.path(OUT_DIR, "client_second_homes.csv")
+LOG_FILE <- file.path(JOBBER_DIR, "refresh_log.txt")
+PASSWORD <- Sys.getenv("CLIENTS_PASSWORD")
+TZ       <- "America/New_York"
+dir.create(OUT_DIR, showWarnings = FALSE, recursive = TRUE)
+
+log_line <- function(...) {
+  line <- paste(format(Sys.time(), "%Y-%m-%d %H:%M %Z", tz = TZ), "|", paste0(...))
+  message(line)
+  cat(line, "\n", file = LOG_FILE, append = TRUE, sep = "")
+}
+
+# -----------------------------------------------------------------------------
+# The refresh, and the 7am schedule
+# -----------------------------------------------------------------------------
+busy <- new.env(); busy$on <- FALSE
+
+run_refresh <- function(trigger) {
+  if (busy$on) return("A refresh is already running.")
+  if (!file.exists(TOKEN_FILE)) {
+    log_line(trigger, ": skipped, Jobber is not connected")
+    return("Jobber is not connected yet.")
+  }
+  busy$on <- TRUE
+  on.exit(busy$on <- FALSE)
+  res <- tryCatch({
+    ensure_collier_roll(Sys.getenv("COLLIER_ROLL", "data/raw/collier_int_parcels.csv"))
+    source("R/17_jobber_pull.R",         local = new.env())
+    source("R/18_client_second_homes.R", local = new.env())
+    "done"
+  }, error = function(e) paste("failed:", conditionMessage(e)))
+  log_line(trigger, ": ", res)
+  res
+}
+
+secs_to_next_7am <- function() {
+  now <- Sys.time()
+  nxt <- as.POSIXct(paste(format(now, "%Y-%m-%d", tz = TZ), "07:00:00"), tz = TZ)
+  if (nxt <= now) nxt <- as.POSIXct(paste(format(now + 86400, "%Y-%m-%d", tz = TZ), "07:00:00"), tz = TZ)
+  as.numeric(difftime(nxt, now, units = "secs"))
+}
+schedule_daily <- function() {
+  later(function() { run_refresh("7am scheduled refresh"); schedule_daily() }, secs_to_next_7am())
+}
+# Off switch for automated tests, which otherwise wait on the queued 7am job.
+if (Sys.getenv("CLIENTS_NO_SCHEDULE") != "true") schedule_daily()
+
+# -----------------------------------------------------------------------------
+# UI
+# -----------------------------------------------------------------------------
+CSS <- "
+body { background:#E6E6EB; }
+.wrap { max-width:1400px; margin:0 auto; padding:20px 16px 40px; }
+.top-title { font-size:1.4rem; font-weight:700; letter-spacing:-.02em; color:#1D1D1F; }
+.top-sub { font-size:.83rem; color:#6E6E73; }
+.tile { background:#fff; border-radius:14px; padding:14px 16px; box-shadow:0 0 0 1px rgba(0,0,0,.045),0 1px 3px rgba(0,0,0,.055); height:100%; }
+.tile-label { font-size:.78rem; color:#6E6E73; font-weight:500; }
+.tile-num { font-size:1.6rem; font-weight:700; letter-spacing:-.03em; color:#1D1D1F; line-height:1.15; }
+.tile-sub { font-size:.76rem; color:#8E8E93; margin-top:2px; }
+.login { max-width:380px; margin:12vh auto; }
+.note { font-size:.8rem; color:#6E6E73; }
+table.dataTable { font-size:.84rem; }
+"
+
+ui <- page_fluid(
+  title = "Snowbird Clients",
+  theme = bs_theme(version = 5, bg = "#FFFFFF", fg = "#1D1D1F", primary = "#0071E3",
+                   base_font = font_collection("-apple-system", "BlinkMacSystemFont", "Segoe UI", "Helvetica Neue", "Arial", "sans-serif")),
+  tags$head(
+    tags$style(HTML(CSS)),
+    tags$meta(name = "robots", content = "noindex, nofollow"),
+    tags$script(HTML("
+      Shiny.addCustomMessageHandler('go', function(url) { window.location.href = url; });
+      Shiny.addCustomMessageHandler('cleanUrl', function(x) { history.replaceState(null, '', location.pathname); });
+    "))
+  ),
+  uiOutput("page")
+)
+
+# -----------------------------------------------------------------------------
+# Server
+# -----------------------------------------------------------------------------
+server <- function(input, output, session) {
+
+  authed  <- reactiveVal(FALSE)
+  fails   <- 0
+  flash   <- reactiveVal(NULL)
+  tick    <- reactiveVal(0)          # bumped after a manual refresh or connect
+
+  # --- Jobber redirect lands here (?code=...&state=...) -----------------------
+  # Handled before login: the state value was created by a logged-in user when
+  # they clicked Connect, so a match is the proof this sign-in is ours.
+  observeEvent(session$clientData$url_search, once = TRUE, {
+    qs <- parseQueryString(session$clientData$url_search)
+    if (is.null(qs$code) && is.null(qs$error)) return()
+    session$sendCustomMessage("cleanUrl", TRUE)
+    if (!is.null(qs$error)) {
+      flash(list(type = "warning", text = paste("Jobber did not connect:", qs$error)))
+      return()
+    }
+    res <- tryCatch(paste0("Connected to Jobber account “", jobber_auth_finish(qs$code, qs$state),
+                           "”. Log in to pull quotes."),
+                    error = function(e) paste("Jobber did not connect:", conditionMessage(e)))
+    flash(list(type = if (startsWith(res, "Connected")) "success" else "warning", text = res))
+    tick(tick() + 1)
+  })
+
+  observeEvent(input$login, {
+    if (!nzchar(PASSWORD)) {
+      flash(list(type = "danger", text = "CLIENTS_PASSWORD is not set on this Railway service, so nobody can log in yet."))
+      return()
+    }
+    if (fails >= 5) {
+      flash(list(type = "danger", text = "Too many attempts. Reload the page to try again."))
+      return()
+    }
+    ok <- identical(as.character(openssl::sha256(input$pw %||% "")), as.character(openssl::sha256(PASSWORD)))
+    if (ok) { authed(TRUE); flash(NULL) } else {
+      fails <<- fails + 1
+      Sys.sleep(1)
+      flash(list(type = "danger", text = "Wrong password."))
+    }
+  })
+
+  observeEvent(input$connect, {
+    req(authed())
+    url <- tryCatch(jobber_auth_start(), error = function(e) { flash(list(type = "danger", text = conditionMessage(e))); NULL })
+    if (!is.null(url)) session$sendCustomMessage("go", url)
+  })
+
+  observeEvent(input$refresh, {
+    req(authed())
+    msg <- withProgress(message = "Pulling quotes from Jobber and rebuilding the plan...", value = .3,
+                        run_refresh("manual refresh"))
+    flash(list(type = if (msg == "done") "success" else "warning",
+               text = if (msg == "done") "Refreshed." else msg))
+    tick(tick() + 1)
+  })
+
+  # Files change on the 7am run too, not only on clicks - so watch them.
+  files_state <- reactivePoll(10000, session,
+    checkFunc = function() paste(file.mtime(c(PLAN_CSV, DB_CSV, TOKEN_FILE, LOG_FILE)), collapse = "|"),
+    valueFunc = function() Sys.time())
+
+  plan <- reactive({ req(authed()); files_state(); tick()
+    if (file.exists(PLAN_CSV)) read_csv(PLAN_CSV, col_types = cols(.default = col_character())) else NULL })
+  db <- reactive({ req(authed()); files_state(); tick()
+    if (file.exists(DB_CSV)) read_csv(DB_CSV, col_types = cols(.default = col_character())) else NULL })
+
+  flash_ui <- function() {
+    f <- flash(); if (is.null(f)) return(NULL)
+    div(class = paste0("alert alert-", f$type, " py-2"), f$text)
+  }
+
+  tile <- function(label, num, sub = NULL)
+    div(class = "tile", div(class = "tile-label", label), div(class = "tile-num", num),
+        if (!is.null(sub)) div(class = "tile-sub", sub))
+
+  output$page <- renderUI({
+    if (!authed()) {
+      return(div(class = "login",
+        div(class = "tile",
+          div(class = "top-title mb-1", "Snowbird Clients"),
+          div(class = "top-sub mb-3", "Private. Client data from Jobber."),
+          flash_ui(),
+          passwordInput("pw", NULL, placeholder = "Password", width = "100%"),
+          actionButton("login", "Log in", class = "btn-primary w-100"),
+          tags$script(HTML("$(document).on('keyup', '#pw', function(e){ if(e.key==='Enter') $('#login').click(); });"))
+        )))
+    }
+
+    files_state(); tick()
+    acct      <- if (file.exists(file.path(JOBBER_DIR, "account.rds"))) readRDS(file.path(JOBBER_DIR, "account.rds")) else NULL
+    connected <- file.exists(TOKEN_FILE)
+    has_creds <- nzchar(Sys.getenv("JOBBER_CLIENT_ID")) && nzchar(Sys.getenv("JOBBER_CLIENT_SECRET"))
+    last_log  <- if (file.exists(LOG_FILE)) tail(readLines(LOG_FILE, warn = FALSE), 1) else "No refresh yet"
+    p <- plan(); d <- db()
+    today <- as.Date(format(Sys.time(), tz = TZ))
+    due   <- if (!is.null(p)) sum(as.Date(p$resend_on) <= today, na.rm = TRUE) else 0
+    week  <- if (!is.null(p)) sum(as.Date(p$resend_on) > today & as.Date(p$resend_on) <= today + 7, na.rm = TRUE) else 0
+    value <- if (!is.null(p)) sum(as.numeric(p$total), na.rm = TRUE) else 0
+    birds <- if (!is.null(d)) sum(d$snowbird == "TRUE", na.rm = TRUE) else 0
+
+    div(class = "wrap",
+      div(class = "d-flex justify-content-between align-items-end flex-wrap gap-2 mb-3",
+        div(div(class = "top-title", "Snowbird Clients"),
+            div(class = "top-sub", if (connected) paste("Jobber:", acct$name %||% "connected") else "Jobber not connected",
+                " · ", last_log)),
+        div(class = "d-flex gap-2",
+          actionButton("connect", if (connected) "Reconnect Jobber" else "Connect Jobber",
+                       class = if (connected) "btn-outline-secondary btn-sm" else "btn-primary btn-sm",
+                       disabled = !has_creds),
+          actionButton("refresh", "Refresh now", class = "btn-outline-primary btn-sm",
+                       disabled = !connected))),
+
+      flash_ui(),
+      if (!has_creds) div(class = "alert alert-warning py-2",
+        "JOBBER_CLIENT_ID and JOBBER_CLIENT_SECRET are not set on this Railway service yet."),
+      if (has_creds && !connected) div(class = "alert alert-info py-2",
+        "Click Connect Jobber. A Jobber admin approves read-only access on Jobber's page, then comes back here."),
+
+      layout_columns(col_widths = c(3, 3, 3, 3), class = "mb-3",
+        tile("Resend now", due, "due today or overdue"),
+        tile("Resend this week", week, "in the next 7 days"),
+        tile("Snowbird quotes outstanding", if (!is.null(p)) nrow(p) else 0,
+             paste(scales::dollar(value), "before discount")),
+        tile("Clients with a home up north", birds,
+             if (!is.null(d)) paste("of", nrow(d), "clients") else NULL)),
+
+      navset_card_tab(
+        nav_panel("Resend plan",
+          div(class = "note mb-2",
+              "Each outstanding quote from a client with a home up north, in the order to resend it with 10% off. ",
+              "The date is 14 days before they are due back, or today if they are already here. ",
+              "Nothing is sent from here."),
+          DTOutput("plan_tbl"),
+          downloadButton("dl_plan", "Download CSV", class = "btn-sm btn-outline-secondary mt-2")),
+        nav_panel("All clients",
+          div(class = "note mb-2",
+              "Every Jobber client and the evidence behind their status. ",
+              "Confirmed = the county property roll and their billing address agree. ",
+              "Likely = one of the two. Year-round = homestead exemption."),
+          DTOutput("db_tbl"),
+          downloadButton("dl_db", "Download CSV", class = "btn-sm btn-outline-secondary mt-2")),
+        nav_panel("How it works",
+          div(style = "max-width:76ch; line-height:1.6;",
+            h5("Who counts as a snowbird"),
+            p("Each property on a quote or job is matched to the Collier County property roll. No homestead exemption ",
+              "and tax mail going out of state means a second home. Their Jobber billing address is the second check. ",
+              "Lee County properties are judged on the billing address until Lee's roll is added."),
+            h5("When they are back"),
+            p("With two or more past seasons on file, their own habit: the date of their first quote or job each autumn. ",
+              "With one season, the earlier of that and the area forecast. With none, the forecast's season opening."),
+            h5("Updates"),
+            p("Quotes are pulled and the plan rebuilt every day at 7:00 am Eastern, and whenever Refresh now is clicked. ",
+              "The property roll is re-downloaded monthly."))))
+    )
+  })
+
+  link_col <- function(u) ifelse(!is.na(u) & grepl("^https://", u),
+                                 sprintf('<a href="%s" target="_blank" rel="noopener">Open</a>', htmltools::htmlEscape(u, attribute = TRUE)), "")
+
+  output$plan_tbl <- renderDT({
+    p <- plan()
+    shiny::validate(shiny::need(!is.null(p), "No plan yet. Connect Jobber, then click Refresh now."))
+    t <- p %>% transmute(`Resend on` = resend_on, Client = client, `Home up north` = northern_home,
+                         `Due back` = predicted_return, `Quote #` = quote_number, Quote = quote_title,
+                         Total = scales::dollar(as.numeric(total)), `With 10% off` = scales::dollar(as.numeric(total_10pct_off)),
+                         Status = snowbird_status, `Why this date` = why_this_date, Jobber = link_col(jobber_link))
+    datatable(t, rownames = FALSE, escape = setdiff(seq_along(t), ncol(t)),
+              options = list(pageLength = 25, order = list(list(0, "asc")), scrollX = TRUE))
+  })
+
+  output$db_tbl <- renderDT({
+    d <- db()
+    shiny::validate(shiny::need(!is.null(d), "No client list yet. Connect Jobber, then click Refresh now."))
+    t <- d %>% transmute(Client = client, Status = status, `Home up north` = coalesce(home_state, home_country),
+                         Region = home_region, `Due back` = predicted_return, Evidence = evidence,
+                         Property = property_address, Jobber = link_col(client_link))
+    datatable(t, rownames = FALSE, escape = setdiff(seq_along(t), ncol(t)),
+              options = list(pageLength = 25, scrollX = TRUE))
+  })
+
+  output$dl_plan <- downloadHandler(
+    filename = function() paste0("quote_resend_plan_", Sys.Date(), ".csv"),
+    content  = function(f) { req(authed()); file.copy(PLAN_CSV, f) })
+  output$dl_db <- downloadHandler(
+    filename = function() paste0("client_second_homes_", Sys.Date(), ".csv"),
+    content  = function(f) { req(authed()); file.copy(DB_CSV, f) })
+}
+
+shinyApp(ui, server)

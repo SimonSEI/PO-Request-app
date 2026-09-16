@@ -35,7 +35,7 @@
 if (file.exists(".Rlib")) .libPaths(c(normalizePath(".Rlib"), .libPaths()))
 suppressPackageStartupMessages({ library(tidyverse); library(lubridate) })
 
-IN_DIR  <- Sys.getenv("SNOWBIRD_CLIENT_DIR", "data/jobber")
+IN_DIR  <- Sys.getenv("SNOWBIRD_CLIENT_DIR", Sys.getenv("JOBBER_DATA_DIR", "data/jobber"))
 OUT_DIR <- Sys.getenv("SNOWBIRD_CLIENT_OUT", "output/clients")
 dir.create(OUT_DIR, showWarnings = FALSE, recursive = TRUE)
 
@@ -114,7 +114,7 @@ CANADA <- c(AB="Alberta", BC="British Columbia", MB="Manitoba", NB="New Brunswic
 rolls <- list()
 
 # --- Collier: the Property Appraiser's own parcel file (as used by R/08) ------
-COLLIER_ROLL <- "data/raw/collier_int_parcels.csv"
+COLLIER_ROLL <- Sys.getenv("COLLIER_ROLL", "data/raw/collier_int_parcels.csv")
 if (file.exists(COLLIER_ROLL)) {
   message("Reading Collier property roll...")
   rolls$collier <- read_csv(COLLIER_ROLL,
@@ -138,7 +138,7 @@ if (file.exists(COLLIER_ROLL)) {
 # "Lee 46 ... NAL 2026" on floridarevenue.com's Data Portal (Tax Roll Data Files
 # -> NAL). Unzip the CSV to data/raw/lee_nal.csv. Column names below follow the
 # Department's NAL user guide.
-LEE_ROLL <- "data/raw/lee_nal.csv"
+LEE_ROLL <- Sys.getenv("LEE_ROLL", "data/raw/lee_nal.csv")
 if (file.exists(LEE_ROLL)) {
   message("Reading Lee property roll...")
   lee <- read_csv(LEE_ROLL, col_types = cols(.default = col_character()), progress = FALSE)

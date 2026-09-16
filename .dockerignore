@@ -10,8 +10,10 @@
 # These feed the analysis scripts, not the running dashboard.
 data/raw/
 
-# Analysis pipeline and generated artefacts - the app reads none of these.
-R/
+# R/ is NOT excluded: the private clients service (clients/Dockerfile) copies
+# the Jobber scripts from it. The public dashboard's Dockerfile copies only
+# named files, so the pipeline scripts still never enter that image.
+#
 # output/ is excluded, EXCEPT the two files the running app actually reads.
 # Order matters here: the exclusion must come before the negations.
 output/*
@@ -26,4 +28,3 @@ run_app.R
 # Client data (also git-ignored) - must never be baked into the public image.
 .Renviron
 data/jobber/
-jobber.Renviron.example
