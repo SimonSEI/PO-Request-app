@@ -9525,21 +9525,21 @@ DASHBOARD_MENU_TEMPLATE = '''
         </a>
         {% endif %}
 
-        {% if role in ('admin', 'office') %}
-        <a class="app-card card-teal" href="{{ url_for('snowbirds_app') }}">
-            <div class="card-icon-wrap">🐦</div>
-            <div class="card-title">Snowbirds</div>
-            <div class="card-desc">Forecast when snowbirds return to Naples, find clients with a home up north, and time discounted quote resends to their return.</div>
-            <button class="card-cta">Open Snowbirds →</button>
-        </a>
-        {% endif %}
-
         {% if role != 'property_manager' %}
         <a class="app-card card-amber" href="{{ url_for('community_billing') }}">
             <div class="card-icon-wrap">💰</div>
             <div class="card-title" data-i18n="cm_title">Community Maintenance</div>
             <div class="card-desc" data-i18n="cm_desc">Enter and review equipment installation data, billing, and community records.</div>
             <button class="card-cta" data-i18n="cm_cta">Open Community →</button>
+        </a>
+        {% endif %}
+
+        {% if role in ('admin', 'office') %}
+        <a class="app-card card-teal" href="{{ url_for('snowbirds_app') }}">
+            <div class="card-icon-wrap">🐦</div>
+            <div class="card-title">Snowbirds</div>
+            <div class="card-desc">Forecast when snowbirds return to Naples, find clients with a home up north, and time discounted quote resends to their return.</div>
+            <button class="card-cta">Open Snowbirds →</button>
         </a>
         {% endif %}
 
