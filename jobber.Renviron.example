@@ -1,0 +1,14 @@
+# Jobber API credentials
+# ---------------------------------------------------------------------------
+# 1. Copy this file to a file named  .Renviron  in this same folder.
+# 2. Paste your app's values from https://developer.getjobber.com (Manage Apps).
+# 3. Restart R (Session -> Restart R in RStudio) so it reads them.
+#
+# .Renviron is in .gitignore - it never goes to GitHub or Railway.
+# Do not put real values in THIS file; this one is committed as a template.
+
+JOBBER_CLIENT_ID=paste-client-id-here
+JOBBER_CLIENT_SECRET=paste-client-secret-here
+
+# Optional: only if Jobber warns that this API version is going out of support
+# JOBBER_API_VERSION=2025-04-16

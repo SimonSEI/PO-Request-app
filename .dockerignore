@@ -22,3 +22,8 @@ README.md
 run_watcher.bat
 setup_project_library.R
 run_app.R
+
+# Client data (also git-ignored) - must never be baked into the public image.
+.Renviron
+data/jobber/
+jobber.Renviron.example

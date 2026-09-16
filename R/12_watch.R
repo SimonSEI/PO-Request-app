@@ -404,5 +404,28 @@ if (nrow(alerts) > 0) {
   say("no changes - predictions unchanged")
 }
 
+# =============================================================================
+# JOBBER CLIENTS  (only once R/16 has connected an account)
+# =============================================================================
+# Pull outstanding quotes fresh each morning and rebuild the resend plan, so
+# new quotes are scheduled and won or archived ones drop off. Runs AFTER the
+# conditions refresh above, so client return dates lean on today's weather.
+# Nothing here writes to Jobber and nothing here is sent to anyone.
+if (file.exists("data/jobber/tokens.rds")) {
+  say("refreshing Jobber quotes and resend plan (R/17, R/18)...")
+  r <- try({
+    source("R/17_jobber_pull.R",          local = new.env(), echo = FALSE)
+    source("R/18_client_second_homes.R",  local = new.env(), echo = FALSE)
+  }, silent = TRUE)
+  if (inherits(r, "try-error")) {
+    say("  Jobber refresh failed:", conditionMessage(attr(r, "condition")))
+    say("  if it mentions a token or 401, re-run R/16_jobber_connect.R")
+  } else if (file.exists("output/clients/quote_resend_plan.csv")) {
+    plan <- read_csv("output/clients/quote_resend_plan.csv", show_col_types = FALSE)
+    due  <- plan %>% filter(resend_on <= today())
+    say("  resend plan:", nrow(plan), "quotes;", nrow(due), "due today or overdue")
+  }
+}
+
 write_csv(state, STATE_FILE)
 say("done")

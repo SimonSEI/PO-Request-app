@@ -517,6 +517,31 @@ The FTI database is the unlock for deep monthly history. That's phase 2.
 
 ---
 
+## Jobber: which clients are snowbirds, and when to resend their quotes
+
+`R/16`–`R/18` connect to Jobber (read-only), work out which clients have a home up north, predict when each one comes back, and schedule each outstanding quote for a resend with 10% off. **Nothing is sent and nothing in Jobber is changed.** The output is a list for a person to act on.
+
+**Setup, once:**
+1. At [developer.getjobber.com](https://developer.getjobber.com), create an app. Set the callback URL to `http://localhost:8765/callback` and give it **read** scopes for Clients, Quotes and Jobs only.
+2. Copy `jobber.Renviron.example` to `.Renviron`, paste in the Client ID and Secret, then restart R.
+3. `source("R/16_jobber_connect.R")`. A Jobber admin clicks **Allow Access** in the browser tab that opens.
+
+**Then:** `source("R/17_jobber_pull.R")` and `source("R/18_client_second_homes.R")`. After that the 7am watcher reruns both every morning.
+
+**How a client counts as a snowbird.** There are two independent checks:
+- **Property roll.** The job address has no homestead exemption and the tax mail goes out of state. This is the same test R/08 uses.
+- **Billing address.** Their Jobber billing address is outside Florida.
+
+Both checks agree → *confirmed*. Only one → *likely*. A homestead exemption means *year-round resident*, whatever the billing address says. Collier uses `data/raw/collier_int_parcels.csv`. Lee needs the state's free NAL roll saved as `data/raw/lee_nal.csv`; until then, Lee clients are judged on billing address alone.
+
+**When they're back.** If a client has two or more past seasons on file, we use their own habit: the date of their first autumn quote or job. With one season, we take the earlier of that date and the area forecast. With none, the area forecast's season opening. **Resend** 14 days before that. If the date has passed and the season is still on, the plan says send now.
+
+**Privacy.** Credentials, tokens, pulled client records and the per-client outputs are all git-ignored and docker-ignored. They stay on this computer, and the public Railway dashboard never sees them.
+
+Outputs: `output/clients/client_second_homes.csv` (every client, with the evidence) and `output/clients/quote_resend_plan.csv` (outstanding snowbird quotes in the order to send them).
+
+---
+
 ## Project layout
 
 ```
