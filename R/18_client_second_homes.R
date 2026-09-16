@@ -383,7 +383,11 @@ plan <- quotes %>%
   # snowbird verdict (suffixed _client).
   transmute(resend_on, client = name, snowbird_status = status_client,
             northern_home = coalesce(home_state, home_country), home_region, predicted_return,
-            quote_number, quote_title = title, quote_status = status,
+            quote_id, quote_number, quote_title = title, quote_status = status,
+            # Only quotes the client simply hasn't answered are sent
+            # automatically. 'Changes requested' means they asked for edits -
+            # a discount email is the wrong reply, so a person handles those.
+            auto_send = if_else(status == "awaiting_response", "yes", "no - changes requested, handle manually"),
             quote_created = as_day(created_at), quote_age_days, total, total_10pct_off,
             why_this_date = paste(timing, return_basis), evidence, property_address, jobber_link)
 

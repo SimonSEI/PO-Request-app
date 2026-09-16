@@ -17,14 +17,24 @@
 #   CLIENTS_PASSWORD, JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET, JOBBER_CALLBACK_URL
 # =============================================================================
 
-# runApp() moves into clients/; the pipeline scripts use paths from the root.
-setwd(Sys.getenv("APP_ROOT", normalizePath("..")))
+# The pipeline scripts use paths from the project root. Shiny runs button
+# handlers from the app's own folder (clients/), NOT from wherever this file
+# last setwd()'d - so anything that sources a script pins the folder itself
+# with in_root(). Without it, Refresh failed with "cannot open the connection".
+ROOT <- normalizePath(Sys.getenv("APP_ROOT", ".."))
+in_root <- function(expr) {
+  owd <- setwd(ROOT)
+  on.exit(setwd(owd), add = TRUE)
+  expr
+}
 
 suppressPackageStartupMessages({
   library(shiny); library(bslib); library(DT); library(tidyverse); library(later)
 })
-source("R/jobber_api.R")
-source("clients/fetch_roll.R")
+source(file.path(ROOT, "R/jobber_api.R"))
+source(file.path(ROOT, "clients/fetch_roll.R"))
+# local = TRUE: auto_send.R uses TZ and log_line from this file.
+source(file.path(ROOT, "clients/auto_send.R"), local = TRUE)
 
 OUT_DIR  <- Sys.getenv("SNOWBIRD_CLIENT_OUT", "output/clients")
 PLAN_CSV <- file.path(OUT_DIR, "quote_resend_plan.csv")
@@ -45,7 +55,9 @@ log_line <- function(...) {
 # -----------------------------------------------------------------------------
 busy <- new.env(); busy$on <- FALSE
 
-run_refresh <- function(trigger) {
+# allow_send is TRUE only for the scheduled 7am run. "Refresh now" rebuilds
+# the plan but never sends anything.
+run_refresh <- function(trigger, allow_send = FALSE) {
   if (busy$on) return("A refresh is already running.")
   if (!file.exists(TOKEN_FILE)) {
     log_line(trigger, ": skipped, Jobber is not connected")
@@ -53,15 +65,17 @@ run_refresh <- function(trigger) {
   }
   busy$on <- TRUE
   on.exit(busy$on <- FALSE)
-  res <- tryCatch({
+  res <- tryCatch(in_root({
     ensure_collier_roll(Sys.getenv("COLLIER_ROLL", "data/raw/collier_int_parcels.csv"))
     source("R/17_jobber_pull.R",         local = new.env())
     source("R/18_client_second_homes.R", local = new.env())
     # One-off: find out what this Jobber API allows before automating sends.
     if (!file.exists(file.path(JOBBER_DIR, "schema_probe.json"))) try(jobber_probe_schema())
     "done"
-  }, error = function(e) paste("failed:", conditionMessage(e)))
+  }), error = function(e) paste("failed:", conditionMessage(e)))
   log_line(trigger, ": ", res)
+  if (allow_send && res == "done")
+    tryCatch(run_auto_send(PLAN_CSV), error = function(e) log_line("auto-send failed: ", conditionMessage(e)))
   res
 }
 
@@ -72,7 +86,7 @@ secs_to_next_7am <- function() {
   as.numeric(difftime(nxt, now, units = "secs"))
 }
 schedule_daily <- function() {
-  later(function() { run_refresh("7am scheduled refresh"); schedule_daily() }, secs_to_next_7am())
+  later(function() { run_refresh("7am scheduled refresh", allow_send = TRUE); schedule_daily() }, secs_to_next_7am())
 }
 # Off switch for automated tests, which otherwise wait on the queued 7am job.
 if (Sys.getenv("CLIENTS_NO_SCHEDULE") != "true") schedule_daily()
@@ -229,7 +243,9 @@ server <- function(input, output, session) {
       if (!has_creds) div(class = "alert alert-warning py-2",
         "JOBBER_CLIENT_ID and JOBBER_CLIENT_SECRET are not set on this Railway service yet."),
       if (has_creds && !connected) div(class = "alert alert-info py-2",
-        "Click Connect Jobber. A Jobber admin approves read-only access on Jobber's page, then comes back here."),
+        "Click Connect Jobber. A Jobber admin approves access on Jobber's page, then comes back here."),
+
+      uiOutput("switch_ui"),
 
       layout_columns(col_widths = c(3, 3, 3, 3), class = "mb-3",
         tile("Resend now", due, "due today or overdue"),
@@ -244,9 +260,16 @@ server <- function(input, output, session) {
           div(class = "note mb-2",
               "Each outstanding quote from a client with a home up north, in the order to resend it with 10% off. ",
               "The date is 14 days before they are due back, or today if they are already here. ",
-              "Nothing is sent from here."),
+              "Only 'awaiting response' quotes can be sent automatically; 'changes requested' ones are for a person to handle."),
           DTOutput("plan_tbl"),
           downloadButton("dl_plan", "Download CSV", class = "btn-sm btn-outline-secondary mt-2")),
+        nav_panel("Auto-send",
+          div(class = "note mb-2",
+              "Due today: awaiting-response quotes whose resend date has arrived and that have never been sent. ",
+              "At 7:00 am these go out with 10% off, up to ", DAILY_CAP, " a day, but only while the switch above is ON."),
+          DTOutput("due_tbl"),
+          h6(class = "mt-4", "Send history"),
+          DTOutput("sent_tbl")),
         nav_panel("All clients",
           div(class = "note mb-2",
               "Every Jobber client and the evidence behind their status. ",
@@ -269,6 +292,76 @@ server <- function(input, output, session) {
     )
   })
 
+  # --- Kill switch --------------------------------------------------------------
+  # Its own output, so flipping it does not rebuild the whole page. Turning ON
+  # asks for confirmation; turning OFF is one click and immediate, because the
+  # sender re-reads the switch before every single quote.
+  sw_tick <- reactiveVal(0)
+
+  output$switch_ui <- renderUI({
+    req(authed()); sw_tick(); files_state()
+    s     <- switch_state()
+    n_due <- nrow(due_for_auto_send(PLAN_CSV))
+    when  <- if (is.na(s$changed_at)) "never changed" else
+               paste("changed", format(s$changed_at, "%d %b %Y %I:%M %p", tz = TZ))
+    div(class = "tile mb-3", style = paste0("border-left:6px solid ", if (s$on) "#34C759" else "#8E8E93", ";"),
+      div(class = "d-flex justify-content-between align-items-center flex-wrap gap-2",
+        div(
+          div(class = "tile-label", "Automatic discounted resends"),
+          div(class = "tile-num", style = paste0("color:", if (s$on) "#1E8E3E" else "#6E6E73"), if (s$on) "ON" else "OFF"),
+          div(class = "tile-sub",
+              if (s$on) sprintf("At 7:00 am, up to %d due quotes get 10%% off and are sent. %d due now.", DAILY_CAP, n_due)
+              else sprintf("Nothing is sent automatically. %d quote%s would be due now.", n_due, if (n_due == 1) "" else "s"),
+              " (", when, ")"),
+          if (!SEND_READY) div(class = "tile-sub", style = "color:#E08600;",
+              "Sending is not built yet: it waits on the Jobber API check. Even when ON, nothing is sent until then.")),
+        if (s$on) actionButton("switch_off", "Turn OFF", class = "btn-danger")
+        else      actionButton("switch_on",  "Turn ON",  class = "btn-outline-success")))
+  })
+
+  observeEvent(input$switch_off, {
+    req(authed())
+    set_switch(FALSE)
+    sw_tick(sw_tick() + 1)
+    flash(list(type = "success", text = "Automatic resends are OFF. Nothing will be sent."))
+  })
+
+  observeEvent(input$switch_on, {
+    req(authed())
+    n_due <- nrow(due_for_auto_send(PLAN_CSV))
+    showModal(modalDialog(
+      title = "Turn on automatic resends?",
+      p(sprintf("Every morning at 7:00 am, up to %d awaiting-response quotes to snowbird clients whose resend date has arrived will get 10%% off and be sent from Jobber, with nobody reviewing them first.", DAILY_CAP)),
+      p(sprintf("%d quote%s would qualify right now. Check the Auto-send tab first.", n_due, if (n_due == 1) "" else "s")),
+      p("You can turn it off at any time. It stops before the next quote."),
+      footer = tagList(modalButton("Cancel"), actionButton("switch_on_confirm", "Turn ON", class = "btn-success"))))
+  })
+
+  observeEvent(input$switch_on_confirm, {
+    req(authed())
+    removeModal()
+    set_switch(TRUE)
+    sw_tick(sw_tick() + 1)
+    flash(list(type = "warning", text = "Automatic resends are ON."))
+  })
+
+  output$due_tbl <- renderDT({
+    req(authed()); sw_tick(); files_state()
+    d <- due_for_auto_send(PLAN_CSV)
+    shiny::validate(shiny::need(nrow(d) > 0, "Nothing is due to be sent."))
+    datatable(d %>% transmute(`Resend on` = resend_on, Client = client, `Quote #` = quote_number,
+                              Quote = quote_title, Total = scales::dollar(as.numeric(total)),
+                              `With 10% off` = scales::dollar(as.numeric(total_10pct_off)), Status = snowbird_status),
+              rownames = FALSE, options = list(pageLength = 25, scrollX = TRUE))
+  })
+
+  output$sent_tbl <- renderDT({
+    req(authed()); sw_tick(); files_state()
+    s <- sent_log()
+    shiny::validate(shiny::need(nrow(s) > 0, "Nothing has been sent yet."))
+    datatable(s %>% arrange(desc(attempted_at)), rownames = FALSE, options = list(pageLength = 25, scrollX = TRUE))
+  })
+
   link_col <- function(u) ifelse(!is.na(u) & grepl("^https://", u),
                                  sprintf('<a href="%s" target="_blank" rel="noopener">Open</a>', htmltools::htmlEscape(u, attribute = TRUE)), "")
 
@@ -278,7 +371,9 @@ server <- function(input, output, session) {
     t <- p %>% transmute(`Resend on` = resend_on, Client = client, `Home up north` = northern_home,
                          `Due back` = predicted_return, `Quote #` = quote_number, Quote = quote_title,
                          Total = scales::dollar(as.numeric(total)), `With 10% off` = scales::dollar(as.numeric(total_10pct_off)),
-                         Status = snowbird_status, `Why this date` = why_this_date, Jobber = link_col(jobber_link))
+                         Status = snowbird_status,
+                         `Auto-send` = if ("auto_send" %in% names(p)) auto_send else "",
+                         `Why this date` = why_this_date, Jobber = link_col(jobber_link))
     datatable(t, rownames = FALSE, escape = setdiff(seq_along(t), ncol(t)),
               options = list(pageLength = 25, order = list(list(0, "asc")), scrollX = TRUE))
   })
