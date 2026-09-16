@@ -1,0 +1,19 @@
+# Cached per-city API downloads - regenerate with R/01_fetch_weather.R
+data/raw/
+
+# R session cruft
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# Project package library (large, machine-specific; recreate with
+# setup_project_library.R)
+.Rlib/
+
+# Jobber client data and credentials - never leaves this computer.
+# .Renviron holds the API secret; data/jobber holds tokens and pulled client
+# records; output/clients holds the per-client analysis.
+.Renviron
+data/jobber/
+output/clients/

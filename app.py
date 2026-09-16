@@ -9525,6 +9525,15 @@ DASHBOARD_MENU_TEMPLATE = '''
         </a>
         {% endif %}
 
+        {% if role in ('admin', 'office') %}
+        <a class="app-card card-teal" href="{{ url_for('snowbirds_app') }}">
+            <div class="card-icon-wrap">🐦</div>
+            <div class="card-title">Snowbirds</div>
+            <div class="card-desc">Forecast when snowbirds return to Naples, find clients with a home up north, and time discounted quote resends to their return.</div>
+            <button class="card-cta">Open Snowbirds →</button>
+        </a>
+        {% endif %}
+
         {% if role != 'property_manager' %}
         <a class="app-card card-amber" href="{{ url_for('community_billing') }}">
             <div class="card-icon-wrap">💰</div>
@@ -35849,6 +35858,113 @@ PUMP_COLUMNS = ['po_number', 'entry_date', 'vendor', 'job_name', 'description',
 
 def _pump_access_ok():
     return 'username' in session and session.get('role') == 'office'
+
+
+# =============================================================================
+# SNOWBIRDS APP
+# =============================================================================
+# The snowbird forecast and the client/quote-resend tool are R (Shiny) services
+# in this same Railway project, built from snowbirds/ in this repo. This app
+# owns who gets in: admin and office users open the Snowbirds card, and the
+# clients tool receives a short-lived signed ticket instead of asking for its
+# own password.
+#
+# Ticket: base64url("sso|username|role|expiry") + "." + HMAC-SHA256 hex, signed
+# with SNOWBIRDS_SSO_SECRET, which the clients service shares (verified in
+# snowbirds/clients/app.R). Valid for 2 minutes - long enough to follow the
+# redirect, useless if copied later.
+SNOWBIRDS_SSO_SECRET = os.environ.get('SNOWBIRDS_SSO_SECRET', '')
+SNOWBIRDS_CLIENTS_URL = os.environ.get('SNOWBIRDS_CLIENTS_URL', '').rstrip('/')
+SNOWBIRDS_FORECAST_URL = os.environ.get('SNOWBIRDS_FORECAST_URL', '').rstrip('/')
+SNOWBIRDS_ROLES = ('admin', 'office')
+
+
+def _snowbirds_access_ok():
+    return 'username' in session and session.get('role') in SNOWBIRDS_ROLES
+
+
+def _snowbirds_ticket(ttl_seconds=120):
+    user = str(session.get('username', '')).replace('|', '')
+    role = str(session.get('role', ''))
+    expires = int(datetime.now().timestamp()) + ttl_seconds
+    payload = f"sso|{user}|{role}|{expires}"
+    sig = hmac.new(SNOWBIRDS_SSO_SECRET.encode(), payload.encode(), 'sha256').hexdigest()
+    encoded = base64.urlsafe_b64encode(payload.encode()).decode().rstrip('=')
+    return f"{encoded}.{sig}"
+
+
+SNOWBIRDS_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Snowbirds</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { --brand:#2563EB; --text-p:#0F172A; --text-s:#475569; --text-m:#94A3B8; --bg:#F8FAFC; --border:#E2E8F0; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:'Inter',system-ui,sans-serif; background:var(--bg); color:var(--text-p); }
+  .top { background:#fff; border-bottom:1px solid var(--border); padding:14px 24px; display:flex; justify-content:space-between; align-items:center; }
+  .top a { color:var(--text-s); text-decoration:none; font-size:14px; }
+  .wrap { max-width:960px; margin:0 auto; padding:32px 16px; }
+  h1 { font-size:26px; margin:0 0 6px; letter-spacing:-.02em; }
+  .sub { color:var(--text-s); margin:0 0 24px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px; }
+  .card { display:block; background:#fff; border:1px solid var(--border); border-radius:14px; padding:22px; text-decoration:none; color:inherit;
+          box-shadow:0 1px 3px rgba(0,0,0,.07); transition:transform .12s, box-shadow .12s; }
+  .card:hover { transform:translateY(-2px); box-shadow:0 4px 16px rgba(0,0,0,.08); }
+  .card .icon { font-size:28px; }
+  .card h2 { font-size:18px; margin:10px 0 6px; }
+  .card p { color:var(--text-s); font-size:14px; line-height:1.5; margin:0 0 14px; }
+  .cta { color:var(--brand); font-weight:600; font-size:14px; }
+  .warn { background:#FFFBEB; border:1px solid #FDE68A; color:#92400E; border-radius:10px; padding:10px 14px; margin-bottom:16px; font-size:14px; }
+</style>
+</head>
+<body>
+  <div class="top"><strong>Snowbirds</strong><a href="{{ url_for('dashboard') }}">← Back to dashboard</a></div>
+  <div class="wrap">
+    <h1>Snowbirds</h1>
+    <p class="sub">When Naples' part-time residents come back, and which of our clients they are.</p>
+    {% if not configured %}
+    <div class="warn">Snowbirds is not fully set up yet: SNOWBIRDS_SSO_SECRET, SNOWBIRDS_CLIENTS_URL and SNOWBIRDS_FORECAST_URL must be set on this service.</div>
+    {% endif %}
+    <div class="grid">
+      <a class="card" href="{{ forecast_url or '#' }}" target="_blank" rel="noopener">
+        <div class="icon">📈</div>
+        <h2>Season forecast</h2>
+        <p>Predicted trough, season start and peak for Collier and Lee counties, from traffic, weather and airport arrivals.</p>
+        <span class="cta">Open forecast →</span>
+      </a>
+      <a class="card" href="{{ url_for('snowbirds_clients') }}">
+        <div class="icon">🏡</div>
+        <h2>Clients &amp; quote resends</h2>
+        <p>Jobber clients with a home up north, when each is due back, and outstanding quotes to resend with 10% off.</p>
+        <span class="cta">Open clients →</span>
+      </a>
+    </div>
+  </div>
+</body>
+</html>
+'''
+
+
+@app.route('/snowbirds')
+def snowbirds_app():
+    if not _snowbirds_access_ok():
+        return redirect(url_for('login'))
+    return render_template_string(
+        SNOWBIRDS_TEMPLATE,
+        forecast_url=SNOWBIRDS_FORECAST_URL,
+        configured=bool(SNOWBIRDS_SSO_SECRET and SNOWBIRDS_CLIENTS_URL and SNOWBIRDS_FORECAST_URL))
+
+
+@app.route('/snowbirds/clients')
+def snowbirds_clients():
+    if not _snowbirds_access_ok():
+        return redirect(url_for('login'))
+    if not (SNOWBIRDS_SSO_SECRET and SNOWBIRDS_CLIENTS_URL):
+        return redirect(url_for('snowbirds_app'))
+    return redirect(f"{SNOWBIRDS_CLIENTS_URL}/?sso={_snowbirds_ticket()}")
 
 
 @app.route('/pumps')
