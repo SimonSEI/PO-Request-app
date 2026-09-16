@@ -57,6 +57,8 @@ run_refresh <- function(trigger) {
     ensure_collier_roll(Sys.getenv("COLLIER_ROLL", "data/raw/collier_int_parcels.csv"))
     source("R/17_jobber_pull.R",         local = new.env())
     source("R/18_client_second_homes.R", local = new.env())
+    # One-off: find out what this Jobber API allows before automating sends.
+    if (!file.exists(file.path(JOBBER_DIR, "schema_probe.json"))) try(jobber_probe_schema())
     "done"
   }, error = function(e) paste("failed:", conditionMessage(e)))
   log_line(trigger, ": ", res)

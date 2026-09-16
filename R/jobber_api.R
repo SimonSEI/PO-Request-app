@@ -217,6 +217,65 @@ g <- function(x, ...) {
 address_spec <- list("street1", "street2", "city", "province", "postalCode", "country")
 
 # -----------------------------------------------------------------------------
+# What can this API version DO with quotes?
+# -----------------------------------------------------------------------------
+# Jobber only shows its full schema to signed-in developers, so before building
+# anything that changes a quote, ask the API itself. Read-only: this lists
+# mutation NAMES and their input fields, never client data. The result goes to
+# the service log and data/jobber/schema_probe.json.
+jobber_probe_schema <- function() {
+  unwrap <- function(t) {
+    while (!is.null(t$ofType)) t <- t$ofType
+    t$name %||% NA_character_
+  }
+  q <- "{ __schema { mutationType { fields { name args { name type { name kind ofType { name kind ofType { name kind } } } } } } } }"
+  res <- tryCatch(jobber_gql(q), error = function(e) e)
+  if (inherits(res, "error")) {
+    message("SCHEMA PROBE: introspection unavailable - ", conditionMessage(res))
+    return(invisible(NULL))
+  }
+  muts <- res$`__schema`$mutationType$fields
+  keep <- Filter(function(m) grepl("quote|discount|send|message|email|lineitem", m$name, ignore.case = TRUE), muts)
+
+  detail <- lapply(keep, function(m) {
+    inputs <- lapply(m$args, function(a) {
+      tname <- unwrap(a$type)
+      fields <- NULL
+      if (!is.na(tname) && grepl("Input|Attributes", tname)) {
+        tt <- tryCatch(jobber_gql(sprintf(
+          '{ __type(name: "%s") { inputFields { name type { name kind ofType { name kind ofType { name kind } } } } } }', tname)),
+          error = function(e) NULL)
+        fields <- vapply(tt$`__type`$inputFields %||% list(),
+                         function(f) paste0(f$name, ":", unwrap(f$type)), "")
+      }
+      list(arg = a$name, type = tname, fields = fields)
+    })
+    list(mutation = m$name, args = inputs)
+  })
+
+  jsonlite::write_json(detail, file.path(JOBBER_DIR, "schema_probe.json"), auto_unbox = TRUE, pretty = TRUE)
+  message("SCHEMA PROBE: ", length(muts), " mutations in total; quote/send-related:")
+  for (d in detail) {
+    message("  ", d$mutation)
+    for (a in d$args)
+      message("    ", a$arg, " (", a$type, ")",
+              if (length(a$fields)) paste0(": ", paste(a$fields, collapse = ", ")) else "")
+  }
+
+  # Which permissions did the admin grant? The access token is a JWT; its
+  # payload is readable. Only the scope list is logged - never the token.
+  tok <- load_tokens()
+  payload <- tryCatch({
+    p <- strsplit(tok$access_token, ".", fixed = TRUE)[[1]][2]
+    p <- chartr("-_", "+/", p); p <- paste0(p, strrep("=", (4 - nchar(p) %% 4) %% 4))
+    jsonlite::fromJSON(rawToChar(openssl::base64_decode(p)))
+  }, error = function(e) list())
+  sc <- payload$scope %||% payload$scopes
+  message("SCHEMA PROBE: granted scopes: ", if (is.null(sc)) "(not listed in token)" else paste(sc, collapse = " "))
+  invisible(detail)
+}
+
+# -----------------------------------------------------------------------------
 # Connecting an account from a web page (the clients app on Railway)
 # -----------------------------------------------------------------------------
 # state  - a random value that must come back unchanged, so a stray or forged
