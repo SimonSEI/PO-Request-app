@@ -2162,6 +2162,77 @@ server <- function(input, output, session) {
     h <- function(t) tags$h5(t, class = "fw-bold mt-4 mb-2",
                              style = "color:#1d3f5a; font-size:1.05rem;")
 
+    # How current each source is, read from the data rather than stated, so
+    # the 'latest' column cannot drift out of date when the watcher adds data.
+    mon_yr     <- function(d) if (length(d) == 0 || is.na(d)) "unknown" else format(d, "%B %Y")
+    traffic_yr <- if (!is.null(traffic_daily)) max(year(traffic_daily$date)) else NA
+    rsw_last   <- if (!is.null(rsw_monthly))
+                    with(rsw_monthly[which.max(rsw_monthly$year * 12 + rsw_monthly$month), ],
+                         make_date(year, month, 1)) else NA
+    wx_to      <- suppressWarnings(max(naples$date))
+    irs_yr     <- if (!is.null(permanent_moves)) max(permanent_moves$year) else NA
+    oni_codes  <- c("DJF","JFM","FMA","MAM","AMJ","MJJ","JJA","JAS","ASO","SON","OND","NDJ")
+    oni_i      <- match(ctxt("oni_season"), oni_codes)
+    oni_when   <- if (is.na(oni_i)) "" else
+                    sprintf(" (%s–%s)", MONTH_ABB[(oni_i - 2) %% 12 + 1], MONTH_ABB[oni_i %% 12 + 1])
+    last_run   <- suppressWarnings(ymd_hm(ctxt("updated"), quiet = TRUE))
+    last_run   <- if (is.na(last_run)) "unknown"
+                  else paste0(format(last_run, "%d %B %Y at "),
+                              sub("^0", "", tolower(format(last_run, "%I:%M %p"))))
+
+    cadence <- list(
+      list("Road traffic counts", "FDOT, six continuous counting stations",
+           sprintf("%s counts", traffic_yr),
+           "Once a year, in spring, covering the year before",
+           "Daily. A new edition needs a manual download and a refit",
+           tags$strong("The forecast dates: trough, season open, peak, end, and the rise and fall")),
+      list("Airport arrivals", "RSW monthly passengers, Lee County Port Authority",
+           mon_yr(rsw_last),
+           "Monthly, 3–4 weeks after the month ends",
+           "Daily. A new month re-runs the arrival-timing test by itself",
+           "Whether this season is running early or late against past years"),
+      list("Temperatures", "Naples and the northern home states: last 30 days plus a 14-day forecast (Open-Meteo)",
+           last_run,
+           "Daily",
+           "Every run",
+           "The early/late winter call, the migration gap, and the reasoning behind each date"),
+      list("El Niño index", "NOAA Oceanic Niño Index",
+           sprintf("%+.1f%s", cnum("oni_value"), oni_when),
+           "Monthly, as a three-month average",
+           "Every run",
+           "Hurricane outlook and how deep the autumn trough is likely to be"),
+      list("Atlantic storms", "National Hurricane Center",
+           sprintf("%s active", ctxt("storms_atlantic")),
+           "Live during hurricane season",
+           "Every run",
+           "Storm warnings on the trough"),
+      list("Weather archive", "Open-Meteo daily history since 2000",
+           sprintf("to %s", format(wx_to, "%d %B %Y")),
+           "Daily, about six days behind",
+           "Daily. Flagged once 30+ new days are waiting",
+           "The long-run temperature trend. A few weeks barely moves 26 years"),
+      list("Where snowbirds come from", "IRS county-to-county moves and Collier property rolls",
+           sprintf("IRS tax year %s", irs_yr),
+           "Once a year; IRS runs about two years behind",
+           "Not watched. Re-run by hand when a new year appears",
+           "Northern home states and the Future trends tab")
+    )
+
+    th <- function(t) tags$th(t, style = "font-weight:600; color:#6E6E73; font-size:.78rem; border-bottom:1px solid #D1D1D6; padding:6px 10px 6px 0;")
+    td <- function(...) tags$td(..., style = "padding:8px 10px 8px 0; vertical-align:top; border-bottom:1px solid #ECECEF;")
+    # Wrapped so that on a phone the four columns scroll sideways inside the
+    # report instead of being crushed to a word per line.
+    cadence_table <- div(style = "overflow-x:auto; margin:.4rem 0 1rem;", tags$table(
+      style = "width:100%; min-width:560px; font-size:.86rem; line-height:1.4; border-collapse:collapse;",
+      tags$thead(tags$tr(th("Data"), th("Published"), th("We check"), th("What it can change"))),
+      tags$tbody(lapply(cadence, function(r) tags$tr(
+        td(tags$strong(r[[1]]),
+           tags$div(r[[2]], style = "color:#8E8E93; font-size:.78rem;"),
+           tags$div(paste("Latest:", r[[3]]), style = "color:#6E6E73; font-size:.78rem; margin-top:2px;")),
+        td(r[[4]]), td(r[[5]]), td(r[[6]])
+      )))
+    ))
+
     div(
       style = "max-width:76ch; font-size:0.97rem; line-height:1.62;",
 
@@ -2216,6 +2287,29 @@ server <- function(input, output, session) {
           "With hurricanes suppressed this year, expect the trough to be shallower than the model's average year — the date should hold, the depth should not."
         else ""),
 
+      h("How often this forecast updates"),
+      p("An automated watcher checks the first six sources below ",
+        strong("every day at 7:00 am", .noWS = "after"),
+        ". Most of them refresh the conditions around the forecast. Only one can move ",
+        "the dates themselves."),
+      cadence_table,
+      p(strong("What makes the dates change. "),
+        "The trough, season-open, peak and end dates come from the traffic model, so ",
+        "they only move when it is refit on a new year of road counts. In practice ",
+        "that is ", strong("about once a year", .noWS = "after"), ", after FDOT's spring release. ",
+        "Everything else refreshes daily and changes the picture around those dates: ",
+        "whether winter up north is early, whether hurricanes will hollow out the autumn, ",
+        "and whether the airport is running ahead of last year."),
+      p(strong("Alerts. "),
+        "After every run the watcher compares the dates with the last recorded ",
+        "prediction. If one has moved, it logs an alert with the old date, the new date, ",
+        "the size of the shift and the data source that caused it."),
+      p(class = "text-muted small",
+        strong("Last refreshed: "),
+        paste0(last_run, ". The watcher runs on the analysis computer, so it skips any morning that "),
+        "computer is off or signed out. The online copy of this dashboard is a snapshot ",
+        "of the last version published from that computer and does not refresh by itself."),
+
       h("What this cannot do"),
       p("The seasonal shape rests on ", strong("one year"), " of daily counts, because ",
         "FDOT overwrite the detailed tables with each annual edition rather than ",
@@ -2231,9 +2325,7 @@ server <- function(input, output, session) {
           p(class = "text-muted small mb-0",
             strong("This report regenerates itself. "),
             "Every figure above is read from the analysis outputs at load, so ",
-            "re-running the pipeline updates it — nothing here is typed by hand. ",
-            "The watcher checks all sources daily and raises an alert if a ",
-            "headline date moves."))
+            "re-running the pipeline updates it — nothing here is typed by hand."))
     )
   })
 
