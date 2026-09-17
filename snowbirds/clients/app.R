@@ -118,6 +118,27 @@ log_line <- function(...) {
 # the service starts, so a redeploy catches up straight away.
 STATUS_FILE    <- file.path(JOBBER_DIR, "refresh_status.json")
 LOCK_FILE      <- file.path(JOBBER_DIR, "refresh.lock")
+
+# --- clear a lock left behind by a killed refresh -----------------------------
+# The refresh runs as a CHILD of this process and writes its pid to the lock,
+# removing it on exit. A redeploy that lands mid-pull kills it before that, and
+# the lock survives on the volume. Both this app and refresh_job.R then refuse
+# every refresh - scheduled and manual - for the full 45-minute timeout, and
+# the only symptom is that "Refresh now" quietly does nothing.
+#
+# This process has just started, so any pid in that file is from the container
+# that died. Check whether it is actually alive before deciding, so a lock held
+# by a genuinely running refresh is never stolen.
+local({
+  if (!file.exists(LOCK_FILE) || !dir.exists("/proc")) return(invisible())
+  pid   <- suppressWarnings(as.integer(readLines(LOCK_FILE, warn = FALSE)[1]))
+  alive <- !is.na(pid) && dir.exists(file.path("/proc", pid))
+  if (!alive) {
+    unlink(LOCK_FILE)
+    message("Cleared a stale refresh lock (pid ", pid, " is not running) - ",
+            "a refresh was killed mid-pull, probably by a redeploy.")
+  }
+})
 QUOTES_EVERY   <- as.numeric(Sys.getenv("QUOTES_REFRESH_MINUTES", "30"))
 DAY_HOURS      <- 6:21
 
@@ -294,6 +315,18 @@ server <- function(input, output, session) {
           else list(type = "warning", text = "Jobber is not connected yet."))
   })
 
+  observeEvent(input$refresh_all, {
+    req(authed())
+    started <- start_refresh("all", trigger = paste("Full refresh by", who()$user))
+    flash(if (started)
+            list(type = "info", text = paste("Pulling quotes, clients and job history in the background.",
+                                             "This takes longer than a quote refresh - usually 10 to 20 minutes.",
+                                             "The page updates itself when it finishes."))
+          else if (refresh_running())
+            list(type = "info", text = "An update is already running. The page updates itself when it finishes.")
+          else list(type = "warning", text = "Jobber is not connected yet."))
+  })
+
   # Data files: the tables and tiles re-render only when these change, so an
   # update in progress does not reset the table someone is scrolling.
   files_state <- reactivePoll(10000, session,
@@ -373,6 +406,13 @@ server <- function(input, output, session) {
                        disabled = !has_creds),
           actionButton("refresh", "Refresh now", class = "btn-outline-primary btn-sm",
                        disabled = !connected),
+          # "Refresh now" pulls quotes only, which is all the daily plan needs.
+          # Client records - names, billing addresses and Jobber's isCompany
+          # flag - are only re-pulled by a full refresh, so the business and
+          # HOA rules run on whatever clients.csv last captured until this is
+          # used. Slower, hence separate.
+          actionButton("refresh_all", "Full refresh (clients too)",
+                       class = "btn-outline-secondary btn-sm", disabled = !connected),
           tags$a(class = "btn btn-outline-secondary btn-sm", href = paste0(OFFICE_URL, "/dashboard"), "← Office App"),
           actionButton("signout", paste("Sign out", who()$user), class = "btn-link btn-sm text-secondary"))),
 
