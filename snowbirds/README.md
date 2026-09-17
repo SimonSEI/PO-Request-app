@@ -617,6 +617,11 @@ and re-checked by the sender immediately before anything goes out:
 - **HOAs, condo and community associations**, and **landscaping, lawn and
   irrigation firms** — trade contacts and, in several cases, competitors.
   Matched on name patterns as well as the company flag.
+- **Management and property-management companies.** In this market a manager
+  on the client line almost always means an HOA or a condo board: the manager
+  is the community's billing contact, not a homeowner. Matched on the full
+  words and the abbreviations (*Mgmt*, *Mgt*), plus *Properties*, *Realty*,
+  *Real Estate* and *Residential*.
 - **Quotes older than 13 months** (`SNOWBIRD_MAX_QUOTE_AGE_MONTHS`). Past that
   the price and the scope want re-quoting, not discounting. A quote with no
   readable creation date fails this check rather than skipping it.

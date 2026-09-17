@@ -81,9 +81,16 @@ ORG_PATTERNS <- c(
   "LANDSCAP", "\\bLAWNS?\\b", "IRRIGATION", "SPRINKLER",
   "\\bNURSER(Y|IES)\\b", "GROUNDS ?(KEEPING|CARE|MAINT)",
   "TREE SERVICE", "\\bSOD\\b", "\\bTURF\\b", "\\bHARDSCAPE",
-  # generic business markers
+  # Management companies. In this market a management company on the client
+  # line almost always means an HOA or a condo board rather than a household -
+  # the manager is the billing contact for the community, not a homeowner.
+  # The abbreviations matter: "Mgmt" is at least as common as the full word.
+  "\\bMANAGEMENT\\b", "\\bMANAGERS?\\b", "\\bMGMT\\.?\\b", "\\bMGT\\.?\\b",
+  "PROPERTY MANAGE", "PROPERTY SERVICES", "\\bPROPERTIES\\b",
+  "\\bREALTY\\b", "REAL ESTATE", "\\bRESIDENTIAL\\b",
+  # other generic business markers
   "\\bLLC\\b", "\\bL\\.L\\.C\\.?\\b", "\\bINC\\.?\\b", "\\bCORP\\b",
-  "\\bLTD\\b", "PROPERTY MANAGE", "\\bMANAGEMENT\\b", "\\bREALTY\\b",
+  "\\bLTD\\b", "\\bHOLDINGS\\b", "\\bENTERPRISES\\b", "\\bGROUP\\b",
   "\\bCHURCH\\b", "\\bSCHOOL\\b", "\\bCITY OF\\b", "\\bCOUNTY OF\\b"
 )
 ORG_RE <- paste(ORG_PATTERNS, collapse = "|")
