@@ -18,6 +18,7 @@ COPY R/17_jobber_pull.R             R/17_jobber_pull.R
 COPY R/18_client_second_homes.R     R/18_client_second_homes.R
 COPY clients/fetch_roll.R           clients/fetch_roll.R
 COPY clients/auto_send.R            clients/auto_send.R
+COPY clients/refresh_job.R          clients/refresh_job.R
 COPY clients/app.R                  clients/app.R
 
 # The area forecast R/18 falls back on when a client has no history.

@@ -102,45 +102,73 @@ log_line <- function(...) {
 }
 
 # -----------------------------------------------------------------------------
-# The refresh, and the 7am schedule
+# Keeping the data current - automatically, in the background
 # -----------------------------------------------------------------------------
-busy <- new.env(); busy$on <- FALSE
+# Refreshes run as a separate R process (clients/refresh_job.R). The web app
+# only starts them and watches the files they write, so the page stays usable
+# the whole time. The schedule, all times Eastern:
+#
+#   every 30 min, 6am-9pm   quotes only (a couple of minutes) - quote status is
+#                           what goes stale during the working day
+#   2am                     everything: quotes, clients, job history
+#   7am                     quotes, then the automatic resends (switch permitting)
+#
+# A check runs every 5 minutes and starts whatever is due. It also runs when
+# the service starts, so a redeploy catches up straight away.
+STATUS_FILE    <- file.path(JOBBER_DIR, "refresh_status.json")
+LOCK_FILE      <- file.path(JOBBER_DIR, "refresh.lock")
+QUOTES_EVERY   <- as.numeric(Sys.getenv("QUOTES_REFRESH_MINUTES", "30"))
+DAY_HOURS      <- 6:21
 
-# allow_send is TRUE only for the scheduled 7am run. "Refresh now" rebuilds
-# the plan but never sends anything.
-run_refresh <- function(trigger, allow_send = FALSE) {
-  if (busy$on) return("A refresh is already running.")
-  if (!file.exists(TOKEN_FILE)) {
-    log_line(trigger, ": skipped, Jobber is not connected")
-    return("Jobber is not connected yet.")
-  }
-  busy$on <- TRUE
-  on.exit(busy$on <- FALSE)
-  res <- tryCatch(in_root({
-    ensure_collier_roll(Sys.getenv("COLLIER_ROLL", "data/raw/collier_int_parcels.csv"))
-    source("R/17_jobber_pull.R",         local = new.env())
-    source("R/18_client_second_homes.R", local = new.env())
-    # One-off: find out what this Jobber API allows before automating sends.
-    if (!file.exists(file.path(JOBBER_DIR, "schema_probe.json"))) try(jobber_probe_schema())
-    "done"
-  }), error = function(e) paste("failed:", conditionMessage(e)))
-  log_line(trigger, ": ", res)
-  if (allow_send && res == "done")
-    tryCatch(run_auto_send(PLAN_CSV), error = function(e) log_line("auto-send failed: ", conditionMessage(e)))
-  res
+read_status <- function() {
+  if (!file.exists(STATUS_FILE)) return(list())
+  tryCatch(jsonlite::fromJSON(STATUS_FILE), error = function(e) list())
+}
+refresh_running <- function() {
+  file.exists(LOCK_FILE) && difftime(Sys.time(), file.mtime(LOCK_FILE), units = "mins") < 45
+}
+minutes_since <- function(txt, now = Sys.time()) {
+  if (is.null(txt) || length(txt) == 0 || is.na(txt) || !nzchar(txt)) return(Inf)
+  as.numeric(difftime(now, as.POSIXct(txt, tz = TZ), units = "mins"))
 }
 
-secs_to_next_7am <- function() {
-  now <- Sys.time()
-  nxt <- as.POSIXct(paste(format(now, "%Y-%m-%d", tz = TZ), "07:00:00"), tz = TZ)
-  if (nxt <= now) nxt <- as.POSIXct(paste(format(now + 86400, "%Y-%m-%d", tz = TZ), "07:00:00"), tz = TZ)
-  as.numeric(difftime(nxt, now, units = "secs"))
+# What should run right now, given the last status? list(scope, send, trigger)
+# or NULL. Kept free of side effects so the schedule can be tested at any hour.
+due_refresh <- function(s, now = Sys.time()) {
+  lt    <- as.POSIXlt(now, tz = TZ)
+  today <- format(lt, "%Y-%m-%d")
+  if (lt$hour == 7 && !identical(s$last_send_run, today))
+    return(list(scope = "quotes", send = TRUE, trigger = "7am refresh + resends"))
+  if (lt$hour >= 2 && lt$hour < 6 && substr(s$last_all %||% "", 1, 10) != today)
+    return(list(scope = "all", send = FALSE, trigger = "overnight full refresh"))
+  if (lt$hour %in% DAY_HOURS && minutes_since(s$last_quotes, now) >= QUOTES_EVERY)
+    return(list(scope = "quotes", send = FALSE, trigger = sprintf("every %d min", QUOTES_EVERY)))
+  if (is.infinite(minutes_since(s$last_all, now)) && is.infinite(minutes_since(s$last_quotes, now)))
+    return(list(scope = "all", send = FALSE, trigger = "first refresh"))
+  NULL
 }
-schedule_daily <- function() {
-  later(function() { run_refresh("7am scheduled refresh", allow_send = TRUE); schedule_daily() }, secs_to_next_7am())
+
+start_refresh <- function(scope = "quotes", send = FALSE, trigger = "manual") {
+  if (refresh_running()) return(FALSE)
+  if (!file.exists(TOKEN_FILE)) return(FALSE)
+  rscript <- file.path(R.home("bin"), "Rscript")
+  system2(rscript, c(file.path(ROOT, "clients/refresh_job.R"), scope,
+                     if (send) "send" else "nosend", shQuote(trigger)),
+          wait = FALSE, stdout = "", stderr = "")
+  TRUE
 }
-# Off switch for automated tests, which otherwise wait on the queued 7am job.
-if (Sys.getenv("CLIENTS_NO_SCHEDULE") != "true") schedule_daily()
+
+scheduler_tick <- function() {
+  tryCatch({
+    if (file.exists(TOKEN_FILE) && !refresh_running()) {
+      d <- due_refresh(read_status())
+      if (!is.null(d)) start_refresh(d$scope, send = d$send, trigger = d$trigger)
+    }
+  }, error = function(e) message("scheduler: ", conditionMessage(e)))
+  later(scheduler_tick, 300)
+}
+# Off switch for automated tests, which otherwise wait on the queued job.
+if (Sys.getenv("CLIENTS_NO_SCHEDULE") != "true") later(scheduler_tick, 20)
 
 # -----------------------------------------------------------------------------
 # UI
@@ -235,19 +263,44 @@ server <- function(input, output, session) {
     if (!is.null(url)) session$sendCustomMessage("go", url)
   })
 
+  # Starts a background refresh and returns at once - the page never waits on it.
   observeEvent(input$refresh, {
     req(authed())
-    msg <- withProgress(message = "Pulling quotes from Jobber and rebuilding the plan...", value = .3,
-                        run_refresh("manual refresh"))
-    flash(list(type = if (msg == "done") "success" else "warning",
-               text = if (msg == "done") "Refreshed." else msg))
-    tick(tick() + 1)
+    started <- start_refresh("quotes", trigger = paste("Refresh now by", who()$user))
+    flash(if (started)
+            list(type = "info", text = "Updating quotes in the background. The page updates itself when it finishes, usually within a few minutes.")
+          else if (refresh_running())
+            list(type = "info", text = "An update is already running. The page updates itself when it finishes.")
+          else list(type = "warning", text = "Jobber is not connected yet."))
   })
 
-  # Files change on the 7am run too, not only on clicks - so watch them.
+  # Data files: the tables and tiles re-render only when these change, so an
+  # update in progress does not reset the table someone is scrolling.
   files_state <- reactivePoll(10000, session,
-    checkFunc = function() paste(file.mtime(c(PLAN_CSV, DB_CSV, TOKEN_FILE, LOG_FILE)), collapse = "|"),
+    checkFunc = function() paste(file.mtime(c(PLAN_CSV, DB_CSV, TOKEN_FILE)), collapse = "|"),
     valueFunc = function() Sys.time())
+
+  # Refresh status: its own small output, polled more often.
+  status_state <- reactivePoll(5000, session,
+    checkFunc = function() paste(file.mtime(STATUS_FILE), file.exists(LOCK_FILE), format(Sys.time(), "%H:%M")),
+    valueFunc = function() list(s = read_status(), running = refresh_running()))
+
+  output$status_ui <- renderUI({
+    req(authed())
+    st <- status_state(); s <- st$s
+    ago <- function(txt) {
+      m <- minutes_since(txt)
+      if (is.infinite(m)) "never" else if (m < 1) "just now" else if (m < 60) sprintf("%d min ago", floor(m))
+      else if (m < 1440) sprintf("%d h ago", floor(m / 60)) else sprintf("%d days ago", floor(m / 1440))
+    }
+    span(class = "top-sub",
+      if (st$running) tags$span(style = "color:#0071E3; font-weight:600;", "⟳ Updating now… ")
+      else if (identical(s$state, "failed")) tags$span(style = "color:#C0392B; font-weight:600;",
+                                                      "Last update failed: ", s$message %||% "", " · "),
+      "Quotes updated ", ago(s$last_quotes),
+      " · clients and job history ", ago(s$last_all),
+      sprintf(" · quotes refresh automatically every %d min, 6am–9pm", QUOTES_EVERY))
+  })
 
   plan <- reactive({ req(authed()); files_state(); tick()
     if (file.exists(PLAN_CSV)) read_csv(PLAN_CSV, col_types = cols(.default = col_character())) else NULL })
@@ -280,7 +333,6 @@ server <- function(input, output, session) {
     acct      <- if (file.exists(file.path(JOBBER_DIR, "account.rds"))) readRDS(file.path(JOBBER_DIR, "account.rds")) else NULL
     connected <- file.exists(TOKEN_FILE)
     has_creds <- nzchar(Sys.getenv("JOBBER_CLIENT_ID")) && nzchar(Sys.getenv("JOBBER_CLIENT_SECRET"))
-    last_log  <- if (file.exists(LOG_FILE)) tail(readLines(LOG_FILE, warn = FALSE), 1) else "No refresh yet"
     p <- plan(); d <- db()
     today <- as.Date(format(Sys.time(), tz = TZ))
     due   <- if (!is.null(p)) sum(as.Date(p$resend_on) <= today, na.rm = TRUE) else 0
@@ -291,8 +343,8 @@ server <- function(input, output, session) {
     div(class = "wrap",
       div(class = "d-flex justify-content-between align-items-end flex-wrap gap-2 mb-3",
         div(div(class = "top-title", "Snowbird Clients"),
-            div(class = "top-sub", if (connected) paste("Jobber:", acct$name %||% "connected") else "Jobber not connected",
-                " · ", last_log)),
+            div(class = "top-sub", if (connected) paste("Jobber:", acct$name %||% "connected") else "Jobber not connected"),
+            uiOutput("status_ui")),
         div(class = "d-flex gap-2",
           actionButton("connect", if (connected) "Reconnect Jobber" else "Connect Jobber",
                        class = if (connected) "btn-outline-secondary btn-sm" else "btn-primary btn-sm",
@@ -350,8 +402,11 @@ server <- function(input, output, session) {
             p("With two or more past seasons on file, their own habit: the date of their first quote or job each autumn. ",
               "With one season, the earlier of that and the area forecast. With none, the forecast's season opening."),
             h5("Updates"),
-            p("Quotes are pulled and the plan rebuilt every day at 7:00 am Eastern, and whenever Refresh now is clicked. ",
-              "The property roll is re-downloaded monthly."))))
+            p("Everything updates on its own, in the background, so the page stays usable. ",
+              sprintf("Quotes are pulled and the plan rebuilt every %d minutes from 6am to 9pm Eastern. ", QUOTES_EVERY),
+              "Clients and job history are reloaded in full overnight. At 7am the quotes update runs first, then any ",
+              "automatic resends. Refresh now starts a quotes update immediately. ",
+              "The county property roll is re-downloaded monthly."))))
     )
   })
 
