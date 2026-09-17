@@ -56,6 +56,61 @@ OUTSTANDING <- c("awaiting_response", "changes_requested")
 # activity is summer business from people who never left.
 RETURN_WINDOW <- c(start = "09-01", end = "01-31")
 
+# --- Who and what this offer must NEVER go to ---------------------------------
+# A "welcome back, 10% off" is aimed at a household with a second home here.
+# Three kinds of recipient are not that, and sending to them is worse than
+# missing a resend:
+#   - businesses generally (Jobber's own isCompany flag, or a company name)
+#   - HOAs, condo and community associations - a board does not come back
+#     for the winter, and a homeowner discount is the wrong message
+#   - landscaping, lawn and irrigation firms - trade contacts, and in several
+#     cases direct competitors
+#
+# Over-matching is deliberately the safe direction: missing a resend costs one
+# discount, emailing a competitor a homeowner offer costs more. Everything
+# dropped is written to excluded_from_plan.csv with the reason, so the office
+# can audit the calls rather than wonder where a quote went.
+ORG_PATTERNS <- c(
+  # HOAs, condo and community associations, clubs
+  "ASSOCIATION", "\\bASSN\\b", "\\bASSOC\\b", "\\bH\\.?O\\.?A\\.?\\b",
+  "\\bP\\.?O\\.?A\\.?\\b", "\\bC\\.?D\\.?D\\.?\\b",
+  "CONDOMINIUM", "\\bCONDOS?\\b", "HOMEOWNER", "PROPERTY OWNERS",
+  "\\bCOMMUNIT(Y|IES)\\b", "COUNTRY CLUB", "\\bCLUB\\b", "\\bVILLAS\\b",
+  "\\bESTATES\\b", "\\bRESORT\\b", "MASTER ASSOC",
+  # the legal forms a community is usually held under
+  "\\bCOOPERATIVE\\b", "\\bCO-?OP\\b", "\\bTOWNHOMES?\\b",
+  "\\bTOWNHOUSES?\\b", "\\bAPARTMENTS?\\b",
+  # landscaping and grounds trades
+  "LANDSCAP", "\\bLAWNS?\\b", "IRRIGATION", "SPRINKLER",
+  "\\bNURSER(Y|IES)\\b", "GROUNDS ?(KEEPING|CARE|MAINT)",
+  "TREE SERVICE", "\\bSOD\\b", "\\bTURF\\b", "\\bHARDSCAPE",
+  # Management companies. In this market a management company on the client
+  # line almost always means an HOA or a condo board rather than a household -
+  # the manager is the billing contact for the community, not a homeowner.
+  # The abbreviations matter: "Mgmt" is at least as common as the full word.
+  "\\bMANAGEMENT\\b", "\\bMANAGERS?\\b", "\\bMGMT\\.?\\b", "\\bMGT\\.?\\b",
+  "PROPERTY MANAGE", "PROPERTY SERVICES", "\\bPROPERTIES\\b",
+  "\\bREALTY\\b", "REAL ESTATE", "\\bRESIDENTIAL\\b",
+  # other generic business markers
+  "\\bLLC\\b", "\\bL\\.L\\.C\\.?\\b", "\\bINC\\.?\\b", "\\bCORP\\b",
+  "\\bLTD\\b", "\\bHOLDINGS\\b", "\\bENTERPRISES\\b", "\\bGROUP\\b",
+  "\\bCHURCH\\b", "\\bSCHOOL\\b", "\\bCITY OF\\b", "\\bCOUNTY OF\\b"
+)
+ORG_RE <- paste(ORG_PATTERNS, collapse = "|")
+
+# Past this, the price, the scope and often the property have moved on. Such a
+# quote wants re-quoting, not resending at a discount.
+# One setting, read by both this script and clients/auto_send.R, so the plan
+# and the sender can never disagree about the limit.
+MAX_QUOTE_AGE_MONTHS <- as.integer(Sys.getenv("SNOWBIRD_MAX_QUOTE_AGE_MONTHS", "13"))
+
+# An optional hand-maintained list for the ones no rule can catch - an HOA
+# called "Autumn Woods" looks exactly like a person's address. One column,
+# client_id or client name, one per row. Lives on the volume beside the
+# Jobber data so it survives redeploys.
+MANUAL_EXCLUDE <- Sys.getenv("SNOWBIRD_EXCLUDE_FILE",
+                             file.path(IN_DIR, "do_not_send.csv"))
+
 # =============================================================================
 # 1. Jobber data
 # =============================================================================
@@ -63,6 +118,35 @@ rd <- function(f) read_csv(file.path(IN_DIR, f), col_types = cols(.default = col
 quotes  <- rd("quotes.csv")  %>% mutate(total = as.numeric(total))
 clients <- rd("clients.csv")
 jobs    <- rd("jobs.csv")
+
+# Older pulls predate the is_company column; treat it as unknown rather than
+# failing, so the rules still work before the next refresh.
+if (!"is_company" %in% names(clients)) clients$is_company <- NA_character_
+
+manual_list <- if (file.exists(MANUAL_EXCLUDE)) {
+  m <- read_csv(MANUAL_EXCLUDE, col_types = cols(.default = col_character()))
+  unique(toupper(str_squish(unlist(m[[1]]))))
+} else character()
+
+clients <- clients %>%
+  mutate(
+    co_flag      = tolower(str_squish(is_company)),
+    co_named     = !is.na(company) & str_squish(company) != "",
+    co_hit   = str_extract(toupper(str_squish(paste(coalesce(name, ""),
+                                                      coalesce(company, "")))), ORG_RE),
+    co_manual    = toupper(str_squish(name)) %in% manual_list | client_id %in% manual_list,
+    # Order matters: Jobber's flag wins, then a company name, then the name
+    # patterns, then the hand-maintained list.
+    is_org = co_manual | co_flag %in% c("true", "t", "yes", "1") | co_named | !is.na(co_hit),
+    org_reason = case_when(
+      co_manual                              ~ "on the do-not-send list",
+      co_flag %in% c("true", "t", "yes", "1") ~ "Jobber marks this client as a company",
+      co_named                               ~ paste0("company name on file: ", str_squish(company)),
+      !is.na(co_hit)                     ~ paste0("name looks like a business or HOA (matched \"",
+                                                    co_hit, "\")"),
+      TRUE                                 ~ NA_character_)
+  ) %>%
+  select(-co_flag, -co_named, -co_hit, -co_manual)
 
 as_day <- function(x) as.Date(suppressWarnings(ymd_hms(x, quiet = TRUE)))
 
@@ -297,6 +381,32 @@ db <- clients %>%
 # 6. When will each snowbird be back?
 # =============================================================================
 fc <- read_csv("output/season_forecast.csv", show_col_types = FALSE)
+
+# Collier and Lee do not share a season. Collier opens around mid-November and
+# troughs in September; Lee opens about a month earlier and troughs in JUNE.
+# Judging a Fort Myers client against Naples' curve is simply the wrong date,
+# so each client is measured against their own county. R/09 writes one row per
+# county; "Pooled" is dropped because it describes no county in particular.
+fc_by_county <- if (file.exists("output/season_forecast_by_county.csv")) {
+  read_csv("output/season_forecast_by_county.csv", show_col_types = FALSE) %>%
+    filter(scope != "Pooled")
+} else NULL
+
+# Falls back to the headline forecast when we have no roll for that county -
+# better a neighbouring county's opening than no date at all.
+start_doy_for <- function(cty) {
+  hit <- if (!is.null(fc_by_county)) {
+    fc_by_county$start_doy[match(cty, fc_by_county$scope)]
+  } else rep(NA_real_, length(cty))
+  coalesce(as.numeric(hit), as.numeric(fc$start_doy))
+}
+
+county_label <- function(cty) {
+  hit <- if (!is.null(fc_by_county)) {
+    fc_by_county$scope[match(cty, fc_by_county$scope)]
+  } else rep(NA_character_, length(cty))
+  paste0(coalesce(hit, as.character(fc$county %||% "the area")), " County")
+}
 cond <- if (file.exists("data/current_conditions.csv"))
   read_csv("data/current_conditions.csv", show_col_types = FALSE) %>% { setNames(as.list(.$value), .$key) } else list()
 
@@ -339,6 +449,8 @@ db <- db %>%
   left_join(activity, by = "client_id") %>%
   mutate(
     own_date = season_anchor + typical_offset,
+    area_return = as.Date(paste0(season_year, "-01-01")) + start_doy_for(county) - 1,
+    area_where  = county_label(county),
     predicted_return = case_when(
       !snowbird                               ~ as.Date(NA),
       coalesce(seasons_seen, 0L) >= 2         ~ own_date,
@@ -350,21 +462,45 @@ db <- db %>%
         sprintf("Their own habit: first autumn contact around %s, median of %d past seasons.",
                 format(own_date, "%d %b"), seasons_seen),
       coalesce(seasons_seen, 0L) == 1 & own_date <= area_return ~
-        sprintf("One past season, first contact around %s - earlier than the area's season opening (%s), so their date is used.",
-                format(own_date, "%d %b"), format(area_return, "%d %b")),
+        sprintf("One past season, first contact around %s - earlier than %s's season opening (%s), so their date is used.",
+                format(own_date, "%d %b"), area_where, format(area_return, "%d %b")),
       coalesce(seasons_seen, 0L) == 1 ~
-        sprintf("One past season, first contact not until %s. That only shows they were here by then, so the area's season opening (%s) is used instead.%s",
-                format(own_date, "%d %b"), format(area_return, "%d %b"), lean),
-      TRUE ~ sprintf("No past autumn contact on file, so the area forecast: the season opens around %s.%s",
-                     format(area_return, "%d %b"), lean))
+        sprintf("One past season, first contact not until %s. That only shows they were here by then, so %s's season opening (%s) is used instead.%s",
+                format(own_date, "%d %b"), area_where, format(area_return, "%d %b"), lean),
+      TRUE ~ sprintf("No past autumn contact on file, so the area forecast: %s's season opens around %s.%s",
+                     area_where, format(area_return, "%d %b"), lean))
   )
 
 # =============================================================================
 # 7. The resend plan
 # =============================================================================
-plan <- quotes %>%
+# %m-% steps whole months without rolling past the end of a short one.
+OLDEST_QUOTE <- TODAY %m-% months(MAX_QUOTE_AGE_MONTHS)
+
+plan_all <- quotes %>%
   filter(status %in% OUTSTANDING) %>%
   inner_join(db %>% filter(snowbird), by = "client_id", suffix = c("", "_client")) %>%
+  mutate(
+    quote_created  = as_day(created_at),
+    quote_age_days = as.numeric(TODAY - quote_created),
+    # A quote with no readable creation date fails the age check rather than
+    # skipping it - we cannot show it is inside the limit, so it does not go.
+    excluded_because = case_when(
+      is_org                       ~ org_reason,
+      is.na(quote_created)         ~ "no creation date on the quote, so its age cannot be checked",
+      quote_created < OLDEST_QUOTE ~ sprintf("quote is %d days old, past the %d-month limit",
+                                             as.integer(round(quote_age_days)), MAX_QUOTE_AGE_MONTHS),
+      TRUE                         ~ NA_character_)
+  )
+
+excluded <- plan_all %>%
+  filter(!is.na(excluded_because)) %>%
+  transmute(client = name, quote_number, quote_title = title, quote_status = status,
+            quote_created, quote_age_days, total, excluded_because, jobber_link) %>%
+  arrange(excluded_because, desc(total))
+
+plan <- plan_all %>%
+  filter(is.na(excluded_because)) %>%
   mutate(
     ideal     = predicted_return - LEAD_DAYS,
     resend_on = case_when(ideal >= TODAY ~ ideal,
@@ -375,7 +511,6 @@ plan <- quotes %>%
       TODAY <= season_end ~ sprintf("Send now: they were due back around %s and the season runs to %s.",
                                     format(predicted_return, "%d %b"), format(season_end, "%d %b %Y")),
       TRUE ~ "Season over - resend before next season."),
-    quote_age_days  = as.numeric(TODAY - as_day(created_at)),
     total_10pct_off = round(total * (1 - DISCOUNT), 2)
   ) %>%
   arrange(resend_on, desc(total)) %>%
@@ -388,11 +523,16 @@ plan <- quotes %>%
             # automatically. 'Changes requested' means they asked for edits -
             # a discount email is the wrong reply, so a person handles those.
             auto_send = if_else(status == "awaiting_response", "yes", "no - changes requested, handle manually"),
-            quote_created = as_day(created_at), quote_age_days, total, total_10pct_off,
+            quote_created, quote_age_days,
+            # Always "no" - organisations never reach this table. The column
+            # exists so auto_send.R can re-check rather than trust the file.
+            client_is_company = if_else(is_org, "yes", "no"),
+            total, total_10pct_off,
             why_this_date = paste(timing, return_basis), evidence, property_address, jobber_link)
 
 client_out <- db %>%
-  transmute(client = name, company, status, snowbird, home_state, home_country, home_region,
+  transmute(client = name, company, is_org, org_reason,
+            status, snowbird, home_state, home_country, home_region,
             predicted_return, return_basis, evidence, n_properties, property_address, county,
             parcel_id, homestead, owner_city, owner_state, owner_country, name_on_roll,
             bill_city, bill_state, bill_country, seasons_seen, client_link) %>%
@@ -400,6 +540,7 @@ client_out <- db %>%
 
 write_csv(client_out, file.path(OUT_DIR, "client_second_homes.csv"), na = "")
 write_csv(plan,       file.path(OUT_DIR, "quote_resend_plan.csv"),   na = "")
+write_csv(excluded,   file.path(OUT_DIR, "excluded_from_plan.csv"),   na = "")
 
 # =============================================================================
 # 8. Plain-English summary
@@ -414,7 +555,14 @@ print(client_out %>% filter(snowbird) %>% count(home_region, home_state, sort = 
 cat("\nProperty rolls used:", if (length(counties_loaded)) paste(str_to_title(counties_loaded), collapse = " + ") else "none", "\n")
 if (!"lee" %in% counties_loaded)
   cat("  (Lee County roll not loaded - Lee clients are judged on billing address alone.)\n")
-cat("Area forecast: season opens", format(area_return, "%d %b %Y"), "|", LEAD_DAYS, "day lead |", DISCOUNT * 100, "% off\n")
+cat("Area forecast (", as.character(fc$county %||% "primary county"), "): season opens ",
+    format(area_return, "%d %b %Y"), " | ", LEAD_DAYS, " day lead | ", DISCOUNT * 100, "% off\n", sep = "")
+if (!is.null(fc_by_county)) {
+  cat("Per-county openings used: ",
+      paste(sprintf("%s %s", fc_by_county$scope,
+                    format(as.Date(paste0(season_year, "-01-01")) + fc_by_county$start_doy - 1, "%d %b")),
+            collapse = " | "), "\n", sep = "")
+}
 
 cat("\n==================== RESEND PLAN ====================\n")
 if (nrow(plan) == 0) cat("No outstanding quotes belong to snowbird clients.\n") else {
@@ -424,4 +572,33 @@ if (nrow(plan) == 0) cat("No outstanding quotes belong to snowbird clients.\n") 
     mutate(resend_week = format(resend_week, "week of %d %b %Y")) %>% print(n = Inf)
 }
 cat("\n", nrow(not_seasonal), " other outstanding quotes belong to year-round or unknown clients - no seasonal timing applies.\n", sep = "")
-cat("\nFiles:", file.path(OUT_DIR, "client_second_homes.csv"), "and", file.path(OUT_DIR, "quote_resend_plan.csv"), "\n")
+
+# Excluded quotes are reported, never silently dropped: a resend that vanishes
+# with no explanation is indistinguishable from a bug.
+cat("\n-------------------- EXCLUDED FROM THE PLAN --------------------\n")
+if (nrow(excluded) == 0) cat("Nothing excluded.\n") else {
+  cat(nrow(excluded), " snowbird quotes held back, worth ",
+      scales::dollar(sum(excluded$total, na.rm = TRUE)), ":\n", sep = "")
+  excluded %>%
+    mutate(rule = case_when(
+      str_detect(excluded_because, "^quote is |^no creation date") ~
+        sprintf("older than %d months", MAX_QUOTE_AGE_MONTHS),
+      TRUE ~ "business, HOA or trade client")) %>%
+    count(rule, name = "quotes") %>% print(n = Inf)
+  cat("\nThe ten largest:\n")
+  excluded %>% arrange(desc(total)) %>% slice_head(n = 10) %>%
+    transmute(client, quote_number,
+              total = scales::dollar(total), excluded_because) %>%
+    as.data.frame() %>% print(row.names = FALSE)
+}
+if (length(manual_list) == 0) {
+  cat("\nNo do-not-send list found at ", MANUAL_EXCLUDE,
+      " - add one (a single column of client names or ids) for any HOA or\n",
+      "business whose name gives no clue, such as a community called Autumn Woods.\n", sep = "")
+} else {
+  cat("\nDo-not-send list: ", length(manual_list), " entries from ", MANUAL_EXCLUDE, "\n", sep = "")
+}
+
+cat("\nFiles:", file.path(OUT_DIR, "client_second_homes.csv"), ",",
+    file.path(OUT_DIR, "quote_resend_plan.csv"), "and",
+    file.path(OUT_DIR, "excluded_from_plan.csv"), "\n")

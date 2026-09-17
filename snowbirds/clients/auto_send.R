@@ -8,6 +8,8 @@
 #   - the quote is 'awaiting response' (never 'changes requested')
 #   - its resend date has arrived
 #   - the client is a confirmed or likely snowbird
+#   - the client is NOT a business, HOA or landscaping/trade company
+#   - the quote is no older than SNOWBIRD_MAX_QUOTE_AGE_MONTHS (default 13)
 #   - this quote has never been sent by this service before
 #   - today's cap has not been reached
 #
@@ -18,6 +20,11 @@
 SWITCH_FILE <- file.path(JOBBER_DIR, "auto_send_switch.rds")
 SENT_LOG    <- file.path(JOBBER_DIR, "sent_quotes.csv")
 DAILY_CAP   <- as.integer(Sys.getenv("AUTO_SEND_DAILY_CAP", "10"))
+
+# Same setting R/18 uses to build the plan. Re-read here rather than trusted
+# from the file, so the sender enforces today's rule, not the rule that was in
+# force whenever the plan on the volume happened to be written.
+MAX_QUOTE_AGE_MONTHS <- as.integer(Sys.getenv("SNOWBIRD_MAX_QUOTE_AGE_MONTHS", "13"))
 
 # The Jobber calls that discount and send a quote are written only after the
 # schema probe shows what this API version actually offers. Until then this
@@ -52,6 +59,30 @@ due_for_auto_send <- function(plan_path, today = as.Date(format(Sys.time(), tz =
   p <- read_csv(plan_path, col_types = cols(.default = col_character()))
   if (!"quote_id" %in% names(p)) return(tibble())
   already <- sent_log() %>% filter(result == "sent") %>% pull(quote_id)
+
+  # ---------------------------------------------------------------------------
+  # Belt and braces on the two "never send" rules
+  # ---------------------------------------------------------------------------
+  # R/18 already drops organisations and over-age quotes when it builds the
+  # plan. This is the last gate before an email actually leaves, and the plan
+  # is a file on a volume that can outlive the code that wrote it - so both
+  # rules are checked again here. A plan with no such columns fails closed.
+  if (!"client_is_company" %in% names(p)) p$client_is_company <- NA_character_
+  if (!"quote_created"     %in% names(p)) p$quote_created     <- NA_character_
+
+  cutoff  <- lubridate::`%m-%`(today, lubridate::period(months = MAX_QUOTE_AGE_MONTHS))
+  created <- suppressWarnings(as.Date(p$quote_created))
+  is_co   <- tolower(str_squish(p$client_is_company)) %in% c("yes", "true", "t", "1")
+  blocked <- is_co | is.na(created) | created < cutoff
+
+  if (any(blocked)) {
+    log_line("auto-send: ", sum(blocked), " quote(s) held back - ",
+             sum(is_co), " company/HOA, ",
+             sum(!is_co & (is.na(created) | created < cutoff)),
+             " older than ", MAX_QUOTE_AGE_MONTHS, " months")
+    p <- p[!blocked, , drop = FALSE]
+  }
+
   p %>%
     filter(quote_status == "awaiting_response",
            str_starts(snowbird_status, "Second home"),

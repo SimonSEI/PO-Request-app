@@ -40,6 +40,8 @@ TODAY  <- Sys.Date()
 curve <- read_csv("output/seasonal_curve.csv", show_col_types = FALSE)
 fc    <- read_csv("output/season_forecast.csv", show_col_types = FALSE)
 
+if (!exists("%||%")) `%||%` <- function(a, b) if (is.null(a)) b else a
+
 # Turn a day-of-year into the NEXT time that day comes round.
 next_occurrence <- function(doy, from = TODAY) {
   this_year <- as.Date(paste0(year(from), "-01-01")) + (doy - 1)
@@ -63,7 +65,11 @@ dates <- tibble(
   arrange(date)
 
 cat("=====================================================================\n")
-cat("  NEXT SEASON - Collier + Lee County (Naples & Fort Myers).  Today is ", format(TODAY, "%d %b %Y"), "\n", sep = "")
+# The scope label comes from the forecast itself, so it can never drift from
+# what R/09 actually fitted - that mislabelling is how a pooled two-county
+# average got reported as "Naples" in the first place.
+scope_label <- paste0(as.character(fc$county %||% "Collier"), " County")
+cat("  NEXT SEASON - ", scope_label, ".  Today is ", format(TODAY, "%d %b %Y"), "\n", sep = "")
 cat("=====================================================================\n\n")
 
 dates %>%
@@ -231,6 +237,19 @@ p <- skill %>%
 ggsave("output/11_forecast_vs_climatology.png", p, width = 10, height = 5.5, dpi = 150)
 
 write_csv(dates, "output/next_season_dates.csv")
+
+# The practical windows, saved so the README generator (R/20) quotes the same
+# dates this script printed rather than a hand-typed copy of them.
+write_csv(
+  tibble(
+    window = c("Peak", "Trough"),
+    from   = c(peak_win[1],  trough_win[1]),
+    to     = c(peak_win[2],  trough_win[2]),
+    days   = c(nrow(peak_band), nrow(trough_band)),
+    inside_today = c(TODAY >= peak_win[1]   && TODAY <= peak_win[2],
+                     TODAY >= trough_win[1] && TODAY <= trough_win[2])
+  ),
+  "output/next_season_windows.csv")
 write_csv(skill, "output/forecast_skill.csv")
 
 message("\nWritten: output/11_forecast_vs_climatology.png")

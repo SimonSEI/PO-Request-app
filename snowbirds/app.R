@@ -659,6 +659,21 @@ SIM_BASE_GAP <- state_temps %>%
     season_year = if_else(month(date) >= 7, year(date), year(date) - 1L)
   )
 
+# What R/09 actually fitted. Read from the CSV rather than written into the
+# prose, because a hand-typed scope is exactly what went wrong before: the
+# forecast was quietly changed to a two-county average while every caption
+# still said Naples.
+FC_COUNTY <- if (!is.null(fc_static)) as.character(fc_static$county %||% "Collier") else "Collier"
+FC_NSTATIONS <- if (!is.null(fc_static) && !is.null(fc_static$stations)) {
+  length(strsplit(trimws(as.character(fc_static$stations)), "\\s+")[[1]])
+} else NA_integer_
+
+# Counties the Season forecast tab can be switched between, primary first.
+FC_COUNTY_CHOICES <- if (!is.null(traffic_daily) && "county_name" %in% names(traffic_daily)) {
+  cs <- sort(unique(traffic_daily$county_name))
+  c(cs[cs == FC_COUNTY], cs[cs != FC_COUNTY])
+} else FC_COUNTY
+
 HEAD <- if (!is.null(fc_static)) list(
   trough   = next_occ_static(fc_static$trough_doy),
   start    = next_occ_static(fc_static$start_doy),
@@ -1267,7 +1282,10 @@ overview_ui <- function() {
 
   div(class = "ov-grid",
 
-    col("Season",
+    # Named, because these three boxes are one county's forecast while the
+    # cards beside them cover both. An unlabelled "Season" is how the scope
+    # went unnoticed last time.
+    col(paste("Season \u00b7", FC_COUNTY),
       ov_card("Next trough",
               ov_num(day_month(h$trough), format(h$trough, "%Y")),
               ov_sub(days_away(h$trough)),
@@ -1557,21 +1575,27 @@ ui <- function(req) page_fluid(
     nav_panel(
       "Season forecast",
       chart_panel(
-        heading = "When will Naples be busiest, and when will it be dead?",
+        # Deliberately not "Naples": this panel switches between counties, and a
+        # heading naming one of them would be wrong half the time.
+        heading = "When will southwest Florida be busiest, and when will it be dead?",
         plain = tagList(
           p("Every grey dot is one real day in 2024. The blue line is the",
             "underlying pattern once you ignore the day-to-day noise, and the",
-            "shaded band is how sure we are about that line."),
-          p(strong("The short version: "),
-            "traffic bottoms out in late September, climbs through the autumn,",
-            "peaks in early March, then falls away through May. The gap between",
-            "the busiest and quietest stretch is about a quarter of all traffic."),
+            "shaded band is how sure we are about that line.",
+            "Collier is Naples; Lee is Fort Myers and Cape Coral."),
+          uiOutput("forecast_short"),
           p(strong("Why you'd care: "),
             "if you staff a business, schedule roadworks, or buy advertising,",
             "these are the dates that decide when demand arrives and when it",
             "disappears.")
         ),
-        chart = spinner(plotOutput("p_forecast", height = "440px"), "440px"),
+        chart = tagList(
+          div(class = "mb-2 d-flex align-items-center gap-2",
+              tags$span("County:", class = "fw-bold small text-muted"),
+              radioButtons("fc_county", NULL, choices = FC_COUNTY_CHOICES,
+                           selected = FC_COUNTY, inline = TRUE)),
+          spinner(plotOutput("p_forecast", height = "440px"), "440px")
+        ),
         footer = spinner(tableOutput("tbl_forecast"), "260px"),
         method = tagList(
           p(strong("Fitting waves to a season."),
@@ -2181,7 +2205,7 @@ server <- function(input, output, session) {
                               sub("^0", "", tolower(format(last_run, "%I:%M %p"))))
 
     cadence <- list(
-      list("Road traffic counts", "FDOT, six continuous counting stations",
+      list("Road traffic counts", "FDOT continuous counting stations",
            sprintf("%s counts", traffic_yr),
            "Once a year, in spring, covering the year before",
            "Daily. A new edition needs a manual download and a refit",
@@ -2254,9 +2278,14 @@ server <- function(input, output, session) {
       ),
 
       h("How it is built"),
-      p("A harmonic regression on ", strong("2024 daily traffic counts"), " from six ",
-        "continuous stations across Collier and Lee counties — machines in the ",
-        "road counting vehicles every day of the year. Sine and cosine pairs at one ",
+      p("A harmonic regression on ", strong("2024 daily traffic counts"), " from ",
+        sprintf("%s continuous counting station%s in %s County",
+                ifelse(is.na(FC_NSTATIONS), "the", as.character(FC_NSTATIONS)),
+                ifelse(!is.na(FC_NSTATIONS) && FC_NSTATIONS == 1, "", "s"), FC_COUNTY),
+        " — machines in the road counting vehicles every day of the year. ",
+        "Each county is fitted on its own, because Collier and Lee do not share ",
+        "a season: Collier troughs in September, Lee in June. Averaging the two ",
+        "describes neither. Sine and cosine pairs at one ",
         "to four cycles per year describe the seasonal shape without anyone having ",
         "to say where the peak sits; day-of-week terms keep quiet Sundays from ",
         "being read as a seasonal dip. The model is fitted to the logarithm of a ",
@@ -2624,8 +2653,19 @@ server <- function(input, output, session) {
                                 "Run R/04_fetch_fti.R to get the traffic data."))
 
     K  <- HARMONICS
-    tr <- traffic_daily %>% filter(!date %in% STORM_DAYS)
+
+    # One county at a time. Averaging Collier and Lee into a single index is
+    # what put a fortnight into the season-opening date: pooled, it reads
+    # 4 Nov; Collier alone reads 17 Nov. The two counties do not share a
+    # season - Collier troughs in September, Lee in June - so a blended curve
+    # describes no road in either.
+    cty <- input$fc_county %||% FC_COUNTY
+    tr <- traffic_daily %>% filter(!date %in% STORM_DAYS, county_name == cty)
     good <- tr %>% count(site) %>% filter(n >= 330) %>% pull(site)
+    shiny::validate(shiny::need(
+      length(good) > 0,
+      paste0("No counting station in ", cty,
+             " County ran enough of 2024 to fit a season to.")))
 
     county <- tr %>%
       filter(site %in% good) %>%
@@ -2699,7 +2739,8 @@ server <- function(input, output, session) {
     })
 
     list(county = county, curve = curve, boot = boot,
-         stats = describe_curve(curve), r2 = summary(fit)$r.squared)
+         stats = describe_curve(curve), r2 = summary(fit)$r.squared,
+         county_name = cty, n_sites = length(good))
   })
   # NOTE: this used to be wrapped in bindCache(HARMONICS). That was added
   # when the bootstrap took 4.7 seconds. Once the qr() rewrite brought it to
@@ -2708,6 +2749,21 @@ server <- function(input, output, session) {
   # calls both gap() and forecast_fit()) hung the whole session, with every
   # output stuck 'recalculating' and no error raised. Removing the cache costs
   # nothing measurable and removes the failure mode.
+
+  # Written from the fit, not typed. The previous wording ("bottoms out in late
+  # September ... about a quarter of all traffic") was true of Collier and
+  # wrong for Lee, which troughs in June and swings half as hard.
+  output$forecast_short <- renderUI({
+    f <- forecast_fit()
+    s <- f$stats
+    p(strong("The short version: "),
+      sprintf(paste0("in %s County traffic bottoms out around %s, climbs through ",
+                     "the autumn, peaks around %s, then falls away by %s. The gap ",
+                     "between the busiest and quietest stretch is about %.0f%% of ",
+                     "all traffic."),
+              f$county_name, doy_to_date(s$trough_doy), doy_to_date(s$peak_doy),
+              doy_to_date(s$end_doy), s$decline_pct))
+  })
 
   output$p_forecast <- renderPlot({
     sized("p_forecast")
@@ -2736,8 +2792,10 @@ server <- function(input, output, session) {
                hjust = 0, colour = "#FF9500", size = LBL) +
       scale_x_continuous(breaks = c(1, 60, 121, 182, 244, 305, 365),
                          labels = c("Jan", "Mar", "May", "Jul", "Sep", "Nov", "Dec")) +
-      labs(title = "Predicted southwest Florida traffic season",
-           subtitle = paste0(HARMONICS, " harmonics · R² = ", round(f$r2, 3),
+      labs(title = paste0("Predicted ", f$county_name, " County traffic season"),
+           subtitle = paste0(f$n_sites, " counting station",
+                             if (f$n_sites == 1) "" else "s",
+                             " · ", HARMONICS, " harmonics · R² = ", round(f$r2, 3),
                              " · grey = actual 2024 days, band = 90% bootstrap"),
            x = NULL, y = "Traffic (1.0 = average day)")
   })

@@ -59,6 +59,17 @@ Set the paths at the top of `R/04` and `R/06`.
 Charts land in `output/`. Downloads are cached in `data/raw/`, so re-running
 step 1 is instant and doesn't re-hammer a free API.
 
+Scripts 08–18 extend the analysis. One more matters for this file:
+
+| Step | File | What it does |
+|---|---|---|
+| — | `R/20_report_numbers.R` | Rewrites every number table in this README from `output/*.csv` |
+
+Run it after `R/09` and `R/10`. The forecast tables below sit between
+`<!-- BEGIN GENERATED: ... -->` markers and are overwritten wholesale, so the
+documentation cannot drift from the code again. Prose outside the markers is
+yours to edit.
+
 ### The interactive dashboard
 
 Run scripts 1–7 first, then launch the app:
@@ -187,19 +198,23 @@ stay visible rather than quietly dropped.
 
 ## Next season — actual dates
 
-From `R/10_next_season_dates.R`, run 15 Sep 2026:
+<!-- BEGIN GENERATED: next-season-dates -->
+
+From `R/10_next_season_dates.R`, run 17 Sep 2026:
 
 | Event | Date | Days away |
 |---|---|---|
-| **Trough** | **Tue 22 Sep 2026** | 7 |
-| **Season starts** | **Tue 17 Nov 2026** | 63 |
-| **Peak** | **Tue 09 Mar 2027** | 175 |
-| **Season ends** | **Fri 07 May 2027** | 234 |
+| **Trough** | **Tue 22 Sep 2026** | 5 |
+| **Season starts** | **Tue 17 Nov 2026** | 61 |
+| **Peak** | **Tue 09 Mar 2027** | 173 |
+| **Season ends** | **Fri 07 May 2027** | 232 |
 
 - **Peak window: 20 Feb – 26 Mar 2027**
 - **Trough window: 12 Sep – 1 Oct 2026** (we are inside it now)
 - Peak runs **1.12×** an average day, trough **0.85×** — a **24% fall** from
   peak to trough, or a **32% rise** from trough to peak.
+
+<!-- END GENERATED: next-season-dates -->
 
 The 22 Sep 2026 trough is a week away, which makes it the first genuinely
 falsifiable claim this project has produced. Worth checking.
@@ -256,6 +271,8 @@ that a busy Tuesday implies a busy Wednesday. Model R² = 0.76.
 
 ### Key dates
 
+<!-- BEGIN GENERATED: forecast-key-dates -->
+
 | | Estimate | 90% CI |
 |---|---|---|
 | **Season starts** | 17 Nov | 10 Nov – 7 Dec |
@@ -270,7 +287,11 @@ since the curve is flat at the top):
 - **Peak period: 20 Feb – 26 Mar** (35 days)
 - **Trough period: 12 Sep – 1 Oct** (20 days)
 
+<!-- END GENERATED: forecast-key-dates -->
+
 ### Magnitude
+
+<!-- BEGIN GENERATED: forecast-magnitude -->
 
 | | Estimate | 90% CI |
 |---|---|---|
@@ -279,19 +300,50 @@ since the curve is flat at the top):
 | **Decline from peak** | **24.0%** | 22.2 – 26.3% |
 | **Increase from trough** | **31.7%** | 28.6 – 35.6% |
 
+<!-- END GENERATED: forecast-magnitude -->
+
 (The two differ because they use different bases: falling 24% from the peak and
 rising 32% from the trough describe the same gap.)
 
+### One county at a time
+
+The forecast above is **Collier only**. It used to average Collier and Lee
+stations into a single index and call the result Naples, which is how a
+fortnight went missing: pooling moved "season starts" from 17 Nov to 4 Nov and
+cut the decline from 24.0% to 18.9%. No new data, just a scope decision.
+
+<!-- BEGIN GENERATED: forecast-by-county -->
+
+| Scope | Stations | Starts | Peak | Ends | Trough | Decline | R² |
+|---|---|---|---|---|---|---|---|
+| **Collier** (what the forecast reports) | 3 | 17 Nov | 9 Mar | 7 May | 22 Sep | 24.0% | 0.762 |
+| Lee | 2 | 17 Oct | 7 Mar | 28 Apr | 23 Jun | 14.3% | 0.777 |
+| Pooled (kept only as a warning) | 5 | 4 Nov | 8 Mar | 6 May | 19 Sep | 18.9% | 0.763 |
+
+<!-- END GENERATED: forecast-by-county -->
+
+The two counties are not variations on one season. Collier troughs in
+September — the dead month after the tourists and before the snowbirds. Lee
+troughs in **June**, and its swing is half as deep. The pooled row is kept in
+the table only as a warning; it describes no road in either county.
+
 ### By station — the roads are not alike
 
-| Station | Peak | Trough | Starts | Ends | Decline |
-|---|---|---|---|---|---|
-| 0094 (Naples urban) | 19 Feb | 27 Jun | 28 Oct | 7 May | 27.7% |
-| 0270 (Everglades, rural) | 7 Mar | 30 Sep | 19 Dec | 3 May | **34.1%** |
-| 0351 | 22 Mar | 18 Sep | 10 Nov | 28 Apr | 17.1% |
+<!-- BEGIN GENERATED: forecast-by-station -->
 
-Spread of two months in peak timing and a 2× spread in amplitude. A
-county-wide number hides a lot — forecast the road you care about.
+| Station | County | Peak | Trough | Starts | Ends | Decline |
+|---|---|---|---|---|---|---|
+| 0094 (Naples urban) | Collier | 19 Feb | 27 Jun | 28 Oct | 7 May | 27.7% |
+| 0270 (Everglades, rural) | Collier | 7 Mar | 30 Sep | 19 Dec | 3 May | 34.1% |
+| 0351 | Collier | 22 Mar | 18 Sep | 10 Nov | 28 Apr | 17.1% |
+| 0184 (Lee) | Lee | 9 Mar | 9 Sep | 26 Oct | 4 May | 17.3% |
+| 0273 (Lee) | Lee | 11 Nov | 22 Jun | 9 Oct | 8 Apr | 16.2% |
+
+<!-- END GENERATED: forecast-by-station -->
+
+Spread of two months in peak timing and a 2× spread in amplitude — wider
+than the confidence interval quoted for the county as a whole. A county-wide
+number hides a lot; forecast the road you care about.
 
 ### The double dip
 
@@ -325,6 +377,22 @@ year of daily data.
 
 Treat them as a **floor** on the true forecasting uncertainty. Getting prior-year
 FTI editions from FDOT would be the single highest-value next step.
+
+**And the one that was never written down: 2024 was a hurricane year.** `R/11`
+lists the 2024 season in `HURRICANE_SEASONS` and excludes it from the airport
+trend as too contaminated to measure timing with. `R/09` fits the entire
+forecast to that same season and removes only the storm *days*. Removing the
+days does not remove the aftermath — anyone whose return was deferred by Milton
+in October is still sitting in the autumn ramp, which is exactly the stretch
+"season starts" is estimated from. The same season cannot be unusable in one
+script and the sole foundation of another. A second year of FTI data is the
+only real fix; until then, treat the November date as the softest number here.
+
+For scale, the airport record does bound how much the season moves year to
+year: across 36 clean seasons the passenger-weighted centre of the season has
+a standard deviation of about **2.3 days** (1.9 after removing the long-run
+trend). Seasons are stable. That is reassuring for the peak, and says nothing
+about the start date, which monthly airport data cannot resolve.
 
 ---
 
@@ -538,7 +606,36 @@ The clients service (`clients/`) connects to Jobber, works out which clients hav
 
 Both checks agree → *confirmed*. Only one → *likely*. A homestead exemption means *year-round resident*, whatever the billing address says. Collier uses `data/raw/collier_int_parcels.csv`. Lee needs the state's free NAL roll saved as `data/raw/lee_nal.csv`; until then, Lee clients are judged on billing address alone.
 
-**When they're back.** If a client has two or more past seasons on file, we use their own habit: the date of their first autumn quote or job. With one season, we take the earlier of that date and the area forecast. With none, the area forecast's season opening. **Resend** 14 days before that. If the date has passed and the season is still on, the plan says send now.
+**When they're back.** If a client has two or more past seasons on file, we use their own habit: the date of their first autumn quote or job. With one season, we take the earlier of that date and the area forecast. With none, the season opening from **their own county's** forecast — Collier
+and Lee differ by about a month, so a Fort Myers client is not judged against
+Naples' curve. **Resend** 14 days before that. If the date has passed and the season is still on, the plan says send now.
+
+**Who never gets one.** Three hard exclusions, applied when the plan is built
+and re-checked by the sender immediately before anything goes out:
+
+- **Businesses**, by Jobber's own `isCompany` flag or a company name on file.
+- **HOAs, condo and community associations** — including anything naming
+  itself a *community* or *communities*, and the legal forms a community is
+  usually held under (*cooperative*, *co-op*, *townhomes*, *apartments*) —
+  and **landscaping, lawn and irrigation firms** — trade contacts and, in several cases, competitors.
+  Matched on name patterns as well as the company flag.
+- **Management and property-management companies.** In this market a manager
+  on the client line almost always means an HOA or a condo board: the manager
+  is the community's billing contact, not a homeowner. Matched on the full
+  words and the abbreviations (*Mgmt*, *Mgt*), plus *Properties*, *Realty*,
+  *Real Estate* and *Residential*.
+- **Quotes older than 13 months** (`SNOWBIRD_MAX_QUOTE_AGE_MONTHS`). Past that
+  the price and the scope want re-quoting, not discounting. A quote with no
+  readable creation date fails this check rather than skipping it.
+
+Over-matching is the deliberate direction: a missed resend costs one discount,
+a homeowner offer emailed to a competitor costs more. Nothing is dropped
+silently — every held-back quote appears with its reason on the **Held back**
+tab and in `excluded_from_plan.csv`.
+
+Some HOAs cannot be spotted from their name at all: a community called
+*Autumn Woods* reads exactly like a person's address. For those, add the
+client name or id to `do_not_send.csv` beside the Jobber data on the volume.
 
 **Privacy.** Client data lives only on the clients service's Railway volume, behind the Office App login. None of it is in GitHub or in either Docker image, and the public dashboard never sees it. Credentials are Railway variables, never code.
 
