@@ -639,9 +639,18 @@ a homeowner offer emailed to a competitor costs more. Nothing is dropped
 silently — every held-back quote appears with its reason on the **Held back**
 tab and in `excluded_from_plan.csv`.
 
-Some HOAs cannot be spotted from their name at all: a community called
-*Autumn Woods* reads exactly like a person's address. For those, add the
-client name or id to `do_not_send.csv` beside the Jobber data on the volume.
+Some clients no rule will ever catch — an individual you simply never want
+approached, or a community whose name reads like a person's address. Two
+do-not-send lists are honoured, both a single column of client names or ids:
+
+- `clients/do_not_send.csv` ships with the code, so a standing decision is
+  version-controlled and reviewable.
+- `do_not_send.csv` beside the Jobber data on the volume, which the office can
+  edit without a deploy.
+
+Matching is exact once case and spacing are normalised, so *Matt Chrisovergis*
+blocks that client but not a *Matthew Chrisovergis*. Listing the Jobber client
+id instead of the name survives a client being renamed.
 
 **Privacy.** Client data lives only on the clients service's Railway volume, behind the Office App login. None of it is in GitHub or in either Docker image, and the public dashboard never sees it. Credentials are Railway variables, never code.
 

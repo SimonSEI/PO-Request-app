@@ -21,6 +21,11 @@ COPY clients/auto_send.R            clients/auto_send.R
 COPY clients/refresh_job.R          clients/refresh_job.R
 COPY clients/app.R                  clients/app.R
 
+# Clients who must never be sent a discounted resend, whatever the rules say.
+# Version-controlled so the decision is reviewable; the office can add more on
+# the volume at /data/jobber/do_not_send.csv and both lists are honoured.
+COPY clients/do_not_send.csv        clients/do_not_send.csv
+
 # The area forecast R/18 falls back on when a client has no history.
 COPY output/season_forecast.csv     output/season_forecast.csv
 COPY data/current_conditions.csv    data/current_conditions.csv
