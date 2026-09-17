@@ -41,6 +41,7 @@ source(file.path(ROOT, "clients/auto_send.R"), local = TRUE)
 OUT_DIR  <- Sys.getenv("SNOWBIRD_CLIENT_OUT", "output/clients")
 PLAN_CSV <- file.path(OUT_DIR, "quote_resend_plan.csv")
 DB_CSV   <- file.path(OUT_DIR, "client_second_homes.csv")
+EXCL_CSV <- file.path(OUT_DIR, "excluded_from_plan.csv")
 LOG_FILE <- file.path(JOBBER_DIR, "refresh_log.txt")
 TZ       <- "America/New_York"
 OFFICE_URL <- sub("/+$", "", Sys.getenv("OFFICE_APP_URL", "https://web-production-01609.up.railway.app"))
@@ -185,6 +186,25 @@ body { background:#E6E6EB; }
 .login { max-width:380px; margin:12vh auto; }
 .note { font-size:.8rem; color:#6E6E73; }
 table.dataTable { font-size:.84rem; }
+
+/* Keep the column headings visible while reading down a long table. These
+   tables run to hundreds of rows and the plan has twelve columns, so by the
+   time you are half way down there is no way to tell which column is which.
+   position:sticky keeps the header row pinned to the top of the viewport as
+   the page scrolls, and an opaque background stops rows showing through it. */
+table.dataTable thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: #fff;
+  box-shadow: inset 0 -1px 0 rgba(0,0,0,.12);
+}
+/* DT puts its sort arrows on a pseudo-element that would otherwise sit under
+   the pinned row. */
+table.dataTable thead th:before, table.dataTable thead th:after { z-index: 4; }
+/* scrollX wraps the table in its own scroller; let the sticky header work
+   inside it as well as on the page. */
+.dataTables_scrollBody { overflow-y: visible !important; }
 "
 
 ui <- page_fluid(
@@ -306,6 +326,8 @@ server <- function(input, output, session) {
     if (file.exists(PLAN_CSV)) read_csv(PLAN_CSV, col_types = cols(.default = col_character())) else NULL })
   db <- reactive({ req(authed()); files_state(); tick()
     if (file.exists(DB_CSV)) read_csv(DB_CSV, col_types = cols(.default = col_character())) else NULL })
+  excluded <- reactive({ req(authed()); files_state(); tick()
+    if (file.exists(EXCL_CSV)) read_csv(EXCL_CSV, col_types = cols(.default = col_character())) else NULL })
 
   flash_ui <- function() {
     f <- flash(); if (is.null(f)) return(NULL)
@@ -392,6 +414,16 @@ server <- function(input, output, session) {
               "Likely = one of the two. Year-round = homestead exemption."),
           DTOutput("db_tbl"),
           downloadButton("dl_db", "Download CSV", class = "btn-sm btn-outline-secondary mt-2")),
+        nav_panel("Held back",
+          div(class = "note mb-2",
+              "Snowbird quotes deliberately kept out of the plan, and why. ",
+              "Businesses, HOAs and landscaping or trade companies never get this offer, ",
+              "and neither does any quote more than ", MAX_QUOTE_AGE_MONTHS, " months old - ",
+              "by then the price and the scope want re-quoting, not discounting. ",
+              "If something is here that should not be, or an HOA slipped through because ",
+              "its name reads like a person's, edit do_not_send.csv beside the Jobber data."),
+          DTOutput("excl_tbl"),
+          downloadButton("dl_excl", "Download CSV", class = "btn-sm btn-outline-secondary mt-2")),
         nav_panel("How it works",
           div(style = "max-width:76ch; line-height:1.6;",
             h5("Who counts as a snowbird"),
@@ -505,6 +537,23 @@ server <- function(input, output, session) {
     datatable(t, rownames = FALSE, escape = setdiff(seq_along(t), ncol(t)),
               options = list(pageLength = 25, scrollX = TRUE))
   })
+
+  output$excl_tbl <- renderDT({
+    e <- excluded()
+    shiny::validate(shiny::need(!is.null(e), "Nothing held back yet - run Refresh now."))
+    shiny::validate(shiny::need(nrow(e) > 0, "Nothing is being held back."))
+    t <- e %>% transmute(Client = client, `Quote #` = quote_number, Quote = quote_title,
+                         Created = quote_created,
+                         `Age (days)` = as.integer(as.numeric(quote_age_days)),
+                         Total = scales::dollar(as.numeric(total)),
+                         Reason = excluded_because, Jobber = link_col(jobber_link))
+    datatable(t, rownames = FALSE, escape = setdiff(seq_along(t), ncol(t)),
+              options = list(pageLength = 25, order = list(list(4, "desc")), scrollX = TRUE))
+  })
+
+  output$dl_excl <- downloadHandler(
+    filename = function() paste0("excluded_from_plan_", Sys.Date(), ".csv"),
+    content  = function(f) { req(authed()); file.copy(EXCL_CSV, f) })
 
   output$dl_plan <- downloadHandler(
     filename = function() paste0("quote_resend_plan_", Sys.Date(), ".csv"),

@@ -110,6 +110,10 @@ if (scope == "all") {
            first_name  = col(n, "firstName"),
            last_name   = col(n, "lastName"),
            company     = col(n, "companyName"),
+           # isCompany was already being requested from the API and then
+           # dropped on the floor. It is the only authoritative "this is a
+           # business, not a household" signal Jobber gives us.
+           is_company  = col(n, "isCompany"),
            created_at  = col(n, "createdAt"),
            client_link = col(n, "jobberWebUri")),
     addr(n, "bill_", "billingAddress"))

@@ -610,6 +610,26 @@ Both checks agree → *confirmed*. Only one → *likely*. A homestead exemption 
 and Lee differ by about a month, so a Fort Myers client is not judged against
 Naples' curve. **Resend** 14 days before that. If the date has passed and the season is still on, the plan says send now.
 
+**Who never gets one.** Three hard exclusions, applied when the plan is built
+and re-checked by the sender immediately before anything goes out:
+
+- **Businesses**, by Jobber's own `isCompany` flag or a company name on file.
+- **HOAs, condo and community associations**, and **landscaping, lawn and
+  irrigation firms** — trade contacts and, in several cases, competitors.
+  Matched on name patterns as well as the company flag.
+- **Quotes older than 13 months** (`SNOWBIRD_MAX_QUOTE_AGE_MONTHS`). Past that
+  the price and the scope want re-quoting, not discounting. A quote with no
+  readable creation date fails this check rather than skipping it.
+
+Over-matching is the deliberate direction: a missed resend costs one discount,
+a homeowner offer emailed to a competitor costs more. Nothing is dropped
+silently — every held-back quote appears with its reason on the **Held back**
+tab and in `excluded_from_plan.csv`.
+
+Some HOAs cannot be spotted from their name at all: a community called
+*Autumn Woods* reads exactly like a person's address. For those, add the
+client name or id to `do_not_send.csv` beside the Jobber data on the volume.
+
 **Privacy.** Client data lives only on the clients service's Railway volume, behind the Office App login. None of it is in GitHub or in either Docker image, and the public dashboard never sees it. Credentials are Railway variables, never code.
 
 Outputs, on screen and as CSV downloads: the **resend plan** (outstanding snowbird quotes in the order to send them) and **all clients** (every client with the evidence).
