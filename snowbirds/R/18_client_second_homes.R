@@ -75,8 +75,11 @@ ORG_PATTERNS <- c(
   "ASSOCIATION", "\\bASSN\\b", "\\bASSOC\\b", "\\bH\\.?O\\.?A\\.?\\b",
   "\\bP\\.?O\\.?A\\.?\\b", "\\bC\\.?D\\.?D\\.?\\b",
   "CONDOMINIUM", "\\bCONDOS?\\b", "HOMEOWNER", "PROPERTY OWNERS",
-  "\\bCOMMUNITY\\b", "COUNTRY CLUB", "\\bCLUB\\b", "\\bVILLAS\\b",
+  "\\bCOMMUNIT(Y|IES)\\b", "COUNTRY CLUB", "\\bCLUB\\b", "\\bVILLAS\\b",
   "\\bESTATES\\b", "\\bRESORT\\b", "MASTER ASSOC",
+  # the legal forms a community is usually held under
+  "\\bCOOPERATIVE\\b", "\\bCO-?OP\\b", "\\bTOWNHOMES?\\b",
+  "\\bTOWNHOUSES?\\b", "\\bAPARTMENTS?\\b",
   # landscaping and grounds trades
   "LANDSCAP", "\\bLAWNS?\\b", "IRRIGATION", "SPRINKLER",
   "\\bNURSER(Y|IES)\\b", "GROUNDS ?(KEEPING|CARE|MAINT)",

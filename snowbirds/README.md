@@ -614,8 +614,10 @@ Naples' curve. **Resend** 14 days before that. If the date has passed and the se
 and re-checked by the sender immediately before anything goes out:
 
 - **Businesses**, by Jobber's own `isCompany` flag or a company name on file.
-- **HOAs, condo and community associations**, and **landscaping, lawn and
-  irrigation firms** — trade contacts and, in several cases, competitors.
+- **HOAs, condo and community associations** — including anything naming
+  itself a *community* or *communities*, and the legal forms a community is
+  usually held under (*cooperative*, *co-op*, *townhomes*, *apartments*) —
+  and **landscaping, lawn and irrigation firms** — trade contacts and, in several cases, competitors.
   Matched on name patterns as well as the company flag.
 - **Management and property-management companies.** In this market a manager
   on the client line almost always means an HOA or a condo board: the manager
