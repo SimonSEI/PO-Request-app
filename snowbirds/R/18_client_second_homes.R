@@ -100,9 +100,20 @@ ORG_RE <- paste(ORG_PATTERNS, collapse = "|")
 
 # Past this, the price, the scope and often the property have moved on. Such a
 # quote wants re-quoting, not resending at a discount.
-# One setting, read by both this script and clients/auto_send.R, so the plan
-# and the sender can never disagree about the limit.
+# One set of settings, read by both this script and clients/auto_send.R, so the
+# plan and the sender can never disagree about what is eligible.
+#
+# A quote has to sit in a WINDOW to be worth chasing with a discount. Too new
+# and the client is still thinking about the original - a discount that soon
+# trains people to wait, and gives away margin on work that may well close on
+# its own. Too old and the price and the scope have moved on, so it wants
+# re-quoting rather than resending.
+MIN_QUOTE_AGE_MONTHS <- as.integer(Sys.getenv("SNOWBIRD_MIN_QUOTE_AGE_MONTHS", "3"))
 MAX_QUOTE_AGE_MONTHS <- as.integer(Sys.getenv("SNOWBIRD_MAX_QUOTE_AGE_MONTHS", "13"))
+
+# And a ceiling on value. A blanket 10% off a large job gives away real money
+# on work that deserves a conversation, not an automated email.
+MAX_QUOTE_VALUE <- as.numeric(Sys.getenv("SNOWBIRD_MAX_QUOTE_VALUE", "14000"))
 
 # An optional hand-maintained list for the ones no rule can catch - an HOA
 # called "Autumn Woods" looks exactly like a person's address. One column,
@@ -475,7 +486,10 @@ db <- db %>%
 # 7. The resend plan
 # =============================================================================
 # %m-% steps whole months without rolling past the end of a short one.
+# A quote created BEFORE oldest_quote is too old; one created AFTER
+# newest_quote has not aged into the window yet.
 OLDEST_QUOTE <- TODAY %m-% months(MAX_QUOTE_AGE_MONTHS)
+NEWEST_QUOTE <- TODAY %m-% months(MIN_QUOTE_AGE_MONTHS)
 
 plan_all <- quotes %>%
   filter(status %in% OUTSTANDING) %>%
@@ -490,6 +504,11 @@ plan_all <- quotes %>%
       is.na(quote_created)         ~ "no creation date on the quote, so its age cannot be checked",
       quote_created < OLDEST_QUOTE ~ sprintf("quote is %d days old, past the %d-month limit",
                                              as.integer(round(quote_age_days)), MAX_QUOTE_AGE_MONTHS),
+      quote_created > NEWEST_QUOTE ~ sprintf("quote is only %d days old, under the %d-month minimum",
+                                             as.integer(round(quote_age_days)), MIN_QUOTE_AGE_MONTHS),
+      is.na(total)                 ~ "no total on the quote, so its value cannot be checked",
+      total >= MAX_QUOTE_VALUE     ~ sprintf("quote total %s is at or above the %s ceiling",
+                                             scales::dollar(total), scales::dollar(MAX_QUOTE_VALUE)),
       TRUE                         ~ NA_character_)
   )
 
@@ -557,6 +576,10 @@ if (!"lee" %in% counties_loaded)
   cat("  (Lee County roll not loaded - Lee clients are judged on billing address alone.)\n")
 cat("Area forecast (", as.character(fc$county %||% "primary county"), "): season opens ",
     format(area_return, "%d %b %Y"), " | ", LEAD_DAYS, " day lead | ", DISCOUNT * 100, "% off\n", sep = "")
+cat("Eligible quotes: ", MIN_QUOTE_AGE_MONTHS, "-", MAX_QUOTE_AGE_MONTHS,
+    " months old (created ", format(OLDEST_QUOTE, "%d %b %Y"), " to ",
+    format(NEWEST_QUOTE, "%d %b %Y"), ") and under ",
+    scales::dollar(MAX_QUOTE_VALUE), "\n", sep = "")
 if (!is.null(fc_by_county)) {
   cat("Per-county openings used: ",
       paste(sprintf("%s %s", fc_by_county$scope,
@@ -581,8 +604,10 @@ if (nrow(excluded) == 0) cat("Nothing excluded.\n") else {
       scales::dollar(sum(excluded$total, na.rm = TRUE)), ":\n", sep = "")
   excluded %>%
     mutate(rule = case_when(
-      str_detect(excluded_because, "^quote is |^no creation date") ~
-        sprintf("older than %d months", MAX_QUOTE_AGE_MONTHS),
+      str_detect(excluded_because, "past the")  ~ sprintf("older than %d months", MAX_QUOTE_AGE_MONTHS),
+      str_detect(excluded_because, "under the") ~ sprintf("newer than %d months", MIN_QUOTE_AGE_MONTHS),
+      str_detect(excluded_because, "ceiling")   ~ sprintf("%s or more", scales::dollar(MAX_QUOTE_VALUE)),
+      str_detect(excluded_because, "^no creation date|^no total") ~ "missing date or total",
       TRUE ~ "business, HOA or trade client")) %>%
     count(rule, name = "quotes") %>% print(n = Inf)
   cat("\nThe ten largest:\n")

@@ -9,7 +9,9 @@
 #   - its resend date has arrived
 #   - the client is a confirmed or likely snowbird
 #   - the client is NOT a business, HOA or landscaping/trade company
-#   - the quote is no older than SNOWBIRD_MAX_QUOTE_AGE_MONTHS (default 13)
+#   - the quote is between SNOWBIRD_MIN_QUOTE_AGE_MONTHS (default 3) and
+#     SNOWBIRD_MAX_QUOTE_AGE_MONTHS (default 13) months old
+#   - its total is under SNOWBIRD_MAX_QUOTE_VALUE (default $14,000)
 #   - this quote has never been sent by this service before
 #   - today's cap has not been reached
 #
@@ -24,7 +26,9 @@ DAILY_CAP   <- as.integer(Sys.getenv("AUTO_SEND_DAILY_CAP", "10"))
 # Same setting R/18 uses to build the plan. Re-read here rather than trusted
 # from the file, so the sender enforces today's rule, not the rule that was in
 # force whenever the plan on the volume happened to be written.
+MIN_QUOTE_AGE_MONTHS <- as.integer(Sys.getenv("SNOWBIRD_MIN_QUOTE_AGE_MONTHS", "3"))
 MAX_QUOTE_AGE_MONTHS <- as.integer(Sys.getenv("SNOWBIRD_MAX_QUOTE_AGE_MONTHS", "13"))
+MAX_QUOTE_VALUE      <- as.numeric(Sys.getenv("SNOWBIRD_MAX_QUOTE_VALUE", "14000"))
 
 # The Jobber calls that discount and send a quote are written only after the
 # schema probe shows what this API version actually offers. Until then this
@@ -70,16 +74,23 @@ due_for_auto_send <- function(plan_path, today = as.Date(format(Sys.time(), tz =
   if (!"client_is_company" %in% names(p)) p$client_is_company <- NA_character_
   if (!"quote_created"     %in% names(p)) p$quote_created     <- NA_character_
 
-  cutoff  <- lubridate::`%m-%`(today, lubridate::period(months = MAX_QUOTE_AGE_MONTHS))
+  oldest  <- lubridate::`%m-%`(today, lubridate::period(months = MAX_QUOTE_AGE_MONTHS))
+  newest  <- lubridate::`%m-%`(today, lubridate::period(months = MIN_QUOTE_AGE_MONTHS))
   created <- suppressWarnings(as.Date(p$quote_created))
+  value   <- suppressWarnings(as.numeric(p$total))
   is_co   <- tolower(str_squish(p$client_is_company)) %in% c("yes", "true", "t", "1")
-  blocked <- is_co | is.na(created) | created < cutoff
+
+  too_old   <- is.na(created) | created < oldest
+  too_new   <- !is.na(created) & created > newest
+  too_big   <- is.na(value) | value >= MAX_QUOTE_VALUE
+  blocked   <- is_co | too_old | too_new | too_big
 
   if (any(blocked)) {
     log_line("auto-send: ", sum(blocked), " quote(s) held back - ",
              sum(is_co), " company/HOA, ",
-             sum(!is_co & (is.na(created) | created < cutoff)),
-             " older than ", MAX_QUOTE_AGE_MONTHS, " months")
+             sum(!is_co & too_old), " older than ", MAX_QUOTE_AGE_MONTHS, " months, ",
+             sum(!is_co & !too_old & too_new), " newer than ", MIN_QUOTE_AGE_MONTHS, " months, ",
+             sum(!is_co & !too_old & !too_new & too_big), " at or above the value ceiling")
     p <- p[!blocked, , drop = FALSE]
   }
 

@@ -624,9 +624,15 @@ and re-checked by the sender immediately before anything goes out:
   is the community's billing contact, not a homeowner. Matched on the full
   words and the abbreviations (*Mgmt*, *Mgt*), plus *Properties*, *Realty*,
   *Real Estate* and *Residential*.
-- **Quotes older than 13 months** (`SNOWBIRD_MAX_QUOTE_AGE_MONTHS`). Past that
-  the price and the scope want re-quoting, not discounting. A quote with no
-  readable creation date fails this check rather than skipping it.
+- **Quotes outside the eligible window.** A quote has to be between
+  **3 and 13 months old** (`SNOWBIRD_MIN_QUOTE_AGE_MONTHS`,
+  `SNOWBIRD_MAX_QUOTE_AGE_MONTHS`) and **under $14,000**
+  (`SNOWBIRD_MAX_QUOTE_VALUE`). Too new and the client is still considering the
+  original — discounting that soon trains people to wait and gives away margin
+  on work that may close anyway. Too old and the price and the scope have moved
+  on, so it wants re-quoting. Too large and a blanket 10% is real money on a job
+  that deserves a conversation, not an automated email. A quote with no readable
+  creation date or no total fails these checks rather than skipping them.
 
 Over-matching is the deliberate direction: a missed resend costs one discount,
 a homeowner offer emailed to a competitor costs more. Nothing is dropped
