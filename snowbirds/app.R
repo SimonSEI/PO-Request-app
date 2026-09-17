@@ -659,6 +659,15 @@ SIM_BASE_GAP <- state_temps %>%
     season_year = if_else(month(date) >= 7, year(date), year(date) - 1L)
   )
 
+# What R/09 actually fitted. Read from the CSV rather than written into the
+# prose, because a hand-typed scope is exactly what went wrong before: the
+# forecast was quietly changed to a two-county average while every caption
+# still said Naples.
+FC_COUNTY <- if (!is.null(fc_static)) as.character(fc_static$county %||% "Collier") else "Collier"
+FC_NSTATIONS <- if (!is.null(fc_static) && !is.null(fc_static$stations)) {
+  length(strsplit(trimws(as.character(fc_static$stations)), "\\s+")[[1]])
+} else NA_integer_
+
 HEAD <- if (!is.null(fc_static)) list(
   trough   = next_occ_static(fc_static$trough_doy),
   start    = next_occ_static(fc_static$start_doy),
@@ -2181,7 +2190,7 @@ server <- function(input, output, session) {
                               sub("^0", "", tolower(format(last_run, "%I:%M %p"))))
 
     cadence <- list(
-      list("Road traffic counts", "FDOT, six continuous counting stations",
+      list("Road traffic counts", "FDOT continuous counting stations",
            sprintf("%s counts", traffic_yr),
            "Once a year, in spring, covering the year before",
            "Daily. A new edition needs a manual download and a refit",
@@ -2254,9 +2263,14 @@ server <- function(input, output, session) {
       ),
 
       h("How it is built"),
-      p("A harmonic regression on ", strong("2024 daily traffic counts"), " from six ",
-        "continuous stations across Collier and Lee counties — machines in the ",
-        "road counting vehicles every day of the year. Sine and cosine pairs at one ",
+      p("A harmonic regression on ", strong("2024 daily traffic counts"), " from ",
+        sprintf("%s continuous counting station%s in %s County",
+                ifelse(is.na(FC_NSTATIONS), "the", as.character(FC_NSTATIONS)),
+                ifelse(!is.na(FC_NSTATIONS) && FC_NSTATIONS == 1, "", "s"), FC_COUNTY),
+        " — machines in the road counting vehicles every day of the year. ",
+        "Each county is fitted on its own, because Collier and Lee do not share ",
+        "a season: Collier troughs in September, Lee in June. Averaging the two ",
+        "describes neither. Sine and cosine pairs at one ",
         "to four cycles per year describe the seasonal shape without anyone having ",
         "to say where the peak sits; day-of-week terms keep quiet Sundays from ",
         "being read as a seasonal dip. The model is fitted to the logarithm of a ",

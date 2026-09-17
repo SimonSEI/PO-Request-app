@@ -297,6 +297,32 @@ db <- clients %>%
 # 6. When will each snowbird be back?
 # =============================================================================
 fc <- read_csv("output/season_forecast.csv", show_col_types = FALSE)
+
+# Collier and Lee do not share a season. Collier opens around mid-November and
+# troughs in September; Lee opens about a month earlier and troughs in JUNE.
+# Judging a Fort Myers client against Naples' curve is simply the wrong date,
+# so each client is measured against their own county. R/09 writes one row per
+# county; "Pooled" is dropped because it describes no county in particular.
+fc_by_county <- if (file.exists("output/season_forecast_by_county.csv")) {
+  read_csv("output/season_forecast_by_county.csv", show_col_types = FALSE) %>%
+    filter(scope != "Pooled")
+} else NULL
+
+# Falls back to the headline forecast when we have no roll for that county -
+# better a neighbouring county's opening than no date at all.
+start_doy_for <- function(cty) {
+  hit <- if (!is.null(fc_by_county)) {
+    fc_by_county$start_doy[match(cty, fc_by_county$scope)]
+  } else rep(NA_real_, length(cty))
+  coalesce(as.numeric(hit), as.numeric(fc$start_doy))
+}
+
+county_label <- function(cty) {
+  hit <- if (!is.null(fc_by_county)) {
+    fc_by_county$scope[match(cty, fc_by_county$scope)]
+  } else rep(NA_character_, length(cty))
+  paste0(coalesce(hit, as.character(fc$county %||% "the area")), " County")
+}
 cond <- if (file.exists("data/current_conditions.csv"))
   read_csv("data/current_conditions.csv", show_col_types = FALSE) %>% { setNames(as.list(.$value), .$key) } else list()
 
@@ -339,6 +365,8 @@ db <- db %>%
   left_join(activity, by = "client_id") %>%
   mutate(
     own_date = season_anchor + typical_offset,
+    area_return = as.Date(paste0(season_year, "-01-01")) + start_doy_for(county) - 1,
+    area_where  = county_label(county),
     predicted_return = case_when(
       !snowbird                               ~ as.Date(NA),
       coalesce(seasons_seen, 0L) >= 2         ~ own_date,
@@ -350,13 +378,13 @@ db <- db %>%
         sprintf("Their own habit: first autumn contact around %s, median of %d past seasons.",
                 format(own_date, "%d %b"), seasons_seen),
       coalesce(seasons_seen, 0L) == 1 & own_date <= area_return ~
-        sprintf("One past season, first contact around %s - earlier than the area's season opening (%s), so their date is used.",
-                format(own_date, "%d %b"), format(area_return, "%d %b")),
+        sprintf("One past season, first contact around %s - earlier than %s's season opening (%s), so their date is used.",
+                format(own_date, "%d %b"), area_where, format(area_return, "%d %b")),
       coalesce(seasons_seen, 0L) == 1 ~
-        sprintf("One past season, first contact not until %s. That only shows they were here by then, so the area's season opening (%s) is used instead.%s",
-                format(own_date, "%d %b"), format(area_return, "%d %b"), lean),
-      TRUE ~ sprintf("No past autumn contact on file, so the area forecast: the season opens around %s.%s",
-                     format(area_return, "%d %b"), lean))
+        sprintf("One past season, first contact not until %s. That only shows they were here by then, so %s's season opening (%s) is used instead.%s",
+                format(own_date, "%d %b"), area_where, format(area_return, "%d %b"), lean),
+      TRUE ~ sprintf("No past autumn contact on file, so the area forecast: %s's season opens around %s.%s",
+                     area_where, format(area_return, "%d %b"), lean))
   )
 
 # =============================================================================
@@ -414,7 +442,14 @@ print(client_out %>% filter(snowbird) %>% count(home_region, home_state, sort = 
 cat("\nProperty rolls used:", if (length(counties_loaded)) paste(str_to_title(counties_loaded), collapse = " + ") else "none", "\n")
 if (!"lee" %in% counties_loaded)
   cat("  (Lee County roll not loaded - Lee clients are judged on billing address alone.)\n")
-cat("Area forecast: season opens", format(area_return, "%d %b %Y"), "|", LEAD_DAYS, "day lead |", DISCOUNT * 100, "% off\n")
+cat("Area forecast (", as.character(fc$county %||% "primary county"), "): season opens ",
+    format(area_return, "%d %b %Y"), " | ", LEAD_DAYS, " day lead | ", DISCOUNT * 100, "% off\n", sep = "")
+if (!is.null(fc_by_county)) {
+  cat("Per-county openings used: ",
+      paste(sprintf("%s %s", fc_by_county$scope,
+                    format(as.Date(paste0(season_year, "-01-01")) + fc_by_county$start_doy - 1, "%d %b")),
+            collapse = " | "), "\n", sep = "")
+}
 
 cat("\n==================== RESEND PLAN ====================\n")
 if (nrow(plan) == 0) cat("No outstanding quotes belong to snowbird clients.\n") else {
