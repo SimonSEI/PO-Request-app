@@ -1,7 +1,7 @@
 # =============================================================================
 # 17 - PULL QUOTES, CLIENTS AND JOB HISTORY FROM JOBBER
 # =============================================================================
-# Read-only. Writes three files to data/jobber/ (git-ignored):
+# Read-only. Writes three files to the Jobber data folder:
 #
 #   quotes.csv   every quote, any status - outstanding ones are what we act on,
 #                the rest show when each client has engaged with us before
@@ -9,25 +9,49 @@
 #                first clue to a second home
 #   jobs.csv     when work was booked, per client - their personal calendar
 #
+# PULL_SCOPE (environment variable):
+#   "quotes"  quotes only - a couple of minutes. Run every 30 minutes in the
+#             day, because quote status is what goes stale. Falls back to a
+#             full pull if clients/jobs have never been pulled.
+#   "all"     everything - run overnight; clients and job history change slowly
+#
 # Deliberately NOT pulled: emails, phone numbers, notes, line items. None of
-# them help decide WHEN to resend, so they stay in Jobber. Take only what the
-# question needs.
+# them help decide WHEN to resend, so they stay in Jobber.
 # =============================================================================
 
 if (file.exists(".Rlib")) .libPaths(c(normalizePath(".Rlib"), .libPaths()))
 source("R/jobber_api.R")
 suppressPackageStartupMessages(library(tidyverse))
 
-addr_cols <- function(node, prefix, path) {
-  a <- node
-  for (k in path) a <- if (is.list(a)) a[[k]] else NULL
-  tibble(!!paste0(prefix, "street1")  := g(a, "street1"),
-         !!paste0(prefix, "street2")  := g(a, "street2"),
-         !!paste0(prefix, "city")     := g(a, "city"),
-         !!paste0(prefix, "province") := g(a, "province"),
-         !!paste0(prefix, "postal")   := g(a, "postalCode"),
-         !!paste0(prefix, "country")  := g(a, "country"))
+scope <- Sys.getenv("PULL_SCOPE", "all")
+if (scope == "quotes" &&
+    !all(file.exists(file.path(JOBBER_DIR, c("clients.csv", "jobs.csv"))))) {
+  message("No client/job history on disk yet - doing a full pull")
+  scope <- "all"
 }
+
+# Column extraction in one pass per field (about 4 s for 35,000 records).
+# Where the old 20-minute refresh actually went: paging 50 records at a time
+# with a 1-second pause after every page - roughly 700 pages, 12 minutes of
+# which was the pause. Pages are now 100 records with a 0.2 s pause, which
+# still sits well inside Jobber's query budget (the client waits and retries
+# if it is ever throttled).
+col <- function(nodes, ...) {
+  path <- c(...)
+  vapply(nodes, function(n) {
+    for (k in path) { if (!is.list(n) || is.null(n[[k]])) return(NA_character_); n <- n[[k]] }
+    if (length(n) == 0) NA_character_ else as.character(n[[1]])
+  }, character(1), USE.NAMES = FALSE)
+}
+addr <- function(nodes, prefix, ...) {
+  p <- c(...)
+  out <- list(col(nodes, p, "street1"), col(nodes, p, "street2"), col(nodes, p, "city"),
+              col(nodes, p, "province"), col(nodes, p, "postalCode"), col(nodes, p, "country"))
+  names(out) <- paste0(prefix, c("street1", "street2", "city", "province", "postal", "country"))
+  as_tibble(out)
+}
+
+started <- Sys.time()
 
 # -----------------------------------------------------------------------------
 # Quotes
@@ -40,70 +64,87 @@ q <- jobber_all("quotes",
               client  = list("id"),
               property = list("id", address = address_spec)),
   required = c("id", "quoteStatus", "createdAt", "client", "property", "address",
-               "street1", "postalCode"))
+               "street1", "postalCode"),
+  page_size = 100, pause = 0.2)
 
-quotes <- map_dfr(q$nodes, function(n) bind_cols(
-  tibble(quote_id     = g(n, "id"),
-         quote_number = g(n, "quoteNumber"),
-         status       = tolower(g(n, "quoteStatus")),
-         title        = g(n, "title"),
-         created_at   = g(n, "createdAt"),
-         updated_at   = g(n, "updatedAt"),
-         sent_at      = g(n, "sentAt"),
-         total        = suppressWarnings(as.numeric(g(n, "amounts", "total"))),
-         jobber_link  = g(n, "jobberWebUri"),
-         client_id    = g(n, "client", "id"),
-         property_id  = g(n, "property", "id")),
-  addr_cols(n, "prop_", c("property", "address"))))
+n <- q$nodes
+quotes <- bind_cols(
+  tibble(quote_id     = col(n, "id"),
+         quote_number = col(n, "quoteNumber"),
+         status       = tolower(col(n, "quoteStatus")),
+         title        = col(n, "title"),
+         created_at   = col(n, "createdAt"),
+         updated_at   = col(n, "updatedAt"),
+         sent_at      = col(n, "sentAt"),
+         total        = suppressWarnings(as.numeric(col(n, "amounts", "total"))),
+         jobber_link  = col(n, "jobberWebUri"),
+         client_id    = col(n, "client", "id"),
+         property_id  = col(n, "property", "id")),
+  addr(n, "prop_", "property", "address"))
 
-# -----------------------------------------------------------------------------
-# Clients
-# -----------------------------------------------------------------------------
-message("Pulling clients...")
-cl <- jobber_all("clients",
-  spec = list("id", "name", "firstName", "lastName", "companyName", "isCompany",
-              "createdAt", "jobberWebUri",
-              billingAddress = address_spec),
-  required = c("id", "billingAddress", "street1", "province", "country"))
+# Write-then-rename, so the app never reads a half-written file.
+save_csv <- function(df, name) {
+  tmp <- file.path(JOBBER_DIR, paste0(name, ".partial"))
+  write_csv(df, tmp)
+  invisible(file.rename(tmp, file.path(JOBBER_DIR, name)))
+}
+save_csv(quotes, "quotes.csv")
+dropped <- q$dropped
 
-clients <- map_dfr(cl$nodes, function(n) bind_cols(
-  tibble(client_id   = g(n, "id"),
-         name        = coalesce(g(n, "name"),
-                                str_squish(paste(g(n, "firstName"), g(n, "lastName")))),
-         first_name  = g(n, "firstName"),
-         last_name   = g(n, "lastName"),
-         company     = g(n, "companyName"),
-         created_at  = g(n, "createdAt"),
-         client_link = g(n, "jobberWebUri")),
-  addr_cols(n, "bill_", "billingAddress")))
+if (scope == "all") {
+  # ---------------------------------------------------------------------------
+  # Clients
+  # ---------------------------------------------------------------------------
+  message("Pulling clients...")
+  cl <- jobber_all("clients",
+    spec = list("id", "name", "firstName", "lastName", "companyName", "isCompany",
+                "createdAt", "jobberWebUri",
+                billingAddress = address_spec),
+    required = c("id", "billingAddress", "street1", "province", "country"),
+    page_size = 100, pause = 0.2)
 
-# -----------------------------------------------------------------------------
-# Jobs (dates only - when each client books work)
-# -----------------------------------------------------------------------------
-message("Pulling job history...")
-jb <- jobber_all("jobs",
-  spec = list("id", "createdAt", "startAt", "completedAt", "jobStatus",
-              client = list("id"),
-              property = list("id", address = address_spec)),
-  required = c("id", "createdAt", "client"))
+  n <- cl$nodes
+  clients <- bind_cols(
+    tibble(client_id   = col(n, "id"),
+           name        = coalesce(col(n, "name"), str_squish(paste(col(n, "firstName"), col(n, "lastName")))),
+           first_name  = col(n, "firstName"),
+           last_name   = col(n, "lastName"),
+           company     = col(n, "companyName"),
+           created_at  = col(n, "createdAt"),
+           client_link = col(n, "jobberWebUri")),
+    addr(n, "bill_", "billingAddress"))
 
-jobs <- map_dfr(jb$nodes, function(n) bind_cols(
-  tibble(job_id       = g(n, "id"),
-         created_at   = g(n, "createdAt"),
-         start_at     = g(n, "startAt"),
-         completed_at = g(n, "completedAt"),
-         status       = tolower(g(n, "jobStatus")),
-         client_id    = g(n, "client", "id"),
-         property_id  = g(n, "property", "id")),
-  addr_cols(n, "prop_", c("property", "address"))))
+  # ---------------------------------------------------------------------------
+  # Jobs (dates only - when each client books work)
+  # ---------------------------------------------------------------------------
+  message("Pulling job history...")
+  jb <- jobber_all("jobs",
+    spec = list("id", "createdAt", "startAt", "completedAt", "jobStatus",
+                client = list("id"),
+                property = list("id", address = address_spec)),
+    required = c("id", "createdAt", "client"),
+    page_size = 100, pause = 0.2)
 
-write_csv(quotes,  file.path(JOBBER_DIR, "quotes.csv"))
-write_csv(clients, file.path(JOBBER_DIR, "clients.csv"))
-write_csv(jobs,    file.path(JOBBER_DIR, "jobs.csv"))
+  n <- jb$nodes
+  jobs <- bind_cols(
+    tibble(job_id       = col(n, "id"),
+           created_at   = col(n, "createdAt"),
+           start_at     = col(n, "startAt"),
+           completed_at = col(n, "completedAt"),
+           status       = tolower(col(n, "jobStatus")),
+           client_id    = col(n, "client", "id"),
+           property_id  = col(n, "property", "id")),
+    addr(n, "prop_", "property", "address"))
+
+  save_csv(clients, "clients.csv")
+  save_csv(jobs, "jobs.csv")
+  writeLines(format(Sys.time(), "%Y-%m-%d %H:%M"), file.path(JOBBER_DIR, "pulled_all_at.txt"))
+  dropped <- c(dropped, cl$dropped, jb$dropped)
+}
 writeLines(format(Sys.time(), "%Y-%m-%d %H:%M"), file.path(JOBBER_DIR, "pulled_at.txt"))
 
-skipped <- unique(c(q$dropped, cl$dropped, jb$dropped))
-cat("\nPulled", nrow(quotes), "quotes,", nrow(clients), "clients,", nrow(jobs), "jobs.\n")
+cat("\nPulled", nrow(quotes), "quotes",
+    if (scope == "all") paste(",", nrow(clients), "clients,", nrow(jobs), "jobs") else "(quotes only)",
+    "in", round(as.numeric(difftime(Sys.time(), started, units = "mins")), 1), "min\n")
 cat("Quote statuses:", paste(names(table(quotes$status)), table(quotes$status), sep = " ", collapse = " | "), "\n")
-if (length(skipped)) cat("Fields this API version does not offer (skipped):", paste(skipped, collapse = ", "), "\n")
-cat("Next: source('R/18_client_second_homes.R')\n")
+if (length(unique(dropped))) cat("Fields this API version does not offer (skipped):", paste(unique(dropped), collapse = ", "), "\n")
