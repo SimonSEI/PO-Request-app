@@ -207,7 +207,21 @@ body { background:#E6E6EB; }
 .tile-sub { font-size:.76rem; color:#8E8E93; margin-top:2px; }
 .login { max-width:380px; margin:12vh auto; }
 .note { font-size:.8rem; color:#6E6E73; }
-table.dataTable { font-size:.84rem; }
+table.dataTable { font-size:.84rem; border-collapse:separate; }
+
+/* Room to breathe. The default DT cell is tight enough that thirteen columns
+   read as one grey block, and long values collide with their neighbours. */
+table.dataTable td, table.dataTable th { padding:10px 14px; vertical-align:top; }
+table.dataTable thead th { font-weight:600; }
+/* Long values wrap onto a second line instead of being clipped mid-word. */
+table.dataTable td { white-space:normal; overflow-wrap:break-word; line-height:1.45; }
+/* ...except dates, quote numbers and money, which must stay on one line. */
+table.dataTable td.dt-nowrap, table.dataTable th.dt-nowrap { white-space:nowrap; }
+table.dataTable td.dt-money, table.dataTable th.dt-money {
+  white-space:nowrap; text-align:right; font-variant-numeric:tabular-nums;
+}
+table.dataTable tbody tr:hover td { background:#F2F6FA; }
+table.dataTable tbody td { border-top:1px solid #ECECF0; }
 
 /* Keep the column headings visible while reading down a long table. These
    tables run to hundreds of rows and the plan has twelve columns, so by the
@@ -569,24 +583,69 @@ server <- function(input, output, session) {
   link_col <- function(u) ifelse(!is.na(u) & grepl("^https://", u),
                                  sprintf('<a href="%s" target="_blank" rel="noopener">Open</a>', htmltools::htmlEscape(u, attribute = TRUE)), "")
 
+  # "2026-11-17" is hard to read at a glance and sorts no better than "17 Nov
+  # 2026" once DT is told the column is a date, so show the readable form.
+  d_fmt <- function(x) {
+    d <- suppressWarnings(as.Date(x))
+    ifelse(is.na(d), "", format(d, "%d %b %Y"))
+  }
+  # "Second home - likely (billing address only)" in a narrow column just
+  # renders as "Second". The prefix is the same on every row anyway.
+  short_status <- function(x) {
+    x <- x %||% ""
+    case_when(
+      grepl("confirmed",  x, ignore.case = TRUE) ~ "Confirmed",
+      grepl("billing",    x, ignore.case = TRUE) ~ "Likely (billing)",
+      grepl("roll only",  x, ignore.case = TRUE) ~ "Likely (roll)",
+      grepl("Year-round", x, ignore.case = TRUE) ~ "Year-round",
+      grepl("^Check",     x)                     ~ "Check",
+      TRUE ~ x)
+  }
+
   output$plan_tbl <- renderDT({
     p <- plan()
     shiny::validate(shiny::need(!is.null(p), "No plan yet. Connect Jobber, then click Refresh now."))
-    t <- p %>% transmute(`Resend on` = resend_on, Client = client, `Home up north` = northern_home,
-                         `Due back` = predicted_return, `Quote #` = quote_number, Quote = quote_title,
-                         Total = scales::dollar(as.numeric(total)), `With 10% off` = scales::dollar(as.numeric(total_10pct_off)),
-                         Status = snowbird_status,
-                         `Auto-send` = if ("auto_send" %in% names(p)) auto_send else "",
-                         `Why this date` = why_this_date, Jobber = link_col(jobber_link))
-    datatable(t, rownames = FALSE, escape = setdiff(seq_along(t), ncol(t)),
-              options = list(pageLength = 25, order = list(list(0, "asc")), scrollX = TRUE))
+    t <- p %>% transmute(
+      `Resend on` = d_fmt(resend_on),
+      Client      = client,
+      `Quote #`   = quote_number,
+      Quote       = quote_title,
+      Quoted      = if ("quote_created" %in% names(p)) d_fmt(quote_created) else "",
+      Total       = scales::dollar(as.numeric(total)),
+      `With 10% off` = scales::dollar(as.numeric(total_10pct_off)),
+      Home        = northern_home,
+      `Due back`  = d_fmt(predicted_return),
+      Status      = short_status(snowbird_status),
+      Sending     = if ("auto_send" %in% names(p)) if_else(auto_send == "yes", "Automatic", "By hand") else "",
+      `Why this date` = why_this_date,
+      Jobber      = link_col(jobber_link))
+
+    datatable(
+      t, rownames = FALSE, escape = setdiff(seq_along(t), ncol(t)),
+      options = list(
+        pageLength = 25, order = list(list(0, "asc")), scrollX = TRUE,
+        autoWidth = FALSE,
+        # Widths and wrapping, because 13 columns sharing the page evenly left
+        # every one of them too narrow to read - dates broke mid-year and quote
+        # titles were cut mid-word.
+        columnDefs = list(
+          list(targets = c(0, 4, 8), className = "dt-nowrap"),
+          list(targets = c(5, 6),    className = "dt-money"),
+          list(targets = 2,          className = "dt-nowrap"),
+          list(targets = 9,  width = "120px"),
+          list(targets = 10, width = "95px"),
+          list(targets = 1,  width = "150px"),
+          list(targets = 3,  width = "250px"),
+          list(targets = 11, width = "330px"))))
   })
 
   output$db_tbl <- renderDT({
     d <- db()
     shiny::validate(shiny::need(!is.null(d), "No client list yet. Connect Jobber, then click Refresh now."))
-    t <- d %>% transmute(Client = client, Status = status, `Home up north` = coalesce(home_state, home_country),
-                         Region = home_region, `Due back` = predicted_return, Evidence = evidence,
+    t <- d %>% transmute(Client = client, Status = short_status(status),
+                         Home = coalesce(home_state, home_country),
+                         Region = home_region, `Due back` = d_fmt(predicted_return),
+                         Evidence = evidence,
                          Property = property_address, Jobber = link_col(client_link))
     datatable(t, rownames = FALSE, escape = setdiff(seq_along(t), ncol(t)),
               options = list(pageLength = 25, scrollX = TRUE))
@@ -683,12 +742,20 @@ server <- function(input, output, session) {
     shiny::validate(shiny::need(!is.null(e), "Nothing held back yet - run Refresh now."))
     shiny::validate(shiny::need(nrow(e) > 0, "Nothing is being held back."))
     t <- e %>% transmute(Client = client, `Quote #` = quote_number, Quote = quote_title,
-                         Created = quote_created,
+                         Quoted = d_fmt(quote_created),
                          `Age (days)` = as.integer(as.numeric(quote_age_days)),
                          Total = scales::dollar(as.numeric(total)),
                          Reason = excluded_because, Jobber = link_col(jobber_link))
-    datatable(t, rownames = FALSE, escape = setdiff(seq_along(t), ncol(t)),
-              options = list(pageLength = 25, order = list(list(4, "desc")), scrollX = TRUE))
+    datatable(
+      t, rownames = FALSE, escape = setdiff(seq_along(t), ncol(t)),
+      options = list(
+        pageLength = 25, order = list(list(4, "desc")), scrollX = TRUE, autoWidth = FALSE,
+        columnDefs = list(
+          list(targets = c(1, 3, 4), className = "dt-nowrap"),
+          list(targets = 5,          className = "dt-money"),
+          list(targets = 0, width = "170px"),
+          list(targets = 2, width = "260px"),
+          list(targets = 6, width = "330px"))))
   })
 
   output$dl_excl <- downloadHandler(
