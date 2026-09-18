@@ -42,6 +42,7 @@ OUT_DIR  <- Sys.getenv("SNOWBIRD_CLIENT_OUT", "output/clients")
 PLAN_CSV <- file.path(OUT_DIR, "quote_resend_plan.csv")
 DB_CSV   <- file.path(OUT_DIR, "client_second_homes.csv")
 EXCL_CSV <- file.path(OUT_DIR, "excluded_from_plan.csv")
+PROBE_JSON <- file.path(JOBBER_DIR, "schema_probe.json")
 LOG_FILE <- file.path(JOBBER_DIR, "refresh_log.txt")
 TZ       <- "America/New_York"
 OFFICE_URL <- sub("/+$", "", Sys.getenv("OFFICE_APP_URL", "https://web-production-01609.up.railway.app"))
@@ -468,6 +469,15 @@ server <- function(input, output, session) {
               "data - a single column of client names or ids, no redeploy needed."),
           DTOutput("excl_tbl"),
           downloadButton("dl_excl", "Download CSV", class = "btn-sm btn-outline-secondary mt-2")),
+        nav_panel("Jobber API",
+          div(class = "note mb-2",
+              "What this app is actually allowed to do in Jobber, asked of the API itself ",
+              "rather than assumed. Sending a discounted quote from here needs two things: a ",
+              "mutation that can apply a discount and send, and a connected account that ",
+              "granted write access. Both are below. Nothing here contains client data - only ",
+              "the names of API operations and permissions."),
+          actionButton("probe_now", "Re-run the check", class = "btn-outline-primary btn-sm mb-3"),
+          uiOutput("probe_ui")),
         nav_panel("How it works",
           div(style = "max-width:76ch; line-height:1.6;",
             h5("Who counts as a snowbird"),
@@ -580,6 +590,92 @@ server <- function(input, output, session) {
                          Property = property_address, Jobber = link_col(client_link))
     datatable(t, rownames = FALSE, escape = setdiff(seq_along(t), ncol(t)),
               options = list(pageLength = 25, scrollX = TRUE))
+  })
+
+  probe <- reactive({
+    req(authed()); tick()
+    if (!file.exists(PROBE_JSON)) return(NULL)
+    tryCatch(jsonlite::fromJSON(PROBE_JSON, simplifyVector = FALSE),
+             error = function(e) NULL)
+  })
+
+  observeEvent(input$probe_now, {
+    req(authed())
+    if (!file.exists(TOKEN_FILE)) {
+      flash(list(type = "warning", text = "Jobber is not connected yet."))
+      return(invisible())
+    }
+    # Read-only and short: one introspection query plus one per input type it
+    # finds. Run inline rather than as a background job so the answer is on
+    # screen immediately.
+    withProgress(message = "Asking Jobber what this app can do...", value = 0.5, {
+      res <- tryCatch({ jobber_probe_schema(); "ok" },
+                      error = function(e) conditionMessage(e))
+    })
+    flash(if (identical(res, "ok"))
+            list(type = "success", text = "Done - the results are below.")
+          else list(type = "warning", text = paste("The check failed:", res)))
+    tick(tick() + 1)
+  })
+
+  output$probe_ui <- renderUI({
+    p <- probe()
+    if (is.null(p))
+      return(div(class = "alert alert-secondary py-2 mb-0",
+                 "No check has run yet. Connect Jobber, then press ",
+                 strong("Re-run the check"), "."))
+
+    # The file used to be a bare list of mutations; keep reading those too.
+    muts   <- if (!is.null(p$mutations)) p$mutations else p
+    scopes <- unlist(p$scopes %||% list())
+    when   <- p$probed_at %||% format(file.mtime(PROBE_JSON), "%Y-%m-%d %H:%M")
+
+    sendable <- Filter(function(m) grepl("send", m$mutation %||% "", ignore.case = TRUE), muts)
+    discount <- Filter(function(m) grepl("discount", m$mutation %||% "", ignore.case = TRUE), muts)
+
+    verdict <- function(label, hits, note) {
+      ok <- length(hits) > 0
+      div(class = paste("py-2 px-3 mb-2 rounded", if (ok) "bg-success-subtle" else "bg-warning-subtle"),
+          strong(label), " ",
+          if (ok) paste0("yes - ", paste(vapply(hits, function(m) m$mutation, ""), collapse = ", "))
+          else "nothing matching was found",
+          div(class = "small text-muted", note))
+    }
+
+    tagList(
+      div(class = "small text-muted mb-2",
+          sprintf("Checked %s · %s quote/send-related operations out of %s in the schema",
+                  when, length(muts), p$total_mutations %||% "?")),
+
+      verdict("Can a quote be sent from the API?", sendable,
+              "Needed for a send to appear in the client's Jobber communication history."),
+      verdict("Can a discount be applied?", discount,
+              "Without this, the 10% has to be applied by hand before sending."),
+
+      div(class = "py-2 px-3 mb-3 rounded bg-light",
+          strong("Permissions granted by the connected account: "),
+          if (length(scopes) == 0)
+            span(class = "text-muted",
+                 "not recorded yet - press Re-run the check (earlier checks did not save them)")
+          else code(paste(scopes, collapse = "  "))),
+
+      h6("Every quote, send and discount operation this API version exposes"),
+      if (length(muts) == 0)
+        div(class = "text-muted small", "None found.")
+      else
+        tags$ul(class = "small", lapply(muts, function(m) {
+          tags$li(
+            code(m$mutation %||% "?"),
+            if (length(m$args))
+              tags$ul(lapply(m$args, function(a) {
+                tags$li(code(a$arg %||% "?"), " (", a$type %||% "?", ")",
+                        if (length(a$fields))
+                          div(class = "text-muted",
+                              paste(unlist(a$fields), collapse = ", ")))
+              }))
+          )
+        }))
+    )
   })
 
   output$excl_tbl <- renderDT({

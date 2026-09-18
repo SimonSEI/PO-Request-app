@@ -652,6 +652,16 @@ Matching is exact once case and spacing are normalised, so *Matt Chrisovergis*
 blocks that client but not a *Matthew Chrisovergis*. Listing the Jobber client
 id instead of the name survives a client being renamed.
 
+**What Jobber actually permits.** The **Jobber API** tab asks the API itself
+which quote, send and discount operations this version exposes, and which
+permissions the connected account granted — both matter, because a send
+mutation the app has no scope for is no more use than no mutation at all. It is
+read-only and records operation and permission names only, never client data or
+the token. Automatic sending stays disabled (`SEND_READY <- FALSE`) until that
+check shows a way to apply the discount *and* send through Jobber, so that a
+resend lands in the client's Jobber communication history rather than arriving
+from nowhere.
+
 **Privacy.** Client data lives only on the clients service's Railway volume, behind the Office App login. None of it is in GitHub or in either Docker image, and the public dashboard never sees it. Credentials are Railway variables, never code.
 
 Outputs, on screen and as CSV downloads: the **resend plan** (outstanding snowbird quotes in the order to send them) and **all clients** (every client with the evidence).

@@ -253,7 +253,6 @@ jobber_probe_schema <- function() {
     list(mutation = m$name, args = inputs)
   })
 
-  jsonlite::write_json(detail, file.path(JOBBER_DIR, "schema_probe.json"), auto_unbox = TRUE, pretty = TRUE)
   message("SCHEMA PROBE: ", length(muts), " mutations in total; quote/send-related:")
   for (d in detail) {
     message("  ", d$mutation)
@@ -272,6 +271,17 @@ jobber_probe_schema <- function() {
   }, error = function(e) list())
   sc <- payload$scope %||% payload$scopes
   message("SCHEMA PROBE: granted scopes: ", if (is.null(sc)) "(not listed in token)" else paste(sc, collapse = " "))
+
+  # Saved together, because the two answers only mean anything side by side: a
+  # send mutation this app has no scope for is no more use than no mutation at
+  # all. Scopes are permission names, never the token itself.
+  jsonlite::write_json(
+    list(probed_at      = format(Sys.time(), "%Y-%m-%d %H:%M:%S", tz = "America/New_York"),
+         total_mutations = length(muts),
+         scopes         = if (is.null(sc)) character() else as.character(sc),
+         mutations      = detail),
+    file.path(JOBBER_DIR, "schema_probe.json"), auto_unbox = TRUE, pretty = TRUE)
+
   invisible(detail)
 }
 
