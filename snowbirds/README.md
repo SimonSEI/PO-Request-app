@@ -624,18 +624,43 @@ and re-checked by the sender immediately before anything goes out:
   is the community's billing contact, not a homeowner. Matched on the full
   words and the abbreviations (*Mgmt*, *Mgt*), plus *Properties*, *Realty*,
   *Real Estate* and *Residential*.
-- **Quotes older than 13 months** (`SNOWBIRD_MAX_QUOTE_AGE_MONTHS`). Past that
-  the price and the scope want re-quoting, not discounting. A quote with no
-  readable creation date fails this check rather than skipping it.
+- **Quotes outside the eligible window.** A quote has to be between
+  **3 and 13 months old** (`SNOWBIRD_MIN_QUOTE_AGE_MONTHS`,
+  `SNOWBIRD_MAX_QUOTE_AGE_MONTHS`) and **under $14,000**
+  (`SNOWBIRD_MAX_QUOTE_VALUE`). Too new and the client is still considering the
+  original — discounting that soon trains people to wait and gives away margin
+  on work that may close anyway. Too old and the price and the scope have moved
+  on, so it wants re-quoting. Too large and a blanket 10% is real money on a job
+  that deserves a conversation, not an automated email. A quote with no readable
+  creation date or no total fails these checks rather than skipping them.
 
 Over-matching is the deliberate direction: a missed resend costs one discount,
 a homeowner offer emailed to a competitor costs more. Nothing is dropped
 silently — every held-back quote appears with its reason on the **Held back**
 tab and in `excluded_from_plan.csv`.
 
-Some HOAs cannot be spotted from their name at all: a community called
-*Autumn Woods* reads exactly like a person's address. For those, add the
-client name or id to `do_not_send.csv` beside the Jobber data on the volume.
+Some clients no rule will ever catch — an individual you simply never want
+approached, or a community whose name reads like a person's address. Two
+do-not-send lists are honoured, both a single column of client names or ids:
+
+- `clients/do_not_send.csv` ships with the code, so a standing decision is
+  version-controlled and reviewable.
+- `do_not_send.csv` beside the Jobber data on the volume, which the office can
+  edit without a deploy.
+
+Matching is exact once case and spacing are normalised, so *Matt Chrisovergis*
+blocks that client but not a *Matthew Chrisovergis*. Listing the Jobber client
+id instead of the name survives a client being renamed.
+
+**What Jobber actually permits.** The **Jobber API** tab asks the API itself
+which quote, send and discount operations this version exposes, and which
+permissions the connected account granted — both matter, because a send
+mutation the app has no scope for is no more use than no mutation at all. It is
+read-only and records operation and permission names only, never client data or
+the token. Automatic sending stays disabled (`SEND_READY <- FALSE`) until that
+check shows a way to apply the discount *and* send through Jobber, so that a
+resend lands in the client's Jobber communication history rather than arriving
+from nowhere.
 
 **Privacy.** Client data lives only on the clients service's Railway volume, behind the Office App login. None of it is in GitHub or in either Docker image, and the public dashboard never sees it. Credentials are Railway variables, never code.
 

@@ -42,6 +42,7 @@ OUT_DIR  <- Sys.getenv("SNOWBIRD_CLIENT_OUT", "output/clients")
 PLAN_CSV <- file.path(OUT_DIR, "quote_resend_plan.csv")
 DB_CSV   <- file.path(OUT_DIR, "client_second_homes.csv")
 EXCL_CSV <- file.path(OUT_DIR, "excluded_from_plan.csv")
+PROBE_JSON <- file.path(JOBBER_DIR, "schema_probe.json")
 LOG_FILE <- file.path(JOBBER_DIR, "refresh_log.txt")
 TZ       <- "America/New_York"
 OFFICE_URL <- sub("/+$", "", Sys.getenv("OFFICE_APP_URL", "https://web-production-01609.up.railway.app"))
@@ -206,7 +207,21 @@ body { background:#E6E6EB; }
 .tile-sub { font-size:.76rem; color:#8E8E93; margin-top:2px; }
 .login { max-width:380px; margin:12vh auto; }
 .note { font-size:.8rem; color:#6E6E73; }
-table.dataTable { font-size:.84rem; }
+table.dataTable { font-size:.84rem; border-collapse:separate; }
+
+/* Room to breathe. The default DT cell is tight enough that thirteen columns
+   read as one grey block, and long values collide with their neighbours. */
+table.dataTable td, table.dataTable th { padding:10px 14px; vertical-align:top; }
+table.dataTable thead th { font-weight:600; }
+/* Long values wrap onto a second line instead of being clipped mid-word. */
+table.dataTable td { white-space:normal; overflow-wrap:break-word; line-height:1.45; }
+/* ...except dates, quote numbers and money, which must stay on one line. */
+table.dataTable td.dt-nowrap, table.dataTable th.dt-nowrap { white-space:nowrap; }
+table.dataTable td.dt-money, table.dataTable th.dt-money {
+  white-space:nowrap; text-align:right; font-variant-numeric:tabular-nums;
+}
+table.dataTable tbody tr:hover td { background:#F2F6FA; }
+table.dataTable tbody td { border-top:1px solid #ECECF0; }
 
 /* Keep the column headings visible while reading down a long table. These
    tables run to hundreds of rows and the plan has twelve columns, so by the
@@ -457,13 +472,26 @@ server <- function(input, output, session) {
         nav_panel("Held back",
           div(class = "note mb-2",
               "Snowbird quotes deliberately kept out of the plan, and why. ",
-              "Businesses, HOAs and landscaping or trade companies never get this offer, ",
-              "and neither does any quote more than ", MAX_QUOTE_AGE_MONTHS, " months old - ",
-              "by then the price and the scope want re-quoting, not discounting. ",
-              "If something is here that should not be, or an HOA slipped through because ",
-              "its name reads like a person's, edit do_not_send.csv beside the Jobber data."),
+              "Businesses, HOAs and landscaping or trade companies never get this offer. ",
+              "Nor does a quote outside the eligible window: it has to be between ",
+              MIN_QUOTE_AGE_MONTHS, " and ", MAX_QUOTE_AGE_MONTHS, " months old and under ",
+              scales::dollar(MAX_QUOTE_VALUE), ". Too new and the client is still ",
+              "considering the original; too old and the price wants re-quoting rather ",
+              "than discounting; too large and it deserves a conversation, not an email. ",
+              "If something is here that should not be, or a client slipped through that ",
+              "should never be approached, add them to do_not_send.csv beside the Jobber ",
+              "data - a single column of client names or ids, no redeploy needed."),
           DTOutput("excl_tbl"),
           downloadButton("dl_excl", "Download CSV", class = "btn-sm btn-outline-secondary mt-2")),
+        nav_panel("Jobber API",
+          div(class = "note mb-2",
+              "What this app is actually allowed to do in Jobber, asked of the API itself ",
+              "rather than assumed. Sending a discounted quote from here needs two things: a ",
+              "mutation that can apply a discount and send, and a connected account that ",
+              "granted write access. Both are below. Nothing here contains client data - only ",
+              "the names of API operations and permissions."),
+          actionButton("probe_now", "Re-run the check", class = "btn-outline-primary btn-sm mb-3"),
+          uiOutput("probe_ui")),
         nav_panel("How it works",
           div(style = "max-width:76ch; line-height:1.6;",
             h5("Who counts as a snowbird"),
@@ -555,27 +583,158 @@ server <- function(input, output, session) {
   link_col <- function(u) ifelse(!is.na(u) & grepl("^https://", u),
                                  sprintf('<a href="%s" target="_blank" rel="noopener">Open</a>', htmltools::htmlEscape(u, attribute = TRUE)), "")
 
+  # "2026-11-17" is hard to read at a glance and sorts no better than "17 Nov
+  # 2026" once DT is told the column is a date, so show the readable form.
+  d_fmt <- function(x) {
+    d <- suppressWarnings(as.Date(x))
+    ifelse(is.na(d), "", format(d, "%d %b %Y"))
+  }
+  # "Second home - likely (billing address only)" in a narrow column just
+  # renders as "Second". The prefix is the same on every row anyway.
+  short_status <- function(x) {
+    x <- x %||% ""
+    case_when(
+      grepl("confirmed",  x, ignore.case = TRUE) ~ "Confirmed",
+      grepl("billing",    x, ignore.case = TRUE) ~ "Likely (billing)",
+      grepl("roll only",  x, ignore.case = TRUE) ~ "Likely (roll)",
+      grepl("Year-round", x, ignore.case = TRUE) ~ "Year-round",
+      grepl("^Check",     x)                     ~ "Check",
+      TRUE ~ x)
+  }
+
   output$plan_tbl <- renderDT({
     p <- plan()
     shiny::validate(shiny::need(!is.null(p), "No plan yet. Connect Jobber, then click Refresh now."))
-    t <- p %>% transmute(`Resend on` = resend_on, Client = client, `Home up north` = northern_home,
-                         `Due back` = predicted_return, `Quote #` = quote_number, Quote = quote_title,
-                         Total = scales::dollar(as.numeric(total)), `With 10% off` = scales::dollar(as.numeric(total_10pct_off)),
-                         Status = snowbird_status,
-                         `Auto-send` = if ("auto_send" %in% names(p)) auto_send else "",
-                         `Why this date` = why_this_date, Jobber = link_col(jobber_link))
-    datatable(t, rownames = FALSE, escape = setdiff(seq_along(t), ncol(t)),
-              options = list(pageLength = 25, order = list(list(0, "asc")), scrollX = TRUE))
+    t <- p %>% transmute(
+      `Resend on` = d_fmt(resend_on),
+      Client      = client,
+      `Quote #`   = quote_number,
+      Quote       = quote_title,
+      Quoted      = if ("quote_created" %in% names(p)) d_fmt(quote_created) else "",
+      Total       = scales::dollar(as.numeric(total)),
+      `With 10% off` = scales::dollar(as.numeric(total_10pct_off)),
+      Home        = northern_home,
+      `Due back`  = d_fmt(predicted_return),
+      Status      = short_status(snowbird_status),
+      Sending     = if ("auto_send" %in% names(p)) if_else(auto_send == "yes", "Automatic", "By hand") else "",
+      `Why this date` = why_this_date,
+      Jobber      = link_col(jobber_link))
+
+    datatable(
+      t, rownames = FALSE, escape = setdiff(seq_along(t), ncol(t)),
+      options = list(
+        pageLength = 25, order = list(list(0, "asc")), scrollX = TRUE,
+        autoWidth = FALSE,
+        # Widths and wrapping, because 13 columns sharing the page evenly left
+        # every one of them too narrow to read - dates broke mid-year and quote
+        # titles were cut mid-word.
+        columnDefs = list(
+          list(targets = c(0, 4, 8), className = "dt-nowrap"),
+          list(targets = c(5, 6),    className = "dt-money"),
+          list(targets = 2,          className = "dt-nowrap"),
+          list(targets = 9,  width = "120px"),
+          list(targets = 10, width = "95px"),
+          list(targets = 1,  width = "150px"),
+          list(targets = 3,  width = "250px"),
+          list(targets = 11, width = "330px"))))
   })
 
   output$db_tbl <- renderDT({
     d <- db()
     shiny::validate(shiny::need(!is.null(d), "No client list yet. Connect Jobber, then click Refresh now."))
-    t <- d %>% transmute(Client = client, Status = status, `Home up north` = coalesce(home_state, home_country),
-                         Region = home_region, `Due back` = predicted_return, Evidence = evidence,
+    t <- d %>% transmute(Client = client, Status = short_status(status),
+                         Home = coalesce(home_state, home_country),
+                         Region = home_region, `Due back` = d_fmt(predicted_return),
+                         Evidence = evidence,
                          Property = property_address, Jobber = link_col(client_link))
     datatable(t, rownames = FALSE, escape = setdiff(seq_along(t), ncol(t)),
               options = list(pageLength = 25, scrollX = TRUE))
+  })
+
+  probe <- reactive({
+    req(authed()); tick()
+    if (!file.exists(PROBE_JSON)) return(NULL)
+    tryCatch(jsonlite::fromJSON(PROBE_JSON, simplifyVector = FALSE),
+             error = function(e) NULL)
+  })
+
+  observeEvent(input$probe_now, {
+    req(authed())
+    if (!file.exists(TOKEN_FILE)) {
+      flash(list(type = "warning", text = "Jobber is not connected yet."))
+      return(invisible())
+    }
+    # Read-only and short: one introspection query plus one per input type it
+    # finds. Run inline rather than as a background job so the answer is on
+    # screen immediately.
+    withProgress(message = "Asking Jobber what this app can do...", value = 0.5, {
+      res <- tryCatch({ jobber_probe_schema(); "ok" },
+                      error = function(e) conditionMessage(e))
+    })
+    flash(if (identical(res, "ok"))
+            list(type = "success", text = "Done - the results are below.")
+          else list(type = "warning", text = paste("The check failed:", res)))
+    tick(tick() + 1)
+  })
+
+  output$probe_ui <- renderUI({
+    p <- probe()
+    if (is.null(p))
+      return(div(class = "alert alert-secondary py-2 mb-0",
+                 "No check has run yet. Connect Jobber, then press ",
+                 strong("Re-run the check"), "."))
+
+    # The file used to be a bare list of mutations; keep reading those too.
+    muts   <- if (!is.null(p$mutations)) p$mutations else p
+    scopes <- unlist(p$scopes %||% list())
+    when   <- p$probed_at %||% format(file.mtime(PROBE_JSON), "%Y-%m-%d %H:%M")
+
+    sendable <- Filter(function(m) grepl("send", m$mutation %||% "", ignore.case = TRUE), muts)
+    discount <- Filter(function(m) grepl("discount", m$mutation %||% "", ignore.case = TRUE), muts)
+
+    verdict <- function(label, hits, note) {
+      ok <- length(hits) > 0
+      div(class = paste("py-2 px-3 mb-2 rounded", if (ok) "bg-success-subtle" else "bg-warning-subtle"),
+          strong(label), " ",
+          if (ok) paste0("yes - ", paste(vapply(hits, function(m) m$mutation, ""), collapse = ", "))
+          else "nothing matching was found",
+          div(class = "small text-muted", note))
+    }
+
+    tagList(
+      div(class = "small text-muted mb-2",
+          sprintf("Checked %s · %s quote/send-related operations out of %s in the schema",
+                  when, length(muts), p$total_mutations %||% "?")),
+
+      verdict("Can a quote be sent from the API?", sendable,
+              "Needed for a send to appear in the client's Jobber communication history."),
+      verdict("Can a discount be applied?", discount,
+              "Without this, the 10% has to be applied by hand before sending."),
+
+      div(class = "py-2 px-3 mb-3 rounded bg-light",
+          strong("Permissions granted by the connected account: "),
+          if (length(scopes) == 0)
+            span(class = "text-muted",
+                 "not recorded yet - press Re-run the check (earlier checks did not save them)")
+          else code(paste(scopes, collapse = "  "))),
+
+      h6("Every quote, send and discount operation this API version exposes"),
+      if (length(muts) == 0)
+        div(class = "text-muted small", "None found.")
+      else
+        tags$ul(class = "small", lapply(muts, function(m) {
+          tags$li(
+            code(m$mutation %||% "?"),
+            if (length(m$args))
+              tags$ul(lapply(m$args, function(a) {
+                tags$li(code(a$arg %||% "?"), " (", a$type %||% "?", ")",
+                        if (length(a$fields))
+                          div(class = "text-muted",
+                              paste(unlist(a$fields), collapse = ", ")))
+              }))
+          )
+        }))
+    )
   })
 
   output$excl_tbl <- renderDT({
@@ -583,12 +742,20 @@ server <- function(input, output, session) {
     shiny::validate(shiny::need(!is.null(e), "Nothing held back yet - run Refresh now."))
     shiny::validate(shiny::need(nrow(e) > 0, "Nothing is being held back."))
     t <- e %>% transmute(Client = client, `Quote #` = quote_number, Quote = quote_title,
-                         Created = quote_created,
+                         Quoted = d_fmt(quote_created),
                          `Age (days)` = as.integer(as.numeric(quote_age_days)),
                          Total = scales::dollar(as.numeric(total)),
                          Reason = excluded_because, Jobber = link_col(jobber_link))
-    datatable(t, rownames = FALSE, escape = setdiff(seq_along(t), ncol(t)),
-              options = list(pageLength = 25, order = list(list(4, "desc")), scrollX = TRUE))
+    datatable(
+      t, rownames = FALSE, escape = setdiff(seq_along(t), ncol(t)),
+      options = list(
+        pageLength = 25, order = list(list(4, "desc")), scrollX = TRUE, autoWidth = FALSE,
+        columnDefs = list(
+          list(targets = c(1, 3, 4), className = "dt-nowrap"),
+          list(targets = 5,          className = "dt-money"),
+          list(targets = 0, width = "170px"),
+          list(targets = 2, width = "260px"),
+          list(targets = 6, width = "330px"))))
   })
 
   output$dl_excl <- downloadHandler(
