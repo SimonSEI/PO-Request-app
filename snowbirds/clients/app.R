@@ -198,7 +198,10 @@ if (Sys.getenv("CLIENTS_NO_SCHEDULE") != "true") later(scheduler_tick, 20)
 # -----------------------------------------------------------------------------
 CSS <- "
 body { background:#E6E6EB; }
-.wrap { max-width:1400px; margin:0 auto; padding:20px 16px 40px; }
+/* 1400px left a wide monitor mostly empty either side of a thirteen-column
+   table. Use the screen that is there, with a cap so the prose columns do not
+   run to an unreadable line length on an ultrawide. */
+.wrap { max-width:2000px; margin:0 auto; padding:20px 24px 40px; }
 .top-title { font-size:1.4rem; font-weight:700; letter-spacing:-.02em; color:#1D1D1F; }
 .top-sub { font-size:.83rem; color:#6E6E73; }
 .tile { background:#fff; border-radius:14px; padding:14px 16px; box-shadow:0 0 0 1px rgba(0,0,0,.045),0 1px 3px rgba(0,0,0,.055); height:100%; }
@@ -222,6 +225,10 @@ table.dataTable td.dt-money, table.dataTable th.dt-money {
 }
 table.dataTable tbody tr:hover td { background:#F2F6FA; }
 table.dataTable tbody td { border-top:1px solid #ECECF0; }
+/* Fill the card rather than sitting at whatever width the columns happen to
+   add up to, which left a band of empty white down the right-hand side. */
+table.dataTable { width:100% !important; }
+.dataTables_wrapper { width:100%; }
 
 /* Keep the column headings visible while reading down a long table. These
    tables run to hundreds of rows and the plan has twelve columns, so by the
