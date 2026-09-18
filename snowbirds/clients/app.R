@@ -220,15 +220,42 @@ table.dataTable thead th { font-weight:600; }
 table.dataTable td { white-space:normal; overflow-wrap:break-word; line-height:1.45; }
 /* ...except dates, quote numbers and money, which must stay on one line. */
 table.dataTable td.dt-nowrap, table.dataTable th.dt-nowrap { white-space:nowrap; }
+table.dataTable td.dt-money { white-space:nowrap; }
 table.dataTable td.dt-money, table.dataTable th.dt-money {
-  white-space:nowrap; text-align:right; font-variant-numeric:tabular-nums;
+  text-align:right; font-variant-numeric:tabular-nums;
 }
+table.dataTable th.dt-nowrap { white-space:normal; }
 table.dataTable tbody tr:hover td { background:#F2F6FA; }
 table.dataTable tbody td { border-top:1px solid #ECECF0; }
 /* Fill the card rather than sitting at whatever width the columns happen to
    add up to, which left a band of empty white down the right-hand side. */
 table.dataTable { width:100% !important; }
 .dataTables_wrapper { width:100%; }
+
+/* table-layout:fixed makes these shares binding. Without it the browser sizes
+   columns by content, and the only column whose text can wrap - the long
+   explanation - is the one it takes the space from. They total 100. */
+table.plan-table { table-layout:fixed; }
+table.plan-table th:nth-child(1),  table.plan-table td:nth-child(1)  { width:7%; }
+table.plan-table th:nth-child(2),  table.plan-table td:nth-child(2)  { width:9%; }
+table.plan-table th:nth-child(3),  table.plan-table td:nth-child(3)  { width:5%; }
+table.plan-table th:nth-child(4),  table.plan-table td:nth-child(4)  { width:12%; }
+table.plan-table th:nth-child(5),  table.plan-table td:nth-child(5)  { width:7%; }
+table.plan-table th:nth-child(6),  table.plan-table td:nth-child(6)  { width:6%; }
+table.plan-table th:nth-child(7),  table.plan-table td:nth-child(7)  { width:7%; }
+table.plan-table th:nth-child(8),  table.plan-table td:nth-child(8)  { width:4%; }
+table.plan-table th:nth-child(9),  table.plan-table td:nth-child(9)  { width:7%; }
+table.plan-table th:nth-child(10), table.plan-table td:nth-child(10) { width:7%; }
+table.plan-table th:nth-child(11), table.plan-table td:nth-child(11) { width:6%; }
+table.plan-table th:nth-child(12), table.plan-table td:nth-child(12) { width:19%; }
+table.plan-table th:nth-child(13), table.plan-table td:nth-child(13) { width:4%; }
+
+/* Below this the thirteen columns stop being readable at any share, so let the
+   card scroll sideways instead of crushing them. */
+@media (max-width: 1100px) {
+  .dataTables_wrapper { overflow-x:auto; }
+  table.plan-table { table-layout:auto; min-width:1100px; }
+}
 
 /* Keep the column headings visible while reading down a long table. These
    tables run to hundreds of rows and the plan has twelve columns, so by the
@@ -576,7 +603,7 @@ server <- function(input, output, session) {
     shiny::validate(shiny::need(nrow(d) > 0, "Nothing is due to be sent."))
     datatable(d %>% transmute(`Resend on` = resend_on, Client = client, `Quote #` = quote_number,
                               Quote = quote_title, Total = scales::dollar(as.numeric(total)),
-                              `With 10% off` = scales::dollar(as.numeric(total_10pct_off)), Status = snowbird_status),
+                              `10% off` = scales::dollar(as.numeric(total_10pct_off)), Status = snowbird_status),
               rownames = FALSE, options = list(pageLength = 25, scrollX = TRUE))
   })
 
@@ -619,7 +646,7 @@ server <- function(input, output, session) {
       Quote       = quote_title,
       Quoted      = if ("quote_created" %in% names(p)) d_fmt(quote_created) else "",
       Total       = scales::dollar(as.numeric(total)),
-      `With 10% off` = scales::dollar(as.numeric(total_10pct_off)),
+      `10% off` = scales::dollar(as.numeric(total_10pct_off)),
       Home        = northern_home,
       `Due back`  = d_fmt(predicted_return),
       Status      = short_status(snowbird_status),
@@ -627,23 +654,21 @@ server <- function(input, output, session) {
       `Why this date` = why_this_date,
       Jobber      = link_col(jobber_link))
 
+    # Widths are set in CSS against .plan-table rather than here: DT ignores
+    # per-column pixel widths unless autoWidth is on, and with the browser's
+    # default table layout the one column that CAN wrap gets starved of space
+    # while the rest keep theirs. That is what squeezed "Why this date" to a
+    # word per line and made every row three hundred pixels tall.
     datatable(
       t, rownames = FALSE, escape = setdiff(seq_along(t), ncol(t)),
+      class = "display plan-table",
       options = list(
-        pageLength = 25, order = list(list(0, "asc")), scrollX = TRUE,
+        pageLength = 25, order = list(list(0, "asc")), scrollX = FALSE,
         autoWidth = FALSE,
-        # Widths and wrapping, because 13 columns sharing the page evenly left
-        # every one of them too narrow to read - dates broke mid-year and quote
-        # titles were cut mid-word.
         columnDefs = list(
           list(targets = c(0, 4, 8), className = "dt-nowrap"),
           list(targets = c(5, 6),    className = "dt-money"),
-          list(targets = 2,          className = "dt-nowrap"),
-          list(targets = 9,  width = "120px"),
-          list(targets = 10, width = "95px"),
-          list(targets = 1,  width = "150px"),
-          list(targets = 3,  width = "250px"),
-          list(targets = 11, width = "330px"))))
+          list(targets = 2,          className = "dt-nowrap"))))
   })
 
   output$db_tbl <- renderDT({
