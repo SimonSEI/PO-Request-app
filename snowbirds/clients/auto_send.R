@@ -21,6 +21,7 @@
 
 SWITCH_FILE <- file.path(JOBBER_DIR, "auto_send_switch.rds")
 SENT_LOG    <- file.path(JOBBER_DIR, "sent_quotes.csv")
+DRYRUN_LOG  <- file.path(JOBBER_DIR, "dry_run_log.csv")
 DAILY_CAP   <- as.integer(Sys.getenv("AUTO_SEND_DAILY_CAP", "10"))
 
 # Same setting R/18 uses to build the plan. Re-read here rather than trusted
@@ -55,6 +56,46 @@ sent_log <- function() {
 
 append_sent <- function(row) {
   write_csv(row, SENT_LOG, append = file.exists(SENT_LOG), na = "")
+}
+
+# ---------------------------------------------------------------------------
+# Dry run: the record of what WOULD have gone out
+# ---------------------------------------------------------------------------
+# The 7am run already logs a count when it declines to send, but a count is not
+# reviewable - by the time anyone asks "who exactly would that have been?" the
+# plan has been rebuilt underneath them. So every declined run writes the names
+# too, and they accumulate. Before the switch is ever turned on, this file is
+# the evidence for whether the rules pick the right people.
+#
+# would_send models the cap as well as the rules: the sender takes the first
+# DAILY_CAP rows of an already-sorted list, so the rest would wait for tomorrow
+# even though they qualify today.
+dry_run_log <- function() {
+  if (!file.exists(DRYRUN_LOG)) return(tibble(run_at = character(), reason = character(),
+                                              quote_id = character(), quote_number = character(),
+                                              client = character(), resend_on = character(),
+                                              total = character(), total_10pct_off = character(),
+                                              would_send = character()))
+  read_csv(DRYRUN_LOG, col_types = cols(.default = col_character()))
+}
+
+record_dry_run <- function(due, reason) {
+  if (nrow(due) == 0) return(invisible(0))
+  cap  <- min(nrow(due), DAILY_CAP)
+  rows <- tibble(
+    run_at          = format(Sys.time(), "%Y-%m-%d %H:%M", tz = TZ),
+    reason          = reason,
+    quote_id        = due$quote_id,
+    quote_number    = due$quote_number,
+    client          = due$client,
+    resend_on       = due$resend_on,
+    total           = due$total,
+    total_10pct_off = due$total_10pct_off,
+    would_send      = c(rep("yes", cap),
+                        rep(paste0("no - past today's cap of ", DAILY_CAP), nrow(due) - cap)))
+  write_csv(rows, DRYRUN_LOG, append = file.exists(DRYRUN_LOG), na = "")
+  log_line("dry run (", reason, "): ", cap, " would go, ", nrow(due) - cap, " would wait")
+  invisible(nrow(rows))
 }
 
 # What WOULD go out now, before the switch and the cap are applied.
@@ -113,10 +154,12 @@ run_auto_send <- function(plan_path) {
   if (nrow(due) == 0) { log_line("auto-send: nothing due"); return(invisible(0)) }
   if (!switch_state()$on) {
     log_line("auto-send: switch is OFF - ", nrow(due), " quote(s) would have been sent")
+    record_dry_run(due, "switch OFF")
     return(invisible(0))
   }
   if (!SEND_READY) {
     log_line("auto-send: switch is ON but sending is not built yet - ", nrow(due), " quote(s) waiting")
+    record_dry_run(due, "sending not built yet")
     return(invisible(0))
   }
 

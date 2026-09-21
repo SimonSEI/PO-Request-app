@@ -494,6 +494,15 @@ server <- function(input, output, session) {
               "Due today: awaiting-response quotes whose resend date has arrived and that have never been sent. ",
               "At 7:00 am these go out with 10% off, up to ", DAILY_CAP, " a day, but only while the switch above is ON."),
           DTOutput("due_tbl"),
+          h6(class = "mt-4", "Dry run"),
+          div(class = "note mb-2",
+              "A dry run writes down exactly who would be emailed and what they would be offered, ",
+              "and sends nothing. The 7:00 am run records one automatically every morning the ",
+              "switch is OFF, so the history below builds up on its own. Check a few mornings of ",
+              "it before turning anything on."),
+          actionButton("dry_run_now", "Run a dry run now", class = "btn-outline-primary btn-sm mb-3"),
+          DTOutput("dry_tbl"),
+          downloadButton("dl_dry", "Download CSV", class = "btn-sm btn-outline-secondary mt-2"),
           h6(class = "mt-4", "Send history"),
           DTOutput("sent_tbl")),
         nav_panel("All clients",
@@ -604,6 +613,34 @@ server <- function(input, output, session) {
     datatable(d %>% transmute(`Resend on` = resend_on, Client = client, `Quote #` = quote_number,
                               Quote = quote_title, Total = scales::dollar(as.numeric(total)),
                               `10% off` = scales::dollar(as.numeric(total_10pct_off)), Status = snowbird_status),
+              rownames = FALSE, options = list(pageLength = 25, scrollX = TRUE))
+  })
+
+  # A dry run on demand, so the rules can be checked without waiting for 7am.
+  # It only reads the plan and writes the record - the sender is never called.
+  observeEvent(input$dry_run_now, {
+    req(authed())
+    d <- due_for_auto_send(PLAN_CSV)
+    if (nrow(d) == 0) {
+      flash(list(type = "success", text = "Dry run done - nothing is due to be sent."))
+    } else {
+      record_dry_run(d, paste0("checked by hand (", who()$user, ")"))
+      flash(list(type = "success",
+                 text = sprintf("Dry run done - %d quote%s recorded below. Nothing was sent.",
+                                nrow(d), if (nrow(d) == 1) "" else "s")))
+    }
+    sw_tick(sw_tick() + 1)
+  })
+
+  output$dry_tbl <- renderDT({
+    req(authed()); sw_tick(); files_state()
+    d <- dry_run_log()
+    shiny::validate(shiny::need(nrow(d) > 0, "No dry run has been recorded yet."))
+    datatable(d %>% arrange(desc(run_at)) %>%
+                transmute(`Run at` = run_at, Why = reason, Client = client, `Quote #` = quote_number,
+                          `Resend on` = resend_on, Total = scales::dollar(as.numeric(total)),
+                          `10% off` = scales::dollar(as.numeric(total_10pct_off)),
+                          `Would send` = would_send),
               rownames = FALSE, options = list(pageLength = 25, scrollX = TRUE))
   })
 
@@ -793,6 +830,10 @@ server <- function(input, output, session) {
   output$dl_excl <- downloadHandler(
     filename = function() paste0("excluded_from_plan_", Sys.Date(), ".csv"),
     content  = function(f) { req(authed()); file.copy(EXCL_CSV, f) })
+
+  output$dl_dry <- downloadHandler(
+    filename = function() paste0("dry_run_log_", Sys.Date(), ".csv"),
+    content  = function(f) { req(authed()); write_csv(dry_run_log(), f, na = "") })
 
   output$dl_plan <- downloadHandler(
     filename = function() paste0("quote_resend_plan_", Sys.Date(), ".csv"),
