@@ -37456,9 +37456,11 @@ _CF_JOBBER_GQL = 'https://api.getjobber.com/api/graphql'
 _CF_JOBBER_AUTHORIZE = 'https://api.getjobber.com/api/oauth/authorize'
 _CF_JOBBER_TOKEN = 'https://api.getjobber.com/api/oauth/token'
 
-CASHFLOW_ROLES = ('admin', 'office')
-# Company cash is not for every office login: set CASHFLOW_USERS to a
-# comma-separated list of usernames to limit the app to those people.
+# Office logins only, by the owner's decision: not admins, technicians or
+# property managers. Keep it that way unless the owner says otherwise.
+CASHFLOW_ROLES = ('office',)
+# To narrow it further to particular office people, set CASHFLOW_USERS to a
+# comma-separated list of usernames.
 CASHFLOW_USERS = {u.strip().lower() for u in os.environ.get('CASHFLOW_USERS', '').split(',') if u.strip()}
 
 # Jobber invoice statuses that still have money owing on them.
