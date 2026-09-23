@@ -52,9 +52,10 @@ SEND_READY <- FALSE
 
 # Applying the discount DOES write to a live quote in the Jobber account, so it
 # is off until someone turns it on deliberately and watches the first one. The
-# mutation name is configurable because it is the one piece not confirmed by
-# reading the schema here - if this API version calls it something else, set
-# JOBBER_QUOTE_EDIT_MUTATION rather than editing code.
+# call below was written against the schema of API version 2026-05-12, read by
+# introspection: quoteEdit(quoteId:, attributes: QuoteEditAttributes!), with
+# discount as a CostModifierAttributes { rate, type: Percent | Unit }. The
+# mutation name stays configurable in case a later version renames it.
 DISCOUNT_ENABLED    <- Sys.getenv("JOBBER_DISCOUNT_ENABLED", "") %in% c("1", "true", "yes", "on")
 QUOTE_EDIT_MUTATION <- Sys.getenv("JOBBER_QUOTE_EDIT_MUTATION", "quoteEdit")
 DISCOUNT_PCT        <- as.numeric(Sys.getenv("SNOWBIRD_DISCOUNT_PCT", "10"))
@@ -208,7 +209,23 @@ quote_edit_offered <- function() {
   list(ok = TRUE, msg = "")
 }
 
-apply_quote_discount <- function(quote_id, pct = DISCOUNT_PCT) {
+# Two things the schema cannot settle are checked on the result instead:
+#
+#  - Whether a rate of 10 means 10% or 1000%/0.1%. The schema says only "the
+#    value of the cost modifier". 10 is the likely reading; the discount Jobber
+#    reports back is compared with what 10% of the quote should roughly be, and
+#    anything far off is flagged before anyone presses Send. The band is wide
+#    on purpose - tax is charged after the discount, so the discount is a little
+#    under 10% of the total - but a factor-of-100 mistake cannot sit inside it.
+#  - Whether Jobber moves a sent quote back to draft when it is edited. The
+#    schema does not say, and quoteEdit has no status field to set it back. The
+#    status after the edit is read and reported, so the first real one answers
+#    the question.
+#
+# Either finding still leaves the quote discounted in Jobber, so it is still
+# recorded as prepared - offering it again would stack a second discount. The
+# warning goes to the person holding the Send button instead.
+apply_quote_discount <- function(quote_id, pct = DISCOUNT_PCT, expected_total = NA_real_) {
   if (!DISCOUNT_ENABLED)
     return(list(ok = FALSE,
                 msg = paste("Applying discounts is turned off. Set JOBBER_DISCOUNT_ENABLED=true",
@@ -216,18 +233,43 @@ apply_quote_discount <- function(quote_id, pct = DISCOUNT_PCT) {
   chk <- quote_edit_offered()
   if (identical(chk$ok, FALSE)) return(list(ok = FALSE, msg = paste0("Not attempted - ", chk$msg, ".")))
 
-  q <- sprintf(paste0("mutation($id: EncodedId!, $input: QuoteEditAttributes!) { ",
-                      "%s(id: $id, input: $input) { quote { id } userErrors { message } } }"),
-               QUOTE_EDIT_MUTATION)
-  res <- tryCatch(jobber_gql(q, list(id = quote_id, input = list(discount = pct))),
-                  error = function(e) e)
+  q <- sprintf(paste0(
+    "mutation($quoteId: EncodedId!, $attributes: QuoteEditAttributes!) { ",
+    "%s(quoteId: $quoteId, attributes: $attributes) { ",
+    "quote { id quoteStatus amounts { discountAmount total } } ",
+    "userErrors { message path } } }"), QUOTE_EDIT_MUTATION)
+  res <- tryCatch(
+    jobber_gql(q, list(quoteId    = quote_id,
+                       attributes = list(discount = list(rate = pct, type = "Percent")))),
+    error = function(e) e)
   if (inherits(res, "error")) return(list(ok = FALSE, msg = conditionMessage(res)))
-  errs <- res[[QUOTE_EDIT_MUTATION]]$userErrors
+
+  out  <- res[[QUOTE_EDIT_MUTATION]]
+  errs <- out$userErrors
   if (length(errs) > 0)
     return(list(ok = FALSE,
                 msg = paste(vapply(errs, function(e) as.character(e$message %||% ""), character(1)),
                             collapse = "; ")))
-  list(ok = TRUE, msg = "")
+
+  status   <- as.character(out$quote$quoteStatus %||% NA_character_)
+  discount <- suppressWarnings(as.numeric(out$quote$amounts$discountAmount %||% NA))
+  total    <- suppressWarnings(as.numeric(out$quote$amounts$total %||% NA))
+
+  warn <- character()
+  if (!is.na(expected_total) && expected_total > 0 && !is.na(discount)) {
+    share <- discount / expected_total
+    if (share < 0.5 * pct / 100 || share > 1.1 * pct / 100)
+      warn <- c(warn, sprintf(paste(
+        "Jobber reports a discount of %s on a quote of about %s - that is not %g%%.",
+        "Check the quote in Jobber before sending, and correct the discount there if needed."),
+        scales::dollar(discount), scales::dollar(expected_total), pct))
+  }
+  if (!is.na(status) && !identical(status, "awaiting_response"))
+    warn <- c(warn, sprintf(paste(
+      "Jobber moved the quote to '%s' when it was edited.",
+      "Sending it from Jobber will still reach the client."), status))
+
+  list(ok = TRUE, msg = "", warn = warn, status = status, discount = discount, total = total)
 }
 
 # ---------------------------------------------------------------------------
@@ -250,18 +292,23 @@ prepare_one_quote <- function(plan_path, quote_id, by = "dashboard") {
                 msg = paste("That quote is no longer eligible - it may have been prepared already,",
                             "answered, or fallen outside the rules. Nothing was changed.")))
   q <- q[1, ]
-  r   <- apply_quote_discount(q$quote_id)
+  r   <- apply_quote_discount(q$quote_id, expected_total = suppressWarnings(as.numeric(q$total)))
   res <- if (isTRUE(r$ok)) "prepared" else paste("failed:", r$msg)
   append_sent(tibble(quote_id = q$quote_id, quote_number = q$quote_number, client = q$client,
                      attempted_at = format(Sys.time(), "%Y-%m-%d %H:%M", tz = TZ),
                      total = q$total, total_10pct_off = q$total_10pct_off, result = res))
-  log_line("prepare by ", by, ": ", q$quote_number, " (", q$client, ") - ", res)
+  log_line("prepare by ", by, ": ", q$quote_number, " (", q$client, ") - ", res,
+           if (isTRUE(r$ok)) sprintf(" | Jobber now shows discount %s, total %s, status %s",
+                                     r$discount, r$total, r$status) else "",
+           if (length(r$warn)) paste0(" | WARNING: ", paste(r$warn, collapse = " ")) else "")
   list(ok   = isTRUE(r$ok),
+       warn = r$warn %||% character(),
        link = q$jobber_link,
        msg  = if (isTRUE(r$ok))
                 sprintf("%s now has %g%% off. Open it in Jobber and press Send.",
                         q$quote_number, DISCOUNT_PCT)
-              else sprintf("Could not discount %s: %s", q$quote_number, r$msg))
+              else sprintf("Could not discount %s: %s", q$quote_number, r$msg),
+       now  = if (isTRUE(r$ok) && !is.na(r$total)) scales::dollar(r$total) else NA_character_)
 }
 
 # Quotes discounted and waiting for someone to press Send in Jobber.

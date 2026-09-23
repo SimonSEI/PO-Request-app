@@ -692,9 +692,14 @@ server <- function(input, output, session) {
     # The link is a real anchor the person clicks, not a popup - a window
     # opened from a server round-trip is not a user gesture, and browsers
     # block it.
+    warned <- length(r$warn) > 0
     showModal(modalDialog(
-      title = "Discount applied - now send it in Jobber",
+      title = if (warned) "Discount applied - check it before sending" else "Discount applied - now send it in Jobber",
       p(r$msg),
+      if (!is.na(r$now)) p(sprintf("Jobber now shows the total as %s.", r$now)),
+      # Shown above the link, not after it: these are the things to look at in
+      # Jobber before pressing Send, not after.
+      if (warned) div(class = "alert alert-danger", lapply(r$warn, p, class = "mb-1")),
       p("Open the quote, check it reads the way you want, and press Send there. ",
         "That is what emails the client and puts it in their communications log."),
       if (!is.na(r$link) && grepl("^https://", r$link))
