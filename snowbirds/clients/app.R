@@ -492,9 +492,10 @@ server <- function(input, output, session) {
         nav_panel("Auto-send",
           div(class = "note mb-2",
               "Due today: awaiting-response quotes whose resend date has arrived and that have never been sent. ",
-              "At 7:00 am these go out with 10% off, up to ", DAILY_CAP, " a day, but only while the switch above is ON. ",
-              "Send now emails one straight away whatever the switch says - it asks first, and it obeys the same ",
-              "rules, so a quote the queue would not send cannot be sent by hand either."),
+              "Jobber's API has no way to email a quote, so nothing here sends by itself - not even at 7:00 am. ",
+              "Discount & open in Jobber applies the ", DISCOUNT_PCT, "% through the API and hands you the quote to ",
+              "press Send on, which is also what records it in that client's Jobber communications. It asks first, ",
+              "and it obeys the same rules, so a quote the queue would not offer cannot be discounted by hand either."),
           DTOutput("due_tbl"),
           h6(class = "mt-4", "Dry run"),
           div(class = "note mb-2",
@@ -505,7 +506,14 @@ server <- function(input, output, session) {
           actionButton("dry_run_now", "Run a dry run now", class = "btn-outline-primary btn-sm mb-3"),
           DTOutput("dry_tbl"),
           downloadButton("dl_dry", "Download CSV", class = "btn-sm btn-outline-secondary mt-2"),
-          h6(class = "mt-4", "Send history"),
+          h6(class = "mt-4", "Discounted, waiting to be sent in Jobber"),
+          div(class = "note mb-2",
+              "These already have the discount on them. This app cannot tell whether anyone ",
+              "pressed Send in Jobber afterwards, so they stay listed here rather than claiming ",
+              "to have gone out - and they are kept out of the queue above so the discount ",
+              "cannot be applied to them twice."),
+          DTOutput("prepared_tbl"),
+          h6(class = "mt-4", "History"),
           DTOutput("sent_tbl")),
         nav_panel("All clients",
           div(class = "note mb-2",
@@ -573,11 +581,13 @@ server <- function(input, output, session) {
           div(class = "tile-label", "Automatic discounted resends"),
           div(class = "tile-num", style = paste0("color:", if (s$on) "#1E8E3E" else "#6E6E73"), if (s$on) "ON" else "OFF"),
           div(class = "tile-sub",
-              if (s$on) sprintf("At 7:00 am, up to %d due quotes get 10%% off and are sent. %d due now.", DAILY_CAP, n_due)
-              else sprintf("Nothing is sent automatically. %d quote%s would be due now.", n_due, if (n_due == 1) "" else "s"),
+              sprintf("Nothing is sent automatically. %d quote%s due now.",
+                      n_due, if (n_due == 1) "" else "s"),
               " (", when, ")"),
           if (!SEND_READY) div(class = "tile-sub", style = "color:#E08600;",
-              "Sending is not built yet: it waits on the Jobber API check. Even when ON, nothing is sent until then.")),
+              "Jobber's API cannot email a quote, so no automatic run can send one. ",
+              "This switch stays here for the day that changes; today it changes nothing. ",
+              "Use Discount & open in Jobber below.")),
         if (s$on) actionButton("switch_off", "Turn OFF", class = "btn-danger")
         else      actionButton("switch_on",  "Turn ON",  class = "btn-outline-success")))
   })
@@ -594,9 +604,12 @@ server <- function(input, output, session) {
     n_due <- nrow(due_for_auto_send(PLAN_CSV))
     showModal(modalDialog(
       title = "Turn on automatic resends?",
-      p(sprintf("Every morning at 7:00 am, up to %d awaiting-response quotes to snowbird clients whose resend date has arrived will get 10%% off and be sent from Jobber, with nobody reviewing them first.", DAILY_CAP)),
-      p(sprintf("%d quote%s would qualify right now. Check the Auto-send tab first.", n_due, if (n_due == 1) "" else "s")),
-      p("You can turn it off at any time. It stops before the next quote."),
+      p("This switch is the guard on unattended sending. It cannot make anything send today: ",
+        "Jobber's API has no mutation that emails a quote, so the 7:00 am run records what is due ",
+        "and stops, whatever position this is in."),
+      p(sprintf("%d quote%s would qualify right now. To actually send one, use Discount & open in Jobber on the Auto-send tab.",
+                n_due, if (n_due == 1) "" else "s")),
+      p("You can turn it off at any time."),
       footer = tagList(modalButton("Cancel"), actionButton("switch_on_confirm", "Turn ON", class = "btn-success"))))
   })
 
@@ -613,7 +626,7 @@ server <- function(input, output, session) {
   # while the plan moved on cannot send the wrong quote.
   send_button <- function(ids) {
     vapply(ids, function(id) sprintf(
-      "<button class='btn btn-sm btn-outline-danger' onclick=\"Shiny.setInputValue('send_one', '%s', {priority:'event'})\">Send now</button>",
+      "<button class='btn btn-sm btn-outline-danger' onclick=\"Shiny.setInputValue('send_one', '%s', {priority:'event'})\">Discount &amp; open in Jobber</button>",
       gsub("[^A-Za-z0-9=_:/.-]", "", id)), character(1), USE.NAMES = FALSE)
   }
 
@@ -631,9 +644,11 @@ server <- function(input, output, session) {
               options = list(pageLength = 25, scrollX = TRUE))
   })
 
-  # "Send now": one quote, chosen by a person, outside the 7am run and outside
-  # the switch. Two steps on purpose - the button only opens a summary, the
-  # modal is what sends, because an email cannot be recalled.
+  # One quote, chosen by a person. Jobber's API cannot email a quote, so this
+  # does the half that can be automated - the discount - and hands the quote
+  # over for a human to press Send in Jobber, which is also what keeps the
+  # send in that client's Jobber communications log. Two steps on purpose: the
+  # button only opens a summary, the modal is what writes to the real quote.
   pending_send <- reactiveVal(NULL)
 
   observeEvent(input$send_one, {
@@ -649,26 +664,44 @@ server <- function(input, output, session) {
     q <- q[1, ]
     pending_send(q$quote_id)
     showModal(modalDialog(
-      title = "Send this quote now?",
-      p(sprintf("%s (%s) will be emailed from Jobber with 10%% off, right now, without waiting for the 7:00 am run.",
-                q$client, q$quote_number)),
+      title = "Apply the discount to this quote?",
+      p(sprintf("%s (%s) will have %g%% taken off in Jobber, straight away.",
+                q$client, q$quote_number, DISCOUNT_PCT)),
       p(sprintf("%s becomes %s.", scales::dollar(as.numeric(q$total)),
                 scales::dollar(as.numeric(q$total_10pct_off)))),
-      p(class = "text-danger mb-0", "An email cannot be recalled once it has gone."),
-      if (!SEND_READY)
+      p(class = "mb-0",
+        "Nothing is emailed by this. The next screen gives you the quote in Jobber, ",
+        "and pressing Send there is what reaches the client and records it against them."),
+      if (!DISCOUNT_ENABLED)
         div(class = "alert alert-warning mt-3 mb-0",
-            "Sending is not built yet - it waits on the Jobber API check. Nothing will be sent."),
+            "Discounting is turned off (JOBBER_DISCOUNT_ENABLED). Nothing will be changed."),
       footer = tagList(modalButton("Cancel"),
-                       actionButton("send_one_confirm", "Send now", class = "btn-danger"))))
+                       actionButton("send_one_confirm", "Apply discount", class = "btn-danger"))))
   })
 
   observeEvent(input$send_one_confirm, {
     req(authed())
     id <- pending_send(); req(!is.null(id))
     removeModal(); pending_send(NULL)
-    r <- send_one_quote(PLAN_CSV, id, by = who()$user)
-    flash(list(type = if (isTRUE(r$ok)) "success" else "warning", text = r$msg))
+    r <- prepare_one_quote(PLAN_CSV, id, by = who()$user)
     sw_tick(sw_tick() + 1)
+    if (!isTRUE(r$ok)) {
+      flash(list(type = "warning", text = r$msg))
+      return(invisible())
+    }
+    # The link is a real anchor the person clicks, not a popup - a window
+    # opened from a server round-trip is not a user gesture, and browsers
+    # block it.
+    showModal(modalDialog(
+      title = "Discount applied - now send it in Jobber",
+      p(r$msg),
+      p("Open the quote, check it reads the way you want, and press Send there. ",
+        "That is what emails the client and puts it in their communications log."),
+      if (!is.na(r$link) && grepl("^https://", r$link))
+        p(tags$a(href = r$link, target = "_blank", rel = "noopener",
+                 class = "btn btn-primary", "Open the quote in Jobber"))
+      else p(class = "text-muted", "No Jobber link was stored for this quote - find it by its number."),
+      footer = modalButton("Done")))
   })
 
   # A dry run on demand, so the rules can be checked without waiting for 7am.
@@ -697,6 +730,16 @@ server <- function(input, output, session) {
                           `10% off` = scales::dollar(as.numeric(total_10pct_off)),
                           `Would send` = would_send),
               rownames = FALSE, options = list(pageLength = 25, scrollX = TRUE))
+  })
+
+  output$prepared_tbl <- renderDT({
+    req(authed()); sw_tick(); files_state()
+    d <- prepared_quotes()
+    shiny::validate(shiny::need(nrow(d) > 0, "Nothing is waiting to be sent."))
+    datatable(d %>% transmute(`Discounted at` = attempted_at, Client = client, `Quote #` = quote_number,
+                              Was = scales::dollar(as.numeric(total)),
+                              `Now` = scales::dollar(as.numeric(total_10pct_off))),
+              rownames = FALSE, options = list(pageLength = 10, scrollX = TRUE))
   })
 
   output$sent_tbl <- renderDT({

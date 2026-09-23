@@ -46,7 +46,12 @@ TODAY <- as.Date(Sys.getenv("SNOWBIRD_TODAY", as.character(Sys.Date())))
 # that the offer is still front of mind when they land. Once a season of
 # resends has been tracked, replace this with the lead that actually converted.
 LEAD_DAYS <- 14
-DISCOUNT  <- 0.10
+
+# The same figure clients/auto_send.R applies through the Jobber API. One
+# setting drives both, so the price this plan promises cannot drift from the
+# discount actually written onto the quote. The column downstream keeps its
+# total_10pct_off name so existing files and the dashboard still line up.
+DISCOUNT  <- as.numeric(Sys.getenv("SNOWBIRD_DISCOUNT_PCT", "10")) / 100
 
 # Quotes Jobber still considers open. Drafts were never sent, approved and
 # converted ones are won, archived ones were closed on purpose.
