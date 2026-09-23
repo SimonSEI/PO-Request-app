@@ -5,8 +5,9 @@
 #
 #   quotes.csv   every quote, any status - outstanding ones are what we act on,
 #                the rest show when each client has engaged with us before
-#   clients.csv  name and billing address - a billing address up north is the
-#                first clue to a second home
+#   clients.csv  name, billing address and phone AREA CODES - a billing
+#                address or a mobile number from up north are clues to a
+#                second home
 #   jobs.csv     when work was booked, per client - their personal calendar
 #
 # PULL_SCOPE (environment variable):
@@ -15,8 +16,10 @@
 #             full pull if clients/jobs have never been pulled.
 #   "all"     everything - run overnight; clients and job history change slowly
 #
-# Deliberately NOT pulled: emails, phone numbers, notes, line items. None of
-# them help decide WHEN to resend, so they stay in Jobber.
+# Deliberately NOT pulled: emails, full phone numbers, notes, line items.
+# Only the three-digit area code of each phone is kept: most snowbirds keep the
+# mobile they had up north, so it helps decide WHO is a snowbird. The rest of
+# the number identifies a person and helps nothing here, so it stays in Jobber.
 # =============================================================================
 
 if (file.exists(".Rlib")) .libPaths(c(normalizePath(".Rlib"), .libPaths()))
@@ -99,11 +102,29 @@ if (scope == "all") {
   cl <- jobber_all("clients",
     spec = list("id", "name", "firstName", "lastName", "companyName", "isCompany",
                 "createdAt", "jobberWebUri",
-                billingAddress = address_spec),
+                billingAddress = address_spec,
+                # Not required: if this API version has no phones field it is
+                # dropped and every client simply has no area code.
+                phones = list("number")),
     required = c("id", "billingAddress", "street1", "province", "country"),
     page_size = 100, pause = 0.2)
 
   n <- cl$nodes
+
+  # Every distinct area code on the client, e.g. "239;312". The number itself
+  # is reduced to its first three digits here and never written anywhere.
+  area_codes <- function(node) {
+    ph <- node$phones
+    if (!is.list(ph) || length(ph) == 0) return(NA_character_)
+    codes <- vapply(ph, function(p) {
+      d <- gsub("[^0-9]", "", as.character(p$number %||% ""))
+      if (nchar(d) == 11 && startsWith(d, "1")) d <- substring(d, 2)
+      if (nchar(d) == 10) substr(d, 1, 3) else NA_character_
+    }, character(1))
+    codes <- unique(codes[!is.na(codes)])
+    if (length(codes)) paste(codes, collapse = ";") else NA_character_
+  }
+
   clients <- bind_cols(
     tibble(client_id   = col(n, "id"),
            name        = coalesce(col(n, "name"), str_squish(paste(col(n, "firstName"), col(n, "lastName")))),
@@ -115,7 +136,8 @@ if (scope == "all") {
            # business, not a household" signal Jobber gives us.
            is_company  = col(n, "isCompany"),
            created_at  = col(n, "createdAt"),
-           client_link = col(n, "jobberWebUri")),
+           client_link = col(n, "jobberWebUri"),
+           phone_areas = vapply(n, area_codes, character(1), USE.NAMES = FALSE)),
     addr(n, "bill_", "billingAddress"))
 
   # ---------------------------------------------------------------------------
