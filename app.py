@@ -37477,6 +37477,9 @@ CASHFLOW_DEFAULTS = {
     'use_po_invoices': True,
     'use_open_pos': True,
     'use_subs': True,
+    'use_qbo_bills': True,       # open bills in QuickBooks (Bill.com)
+    'use_learned': True,         # regular payments learned from QuickBooks
+    'use_other_spend': True,     # a typical week of everything else
 }
 
 CASHFLOW_CATEGORIES_OUT = ['Payroll', 'Payroll taxes', 'Rent', 'Insurance', 'Vehicle & equipment loans',
@@ -37592,7 +37595,7 @@ def _cf_looks_like_company(name):
     return bool(_CF_COMPANY_WORDS.search(name or ''))
 
 
-_CF_THREAD_LOCKS = {'token': threading.Lock(), 'sync': threading.Lock()}
+_CF_THREAD_LOCKS = {name: threading.Lock() for name in ('token', 'sync', 'qbo_token', 'qbo_sync')}
 
 
 class _CfLock:
@@ -37747,6 +37750,17 @@ def init_cashflow_db():
                   ready_to_bill REAL,
                   dso REAL,
                   cash REAL)''')
+    # QuickBooks: replaced whole on every sync.
+    c.execute('''CREATE TABLE IF NOT EXISTS cf_qbo_accounts (
+                  id TEXT PRIMARY KEY, name TEXT, type TEXT, subtype TEXT,
+                  balance REAL, active INTEGER, synced_at TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS cf_qbo_bills (
+                  id TEXT PRIMARY KEY, vendor TEXT, doc_number TEXT, txn_date TEXT,
+                  due_date TEXT, balance REAL, total REAL, synced_at TEXT)''')
+    # Money out of the bank over the last 13 months, one row per payment.
+    c.execute('''CREATE TABLE IF NOT EXISTS cf_qbo_spend (
+                  txn_key TEXT PRIMARY KEY, txn_date TEXT, payee TEXT, amount REAL,
+                  kind TEXT, account TEXT, synced_at TEXT)''')
     conn.commit()
     conn.close()
 
@@ -38055,7 +38069,7 @@ def cashflow_sync_jobber(full=False):
             if first:
                 # Jobber is the record from here on; an earlier spreadsheet
                 # import alongside it would count every invoice twice.
-                conn.execute("DELETE FROM cf_invoices WHERE source='import'")
+                conn.execute("DELETE FROM cf_invoices WHERE source IN ('import', 'qbo')")
                 marks['full_at'] = today.isoformat()
             marks['invoices_at'] = today.isoformat()
             conn.commit()
@@ -38079,10 +38093,398 @@ def _cf_start_sync(full=False):
 
 
 def _cf_scheduled_sync():
-    if not _cf_state('jobber_tokens').get('refresh_token'):
-        return
-    full_at = _cf_d(_cf_state('sync_marks').get('full_at'))
-    cashflow_sync_jobber(full=not full_at or (_cf_today() - full_at).days >= 7)
+    if _cf_state('jobber_tokens').get('refresh_token'):
+        full_at = _cf_d(_cf_state('sync_marks').get('full_at'))
+        cashflow_sync_jobber(full=not full_at or (_cf_today() - full_at).days >= 7)
+    if _cf_state('qbo_tokens').get('refresh_token'):
+        cashflow_sync_qbo()
+
+
+# ── QuickBooks Online connection ─────────────────────────────────────────────
+# QuickBooks holds what Jobber can't: bank and card balances, the bills Bill.com
+# syncs in, and a year of what actually went out of the bank - payroll (run by
+# an outside provider, but its debits land in the bank register), rent, loans,
+# card payments. From that history the forecast learns the regular payments,
+# so nobody has to type them in.
+#
+# Read-only in practice: Intuit's only accounting scope is read/write, but this
+# code never writes. Setup: QBO_CLIENT_ID / QBO_CLIENT_SECRET on this service
+# and the callback URL shown on the Setup tab registered on the Intuit app.
+
+QBO_CLIENT_ID = os.environ.get('QBO_CLIENT_ID', '')
+QBO_CLIENT_SECRET = os.environ.get('QBO_CLIENT_SECRET', '')
+QBO_ENVIRONMENT = os.environ.get('QBO_ENVIRONMENT', 'production').lower()
+_CF_QBO_AUTHORIZE = 'https://appcenter.intuit.com/connect/oauth2'
+_CF_QBO_TOKEN = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer'
+_CF_QBO_REVOKE = 'https://developer.api.intuit.com/v2/oauth2/tokens/revoke'
+_CF_QBO_API = ('https://sandbox-quickbooks.api.intuit.com' if QBO_ENVIRONMENT == 'sandbox'
+               else 'https://quickbooks.api.intuit.com')
+_CF_QBO_APP = 'https://app.sandbox.qbo.intuit.com' if QBO_ENVIRONMENT == 'sandbox' else 'https://app.qbo.intuit.com'
+_CF_QBO_MINOR = '75'
+
+
+class CashflowQboError(Exception):
+    pass
+
+
+def _cf_qbo_configured():
+    return bool(QBO_CLIENT_ID and QBO_CLIENT_SECRET)
+
+
+def _cf_qbo_callback_url():
+    explicit = os.environ.get('QBO_CALLBACK_URL', '').strip()
+    if explicit:
+        return explicit
+    base = WEBSITE_URL.rstrip('/') if WEBSITE_URL and 'localhost' not in WEBSITE_URL else request.url_root.rstrip('/')
+    return base + '/cashflow/qbo/callback'
+
+
+def _cf_qbo_token_request(fields):
+    r = http_requests.post(_CF_QBO_TOKEN, data=fields, auth=(QBO_CLIENT_ID, QBO_CLIENT_SECRET),
+                           headers={'Accept': 'application/json'}, timeout=30)
+    try:
+        out = r.json()
+    except ValueError:
+        out = {}
+    if r.status_code >= 400 or not out.get('access_token'):
+        raise CashflowQboError(f"QuickBooks refused the sign-in (HTTP {r.status_code}): "
+                               f"{out.get('error_description') or out.get('error') or 'no detail'}")
+    return out
+
+
+def _cf_qbo_save_tokens(new, previous):
+    tok = dict(previous)
+    tok.update(access_token=new['access_token'],
+               # Intuit rotates the refresh token (it lasts 100 days, renewed on use).
+               refresh_token=new.get('refresh_token') or previous.get('refresh_token'),
+               obtained_at=time.time())
+    _cf_save_state('qbo_tokens', tok)
+    return tok
+
+
+def _cf_qbo_access_token(force_refresh=False):
+    with _CfLock('qbo_token'):
+        tok = _cf_state('qbo_tokens')
+        if not tok.get('refresh_token') or not tok.get('realm_id'):
+            raise CashflowQboError('QuickBooks is not connected')
+        if force_refresh or time.time() - float(tok.get('obtained_at') or 0) > 50 * 60:
+            tok = _cf_qbo_save_tokens(_cf_qbo_token_request(
+                {'grant_type': 'refresh_token', 'refresh_token': tok['refresh_token']}), tok)
+        return tok['access_token'], tok['realm_id']
+
+
+def _cf_qbo_get(path, params=None):
+    force = False
+    for _ in range(4):
+        token, realm = _cf_qbo_access_token(force_refresh=force)
+        r = http_requests.get(f'{_CF_QBO_API}/v3/company/{realm}/{path}', timeout=60,
+                              params=dict(params or {}, minorversion=_CF_QBO_MINOR),
+                              headers={'Authorization': f'Bearer {token}', 'Accept': 'application/json'})
+        if r.status_code == 401:
+            force = True
+            continue
+        if r.status_code == 429:
+            time.sleep(30)
+            continue
+        try:
+            out = r.json()
+        except ValueError:
+            out = {}
+        fault = (out.get('Fault') or {}).get('Error') or []
+        if r.status_code >= 400 or fault:
+            msg = '; '.join(f"{e.get('Message', '')} {e.get('Detail', '')}".strip() for e in fault)
+            raise CashflowQboError(f'QuickBooks API HTTP {r.status_code}' + (f': {msg}' if msg else ''))
+        return out
+    raise CashflowQboError('QuickBooks kept refusing the request (signed out or rate limited)')
+
+
+def _cf_qbo_query(entity, where='', page=1000):
+    """Every row of a QuickBooks query, 1,000 at a time."""
+    rows, start = [], 1
+    while True:
+        q = f"SELECT * FROM {entity}{' WHERE ' + where if where else ''} STARTPOSITION {start} MAXRESULTS {page}"
+        got = (_cf_qbo_get('query', {'query': q}).get('QueryResponse') or {}).get(entity) or []
+        rows.extend(got)
+        if len(got) < page:
+            return rows
+        start += page
+
+
+def _cf_ref_name(ref):
+    return ((ref or {}).get('name') or '').strip()
+
+
+def _cf_qbo_money_out(bank_ids, card_ids, account_names, since):
+    """Every payment out of a bank account since `since`: bill payments (Bill.com
+    lands here), checks and expenses, transfers to cards and loans, and journal
+    entries (how outside payroll providers are often booked)."""
+    out = []
+    for p in _cf_qbo_query('Purchase', f"TxnDate >= '{since}'"):
+        if p.get('Credit') or (p.get('AccountRef') or {}).get('value') not in bank_ids:
+            continue            # card charges are not cash out; refunds are not payments
+        payee = _cf_ref_name(p.get('EntityRef'))
+        if not payee:
+            line = next(iter(p.get('Line') or []), {})
+            payee = (line.get('Description') or '').strip()[:60] or _cf_ref_name(
+                (line.get('AccountBasedExpenseLineDetail') or {}).get('AccountRef')) or 'Expense'
+        out.append((f"purchase:{p['Id']}", p['TxnDate'], payee, float(p.get('TotalAmt') or 0), 'expense',
+                    account_names.get(p['AccountRef']['value'], '')))
+    for b in _cf_qbo_query('BillPayment', f"TxnDate >= '{since}'"):
+        acct = ((b.get('CheckPayment') or {}).get('BankAccountRef') or {}).get('value')
+        if acct not in bank_ids:
+            continue
+        out.append((f"billpay:{b['Id']}", b['TxnDate'], _cf_ref_name(b.get('VendorRef')) or 'Vendor',
+                    float(b.get('TotalAmt') or 0), 'bill_payment', account_names.get(acct, '')))
+    for t in _cf_qbo_query('Transfer', f"TxnDate >= '{since}'"):
+        src, dst = (t.get('FromAccountRef') or {}).get('value'), (t.get('ToAccountRef') or {})
+        if src not in bank_ids or dst.get('value') in bank_ids:
+            continue            # between our own bank accounts: not money leaving
+        kind = 'card_payment' if dst.get('value') in card_ids else 'transfer'
+        out.append((f"transfer:{t['Id']}", t['TxnDate'],
+                    ('Card payment: ' if kind == 'card_payment' else '') + (_cf_ref_name(dst) or 'Transfer'),
+                    float(t.get('Amount') or 0), kind, account_names.get(src, '')))
+    for j in _cf_qbo_query('JournalEntry', f"TxnDate >= '{since}'"):
+        lines = j.get('Line') or []
+        det = [(l, l.get('JournalEntryLineDetail') or {}) for l in lines]
+        if any(d.get('PostingType') == 'Debit' and (d.get('AccountRef') or {}).get('value') in bank_ids for _, d in det):
+            continue            # money came into a bank account: a deposit or internal move
+        for l, d in det:
+            acct = (d.get('AccountRef') or {}).get('value')
+            if d.get('PostingType') == 'Credit' and acct in bank_ids:
+                payee = (_cf_ref_name((d.get('Entity') or {}).get('EntityRef')) or (l.get('Description') or '').strip()[:60]
+                         or (j.get('PrivateNote') or '').strip()[:60] or 'Journal entry')
+                out.append((f"journal:{j['Id']}:{l.get('Id')}", j['TxnDate'], payee, float(l.get('Amount') or 0),
+                            'journal', account_names.get(acct, '')))
+    return out
+
+
+def cashflow_sync_qbo(full=False):
+    """Pull balances, open bills and a year of payments (plus invoices when Jobber
+    is not connected) from QuickBooks. One run at a time across workers."""
+    with _CfLock('qbo_sync', blocking=False) as got:
+        if not got:
+            return False
+        now = _cf_now_text()
+        status = {'state': 'running', 'started_at': _cf_utc_stamp(), 'stage': 'Starting', 'counts': {}, 'warnings': []}
+        _cf_save_state('qbo_status', status)
+        marks = _cf_state('qbo_marks')
+        today = _cf_today()
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+
+        def progress(stage, key=None, n=0):
+            conn.commit()
+            status['stage'] = stage
+            if key:
+                status['counts'][key] = n
+            _cf_save_state('qbo_status', status)
+
+        try:
+            info = (_cf_qbo_get(f"companyinfo/{_cf_state('qbo_tokens')['realm_id']}").get('CompanyInfo') or {})
+            if info.get('CompanyName'):
+                tok = _cf_state('qbo_tokens')
+                tok['company_name'] = info['CompanyName']
+                _cf_save_state('qbo_tokens', tok)
+
+            # 1. Bank and card accounts with QuickBooks' current balance.
+            progress('Bank accounts')
+            accounts = _cf_qbo_query('Account', "AccountType IN ('Bank', 'Credit Card')")
+            conn.execute("DELETE FROM cf_qbo_accounts")
+            conn.executemany("INSERT INTO cf_qbo_accounts VALUES (?,?,?,?,?,?,?)", [
+                (a['Id'], a.get('Name') or '', 'bank' if a.get('AccountType') == 'Bank' else 'card',
+                 a.get('AccountSubType') or '', float(a.get('CurrentBalance') or 0), 1 if a.get('Active', True) else 0, now)
+                for a in accounts])
+            bank_ids = {a['Id'] for a in accounts if a.get('AccountType') == 'Bank'}
+            card_ids = {a['Id'] for a in accounts if a.get('AccountType') == 'Credit Card'}
+            names = {a['Id']: a.get('Name') or '' for a in accounts}
+            progress('Bank accounts', 'accounts', len(accounts))
+
+            # 2. Open bills - what Bill.com says we owe, with due dates.
+            bills = _cf_qbo_query('Bill', "Balance > '0'")
+            conn.execute("DELETE FROM cf_qbo_bills")
+            conn.executemany("INSERT INTO cf_qbo_bills VALUES (?,?,?,?,?,?,?,?)", [
+                (b['Id'], _cf_ref_name(b.get('VendorRef')), b.get('DocNumber') or '', _cf_iso(b.get('TxnDate')),
+                 _cf_iso(b.get('DueDate')) or _cf_iso(b.get('TxnDate')), float(b.get('Balance') or 0),
+                 float(b.get('TotalAmt') or 0), now) for b in bills])
+            progress('Open bills', 'open_bills', len(bills))
+
+            # 3. Thirteen months of money out, to learn the regular payments.
+            since = (today - timedelta(days=400)).isoformat()
+            spend = _cf_qbo_money_out(bank_ids, card_ids, names, since)
+            conn.execute("DELETE FROM cf_qbo_spend")
+            conn.executemany("INSERT OR REPLACE INTO cf_qbo_spend VALUES (?,?,?,?,?,?,?)",
+                             [(*r, now) for r in spend])
+            progress('Payments out', 'payments_out', len(spend))
+
+            # 4. Invoices and customer payments - only when Jobber is not the
+            #    source, since Jobber syncs the same invoices into QuickBooks.
+            if _cf_state('jobber_tokens').get('refresh_token'):
+                conn.execute("DELETE FROM cf_invoices WHERE source='qbo'")
+            else:
+                first = full or not marks.get('invoices_at')
+                inv_since = (today - timedelta(days=3 * 365)).isoformat() if first else \
+                    (_cf_d(marks['invoices_at']) - timedelta(days=2)).isoformat()
+                pays = _cf_qbo_query('Payment', f"TxnDate >= '{(today - timedelta(days=3 * 365)).isoformat()}'"
+                                     if first else f"MetaData.LastUpdatedTime >= '{inv_since}'")
+                paid_on = {}
+                for p in pays:
+                    for line in p.get('Line') or []:
+                        for lt in line.get('LinkedTxn') or []:
+                            if lt.get('TxnType') == 'Invoice':
+                                k = 'qbo:' + lt['TxnId']
+                                paid_on[k] = max(paid_on.get(k, ''), p.get('TxnDate') or '')
+                    conn.execute("INSERT OR REPLACE INTO cf_payments VALUES (?,?,?,?,?,?,?,?)",
+                                 ('qbo:' + p['Id'], None, 'qbo:' + ((p.get('CustomerRef') or {}).get('value') or ''),
+                                  float(p.get('TotalAmt') or 0), _cf_iso(p.get('TxnDate')), 'PAYMENT', 'qbo', now))
+                progress('Customer payments', 'customer_payments', len(pays))
+                where = (f"TxnDate >= '{inv_since}'" if first else f"MetaData.LastUpdatedTime >= '{inv_since}'")
+                invoices = {i['Id']: i for i in _cf_qbo_query('Invoice', where)}
+                invoices.update({i['Id']: i for i in _cf_qbo_query('Invoice', "Balance > '0'")})
+                rows = []
+                for i in invoices.values():
+                    total, bal = float(i.get('TotalAmt') or 0), float(i.get('Balance') or 0)
+                    if total <= 0:
+                        continue            # voided
+                    key, due = 'qbo:' + i['Id'], _cf_iso(i.get('DueDate'))
+                    name = _cf_ref_name(i.get('CustomerRef'))
+                    if bal <= 0.005:
+                        status_ = 'paid'
+                    else:
+                        status_ = 'past_due' if due and due < today.isoformat() else 'awaiting_payment'
+                    prev = conn.execute("SELECT paid_date FROM cf_invoices WHERE invoice_key=?", (key,)).fetchone()
+                    paid = paid_on.get(key) or (prev[0] if prev else None) if status_ == 'paid' else None
+                    rows.append((key, 'qbo', i.get('DocNumber') or i['Id'],
+                                 'qbo:' + ((i.get('CustomerRef') or {}).get('value') or ''), name,
+                                 1 if _cf_looks_like_company(name) else 0, (i.get('PrivateNote') or '')[:120], status_,
+                                 _cf_iso(i.get('TxnDate')), due, _cf_iso(paid), total, bal, None,
+                                 f"{_CF_QBO_APP}/app/invoice?txnId={i['Id']}", '[]',
+                                 _cf_iso((i.get('MetaData') or {}).get('LastUpdatedTime')), now))
+                _cf_store_invoices(conn, rows)
+                # Anything still open here but no longer open in QuickBooks and
+                # not just updated was deleted or voided there.
+                open_now = {'qbo:' + i['Id'] for i in invoices.values() if float(i.get('Balance') or 0) > 0.005}
+                changed = {'qbo:' + i for i in invoices}
+                for (k,) in conn.execute("SELECT invoice_key FROM cf_invoices WHERE source='qbo' AND status IN "
+                                         "('awaiting_payment','past_due','sent_not_due')").fetchall():
+                    if k not in open_now and k not in changed:
+                        conn.execute("DELETE FROM cf_invoices WHERE invoice_key=?", (k,))
+                if first:
+                    conn.execute("DELETE FROM cf_invoices WHERE source='import'")
+                    marks['full_at'] = today.isoformat()
+                marks['invoices_at'] = today.isoformat()
+                progress('Invoices', 'invoices', len(rows))
+            conn.commit()
+            _cf_save_state('qbo_marks', marks)
+            if not marks.get('connected_defaults_done'):
+                # Bill.com puts supplier and subcontractor invoices into QuickBooks
+                # as bills, so the PO-app guesses would now count them twice.
+                s = json.loads(get_setting('cashflow_settings') or '{}')
+                s.setdefault('use_po_invoices', False)
+                s.setdefault('use_open_pos', False)
+                _cf_save_state('settings', s)
+                marks['connected_defaults_done'] = True
+                _cf_save_state('qbo_marks', marks)
+            status.update(state='ok', stage='Done')
+        except Exception as e:
+            conn.rollback()
+            status.update(state='error', error=str(e))
+            print(f"⚠ Cash flow: QuickBooks sync failed: {e}")
+        finally:
+            conn.close()
+            status['finished_at'] = _cf_utc_stamp()
+            _cf_save_state('qbo_status', status)
+        return True
+
+
+def _cf_start_qbo_sync(full=False):
+    threading.Thread(target=cashflow_sync_qbo, args=(full,), daemon=True).start()
+
+
+# ── Regular payments learned from QuickBooks ─────────────────────────────────
+
+_CF_PAYEE_CATEGORIES = [
+    (r'payroll|adp|paychex|gusto|paycom|paylocity|intuit.?pay|trinet|justworks|insperity|net ?pay|wages', 'Payroll'),
+    (r'eftps|irs|internal revenue|941|futa|suta|reemployment', 'Payroll taxes'),
+    (r'dept of revenue|department of revenue|sales tax|fl dor|tax collector', 'Taxes'),
+    (r'card payment|amex|american express|capital one|chase card|citi card|visa|mastercard|discover', 'Credit cards'),
+    (r'rent|lease|landlord|properties llc|realty', 'Rent'),
+    (r'insurance|state farm|progressive|hartford|geico|travelers|nationwide|liberty mutual|zurich|workers comp|bcbs|blue cross|aetna|humana|united ?health|cigna', 'Insurance'),
+    (r'ford credit|ally|toyota financial|gm financial|kubota|deere|john deere|caterpillar|cat financial|loan|lending|financial services|note payable|bank of america|wells fargo|truist', 'Vehicle & equipment loans'),
+    (r'wex|fleetcor|fuel|shell|exxon|mobil|chevron|sunoco|racetrac|wawa|marathon|speedway|circle k', 'Fuel'),
+    (r'fpl|florida power|lcec|comcast|xfinity|at&t|att\b|verizon|t-mobile|spectrum|water|utilit|waste|electric', 'Utilities & phones'),
+    (r'jobber|quickbooks|intuit|microsoft|google|adobe|bill\.com|software|dropbox|zoom', 'Software'),
+    (r'owner|draw|distribution|shareholder', 'Owner draws'),
+]
+
+
+def _cf_payee_category(payee):
+    p = (payee or '').lower()
+    return next((cat for pat, cat in _CF_PAYEE_CATEGORIES if re.search(pat, p)), 'Regular payments')
+
+
+def _cf_payee_key(payee):
+    return re.sub(r'[^a-z]+', ' ', (payee or '').lower()).strip() or 'unnamed'
+
+
+def cashflow_learn_patterns(spend, today):
+    """Payees paid on a steady rhythm - weekly, every two weeks, monthly or
+    quarterly - and what they are usually paid. Everything else is 'other
+    spending', forecast as a typical week."""
+    by_payee = defaultdict(lambda: {'name': None, 'dates': defaultdict(float)})
+    for s in spend:
+        d = _cf_d(s['txn_date'])
+        if not d or (s['amount'] or 0) <= 0:
+            continue
+        g = by_payee[_cf_payee_key(s['payee'])]
+        g['name'] = g['name'] or s['payee']
+        g['dates'][d] += s['amount']
+    cadences = ((7, 'weekly', 5, 9), (14, 'biweekly', 12, 17), (30, 'monthly', 26, 35), (91, 'quarterly', 84, 100))
+    patterns, regular_keys = [], set()
+    for key, g in by_payee.items():
+        dates = sorted(g['dates'])
+        if len(dates) < 3:
+            continue
+        gaps = [(b - a).days for a, b in zip(dates, dates[1:])]
+        med = sorted(gaps)[len(gaps) // 2]
+        cad = next((c for c in cadences if c[2] <= med <= c[3]), None)
+        if not cad:
+            continue
+        step, freq = cad[0], cad[1]
+        steady = sum(1 for x in gaps if abs(x - step) <= step * .4) / len(gaps)
+        if steady < .6 or (today - dates[-1]).days > step * 1.6 + 5:
+            continue            # irregular, or it has stopped
+        recent = [g['dates'][d] for d in dates[-6:]]
+        amount = sorted(recent)[len(recent) // 2]
+        patterns.append({'key': key, 'name': g['name'], 'category': _cf_payee_category(g['name']),
+                         'frequency': freq, 'step': step, 'amount': round(amount, 2), 'count': len(dates),
+                         'last_date': dates[-1].isoformat(), 'last_amount': round(g['dates'][dates[-1]], 2),
+                         'day': sorted(d.day for d in dates[-4:])[len(dates[-4:]) // 2]})
+        regular_keys.add(key)
+    patterns.sort(key=lambda p: -p['amount'] * (30 / p['step']))
+    return patterns, regular_keys
+
+
+def _cf_pattern_dates(p, start, end):
+    """Next payment dates of a learned pattern within [start, end]."""
+    last = _cf_d(p['last_date'])
+    out = []
+    if p['frequency'] in ('monthly', 'quarterly'):
+        months = 1 if p['frequency'] == 'monthly' else 3
+        k = 1
+        while True:
+            d = _cf_add_months(last.replace(day=1), k * months, p['day'])
+            if d > end:
+                break
+            # A payment a few days late isn't a missed month.
+            if d >= start - timedelta(days=7):
+                out.append(max(d, start))
+            k += 1
+    else:
+        d = last + timedelta(days=p['step'])
+        while d <= end:
+            if d >= start - timedelta(days=3):
+                out.append(max(d, start))
+            d += timedelta(days=p['step'])
+    return out
 
 
 # ── Spreadsheet import ───────────────────────────────────────────────────────
@@ -38372,7 +38774,12 @@ def cashflow_model(delay_days=0, haircut_pct=0.0, sales_pct=None, weeks=None, re
                                   jobber_paid, jobber_paid_date
                            FROM vendor_invoices WHERE invoice_total > 0""").fetchall()
     snapshots = conn.execute("SELECT * FROM cf_ar_snapshots ORDER BY snapshot_date DESC LIMIT 400").fetchall()
+    qbo_accounts = conn.execute("SELECT * FROM cf_qbo_accounts ORDER BY type, name").fetchall()
+    qbo_bills = conn.execute("SELECT * FROM cf_qbo_bills ORDER BY due_date").fetchall()
+    qbo_spend = conn.execute("SELECT * FROM cf_qbo_spend").fetchall()
     conn.close()
+    qbo_tok = _cf_state('qbo_tokens')
+    qbo_on = bool(qbo_tok.get('refresh_token'))
 
     def ck(r):
         return r['client_id'] or ('name:' + (r['client_name'] or '').strip().lower())
@@ -38629,8 +39036,69 @@ def cashflow_model(delay_days=0, haircut_pct=0.0, sales_pct=None, weeks=None, re
             add(f'{direction}:{cat}', cat, direction, 'items', d, float(it['amount'] or 0),
                 {'label': it['name'], 'detail': it['frequency'], 'item_id': it['id']})
 
-    # ── Supplier invoices matched to POs ─────────────────────────────────
+    # ── QuickBooks: open bills, learned regular payments, other spending ─
     terms = int(s['supplier_terms_days'])
+
+    def digits(v):
+        return re.sub(r'\D', '', str(v or '')).lstrip('0')
+    sub_numbers = {digits(r['invoice_number']) for r in subs} - {''}
+    bill_numbers, bill_due_by_payee = set(), {}
+    bills_total = 0.0
+    if qbo_on and s['use_qbo_bills']:
+        for b in qbo_bills:
+            num = digits(b['doc_number'])
+            bill_numbers.add(num)
+            if s['use_subs'] and num and num in sub_numbers:
+                continue            # a subcontractor's bill: paid when the client pays (below)
+            due = _cf_d(b['due_date']) or today
+            k = _cf_payee_key(b['vendor'])
+            bill_due_by_payee[k] = max(bill_due_by_payee.get(k, due), due)
+            bills_total += float(b['balance'] or 0)
+            add('qbo_bills', 'Bills in QuickBooks (Bill.com)', 'out', 'qbo', max(due, today), float(b['balance'] or 0),
+                {'label': f"{b['vendor'] or 'Vendor'} {('#' + b['doc_number']) if b['doc_number'] else ''}".strip(),
+                 'detail': ('overdue, was due ' if due < today else 'due ') + _cf_md(due)})
+    patterns, regular = cashflow_learn_patterns(qbo_spend, today) if qbo_on else ([], set())
+    excluded = set(s.get('qbo_excluded_patterns') or [])
+    learned_monthly = 0.0
+    for p in patterns:
+        p['included'] = bool(s['use_learned']) and p['key'] not in excluded
+        # A bill already in QuickBooks for this payee covers them until it is due.
+        covered = bill_due_by_payee.get(p['key'])
+        dates = [d for d in _cf_pattern_dates(p, today, week_ends[-1])
+                 if not covered or d > covered + timedelta(days=p['step'] // 2)]
+        p['next'] = dates[0].isoformat() if dates else None
+        if p['included']:
+            learned_monthly += p['amount'] * 30 / p['step']
+            for d in dates:
+                add(f"out:{p['category']}", p['category'], 'out', 'learned', d, p['amount'],
+                    {'label': p['name'], 'detail': f"learned from QuickBooks: {p['frequency']}, "
+                                                   f"last paid {_cf_md(_cf_d(p['last_date']))}"})
+    other_weekly = 0.0
+    if qbo_on:
+        monday = today - timedelta(days=today.weekday())
+        weekly = defaultdict(float)
+        for x in qbo_spend:
+            d = _cf_d(x['txn_date'])
+            if d and d < monday and (monday - d).days <= 91 and _cf_payee_key(x['payee']) not in regular:
+                weekly[(monday - d).days // 7] += x['amount'] or 0
+        vals = sorted(weekly.get(i, 0.0) for i in range(13))
+        # The median week: one big equipment purchase doesn't become a habit.
+        other_weekly = vals[6]
+        if s['use_other_spend'] and other_weekly > 0:
+            # Bills already in QuickBooks cover the next few weeks of these
+            # vendors, so the typical week phases in over the supplier terms.
+            ramp = max(7, terms) if s['use_qbo_bills'] else 0
+            for w in range(H):
+                days = (week_ends[w] - week_starts[w]).days + 1
+                mid = week_starts[w] + timedelta(days=days // 2)
+                f = min(1.0, (mid - today).days / ramp) if ramp else 1.0
+                if f > 0:
+                    add('other_spend', 'Other spending (typical week)', 'out', 'qbo', mid, other_weekly * days / 7 * f,
+                        {'label': 'Typical week of other payments',
+                         'detail': f"{_cf_money_text(other_weekly)} in a typical week lately"
+                                   + (f"; {round(f * 100)}% counted while bills already in QuickBooks cover the rest" if f < 1 else '')})
+
+    # ── Supplier invoices matched to POs ─────────────────────────────────
     po_total = 0.0
     if s['use_po_invoices']:
         for r in po_invoices:
@@ -38641,6 +39109,8 @@ def cashflow_model(delay_days=0, haircut_pct=0.0, sales_pct=None, weeks=None, re
             due = basis + timedelta(days=terms)
             if due < today - timedelta(days=7):
                 continue            # due more than a week ago: assumed paid
+            if qbo_on and (digits(r['invoice_number']) in bill_numbers or (today - basis).days > 14):
+                continue            # in QuickBooks as a bill already, or entered there by now
             po_total += amount
             add('po_invoices', 'Supplier invoices (PO app)', 'out', 'auto', max(due, today), amount,
                 {'label': f"{r['store_name'] or 'Supplier'} #{r['invoice_number']}",
@@ -38659,8 +39129,6 @@ def cashflow_model(delay_days=0, haircut_pct=0.0, sales_pct=None, weeks=None, re
                  'detail': (r['description'] or '')[:80]})
 
     # ── Subcontractors: paid when the client pays us ─────────────────────
-    def digits(v):
-        return re.sub(r'\D', '', str(v or '')).lstrip('0')
     by_number = {}
     for r in invs:
         if r['invoice_number']:
@@ -38695,11 +39163,19 @@ def cashflow_model(delay_days=0, haircut_pct=0.0, sales_pct=None, weeks=None, re
                  'detail': rule})
 
     # ── Cash ─────────────────────────────────────────────────────────────
-    cash = sum(float(a['balance'] or 0) for a in accounts)
-    as_of_dates = [_cf_d(a['as_of']) for a in accounts if _cf_d(a['as_of'])]
+    qbo_status = _cf_state('qbo_status')
+    excluded_acc = set(s.get('qbo_excluded_accounts') or [])
+    qbo_bank = [dict(a, included=a['id'] not in excluded_acc) for a in qbo_accounts
+                if a['type'] == 'bank' and a['active']] if qbo_on else []
+    cash = sum(float(a['balance'] or 0) for a in accounts) + sum(a['balance'] for a in qbo_bank if a['included'])
+    manual_dates = [_cf_d(a['as_of']) for a in accounts if _cf_d(a['as_of'])]
+    as_of_dates = list(manual_dates)
+    if any(a['included'] for a in qbo_bank):
+        as_of_dates.append(_cf_d(qbo_bank[0]['synced_at']) or today)
     cash_as_of = min(as_of_dates).isoformat() if as_of_dates else None
+    n_accounts = len(accounts) + sum(1 for a in qbo_bank if a['included'])
 
-    order = {'ar': 0, 'ready': 1, 'new_sales': 2, 'items': 3, 'auto': 4}
+    order = {'ar': 0, 'ready': 1, 'new_sales': 2, 'items': 3, 'learned': 3, 'qbo': 4, 'auto': 5}
     ins = sorted((l for l in lines.values() if l['dir'] == 'in'), key=lambda l: (order[l['group']], l['label']))
     outs = sorted((l for l in lines.values() if l['dir'] == 'out'),
                   key=lambda l: (order[l['group']],
@@ -38735,7 +39211,7 @@ def cashflow_model(delay_days=0, haircut_pct=0.0, sales_pct=None, weeks=None, re
     recent_dtp = sorted(d for _, _, d, pd in paid_hist if pd > today - timedelta(days=365))
     prior_dtp = sorted(d for _, _, d, pd in paid_hist if today - timedelta(days=730) < pd <= today - timedelta(days=365))
     kpis = {
-        'cash': round(cash, 2), 'cash_as_of': cash_as_of, 'accounts': len(accounts),
+        'cash': round(cash, 2), 'cash_as_of': cash_as_of, 'accounts': n_accounts,
         'ar_total': round(ar_total, 2), 'ar_count': len(open_invs),
         'past_due': round(past_due, 2), 'past_due_pct': round(past_due / ar_total * 100, 1) if ar_total else 0,
         'dso': dso,
@@ -38817,12 +39293,20 @@ def cashflow_model(delay_days=0, haircut_pct=0.0, sales_pct=None, weeks=None, re
                        'text': 'No invoices yet. Connect Jobber or upload an invoice report on the Setup tab.'})
     if sync.get('state') == 'error':
         alerts.append({'level': 'bad', 'tab': 'setup', 'text': f"The last Jobber sync failed: {sync.get('error')}"})
-    if not accounts:
+    if qbo_status.get('state') == 'error' and qbo_on:
+        alerts.append({'level': 'bad', 'tab': 'setup', 'text': f"The last QuickBooks sync failed: {qbo_status.get('error')}"})
+    if not n_accounts:
         alerts.append({'level': 'warn', 'tab': 'setup',
-                       'text': "Enter today's bank balance on the Setup tab. The forecast starts from it."})
-    elif cash_as_of and (today - _cf_d(cash_as_of)).days > 7:
+                       'text': "Enter today's bank balance on the Setup tab (or connect QuickBooks). The forecast starts from it."})
+    elif manual_dates and (today - min(manual_dates)).days > 7:
         alerts.append({'level': 'warn', 'tab': 'setup',
-                       'text': f"The bank balance is {(today - _cf_d(cash_as_of)).days} days old. Update it so the forecast starts from the truth."})
+                       'text': f"A bank balance entered by hand is {(today - min(manual_dates)).days} days old. Update it so the forecast starts from the truth."})
+    hand = {it['category'] for it in items if it['active'] and it['direction'] == 'out'}
+    twice = sorted({p['category'] for p in patterns if p['included'] and p['category'] in hand})
+    if twice:
+        alerts.append({'level': 'warn', 'tab': 'setup',
+                       'text': f"{', '.join(twice)}: entered by hand and also learned from QuickBooks, so probably counted twice. "
+                               f"Switch one of them off on the Setup tab."})
     if below is not None:
         alerts.append({'level': 'bad', 'tab': 'forecast',
                        'text': f"Cash is forecast to fall below your {_cf_money_text(floor)} minimum in the week of "
@@ -38853,7 +39337,7 @@ def cashflow_model(delay_days=0, haircut_pct=0.0, sales_pct=None, weeks=None, re
         alerts.append({'level': 'warn', 'tab': 'receivables',
                        'text': f"Days sales outstanding is up from {month_ago['dso']:.0f} to {dso:.0f} in the last month. "
                                f"Clients are paying slower."})
-    if invs and not items:
+    if invs and not items and not qbo_on:
         alerts.append({'level': 'info', 'tab': 'setup',
                        'text': 'Add payroll, rent and other regular bills on the Setup tab so the forecast includes what goes out.'})
 
@@ -38876,6 +39360,14 @@ def cashflow_model(delay_days=0, haircut_pct=0.0, sales_pct=None, weeks=None, re
         'alerts': alerts,
         'accounts': [dict(a) for a in accounts],
         'items': [dict(i) for i in items],
+        'qbo': {'connected': qbo_on, 'company': qbo_tok.get('company_name'),
+                'connected_by': qbo_tok.get('connected_by'), 'connected_at': qbo_tok.get('connected_at'),
+                'status': qbo_status, 'bank': qbo_bank,
+                'cards': [dict(a) for a in qbo_accounts if a['type'] == 'card' and a['active']] if qbo_on else [],
+                'bills_total': round(bills_total, 2), 'bills_count': len(qbo_bills) if qbo_on else 0,
+                'patterns': patterns, 'learned_monthly': round(learned_monthly, 2),
+                'other_weekly': round(other_weekly, 2),
+                'invoices': sum(1 for r in invs if r['source'] == 'qbo')},
     }
 
 
@@ -39193,6 +39685,9 @@ CASHFLOW_TEMPLATE = r'''<!DOCTYPE html>
         <label><input type="checkbox" data-s="use_po_invoices"> Supplier invoices (PO app)</label>
         <label><input type="checkbox" data-s="use_open_pos"> Open POs</label>
         <label><input type="checkbox" data-s="use_subs"> Subcontractor bills</label>
+        <label class="js-qbo"><input type="checkbox" data-s="use_qbo_bills"> Bills in QuickBooks</label>
+        <label class="js-qbo"><input type="checkbox" data-s="use_learned"> Regular payments learned from QuickBooks</label>
+        <label class="js-qbo"><input type="checkbox" data-s="use_other_spend"> Other spending (typical week)</label>
       </div>
     </div>
     <div class="card">
@@ -39229,6 +39724,12 @@ CASHFLOW_TEMPLATE = r'''<!DOCTYPE html>
         <button class="btn primary" id="st-save">Save settings</button>
       </div>
     </div>
+    <div class="card" id="st-learned-card" style="display:none">
+      <div class="card-h"><div><h2>Regular payments learned from QuickBooks</h2>
+        <p class="sub">Payees paid on a steady rhythm over the last year: payroll, taxes, rent, loans, card payments. Untick anything that has ended or shouldn't be forecast.</p></div>
+        <div class="num"><div class="muted small">About a month</div><div style="font-size:20px;font-weight:750" id="st-learned-total">—</div></div></div>
+      <div class="tw" id="st-learned"></div>
+    </div>
     <div class="card">
       <div class="card-h"><div><h2>Regular bills &amp; planned items</h2>
         <p class="sub">Payroll, rent, loans, insurance, tax payments, anything that moves cash but isn't a Jobber invoice or a PO. Don't add sales you bill through Jobber here; the forecast already has those.</p></div>
@@ -39236,8 +39737,11 @@ CASHFLOW_TEMPLATE = r'''<!DOCTYPE html>
       <div class="chips" id="st-quick" style="margin-bottom:12px"></div>
       <div class="tw" id="st-items"></div>
     </div>
-    <div class="grid2">
+    <div class="grid2" style="margin-bottom:18px">
+      <div class="card" id="st-qbo"></div>
       <div class="card" id="st-jobber"></div>
+    </div>
+    <div class="grid2">
       <div class="card">
         <h2>Upload an invoice report</h2>
         <p class="sub">Use this until Jobber is connected, or if you'd rather not connect it.</p>
@@ -39521,6 +40025,7 @@ function renderSource() {
     text = sync.state === 'error' ? 'Jobber sync failed' : 'Jobber · synced ' + (ago(sync.finished_at) || 'never');
   } else if (src.imported) { dot = 'ok'; text = 'Uploaded report · ' + ((src.import || {}).at || '').slice(0, 10); }
   else if (src.jobber_rows) { text = 'Jobber disconnected · last synced ' + (ago(sync.finished_at) || 'a while ago'); }
+  else if (S.m.qbo.connected) { dot = (S.m.qbo.status || {}).state === 'error' ? 'bad' : 'ok'; text = 'QuickBooks · synced ' + (ago((S.m.qbo.status || {}).finished_at) || 'never'); }
   else text = 'No data yet';
   el.innerHTML = '<span class="dot ' + dot + '"></span>' + esc(text);
   el.title = text;
@@ -39749,6 +40254,7 @@ function renderForecast() {
     : 'Based on the last 8 weeks (less than a year of history). Far left = as is.';
   $$('#fc-weeks .chip').forEach(c => c.classList.toggle('on', +c.dataset.w === m.scenario.weeks));
   $$('#fc-toggles input').forEach(i => { i.checked = !!m.settings[i.dataset.s]; });
+  $$('#fc-toggles .js-qbo').forEach(l => { l.style.display = m.qbo.connected ? '' : 'none'; });
 
   let sub = 'Ending balance ' + money(k.end_balance) + ' in the week of ' + md(m.weeks[m.weeks.length - 1].start) + '. Lowest point ' + money(k.low_balance) + ' (week of ' + md(k.low_week) + ').';
   if (k.below_floor_week) sub += ' Falls below your ' + money(floor) + ' minimum in the week of ' + md(k.below_floor_week) + '.';
@@ -39782,6 +40288,9 @@ function renderForecast() {
     '<li><b>Drafts &amp; finished work:</b> assumed invoiced within ' + st.unbilled_lag_days + ' days (drafts in 2), then paid like any new invoice for that client. Jobs finished more than 4 months ago are left out.</li>' +
     '<li><b>New sales:</b> ' + (m.sales.basis === 'last_year' ? 'what was invoiced in the same weeks last year, adjusted by how this year compares (' + (m.sales.growth >= 1 ? '+' : '') + Math.round((m.sales.growth - 1) * 100) + '% used)' : m.sales.basis === 'recent' ? 'the average weekly invoicing of the last 8 weeks' : 'none yet (needs invoice history)') + ', then paid on the usual schedule. Winter season shows up here automatically once a year of history is in.</li>' +
     '<li><b>Regular bills:</b> everything on the Setup tab, on its schedule.</li>' +
+    (m.qbo.connected ? '<li><b>Bills in QuickBooks:</b> every open bill (Bill.com puts them there), on its due date; overdue ones this week. Subcontractor bills that match Vendor Invoices are left to the pay-when-paid rule below.</li>' +
+      '<li><b>Regular payments learned from QuickBooks:</b> payees paid weekly, every two weeks, monthly or quarterly over the last year (payroll, taxes, rent, loans, card payments), at their usual amount. A payee with an open bill waits until that bill is paid.</li>' +
+      '<li><b>Other spending:</b> everything else paid out of the bank, as a typical week (' + money(m.qbo.other_weekly) + '), phased in over ' + st.supplier_terms_days + ' days because open bills already cover the near term.</li>' : '') +
     '<li><b>Supplier invoices:</b> invoices matched to POs in the PO app, paid ' + st.supplier_terms_days + ' days after they arrive. Anything due more than a week ago is assumed paid.</li>' +
     '<li><b>Open POs:</b> approved POs under 60 days old with no invoice yet, paid about ' + (st.supplier_terms_days + 7) + ' days after the PO.</li>' +
     '<li><b>Subcontractors:</b> Installation → Vendor Invoices, paid a week after the client pays us (pay-when-paid), or on the expected payment date if one is set.</li>' +
@@ -39812,12 +40321,18 @@ $$('#fc-toggles input').forEach(i => i.addEventListener('change', async () => {
 function renderSetup() {
   const m = S.m, st = m.settings;
   // accounts
-  const ac = m.accounts, total = ac.reduce((a, x) => a + (+x.balance || 0), 0);
-  $('#st-accounts').innerHTML = ac.length ? '<table class="t"><thead><tr><th>Account</th><th class="n">Balance</th><th>As of</th><th></th></tr></thead><tbody>' +
+  const ac = m.accounts, qb = m.qbo.bank || [];
+  const total = ac.reduce((a, x) => a + (+x.balance || 0), 0) + qb.filter(a => a.included).reduce((a, x) => a + x.balance, 0);
+  const qbRows = qb.map(a => '<tr' + (a.included ? '' : ' class="muted"') + '><td><label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input type="checkbox" data-qacct="' + esc(a.id) + '"' + (a.included ? ' checked' : '') + '>' + esc(a.name) + '</label></td><td class="n">' + money(a.balance) + '</td><td>QuickBooks<div class="muted small">synced ' + md(a.synced_at) + '</div></td><td></td></tr>').join('');
+  $('#st-accounts').innerHTML = (ac.length || qb.length) ? '<table class="t"><thead><tr><th>Account</th><th class="n">Balance</th><th>As of</th><th></th></tr></thead><tbody>' + qbRows +
     ac.map(a => '<tr><td>' + esc(a.name) + '</td><td class="n">' + money(a.balance) + '</td><td>' + mdy(a.as_of) + ((pd(m.today) - pd(a.as_of)) / 864e5 > 7 ? ' <span class="pill warn">update</span>' : '') + '<div class="muted small">' + esc(a.updated_by || '') + '</div></td>' +
       '<td style="white-space:nowrap"><button class="btn sm" data-acct="' + a.id + '">Update</button> <button class="btn sm danger" data-acct-del="' + a.id + '">✕</button></td></tr>').join('') +
     '</tbody><tfoot><tr><td>Total</td><td class="n">' + money(total) + '</td><td colspan="2"></td></tr></tfoot></table>'
-    : '<div class="empty"><b>No bank balance yet.</b>Add your operating account (and any others you pay bills from).</div>';
+    : '<div class="empty"><b>No bank balance yet.</b>Connect QuickBooks below, or add your operating account by hand.</div>';
+  if (qb.length) $('#st-accounts').insertAdjacentHTML('beforeend', '<p class="hint">QuickBooks balances are its register balance: right as long as bank-feed transactions are being accepted. Untick an account to leave it out (for example a savings account you don\'t spend from).</p>');
+  $$('[data-qacct]').forEach(cb => cb.addEventListener('change', async () => {
+    try { await api('/cashflow/api/qbo/include', { json: { kind: 'account', key: cb.dataset.qacct, include: cb.checked } }); load(); } catch (e) { cb.checked = !cb.checked; }
+  }));
   $$('[data-acct]').forEach(b => b.addEventListener('click', () => openAccount(ac.find(a => a.id === +b.dataset.acct))));
   $$('[data-acct-del]').forEach(b => b.addEventListener('click', async () => {
     const a = ac.find(x => x.id === +b.dataset.acctDel);
@@ -39846,8 +40361,80 @@ function renderSetup() {
     await api('/cashflow/api/items/delete', { json: { id: i.id } }); load();
   }));
 
+  renderLearned();
+  renderQbo();
   renderJobber();
   renderImport();
+}
+
+function renderLearned() {
+  const q = S.m.qbo, card = $('#st-learned-card');
+  card.style.display = q.connected ? '' : 'none';
+  if (!q.connected) return;
+  $('#st-learned-total').textContent = money(q.learned_monthly);
+  const ps = q.patterns;
+  $('#st-learned').innerHTML = ps.length ? '<table class="t"><thead><tr><th>Payee</th><th>Category</th><th class="n">Usually</th><th>How often</th><th>Last paid</th><th>Next</th></tr></thead><tbody>' +
+    ps.map(p => '<tr' + (p.included ? '' : ' class="muted"') + '><td><label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input type="checkbox" data-pat="' + esc(p.key) + '"' + (p.included ? ' checked' : '') + (S.m.settings.use_learned ? '' : ' disabled') + '>' + esc(p.name) + '</label><div class="muted small">' + p.count + ' payments in the last year</div></td>' +
+      '<td>' + esc(p.category) + '</td><td class="n">' + money(p.amount) + '</td><td>' + (FREQ[p.frequency] || p.frequency) + '</td><td>' + md(p.last_date) + ' <span class="muted small">' + money(p.last_amount) + '</span></td><td>' + (p.next ? md(p.next) : '<span class="muted">covered by a bill</span>') + '</td></tr>').join('') + '</tbody></table>' +
+    '<p class="hint">Everything else paid out of the bank, like suppliers paid at irregular times, is forecast as a typical week: <b>' + money(q.other_weekly) + '</b> lately.' + (S.m.settings.use_learned ? '' : ' Learned payments are switched off on the Forecast tab.') + '</p>'
+    : '<div class="empty">' + (q.status && q.status.state === 'running' ? 'Learning from QuickBooks…' : 'No regular payments found in the last year yet.') + '</div>';
+  $$('[data-pat]').forEach(cb => cb.addEventListener('change', async () => {
+    try { await api('/cashflow/api/qbo/include', { json: { kind: 'pattern', key: cb.dataset.pat, include: cb.checked } }); load(); } catch (e) { cb.checked = !cb.checked; }
+  }));
+}
+
+function renderQbo() {
+  const q = S.m.qbo, st = q.status || {}, el = $('#st-qbo');
+  let h = '<h2>QuickBooks Online</h2>';
+  if (!BOOT.qbo_configured) {
+    h += '<p class="sub">Not set up on the server yet. Once connected, bank balances, bills (from Bill.com) and regular payments like payroll come in by themselves.</p><ol class="steps">' +
+      '<li>At <b>developer.intuit.com</b>, create an app with the <b>Accounting</b> scope.</li>' +
+      '<li>Add the redirect URI <code class="cp">' + esc(BOOT.qbo_callback_url) + '</code> <button class="btn sm" id="qb-copy">Copy</button></li>' +
+      '<li>For production keys Intuit asks for a terms and privacy page: use <code class="cp">' + esc(BOOT.legal_url) + '</code></li>' +
+      '<li>In Railway → <b>Office App</b> → Variables, add <code class="cp">QBO_CLIENT_ID</code> and <code class="cp">QBO_CLIENT_SECRET</code> (production keys).</li>' +
+      '<li>Come back here and click <b>Connect QuickBooks</b>.</li></ol>';
+  } else if (!q.connected) {
+    h += '<p class="sub">Connect once and bank balances, open bills from Bill.com, and a year of payments (payroll, rent, loans, cards) sync every two hours. The app only reads from QuickBooks.</p>' +
+      '<a class="btn primary" href="/cashflow/qbo/connect">Connect QuickBooks</a>' + (BOOT.qbo_sandbox ? ' <span class="pill warn">sandbox</span>' : '') +
+      '<p class="hint">Redirect URI for the Intuit app: <code class="cp">' + esc(BOOT.qbo_callback_url) + '</code></p>';
+  } else {
+    const running = st.state === 'running';
+    h += '<p class="sub">' + (q.company ? '<b>' + esc(q.company) + '</b> · ' : '') + 'connected' + (q.connected_by ? ' by ' + esc(q.connected_by) : '') + '. Syncs every two hours. Read-only.</p>' +
+      '<table class="t"><tbody><tr><td>Last sync</td><td>' + (running ? '<span class="pill info">Running: ' + esc(st.stage || '') + '</span>' : st.state === 'error' ? '<span class="pill bad">Failed</span> ' + esc(ago(st.finished_at)) : st.finished_at ? '<span class="pill good">OK</span> ' + esc(ago(st.finished_at)) : 'never') + '</td></tr>' +
+      '<tr><td>Bank accounts</td><td>' + q.bank.length + (q.cards.length ? ' · ' + plural(q.cards.length, 'card') + ' owing ' + money(q.cards.reduce((a, c) => a + c.balance, 0)) : '') + '</td></tr>' +
+      '<tr><td>Open bills</td><td>' + q.bills_count + ' · ' + money(q.bills_total) + '</td></tr>' +
+      '<tr><td>Regular payments</td><td>' + q.patterns.length + ' learned · about ' + money(q.learned_monthly) + ' a month</td></tr>' +
+      (q.invoices ? '<tr><td>Invoices</td><td>' + q.invoices + ' (Jobber isn\'t connected, so these come from QuickBooks)</td></tr>' : '') +
+      '</tbody></table>';
+    if (st.state === 'error') h += '<p class="small" style="color:var(--bad)">' + esc(st.error) + (/refused the sign-in|not connected/i.test(st.error || '') ? ' Try Disconnect, then Connect QuickBooks again.' : '') + '</p>';
+    h += '<div class="row" style="margin-top:12px"><button class="btn primary" id="qb-sync"' + (running ? ' disabled' : '') + '>Sync now</button><button class="btn danger" id="qb-disc">Disconnect</button></div>';
+  }
+  el.innerHTML = h;
+  const copy = $('#qb-copy', el);
+  if (copy) copy.addEventListener('click', () => navigator.clipboard.writeText(BOOT.qbo_callback_url).then(() => toast('Copied')));
+  const sy = $('#qb-sync', el), di = $('#qb-disc', el);
+  if (sy) sy.addEventListener('click', async () => {
+    await api('/cashflow/api/qbo/sync', { json: {} }); toast('QuickBooks sync started');
+    S.m.qbo.status = { state: 'running', stage: 'Starting' }; renderQbo();
+  });
+  if (di) di.addEventListener('click', async () => {
+    if (!confirm('Disconnect QuickBooks? Balances and bills stop updating.')) return;
+    await api('/cashflow/qbo/disconnect', { json: {} }); load();
+  });
+  if (st.state === 'running') pollQbo();
+}
+function pollQbo() {
+  if (S.qpolling) return;
+  S.qpolling = setInterval(async () => {
+    try {
+      const r = await api('/cashflow/api/qbo/status');
+      if (r.status.state !== 'running') {
+        clearInterval(S.qpolling); S.qpolling = null;
+        toast(r.status.state === 'ok' ? 'QuickBooks sync finished' : 'QuickBooks sync failed', r.status.state === 'ok' ? '' : 'bad');
+        load();
+      } else { S.m.qbo.status = r.status; if (S.tab === 'setup') renderQbo(); }
+    } catch (e) { clearInterval(S.qpolling); S.qpolling = null; }
+  }, 2500);
 }
 
 function nextWeekday(dow) { const d = pd(S.m.today); d.setDate(d.getDate() + ((dow - d.getDay() + 7) % 7 || 7)); return iso(d); }
@@ -40059,6 +40646,10 @@ def cashflow_app():
         'categories_out': CASHFLOW_CATEGORIES_OUT,
         'categories_in': CASHFLOW_CATEGORIES_IN,
         'restricted': bool(CASHFLOW_USERS),
+        'qbo_configured': _cf_qbo_configured(),
+        'qbo_callback_url': _cf_qbo_callback_url(),
+        'legal_url': request.url_root.rstrip('/') + '/cashflow/legal' if 'localhost' in (WEBSITE_URL or 'localhost') else WEBSITE_URL.rstrip('/') + '/cashflow/legal',
+        'qbo_sandbox': QBO_ENVIRONMENT == 'sandbox',
     }
     return render_template_string(CASHFLOW_TEMPLATE, boot=boot,
                                   full_name=session.get('full_name', session.get('username', 'User')))
@@ -40332,6 +40923,124 @@ def cashflow_jobber_disconnect():
     return jsonify({'success': True})
 
 
+@app.route('/cashflow/qbo/connect')
+def cashflow_qbo_connect():
+    if not _cashflow_access_ok():
+        return redirect(url_for('login'))
+    if not _cf_qbo_configured():
+        flash('QuickBooks is not set up on this server yet: QBO_CLIENT_ID and QBO_CLIENT_SECRET are missing.')
+        return redirect(url_for('cashflow_app') + '#setup')
+    state = secrets.token_urlsafe(24)
+    session['cf_qbo_state'] = state
+    from urllib.parse import urlencode
+    return redirect(_CF_QBO_AUTHORIZE + '?' + urlencode({
+        'client_id': QBO_CLIENT_ID, 'response_type': 'code', 'scope': 'com.intuit.quickbooks.accounting',
+        'redirect_uri': _cf_qbo_callback_url(), 'state': state}))
+
+
+@app.route('/cashflow/qbo/callback')
+def cashflow_qbo_callback():
+    if not _cashflow_access_ok():
+        return redirect(url_for('login'))
+    expected = session.pop('cf_qbo_state', None)
+    if not expected or not hmac.compare_digest(expected, request.args.get('state', '')):
+        flash('The QuickBooks sign-in could not be verified. Please try Connect QuickBooks again.')
+        return redirect(url_for('cashflow_app') + '#setup')
+    if request.args.get('error') or not request.args.get('code') or not request.args.get('realmId'):
+        flash(f"QuickBooks did not connect: {request.args.get('error_description') or request.args.get('error') or 'no company chosen'}")
+        return redirect(url_for('cashflow_app') + '#setup')
+    try:
+        tok = _cf_qbo_token_request({'grant_type': 'authorization_code', 'code': request.args['code'],
+                                     'redirect_uri': _cf_qbo_callback_url()})
+    except CashflowQboError as e:
+        flash(str(e))
+        return redirect(url_for('cashflow_app') + '#setup')
+    _cf_qbo_save_tokens(tok, {'realm_id': request.args['realmId'],
+                              'connected_by': session.get('full_name') or session['username'],
+                              'connected_at': _cf_now_text()[:16]})
+    log_activity(session['username'], 'CASHFLOW_QBO_CONNECT', 'cashflow', None, 'Connected QuickBooks')
+    _cf_start_qbo_sync(full=True)
+    flash('QuickBooks is connected. The first pull takes a minute or two.')
+    return redirect(url_for('cashflow_app') + '#setup')
+
+
+@app.route('/cashflow/qbo/disconnect', methods=['POST'])
+def cashflow_qbo_disconnect():
+    if not _cashflow_access_ok():
+        return _cf_denied()
+    tok = _cf_state('qbo_tokens')
+    if tok.get('refresh_token'):
+        try:        # tell Intuit too, so the app no longer shows as connected there
+            http_requests.post(_CF_QBO_REVOKE, json={'token': tok['refresh_token']}, timeout=15,
+                               auth=(QBO_CLIENT_ID, QBO_CLIENT_SECRET), headers={'Accept': 'application/json'})
+        except Exception:
+            pass
+    _cf_save_state('qbo_tokens', {})
+    log_activity(session['username'], 'CASHFLOW_QBO_DISCONNECT', 'cashflow', None, 'Disconnected QuickBooks')
+    return jsonify({'success': True})
+
+
+@app.route('/cashflow/api/qbo/sync', methods=['POST'])
+def cashflow_api_qbo_sync():
+    if not _cashflow_access_ok():
+        return _cf_denied()
+    if not _cf_state('qbo_tokens').get('refresh_token'):
+        return jsonify({'success': False, 'error': 'Connect QuickBooks first'}), 400
+    _cf_start_qbo_sync(full=bool((request.get_json(silent=True) or {}).get('full')))
+    return jsonify({'success': True})
+
+
+@app.route('/cashflow/api/qbo/status')
+def cashflow_api_qbo_status():
+    if not _cashflow_access_ok():
+        return _cf_denied()
+    st = _cf_state('qbo_status')
+    started = st.get('started_at')
+    if st.get('state') == 'running' and started and \
+            datetime.utcnow() - datetime.strptime(started, '%Y-%m-%dT%H:%M:%SZ') > timedelta(minutes=30):
+        st.update(state='error', error='The sync stopped part way (the app restarted). Run it again.')
+    return jsonify({'success': True, 'status': st})
+
+
+@app.route('/cashflow/api/qbo/include', methods=['POST'])
+def cashflow_api_qbo_include():
+    """Switch one learned payment or one QuickBooks bank account in or out."""
+    if not _cashflow_access_ok():
+        return _cf_denied()
+    d = request.get_json(silent=True) or {}
+    field = {'pattern': 'qbo_excluded_patterns', 'account': 'qbo_excluded_accounts'}.get(d.get('kind'))
+    key = str(d.get('key') or '')
+    if not field or not key:
+        return jsonify({'success': False, 'error': 'Nothing to change'}), 400
+    s = json.loads(get_setting('cashflow_settings') or '{}')
+    out = set(s.get(field) or [])
+    if d.get('include'):
+        out.discard(key)
+    else:
+        out.add(key)
+    s[field] = sorted(out)
+    _cf_save_state('settings', s)
+    return jsonify({'success': True})
+
+
+@app.route('/cashflow/legal')
+def cashflow_legal():
+    """Terms and privacy for the QuickBooks connection - Intuit asks for a public
+    page. The app is internal, so the terms are short."""
+    return render_template_string('''<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Office App: terms and privacy</title>
+<style>body{font-family:-apple-system,'Segoe UI',Roboto,Arial,sans-serif;max-width:720px;margin:40px auto;padding:0 16px;color:#0F172A;line-height:1.6;background:#fff}h1{font-size:22px}h2{font-size:16px;margin-top:28px}</style>
+</head><body>
+<h1>Stahlman-England Office App: terms of use and privacy</h1>
+<p>The Office App is an internal tool of Stahlman-England Irrigation, Inc. It is not offered to the public or to other companies. Only Stahlman-England staff with an account can sign in.</p>
+<h2>Terms of use</h2>
+<p>The app connects to the company's own QuickBooks Online and Jobber accounts to forecast cash flow. It is used by authorised staff for internal planning only and is provided as is.</p>
+<h2>Privacy</h2>
+<p>The app reads account balances, bills, payments and invoices from the company's own QuickBooks Online and Jobber accounts. It does not write to, change or delete anything in either service. The data is stored on the company's private server, used only for the company's own cash planning, and never sold or shared with anyone else. Disconnecting QuickBooks or Jobber in the app (Cash Flow &amp; AR &rarr; Setup) stops any further access.</p>
+<p>Questions: contact Stahlman-England Irrigation, Naples, Florida.</p>
+</body></html>''')
+
+
 @app.route('/cashflow/api/export.xlsx')
 def cashflow_api_export():
     if not _cashflow_access_ok():
@@ -40432,13 +41141,13 @@ elif not PO_EMAIL_MONITORING_ENABLED:
 
 # Cash Flow & AR: keep Jobber invoices fresh. Every worker schedules it; the
 # sync's own file lock lets only one run at a time.
-if SCHEDULER_AVAILABLE and _cf_jobber_configured():
+if SCHEDULER_AVAILABLE and (_cf_jobber_configured() or _cf_qbo_configured()):
     try:
         _cf_scheduler = BackgroundScheduler()
         _cf_scheduler.add_job(_cf_scheduled_sync, 'interval', hours=2, id='cashflow_jobber_sync',
                               next_run_time=datetime.now() + timedelta(minutes=3))
         _cf_scheduler.start()
-        print("✓ Cash flow Jobber sync scheduled every 2 hours")
+        print("✓ Cash flow Jobber/QuickBooks sync scheduled every 2 hours")
     except Exception as e:
         print(f"⚠ Could not start cash flow scheduler: {e}")
 
