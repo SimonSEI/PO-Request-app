@@ -124,7 +124,15 @@ record_dry_run <- function(due, reason) {
 }
 
 # What WOULD go out now, before the switch and the cap are applied.
-due_for_auto_send <- function(plan_path, today = as.Date(format(Sys.time(), tz = TZ))) {
+#
+# ignore_date = TRUE is for a person choosing a quote by hand. The resend date
+# is a timing judgement - when the offer is most likely to land - not a safety
+# rule, so someone looking at the plan may decide a quote should go today. Every
+# rule that protects a client or the business still applies: companies and
+# HOAs, the age window, the value ceiling, the do-not-send lists (via the plan),
+# 'awaiting response' only, and never twice.
+due_for_auto_send <- function(plan_path, today = as.Date(format(Sys.time(), tz = TZ)),
+                              ignore_date = FALSE) {
   if (!file.exists(plan_path)) return(tibble())
   p <- read_csv(plan_path, col_types = cols(.default = col_character()))
   if (!"quote_id" %in% names(p)) return(tibble())
@@ -166,7 +174,7 @@ due_for_auto_send <- function(plan_path, today = as.Date(format(Sys.time(), tz =
   p %>%
     filter(quote_status == "awaiting_response",
            str_starts(snowbird_status, "Second home"),
-           as.Date(resend_on) <= today,
+           ignore_date | as.Date(resend_on) <= today,
            !(quote_id %in% already)) %>%
     arrange(resend_on, desc(as.numeric(total)))
 }
@@ -285,7 +293,7 @@ apply_quote_discount <- function(quote_id, pct = DISCOUNT_PCT, expected_total = 
 # whether the person went on to press Send. That is the honest state, and it is
 # enough to stop the quote being offered again and discounted twice.
 prepare_one_quote <- function(plan_path, quote_id, by = "dashboard") {
-  due <- due_for_auto_send(plan_path)
+  due <- due_for_auto_send(plan_path, ignore_date = TRUE)
   q   <- due[due$quote_id == quote_id, , drop = FALSE]
   if (nrow(q) == 0)
     return(list(ok = FALSE,

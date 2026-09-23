@@ -486,7 +486,9 @@ server <- function(input, output, session) {
           div(class = "note mb-2",
               "Each outstanding quote from a client with a home up north, in the order to resend it with 10% off. ",
               "The date is 14 days before they are due back, or today if they are already here. ",
-              "Only 'awaiting response' quotes can be sent automatically; 'changes requested' ones are for a person to handle."),
+              "Only 'awaiting response' quotes can be sent automatically; 'changes requested' ones are for a person to handle. ",
+              "Discount & open in Jobber takes the ", DISCOUNT_PCT, "% off now, whatever the resend date, and opens the quote ",
+              "so you can press Send in Jobber."),
           DTOutput("plan_tbl"),
           downloadButton("dl_plan", "Download CSV", class = "btn-sm btn-outline-secondary mt-2")),
         nav_panel("Auto-send",
@@ -634,13 +636,14 @@ server <- function(input, output, session) {
     req(authed()); sw_tick(); files_state()
     d <- due_for_auto_send(PLAN_CSV)
     shiny::validate(shiny::need(nrow(d) > 0, "Nothing is due to be sent."))
-    datatable(d %>% transmute(`Resend on` = resend_on, Client = client, `Quote #` = quote_number,
-                              Quote = quote_title, Total = scales::dollar(as.numeric(total)),
-                              `10% off` = scales::dollar(as.numeric(total_10pct_off)), Status = snowbird_status,
-                              Send = send_button(quote_id)),
-              # Only the button column is raw HTML. Client names and quote
-              # titles come from Jobber, so they stay escaped.
-              rownames = FALSE, escape = -8, selection = "none",
+    t <- d %>% transmute(`Resend on` = resend_on, Client = client, `Quote #` = quote_number,
+                         Quote = quote_title, Total = scales::dollar(as.numeric(total)),
+                         `10% off` = scales::dollar(as.numeric(total_10pct_off)), Status = snowbird_status,
+                         Send = send_button(quote_id))
+    # Only the button column is raw HTML. Client names and quote titles come
+    # from Jobber, so they stay escaped. Named, not numbered, so adding a
+    # column cannot quietly unescape the wrong one.
+    datatable(t, rownames = FALSE, escape = which(names(t) != "Send"), selection = "none",
               options = list(pageLength = 25, scrollX = TRUE))
   })
 
@@ -653,7 +656,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$send_one, {
     req(authed())
-    d <- due_for_auto_send(PLAN_CSV)
+    d <- due_for_auto_send(PLAN_CSV, ignore_date = TRUE)
     q <- d[d$quote_id == input$send_one, , drop = FALSE]
     if (nrow(q) == 0) {
       flash(list(type = "warning",
@@ -779,6 +782,8 @@ server <- function(input, output, session) {
   output$plan_tbl <- renderDT({
     p <- plan()
     shiny::validate(shiny::need(!is.null(p), "No plan yet. Connect Jobber, then click Refresh now."))
+    sw_tick()
+    sendable_ids <- due_for_auto_send(PLAN_CSV, ignore_date = TRUE)$quote_id
     t <- p %>% transmute(
       `Resend on` = d_fmt(resend_on),
       Client      = client,
@@ -792,7 +797,12 @@ server <- function(input, output, session) {
       Status      = short_status(snowbird_status),
       Sending     = if ("auto_send" %in% names(p)) if_else(auto_send == "yes", "Automatic", "By hand") else "",
       `Why this date` = why_this_date,
-      Jobber      = link_col(jobber_link))
+      Jobber      = link_col(jobber_link),
+      # The button only on rows a person may send today. The resend date is
+      # not required - choosing to send early is the point of a manual button -
+      # but every protective rule is, so an HOA, a changes-requested quote or
+      # one already discounted shows no button at all.
+      Send        = if_else(quote_id %in% sendable_ids, send_button(quote_id), ""))
 
     # Widths are set in CSS against .plan-table rather than here: DT ignores
     # per-column pixel widths unless autoWidth is on, and with the browser's
@@ -800,7 +810,7 @@ server <- function(input, output, session) {
     # while the rest keep theirs. That is what squeezed "Why this date" to a
     # word per line and made every row three hundred pixels tall.
     datatable(
-      t, rownames = FALSE, escape = setdiff(seq_along(t), ncol(t)),
+      t, rownames = FALSE, escape = which(!names(t) %in% c("Jobber", "Send")), selection = "none",
       class = "display plan-table",
       options = list(
         pageLength = 25, order = list(list(0, "asc")), scrollX = FALSE,
@@ -862,7 +872,12 @@ server <- function(input, output, session) {
     when   <- p$probed_at %||% format(file.mtime(PROBE_JSON), "%Y-%m-%d %H:%M")
 
     sendable <- Filter(function(m) grepl("send", m$mutation %||% "", ignore.case = TRUE), muts)
-    discount <- Filter(function(m) grepl("discount", m$mutation %||% "", ignore.case = TRUE), muts)
+    # A discount is a FIELD on the quote-edit mutation, not a mutation of its
+    # own, so searching mutation names never finds it. Ask the same question
+    # the Discount button asks before it writes anything.
+    discount <- if (isTRUE(quote_edit_offered()$ok))
+                  list(list(mutation = paste0(QUOTE_EDIT_MUTATION, " (its discount field)")))
+                else list()
 
     verdict <- function(label, hits, note) {
       ok <- length(hits) > 0
@@ -879,9 +894,10 @@ server <- function(input, output, session) {
                   when, length(muts), p$total_mutations %||% "?")),
 
       verdict("Can a quote be sent from the API?", sendable,
-              "Needed for a send to appear in the client's Jobber communication history."),
+              paste("Jobber's API has no operation that emails a quote, so sending is always",
+                    "the Send button in Jobber - which is also what logs it in the client's communications.")),
       verdict("Can a discount be applied?", discount,
-              "Without this, the 10% has to be applied by hand before sending."),
+              "This is what the Discount & open in Jobber button uses."),
 
       div(class = "py-2 px-3 mb-3 rounded bg-light",
           strong("Permissions granted by the connected account: "),
