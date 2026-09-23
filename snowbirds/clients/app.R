@@ -9,7 +9,8 @@
 #   - Connect Jobber   read-only OAuth; the admin approves on Jobber's own page
 #   - Every day 7am ET pull quotes, refresh the property roll monthly, rebuild
 #                      the resend plan (R/17 + R/18)
-#   - Resend plan      outstanding snowbird quotes in the order to resend them
+#   - Scheduled to send  outstanding snowbird quotes in the order to resend
+#                        them; search a client and send one by hand
 #   - All clients      every client with the second-home evidence
 #
 # It never writes to Jobber and never sends anything to anyone.
@@ -487,13 +488,16 @@ server <- function(input, output, session) {
              if (!is.null(d)) paste("of", nrow(d), "clients") else NULL)),
 
       navset_card_tab(
-        nav_panel("Resend plan",
+        # First tab, so the page opens on it: every quote scheduled to go out,
+        # searchable, with the send button on each row that may be sent.
+        nav_panel("Scheduled to send",
           div(class = "note mb-2",
-              "Each outstanding quote from a client with a home up north, in the order to resend it with 10% off. ",
-              "The date is 14 days before they are due back, or today if they are already here. ",
-              "Only 'awaiting response' quotes can be sent automatically; 'changes requested' ones are for a person to handle. ",
-              "Discount & open in Jobber takes the ", DISCOUNT_PCT, "% off now, whatever the resend date, and opens the quote ",
-              "so you can press Send in Jobber."),
+              "Every outstanding quote from a client with a home up north, in the order it is scheduled to be resent with ",
+              DISCOUNT_PCT, "% off. The date is 14 days before they are due back, or today if they are already here. ",
+              "Search for a client to find their quote. To send one now, whatever its date, press ",
+              strong("Discount & open in Jobber"), ": it takes the ", DISCOUNT_PCT, "% off and opens the quote so you can ",
+              "press Send in Jobber. Quotes with no button cannot be sent from here - 'changes requested' ones are ",
+              "for a person to handle."),
           DTOutput("plan_tbl"),
           downloadButton("dl_plan", "Download CSV", class = "btn-sm btn-outline-secondary mt-2")),
         nav_panel("Auto-send",
@@ -641,7 +645,7 @@ server <- function(input, output, session) {
     req(authed()); sw_tick(); files_state()
     d <- due_for_auto_send(PLAN_CSV)
     shiny::validate(shiny::need(nrow(d) > 0, "Nothing is due to be sent."))
-    t <- d %>% transmute(`Resend on` = resend_on, Client = client, `Quote #` = quote_number,
+    t <- d %>% transmute(`Scheduled for` = resend_on, Client = client, `Quote #` = quote_number,
                          Quote = quote_title, Total = scales::dollar(as.numeric(total)),
                          `10% off` = scales::dollar(as.numeric(total_10pct_off)), Status = snowbird_status,
                          Send = send_button(quote_id))
@@ -739,7 +743,7 @@ server <- function(input, output, session) {
     shiny::validate(shiny::need(nrow(d) > 0, "No dry run has been recorded yet."))
     datatable(d %>% arrange(desc(run_at)) %>%
                 transmute(`Run at` = run_at, Why = reason, Client = client, `Quote #` = quote_number,
-                          `Resend on` = resend_on, Total = scales::dollar(as.numeric(total)),
+                          `Scheduled for` = resend_on, Total = scales::dollar(as.numeric(total)),
                           `10% off` = scales::dollar(as.numeric(total_10pct_off)),
                           `Would send` = would_send),
               rownames = FALSE, options = list(pageLength = 25, scrollX = TRUE))
@@ -790,7 +794,7 @@ server <- function(input, output, session) {
     sw_tick()
     sendable_ids <- due_for_auto_send(PLAN_CSV, ignore_date = TRUE)$quote_id
     t <- p %>% transmute(
-      `Resend on` = d_fmt(resend_on),
+      `Scheduled for` = d_fmt(resend_on),
       Client      = client,
       `Quote #`   = quote_number,
       Quote       = quote_title,
@@ -818,6 +822,10 @@ server <- function(input, output, session) {
       t, rownames = FALSE, escape = which(!names(t) %in% c("Jobber", "Send")), selection = "none",
       class = "display plan-table",
       options = list(
+        # The search box matches any column, so a client's name, a quote
+        # number or a word from the quote title all find it.
+        language = list(search = "Search clients:",
+                        searchPlaceholder = "name, quote # or title"),
         pageLength = 25, order = list(list(0, "asc")), scrollX = FALSE,
         autoWidth = FALSE,
         columnDefs = list(
