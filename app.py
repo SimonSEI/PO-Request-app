@@ -3897,7 +3897,7 @@ def edit_office_admin_password():
             return jsonify({'success': False, 'error': 'Administrator not found'})
 
         # Update the password
-        c.execute("UPDATE users SET password = ? WHERE id = ?", (new_password, admin_id))
+        c.execute("UPDATE users SET password = ? WHERE id = ?", (generate_password_hash(new_password), admin_id))
 
         conn.commit()
         conn.close()
@@ -37501,7 +37501,21 @@ except ImportError:  # Windows dev machines: fall back to in-process locks
     fcntl = None
 
 
+# Off unless CASHFLOW_ENABLED=true on the service. Switched off on the
+# owner's instruction until the stored Jobber/QuickBooks sign-ins are
+# encrypted and database backups can no longer carry them out.
+CASHFLOW_ENABLED = os.environ.get('CASHFLOW_ENABLED', '').lower() in ('1', 'true', 'yes', 'on')
+
+
+@app.before_request
+def _cashflow_off_switch():
+    if not CASHFLOW_ENABLED and request.path.startswith('/cashflow'):
+        return 'Not found', 404
+
+
 def _cashflow_access_ok():
+    if not CASHFLOW_ENABLED:
+        return False
     if 'username' not in session or session.get('role') not in CASHFLOW_ROLES:
         return False
     return not CASHFLOW_USERS or session['username'].lower() in CASHFLOW_USERS
@@ -41121,6 +41135,13 @@ def cashflow_api_export():
 init_db()
 print("✓ Database initialized on startup")
 init_cashflow_db()
+if not CASHFLOW_ENABLED:
+    # Switched off: forget any Jobber or QuickBooks sign-in, so neither the
+    # database nor a downloaded backup holds a working key to either account.
+    for _k in ('jobber_tokens', 'qbo_tokens'):
+        if _cf_state(_k):
+            _cf_save_state(_k, {})
+            print(f"✓ Cash flow is off: cleared stored {_k.split('_')[0]} sign-in")
 
 # Set up background scheduler for automatic email checking
 if SCHEDULER_AVAILABLE and PO_EMAIL_MONITORING_ENABLED:
@@ -41141,7 +41162,7 @@ elif not PO_EMAIL_MONITORING_ENABLED:
 
 # Cash Flow & AR: keep Jobber invoices fresh. Every worker schedules it; the
 # sync's own file lock lets only one run at a time.
-if SCHEDULER_AVAILABLE and (_cf_jobber_configured() or _cf_qbo_configured()):
+if CASHFLOW_ENABLED and SCHEDULER_AVAILABLE and (_cf_jobber_configured() or _cf_qbo_configured()):
     try:
         _cf_scheduler = BackgroundScheduler()
         _cf_scheduler.add_job(_cf_scheduled_sync, 'interval', hours=2, id='cashflow_jobber_sync',
