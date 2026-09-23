@@ -492,7 +492,9 @@ server <- function(input, output, session) {
         nav_panel("Auto-send",
           div(class = "note mb-2",
               "Due today: awaiting-response quotes whose resend date has arrived and that have never been sent. ",
-              "At 7:00 am these go out with 10% off, up to ", DAILY_CAP, " a day, but only while the switch above is ON."),
+              "At 7:00 am these go out with 10% off, up to ", DAILY_CAP, " a day, but only while the switch above is ON. ",
+              "Send now emails one straight away whatever the switch says - it asks first, and it obeys the same ",
+              "rules, so a quote the queue would not send cannot be sent by hand either."),
           DTOutput("due_tbl"),
           h6(class = "mt-4", "Dry run"),
           div(class = "note mb-2",
@@ -606,14 +608,67 @@ server <- function(input, output, session) {
     flash(list(type = "warning", text = "Automatic resends are ON."))
   })
 
+  # One button per row. It carries the quote id, but the id is only a lookup -
+  # the server re-derives the queue and matches against it, so a page left open
+  # while the plan moved on cannot send the wrong quote.
+  send_button <- function(ids) {
+    vapply(ids, function(id) sprintf(
+      "<button class='btn btn-sm btn-outline-danger' onclick=\"Shiny.setInputValue('send_one', '%s', {priority:'event'})\">Send now</button>",
+      gsub("[^A-Za-z0-9=_:/.-]", "", id)), character(1), USE.NAMES = FALSE)
+  }
+
   output$due_tbl <- renderDT({
     req(authed()); sw_tick(); files_state()
     d <- due_for_auto_send(PLAN_CSV)
     shiny::validate(shiny::need(nrow(d) > 0, "Nothing is due to be sent."))
     datatable(d %>% transmute(`Resend on` = resend_on, Client = client, `Quote #` = quote_number,
                               Quote = quote_title, Total = scales::dollar(as.numeric(total)),
-                              `10% off` = scales::dollar(as.numeric(total_10pct_off)), Status = snowbird_status),
-              rownames = FALSE, options = list(pageLength = 25, scrollX = TRUE))
+                              `10% off` = scales::dollar(as.numeric(total_10pct_off)), Status = snowbird_status,
+                              Send = send_button(quote_id)),
+              # Only the button column is raw HTML. Client names and quote
+              # titles come from Jobber, so they stay escaped.
+              rownames = FALSE, escape = -8, selection = "none",
+              options = list(pageLength = 25, scrollX = TRUE))
+  })
+
+  # "Send now": one quote, chosen by a person, outside the 7am run and outside
+  # the switch. Two steps on purpose - the button only opens a summary, the
+  # modal is what sends, because an email cannot be recalled.
+  pending_send <- reactiveVal(NULL)
+
+  observeEvent(input$send_one, {
+    req(authed())
+    d <- due_for_auto_send(PLAN_CSV)
+    q <- d[d$quote_id == input$send_one, , drop = FALSE]
+    if (nrow(q) == 0) {
+      flash(list(type = "warning",
+                 text = "That quote is no longer in the queue. Nothing was sent."))
+      sw_tick(sw_tick() + 1)
+      return(invisible())
+    }
+    q <- q[1, ]
+    pending_send(q$quote_id)
+    showModal(modalDialog(
+      title = "Send this quote now?",
+      p(sprintf("%s (%s) will be emailed from Jobber with 10%% off, right now, without waiting for the 7:00 am run.",
+                q$client, q$quote_number)),
+      p(sprintf("%s becomes %s.", scales::dollar(as.numeric(q$total)),
+                scales::dollar(as.numeric(q$total_10pct_off)))),
+      p(class = "text-danger mb-0", "An email cannot be recalled once it has gone."),
+      if (!SEND_READY)
+        div(class = "alert alert-warning mt-3 mb-0",
+            "Sending is not built yet - it waits on the Jobber API check. Nothing will be sent."),
+      footer = tagList(modalButton("Cancel"),
+                       actionButton("send_one_confirm", "Send now", class = "btn-danger"))))
+  })
+
+  observeEvent(input$send_one_confirm, {
+    req(authed())
+    id <- pending_send(); req(!is.null(id))
+    removeModal(); pending_send(NULL)
+    r <- send_one_quote(PLAN_CSV, id, by = who()$user)
+    flash(list(type = if (isTRUE(r$ok)) "success" else "warning", text = r$msg))
+    sw_tick(sw_tick() + 1)
   })
 
   # A dry run on demand, so the rules can be checked without waiting for 7am.

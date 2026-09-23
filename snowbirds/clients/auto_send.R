@@ -149,6 +149,46 @@ send_discounted_quote <- function(quote_id) {
   stop("sending is not built yet - waiting on the Jobber schema probe", call. = FALSE)
 }
 
+# ---------------------------------------------------------------------------
+# One quote, sent on purpose by a person
+# ---------------------------------------------------------------------------
+# The switch governs the unattended 7am run. Someone reading the queue and
+# choosing a single quote is a different decision, so this does not consult the
+# switch - but it gets no shortcut round the rules either. Eligibility is
+# re-derived through due_for_auto_send(), the same gate the automatic run uses,
+# so a company, a quote outside the age window, one over the value ceiling or
+# one already sent cannot be pushed through by hand. The id is matched against
+# that list rather than trusted, so a stale page cannot send the wrong quote.
+#
+# The log row records result "sent" exactly as the automatic path does, because
+# both the never-send-twice check and the daily count read that value. Who
+# pressed it goes to the refresh log rather than a new column: sent_quotes.csv
+# already exists on the volume, and appending a wider row would misalign it.
+send_one_quote <- function(plan_path, quote_id, by = "dashboard") {
+  due <- due_for_auto_send(plan_path)
+  q   <- due[due$quote_id == quote_id, , drop = FALSE]
+  if (nrow(q) == 0)
+    return(list(ok = FALSE,
+                msg = paste("That quote is no longer eligible - it may have been sent already,",
+                            "answered, or fallen outside the rules. Nothing was sent.")))
+  if (!SEND_READY)
+    return(list(ok = FALSE,
+                msg = paste("Sending is not built yet - it waits on the Jobber API check.",
+                            "Nothing was sent.")))
+
+  q   <- q[1, ]
+  res <- tryCatch({ send_discounted_quote(q$quote_id); "sent" },
+                  error = function(e) paste("failed:", conditionMessage(e)))
+  append_sent(tibble(quote_id = q$quote_id, quote_number = q$quote_number, client = q$client,
+                     attempted_at = format(Sys.time(), "%Y-%m-%d %H:%M", tz = TZ),
+                     total = q$total, total_10pct_off = q$total_10pct_off, result = res))
+  log_line("send now by ", by, ": ", q$quote_number, " (", q$client, ") - ", res)
+  list(ok  = identical(res, "sent"),
+       msg = if (identical(res, "sent"))
+               sprintf("Sent %s to %s with 10%% off.", q$quote_number, q$client)
+             else sprintf("Could not send %s: %s", q$quote_number, sub("^failed: ", "", res)))
+}
+
 run_auto_send <- function(plan_path) {
   due <- due_for_auto_send(plan_path)
   if (nrow(due) == 0) { log_line("auto-send: nothing due"); return(invisible(0)) }
