@@ -22,6 +22,11 @@ from email.parser import Parser
 from email.header import decode_header
 import base64
 import hmac
+import io
+import csv
+import time
+import bisect
+from collections import defaultdict
 import threading
 import requests as http_requests  # aliased to avoid conflict with flask.request
 
@@ -3738,7 +3743,8 @@ def dashboard():
                                  role=role,
                                  full_name=full_name,
                                  tech_type=session.get('tech_type', ''),
-                                 user_lang=session.get('user_lang', 'en'))
+                                 user_lang=session.get('user_lang', 'en'),
+                                 cashflow_ok=_cashflow_access_ok())
 
 @app.route('/office_admin')
 def office_admin():
@@ -9540,6 +9546,15 @@ DASHBOARD_MENU_TEMPLATE = '''
             <div class="card-title">Snowbirds</div>
             <div class="card-desc">Forecast when snowbirds return to Naples, find clients with a home up north, and time discounted quote resends to their return.</div>
             <button class="card-cta">Open Snowbirds →</button>
+        </a>
+        {% endif %}
+
+        {% if cashflow_ok %}
+        <a class="app-card card-green" href="{{ url_for('cashflow_app') }}">
+            <div class="card-icon-wrap">📊</div>
+            <div class="card-title">Cash Flow &amp; AR</div>
+            <div class="card-desc">What we're owed and when it will really arrive, who to call about late invoices, and a week-by-week cash forecast.</div>
+            <button class="card-cta">Open Cash Flow →</button>
         </a>
         {% endif %}
 
@@ -37410,8 +37425,2991 @@ def wo_portal_submit():
     return jsonify({'success': True, 'id': wo_id})
 
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CASH FLOW & AR
+# ═══════════════════════════════════════════════════════════════════════════════
+# What the business is owed, when that money will really arrive, and what has to
+# go out - rolled into a week-by-week cash forecast.
+#
+#   Money owed        Jobber invoices, pulled over OAuth - or an invoice report
+#                     exported from Jobber (or QuickBooks) and uploaded
+#   When it arrives   learned from how each client has paid before. An invoice
+#                     that is already 45 days old is forecast from the past
+#                     invoices that also went past 45 days, not from the average
+#                     - late invoices behave differently from fresh ones
+#   Money going out   payroll and fixed bills entered on the Setup tab, plus the
+#                     supplier invoices (PO app) and subcontractor bills
+#                     (Installation > Vendor Invoices) this app already tracks
+#
+# Jobber setup: JOBBER_CLIENT_ID / JOBBER_CLIENT_SECRET on this service, the
+# callback URL shown on the Setup tab entered on the app in Jobber's Developer
+# Center, then an office user clicks "Connect Jobber" once.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+JOBBER_CLIENT_ID = os.environ.get('JOBBER_CLIENT_ID', '')
+JOBBER_CLIENT_SECRET = os.environ.get('JOBBER_CLIENT_SECRET', '')
+# Jobber dates its API versions. Same default as the Snowbirds service; when a
+# version ages out Jobber says so in every response and the Setup tab shows it.
+JOBBER_API_VERSION = os.environ.get('JOBBER_API_VERSION', '2025-04-16')
+_CF_JOBBER_GQL = 'https://api.getjobber.com/api/graphql'
+_CF_JOBBER_AUTHORIZE = 'https://api.getjobber.com/api/oauth/authorize'
+_CF_JOBBER_TOKEN = 'https://api.getjobber.com/api/oauth/token'
+
+CASHFLOW_ROLES = ('admin', 'office')
+# Company cash is not for every office login: set CASHFLOW_USERS to a
+# comma-separated list of usernames to limit the app to those people.
+CASHFLOW_USERS = {u.strip().lower() for u in os.environ.get('CASHFLOW_USERS', '').split(',') if u.strip()}
+
+# Jobber invoice statuses that still have money owing on them.
+_CF_OPEN_STATUSES = ('awaiting_payment', 'past_due', 'sent_not_due')
+
+CASHFLOW_DEFAULTS = {
+    'cash_floor': 0,             # warn when the forecast balance drops below this
+    'customer_terms_days': 30,   # used when an invoice carries no due date
+    'supplier_terms_days': 30,   # supplier invoice arrives -> we pay it
+    'unbilled_lag_days': 7,      # work finished -> invoice sent
+    'horizon_weeks': 13,
+    'use_new_sales': True,
+    'use_ready_to_bill': True,
+    'use_po_invoices': True,
+    'use_open_pos': True,
+    'use_subs': True,
+}
+
+CASHFLOW_CATEGORIES_OUT = ['Payroll', 'Payroll taxes', 'Rent', 'Insurance', 'Vehicle & equipment loans',
+                           'Fuel', 'Credit cards', 'Materials', 'Utilities & phones', 'Software',
+                           'Taxes', 'Loan payments', 'Owner draws', 'Other expense']
+CASHFLOW_CATEGORIES_IN = ['Other income', 'Line of credit draw', 'Contract payments (not in Jobber)',
+                          'Refund', 'Asset sale']
+CASHFLOW_FREQUENCIES = ('once', 'weekly', 'biweekly', 'semimonthly', 'monthly', 'quarterly', 'annually')
+
+try:
+    from zoneinfo import ZoneInfo
+    _CF_TZ = ZoneInfo('America/New_York')
+except Exception:
+    _CF_TZ = None
+
+try:
+    import fcntl
+except ImportError:  # Windows dev machines: fall back to in-process locks
+    fcntl = None
+
+
+def _cashflow_access_ok():
+    if 'username' not in session or session.get('role') not in CASHFLOW_ROLES:
+        return False
+    return not CASHFLOW_USERS or session['username'].lower() in CASHFLOW_USERS
+
+
+def _cf_today():
+    """Today in Naples - the server clock runs on UTC."""
+    if _CF_TZ:
+        return datetime.now(_CF_TZ).date()
+    return (datetime.utcnow() - timedelta(hours=5)).date()
+
+
+def _cf_now_text():
+    """Naples wall-clock time for "who did what when" columns."""
+    now = datetime.now(_CF_TZ) if _CF_TZ else datetime.utcnow() - timedelta(hours=5)
+    return now.strftime('%Y-%m-%d %H:%M:%S')
+
+
+def _cf_utc_stamp():
+    """UTC with a Z, so the browser can say "synced 5 minutes ago" correctly."""
+    return datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def _cf_iso(value):
+    """A date from Jobber, a spreadsheet or this app's own tables -> 'YYYY-MM-DD', or None."""
+    if value is None or value == '':
+        return None
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if hasattr(value, 'isoformat') and not isinstance(value, str):
+        return value.isoformat()[:10]
+    s = str(value).strip()
+    if not s or s.upper() in ('N/A', 'NA', 'NONE', '-', 'NULL'):
+        return None
+    if 'T' in s and len(s) >= 19:
+        try:
+            dt = datetime.fromisoformat(s.replace('Z', '+00:00'))
+            if dt.tzinfo and _CF_TZ:
+                dt = dt.astimezone(_CF_TZ)
+            return dt.date().isoformat()
+        except ValueError:
+            pass
+    for fmt in ('%Y-%m-%d', '%Y-%m-%d %H:%M:%S', '%m/%d/%Y', '%m/%d/%y', '%b %d, %Y', '%B %d, %Y',
+                '%d-%b-%Y', '%d-%b-%y', '%m-%d-%Y', '%Y/%m/%d', '%m/%d/%Y %H:%M', '%m/%d/%Y %I:%M %p',
+                '%m/%d/%Y %H:%M:%S', '%b %d %Y'):
+        try:
+            return datetime.strptime(s, fmt).date().isoformat()
+        except ValueError:
+            continue
+    m = re.match(r'(\d{4}-\d{2}-\d{2})', s)
+    return m.group(1) if m else None
+
+
+def _cf_d(s):
+    """'YYYY-MM-DD...' -> date, or None."""
+    try:
+        return datetime.strptime(str(s)[:10], '%Y-%m-%d').date() if s else None
+    except ValueError:
+        return None
+
+
+def _cf_md(d):
+    """'Sep 3' - strftime's %-d is not portable."""
+    return f"{d.strftime('%b')} {d.day}"
+
+
+def _cf_money(v):
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip().replace('$', '').replace(',', '')
+    neg = s.startswith('(') and s.endswith(')')
+    s = s.strip('()').strip()
+    if s in ('', '-'):
+        return None
+    try:
+        f = float(s)
+    except ValueError:
+        return None
+    return -f if neg else f
+
+
+_CF_COMPANY_WORDS = re.compile(
+    r"\b(hoa|poa|cdd|association|assn|assoc|inc|llc|l\.l\.c|corp|corporation|company|club|condo|condominium|"
+    r"condominiums|community|communities|management|mgmt|master|properties|property|homes|builders|"
+    r"construction|group|trust|church|school|county|city of|village|estates|golf|partners|ltd|services)\b", re.I)
+
+
+def _cf_looks_like_company(name):
+    return bool(_CF_COMPANY_WORDS.search(name or ''))
+
+
+_CF_THREAD_LOCKS = {'token': threading.Lock(), 'sync': threading.Lock()}
+
+
+class _CfLock:
+    """A lock every gunicorn worker respects - a flock on a file beside the database."""
+
+    def __init__(self, name, blocking=True):
+        self.path = os.path.join(DATA_DIR, f'.cashflow_{name}.lock')
+        self.tlock = _CF_THREAD_LOCKS[name]
+        self.blocking = blocking
+        self.fh = None
+        self.acquired = False
+
+    def __enter__(self):
+        if not self.tlock.acquire(blocking=self.blocking):
+            return False
+        if fcntl:
+            self.fh = open(self.path, 'w')
+            try:
+                fcntl.flock(self.fh, fcntl.LOCK_EX | (0 if self.blocking else fcntl.LOCK_NB))
+            except OSError:
+                self.fh.close()
+                self.fh = None
+                self.tlock.release()
+                return False
+        self.acquired = True
+        return True
+
+    def __exit__(self, *exc):
+        if not self.acquired:
+            return False
+        if self.fh:
+            fcntl.flock(self.fh, fcntl.LOCK_UN)
+            self.fh.close()
+        self.tlock.release()
+        return False
+
+
+def _cf_settings():
+    s = dict(CASHFLOW_DEFAULTS)
+    try:
+        s.update(json.loads(get_setting('cashflow_settings') or '{}'))
+    except (TypeError, ValueError):
+        pass
+    return s
+
+
+def _cf_state(key):
+    try:
+        return json.loads(get_setting(f'cashflow_{key}') or '{}')
+    except (TypeError, ValueError):
+        return {}
+
+
+def _cf_save_state(key, value):
+    set_setting(f'cashflow_{key}', json.dumps(value))
+
+
+def init_cashflow_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    # Invoices from Jobber (keyed by Jobber's id) or an uploaded report
+    # (keyed "import:<invoice number>"). Dates are YYYY-MM-DD, Naples time.
+    c.execute('''CREATE TABLE IF NOT EXISTS cf_invoices (
+                  invoice_key TEXT PRIMARY KEY,
+                  source TEXT NOT NULL,
+                  invoice_number TEXT,
+                  client_id TEXT,
+                  client_name TEXT,
+                  is_company INTEGER DEFAULT 0,
+                  subject TEXT,
+                  status TEXT,
+                  issued_date TEXT,
+                  due_date TEXT,
+                  paid_date TEXT,
+                  total REAL DEFAULT 0,
+                  balance REAL DEFAULT 0,
+                  terms_days INTEGER,
+                  web_uri TEXT,
+                  job_ids TEXT,
+                  updated_at TEXT,
+                  synced_at TEXT)''')
+    c.execute("CREATE INDEX IF NOT EXISTS idx_cf_invoices_status ON cf_invoices(status)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_cf_invoices_number ON cf_invoices(invoice_number)")
+    # Money actually received, per Jobber payment record.
+    c.execute('''CREATE TABLE IF NOT EXISTS cf_payments (
+                  payment_key TEXT PRIMARY KEY,
+                  invoice_key TEXT,
+                  client_id TEXT,
+                  amount REAL DEFAULT 0,
+                  entry_date TEXT,
+                  kind TEXT,
+                  method TEXT,
+                  synced_at TEXT)''')
+    c.execute("CREATE INDEX IF NOT EXISTS idx_cf_payments_invoice ON cf_payments(invoice_key)")
+    # Jobs Jobber marks "requires invoicing": the work is done, the bill is not out.
+    c.execute('''CREATE TABLE IF NOT EXISTS cf_unbilled_jobs (
+                  job_key TEXT PRIMARY KEY,
+                  job_number TEXT,
+                  title TEXT,
+                  client_id TEXT,
+                  client_name TEXT,
+                  is_company INTEGER DEFAULT 0,
+                  amount REAL DEFAULT 0,
+                  completed_date TEXT,
+                  web_uri TEXT,
+                  synced_at TEXT)''')
+    # Collections log: every call, email and promise to pay, newest last.
+    c.execute('''CREATE TABLE IF NOT EXISTS cf_collection_notes (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  invoice_key TEXT NOT NULL,
+                  invoice_number TEXT,
+                  client_name TEXT,
+                  action TEXT,
+                  note TEXT,
+                  promised_date TEXT,
+                  created_by TEXT,
+                  created_at TEXT)''')
+    c.execute("CREATE INDEX IF NOT EXISTS idx_cf_notes_invoice ON cf_collection_notes(invoice_key)")
+    # Payroll, rent, loans and anything else that moves cash but is not a
+    # Jobber invoice or a PO: one-off or repeating.
+    c.execute('''CREATE TABLE IF NOT EXISTS cf_items (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  name TEXT NOT NULL,
+                  direction TEXT NOT NULL DEFAULT 'out',
+                  category TEXT,
+                  amount REAL NOT NULL DEFAULT 0,
+                  frequency TEXT NOT NULL DEFAULT 'monthly',
+                  start_date TEXT NOT NULL,
+                  end_date TEXT,
+                  notes TEXT,
+                  active INTEGER DEFAULT 1,
+                  created_by TEXT,
+                  created_at TEXT,
+                  updated_at TEXT)''')
+    # Bank accounts and their latest balance - where the forecast starts.
+    c.execute('''CREATE TABLE IF NOT EXISTS cf_accounts (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  name TEXT NOT NULL,
+                  balance REAL NOT NULL DEFAULT 0,
+                  as_of TEXT,
+                  updated_by TEXT,
+                  updated_at TEXT)''')
+    # One row a day so AR, lateness and DSO can be watched over time.
+    c.execute('''CREATE TABLE IF NOT EXISTS cf_ar_snapshots (
+                  snapshot_date TEXT PRIMARY KEY,
+                  total_ar REAL,
+                  not_due REAL,
+                  d1_30 REAL,
+                  d31_60 REAL,
+                  d61_90 REAL,
+                  d90_plus REAL,
+                  ready_to_bill REAL,
+                  dso REAL,
+                  cash REAL)''')
+    conn.commit()
+    conn.close()
+
+
+# ── Jobber connection ────────────────────────────────────────────────────────
+
+class CashflowJobberError(Exception):
+    pass
+
+
+def _cf_jobber_configured():
+    return bool(JOBBER_CLIENT_ID and JOBBER_CLIENT_SECRET)
+
+
+def _cf_callback_url():
+    """Where Jobber sends the browser after "Allow". Must match the callback URL
+    on the app in Jobber's Developer Center character for character."""
+    explicit = os.environ.get('JOBBER_CALLBACK_URL', '').strip()
+    if explicit:
+        return explicit
+    base = WEBSITE_URL.rstrip('/') if WEBSITE_URL and 'localhost' not in WEBSITE_URL else request.url_root.rstrip('/')
+    return base + '/cashflow/jobber/callback'
+
+
+def _cf_token_request(fields):
+    r = http_requests.post(_CF_JOBBER_TOKEN, timeout=30,
+                           data=dict(fields, client_id=JOBBER_CLIENT_ID, client_secret=JOBBER_CLIENT_SECRET))
+    try:
+        out = r.json()
+    except ValueError:
+        out = {}
+    if r.status_code >= 400 or not out.get('access_token'):
+        raise CashflowJobberError(f"Jobber refused the sign-in (HTTP {r.status_code}): "
+                                  f"{out.get('error_description') or out.get('error') or 'no detail'}")
+    return out
+
+
+def _cf_save_tokens(new, previous=None):
+    previous = previous or {}
+    tok = {
+        'access_token': new['access_token'],
+        # Jobber may rotate the refresh token; keep the old one only when it did not.
+        'refresh_token': new.get('refresh_token') or previous.get('refresh_token'),
+        'obtained_at': time.time(),
+        'connected_by': previous.get('connected_by'),
+        'connected_at': previous.get('connected_at'),
+    }
+    _cf_save_state('jobber_tokens', tok)
+    return tok
+
+
+def _cf_access_token(force_refresh=False):
+    # Refreshes are serialised across workers: with a rotating refresh token, two
+    # workers refreshing at once would leave one holding a dead token.
+    with _CfLock('token'):
+        tok = _cf_state('jobber_tokens')
+        if not tok.get('refresh_token'):
+            raise CashflowJobberError('Jobber is not connected')
+        if force_refresh or time.time() - float(tok.get('obtained_at') or 0) > 55 * 60:
+            new = _cf_token_request({'grant_type': 'refresh_token', 'refresh_token': tok['refresh_token']})
+            tok = _cf_save_tokens(new, tok)
+        return tok['access_token']
+
+
+_CF_SYNC_NOTES = {}
+
+
+def _cf_jobber_gql(query, variables=None):
+    """One GraphQL call: refreshes an expired token, waits out throttling, and
+    raises Jobber's own message for anything else."""
+    force = False
+    for _ in range(5):
+        token = _cf_access_token(force_refresh=force)
+        r = http_requests.post(_CF_JOBBER_GQL, timeout=90,
+                               json={'query': query, 'variables': variables or {}},
+                               headers={'Authorization': f'Bearer {token}',
+                                        'X-JOBBER-GRAPHQL-VERSION': JOBBER_API_VERSION})
+        if r.status_code == 401:
+            force = True
+            continue
+        if r.status_code == 429:
+            time.sleep(30)
+            continue
+        if r.status_code >= 400:
+            raise CashflowJobberError(f'Jobber API HTTP {r.status_code}')
+        out = r.json()
+        ext = out.get('extensions') or {}
+        warn = (ext.get('versioning') or {}).get('warning')
+        if warn:
+            _CF_SYNC_NOTES['version_warning'] = warn
+        cost = ext.get('cost') or {}
+        throttle = cost.get('throttleStatus') or {}
+        errors = out.get('errors') or []
+        if errors:
+            codes = {(e.get('extensions') or {}).get('code') for e in errors}
+            if 'THROTTLED' in codes:
+                need = (cost.get('requestedQueryCost') or 1000) - (throttle.get('currentlyAvailable') or 0)
+                time.sleep(min(60, max(need, 0) / (throttle.get('restoreRate') or 500) + 1))
+                continue
+            raise CashflowJobberError(' | '.join(e.get('message', '?') for e in errors))
+        # Leave headroom for the next page rather than be refused halfway through.
+        avail, asked = throttle.get('currentlyAvailable'), cost.get('requestedQueryCost') or 0
+        if avail is not None and avail < asked * 1.5:
+            time.sleep(min(30, (asked * 1.5 - avail) / (throttle.get('restoreRate') or 500)))
+        return out.get('data') or {}
+    raise CashflowJobberError('Jobber kept refusing the request (signed out or rate limited)')
+
+
+# A query spec is a list of field names and (name, [sub-fields]) pairs, so a
+# field an older API version lacks can be dropped and the query retried.
+def _cf_render(spec):
+    return ' '.join(f if isinstance(f, str) else f'{f[0]} {{ {_cf_render(f[1])} }}' for f in spec)
+
+
+def _cf_drop(spec, field):
+    out = []
+    for f in spec:
+        if isinstance(f, str):
+            if f != field:
+                out.append(f)
+        elif f[0] != field:
+            sub = _cf_drop(f[1], field)
+            if sub:
+                out.append((f[0], sub))
+    return out
+
+
+_CF_INVOICE_SPEC = ['id', 'invoiceNumber', 'invoiceStatus', 'subject', 'issuedDate', 'dueDate',
+                    'receivedDate', 'invoiceNet', 'updatedAt', 'jobberWebUri', 'jobIds',
+                    ('amounts', ['total', 'invoiceBalance']),
+                    ('client', ['id', 'name', 'isCompany'])]
+_CF_INVOICE_REQUIRED = {'id', 'invoiceStatus', 'amounts', 'total', 'invoiceBalance',
+                        'issuedDate', 'dueDate', 'client'}
+_CF_PAYMENT_SPEC = ['id', 'amount', 'entryDate', 'adjustmentType', 'paymentType',
+                    ('invoice', ['id']), ('client', ['id'])]
+_CF_JOB_SPEC = ['id', 'jobNumber', 'title', 'uninvoicedTotal', 'completedAt', 'endAt', 'jobberWebUri',
+                ('client', ['id', 'name', 'isCompany'])]
+_CF_EFFECTIVE_SPECS = {}
+
+
+def _cf_jobber_pages(connection, spec, required, filter_value=None, filter_type=None, page_size=100):
+    """Every node of a top-level connection, one page at a time."""
+    spec = _CF_EFFECTIVE_SPECS.get(connection, spec)
+    cursor = None
+    while True:
+        decl, args = '$first: Int!, $after: String', 'first: $first, after: $after'
+        variables = {'first': page_size, 'after': cursor}
+        if filter_value is not None:
+            decl += f', $filter: {filter_type}'
+            args += ', filter: $filter'
+            variables['filter'] = filter_value
+        q = (f'query({decl}) {{ {connection}({args}) {{ nodes {{ {_cf_render(spec)} }} '
+             f'pageInfo {{ hasNextPage endCursor }} }} }}')
+        try:
+            data = _cf_jobber_gql(q, variables)
+        except CashflowJobberError as e:
+            m = re.search(r"Field '(\w+)' doesn't exist", str(e))
+            if m and m.group(1) not in required and m.group(1) in _cf_render(spec).split():
+                spec = _CF_EFFECTIVE_SPECS[connection] = _cf_drop(spec, m.group(1))
+                continue
+            raise
+        page = data.get(connection) or {}
+        yield page.get('nodes') or []
+        info = page.get('pageInfo') or {}
+        if not info.get('hasNextPage'):
+            return
+        cursor = info.get('endCursor')
+        time.sleep(0.2)
+
+
+_CF_INVOICE_COLS = ('invoice_key', 'source', 'invoice_number', 'client_id', 'client_name', 'is_company',
+                    'subject', 'status', 'issued_date', 'due_date', 'paid_date', 'total', 'balance',
+                    'terms_days', 'web_uri', 'job_ids', 'updated_at', 'synced_at')
+
+
+def _cf_store_invoices(conn, rows):
+    conn.executemany(f"INSERT OR REPLACE INTO cf_invoices ({', '.join(_CF_INVOICE_COLS)}) "
+                     f"VALUES ({', '.join('?' * len(_CF_INVOICE_COLS))})", rows)
+    return len(rows)
+
+
+def _cf_jobber_invoice_rows(nodes, now):
+    rows = []
+    for n in nodes:
+        amts, cl = n.get('amounts') or {}, n.get('client') or {}
+        name = cl.get('name') or ''
+        company = cl['isCompany'] if 'isCompany' in cl else _cf_looks_like_company(name)
+        rows.append((n['id'], 'jobber', n.get('invoiceNumber'), cl.get('id'), name, 1 if company else 0,
+                     n.get('subject') or '', (n.get('invoiceStatus') or '').lower(),
+                     _cf_iso(n.get('issuedDate')), _cf_iso(n.get('dueDate')), _cf_iso(n.get('receivedDate')),
+                     float(amts.get('total') or 0), float(amts.get('invoiceBalance') or 0),
+                     n.get('invoiceNet'), n.get('jobberWebUri'), json.dumps(n.get('jobIds') or []),
+                     _cf_iso(n.get('updatedAt')), now))
+    return rows
+
+
+def cashflow_sync_jobber(full=False):
+    """Pull invoices, payments and finished-but-unbilled jobs from Jobber into
+    the cf_ tables. Only one sync runs at a time across all workers; returns
+    False when another is already running."""
+    with _CfLock('sync', blocking=False) as got:
+        if not got:
+            return False
+        now = _cf_now_text()
+        status = {'state': 'running', 'started_at': _cf_utc_stamp(), 'full': bool(full), 'stage': 'Starting',
+                  'counts': {}, 'warnings': []}
+        _cf_save_state('sync_status', status)
+        _CF_SYNC_NOTES.clear()
+        marks = _cf_state('sync_marks')
+        first = full or not marks.get('invoices_at')
+        today = _cf_today()
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+
+        def progress(stage, key=None, n=0):
+            # Commit first: the status is saved on its own connection, which
+            # would wait on this one's open write and time out.
+            conn.commit()
+            status['stage'] = stage
+            if key:
+                status['counts'][key] = status['counts'].get(key, 0) + n
+            _cf_save_state('sync_status', status)
+
+        try:
+            # 1. Every invoice changed since the last pull - three years of
+            #    history the first time, which is what payment speed is learned from.
+            since = today - timedelta(days=3 * 365) if first else _cf_d(marks['invoices_at']) - timedelta(days=2)
+            for nodes in _cf_jobber_pages('invoices', _CF_INVOICE_SPEC, _CF_INVOICE_REQUIRED,
+                                          {'updatedAt': {'after': f'{since.isoformat()}T00:00:00Z'}},
+                                          'InvoiceFilterAttributes'):
+                progress('Invoices', 'invoices', _cf_store_invoices(conn, _cf_jobber_invoice_rows(nodes, now)))
+                conn.commit()
+
+            # 2. Every invoice Jobber lists as open or draft, however old. This IS
+            #    the receivables list, so it is pulled whole every time.
+            seen = set()
+            for st in _CF_OPEN_STATUSES + ('draft',):
+                for nodes in _cf_jobber_pages('invoices', _CF_INVOICE_SPEC, _CF_INVOICE_REQUIRED,
+                                              {'status': st}, 'InvoiceFilterAttributes'):
+                    _cf_store_invoices(conn, _cf_jobber_invoice_rows(nodes, now))
+                    seen.update(n['id'] for n in nodes)
+                    progress('Open invoices', 'open_or_draft', len(nodes))
+            conn.commit()
+
+            # 3. Anything still open here that Jobber no longer lists as open was
+            #    paid, written off or deleted since - look each one up.
+            open_here = [r[0] for r in conn.execute(
+                f"SELECT invoice_key FROM cf_invoices WHERE source='jobber' AND status IN "
+                f"({', '.join('?' * (len(_CF_OPEN_STATUSES) + 1))})", _CF_OPEN_STATUSES + ('draft',))]
+            spec = _CF_EFFECTIVE_SPECS.get('invoices', _CF_INVOICE_SPEC)
+            one = f'query($id: EncodedId!) {{ invoice(id: $id) {{ {_cf_render(spec)} }} }}'
+            for key in [k for k in open_here if k not in seen][:300]:
+                try:
+                    node = _cf_jobber_gql(one, {'id': key}).get('invoice')
+                except CashflowJobberError as e:
+                    if 'not found' not in str(e).lower():
+                        raise
+                    node = None
+                if node:
+                    _cf_store_invoices(conn, _cf_jobber_invoice_rows([node], now))
+                else:
+                    conn.execute("DELETE FROM cf_invoices WHERE invoice_key=?", (key,))
+                progress('Closing out paid invoices', 'rechecked', 1)
+            conn.commit()
+
+            # 4. Payments: the cash that actually arrived, and a paid date for
+            #    any invoice that lacks one. Needs the payments scope - optional.
+            try:
+                since_p = (today - timedelta(days=3 * 365) if first or not marks.get('payments_at')
+                           else _cf_d(marks['payments_at']) - timedelta(days=7))
+                for nodes in _cf_jobber_pages('paymentRecords', _CF_PAYMENT_SPEC, {'id', 'amount', 'entryDate'},
+                                              {'entryDate': {'after': f'{since_p.isoformat()}T00:00:00Z'}},
+                                              'PaymentRecordFilterAttributes'):
+                    rows = [(n['id'], (n.get('invoice') or {}).get('id'), (n.get('client') or {}).get('id'),
+                             float(n.get('amount') or 0), _cf_iso(n.get('entryDate')),
+                             (n.get('adjustmentType') or '').upper(), n.get('paymentType'), now) for n in nodes]
+                    conn.executemany("""INSERT OR REPLACE INTO cf_payments
+                                        (payment_key, invoice_key, client_id, amount, entry_date, kind, method, synced_at)
+                                        VALUES (?,?,?,?,?,?,?,?)""", rows)
+                    conn.commit()
+                    progress('Payments', 'payments', len(rows))
+                marks['payments_at'] = today.isoformat()
+            except CashflowJobberError as e:
+                status['warnings'].append(f'Payments were not pulled: {e}')
+
+            # 5. Work finished but not billed yet - cash that is one invoice away.
+            try:
+                rows = []
+                for nodes in _cf_jobber_pages('jobs', _CF_JOB_SPEC, {'id', 'uninvoicedTotal'},
+                                              {'status': 'requires_invoicing'}, 'JobFilterAttributes'):
+                    for n in nodes:
+                        cl = n.get('client') or {}
+                        name = cl.get('name') or ''
+                        company = cl['isCompany'] if 'isCompany' in cl else _cf_looks_like_company(name)
+                        rows.append((n['id'], str(n.get('jobNumber') or ''), n.get('title') or '', cl.get('id'),
+                                     name, 1 if company else 0, float(n.get('uninvoicedTotal') or 0),
+                                     _cf_iso(n.get('completedAt') or n.get('endAt')), n.get('jobberWebUri'), now))
+                    progress('Jobs waiting to be invoiced', 'jobs_to_invoice', len(nodes))
+                conn.execute("DELETE FROM cf_unbilled_jobs")
+                conn.executemany("""INSERT OR REPLACE INTO cf_unbilled_jobs
+                                    (job_key, job_number, title, client_id, client_name, is_company, amount,
+                                     completed_date, web_uri, synced_at) VALUES (?,?,?,?,?,?,?,?,?,?)""", rows)
+                conn.commit()
+            except CashflowJobberError as e:
+                status['warnings'].append(f'Jobs waiting to be invoiced were not pulled: {e}')
+
+            if first:
+                # Jobber is the record from here on; an earlier spreadsheet
+                # import alongside it would count every invoice twice.
+                conn.execute("DELETE FROM cf_invoices WHERE source='import'")
+                marks['full_at'] = today.isoformat()
+            marks['invoices_at'] = today.isoformat()
+            conn.commit()
+            _cf_save_state('sync_marks', marks)
+            status.update(state='ok', stage='Done')
+        except Exception as e:
+            conn.rollback()
+            status.update(state='error', error=str(e))
+            print(f"⚠ Cash flow: Jobber sync failed: {e}")
+        finally:
+            conn.close()
+            status['finished_at'] = _cf_utc_stamp()
+            if _CF_SYNC_NOTES.get('version_warning'):
+                status['version_warning'] = _CF_SYNC_NOTES['version_warning']
+            _cf_save_state('sync_status', status)
+        return True
+
+
+def _cf_start_sync(full=False):
+    threading.Thread(target=cashflow_sync_jobber, args=(full,), daemon=True).start()
+
+
+def _cf_scheduled_sync():
+    if not _cf_state('jobber_tokens').get('refresh_token'):
+        return
+    full_at = _cf_d(_cf_state('sync_marks').get('full_at'))
+    cashflow_sync_jobber(full=not full_at or (_cf_today() - full_at).days >= 7)
+
+
+# ── Spreadsheet import ───────────────────────────────────────────────────────
+# Jobber: Reports > Invoices (or Aged receivables) > Export. QuickBooks' A/R
+# Aging Detail export works too. Headers are matched by name, so column order
+# and extra columns do not matter.
+
+_CF_IMPORT_HEADERS = {
+    'invoice_number': ['invoice #', 'invoice number', 'invoice no', 'invoice no.', 'inv #', 'invoice', 'num',
+                       'number', 'no.', 'ref no.', 'ref #'],
+    'client_name': ['client name', 'client', 'customer', 'customer name', 'customer full name', 'billed to',
+                    'name', 'company'],
+    'subject': ['subject', 'title', 'description', 'memo', 'memo/description', 'job title'],
+    'status': ['status', 'invoice status'],
+    'issued_date': ['issued date', 'issued', 'invoice date', 'date issued', 'issue date', 'date', 'created date',
+                    'created'],
+    'due_date': ['due date', 'date due', 'due'],
+    'paid_date': ['marked paid date', 'paid date', 'date paid', 'paid on', 'received date', 'paid at'],
+    'total': ['total', 'invoice total', 'total amount', 'amount', 'grand total'],
+    'balance': ['balance', 'open balance', 'balance due', 'amount due', 'outstanding', 'amount outstanding',
+                'invoice balance', 'remaining balance'],
+}
+
+
+def _cf_norm_header(h):
+    h = str(h or '').strip().lower()
+    h = re.sub(r'\(\s*(\$|usd|\$ usd)\s*\)', '', h)
+    return re.sub(r'\s+', ' ', h.replace('*', '').strip(' :'))
+
+
+def _cf_read_table(file_storage):
+    """Rows of cells from an uploaded .csv or .xlsx."""
+    name = (file_storage.filename or '').lower()
+    data = file_storage.read()
+    if name.endswith(('.xlsx', '.xlsm')):
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        # The sheet with the most rows is the report; a cover sheet is not.
+        best = max(wb.worksheets, key=lambda ws: ws.max_row or 0)
+        return [list(r) for r in best.iter_rows(values_only=True)]
+    if name.endswith('.xls'):
+        raise ValueError('Old .xls files cannot be read - save it as .xlsx or .csv and upload again.')
+    text = None
+    for enc in ('utf-8-sig', 'cp1252', 'latin-1'):
+        try:
+            text = data.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    return list(csv.reader(io.StringIO(text or '')))
+
+
+def _cf_map_columns(rows):
+    """Find the header row (the one naming the most known columns in the first
+    20 rows) and which column holds what."""
+    best_i, best = None, {}
+    for i, row in enumerate(rows[:20]):
+        headers = [_cf_norm_header(h) for h in row]
+        mapping = {}
+        for field, names in _CF_IMPORT_HEADERS.items():
+            for nm in names:
+                if nm in headers and headers.index(nm) not in mapping.values():
+                    mapping[field] = headers.index(nm)
+                    break
+        if len(mapping) > len(best):
+            best_i, best = i, mapping
+    return best_i, best
+
+
+def cashflow_parse_import(rows, customer_terms_days=30):
+    hdr, m = _cf_map_columns(rows)
+    if hdr is None or 'invoice_number' not in m or not ({'total', 'balance'} & m.keys()):
+        raise ValueError("Couldn't find an invoice number column and an amount (Total or Balance) column. "
+                         "Export the Invoices report from Jobber and upload that file.")
+    now = _cf_now_text()
+    out, seen, skipped = [], set(), 0
+    for row in rows[hdr + 1:]:
+        def get(field):
+            j = m.get(field)
+            return row[j] if j is not None and j < len(row) else None
+        num = str(get('invoice_number') or '').strip()
+        if re.fullmatch(r'\d+\.0', num):
+            num = num[:-2]
+        total, balance = _cf_money(get('total')), _cf_money(get('balance'))
+        if not num or num.lower().startswith('total') or (total is None and balance is None):
+            skipped += 1
+            continue
+        key = f'import:{num}'
+        if key in seen:
+            skipped += 1
+            continue
+        seen.add(key)
+        raw = str(get('status') or '').strip().lower()
+        if total is None:
+            total = balance
+        if 'bad' in raw:
+            status = 'bad_debt'
+        elif 'draft' in raw:
+            status = 'draft'
+        elif ('paid' in raw and not any(w in raw for w in ('awaiting', 'unpaid', 'partial', 'not'))) or \
+                (balance is not None and abs(balance) <= 0.005 and total > 0):
+            status = 'paid'
+        elif any(w in raw for w in ('past', 'overdue', 'late')):
+            status = 'past_due'
+        else:
+            status = 'awaiting_payment'
+        if balance is None:
+            balance = 0.0 if status in ('paid', 'bad_debt') else total
+        client = str(get('client_name') or '').strip()
+        issued = _cf_iso(get('issued_date'))
+        due = _cf_iso(get('due_date'))
+        out.append((key, 'import', num, 'name:' + client.lower(), client, 1 if _cf_looks_like_company(client) else 0,
+                    str(get('subject') or '').strip(), status, issued, due,
+                    _cf_iso(get('paid_date')) if status == 'paid' else None,
+                    total, balance if status not in ('paid', 'bad_debt') else 0.0,
+                    None if due else customer_terms_days, None, '[]', None, now))
+    found = {f: rows[hdr][j] for f, j in m.items()}
+    return out, found, skipped
+
+
+# ── The model ────────────────────────────────────────────────────────────────
+
+_CF_BUCKETS = [('not_due', 'Not due yet'), ('d1_30', '1–30 days late'), ('d31_60', '31–60 days late'),
+               ('d61_90', '61–90 days late'), ('d90_plus', '90+ days late')]
+
+
+def _cf_bucket(days_late):
+    if days_late <= 0:
+        return 'not_due'
+    if days_late <= 30:
+        return 'd1_30'
+    if days_late <= 60:
+        return 'd31_60'
+    if days_late <= 90:
+        return 'd61_90'
+    return 'd90_plus'
+
+
+def _cf_median(xs):
+    """Median of an already-sorted list."""
+    if not xs:
+        return None
+    n = len(xs)
+    return xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2
+
+
+def _cf_pct(xs, q):
+    """q-th quantile of an already-sorted list."""
+    return xs[min(len(xs) - 1, int(q * len(xs)))] if xs else None
+
+
+def _cf_points(xs, n=20):
+    """At most n evenly spaced values standing in for a sorted distribution."""
+    if len(xs) <= n:
+        return list(xs)
+    return [xs[int((i + 0.5) / n * len(xs))] for i in range(n)]
+
+
+class _CfBehavior:
+    """How long clients take to pay, learned from invoices already paid.
+
+    paid: (client_key, is_company, days from issue to paid)
+    lost: age in days at which an invoice was written off - or, for one still
+          open after a year, its age today
+    """
+    # Before there is enough history: the chance an invoice this many days old
+    # is eventually paid. Real history outweighs these as it builds up.
+    PRIOR = ((30, .99), (60, .97), (90, .94), (120, .90), (180, .80), (365, .60))
+    PRIOR_WEIGHT = 20
+
+    def __init__(self, paid, lost):
+        self.by_client, self.by_seg, self.all = defaultdict(list), defaultdict(list), []
+        for client_key, seg, days in paid:
+            self.by_client[client_key].append(days)
+            self.by_seg[seg].append(days)
+            self.all.append(days)
+        for lst in list(self.by_client.values()) + list(self.by_seg.values()) + [self.all]:
+            lst.sort()
+        self.lost = sorted(lost)
+
+    def p_collect(self, age):
+        """Chance an invoice still unpaid at `age` days is ever paid: of past
+        invoices that reached this age unpaid, the share that got paid."""
+        paid = len(self.all) - bisect.bisect_right(self.all, age)
+        lost = len(self.lost) - bisect.bisect_right(self.lost, age)
+        prior = next((p for limit, p in self.PRIOR if age <= limit), .35)
+        return (paid + self.PRIOR_WEIGHT * prior) / (paid + lost + self.PRIOR_WEIGHT)
+
+    def later(self, client_key, seg, age):
+        """Days-to-pay of past invoices that were still unpaid at `age` days -
+        this client's own if there are enough, else similar clients', else
+        everyone's. Returns (basis, those days, the whole history used)."""
+        for basis, lst, need in (('client', self.by_client.get(client_key, []), 3),
+                                 ('segment', self.by_seg.get(seg, []), 8),
+                                 ('all', self.all, 8)):
+            i = bisect.bisect_right(lst, age)
+            if len(lst) - i >= need:
+                return basis, lst[i:], lst
+        return 'stale', [], []
+
+
+def _cf_add_months(d, months, day):
+    y, m = divmod(d.month - 1 + months, 12)
+    y, m = d.year + y, m + 1
+    last = (datetime(y + (m == 12), m % 12 + 1, 1) - timedelta(days=1)).day
+    return d.replace(year=y, month=m, day=min(day, last))
+
+
+def _cf_occurrences(item, start, end):
+    """Dates between start and end (inclusive) on which a recurring item hits."""
+    d0 = _cf_d(item['start_date'])
+    if not d0:
+        return []
+    stop = min(end, _cf_d(item['end_date']) or end)
+    freq = item['frequency']
+    out = []
+    if freq == 'once':
+        return [d0] if start <= d0 <= stop else []
+    if freq in ('weekly', 'biweekly'):
+        step = 7 if freq == 'weekly' else 14
+        d = d0
+        if d < start:
+            d += timedelta(days=-(-(start - d).days // step) * step)
+        while d <= stop:
+            out.append(d)
+            d += timedelta(days=step)
+        return out
+    months = {'monthly': 1, 'semimonthly': 1, 'quarterly': 3, 'annually': 12}.get(freq, 1)
+    days = [d0.day] + ([min(d0.day + 15, 31)] if freq == 'semimonthly' else [])
+    k = 0
+    while True:
+        base = _cf_add_months(d0.replace(day=1), k * months, 1)
+        if base > stop:
+            break
+        for day in days:
+            d = _cf_add_months(base, 0, day)
+            if d >= d0 and start <= d <= stop:
+                out.append(d)
+        k += 1
+    return sorted(out)
+
+
+def _cf_table_cols(conn, table):
+    try:
+        return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    except sqlite3.Error:
+        return set()
+
+
+def _cf_money_text(v):
+    return f"${v:,.0f}" if v >= 0 else f"-${-v:,.0f}"
+
+
+def cashflow_model(delay_days=0, haircut_pct=0.0, sales_pct=None, weeks=None, record_snapshot=True):
+    """Everything the Cash Flow page shows, computed fresh from the database.
+
+    delay_days   scenario: every expected payment arrives this many days later
+    haircut_pct  scenario: this share of what is owed never arrives
+    sales_pct    scenario: new sales vs the usual pattern (None = learned trend)
+    """
+    s = _cf_settings()
+    H = max(4, min(int(weeks or s['horizon_weeks'] or 13), 52))
+    delay_days = max(-30, min(int(delay_days or 0), 120))
+    haircut = max(0.0, min(float(haircut_pct or 0), 90.0)) / 100
+    today = _cf_today()
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    invs = conn.execute("SELECT * FROM cf_invoices").fetchall()
+    payments = conn.execute("SELECT invoice_key, amount, entry_date, kind FROM cf_payments").fetchall()
+    jobs = conn.execute("SELECT * FROM cf_unbilled_jobs").fetchall()
+    notes = conn.execute("SELECT * FROM cf_collection_notes ORDER BY created_at, id").fetchall()
+    items = conn.execute("SELECT * FROM cf_items ORDER BY direction DESC, category, name").fetchall()
+    accounts = conn.execute("SELECT * FROM cf_accounts ORDER BY name").fetchall()
+
+    po_cols = _cf_table_cols(conn, 'po_requests')
+    store = 'p.store_name' if 'store_name' in po_cols else "''"
+    po_invoices = conn.execute(f"""SELECT i.id, i.po_id, i.invoice_number, i.invoice_cost, i.invoice_date,
+                                          i.invoice_upload_date, i.created_at, p.job_name, {store} AS store_name
+                                   FROM invoices i LEFT JOIN po_requests p ON p.id = i.po_id""").fetchall()
+    store = 'store_name' if 'store_name' in po_cols else "''"
+    open_pos = conn.execute(f"""SELECT id, job_name, estimated_cost, request_date, description, {store} AS store_name
+                                FROM po_requests WHERE status IN ('approved', 'awaiting_invoice')
+                                  AND estimated_cost > 0""").fetchall()
+    subs = conn.execute("""SELECT id, sub_contractor, invoice_date, invoice_number, invoice_total,
+                                  sei_proposal_number, expected_payment_date, jobber_invoice_number,
+                                  jobber_paid, jobber_paid_date
+                           FROM vendor_invoices WHERE invoice_total > 0""").fetchall()
+    snapshots = conn.execute("SELECT * FROM cf_ar_snapshots ORDER BY snapshot_date DESC LIMIT 400").fetchall()
+    conn.close()
+
+    def ck(r):
+        return r['client_id'] or ('name:' + (r['client_name'] or '').strip().lower())
+
+    # ── Payment behaviour ────────────────────────────────────────────────
+    last_pay, cash_in = {}, defaultdict(float)
+    for p in payments:
+        d = _cf_d(p['entry_date'])
+        if not d:
+            continue
+        kind = p['kind'] or 'PAYMENT'
+        if kind in ('PAYMENT', 'DEPOSIT'):
+            cash_in[d] += abs(p['amount'] or 0)
+            if p['invoice_key'] and (p['invoice_key'] not in last_pay or d > last_pay[p['invoice_key']]):
+                last_pay[p['invoice_key']] = d
+        elif kind in ('REFUND', 'FAILED_ACH_PAYMENT'):
+            cash_in[d] -= abs(p['amount'] or 0)
+
+    hist_from = today - timedelta(days=730)
+    paid_hist, lost, invoiced_by_day, paid_by_day = [], [], defaultdict(float), defaultdict(float)
+    for r in invs:
+        st, issued = r['status'], _cf_d(r['issued_date'])
+        if st != 'draft' and issued:
+            invoiced_by_day[issued] += r['total'] or 0
+        if st == 'paid':
+            pd = _cf_d(r['paid_date']) or last_pay.get(r['invoice_key']) or _cf_d(r['updated_at'])
+            if pd:
+                paid_by_day[pd] += r['total'] or 0
+            if issued and pd and issued >= hist_from and -30 <= (pd - issued).days <= 730:
+                paid_hist.append((ck(r), r['is_company'] or 0, max((pd - issued).days, 0), pd))
+        elif st == 'bad_debt' and issued and issued >= today - timedelta(days=3 * 365):
+            lost.append(max(((_cf_d(r['updated_at']) or today) - issued).days, 0))
+        elif st in _CF_OPEN_STATUSES and issued and (today - issued).days > 365 and (r['balance'] or 0) > 0.005:
+            lost.append((today - issued).days)
+    beh = _CfBehavior([(c, sg, d) for c, sg, d, _ in paid_hist], lost)
+
+    # ── The weeks ────────────────────────────────────────────────────────
+    week_starts = [today] + [today + timedelta(days=7 - today.weekday() + 7 * i) for i in range(H - 1)]
+    week_ends = [ws + timedelta(days=6 - ws.weekday()) for ws in week_starts]
+
+    def wk(d):
+        if d <= week_ends[0]:
+            return 0
+        i = (d - week_starts[1]).days // 7 + 1
+        return i if i < H else H          # H = after the horizon
+
+    lines, detail = {}, defaultdict(list)
+
+    def line(key, label, direction, group):
+        if key not in lines:
+            lines[key] = {'key': key, 'label': label, 'dir': direction, 'group': group, 'values': [0.0] * (H + 1)}
+        return lines[key]
+
+    def add(key, label, direction, group, d, amount, item):
+        w = wk(d)
+        line(key, label, direction, group)['values'][w] += amount
+        detail[(key, w)].append(dict(item, amount=round(amount, 2), date=d.isoformat()))
+
+    def spread(key, label, group, dates, amount, item):
+        """Book `amount` across possible payment dates, equally weighted."""
+        per_week = defaultdict(float)
+        for d in dates:
+            per_week[wk(max(d, today))] += amount / len(dates)
+        ln = line(key, label, 'in', group)
+        for w, amt in per_week.items():
+            ln['values'][w] += amt
+            detail[(key, w)].append(dict(item, amount=round(amt, 2)))
+
+    # ── Receivables ──────────────────────────────────────────────────────
+    latest_note, latest_promise, note_count = {}, {}, defaultdict(int)
+    for n in notes:
+        latest_note[n['invoice_key']] = n
+        note_count[n['invoice_key']] += 1
+        if n['promised_date']:
+            latest_promise[n['invoice_key']] = n
+
+    open_invs, aging = [], {k: {'key': k, 'label': lbl, 'amount': 0.0, 'count': 0} for k, lbl in _CF_BUCKETS}
+    at_risk = 0.0
+    for r in invs:
+        if r['status'] not in _CF_OPEN_STATUSES or (r['balance'] or 0) <= 0.005:
+            continue
+        bal = float(r['balance'])
+        issued = _cf_d(r['issued_date'])
+        terms = r['terms_days'] if r['terms_days'] is not None else s['customer_terms_days']
+        due = _cf_d(r['due_date']) or (issued + timedelta(days=int(terms or 0)) if issued else today)
+        issued = issued or due - timedelta(days=int(terms or 0))
+        age, late = max((today - issued).days, 0), (today - due).days
+        bucket = _cf_bucket(late)
+        aging[bucket]['amount'] += bal
+        aging[bucket]['count'] += 1
+        seg = r['is_company'] or 0
+        key = r['invoice_key']
+        note, promise = latest_note.get(key), latest_promise.get(key)
+        p_model = beh.p_collect(age)
+        at_risk += bal * (1 - p_model)
+        basis, later, base = beh.later(ck(r), seg, age)
+        broken = disputed = False
+        promise_date = _cf_d(promise['promised_date']) if promise else None
+
+        if note and note['action'] == 'write_off':
+            p, dates, why = 0.0, [today], 'Marked as a write-off - left out of the forecast.'
+            expected, lo, hi = None, None, None
+        elif promise_date and promise_date >= today - timedelta(days=3):
+            # A promise inside a 3-day grace period stands; after that it is broken.
+            p = max(p_model, .9)
+            dates = [promise_date + timedelta(days=delay_days)]
+            expected = lo = hi = dates[0]
+            why = (f"Promised to pay by {_cf_md(promise_date)}"
+                   f" ({promise['created_by'] or 'logged'} on {str(promise['created_at'])[:10]}).")
+        else:
+            broken = promise_date is not None
+            p = p_model
+            if basis == 'stale':
+                dates = [today + timedelta(days=7 * k + delay_days) for k in range(1, 9)]
+                expected, lo, hi = today + timedelta(days=30 + delay_days), dates[0], dates[-1]
+                why = (f"{age} days old - older than almost every invoice that has ever been paid, "
+                       f"so it is treated as doubtful and spread over the next two months.")
+            else:
+                dates = [issued + timedelta(days=d + delay_days) for d in _cf_points(later)]
+                expected = issued + timedelta(days=_cf_median(later) + delay_days)
+                lo = issued + timedelta(days=_cf_pct(later, .25) + delay_days)
+                hi = issued + timedelta(days=_cf_pct(later, .75) + delay_days)
+                who = {'client': 'This client', 'segment': 'Commercial & HOA clients' if seg else 'Homeowners',
+                       'all': 'Clients'}[basis]
+                why = f"{who} usually pay{'s' if basis == 'client' else ''} in {round(_cf_median(base))} days"
+                why += f" ({len(base)} paid invoices)." if basis == 'client' else \
+                    " (not enough history for this client yet)."
+                if age > 0 and len(later) < len(base):
+                    why += f" Of invoices still unpaid at {age} days, half were paid by day {round(_cf_median(later))}."
+            if broken:
+                why = f"Broke a promise to pay by {_cf_md(promise_date)}. " + why
+        if note and note['action'] == 'disputed':
+            disputed = True
+            p *= .5
+            why = 'Disputed - counted at half. ' + why
+        p *= (1 - haircut)
+        if p > 0:
+            spread('ar', 'Payments on open invoices', 'ar', dates, bal * p,
+                   {'label': f"#{r['invoice_number']} {r['client_name']}", 'invoice_key': key,
+                    'detail': f"{_cf_money_text(bal)} owed, {round(p * 100)}% likely", 'link': r['web_uri']})
+        open_invs.append({
+            'key': key, 'number': r['invoice_number'], 'client': r['client_name'] or '(no name)',
+            'client_key': ck(r), 'subject': r['subject'] or '', 'issued': issued.isoformat(),
+            'due': due.isoformat(), 'age': age, 'late': late, 'bucket': bucket, 'balance': round(bal, 2),
+            'total': round(r['total'] or 0, 2), 'p': round(p, 3), 'p_model': round(p_model, 3),
+            'expected': expected.isoformat() if expected else None,
+            'range': [lo.isoformat(), hi.isoformat()] if lo else None,
+            'why': why, 'basis': basis, 'link': r['web_uri'], 'company': bool(seg),
+            'broken': broken, 'disputed': disputed,
+            'promise': promise_date.isoformat() if promise_date and not broken else None,
+            'note': ({'action': note['action'], 'note': note['note'], 'by': note['created_by'],
+                      'at': str(note['created_at'])[:16], 'count': note_count[key]} if note else None),
+        })
+    open_invs.sort(key=lambda x: -x['balance'])
+    ar_total = sum(b['amount'] for b in aging.values())
+
+    # ── Money one step away: drafts and finished jobs not invoiced ───────
+    ready, draft_jobs = [], set()
+    for r in invs:
+        if r['status'] == 'draft' and (r['total'] or 0) > 0:
+            try:
+                draft_jobs.update(json.loads(r['job_ids'] or '[]'))
+            except ValueError:
+                pass
+            ready.append({'kind': 'draft', 'label': f"Draft #{r['invoice_number']}", 'client': r['client_name'],
+                          'client_key': ck(r), 'company': r['is_company'] or 0, 'amount': round(r['total'], 2),
+                          'date': None, 'link': r['web_uri'], 'old': False, 'subject': r['subject'] or ''})
+    for j in jobs:
+        if j['job_key'] in draft_jobs or (j['amount'] or 0) <= 0:
+            continue
+        done = _cf_d(j['completed_date'])
+        ready.append({'kind': 'job', 'label': f"Job #{j['job_number']}", 'client': j['client_name'],
+                      'client_key': j['client_id'], 'company': j['is_company'] or 0, 'amount': round(j['amount'], 2),
+                      'date': done.isoformat() if done else None, 'link': j['web_uri'], 'subject': j['title'] or '',
+                      # Finished 4+ months ago and never billed: more likely a job
+                      # nobody closed out in Jobber than money on its way.
+                      'old': bool(done and (today - done).days > 120)})
+    ready.sort(key=lambda x: -x['amount'])
+    ready_total = sum(x['amount'] for x in ready if not x['old'])
+    if s['use_ready_to_bill']:
+        p0 = beh.p_collect(0) * (1 - haircut)
+        for x in ready:
+            if x['old']:
+                continue
+            bill = today + timedelta(days=2 if x['kind'] == 'draft' else int(s['unbilled_lag_days']))
+            _, later, _ = beh.later(x['client_key'], x['company'], 0)
+            pts = _cf_points(later) or [int(s['customer_terms_days'])]
+            spread('ready', 'Drafts & finished work, once invoiced', 'ready',
+                   [bill + timedelta(days=d + delay_days) for d in pts], x['amount'] * p0,
+                   {'label': f"{x['label']} {x['client'] or ''}", 'link': x['link'],
+                    'detail': f"{_cf_money_text(x['amount'])}, invoiced ~{_cf_md(bill)}"})
+
+    # ── New sales, from last year's pattern ──────────────────────────────
+    days_sorted = sorted(invoiced_by_day)
+    cum, run = [], 0.0
+    for d in days_sorted:
+        run += invoiced_by_day[d]
+        cum.append(run)
+
+    def invoiced(a, b):
+        """Total invoiced on days a <= d < b."""
+        i, j = bisect.bisect_left(days_sorted, a), bisect.bisect_left(days_sorted, b)
+        return (cum[j - 1] if j else 0.0) - (cum[i - 1] if i else 0.0)
+
+    span = (today - days_sorted[0]).days if days_sorted else 0
+    sales = {'basis': None, 'auto_growth': None, 'growth': None, 'weekly': []}
+    if span >= 400:
+        # This year vs the same stretch last year - up to 26 weeks, because a
+        # few big commercial invoices swing anything shorter.
+        gw = min(182, span - 371)
+        recent = invoiced(today - timedelta(days=gw), today)
+        ly = invoiced(today - timedelta(days=gw + 364), today - timedelta(days=364))
+        auto = max(.6, min(recent / ly, 1.6)) if gw >= 56 and recent > 0 and ly > 0 else 1.0
+        sales.update(basis='last_year', auto_growth=round(auto, 3))
+
+        def base_for(w):
+            ws, we = week_starts[w], week_ends[w]
+            n = (we - ws).days + 1
+            # The same weekdays a year earlier (364 days back), widened by two
+            # weeks each side to smooth out one-off big invoices.
+            return invoiced(ws - timedelta(days=378), we - timedelta(days=349)) / (n + 28) * n
+    elif span >= 28:
+        window = min(span, 56)
+        daily = invoiced(today - timedelta(days=window), today) / window
+        sales.update(basis='recent', auto_growth=1.0)
+
+        def base_for(w):
+            return daily * ((week_ends[w] - week_starts[w]).days + 1)
+    else:
+        base_for = None
+    if base_for:
+        growth = 1 + float(sales_pct) / 100 if sales_pct is not None else sales['auto_growth']
+        sales['growth'] = round(growth, 3)
+        p0 = beh.p_collect(0) * (1 - haircut)
+        pts = _cf_points(beh.all) or [int(s['customer_terms_days'])]
+        for w in range(H):
+            amt = base_for(w) * growth
+            sales['weekly'].append(round(amt, 2))
+            if s['use_new_sales'] and amt > 0:
+                mid = week_starts[w] + timedelta(days=((week_ends[w] - week_starts[w]).days) // 2)
+                spread('new_sales', 'New sales, once invoiced and paid', 'new_sales',
+                       [mid + timedelta(days=d + delay_days) for d in pts], amt * p0,
+                       {'label': f"Sales invoiced week of {_cf_md(week_starts[w])}",
+                        'detail': f"{_cf_money_text(amt)} expected to be invoiced that week"})
+
+    # ── Regular bills and other planned items ────────────────────────────
+    horizon_end = week_ends[-1]
+    for it in items:
+        if not it['active']:
+            continue
+        direction = 'in' if it['direction'] == 'in' else 'out'
+        cat = it['category'] or ('Other income' if direction == 'in' else 'Other expense')
+        for d in _cf_occurrences(it, today, horizon_end):
+            add(f'{direction}:{cat}', cat, direction, 'items', d, float(it['amount'] or 0),
+                {'label': it['name'], 'detail': it['frequency'], 'item_id': it['id']})
+
+    # ── Supplier invoices matched to POs ─────────────────────────────────
+    terms = int(s['supplier_terms_days'])
+    po_total = 0.0
+    if s['use_po_invoices']:
+        for r in po_invoices:
+            amount = _cf_money(r['invoice_cost']) or 0
+            basis = _cf_d(_cf_iso(r['invoice_date'])) or _cf_d(_cf_iso(r['invoice_upload_date'] or r['created_at']))
+            if amount <= 0 or not basis:
+                continue
+            due = basis + timedelta(days=terms)
+            if due < today - timedelta(days=7):
+                continue            # due more than a week ago: assumed paid
+            po_total += amount
+            add('po_invoices', 'Supplier invoices (PO app)', 'out', 'auto', max(due, today), amount,
+                {'label': f"{r['store_name'] or 'Supplier'} #{r['invoice_number']}",
+                 'detail': f"PO {format_po_number(r['po_id'], r['job_name'])}, received {_cf_md(basis)}"})
+    open_po_total = 0.0
+    if s['use_open_pos']:
+        for r in open_pos:
+            req = _cf_d(_cf_iso(r['request_date']))
+            if not req or (today - req).days > 60:
+                continue            # open for 2+ months: more likely abandoned than coming
+            amount = float(r['estimated_cost'] or 0)
+            open_po_total += amount
+            add('open_pos', 'Open POs, not invoiced yet', 'out', 'auto',
+                max(req + timedelta(days=7 + terms), today + timedelta(days=7)), amount,
+                {'label': f"PO {format_po_number(r['id'], r['job_name'])} {r['store_name'] or ''}".strip(),
+                 'detail': (r['description'] or '')[:80]})
+
+    # ── Subcontractors: paid when the client pays us ─────────────────────
+    def digits(v):
+        return re.sub(r'\D', '', str(v or '')).lstrip('0')
+    by_number = {}
+    for r in invs:
+        if r['invoice_number']:
+            by_number[digits(r['invoice_number'])] = r
+    expected_by_number = {digits(x['number']): _cf_d(x['expected']) for x in open_invs if x['expected']}
+    subs_total = 0.0
+    if s['use_subs']:
+        for r in subs:
+            inv_date = _cf_d(_cf_iso(r['invoice_date']))
+            num = digits(r['jobber_invoice_number'])
+            linked = by_number.get(num) if num else None
+            client_paid = _cf_d(_cf_iso(r['jobber_paid_date'])) if r['jobber_paid'] else None
+            if not client_paid and linked is not None and linked['status'] == 'paid':
+                client_paid = _cf_d(linked['paid_date']) or last_pay.get(linked['invoice_key']) or today
+            if r['jobber_paid'] or client_paid:
+                if not client_paid or (today - client_paid).days > 21:
+                    continue        # client paid weeks ago: assume the sub has been paid
+                when, rule = client_paid + timedelta(days=7), f"client paid {_cf_md(client_paid)}"
+            elif _cf_d(_cf_iso(r['expected_payment_date'])):
+                when, rule = _cf_d(_cf_iso(r['expected_payment_date'])), 'expected payment date'
+            elif num and num in expected_by_number:
+                when = expected_by_number[num] + timedelta(days=7)
+                rule = f"a week after invoice #{r['jobber_invoice_number']} is expected to be paid"
+            elif inv_date and (today - inv_date).days <= 365:
+                when, rule = max(inv_date + timedelta(days=45), today + timedelta(days=14)), 'no link to a Jobber invoice'
+            else:
+                continue
+            amount = float(r['invoice_total'] or 0)
+            subs_total += amount
+            add('subs', 'Subcontractor bills', 'out', 'auto', max(when, today), amount,
+                {'label': f"{r['sub_contractor'] or 'Subcontractor'} #{r['invoice_number'] or ''}".strip(),
+                 'detail': rule})
+
+    # ── Cash ─────────────────────────────────────────────────────────────
+    cash = sum(float(a['balance'] or 0) for a in accounts)
+    as_of_dates = [_cf_d(a['as_of']) for a in accounts if _cf_d(a['as_of'])]
+    cash_as_of = min(as_of_dates).isoformat() if as_of_dates else None
+
+    order = {'ar': 0, 'ready': 1, 'new_sales': 2, 'items': 3, 'auto': 4}
+    ins = sorted((l for l in lines.values() if l['dir'] == 'in'), key=lambda l: (order[l['group']], l['label']))
+    outs = sorted((l for l in lines.values() if l['dir'] == 'out'),
+                  key=lambda l: (order[l['group']],
+                                 CASHFLOW_CATEGORIES_OUT.index(l['label']) if l['label'] in CASHFLOW_CATEGORIES_OUT else 99,
+                                 l['label']))
+    rows, bal = [], cash
+    for w in range(H):
+        tin = sum(l['values'][w] for l in ins)
+        tout = sum(l['values'][w] for l in outs)
+        rows.append({'begin': round(bal, 2), 'in': round(tin, 2), 'out': round(tout, 2),
+                     'net': round(tin - tout, 2), 'end': round(bal + tin - tout, 2)})
+        bal += tin - tout
+    for l in ins + outs:
+        l['values'] = [round(v, 2) for v in l['values']]
+        l['total'] = round(sum(l['values'][:H]), 2)
+
+    week_list = [{'start': ws.isoformat(), 'end': we.isoformat(),
+                  'label': 'This week' if i == 0 else _cf_md(ws)}
+                 for i, (ws, we) in enumerate(zip(week_starts, week_ends))]
+    floor = float(s['cash_floor'] or 0)
+    low_i = min(range(H), key=lambda i: rows[i]['end'])
+    below = next((i for i in range(H) if rows[i]['end'] < floor), None)
+
+    detail_out = {}
+    for (k, w), lst in detail.items():
+        lst.sort(key=lambda x: -abs(x['amount']))
+        detail_out[f'{k}|{w}'] = {'items': lst[:60], 'more': max(0, len(lst) - 60)}
+
+    # ── KPIs ─────────────────────────────────────────────────────────────
+    past_due = ar_total - aging['not_due']['amount']
+    billed_90 = invoiced(today - timedelta(days=90), today + timedelta(days=1))
+    dso = round(ar_total / (billed_90 / 90), 1) if billed_90 > 0 else None
+    recent_dtp = sorted(d for _, _, d, pd in paid_hist if pd > today - timedelta(days=365))
+    prior_dtp = sorted(d for _, _, d, pd in paid_hist if today - timedelta(days=730) < pd <= today - timedelta(days=365))
+    kpis = {
+        'cash': round(cash, 2), 'cash_as_of': cash_as_of, 'accounts': len(accounts),
+        'ar_total': round(ar_total, 2), 'ar_count': len(open_invs),
+        'past_due': round(past_due, 2), 'past_due_pct': round(past_due / ar_total * 100, 1) if ar_total else 0,
+        'dso': dso,
+        'days_to_pay': _cf_median(recent_dtp), 'days_to_pay_n': len(recent_dtp),
+        'days_to_pay_prior': _cf_median(prior_dtp),
+        'expected_4w': round(sum(lines['ar']['values'][:4]) if 'ar' in lines else 0, 2),
+        'ready_to_bill': round(ready_total, 2),
+        'at_risk': round(at_risk, 2),
+        'low_balance': rows[low_i]['end'], 'low_week': week_list[low_i]['start'],
+        'below_floor_week': week_list[below]['start'] if below is not None else None,
+        'end_balance': rows[-1]['end'],
+        'collection_rate': round(beh.p_collect(0) * 100, 1),
+        'history_n': len(beh.all),
+        'po_owed': round(po_total, 2), 'open_po': round(open_po_total, 2), 'subs_owed': round(subs_total, 2),
+    }
+
+    # ── History ──────────────────────────────────────────────────────────
+    monday = today - timedelta(days=today.weekday())
+    receipts = cash_in if cash_in else paid_by_day
+    collections = []
+    for i in range(26, 0, -1):
+        ws = monday - timedelta(days=7 * i)
+        collections.append({'start': ws.isoformat(),
+                            'amount': round(sum(receipts.get(ws + timedelta(days=k), 0) for k in range(7)), 2),
+                            'invoiced': round(invoiced(ws, ws + timedelta(days=7)), 2)})
+    speed = defaultdict(list)
+    for _, _, d, pd in paid_hist:
+        speed[f'{pd.year} Q{(pd.month - 1) // 3 + 1}'].append(d)
+    speed = [{'quarter': q, 'median': _cf_median(sorted(v)), 'n': len(v)} for q, v in sorted(speed.items())][-8:]
+
+    snap_row = {'total_ar': round(ar_total, 2), 'ready_to_bill': round(ready_total, 2), 'dso': dso,
+                'cash': round(cash, 2), **{k: round(aging[k]['amount'], 2) for k, _ in _CF_BUCKETS}}
+    if record_snapshot and invs:
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            conn.execute(f"""INSERT OR REPLACE INTO cf_ar_snapshots (snapshot_date, {', '.join(snap_row)})
+                             VALUES (?, {', '.join('?' * len(snap_row))})""",
+                         (today.isoformat(), *snap_row.values()))
+            conn.commit()
+            conn.close()
+        except sqlite3.Error as e:
+            print(f"⚠ Cash flow snapshot not saved: {e}")
+    trend = [dict(r) for r in reversed(snapshots) if r['snapshot_date'] != today.isoformat()]
+    if invs:
+        trend.append({'snapshot_date': today.isoformat(), **snap_row})
+    month_ago = next((t for t in reversed(trend) if _cf_d(t['snapshot_date']) <= today - timedelta(days=28)), None)
+
+    # ── Clients ──────────────────────────────────────────────────────────
+    clients = {}
+    for x in open_invs:
+        c = clients.setdefault(x['client_key'], {'key': x['client_key'], 'name': x['client'], 'balance': 0.0,
+                                                 'count': 0, 'oldest_late': -9999, 'company': x['company'],
+                                                 'expected_4w': 0.0, **{k: 0.0 for k, _ in _CF_BUCKETS}})
+        c['balance'] += x['balance']
+        c['count'] += 1
+        c[x['bucket']] += x['balance']
+        c['oldest_late'] = max(c['oldest_late'], x['late'])
+    inv_by_key = {x['key']: x for x in open_invs}
+    for (k, w), lst in detail.items():
+        if k == 'ar' and w < 4:
+            for it in lst:
+                inv = inv_by_key.get(it.get('invoice_key'))
+                if inv:
+                    clients[inv['client_key']]['expected_4w'] += it['amount']
+    for c in clients.values():
+        lst = beh.by_client.get(c['key'], [])
+        c['days_to_pay'] = _cf_median(lst)
+        c['paid_n'] = len(lst)
+        c['past_due'] = round(c['balance'] - c['not_due'], 2)
+        for k in ('balance', 'expected_4w', *(b for b, _ in _CF_BUCKETS)):
+            c[k] = round(c[k], 2)
+    clients = sorted(clients.values(), key=lambda c: -c['balance'])
+
+    # ── What needs attention ─────────────────────────────────────────────
+    alerts = []
+    sync = _cf_state('sync_status')
+    if not invs:
+        alerts.append({'level': 'info', 'tab': 'setup',
+                       'text': 'No invoices yet. Connect Jobber or upload an invoice report on the Setup tab.'})
+    if sync.get('state') == 'error':
+        alerts.append({'level': 'bad', 'tab': 'setup', 'text': f"The last Jobber sync failed: {sync.get('error')}"})
+    if not accounts:
+        alerts.append({'level': 'warn', 'tab': 'setup',
+                       'text': "Enter today's bank balance on the Setup tab. The forecast starts from it."})
+    elif cash_as_of and (today - _cf_d(cash_as_of)).days > 7:
+        alerts.append({'level': 'warn', 'tab': 'setup',
+                       'text': f"The bank balance is {(today - _cf_d(cash_as_of)).days} days old. Update it so the forecast starts from the truth."})
+    if below is not None:
+        alerts.append({'level': 'bad', 'tab': 'forecast',
+                       'text': f"Cash is forecast to fall below your {_cf_money_text(floor)} minimum in the week of "
+                               f"{_cf_md(week_starts[below])}. Lowest point: {_cf_money_text(rows[low_i]['end'])} "
+                               f"in the week of {_cf_md(week_starts[low_i])}."})
+    if ready_total > 0:
+        n = sum(1 for x in ready if not x['old'])
+        alerts.append({'level': 'warn', 'tab': 'receivables',
+                       'text': f"{_cf_money_text(ready_total)} of finished work is not invoiced yet ({n} "
+                               f"{'item' if n == 1 else 'items'}). Every day it waits is a day later the cash arrives."})
+    broken = [x for x in open_invs if x['broken']]
+    if broken:
+        alerts.append({'level': 'bad', 'tab': 'collections',
+                       'text': f"{len(broken)} promised {'payment is' if len(broken) == 1 else 'payments are'} overdue "
+                               f"({_cf_money_text(sum(x['balance'] for x in broken))})."})
+    if aging['d90_plus']['amount'] > 0:
+        alerts.append({'level': 'warn', 'tab': 'collections',
+                       'text': f"{_cf_money_text(aging['d90_plus']['amount'])} is more than 90 days late across "
+                               f"{aging['d90_plus']['count']} invoices."})
+    late_clients = sorted((c for c in clients if c['past_due'] > 0), key=lambda c: -c['past_due'])
+    if len(late_clients) >= 4 and past_due > 0:
+        top = sum(c['past_due'] for c in late_clients[:3])
+        if top / past_due >= .5:
+            alerts.append({'level': 'info', 'tab': 'receivables',
+                           'text': f"Three clients hold {round(top / past_due * 100)}% of everything late: "
+                                   f"{', '.join(c['name'] for c in late_clients[:3])}."})
+    if dso is not None and month_ago and month_ago.get('dso') and dso - month_ago['dso'] >= 5:
+        alerts.append({'level': 'warn', 'tab': 'receivables',
+                       'text': f"Days sales outstanding is up from {month_ago['dso']:.0f} to {dso:.0f} in the last month. "
+                               f"Clients are paying slower."})
+    if invs and not items:
+        alerts.append({'level': 'info', 'tab': 'setup',
+                       'text': 'Add payroll, rent and other regular bills on the Setup tab so the forecast includes what goes out.'})
+
+    tokens = _cf_state('jobber_tokens')
+    return {
+        'today': today.isoformat(), 'has_data': bool(invs),
+        'source': {'jobber': bool(tokens.get('refresh_token')),
+                   'imported': sum(1 for r in invs if r['source'] == 'import'),
+                   'jobber_rows': sum(1 for r in invs if r['source'] == 'jobber'),
+                   'sync': sync, 'marks': _cf_state('sync_marks'),
+                   'import': _cf_state('import_info')},
+        'settings': s,
+        'scenario': {'delay_days': delay_days, 'haircut_pct': round(haircut * 100, 1),
+                     'sales_pct': sales_pct, 'weeks': H},
+        'kpis': kpis, 'aging': [aging[k] for k, _ in _CF_BUCKETS],
+        'clients': clients, 'invoices': open_invs, 'ready': ready, 'sales': sales,
+        'weeks': week_list, 'lines': ins + outs, 'rows': rows, 'detail': detail_out,
+        'history': {'collections': collections, 'speed': speed, 'trend': trend[-180:],
+                    'collections_source': 'payments' if cash_in else 'paid invoices'},
+        'alerts': alerts,
+        'accounts': [dict(a) for a in accounts],
+        'items': [dict(i) for i in items],
+    }
+
+
+CASHFLOW_TEMPLATE = r'''<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cash Flow &amp; AR — Stahlman-England</title>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<style>
+  :root {
+    --brand:#2563EB; --brand-dark:#1D4ED8; --brand-light:#EFF6FF;
+    --ink:#0F172A; --ink2:#475569; --ink3:#94A3B8;
+    --bg:#F8FAFC; --card:#FFFFFF; --line:#E2E8F0; --line2:#F1F5F9;
+    --good:#059669; --good-bg:#ECFDF5; --warn:#B45309; --warn-bg:#FFFBEB; --bad:#DC2626; --bad-bg:#FEF2F2;
+    --in:#10B981; --out:#F43F5E;
+    --b0:#3B82F6; --b1:#FBBF24; --b2:#F97316; --b3:#EF4444; --b4:#991B1B;
+    --shadow:0 1px 3px rgba(15,23,42,.06),0 1px 2px rgba(15,23,42,.04);
+  }
+  *,*::before,*::after { box-sizing:border-box; }
+  body { margin:0; font-family:Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--ink); font-size:14px; line-height:1.45; }
+  a { color:var(--brand); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  .num, td.n, th.n { font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; }
+
+  .top { background:#fff; border-bottom:1px solid var(--line); position:sticky; top:0; z-index:50; }
+  .top-in { max-width:1320px; margin:0 auto; padding:0 20px; height:58px; display:flex; align-items:center; gap:14px; }
+  .top-in .back { color:var(--ink2); font-size:13px; font-weight:500; }
+  .top-in .sep { width:1px; height:24px; background:var(--line); }
+  .top-in h1 { font-size:17px; margin:0; letter-spacing:-.01em; }
+  .src { margin-left:auto; font-size:12px; color:var(--ink2); background:var(--bg); border:1px solid var(--line); border-radius:100px; padding:5px 12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:52vw; }
+  .src .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--ink3); margin-right:6px; vertical-align:1px; }
+  .src .dot.ok { background:var(--good); } .src .dot.run { background:var(--brand); animation:pulse 1s infinite alternate; } .src .dot.bad { background:var(--bad); }
+  @keyframes pulse { to { opacity:.3; } }
+  .tabs { max-width:1320px; margin:0 auto; padding:0 20px; display:flex; gap:2px; overflow-x:auto; }
+  .tabs a { padding:11px 14px 10px; font-size:14px; font-weight:600; color:var(--ink2); border-bottom:2px solid transparent; white-space:nowrap; }
+  .tabs a:hover { color:var(--ink); text-decoration:none; }
+  .tabs a.on { color:var(--brand); border-bottom-color:var(--brand); }
+  .tabs .badge { display:inline-block; min-width:18px; padding:0 5px; margin-left:5px; border-radius:9px; background:var(--bad); color:#fff; font-size:11px; line-height:18px; text-align:center; }
+
+  main { max-width:1320px; margin:0 auto; padding:20px 20px 60px; }
+  section[data-tab] { display:none; }
+  section[data-tab].on { display:block; }
+  .flash { max-width:1320px; margin:14px auto 0; padding:0 20px; }
+  .flash div { background:var(--brand-light); border:1px solid #BFDBFE; color:#1E3A8A; padding:10px 14px; border-radius:10px; margin-bottom:6px; }
+
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow); padding:18px 20px; margin-bottom:18px; }
+  .card h2 { font-size:15px; margin:0 0 4px; letter-spacing:-.01em; }
+  .card .sub { color:var(--ink2); font-size:13px; margin:0 0 14px; }
+  .card-h { display:flex; align-items:flex-start; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
+  .card-h > div:first-child { flex:1; min-width:200px; }
+  .card-h .sub { margin:0; }
+  .grid2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(420px,1fr)); gap:18px; }
+  .grid2 > .card { margin-bottom:0; }
+  .stack { display:flex; flex-direction:column; gap:18px; margin-bottom:18px; }
+
+  .kpis { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:12px; margin-bottom:18px; }
+  .kpi { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px 16px; box-shadow:var(--shadow); }
+  .kpi .l { font-size:12px; font-weight:600; color:var(--ink2); }
+  .kpi .v { font-size:24px; font-weight:750; letter-spacing:-.02em; margin:4px 0 2px; font-variant-numeric:tabular-nums; }
+  .kpi .s { font-size:12px; color:var(--ink2); }
+  .kpi.warn { border-color:#FDE68A; background:var(--warn-bg); } .kpi.warn .v { color:var(--warn); }
+  .kpi.bad { border-color:#FECACA; background:var(--bad-bg); } .kpi.bad .v { color:var(--bad); }
+  .kpi.good .v { color:var(--good); }
+
+  .btn { display:inline-flex; align-items:center; gap:6px; padding:8px 14px; border-radius:8px; border:1px solid var(--line); background:#fff; color:var(--ink); font:inherit; font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap; }
+  .btn:hover { background:var(--bg); text-decoration:none; }
+  .btn.primary { background:var(--brand); border-color:var(--brand); color:#fff; }
+  .btn.primary:hover { background:var(--brand-dark); }
+  .btn.danger { color:var(--bad); border-color:#FECACA; }
+  .btn.danger:hover { background:var(--bad-bg); }
+  .btn.sm { padding:4px 9px; font-size:12px; border-radius:6px; }
+  .btn:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+
+  input[type=text], input[type=number], input[type=date], input[type=search], select, textarea {
+    font:inherit; font-size:14px; padding:8px 10px; border:1px solid #CBD5E1; border-radius:8px; background:#fff; color:var(--ink); }
+  input:focus, select:focus, textarea:focus { outline:2px solid #BFDBFE; border-color:var(--brand); }
+  textarea { width:100%; min-height:70px; resize:vertical; }
+  label.f { display:block; font-size:12px; font-weight:600; color:var(--ink2); margin:0 0 4px; }
+  .fg { margin-bottom:12px; }
+  .fg input, .fg select { width:100%; }
+  .form-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:4px 14px; }
+  .hint { font-size:12px; color:var(--ink3); margin-top:4px; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; }
+  .chip { padding:5px 11px; border-radius:100px; border:1px solid var(--line); background:#fff; font:inherit; font-size:12px; font-weight:600; color:var(--ink2); cursor:pointer; }
+  .chip.on { background:var(--ink); border-color:var(--ink); color:#fff; }
+  .chip:hover:not(.on) { background:var(--bg); }
+
+  .tw { overflow-x:auto; -webkit-overflow-scrolling:touch; margin:0 -20px; padding:0 20px; }
+  table.t { width:100%; border-collapse:collapse; font-size:13px; }
+  table.t th { text-align:left; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--ink2); padding:8px 10px; border-bottom:1px solid var(--line); white-space:nowrap; background:#fff; }
+  table.t th.sort { cursor:pointer; user-select:none; }
+  table.t th.sort:hover { color:var(--ink); }
+  table.t th .ar { color:var(--brand); }
+  table.t td { padding:9px 10px; border-bottom:1px solid var(--line2); vertical-align:top; }
+  table.t tr.click { cursor:pointer; }
+  table.t tr.click:hover td { background:#F8FAFC; }
+  table.t tr.open td { background:#F8FAFC; }
+  table.t tr.x td { background:#F8FAFC; padding:4px 10px 14px; }
+  table.t tfoot td { font-weight:700; border-top:1px solid var(--line); border-bottom:none; }
+  .muted { color:var(--ink3); }
+  .small { font-size:12px; }
+  .why { color:var(--ink2); font-size:12px; margin-top:2px; max-width:520px; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:100px; font-size:11px; font-weight:700; white-space:nowrap; }
+  .pill.bad { background:var(--bad-bg); color:var(--bad); } .pill.warn { background:var(--warn-bg); color:var(--warn); }
+  .pill.good { background:var(--good-bg); color:var(--good); } .pill.info { background:var(--brand-light); color:var(--brand); }
+  .pill.grey { background:var(--line2); color:var(--ink2); }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; vertical-align:-1px; }
+  .empty { padding:26px 10px; text-align:center; color:var(--ink2); }
+  .empty b { display:block; color:var(--ink); margin-bottom:4px; font-size:14px; }
+
+  .alerts { list-style:none; margin:0; padding:0; }
+  .alerts li { display:flex; gap:10px; padding:10px 0; border-bottom:1px solid var(--line2); align-items:flex-start; cursor:pointer; }
+  .alerts li:last-child { border-bottom:none; }
+  .alerts li:hover .at { text-decoration:underline; }
+  .alerts .ic { flex:0 0 22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:800; }
+  .alerts .bad .ic { background:var(--bad-bg); color:var(--bad); } .alerts .warn .ic { background:var(--warn-bg); color:var(--warn); } .alerts .info .ic { background:var(--brand-light); color:var(--brand); }
+  .alerts .at { flex:1; }
+
+  .agebar { display:flex; height:30px; border-radius:8px; overflow:hidden; background:var(--line2); }
+  .agebar div { height:100%; min-width:2px; }
+  .agelegend { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:10px; margin-top:12px; }
+  .agelegend .v { font-size:17px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .agelegend .l { font-size:12px; color:var(--ink2); }
+  .agelegend button { all:unset; cursor:pointer; display:block; padding:6px 8px; margin:-6px -8px; border-radius:8px; }
+  .agelegend button:hover, .agelegend button.on { background:var(--bg); }
+  .cbar { display:flex; height:8px; border-radius:4px; overflow:hidden; background:var(--line2); min-width:80px; }
+
+  .chart { width:100%; position:relative; }
+  .chart svg { width:100%; height:auto; display:block; overflow:visible; }
+  .chart .grid { stroke:var(--line2); stroke-width:1; }
+  .chart .zero { stroke:#94A3B8; stroke-width:1; }
+  .chart .ax { fill:var(--ink3); font-size:11px; }
+  .chart .axd { fill:var(--ink2); font-size:11px; }
+  .chart .hov { fill:transparent; cursor:crosshair; }
+  .chart .hov:hover { fill:rgba(37,99,235,.05); }
+  .legend { display:flex; gap:16px; flex-wrap:wrap; font-size:12px; color:var(--ink2); margin-top:8px; }
+  .tip { position:fixed; z-index:200; pointer-events:none; background:#0F172A; color:#fff; font-size:12px; padding:8px 10px; border-radius:8px; box-shadow:0 6px 20px rgba(0,0,0,.2); display:none; max-width:260px; line-height:1.5; }
+  .tip b { font-weight:700; }
+  .tip .r { display:flex; justify-content:space-between; gap:16px; font-variant-numeric:tabular-nums; }
+
+  .scen { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px 22px; align-items:end; }
+  .scen .v { float:right; font-weight:700; color:var(--ink); font-variant-numeric:tabular-nums; }
+  .scen input[type=range] { width:100%; accent-color:var(--brand); }
+  .toggles { display:flex; gap:8px 18px; flex-wrap:wrap; margin-top:14px; padding-top:14px; border-top:1px solid var(--line2); font-size:13px; }
+  .toggles label { display:flex; gap:6px; align-items:center; cursor:pointer; }
+  .toggles input { accent-color:var(--brand); width:15px; height:15px; }
+
+  table.fc { border-collapse:separate; border-spacing:0; font-size:12.5px; font-variant-numeric:tabular-nums; min-width:100%; }
+  table.fc th, table.fc td { padding:7px 9px; text-align:right; white-space:nowrap; border-bottom:1px solid var(--line2); }
+  table.fc th { font-size:11px; color:var(--ink2); font-weight:700; background:#fff; position:sticky; top:0; }
+  table.fc td:first-child, table.fc th:first-child { text-align:left; position:sticky; left:0; background:#fff; z-index:1; min-width:230px; max-width:260px; overflow:hidden; text-overflow:ellipsis; border-right:1px solid var(--line); }
+  table.fc tr.sec td { font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.05em; color:var(--ink2); background:var(--bg); }
+  table.fc tr.sec td:first-child { background:var(--bg); }
+  table.fc tr.tot td { font-weight:700; border-top:1px solid var(--line); }
+  table.fc tr.end td { font-weight:800; font-size:13px; background:var(--brand-light); }
+  table.fc tr.end td:first-child { background:var(--brand-light); }
+  table.fc td.low { color:var(--bad); background:var(--bad-bg) !important; }
+  table.fc td.c { cursor:pointer; }
+  table.fc td.c:hover { background:var(--brand-light); color:var(--brand); }
+  table.fc td.z { color:#CBD5E1; }
+  table.fc .after { color:var(--ink3); border-left:1px dashed var(--line); }
+  details.how { margin-top:4px; }
+  details.how summary { cursor:pointer; font-weight:600; color:var(--brand); }
+  details.how ol, details.how ul { padding-left:20px; color:var(--ink2); }
+  details.how li { margin:6px 0; }
+  .steps { padding-left:20px; margin:8px 0; color:var(--ink2); }
+  .steps li { margin:6px 0; }
+  code.cp { background:var(--line2); padding:2px 6px; border-radius:5px; font-size:12px; word-break:break-all; }
+
+  .modal-bg { position:fixed; inset:0; background:rgba(15,23,42,.45); z-index:100; display:none; align-items:flex-start; justify-content:center; padding:6vh 14px; overflow-y:auto; }
+  .modal-bg.on { display:flex; }
+  .modal { background:#fff; border-radius:14px; width:560px; max-width:100%; box-shadow:0 20px 60px rgba(0,0,0,.25); }
+  .modal.wide { width:760px; }
+  .modal-h { display:flex; align-items:center; gap:10px; padding:16px 20px; border-bottom:1px solid var(--line); }
+  .modal-h h3 { margin:0; font-size:16px; flex:1; }
+  .modal-h .x { all:unset; cursor:pointer; font-size:22px; color:var(--ink3); line-height:1; padding:0 4px; }
+  .modal-b { padding:18px 20px; max-height:70vh; overflow-y:auto; }
+  .modal-f { padding:12px 20px; border-top:1px solid var(--line); display:flex; gap:8px; justify-content:flex-end; }
+  .toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); z-index:300; background:#0F172A; color:#fff; padding:10px 16px; border-radius:10px; font-size:13px; box-shadow:0 8px 24px rgba(0,0,0,.2); display:none; max-width:90vw; }
+  .toast.bad { background:var(--bad); }
+  .busy { position:fixed; top:0; left:0; height:3px; background:var(--brand); z-index:400; width:0; transition:width .3s; }
+  .busy.on { width:70%; transition:width 3s ease-out; }
+  .note-list { border-top:1px solid var(--line); margin-top:14px; padding-top:10px; }
+  .note-list .n { padding:8px 0; border-bottom:1px solid var(--line2); font-size:13px; }
+  .note-list .n .m { font-size:12px; color:var(--ink3); }
+
+  @media (max-width:720px) {
+    .top-in { padding:0 16px; gap:10px; } .tabs { padding:0 10px; } main { padding:16px 16px 50px; }
+    .tw { margin:0 -16px; padding:0 16px; }
+    .grid2 { grid-template-columns:1fr; }
+    .kpis { grid-template-columns:repeat(2,1fr); }
+    .kpi .v { font-size:20px; }
+    .card { padding:16px; }
+    .src { max-width:40vw; }
+    .top-in .back span { display:none; }
+    .hide-sm { display:none; }
+    table.fc td:first-child, table.fc th:first-child { min-width:140px; max-width:150px; }
+  }
+</style>
+</head>
+<body>
+<div class="busy" id="busy"></div>
+<header class="top">
+  <div class="top-in">
+    <a class="back" href="{{ url_for('dashboard') }}">← <span>Dashboard</span></a>
+    <div class="sep"></div>
+    <h1>Cash Flow &amp; AR</h1>
+    <div class="src" id="src"><span class="dot"></span>Loading…</div>
+  </div>
+  <nav class="tabs" id="tabs">
+    <a href="#overview" data-t="overview">Overview</a>
+    <a href="#receivables" data-t="receivables">Receivables</a>
+    <a href="#collections" data-t="collections">Collections<span class="badge" id="col-badge" style="display:none"></span></a>
+    <a href="#forecast" data-t="forecast">Forecast</a>
+    <a href="#setup" data-t="setup">Setup</a>
+  </nav>
+</header>
+{% with msgs = get_flashed_messages() %}{% if msgs %}
+<div class="flash">{% for m in msgs %}<div>{{ m }}</div>{% endfor %}</div>
+{% endif %}{% endwith %}
+
+<main>
+  <!-- ═══ OVERVIEW ═══ -->
+  <section data-tab="overview">
+    <div class="kpis" id="ov-kpis"></div>
+    <div class="card">
+      <div class="card-h">
+        <div><h2>Cash over the next <span class="js-weeks">13</span> weeks</h2>
+          <p class="sub">Starting from today's bank balance: what is expected in and out each week, and where the balance ends up.</p></div>
+        <a class="btn" href="#forecast">Open forecast →</a>
+      </div>
+      <div class="chart" id="ov-chart"></div>
+      <div class="legend">
+        <span><span class="sw" style="background:var(--brand)"></span>Bank balance at week end</span>
+        <span><span class="sw" style="background:var(--in)"></span>Money in</span>
+        <span><span class="sw" style="background:var(--out)"></span>Money out</span>
+        <span id="ov-floor-legend"><span class="sw" style="background:var(--bad)"></span>Minimum cash</span>
+      </div>
+    </div>
+    <div class="grid2">
+      <div class="card"><h2>What needs attention</h2><p class="sub">Click any line to go to it.</p><ul class="alerts" id="ov-alerts"></ul></div>
+      <div class="card">
+        <div class="card-h"><div><h2>Who owes the most</h2><p class="sub">Open balance by client, coloured by how late it is.</p></div>
+          <a class="btn sm" href="#receivables">All clients →</a></div>
+        <div id="ov-clients"></div>
+        <div style="margin-top:16px"><div class="agebar" id="ov-agebar"></div><div class="legend" id="ov-agelegend"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ RECEIVABLES ═══ -->
+  <section data-tab="receivables">
+    <div class="card">
+      <h2>How late is what we're owed?</h2>
+      <p class="sub" id="rc-age-sub">Open invoices by days past their due date.</p>
+      <div class="agebar" id="rc-agebar"></div>
+      <div class="agelegend" id="rc-agelegend"></div>
+    </div>
+    <div class="card" id="rc-ready-card">
+      <div class="card-h"><div><h2>Ready to bill</h2>
+        <p class="sub">Draft invoices and jobs Jobber marks "requires invoicing". This is money that can't arrive until the invoice goes out.</p></div>
+        <div class="num"><div class="muted small">Ready to bill</div><div style="font-size:20px;font-weight:750" id="rc-ready-total">—</div></div></div>
+      <div class="tw" id="rc-ready"></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><div><h2>Clients</h2><p class="sub">Everyone with an open balance. Click a client to see their invoices.</p></div>
+        <input type="search" id="rc-cq" placeholder="Search clients…" style="width:220px"></div>
+      <div class="tw" id="rc-clients"></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><div><h2>Open invoices</h2>
+        <p class="sub">When each is expected to be paid, and why. Click an invoice for the reasoning and to log a follow-up.</p></div>
+        <div class="row"><input type="search" id="rc-iq" placeholder="Search invoices…" style="width:200px"></div></div>
+      <div class="chips" id="rc-ichips" style="margin-bottom:10px"></div>
+      <div class="tw" id="rc-invoices"></div>
+    </div>
+    <div class="grid2">
+      <div class="card"><h2>Money collected each week</h2><p class="sub" id="rc-coll-sub">Last 26 weeks.</p><div class="chart" id="rc-coll"></div>
+        <div class="legend"><span><span class="sw" style="background:var(--in)"></span>Collected</span><span><span class="sw" style="background:#94A3B8"></span>Invoiced</span></div></div>
+      <div class="card"><h2>How fast clients pay</h2><p class="sub">Typical (median) days from invoice to payment, by the quarter it was paid.</p><div class="chart" id="rc-speed"></div></div>
+    </div>
+    <div class="card" style="margin-top:18px"><h2>What we're owed over time</h2><p class="sub">Recorded once a day. The red line is the late part.</p><div class="chart" id="rc-trend"></div></div>
+  </section>
+
+  <!-- ═══ COLLECTIONS ═══ -->
+  <section data-tab="collections">
+    <div class="kpis" id="co-kpis"></div>
+    <div class="card">
+      <div class="card-h"><div><h2>Who to call</h2>
+        <p class="sub">Late invoices, biggest and oldest first, broken promises at the top. Log each call or email. A promise to pay moves that money to the promised week in the forecast.</p></div></div>
+      <div class="chips" id="co-chips" style="margin-bottom:10px"></div>
+      <div class="tw" id="co-list"></div>
+    </div>
+  </section>
+
+  <!-- ═══ FORECAST ═══ -->
+  <section data-tab="forecast">
+    <div class="card">
+      <div class="card-h"><div><h2>What if?</h2><p class="sub">Try a slower season or slower payers. These sliders change only what you see; they reset when you leave.</p></div>
+        <div class="row"><button class="btn" id="fc-reset">Reset</button><a class="btn" id="fc-xlsx" href="/cashflow/api/export.xlsx">⬇ Excel</a></div></div>
+      <div class="scen">
+        <div><label class="f">Clients pay later by <span class="v" id="fc-delay-v">0 days</span></label><input type="range" id="fc-delay" min="0" max="60" step="1" value="0"></div>
+        <div><label class="f">Never collected <span class="v" id="fc-hair-v">0%</span></label><input type="range" id="fc-hair" min="0" max="50" step="1" value="0"></div>
+        <div><label class="f">New sales vs usual <span class="v" id="fc-sales-v">Learned</span></label><input type="range" id="fc-sales" min="-51" max="50" step="1" value="-51">
+          <div class="hint" id="fc-sales-hint"></div></div>
+        <div><label class="f">Look ahead</label>
+          <div class="chips" id="fc-weeks"><button class="chip" data-w="13">13 weeks</button><button class="chip" data-w="26">26 weeks</button><button class="chip" data-w="52">1 year</button></div></div>
+      </div>
+      <div class="toggles" id="fc-toggles">
+        <label><input type="checkbox" data-s="use_new_sales"> New sales (last year's pattern)</label>
+        <label><input type="checkbox" data-s="use_ready_to_bill"> Drafts &amp; finished work</label>
+        <label><input type="checkbox" data-s="use_po_invoices"> Supplier invoices (PO app)</label>
+        <label><input type="checkbox" data-s="use_open_pos"> Open POs</label>
+        <label><input type="checkbox" data-s="use_subs"> Subcontractor bills</label>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Cash over the next <span class="js-weeks">13</span> weeks</h2>
+      <p class="sub" id="fc-chart-sub"></p>
+      <div class="chart" id="fc-chart"></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><div><h2>Week by week</h2><p class="sub">Click any amount to see what makes it up. "After" is money expected beyond this view, not counted in the balance.</p></div></div>
+      <div class="tw" id="fc-table"></div>
+      <details class="how" style="margin-top:16px">
+        <summary>How this forecast works</summary>
+        <div id="fc-how"></div>
+      </details>
+    </div>
+  </section>
+
+  <!-- ═══ SETUP ═══ -->
+  <section data-tab="setup">
+    <div class="grid2" style="margin-bottom:18px">
+      <div class="card">
+        <div class="card-h"><div><h2>Bank balances</h2><p class="sub">Where the forecast starts. Update these weekly, or whenever you check the bank.</p></div>
+          <button class="btn primary" id="st-add-acct">+ Account</button></div>
+        <div class="tw" id="st-accounts"></div>
+      </div>
+      <div class="card">
+        <h2>Settings</h2><p class="sub">Assumptions the forecast uses.</p>
+        <div class="form-grid">
+          <div class="fg"><label class="f">Minimum cash to keep</label><input type="number" id="st-floor" min="0" step="1000"><div class="hint">You're warned when the forecast drops below this.</div></div>
+          <div class="fg"><label class="f">We pay suppliers after (days)</label><input type="number" id="st-sterms" min="0" max="120"><div class="hint">From when their invoice arrives in the PO app.</div></div>
+          <div class="fg"><label class="f">Finished work is invoiced after (days)</label><input type="number" id="st-lag" min="0" max="60"></div>
+          <div class="fg"><label class="f">Customer terms if none on invoice (days)</label><input type="number" id="st-cterms" min="0" max="120"></div>
+        </div>
+        <button class="btn primary" id="st-save">Save settings</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-h"><div><h2>Regular bills &amp; planned items</h2>
+        <p class="sub">Payroll, rent, loans, insurance, tax payments, anything that moves cash but isn't a Jobber invoice or a PO. Don't add sales you bill through Jobber here; the forecast already has those.</p></div>
+        <button class="btn primary" id="st-add-item">+ Add item</button></div>
+      <div class="chips" id="st-quick" style="margin-bottom:12px"></div>
+      <div class="tw" id="st-items"></div>
+    </div>
+    <div class="grid2">
+      <div class="card" id="st-jobber"></div>
+      <div class="card">
+        <h2>Upload an invoice report</h2>
+        <p class="sub">Use this until Jobber is connected, or if you'd rather not connect it.</p>
+        <ol class="steps">
+          <li>In Jobber, open <b>Reports → Invoices</b>, set the dates to cover the <b>last two years</b>, and export to CSV.</li>
+          <li>Upload the file here. Paid invoices matter: their paid dates are how the app learns how fast each client pays.</li>
+        </ol>
+        <p class="hint">A QuickBooks "A/R Aging Detail" export also works, but it only lists open invoices, so payment speed can't be learned from it. Uploading again replaces the last upload.</p>
+        <div class="row" style="margin-top:10px"><input type="file" id="st-file" accept=".csv,.xlsx,.xlsm"><button class="btn primary" id="st-upload">Upload</button></div>
+        <div id="st-import" style="margin-top:12px"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="modal-bg" id="modal-bg"><div class="modal" id="modal"></div></div>
+<div class="tip" id="tip"></div>
+<div class="toast" id="toast"></div>
+
+<script>const BOOT = {{ boot|tojson }};</script>
+<script>
+{% raw %}
+(function () {
+'use strict';
+const $ = (s, el) => (el || document).querySelector(s);
+const $$ = (s, el) => Array.from((el || document).querySelectorAll(s));
+const CSRF = ($('meta[name="csrf-token"]') || {}).content || '';
+
+const S = {
+  m: null, tab: 'overview',
+  sc: { delay: 0, haircut: 0, sales: 'auto', weeks: '' },
+  cl: { q: '', sort: 'balance', dir: -1, open: null, limit: 25 },
+  iv: { q: '', bucket: '', sort: 'balance', dir: -1, open: null, limit: 50 },
+  co: { filter: 'late' },
+  polling: null,
+};
+
+// ── formatting ──────────────────────────────────────────────────────────
+function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+const F0 = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+function money(v) { if (v == null || isNaN(v)) return '—'; const r = Math.round(v); return r < 0 ? '−' + F0.format(-r) : F0.format(r); }
+function moneyShort(v) {
+  const a = Math.abs(v), s = v < 0 ? '−' : '';
+  if (a >= 1e6) return s + '$' + (a / 1e6).toFixed(a >= 1e7 ? 0 : 1).replace(/\.0$/, '') + 'M';
+  if (a >= 1e3) return s + '$' + (a / 1e3).toFixed(a >= 1e4 ? 0 : 1).replace(/\.0$/, '') + 'k';
+  return s + '$' + Math.round(a);
+}
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function pd(s) { if (!s) return null; const p = String(s).slice(0, 10).split('-').map(Number); return new Date(p[0], p[1] - 1, p[2]); }
+function md(s) { const d = pd(s); return d ? MON[d.getMonth()] + ' ' + d.getDate() : '—'; }
+function mdy(s) { const d = pd(s); return d ? MON[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear() : '—'; }
+function iso(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function ago(stamp) {
+  if (!stamp) return '';
+  const t = new Date(stamp.endsWith('Z') ? stamp : stamp.replace(' ', 'T'));
+  const m = Math.round((Date.now() - t) / 60000);
+  if (m < 1) return 'just now'; if (m < 60) return m + ' min ago';
+  const h = Math.round(m / 60); if (h < 36) return h + ' hour' + (h > 1 ? 's' : '') + ' ago';
+  return Math.round(h / 24) + ' days ago';
+}
+function plural(n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); }
+const BUCKET_COLORS = { not_due: 'var(--b0)', d1_30: 'var(--b1)', d31_60: 'var(--b2)', d61_90: 'var(--b3)', d90_plus: 'var(--b4)' };
+const BUCKETS = ['not_due', 'd1_30', 'd31_60', 'd61_90', 'd90_plus'];
+const ACTIONS = { called: 'Called', emailed: 'Emailed', texted: 'Texted', promised: 'Promised to pay', disputed: 'Disputed', payment_plan: 'Payment plan', write_off: 'Write off', note: 'Note' };
+const FREQ = { once: 'One time', weekly: 'Every week', biweekly: 'Every 2 weeks', semimonthly: 'Twice a month', monthly: 'Monthly', quarterly: 'Quarterly', annually: 'Yearly' };
+const PER_MONTH = { once: 0, weekly: 52 / 12, biweekly: 26 / 12, semimonthly: 2, monthly: 1, quarterly: 1 / 3, annually: 1 / 12 };
+
+// ── plumbing ────────────────────────────────────────────────────────────
+function toast(msg, kind) {
+  const t = $('#toast'); t.textContent = msg; t.className = 'toast' + (kind ? ' ' + kind : ''); t.style.display = 'block';
+  clearTimeout(toast._t); toast._t = setTimeout(() => { t.style.display = 'none'; }, kind === 'bad' ? 6000 : 3000);
+}
+async function api(url, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({ 'X-CSRFToken': CSRF }, opts.headers || {});
+  if (opts.json !== undefined) {
+    opts.method = opts.method || 'POST'; opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(opts.json); delete opts.json;
+  }
+  let r;
+  try { r = await fetch(url, opts); } catch (e) { toast('Network error. Check your connection.', 'bad'); throw e; }
+  let data;
+  try { data = await r.json(); } catch (e) { data = { success: false, error: r.status === 200 ? 'Your session expired. Reload the page.' : 'Server error (' + r.status + ')' }; }
+  if (!r.ok || data.success === false) { toast(data.error || ('Error ' + r.status), 'bad'); throw new Error(data.error); }
+  return data;
+}
+function busy(on) { $('#busy').className = 'busy' + (on ? ' on' : ''); }
+
+async function load() {
+  const q = new URLSearchParams();
+  if (S.sc.delay) q.set('delay', S.sc.delay);
+  if (S.sc.haircut) q.set('haircut', S.sc.haircut);
+  if (S.sc.sales !== 'auto') q.set('sales', S.sc.sales);
+  if (S.sc.weeks) q.set('weeks', S.sc.weeks);
+  $('#fc-xlsx').href = '/cashflow/api/export.xlsx?' + q;
+  busy(true);
+  try { S.m = await api('/cashflow/api/model?' + q); render(); }
+  finally { busy(false); }
+}
+let _loadT;
+function loadSoon() { clearTimeout(_loadT); _loadT = setTimeout(load, 250); }
+
+function render() {
+  const m = S.m;
+  $$('.js-weeks').forEach(e => { e.textContent = m.scenario.weeks; });
+  renderSource(); renderOverview(); renderReceivables(); renderCollections(); renderForecast(); renderSetup();
+}
+
+// ── tabs ────────────────────────────────────────────────────────────────
+function showTab(t) {
+  if (!$('section[data-tab="' + t + '"]')) t = 'overview';
+  S.tab = t;
+  $$('section[data-tab]').forEach(s => s.classList.toggle('on', s.dataset.tab === t));
+  $$('#tabs a').forEach(a => a.classList.toggle('on', a.dataset.t === t));
+  if (S.m) requestAnimationFrame(() => { if (t === 'forecast') renderForecast(); if (t === 'receivables') renderReceivables(); if (t === 'overview') renderOverview(); });
+}
+window.addEventListener('hashchange', () => { showTab(location.hash.slice(1)); window.scrollTo(0, 0); });
+
+// ── modal & tooltip ─────────────────────────────────────────────────────
+function openModal(title, body, foot, wide) {
+  const m = $('#modal');
+  m.className = 'modal' + (wide ? ' wide' : '');
+  m.innerHTML = '<div class="modal-h"><h3>' + esc(title) + '</h3><button class="x" data-close>&times;</button></div>' +
+    '<div class="modal-b">' + body + '</div>' + (foot ? '<div class="modal-f">' + foot + '</div>' : '');
+  $('#modal-bg').classList.add('on');
+  const first = m.querySelector('input:not([type=hidden]), select, textarea');
+  if (first) setTimeout(() => first.focus(), 30);
+  return m;
+}
+function closeModal() { $('#modal-bg').classList.remove('on'); }
+$('#modal-bg').addEventListener('click', e => { if (e.target.id === 'modal-bg' || e.target.hasAttribute('data-close')) closeModal(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+const tip = $('#tip');
+function showTip(e, html) {
+  tip.innerHTML = html; tip.style.display = 'block';
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  let x = e.clientX + 14, y = e.clientY + 14;
+  if (x + w > window.innerWidth - 8) x = e.clientX - w - 14;
+  if (y + h > window.innerHeight - 8) y = e.clientY - h - 14;
+  tip.style.left = Math.max(8, x) + 'px'; tip.style.top = Math.max(8, y) + 'px';
+}
+function hideTip() { tip.style.display = 'none'; }
+
+// ── charts (inline SVG: this app's security policy allows no chart libraries) ──
+function niceTicks(lo, hi, n) {
+  const raw = (hi - lo) / n, mag = Math.pow(10, Math.floor(Math.log10(raw || 1))), norm = raw / mag;
+  const step = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag;
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push(Math.abs(v) < 1e-9 ? 0 : v);
+  return out;
+}
+
+function cashChart(el, m, tall) {
+  // Drawn at the element's real width so text stays readable on a phone.
+  const W = Math.max(320, Math.round(el.clientWidth || 960)), topH = tall ? 250 : 200, gap = 18, barH = tall ? 100 : 80, labH = 22;
+  const padL = 58, padR = 10, padT = 10;
+  const rows = m.rows, n = rows.length, floor = +m.settings.cash_floor || 0, start = m.kpis.cash;
+  const vals = [start].concat(rows.map(r => r.end));
+  let lo = Math.min(0, ...vals, floor), hi = Math.max(...vals, floor);
+  if (hi - lo < 1) hi = lo + 1000;
+  const padV = (hi - lo) * 0.1; hi += padV; if (lo < 0) lo -= padV;
+  const plotW = W - padL - padR, step = plotW / n;
+  const y = v => padT + (hi - v) / (hi - lo) * (topH - padT);
+  const xe = i => padL + step * (i + 1);
+  const xc = i => padL + step * (i + 0.5);
+  let s = '';
+  niceTicks(lo, hi, tall ? 5 : 4).forEach(t => {
+    s += '<line class="' + (t === 0 ? 'zero' : 'grid') + '" x1="' + padL + '" x2="' + (W - padR) + '" y1="' + y(t) + '" y2="' + y(t) + '"/>';
+    s += '<text class="ax" x="' + (padL - 8) + '" y="' + (y(t) + 4) + '" text-anchor="end">' + moneyShort(t) + '</text>';
+  });
+  const pts = [[padL, y(start)]].concat(rows.map((r, i) => [xe(i), y(r.end)]));
+  const base = y(Math.max(lo, Math.min(0, hi)));
+  s += '<path d="M' + pts.map(p => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join('L') + 'L' + xe(n - 1) + ',' + base + 'L' + padL + ',' + base + 'Z" fill="rgba(37,99,235,.08)"/>';
+  if (floor > 0) {
+    s += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + y(floor) + '" y2="' + y(floor) + '" stroke="var(--bad)" stroke-width="1.5" stroke-dasharray="5 4"/>';
+    s += '<text class="ax" x="' + (W - padR) + '" y="' + (y(floor) - 5) + '" text-anchor="end" style="fill:var(--bad)">Minimum ' + moneyShort(floor) + '</text>';
+  }
+  s += '<path d="M' + pts.map(p => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join('L') + '" fill="none" stroke="var(--brand)" stroke-width="2.5" stroke-linejoin="round"/>';
+  s += '<circle cx="' + padL + '" cy="' + y(start) + '" r="3.5" fill="#fff" stroke="var(--brand)" stroke-width="2"/>';
+  rows.forEach((r, i) => {
+    const lowc = r.end < floor;
+    s += '<circle cx="' + xe(i) + '" cy="' + y(r.end) + '" r="' + (lowc ? 4.5 : 3.5) + '" fill="' + (lowc ? 'var(--bad)' : 'var(--brand)') + '" stroke="#fff" stroke-width="1.5"/>';
+  });
+  // money in / out per week
+  const by = topH + gap + barH / 2, maxF = Math.max(1, ...rows.map(r => Math.max(r.in, r.out)));
+  const bw = Math.min(22, step * 0.34);
+  s += '<line class="zero" x1="' + padL + '" x2="' + (W - padR) + '" y1="' + by + '" y2="' + by + '"/>';
+  s += '<text class="ax" x="' + (padL - 8) + '" y="' + (by - barH / 2 + 10) + '" text-anchor="end">in</text>';
+  s += '<text class="ax" x="' + (padL - 8) + '" y="' + (by + barH / 2) + '" text-anchor="end">out</text>';
+  rows.forEach((r, i) => {
+    const hIn = r.in / maxF * (barH / 2 - 2), hOut = r.out / maxF * (barH / 2 - 2);
+    if (hIn > 0) s += '<rect x="' + (xc(i) - bw / 2) + '" y="' + (by - hIn) + '" width="' + bw + '" height="' + hIn + '" rx="2" fill="var(--in)"/>';
+    if (hOut > 0) s += '<rect x="' + (xc(i) - bw / 2) + '" y="' + by + '" width="' + bw + '" height="' + hOut + '" rx="2" fill="var(--out)"/>';
+  });
+  const every = Math.max(1, Math.ceil(52 / step)), ly = topH + gap + barH + labH - 4;
+  m.weeks.forEach((w, i) => { if (i % every === 0) s += '<text class="axd" x="' + xc(i) + '" y="' + ly + '" text-anchor="middle">' + esc(w.label) + '</text>'; });
+  rows.forEach((r, i) => { s += '<rect class="hov" data-i="' + i + '" x="' + (padL + step * i) + '" y="0" width="' + step + '" height="' + (topH + gap + barH) + '"/>'; });
+  const H = topH + gap + barH + labH;
+  el.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Cash forecast chart">' + s + '</svg>';
+  $$('.hov', el).forEach(rc => {
+    rc.addEventListener('mousemove', e => {
+      const i = +rc.dataset.i, r = rows[i], w = m.weeks[i];
+      showTip(e, '<b>' + (i === 0 ? 'This week' : 'Week of ' + md(w.start)) + '</b>' +
+        '<div class="r"><span>Start</span><span>' + money(r.begin) + '</span></div>' +
+        '<div class="r"><span>Money in</span><span>+' + money(r.in) + '</span></div>' +
+        '<div class="r"><span>Money out</span><span>−' + money(r.out) + '</span></div>' +
+        '<div class="r"><b>End</b><b' + (r.end < floor ? ' style="color:#FCA5A5"' : '') + '>' + money(r.end) + '</b></div>');
+    });
+    rc.addEventListener('mouseleave', hideTip);
+    rc.addEventListener('click', () => { location.hash = 'forecast'; });
+  });
+}
+
+function barChart(el, data, o) {
+  if (!data.length || !data.some(d => d[o.key])) { el.innerHTML = '<div class="empty">' + (o.empty || 'Nothing to show yet.') + '</div>'; return; }
+  const W = Math.max(300, Math.round(el.clientWidth || 560)), H = 190, padL = 50, padB = 22, padT = 16, padR = 6;
+  const max = Math.max(1, ...data.map(d => Math.max(d[o.key] || 0, o.line ? (d[o.line] || 0) : 0)));
+  const ticks = niceTicks(0, max * 1.08, 3), top = ticks[ticks.length - 1] || max;
+  const step = (W - padL - padR) / data.length, y = v => padT + (1 - v / top) * (H - padT - padB);
+  let s = '';
+  ticks.forEach(t => { s += '<line class="' + (t === 0 ? 'zero' : 'grid') + '" x1="' + padL + '" x2="' + (W - padR) + '" y1="' + y(t) + '" y2="' + y(t) + '"/><text class="ax" x="' + (padL - 6) + '" y="' + (y(t) + 4) + '" text-anchor="end">' + (o.fmt ? o.fmt(t) : moneyShort(t)) + '</text>'; });
+  const bw = Math.max(3, step * 0.62);
+  data.forEach((d, i) => {
+    const v = d[o.key] || 0, x = padL + step * i + (step - bw) / 2;
+    s += '<rect x="' + x + '" y="' + y(v) + '" width="' + bw + '" height="' + Math.max(0, y(0) - y(v)) + '" rx="2" fill="' + (o.color || 'var(--in)') + '"/>';
+    if (o.values) s += '<text class="axd" x="' + (x + bw / 2) + '" y="' + (y(v) - 5) + '" text-anchor="middle">' + (o.fmt ? o.fmt(v) : moneyShort(v)) + '</text>';
+    if (i % Math.max(o.every || 1, Math.ceil(44 / step)) === 0) s += '<text class="ax" x="' + (padL + step * (i + 0.5)) + '" y="' + (H - 5) + '" text-anchor="middle">' + esc(o.label(d)) + '</text>';
+  });
+  if (o.line) s += '<path d="M' + data.map((d, i) => (padL + step * (i + 0.5)).toFixed(1) + ',' + y(d[o.line] || 0).toFixed(1)).join('L') + '" fill="none" stroke="#94A3B8" stroke-width="1.5" stroke-dasharray="4 3"/>';
+  data.forEach((d, i) => { s += '<rect class="hov" data-i="' + i + '" x="' + (padL + step * i) + '" y="0" width="' + step + '" height="' + (H - padB) + '"/>'; });
+  el.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '">' + s + '</svg>';
+  $$('.hov', el).forEach(r => {
+    r.addEventListener('mousemove', e => showTip(e, o.tip(data[+r.dataset.i])));
+    r.addEventListener('mouseleave', hideTip);
+  });
+}
+
+function trendChart(el, pts) {
+  if (pts.length < 2) { el.innerHTML = '<div class="empty"><b>This fills in day by day.</b>Check back in a week to see whether what we\'re owed is growing or shrinking.</div>'; return; }
+  const W = Math.max(320, Math.round(el.clientWidth || 960)), H = 200, padL = 58, padR = 10, padT = 12, padB = 22;
+  const late = p => (p.total_ar || 0) - (p.not_due || 0);
+  const max = Math.max(1, ...pts.map(p => p.total_ar || 0));
+  const ticks = niceTicks(0, max * 1.08, 4), top = ticks[ticks.length - 1] || max;
+  const x = i => padL + (W - padL - padR) * (pts.length === 1 ? 0.5 : i / (pts.length - 1));
+  const y = v => padT + (1 - v / top) * (H - padT - padB);
+  let s = '';
+  ticks.forEach(t => { s += '<line class="' + (t === 0 ? 'zero' : 'grid') + '" x1="' + padL + '" x2="' + (W - padR) + '" y1="' + y(t) + '" y2="' + y(t) + '"/><text class="ax" x="' + (padL - 8) + '" y="' + (y(t) + 4) + '" text-anchor="end">' + moneyShort(t) + '</text>'; });
+  s += '<path d="M' + pts.map((p, i) => x(i).toFixed(1) + ',' + y(p.total_ar || 0).toFixed(1)).join('L') + 'L' + x(pts.length - 1) + ',' + y(0) + 'L' + x(0) + ',' + y(0) + 'Z" fill="rgba(37,99,235,.08)"/>';
+  s += '<path d="M' + pts.map((p, i) => x(i).toFixed(1) + ',' + y(p.total_ar || 0).toFixed(1)).join('L') + '" fill="none" stroke="var(--brand)" stroke-width="2"/>';
+  s += '<path d="M' + pts.map((p, i) => x(i).toFixed(1) + ',' + y(late(p)).toFixed(1)).join('L') + '" fill="none" stroke="var(--bad)" stroke-width="2"/>';
+  const every = Math.max(1, Math.ceil(pts.length / Math.max(3, Math.floor(W / 110))));
+  pts.forEach((p, i) => { if (i % every === 0 || i === pts.length - 1) s += '<text class="ax" x="' + x(i) + '" y="' + (H - 5) + '" text-anchor="middle">' + md(p.snapshot_date) + '</text>'; });
+  const colW = (W - padL - padR) / Math.max(1, pts.length - 1);
+  pts.forEach((p, i) => { s += '<rect class="hov" data-i="' + i + '" x="' + (x(i) - colW / 2) + '" y="0" width="' + colW + '" height="' + (H - padB) + '"/>'; });
+  el.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '">' + s + '</svg>';
+  $$('.hov', el).forEach(r => {
+    r.addEventListener('mousemove', e => { const p = pts[+r.dataset.i]; showTip(e, '<b>' + mdy(p.snapshot_date) + '</b><div class="r"><span>Owed</span><span>' + money(p.total_ar) + '</span></div><div class="r"><span>Late</span><span>' + money(late(p)) + '</span></div>' + (p.dso != null ? '<div class="r"><span>DSO</span><span>' + Math.round(p.dso) + ' days</span></div>' : '')); });
+    r.addEventListener('mouseleave', hideTip);
+  });
+}
+
+function ageBar(el, legendEl, aging, total, interactive) {
+  el.innerHTML = total > 0 ? aging.map(b => b.amount > 0 ? '<div style="width:' + (b.amount / total * 100) + '%;background:' + BUCKET_COLORS[b.key] + '" title="' + esc(b.label) + ': ' + money(b.amount) + '"></div>' : '').join('') : '';
+  if (!legendEl) return;
+  if (legendEl.classList.contains('agelegend')) {
+    legendEl.innerHTML = aging.map(b => '<button data-b="' + b.key + '"' + (S.iv.bucket === b.key ? ' class="on"' : '') + '><div class="l"><span class="sw" style="background:' + BUCKET_COLORS[b.key] + '"></span>' + esc(b.label) + '</div><div class="v">' + money(b.amount) + '</div><div class="l">' + plural(b.count, 'invoice') + (total ? ' · ' + Math.round(b.amount / total * 100) + '%' : '') + '</div></button>').join('');
+    if (interactive) $$('button', legendEl).forEach(b => b.addEventListener('click', () => { S.iv.bucket = S.iv.bucket === b.dataset.b ? '' : b.dataset.b; renderReceivables(); $('#rc-invoices').scrollIntoView({ behavior: 'smooth', block: 'start' }); }));
+  } else {
+    legendEl.innerHTML = aging.map(b => '<span><span class="sw" style="background:' + BUCKET_COLORS[b.key] + '"></span>' + esc(b.label) + ' ' + money(b.amount) + '</span>').join('');
+  }
+}
+
+// ── source pill ─────────────────────────────────────────────────────────
+function renderSource() {
+  const src = S.m.source, sync = src.sync || {}, el = $('#src');
+  let dot = '', text;
+  if (sync.state === 'running') { dot = 'run'; text = 'Syncing Jobber… ' + (sync.stage || ''); }
+  else if (src.jobber) {
+    dot = sync.state === 'error' ? 'bad' : 'ok';
+    text = sync.state === 'error' ? 'Jobber sync failed' : 'Jobber · synced ' + (ago(sync.finished_at) || 'never');
+  } else if (src.imported) { dot = 'ok'; text = 'Uploaded report · ' + ((src.import || {}).at || '').slice(0, 10); }
+  else if (src.jobber_rows) { text = 'Jobber disconnected · last synced ' + (ago(sync.finished_at) || 'a while ago'); }
+  else text = 'No data yet';
+  el.innerHTML = '<span class="dot ' + dot + '"></span>' + esc(text);
+  el.title = text;
+}
+
+// ── overview ────────────────────────────────────────────────────────────
+function kpi(label, value, sub, cls) { return '<div class="kpi ' + (cls || '') + '"><div class="l">' + label + '</div><div class="v">' + value + '</div><div class="s">' + (sub || '') + '</div></div>'; }
+
+function renderOverview() {
+  const m = S.m, k = m.kpis, floor = +m.settings.cash_floor || 0;
+  const cashSub = k.accounts ? plural(k.accounts, 'account') + ' · as of ' + md(k.cash_as_of) : '<a href="#setup">Enter your bank balance →</a>';
+  const dtp = k.days_to_pay != null ? Math.round(k.days_to_pay) + ' days' : '—';
+  let dtpSub = k.days_to_pay_n ? plural(k.days_to_pay_n, 'invoice') + ' paid in the last year' : 'learned from paid invoices';
+  if (k.days_to_pay != null && k.days_to_pay_prior != null) {
+    const d = Math.round(k.days_to_pay - k.days_to_pay_prior);
+    dtpSub = d === 0 ? 'same as the year before' : (Math.abs(d) + (d > 0 ? ' slower' : ' faster') + ' than the year before');
+  }
+  $('#ov-kpis').innerHTML =
+    kpi('Cash now', k.accounts ? money(k.cash) : '—', cashSub, k.accounts ? '' : 'warn') +
+    kpi('Owed to us', money(k.ar_total), plural(k.ar_count, 'open invoice') + (k.dso != null ? ' · DSO ' + Math.round(k.dso) + ' days' : '')) +
+    kpi('Late', money(k.past_due), (k.past_due_pct || 0) + '% of what\'s owed', k.past_due_pct >= 35 ? 'warn' : '') +
+    kpi('Coming in, next 4 weeks', money(k.expected_4w), 'from invoices already sent') +
+    kpi('Lowest cash ahead', money(k.low_balance), 'week of ' + md(k.low_week), k.low_balance < floor ? 'bad' : (k.low_balance < k.cash * 0.5 ? 'warn' : 'good')) +
+    kpi('Typical time to get paid', dtp, dtpSub, k.days_to_pay_prior != null && k.days_to_pay - k.days_to_pay_prior >= 5 ? 'warn' : '');
+  cashChart($('#ov-chart'), m, false);
+  $('#ov-floor-legend').style.display = floor > 0 ? '' : 'none';
+
+  const al = m.alerts;
+  $('#ov-alerts').innerHTML = al.length ? al.map(a => '<li class="' + a.level + '" data-tab="' + a.tab + '"><span class="ic">' + (a.level === 'bad' ? '!' : a.level === 'warn' ? '•' : 'i') + '</span><span class="at">' + esc(a.text) + '</span></li>').join('')
+    : '<li class="info"><span class="ic">✓</span><span class="at">Nothing urgent. Cash stays above your minimum and there are no broken promises.</span></li>';
+  $$('#ov-alerts li[data-tab]').forEach(li => li.addEventListener('click', () => { location.hash = li.dataset.tab; }));
+
+  const top = m.clients.slice(0, 8), maxB = Math.max(1, ...top.map(c => c.balance));
+  $('#ov-clients').innerHTML = top.length ? '<table class="t"><tbody>' + top.map(c =>
+    '<tr><td style="width:40%">' + esc(c.name) + (c.past_due > 0 ? ' <span class="pill ' + (c.oldest_late > 60 ? 'bad' : 'warn') + '">' + c.oldest_late + 'd late</span>' : '') + '</td>' +
+    '<td style="width:40%"><div class="cbar" style="width:' + Math.max(4, c.balance / maxB * 100) + '%">' + BUCKETS.map(b => c[b] > 0 ? '<div style="width:' + (c[b] / c.balance * 100) + '%;background:' + BUCKET_COLORS[b] + '"></div>' : '').join('') + '</div></td>' +
+    '<td class="n">' + money(c.balance) + '</td></tr>').join('') + '</tbody></table>'
+    : '<div class="empty">No open invoices.</div>';
+  ageBar($('#ov-agebar'), $('#ov-agelegend'), m.aging, k.ar_total, false);
+}
+
+// ── receivables ─────────────────────────────────────────────────────────
+function sortRows(rows, key, dir) {
+  return rows.slice().sort((a, b) => {
+    const x = a[key], y = b[key];
+    if (typeof x === 'string' || typeof y === 'string') return dir * String(x || '').localeCompare(String(y || ''));
+    return dir * ((x == null ? -Infinity : x) - (y == null ? -Infinity : y));
+  });
+}
+function th(label, key, st, cls) {
+  const on = st.sort === key;
+  return '<th class="sort ' + (cls || '') + '" data-sort="' + key + '">' + label + (on ? ' <span class="ar">' + (st.dir < 0 ? '↓' : '↑') + '</span>' : '') + '</th>';
+}
+function wireSort(el, st, rerender) {
+  $$('th[data-sort]', el).forEach(h => h.addEventListener('click', () => {
+    const k = h.dataset.sort;
+    if (st.sort === k) st.dir = -st.dir; else { st.sort = k; st.dir = ['client', 'name', 'number'].includes(k) ? 1 : -1; }
+    rerender();
+  }));
+}
+function expectedCell(x) {
+  if (!x.expected) return '<span class="muted">—</span>';
+  let s = md(x.expected);
+  if (x.range && x.range[0] !== x.range[1]) s += '<div class="muted small">' + md(x.range[0]) + ' – ' + md(x.range[1]) + '</div>';
+  return s;
+}
+function chanceCell(x) {
+  const p = Math.round(x.p * 100);
+  return '<span class="pill ' + (p >= 90 ? 'good' : p >= 70 ? 'warn' : 'bad') + '">' + p + '%</span>';
+}
+function lateCell(x) {
+  if (x.late <= 0) return '<span class="muted">due ' + md(x.due) + '</span>';
+  return '<span style="color:' + (x.late > 60 ? 'var(--bad)' : x.late > 30 ? 'var(--warn)' : 'var(--ink)') + ';font-weight:600">' + x.late + ' days</span>';
+}
+function noteCell(x) {
+  let s = '';
+  if (x.broken) s += '<span class="pill bad">Broke promise</span> ';
+  if (x.promise) s += '<span class="pill info">Promised ' + md(x.promise) + '</span> ';
+  if (x.disputed) s += '<span class="pill warn">Disputed</span> ';
+  if (x.note) s += '<div class="muted small">' + esc(ACTIONS[x.note.action] || x.note.action) + ' · ' + md(x.note.at) + (x.note.note ? ': ' + esc(x.note.note.slice(0, 60)) + (x.note.note.length > 60 ? '…' : '') : '') + '</div>';
+  return s || '<span class="muted">—</span>';
+}
+function invoiceDetail(x, cols) {
+  return '<tr class="x"><td colspan="' + cols + '"><div class="why"><b>Why ' + (x.expected ? md(x.expected) : 'this') + ':</b> ' + esc(x.why) + '</div>' +
+    '<div class="small muted" style="margin:6px 0 8px">' + (x.subject ? esc(x.subject) + ' · ' : '') + 'Issued ' + mdy(x.issued) + ' · due ' + mdy(x.due) + ' · total ' + money(x.total) + (x.p_model !== x.p ? ' · model chance ' + Math.round(x.p_model * 100) + '%' : '') + '</div>' +
+    '<div class="row"><button class="btn sm primary" data-log="' + esc(x.key) + '">Log a call or promise</button>' + (x.link ? '<a class="btn sm" href="' + esc(x.link) + '" target="_blank" rel="noopener">Open in Jobber ↗</a>' : '') + '</div></td></tr>';
+}
+function wireLogButtons(el) { $$('[data-log]', el).forEach(b => b.addEventListener('click', e => { e.stopPropagation(); openLog(b.dataset.log); })); }
+
+function renderReceivables() {
+  const m = S.m, k = m.kpis;
+  $('#rc-age-sub').textContent = 'Open invoices by days past their due date: ' + money(k.ar_total) + ' across ' + plural(k.ar_count, 'invoice') + '. Click a group to filter the invoice list.';
+  ageBar($('#rc-agebar'), $('#rc-agelegend'), m.aging, k.ar_total, true);
+
+  // ready to bill
+  $('#rc-ready-total').textContent = money(k.ready_to_bill);
+  const ready = m.ready;
+  $('#rc-ready').innerHTML = ready.length ? '<table class="t"><thead><tr><th>What</th><th>Client</th><th class="hide-sm">Description</th><th>Finished</th><th class="n">Amount</th><th></th></tr></thead><tbody>' +
+    ready.slice(0, 50).map(x => '<tr' + (x.old ? ' class="muted"' : '') + '><td>' + esc(x.label) + (x.old ? ' <span class="pill grey" title="Finished 4+ months ago and never billed: probably a job to close out in Jobber. Left out of the forecast.">old</span>' : '') + '</td><td>' + esc(x.client) + '</td><td class="hide-sm">' + esc((x.subject || '').slice(0, 60)) + '</td><td>' + (x.date ? md(x.date) : '—') + '</td><td class="n">' + money(x.amount) + '</td><td>' + (x.link ? '<a href="' + esc(x.link) + '" target="_blank" rel="noopener">Jobber ↗</a>' : '') + '</td></tr>').join('') +
+    '</tbody></table>' + (ready.length > 50 ? '<p class="muted small">…and ' + (ready.length - 50) + ' more.</p>' : '')
+    : '<div class="empty">' + (m.source.jobber ? 'Nothing waiting to be invoiced.' : 'Connect Jobber to see finished jobs that haven\'t been invoiced.') + '</div>';
+
+  // clients
+  const q = S.cl.q.toLowerCase();
+  let cl = m.clients.filter(c => !q || c.name.toLowerCase().includes(q));
+  cl = sortRows(cl, S.cl.sort, S.cl.dir);
+  const cEl = $('#rc-clients');
+  cEl.innerHTML = cl.length ? '<table class="t"><thead><tr>' + th('Client', 'name', S.cl) + th('Owed', 'balance', S.cl, 'n') + th('Late', 'past_due', S.cl, 'n') +
+    '<th class="hide-sm" style="min-width:120px">Mix</th>' + th('Oldest', 'oldest_late', S.cl, 'n') + th('Usually pays in', 'days_to_pay', S.cl, 'n') + th('Next 4 wks', 'expected_4w', S.cl, 'n') + '</tr></thead><tbody>' +
+    cl.slice(0, S.cl.limit).map(c => {
+      let r = '<tr class="click' + (S.cl.open === c.key ? ' open' : '') + '" data-c="' + esc(c.key) + '"><td>' + esc(c.name) + (c.company ? ' <span class="pill grey">Co.</span>' : '') + ' <span class="muted small">' + plural(c.count, 'inv') + '</span></td>' +
+        '<td class="n">' + money(c.balance) + '</td><td class="n">' + (c.past_due > 0 ? money(c.past_due) : '<span class="muted">—</span>') + '</td>' +
+        '<td class="hide-sm"><div class="cbar">' + BUCKETS.map(b => c[b] > 0 ? '<div style="width:' + (c[b] / c.balance * 100) + '%;background:' + BUCKET_COLORS[b] + '"></div>' : '').join('') + '</div></td>' +
+        '<td class="n">' + (c.oldest_late > 0 ? c.oldest_late + ' days late' : '<span class="muted">not due</span>') + '</td>' +
+        '<td class="n">' + (c.days_to_pay != null ? Math.round(c.days_to_pay) + ' days <span class="muted small">(' + c.paid_n + ')</span>' : '<span class="muted">new</span>') + '</td>' +
+        '<td class="n">' + money(c.expected_4w) + '</td></tr>';
+      if (S.cl.open === c.key) {
+        const invs = m.invoices.filter(x => x.client_key === c.key);
+        r += '<tr class="x"><td colspan="7"><table class="t"><thead><tr><th>Invoice</th><th>Due</th><th class="n">Balance</th><th>Expected</th><th>Chance</th><th>Follow-up</th><th></th></tr></thead><tbody>' +
+          invs.map(x => '<tr><td>#' + esc(x.number) + '<div class="why">' + esc(x.why) + '</div></td><td>' + lateCell(x) + '</td><td class="n">' + money(x.balance) + '</td><td>' + expectedCell(x) + '</td><td>' + chanceCell(x) + '</td><td>' + noteCell(x) + '</td><td><button class="btn sm" data-log="' + esc(x.key) + '">Log</button>' + (x.link ? ' <a class="btn sm" href="' + esc(x.link) + '" target="_blank" rel="noopener">↗</a>' : '') + '</td></tr>').join('') +
+          '</tbody></table></td></tr>';
+      }
+      return r;
+    }).join('') + '</tbody></table>' + (cl.length > S.cl.limit ? '<button class="btn sm" id="rc-cmore" style="margin-top:10px">Show all ' + cl.length + ' clients</button>' : '')
+    : '<div class="empty">' + (m.has_data ? 'No clients match.' : '<b>No invoices yet.</b>Connect Jobber or upload an invoice report on the Setup tab.') + '</div>';
+  wireSort(cEl, S.cl, renderReceivables);
+  const cm = $('#rc-cmore'); if (cm) cm.addEventListener('click', () => { S.cl.limit = 100000; renderReceivables(); });
+  $$('tr[data-c]', cEl).forEach(tr => tr.addEventListener('click', () => { S.cl.open = S.cl.open === tr.dataset.c ? null : tr.dataset.c; renderReceivables(); }));
+  wireLogButtons(cEl);
+
+  // invoices
+  $('#rc-ichips').innerHTML = '<button class="chip' + (!S.iv.bucket ? ' on' : '') + '" data-b="">All</button>' + m.aging.map(b => '<button class="chip' + (S.iv.bucket === b.key ? ' on' : '') + '" data-b="' + b.key + '">' + esc(b.label) + ' <span class="muted">' + b.count + '</span></button>').join('');
+  $$('#rc-ichips .chip').forEach(c => c.addEventListener('click', () => { S.iv.bucket = c.dataset.b; renderReceivables(); }));
+  const iq = S.iv.q.toLowerCase();
+  let iv = m.invoices.filter(x => (!S.iv.bucket || x.bucket === S.iv.bucket) && (!iq || (x.client + ' ' + x.number + ' ' + x.subject).toLowerCase().includes(iq)));
+  iv = sortRows(iv, S.iv.sort, S.iv.dir);
+  const iEl = $('#rc-invoices');
+  iEl.innerHTML = iv.length ? '<table class="t"><thead><tr>' + th('Invoice', 'number', S.iv) + th('Client', 'client', S.iv) + th('Late', 'late', S.iv) + th('Balance', 'balance', S.iv, 'n') +
+    th('Expected', 'expected', S.iv) + th('Chance', 'p', S.iv) + '<th class="hide-sm">Follow-up</th></tr></thead><tbody>' +
+    iv.slice(0, S.iv.limit).map(x => '<tr class="click' + (S.iv.open === x.key ? ' open' : '') + '" data-i="' + esc(x.key) + '"><td>#' + esc(x.number) + '</td><td>' + esc(x.client) + '</td><td>' + lateCell(x) + '</td><td class="n">' + money(x.balance) + '</td><td>' + expectedCell(x) + '</td><td>' + chanceCell(x) + '</td><td class="hide-sm">' + noteCell(x) + '</td></tr>' + (S.iv.open === x.key ? invoiceDetail(x, 7) : '')).join('') +
+    '</tbody><tfoot><tr><td colspan="3">' + plural(iv.length, 'invoice') + '</td><td class="n">' + money(iv.reduce((a, x) => a + x.balance, 0)) + '</td><td colspan="3"></td></tr></tfoot></table>' + (iv.length > S.iv.limit ? '<button class="btn sm" id="rc-imore" style="margin-top:10px">Show all ' + iv.length + ' invoices</button>' : '')
+    : '<div class="empty">No open invoices' + (S.iv.bucket || iq ? ' match.' : '.') + '</div>';
+  wireSort(iEl, S.iv, renderReceivables);
+  const im = $('#rc-imore'); if (im) im.addEventListener('click', () => { S.iv.limit = 100000; renderReceivables(); });
+  $$('tr[data-i]', iEl).forEach(tr => tr.addEventListener('click', () => { S.iv.open = S.iv.open === tr.dataset.i ? null : tr.dataset.i; renderReceivables(); }));
+  wireLogButtons(iEl);
+
+  // history
+  const h = m.history;
+  $('#rc-coll-sub').textContent = 'Last 26 weeks, from ' + (h.collections_source === 'payments' ? 'Jobber payment records' : 'the dates invoices were marked paid') + '. The dashed line is what was invoiced.';
+  barChart($('#rc-coll'), h.collections, { key: 'amount', line: 'invoiced', every: 4, label: d => md(d.start), empty: 'No payment history yet.',
+    tip: d => '<b>Week of ' + md(d.start) + '</b><div class="r"><span>Collected</span><span>' + money(d.amount) + '</span></div><div class="r"><span>Invoiced</span><span>' + money(d.invoiced) + '</span></div>' });
+  barChart($('#rc-speed'), h.speed, { key: 'median', color: 'var(--brand)', values: true, fmt: v => Math.round(v) + 'd', label: d => d.quarter.replace(/^20/, "'"), empty: 'Needs paid invoices with dates.',
+    tip: d => '<b>' + d.quarter + '</b><div class="r"><span>Typical days to pay</span><span>' + Math.round(d.median) + '</span></div><div class="r"><span>Invoices paid</span><span>' + d.n + '</span></div>' });
+  trendChart($('#rc-trend'), h.trend);
+}
+
+// ── collections ─────────────────────────────────────────────────────────
+function renderCollections() {
+  const m = S.m, inv = m.invoices;
+  const late = inv.filter(x => x.late > 0), broken = inv.filter(x => x.broken), promised = inv.filter(x => x.promise);
+  const soon = promised.filter(x => (pd(x.promise) - pd(m.today)) / 864e5 <= 14);
+  $('#col-badge').style.display = broken.length ? '' : 'none';
+  $('#col-badge').textContent = broken.length;
+  const touched = late.filter(x => x.note && (pd(m.today) - pd(x.note.at)) / 864e5 <= 14).length;
+  $('#co-kpis').innerHTML =
+    kpi('Late', money(late.reduce((a, x) => a + x.balance, 0)), plural(late.length, 'invoice')) +
+    kpi('Promised, next 2 weeks', money(soon.reduce((a, x) => a + x.balance, 0)), plural(soon.length, 'promise')) +
+    kpi('Broken promises', money(broken.reduce((a, x) => a + x.balance, 0)), plural(broken.length, 'invoice'), broken.length ? 'bad' : 'good') +
+    kpi('Followed up, last 2 weeks', late.length ? Math.round(touched / late.length * 100) + '%' : '—', touched + ' of ' + late.length + ' late invoices');
+
+  const f = S.co.filter;
+  const filters = [['late', 'All late', late.length], ['broken', 'Broken promises', broken.length], ['promised', 'Promised', promised.length],
+    ['60', '60+ days', inv.filter(x => x.late > 60).length], ['untouched', 'Never contacted', late.filter(x => !x.note).length],
+    ['disputed', 'Disputed', inv.filter(x => x.disputed).length], ['all', 'Everything open', inv.length]];
+  $('#co-chips').innerHTML = filters.map(([k, l, n]) => '<button class="chip' + (f === k ? ' on' : '') + '" data-f="' + k + '">' + l + ' <span class="muted">' + n + '</span></button>').join('');
+  $$('#co-chips .chip').forEach(c => c.addEventListener('click', () => { S.co.filter = c.dataset.f; renderCollections(); }));
+  const pick = { late: x => x.late > 0 || x.broken, broken: x => x.broken, promised: x => x.promise, '60': x => x.late > 60, untouched: x => x.late > 0 && !x.note, disputed: x => x.disputed, all: () => true }[f];
+  const list = inv.filter(pick).sort((a, b) => (b.broken - a.broken) || (b.balance * Math.min(Math.max(b.late, 1), 180) - a.balance * Math.min(Math.max(a.late, 1), 180)));
+  const el = $('#co-list');
+  el.innerHTML = list.length ? '<table class="t"><thead><tr><th>Client</th><th>Invoice</th><th>Late</th><th class="n">Balance</th><th>Last contact</th><th></th></tr></thead><tbody>' +
+    list.slice(0, 300).map(x => '<tr><td><b>' + esc(x.client) + '</b>' + (x.company ? ' <span class="pill grey">Co.</span>' : '') + '</td><td>#' + esc(x.number) + '<div class="muted small">' + esc((x.subject || '').slice(0, 40)) + '</div></td><td>' + lateCell(x) + '</td><td class="n"><b>' + money(x.balance) + '</b></td><td>' + noteCell(x) + '</td>' +
+      '<td style="white-space:nowrap"><button class="btn sm primary" data-log="' + esc(x.key) + '">Log</button>' + (x.link ? ' <a class="btn sm" href="' + esc(x.link) + '" target="_blank" rel="noopener">Jobber ↗</a>' : '') + '</td></tr>').join('') +
+    '</tbody><tfoot><tr><td colspan="3">' + plural(list.length, 'invoice') + '</td><td class="n">' + money(list.reduce((a, x) => a + x.balance, 0)) + '</td><td colspan="2"></td></tr></tfoot></table>'
+    : '<div class="empty"><b>' + (f === 'late' ? 'Nothing is late.' : 'Nothing here.') + '</b>' + (m.has_data ? '' : 'Connect Jobber or upload an invoice report on the Setup tab.') + '</div>';
+  wireLogButtons(el);
+}
+
+async function openLog(key) {
+  const x = S.m.invoices.find(i => i.key === key);
+  if (!x) return;
+  const body = '<p class="small muted" style="margin-top:0">' + money(x.balance) + ' owed · ' + (x.late > 0 ? x.late + ' days late' : 'due ' + mdy(x.due)) + '</p>' +
+    '<div class="form-grid"><div class="fg"><label class="f">What happened</label><select id="lg-action">' + Object.entries(ACTIONS).map(([k, v]) => '<option value="' + k + '">' + v + '</option>').join('') + '</select></div>' +
+    '<div class="fg" id="lg-date-wrap" style="display:none"><label class="f">Promised to pay by</label><input type="date" id="lg-date"></div></div>' +
+    '<div class="fg"><label class="f">Notes</label><textarea id="lg-note" placeholder="Spoke with the manager, check going out Friday…"></textarea></div>' +
+    '<p class="hint" id="lg-hint"></p><div class="note-list" id="lg-history"><div class="muted small">Loading history…</div></div>';
+  const mo = openModal('#' + x.number + ' · ' + x.client, body, '<button class="btn" data-close>Cancel</button><button class="btn primary" id="lg-save">Save</button>');
+  const hints = { promised: 'The forecast moves this invoice to the promised week, at 90% or better. If the date passes by 3+ days unpaid, it shows as a broken promise.',
+    payment_plan: 'Set the date of the next payment you expect.', disputed: 'Disputed invoices count at half in the forecast until you log something else.',
+    write_off: 'Write-offs are left out of the forecast. (Mark it as bad debt in Jobber too.)' };
+  const upd = () => { const a = $('#lg-action').value; $('#lg-date-wrap').style.display = (a === 'promised' || a === 'payment_plan') ? '' : 'none'; $('#lg-hint').textContent = hints[a] || ''; };
+  $('#lg-action').addEventListener('change', upd); upd();
+  $('#lg-save').addEventListener('click', async () => {
+    const btn = $('#lg-save'); btn.disabled = true;
+    try {
+      await api('/cashflow/api/notes', { json: { invoice_key: key, action: $('#lg-action').value, note: $('#lg-note').value, promised_date: $('#lg-date-wrap').style.display === 'none' ? null : $('#lg-date').value } });
+      closeModal(); toast('Saved'); load();
+    } catch (e) { btn.disabled = false; }
+  });
+  try {
+    const r = await api('/cashflow/api/notes?invoice_key=' + encodeURIComponent(key));
+    if (mo.isConnected) $('#lg-history').innerHTML = r.notes.length ? '<div class="small" style="font-weight:700;margin-bottom:4px">History</div>' + r.notes.map(n => '<div class="n"><b>' + esc(ACTIONS[n.action] || n.action) + '</b>' + (n.promised_date ? ' · by ' + mdy(n.promised_date) : '') + (n.note ? ' · ' + esc(n.note) : '') + '<div class="m">' + esc(n.created_by || '') + ' · ' + esc(String(n.created_at || '').slice(0, 16)) + '</div></div>').join('') : '<div class="muted small">No follow-ups logged yet.</div>';
+  } catch (e) { /* toast already shown */ }
+}
+
+// ── forecast ────────────────────────────────────────────────────────────
+function renderForecast() {
+  const m = S.m, k = m.kpis, sc = S.sc, floor = +m.settings.cash_floor || 0;
+  $('#fc-delay').value = sc.delay; $('#fc-delay-v').textContent = sc.delay + ' day' + (sc.delay === 1 ? '' : 's');
+  $('#fc-hair').value = sc.haircut; $('#fc-hair-v').textContent = sc.haircut + '%';
+  const auto = m.sales.auto_growth;
+  $('#fc-sales').value = sc.sales === 'auto' ? -51 : sc.sales;
+  $('#fc-sales-v').textContent = sc.sales === 'auto' ? 'Learned' : (sc.sales > 0 ? '+' : '') + sc.sales + '%';
+  $('#fc-sales-hint').textContent = !m.sales.basis ? 'Needs at least a month of invoice history.'
+    : m.sales.basis === 'last_year' ? 'Learned: this year is running ' + (auto >= 1 ? '+' : '') + Math.round((auto - 1) * 100) + '% vs last year. Far left = learned.'
+    : 'Based on the last 8 weeks (less than a year of history). Far left = as is.';
+  $$('#fc-weeks .chip').forEach(c => c.classList.toggle('on', +c.dataset.w === m.scenario.weeks));
+  $$('#fc-toggles input').forEach(i => { i.checked = !!m.settings[i.dataset.s]; });
+
+  let sub = 'Ending balance ' + money(k.end_balance) + ' in the week of ' + md(m.weeks[m.weeks.length - 1].start) + '. Lowest point ' + money(k.low_balance) + ' (week of ' + md(k.low_week) + ').';
+  if (k.below_floor_week) sub += ' Falls below your ' + money(floor) + ' minimum in the week of ' + md(k.below_floor_week) + '.';
+  if (!k.accounts) sub = 'No bank balance entered, so this starts from $0. Add one on the Setup tab. ' + sub;
+  $('#fc-chart-sub').textContent = sub;
+  if (S.tab === 'forecast') cashChart($('#fc-chart'), m, true);
+
+  const n = m.weeks.length, cols = n + 2;
+  const cell = (v, key, w, extra) => {
+    const has = Math.abs(v) >= 0.5;
+    return '<td class="' + (has && key ? 'c ' : '') + (has ? '' : 'z ') + (extra || '') + '"' + (has && key ? ' data-k="' + esc(key) + '" data-w="' + w + '"' : '') + '>' + (has ? money(v) : '–') + '</td>';
+  };
+  const lineRow = l => '<tr><td title="' + esc(l.label) + '">' + esc(l.label) + '</td>' + l.values.slice(0, n).map((v, i) => cell(v, l.key, i)).join('') + cell(l.values[n], l.key, n, 'after') + '</tr>';
+  const ins = m.lines.filter(l => l.dir === 'in'), outs = m.lines.filter(l => l.dir === 'out');
+  const totRow = (label, key) => '<tr class="tot"><td>' + label + '</td>' + m.rows.map(r => cell(r[key])).join('') + '<td class="after"></td></tr>';
+  let t = '<table class="fc"><thead><tr><th>Week of</th>' + m.weeks.map(w => '<th>' + esc(w.label) + '</th>').join('') + '<th class="after">After</th></tr></thead><tbody>';
+  t += '<tr class="tot"><td>Starting cash</td>' + m.rows.map(r => cell(r.begin)).join('') + '<td class="after"></td></tr>';
+  t += '<tr class="sec"><td>Money in</td><td colspan="' + (cols - 1) + '"></td></tr>' + (ins.length ? ins.map(lineRow).join('') : '<tr><td class="muted">Nothing expected</td><td colspan="' + (cols - 1) + '"></td></tr>') + totRow('Total in', 'in');
+  t += '<tr class="sec"><td>Money out</td><td colspan="' + (cols - 1) + '"></td></tr>' + (outs.length ? outs.map(lineRow).join('') : '<tr><td class="muted">Nothing entered yet · <a href="#setup">add bills</a></td><td colspan="' + (cols - 1) + '"></td></tr>') + totRow('Total out', 'out');
+  t += '<tr class="tot"><td>Net change</td>' + m.rows.map(r => '<td style="color:' + (r.net < 0 ? 'var(--bad)' : 'var(--good)') + '">' + (r.net > 0 ? '+' : '') + money(r.net) + '</td>').join('') + '<td class="after"></td></tr>';
+  t += '<tr class="end"><td>Ending cash</td>' + m.rows.map(r => '<td' + (r.end < floor ? ' class="low"' : '') + '>' + money(r.end) + '</td>').join('') + '<td class="after"></td></tr>';
+  t += '</tbody></table>';
+  const el = $('#fc-table');
+  el.innerHTML = t;
+  $$('td.c', el).forEach(td => td.addEventListener('click', () => openDrill(td.dataset.k, +td.dataset.w)));
+
+  const st = m.settings;
+  $('#fc-how').innerHTML = '<ol>' +
+    '<li><b>Start:</b> the bank balances on the Setup tab (' + money(k.cash) + ').</li>' +
+    '<li><b>Payments on open invoices:</b> each unpaid invoice is placed in the weeks it is likely to be paid, based on how long that client took to pay before (or similar clients, when they are new). If an invoice is already late, only past invoices that were <i>also</i> that late are used, and those usually take much longer than average. The amount is scaled by the chance it gets paid at all, which drops as invoices age (' + k.history_n + ' paid invoices learned from; ' + k.collection_rate + '% of invoices are eventually collected). A promise logged on the Collections tab overrides this.</li>' +
+    '<li><b>Drafts &amp; finished work:</b> assumed invoiced within ' + st.unbilled_lag_days + ' days (drafts in 2), then paid like any new invoice for that client. Jobs finished more than 4 months ago are left out.</li>' +
+    '<li><b>New sales:</b> ' + (m.sales.basis === 'last_year' ? 'what was invoiced in the same weeks last year, adjusted by how this year compares (' + (m.sales.growth >= 1 ? '+' : '') + Math.round((m.sales.growth - 1) * 100) + '% used)' : m.sales.basis === 'recent' ? 'the average weekly invoicing of the last 8 weeks' : 'none yet (needs invoice history)') + ', then paid on the usual schedule. Winter season shows up here automatically once a year of history is in.</li>' +
+    '<li><b>Regular bills:</b> everything on the Setup tab, on its schedule.</li>' +
+    '<li><b>Supplier invoices:</b> invoices matched to POs in the PO app, paid ' + st.supplier_terms_days + ' days after they arrive. Anything due more than a week ago is assumed paid.</li>' +
+    '<li><b>Open POs:</b> approved POs under 60 days old with no invoice yet, paid about ' + (st.supplier_terms_days + 7) + ' days after the PO.</li>' +
+    '<li><b>Subcontractors:</b> Installation → Vendor Invoices, paid a week after the client pays us (pay-when-paid), or on the expected payment date if one is set.</li>' +
+    '</ol><p class="muted small">Not included unless you add it: loan draws, credit lines, owner contributions, big one-off purchases, tax bills. Add them as planned items.</p>';
+}
+
+function openDrill(key, w) {
+  const m = S.m, l = m.lines.find(x => x.key === key), d = m.detail[key + '|' + w];
+  if (!l || !d) return;
+  const when = w >= m.weeks.length ? 'after ' + md(m.weeks[m.weeks.length - 1].end) : (w === 0 ? 'this week' : 'week of ' + md(m.weeks[w].start));
+  const body = '<table class="t"><thead><tr><th>Item</th><th class="n">Amount</th></tr></thead><tbody>' +
+    d.items.map(it => '<tr><td>' + (it.link ? '<a href="' + esc(it.link) + '" target="_blank" rel="noopener">' + esc(it.label) + '</a>' : esc(it.label)) + (it.detail ? '<div class="muted small">' + esc(it.detail) + (it.date ? ' · ' + md(it.date) : '') + '</div>' : '') + '</td><td class="n">' + money(it.amount) + '</td></tr>').join('') +
+    '</tbody><tfoot><tr><td>' + (d.more ? '…and ' + d.more + ' smaller items' : 'Total') + '</td><td class="n">' + money(l.values[w]) + '</td></tr></tfoot></table>' +
+    (key === 'ar' ? '<p class="hint">Each invoice is split across the weeks it could land in, so one invoice can show up in several weeks with part of its balance.</p>' : '');
+  openModal(l.label + ' · ' + when, body, null, true);
+}
+
+$('#fc-delay').addEventListener('input', e => { S.sc.delay = +e.target.value; $('#fc-delay-v').textContent = S.sc.delay + ' days'; loadSoon(); });
+$('#fc-hair').addEventListener('input', e => { S.sc.haircut = +e.target.value; $('#fc-hair-v').textContent = S.sc.haircut + '%'; loadSoon(); });
+$('#fc-sales').addEventListener('input', e => { const v = +e.target.value; S.sc.sales = v <= -51 ? 'auto' : v; $('#fc-sales-v').textContent = v <= -51 ? 'Learned' : (v > 0 ? '+' : '') + v + '%'; loadSoon(); });
+$$('#fc-weeks .chip').forEach(c => c.addEventListener('click', () => { S.sc.weeks = c.dataset.w; load(); }));
+$('#fc-reset').addEventListener('click', () => { S.sc = { delay: 0, haircut: 0, sales: 'auto', weeks: '' }; load(); });
+$$('#fc-toggles input').forEach(i => i.addEventListener('change', async () => {
+  try { await api('/cashflow/api/settings', { json: { [i.dataset.s]: i.checked } }); load(); } catch (e) { i.checked = !i.checked; }
+}));
+
+// ── setup ───────────────────────────────────────────────────────────────
+function renderSetup() {
+  const m = S.m, st = m.settings;
+  // accounts
+  const ac = m.accounts, total = ac.reduce((a, x) => a + (+x.balance || 0), 0);
+  $('#st-accounts').innerHTML = ac.length ? '<table class="t"><thead><tr><th>Account</th><th class="n">Balance</th><th>As of</th><th></th></tr></thead><tbody>' +
+    ac.map(a => '<tr><td>' + esc(a.name) + '</td><td class="n">' + money(a.balance) + '</td><td>' + mdy(a.as_of) + ((pd(m.today) - pd(a.as_of)) / 864e5 > 7 ? ' <span class="pill warn">update</span>' : '') + '<div class="muted small">' + esc(a.updated_by || '') + '</div></td>' +
+      '<td style="white-space:nowrap"><button class="btn sm" data-acct="' + a.id + '">Update</button> <button class="btn sm danger" data-acct-del="' + a.id + '">✕</button></td></tr>').join('') +
+    '</tbody><tfoot><tr><td>Total</td><td class="n">' + money(total) + '</td><td colspan="2"></td></tr></tfoot></table>'
+    : '<div class="empty"><b>No bank balance yet.</b>Add your operating account (and any others you pay bills from).</div>';
+  $$('[data-acct]').forEach(b => b.addEventListener('click', () => openAccount(ac.find(a => a.id === +b.dataset.acct))));
+  $$('[data-acct-del]').forEach(b => b.addEventListener('click', async () => {
+    const a = ac.find(x => x.id === +b.dataset.acctDel);
+    if (!confirm('Remove the account "' + a.name + '"?')) return;
+    await api('/cashflow/api/accounts/delete', { json: { id: a.id } }); load();
+  }));
+
+  // settings
+  $('#st-floor').value = st.cash_floor; $('#st-sterms').value = st.supplier_terms_days;
+  $('#st-lag').value = st.unbilled_lag_days; $('#st-cterms').value = st.customer_terms_days;
+
+  // items
+  const it = m.items;
+  const monthlyOut = it.filter(i => i.active && i.direction === 'out').reduce((a, i) => a + (+i.amount || 0) * (PER_MONTH[i.frequency] || 0), 0);
+  $('#st-items').innerHTML = it.length ? '<table class="t"><thead><tr><th>Item</th><th>Category</th><th class="n">Amount</th><th>How often</th><th>From</th><th class="hide-sm">Until</th><th></th></tr></thead><tbody>' +
+    it.map(i => '<tr' + (i.active ? '' : ' class="muted"') + '><td>' + esc(i.name) + (i.notes ? '<div class="muted small">' + esc(i.notes.slice(0, 80)) + '</div>' : '') + '</td>' +
+      '<td><span class="pill ' + (i.direction === 'in' ? 'good' : 'grey') + '">' + (i.direction === 'in' ? 'In' : 'Out') + '</span> ' + esc(i.category || '') + '</td>' +
+      '<td class="n">' + money(i.amount) + '</td><td>' + (FREQ[i.frequency] || i.frequency) + (i.active ? '' : ' · paused') + '</td><td>' + mdy(i.start_date) + '</td><td class="hide-sm">' + (i.end_date ? mdy(i.end_date) : '—') + '</td>' +
+      '<td style="white-space:nowrap"><button class="btn sm" data-item="' + i.id + '">Edit</button> <button class="btn sm danger" data-item-del="' + i.id + '">✕</button></td></tr>').join('') +
+    '</tbody><tfoot><tr><td colspan="7">Regular bills come to about <b>' + money(monthlyOut) + ' a month</b>.</td></tr></tfoot></table>'
+    : '<div class="empty"><b>Nothing added yet.</b>Start with payroll and rent. The buttons above fill in sensible defaults.</div>';
+  $$('[data-item]').forEach(b => b.addEventListener('click', () => openItem(it.find(i => i.id === +b.dataset.item))));
+  $$('[data-item-del]').forEach(b => b.addEventListener('click', async () => {
+    const i = it.find(x => x.id === +b.dataset.itemDel);
+    if (!confirm('Delete "' + i.name + '"?')) return;
+    await api('/cashflow/api/items/delete', { json: { id: i.id } }); load();
+  }));
+
+  renderJobber();
+  renderImport();
+}
+
+function nextWeekday(dow) { const d = pd(S.m.today); d.setDate(d.getDate() + ((dow - d.getDay() + 7) % 7 || 7)); return iso(d); }
+function nextMonthDay(day) { const d = pd(S.m.today); const n = new Date(d.getFullYear(), d.getMonth() + (d.getDate() >= day ? 1 : 0), day); return iso(n); }
+const QUICK = [
+  ['Payroll', () => ({ name: 'Payroll', category: 'Payroll', frequency: 'biweekly', start_date: nextWeekday(5) })],
+  ['Payroll taxes', () => ({ name: 'Payroll taxes', category: 'Payroll taxes', frequency: 'biweekly', start_date: nextWeekday(3) })],
+  ['Rent', () => ({ name: 'Rent', category: 'Rent', frequency: 'monthly', start_date: nextMonthDay(1) })],
+  ['Insurance', () => ({ name: 'Insurance', category: 'Insurance', frequency: 'monthly', start_date: nextMonthDay(1) })],
+  ['Truck loan', () => ({ name: 'Truck loan', category: 'Vehicle & equipment loans', frequency: 'monthly', start_date: nextMonthDay(15) })],
+  ['Fuel', () => ({ name: 'Fuel cards', category: 'Fuel', frequency: 'weekly', start_date: nextWeekday(1) })],
+  ['Credit card', () => ({ name: 'Credit card payment', category: 'Credit cards', frequency: 'monthly', start_date: nextMonthDay(25) })],
+  ['Sales tax', () => ({ name: 'FL sales tax', category: 'Taxes', frequency: 'monthly', start_date: nextMonthDay(20) })],
+  ['Owner draw', () => ({ name: 'Owner draw', category: 'Owner draws', frequency: 'monthly', start_date: nextMonthDay(1) })],
+  ['One-off expense', () => ({ name: '', category: 'Other expense', frequency: 'once', start_date: nextWeekday(5) })],
+  ['Money coming in', () => ({ name: '', direction: 'in', category: 'Other income', frequency: 'once', start_date: nextWeekday(5) })],
+];
+function renderQuick() {
+  $('#st-quick').innerHTML = QUICK.map((q, i) => '<button class="chip" data-q="' + i + '">+ ' + esc(q[0]) + '</button>').join('');
+  $$('#st-quick .chip').forEach(c => c.addEventListener('click', () => openItem(Object.assign({ direction: 'out', amount: '', active: 1 }, QUICK[+c.dataset.q][1]()))));
+}
+
+function openItem(it) {
+  it = it || { direction: 'out', frequency: 'monthly', start_date: S.m.today, active: 1 };
+  const cats = d => (d === 'in' ? BOOT.categories_in : BOOT.categories_out).map(c => '<option value="' + esc(c) + '">').join('');
+  const body = '<div class="chips" style="margin-bottom:14px"><button class="chip" data-dir="out">Money out</button><button class="chip" data-dir="in">Money in</button></div>' +
+    '<div class="form-grid">' +
+    '<div class="fg"><label class="f">Name</label><input type="text" id="it-name" value="' + esc(it.name || '') + '" placeholder="e.g. Payroll"></div>' +
+    '<div class="fg"><label class="f">Category</label><input type="text" id="it-cat" list="it-cats" value="' + esc(it.category || '') + '"><datalist id="it-cats"></datalist></div>' +
+    '<div class="fg"><label class="f">Amount each time</label><input type="number" id="it-amt" min="0" step="0.01" value="' + esc(it.amount === '' || it.amount == null ? '' : it.amount) + '" placeholder="0"></div>' +
+    '<div class="fg"><label class="f">How often</label><select id="it-freq">' + Object.entries(FREQ).map(([k, v]) => '<option value="' + k + '"' + (it.frequency === k ? ' selected' : '') + '>' + v + '</option>').join('') + '</select></div>' +
+    '<div class="fg"><label class="f" id="it-start-l">Next date</label><input type="date" id="it-start" value="' + esc(it.start_date || '') + '"></div>' +
+    '<div class="fg" id="it-end-wrap"><label class="f">Ends (optional)</label><input type="date" id="it-end" value="' + esc(it.end_date || '') + '"></div>' +
+    '</div><div class="fg"><label class="f">Notes</label><input type="text" id="it-notes" value="' + esc(it.notes || '') + '" style="width:100%"></div>' +
+    '<label class="small" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="it-active"' + (it.active ? ' checked' : '') + '> Include in the forecast</label>' +
+    '<p class="hint" id="it-hint"></p>';
+  openModal(it.id ? 'Edit ' + (it.name || 'item') : 'Add a bill or planned item', body, '<button class="btn" data-close>Cancel</button><button class="btn primary" id="it-save">Save</button>');
+  let dir = it.direction === 'in' ? 'in' : 'out';
+  const upd = () => {
+    $$('[data-dir]').forEach(c => c.classList.toggle('on', c.dataset.dir === dir));
+    $('#it-cats').innerHTML = cats(dir);
+    const f = $('#it-freq').value;
+    $('#it-end-wrap').style.display = f === 'once' ? 'none' : '';
+    $('#it-start-l').textContent = f === 'once' ? 'Date' : 'Next date';
+    $('#it-hint').textContent = f === 'semimonthly' ? 'Twice a month: on this date\'s day and 15 days later (e.g. the 1st and 16th, or the 15th and 30th).' : f === 'biweekly' ? 'Every other week from this date.' : '';
+  };
+  $$('[data-dir]').forEach(c => c.addEventListener('click', () => { dir = c.dataset.dir; upd(); }));
+  $('#it-freq').addEventListener('change', upd); upd();
+  $('#it-save').addEventListener('click', async () => {
+    const b = $('#it-save'); b.disabled = true;
+    try {
+      await api('/cashflow/api/items/save', { json: { id: it.id, name: $('#it-name').value, direction: dir, category: $('#it-cat').value, amount: $('#it-amt').value,
+        frequency: $('#it-freq').value, start_date: $('#it-start').value, end_date: $('#it-end').value, notes: $('#it-notes').value, active: $('#it-active').checked } });
+      closeModal(); toast('Saved'); load();
+    } catch (e) { b.disabled = false; }
+  });
+}
+
+function openAccount(a) {
+  a = a || { name: S.m.accounts.length ? '' : 'Operating account', balance: '', as_of: S.m.today };
+  const body = '<div class="fg"><label class="f">Account</label><input type="text" id="ac-name" value="' + esc(a.name) + '" placeholder="e.g. Operating (checking)"></div>' +
+    '<div class="form-grid"><div class="fg"><label class="f">Balance</label><input type="number" id="ac-bal" step="0.01" value="' + esc(a.balance) + '"></div>' +
+    '<div class="fg"><label class="f">As of</label><input type="date" id="ac-date" value="' + esc(a.id ? S.m.today : (a.as_of || S.m.today)) + '"></div></div>' +
+    '<p class="hint">Use the available balance: what you could spend today after checks that haven\'t cleared.</p>';
+  openModal(a.id ? 'Update ' + a.name : 'Add a bank account', body, '<button class="btn" data-close>Cancel</button><button class="btn primary" id="ac-save">Save</button>');
+  $('#ac-save').addEventListener('click', async () => {
+    const b = $('#ac-save'); b.disabled = true;
+    try { await api('/cashflow/api/accounts/save', { json: { id: a.id, name: $('#ac-name').value, balance: $('#ac-bal').value, as_of: $('#ac-date').value } }); closeModal(); toast('Saved'); load(); }
+    catch (e) { b.disabled = false; }
+  });
+}
+
+$('#st-add-acct').addEventListener('click', () => openAccount());
+$('#st-add-item').addEventListener('click', () => openItem());
+$('#st-save').addEventListener('click', async () => {
+  try {
+    await api('/cashflow/api/settings', { json: { cash_floor: $('#st-floor').value, supplier_terms_days: $('#st-sterms').value, unbilled_lag_days: $('#st-lag').value, customer_terms_days: $('#st-cterms').value } });
+    toast('Settings saved'); load();
+  } catch (e) { /* toast shown */ }
+});
+
+function renderJobber() {
+  const m = S.m, src = m.source, sync = src.sync || {}, marks = src.marks || {}, el = $('#st-jobber');
+  let h = '<h2>Jobber</h2>';
+  if (!BOOT.jobber_configured) {
+    h += '<p class="sub">Not set up on the server yet. One-time setup, about 10 minutes:</p><ol class="steps">' +
+      '<li>Sign in at <b>developer.getjobber.com</b> and create an app (e.g. "Office App cash flow"). The Snowbirds service has its own app whose callback points at that service, so this one needs its own.</li>' +
+      '<li>Set its OAuth Callback URL to <code class="cp">' + esc(BOOT.callback_url) + '</code> <button class="btn sm" id="jb-copy">Copy</button></li>' +
+      '<li>Give it <b>read</b> access to Clients, Invoices, Jobs and Payments.</li>' +
+      '<li>In Railway → <b>Office App</b> → Variables, add <code class="cp">JOBBER_CLIENT_ID</code> and <code class="cp">JOBBER_CLIENT_SECRET</code> from the app. It redeploys by itself.</li>' +
+      '<li>Come back here and click <b>Connect Jobber</b>.</li></ol>';
+  } else if (!src.jobber) {
+    h += '<p class="sub">Connect once and invoices, payments and jobs waiting to be invoiced sync every two hours. Read-only: this app never changes anything in Jobber.</p>' +
+      '<a class="btn primary" href="/cashflow/jobber/connect">Connect Jobber</a>' +
+      '<p class="hint">Jobber\'s callback URL for this app must be <code class="cp">' + esc(BOOT.callback_url) + '</code></p>';
+  } else {
+    const running = sync.state === 'running';
+    h += '<p class="sub">Connected' + (BOOT.jobber_connected_by ? ' by ' + esc(BOOT.jobber_connected_by) : '') + (BOOT.jobber_connected_at ? ' on ' + mdy(BOOT.jobber_connected_at) : '') + '. Syncs every two hours, with a full refresh weekly. Read-only.</p>';
+    h += '<table class="t"><tbody>' +
+      '<tr><td>Last sync</td><td>' + (running ? '<span class="pill info">Running: ' + esc(sync.stage || '') + '</span>' : sync.state === 'error' ? '<span class="pill bad">Failed</span> ' + esc(ago(sync.finished_at)) : sync.finished_at ? '<span class="pill good">OK</span> ' + esc(ago(sync.finished_at)) : 'never') + '</td></tr>' +
+      (sync.counts && Object.keys(sync.counts).length ? '<tr><td>Pulled</td><td class="small">' + Object.entries(sync.counts).map(([k, v]) => v + ' ' + esc(k.replace(/_/g, ' '))).join(' · ') + '</td></tr>' : '') +
+      '<tr><td>Invoices here</td><td>' + src.jobber_rows + '</td></tr>' +
+      (marks.full_at ? '<tr><td>Last full refresh</td><td>' + mdy(marks.full_at) + '</td></tr>' : '') +
+      '</tbody></table>';
+    if (sync.state === 'error') h += '<p class="small" style="color:var(--bad)">' + esc(sync.error) + (/refused the sign-in|not connected/i.test(sync.error || '') ? ' Try Disconnect, then Connect Jobber again.' : '') + '</p>';
+    (sync.warnings || []).forEach(w => { h += '<p class="small" style="color:var(--warn)">' + esc(w) + '</p>'; });
+    if (sync.version_warning) h += '<p class="small" style="color:var(--warn)">Jobber API version ' + esc(BOOT.api_version) + ': ' + esc(sync.version_warning) + ' Set JOBBER_API_VERSION on the Office App service to the newer version.</p>';
+    h += '<div class="row" style="margin-top:12px"><button class="btn primary" id="jb-sync"' + (running ? ' disabled' : '') + '>Sync now</button><button class="btn" id="jb-full"' + (running ? ' disabled' : '') + '>Full refresh</button><button class="btn danger" id="jb-disc">Disconnect</button></div>';
+  }
+  el.innerHTML = h;
+  const copy = $('#jb-copy', el);
+  if (copy) copy.addEventListener('click', () => { navigator.clipboard.writeText(BOOT.callback_url).then(() => toast('Copied')); });
+  const sy = $('#jb-sync', el), fu = $('#jb-full', el), di = $('#jb-disc', el);
+  if (sy) sy.addEventListener('click', () => startSync(false));
+  if (fu) fu.addEventListener('click', () => startSync(true));
+  if (di) di.addEventListener('click', async () => {
+    if (!confirm('Disconnect Jobber? Invoices already pulled stay here; they just stop updating.')) return;
+    await api('/cashflow/jobber/disconnect', { json: {} }); BOOT.jobber_connected = false; load();
+  });
+  if (sync.state === 'running') pollSync();
+}
+
+async function startSync(full) {
+  await api('/cashflow/api/sync', { json: { full } });
+  toast(full ? 'Full refresh started. This takes a few minutes.' : 'Sync started');
+  S.m.source.sync = { state: 'running', stage: 'Starting' };
+  renderJobber(); renderSource();
+}
+function pollSync() {
+  if (S.polling) return;
+  S.polling = setInterval(async () => {
+    try {
+      const r = await api('/cashflow/api/sync_status');
+      S.m.source.sync = r.status; S.m.source.marks = r.marks;
+      if (r.status.state !== 'running') {
+        clearInterval(S.polling); S.polling = null;
+        toast(r.status.state === 'ok' ? 'Jobber sync finished' : 'Jobber sync failed', r.status.state === 'ok' ? '' : 'bad');
+        load();
+      } else { renderSource(); if (S.tab === 'setup') renderJobber(); }
+    } catch (e) { clearInterval(S.polling); S.polling = null; }
+  }, 2500);
+}
+
+function renderImport() {
+  const src = S.m.source, info = src.import || {}, el = $('#st-import');
+  if (!src.imported) { el.innerHTML = src.jobber ? '<p class="hint">Jobber is connected, so there\'s no need to upload anything.</p>' : ''; return; }
+  el.innerHTML = '<div class="small"><b>' + esc(info.filename || 'Uploaded file') + '</b> · ' + esc(info.at || '') + ' · ' + src.imported + ' invoices (' + (info.open || 0) + ' open, ' + (info.paid_with_dates || 0) + ' paid with dates)</div>' +
+    (info.warnings || []).map(w => '<p class="small" style="color:var(--warn);margin:6px 0">' + esc(w) + '</p>').join('') +
+    '<button class="btn sm danger" id="st-clear" style="margin-top:6px">Remove uploaded invoices</button>';
+  $('#st-clear').addEventListener('click', async () => {
+    if (!confirm('Remove all invoices from the uploaded file?')) return;
+    await api('/cashflow/api/import/clear', { json: {} }); load();
+  });
+}
+$('#st-upload').addEventListener('click', async () => {
+  const f = $('#st-file').files[0];
+  if (!f) { toast('Choose a file first', 'bad'); return; }
+  const fd = new FormData(); fd.append('file', f);
+  const b = $('#st-upload'); b.disabled = true;
+  try {
+    const r = await api('/cashflow/api/import', { method: 'POST', body: fd });
+    toast('Imported ' + r.rows + ' invoices'); $('#st-file').value = ''; load();
+  } catch (e) { /* toast shown */ } finally { b.disabled = false; }
+});
+
+// ── search boxes ────────────────────────────────────────────────────────
+$('#rc-cq').addEventListener('input', e => { S.cl.q = e.target.value; renderReceivables(); });
+$('#rc-iq').addEventListener('input', e => { S.iv.q = e.target.value; renderReceivables(); });
+let _rz;
+window.addEventListener('resize', () => { clearTimeout(_rz); _rz = setTimeout(() => { if (S.m) showTab(S.tab); }, 200); });
+
+// ── go ──────────────────────────────────────────────────────────────────
+showTab(location.hash.slice(1) || 'overview');
+load().then(() => { renderQuick(); if (!S.m.has_data && !location.hash) location.hash = 'setup'; });
+})();
+{% endraw %}
+</script>
+</body>
+</html>
+'''
+
+
+# ── Routes ───────────────────────────────────────────────────────────────────
+
+def _cf_denied():
+    return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+
+
+def _cf_scenario_args():
+    a = request.args
+    sales = a.get('sales')
+    return {'delay_days': int(float(a.get('delay') or 0)), 'haircut_pct': float(a.get('haircut') or 0),
+            'sales_pct': float(sales) if sales not in (None, '', 'auto') else None,
+            'weeks': int(a['weeks']) if a.get('weeks') else None}
+
+
+@app.route('/cashflow')
+def cashflow_app():
+    if not _cashflow_access_ok():
+        return redirect(url_for('login'))
+    tokens = _cf_state('jobber_tokens')
+    boot = {
+        'jobber_configured': _cf_jobber_configured(),
+        'jobber_connected': bool(tokens.get('refresh_token')),
+        'jobber_connected_by': tokens.get('connected_by'),
+        'jobber_connected_at': tokens.get('connected_at'),
+        'callback_url': _cf_callback_url(),
+        'api_version': JOBBER_API_VERSION,
+        'categories_out': CASHFLOW_CATEGORIES_OUT,
+        'categories_in': CASHFLOW_CATEGORIES_IN,
+        'restricted': bool(CASHFLOW_USERS),
+    }
+    return render_template_string(CASHFLOW_TEMPLATE, boot=boot,
+                                  full_name=session.get('full_name', session.get('username', 'User')))
+
+
+@app.route('/cashflow/api/model')
+def cashflow_api_model():
+    if not _cashflow_access_ok():
+        return _cf_denied()
+    try:
+        return jsonify({'success': True, **cashflow_model(**_cf_scenario_args())})
+    except Exception as e:
+        import logging
+        logging.exception('Cash flow model failed')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/cashflow/api/settings', methods=['POST'])
+def cashflow_api_settings():
+    if not _cashflow_access_ok():
+        return _cf_denied()
+    data = request.get_json(silent=True) or {}
+    s = _cf_settings()
+    for k, default in CASHFLOW_DEFAULTS.items():
+        if k not in data:
+            continue
+        if isinstance(default, bool):
+            s[k] = bool(data[k])
+        else:
+            v = _cf_money(data[k])
+            if v is None:
+                return jsonify({'success': False, 'error': f'{k.replace("_", " ")} must be a number'}), 400
+            s[k] = max(0, min(v, 10_000_000)) if k == 'cash_floor' else int(max(0, min(v, 365)))
+    if s['horizon_weeks'] not in (13, 26, 52):
+        s['horizon_weeks'] = 13
+    _cf_save_state('settings', s)
+    return jsonify({'success': True, 'settings': s})
+
+
+@app.route('/cashflow/api/accounts/save', methods=['POST'])
+def cashflow_api_account_save():
+    if not _cashflow_access_ok():
+        return _cf_denied()
+    d = request.get_json(silent=True) or {}
+    name = (d.get('name') or '').strip()
+    balance = _cf_money(d.get('balance'))
+    as_of = _cf_iso(d.get('as_of')) or _cf_today().isoformat()
+    if not name or balance is None:
+        return jsonify({'success': False, 'error': 'Give the account a name and a balance'}), 400
+    now = _cf_now_text()
+    conn = sqlite3.connect(DB_PATH)
+    if d.get('id'):
+        conn.execute("UPDATE cf_accounts SET name=?, balance=?, as_of=?, updated_by=?, updated_at=? WHERE id=?",
+                     (name, balance, as_of, session['username'], now, int(d['id'])))
+    else:
+        conn.execute("INSERT INTO cf_accounts (name, balance, as_of, updated_by, updated_at) VALUES (?,?,?,?,?)",
+                     (name, balance, as_of, session['username'], now))
+    conn.commit()
+    conn.close()
+    log_activity(session['username'], 'CASHFLOW_BALANCE', 'cf_accounts', d.get('id'), f'{name}: {balance:,.2f} as of {as_of}')
+    return jsonify({'success': True})
+
+
+@app.route('/cashflow/api/accounts/delete', methods=['POST'])
+def cashflow_api_account_delete():
+    if not _cashflow_access_ok():
+        return _cf_denied()
+    d = request.get_json(silent=True) or {}
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM cf_accounts WHERE id=?", (int(d.get('id') or 0),))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
+
+
+@app.route('/cashflow/api/items/save', methods=['POST'])
+def cashflow_api_item_save():
+    if not _cashflow_access_ok():
+        return _cf_denied()
+    d = request.get_json(silent=True) or {}
+    name = (d.get('name') or '').strip()
+    amount = _cf_money(d.get('amount'))
+    start = _cf_iso(d.get('start_date'))
+    freq = d.get('frequency') if d.get('frequency') in CASHFLOW_FREQUENCIES else 'monthly'
+    direction = 'in' if d.get('direction') == 'in' else 'out'
+    if not name or amount is None or amount < 0 or not start:
+        return jsonify({'success': False, 'error': 'Name, a positive amount and a date are required'}), 400
+    end = _cf_iso(d.get('end_date'))
+    fields = (name, direction, (d.get('category') or '').strip()[:60], amount, freq, start,
+              end if freq != 'once' else None, (d.get('notes') or '').strip()[:500], 1 if d.get('active', True) else 0)
+    now = _cf_now_text()
+    conn = sqlite3.connect(DB_PATH)
+    if d.get('id'):
+        conn.execute("""UPDATE cf_items SET name=?, direction=?, category=?, amount=?, frequency=?, start_date=?,
+                        end_date=?, notes=?, active=?, updated_at=? WHERE id=?""", (*fields, now, int(d['id'])))
+    else:
+        conn.execute("""INSERT INTO cf_items (name, direction, category, amount, frequency, start_date, end_date,
+                        notes, active, created_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     (*fields, session['username'], now, now))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
+
+
+@app.route('/cashflow/api/items/delete', methods=['POST'])
+def cashflow_api_item_delete():
+    if not _cashflow_access_ok():
+        return _cf_denied()
+    d = request.get_json(silent=True) or {}
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM cf_items WHERE id=?", (int(d.get('id') or 0),))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
+
+
+_CF_NOTE_ACTIONS = ('called', 'emailed', 'texted', 'promised', 'disputed', 'payment_plan', 'write_off', 'note')
+
+
+@app.route('/cashflow/api/notes', methods=['GET', 'POST'])
+def cashflow_api_notes():
+    if not _cashflow_access_ok():
+        return _cf_denied()
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    if request.method == 'GET':
+        rows = conn.execute("SELECT * FROM cf_collection_notes WHERE invoice_key=? ORDER BY created_at DESC, id DESC",
+                            (request.args.get('invoice_key', ''),)).fetchall()
+        conn.close()
+        return jsonify({'success': True, 'notes': [dict(r) for r in rows]})
+    d = request.get_json(silent=True) or {}
+    key = d.get('invoice_key') or ''
+    inv = conn.execute("SELECT invoice_number, client_name FROM cf_invoices WHERE invoice_key=?", (key,)).fetchone()
+    action = d.get('action') if d.get('action') in _CF_NOTE_ACTIONS else 'note'
+    promised = _cf_iso(d.get('promised_date'))
+    if not inv:
+        conn.close()
+        return jsonify({'success': False, 'error': 'Invoice not found'}), 404
+    if action == 'promised' and not promised:
+        conn.close()
+        return jsonify({'success': False, 'error': 'When did they promise to pay by?'}), 400
+    conn.execute("""INSERT INTO cf_collection_notes (invoice_key, invoice_number, client_name, action, note,
+                    promised_date, created_by, created_at) VALUES (?,?,?,?,?,?,?,?)""",
+                 (key, inv['invoice_number'], inv['client_name'], action, (d.get('note') or '').strip()[:2000],
+                  promised, session.get('full_name') or session['username'],
+                  _cf_now_text()))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
+
+
+@app.route('/cashflow/api/import', methods=['POST'])
+def cashflow_api_import():
+    if not _cashflow_access_ok():
+        return _cf_denied()
+    f = request.files.get('file')
+    if not f or not f.filename:
+        return jsonify({'success': False, 'error': 'Choose a file to upload'}), 400
+    try:
+        rows, found, skipped = cashflow_parse_import(_cf_read_table(f), int(_cf_settings()['customer_terms_days']))
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Could not read that file: {e}'}), 400
+    if not rows:
+        return jsonify({'success': False, 'error': 'No invoice rows found in that file'}), 400
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM cf_invoices WHERE source='import'")
+    _cf_store_invoices(conn, rows)
+    conn.commit()
+    conn.close()
+    open_n = sum(1 for r in rows if r[7] in _CF_OPEN_STATUSES and r[12] > 0.005)
+    paid_n = sum(1 for r in rows if r[7] == 'paid' and r[8] and r[10])
+    warnings = []
+    if 'issued_date' not in found:
+        warnings.append('No issued/invoice date column: ages come from due dates, and payment speed cannot be learned.')
+    if 'paid_date' not in found:
+        warnings.append('No paid date column: payment speed cannot be learned from this file, so forecasts use '
+                        'standard assumptions. The Jobber Invoices report has a "Marked paid date" column.')
+    if 'client_name' not in found:
+        warnings.append('No client column: every invoice is treated as one client.')
+    info = {'filename': f.filename, 'at': _cf_now_text()[:16], 'by': session['username'],
+            'rows': len(rows), 'open': open_n, 'paid_with_dates': paid_n, 'skipped': skipped,
+            'columns': {k: str(v) for k, v in found.items()}, 'warnings': warnings}
+    _cf_save_state('import_info', info)
+    log_activity(session['username'], 'CASHFLOW_IMPORT', 'cf_invoices', None, f'{f.filename}: {len(rows)} invoices')
+    return jsonify({'success': True, **info})
+
+
+@app.route('/cashflow/api/import/clear', methods=['POST'])
+def cashflow_api_import_clear():
+    if not _cashflow_access_ok():
+        return _cf_denied()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM cf_invoices WHERE source='import'")
+    conn.commit()
+    conn.close()
+    _cf_save_state('import_info', {})
+    return jsonify({'success': True})
+
+
+@app.route('/cashflow/api/sync', methods=['POST'])
+def cashflow_api_sync():
+    if not _cashflow_access_ok():
+        return _cf_denied()
+    if not _cf_state('jobber_tokens').get('refresh_token'):
+        return jsonify({'success': False, 'error': 'Connect Jobber first'}), 400
+    _cf_start_sync(full=bool((request.get_json(silent=True) or {}).get('full')))
+    return jsonify({'success': True})
+
+
+@app.route('/cashflow/api/sync_status')
+def cashflow_api_sync_status():
+    if not _cashflow_access_ok():
+        return _cf_denied()
+    st = _cf_state('sync_status')
+    started = st.get('started_at')
+    # A worker restarted mid-sync leaves "running" behind; after 30 minutes it is not.
+    if st.get('state') == 'running' and started and \
+            datetime.utcnow() - datetime.strptime(started, '%Y-%m-%dT%H:%M:%SZ') > timedelta(minutes=30):
+        st.update(state='error', error='The sync stopped part way (the app restarted). Run it again.')
+    return jsonify({'success': True, 'status': st, 'marks': _cf_state('sync_marks')})
+
+
+@app.route('/cashflow/jobber/connect')
+def cashflow_jobber_connect():
+    if not _cashflow_access_ok():
+        return redirect(url_for('login'))
+    if not _cf_jobber_configured():
+        flash('Jobber is not set up on this server yet: JOBBER_CLIENT_ID and JOBBER_CLIENT_SECRET are missing.')
+        return redirect(url_for('cashflow_app') + '#setup')
+    state = secrets.token_urlsafe(24)
+    session['cf_jobber_state'] = state
+    from urllib.parse import urlencode
+    return redirect(_CF_JOBBER_AUTHORIZE + '?' + urlencode({
+        'response_type': 'code', 'client_id': JOBBER_CLIENT_ID,
+        'redirect_uri': _cf_callback_url(), 'state': state}))
+
+
+@app.route('/cashflow/jobber/callback')
+def cashflow_jobber_callback():
+    if not _cashflow_access_ok():
+        return redirect(url_for('login'))
+    expected = session.pop('cf_jobber_state', None)
+    if not expected or not hmac.compare_digest(expected, request.args.get('state', '')):
+        flash('The Jobber sign-in could not be verified. Please try Connect Jobber again.')
+        return redirect(url_for('cashflow_app') + '#setup')
+    if request.args.get('error') or not request.args.get('code'):
+        flash(f"Jobber did not connect: {request.args.get('error_description') or request.args.get('error') or 'no code returned'}")
+        return redirect(url_for('cashflow_app') + '#setup')
+    try:
+        tok = _cf_token_request({'grant_type': 'authorization_code', 'code': request.args['code'],
+                                 'redirect_uri': _cf_callback_url()})
+    except CashflowJobberError as e:
+        flash(str(e))
+        return redirect(url_for('cashflow_app') + '#setup')
+    _cf_save_tokens(tok, {'connected_by': session.get('full_name') or session['username'],
+                          'connected_at': _cf_now_text()[:16]})
+    log_activity(session['username'], 'CASHFLOW_JOBBER_CONNECT', 'cashflow', None, 'Connected Jobber')
+    _cf_start_sync(full=True)
+    flash('Jobber is connected. The first pull of invoice history takes a few minutes.')
+    return redirect(url_for('cashflow_app') + '#setup')
+
+
+@app.route('/cashflow/jobber/disconnect', methods=['POST'])
+def cashflow_jobber_disconnect():
+    if not _cashflow_access_ok():
+        return _cf_denied()
+    _cf_save_state('jobber_tokens', {})
+    log_activity(session['username'], 'CASHFLOW_JOBBER_DISCONNECT', 'cashflow', None, 'Disconnected Jobber')
+    return jsonify({'success': True})
+
+
+@app.route('/cashflow/api/export.xlsx')
+def cashflow_api_export():
+    if not _cashflow_access_ok():
+        return redirect(url_for('login'))
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+    m = cashflow_model(**_cf_scenario_args(), record_snapshot=False)
+    wb = openpyxl.Workbook()
+    bold, head = Font(bold=True), PatternFill('solid', fgColor='DBEAFE')
+    money = '#,##0;[Red]-#,##0'
+
+    ws = wb.active
+    ws.title = 'Forecast'
+    weeks = m['weeks']
+    ws.append(['Week of'] + [w['start'] for w in weeks] + ['After'])
+    ws.append(['Starting cash'] + [r['begin'] for r in m['rows']])
+    for grp, title in (('in', 'MONEY IN'), ('out', 'MONEY OUT')):
+        ws.append([title])
+        ws.cell(ws.max_row, 1).font = bold
+        for l in m['lines']:
+            if l['dir'] == grp:
+                ws.append([l['label']] + l['values'])
+    ws.append(['Total in'] + [r['in'] for r in m['rows']])
+    ws.append(['Total out'] + [r['out'] for r in m['rows']])
+    ws.append(['Net'] + [r['net'] for r in m['rows']])
+    ws.append(['Ending cash'] + [r['end'] for r in m['rows']])
+    for cell in ws[1]:
+        cell.font, cell.fill = bold, head
+    for row in ws.iter_rows(min_row=2, min_col=2):
+        for cell in row:
+            cell.number_format = money
+    for cell in ws[ws.max_row]:
+        cell.font = bold
+    ws.column_dimensions['A'].width = 42
+    ws.freeze_panes = 'B2'
+
+    ws = wb.create_sheet('Open invoices')
+    cols = ['Invoice #', 'Client', 'Subject', 'Issued', 'Due', 'Days late', 'Balance', 'Expected paid',
+            'Earliest', 'Latest', 'Chance paid', 'Why', 'Last note']
+    ws.append(cols)
+    for x in m['invoices']:
+        ws.append([x['number'], x['client'], x['subject'], x['issued'], x['due'], max(x['late'], 0), x['balance'],
+                   x['expected'], (x['range'] or [None, None])[0], (x['range'] or [None, None])[1], x['p'], x['why'],
+                   (x['note'] or {}).get('note')])
+    for cell in ws[1]:
+        cell.font, cell.fill = bold, head
+    for row in ws.iter_rows(min_row=2):
+        row[6].number_format = money
+        row[10].number_format = '0%'
+        row[11].alignment = Alignment(wrap_text=False)
+    for col, width in zip('ABCDEFGHIJKL', (11, 30, 30, 11, 11, 9, 12, 13, 11, 11, 11, 70)):
+        ws.column_dimensions[col].width = width
+    ws.freeze_panes = 'A2'
+
+    ws = wb.create_sheet('Assumptions')
+    sc, k = m['scenario'], m['kpis']
+    for row in (['Prepared', m['today']],
+                ['Starting cash', k['cash'], f"as of {k['cash_as_of'] or 'not entered'}"],
+                ['Payment delay (scenario)', f"{sc['delay_days']} days"],
+                ['Never collected (scenario)', f"{sc['haircut_pct']}%"],
+                ['New sales vs pattern', 'learned' if sc['sales_pct'] is None else f"{sc['sales_pct']:+.0f}%",
+                 f"basis: {m['sales']['basis'] or 'none'}, growth used {m['sales']['growth']}"],
+                ['Paid invoices learned from', k['history_n']],
+                ['Lifetime collection rate', f"{k['collection_rate']}%"],
+                ['Supplier terms', f"{m['settings']['supplier_terms_days']} days"],
+                ['Minimum cash', m['settings']['cash_floor']]):
+        ws.append(row)
+    ws.column_dimensions['A'].width = 30
+    ws.column_dimensions['C'].width = 50
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return send_file(buf, as_attachment=True, download_name=f"cash-flow-forecast-{m['today']}.xlsx",
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+
 init_db()
 print("✓ Database initialized on startup")
+init_cashflow_db()
 
 # Set up background scheduler for automatic email checking
 if SCHEDULER_AVAILABLE and PO_EMAIL_MONITORING_ENABLED:
@@ -37429,6 +40427,18 @@ elif not SCHEDULER_AVAILABLE:
     print("⚠ APScheduler not installed - auto email checking disabled")
 elif not PO_EMAIL_MONITORING_ENABLED:
     print("ℹ Email monitoring not configured - auto checking disabled")
+
+# Cash Flow & AR: keep Jobber invoices fresh. Every worker schedules it; the
+# sync's own file lock lets only one run at a time.
+if SCHEDULER_AVAILABLE and _cf_jobber_configured():
+    try:
+        _cf_scheduler = BackgroundScheduler()
+        _cf_scheduler.add_job(_cf_scheduled_sync, 'interval', hours=2, id='cashflow_jobber_sync',
+                              next_run_time=datetime.now() + timedelta(minutes=3))
+        _cf_scheduler.start()
+        print("✓ Cash flow Jobber sync scheduled every 2 hours")
+    except Exception as e:
+        print(f"⚠ Could not start cash flow scheduler: {e}")
 
 if __name__ == '__main__':
        app.run(debug=False)  # Change to False for production
