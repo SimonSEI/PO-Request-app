@@ -43,6 +43,8 @@ DAILY_CAP   <- as.integer(Sys.getenv("AUTO_SEND_DAILY_CAP", "10"))
 MIN_QUOTE_AGE_MONTHS <- as.integer(Sys.getenv("SNOWBIRD_MIN_QUOTE_AGE_MONTHS", "3"))
 MAX_QUOTE_AGE_MONTHS <- as.integer(Sys.getenv("SNOWBIRD_MAX_QUOTE_AGE_MONTHS", "13"))
 MAX_QUOTE_VALUE      <- as.numeric(Sys.getenv("SNOWBIRD_MAX_QUOTE_VALUE", "14000"))
+# Quote titles never offered this discount (monthly maintenance programmes).
+SKIP_TITLE_RE        <- Sys.getenv("SNOWBIRD_SKIP_TITLE_PATTERN", "(?i)\\bmonthly\\b.*\\bmaint")
 
 # Sending from here is not merely unbuilt, it is not offered by the API. This
 # stays FALSE so the automatic run can never email anyone; it would only become
@@ -156,18 +158,24 @@ due_for_auto_send <- function(plan_path, today = as.Date(format(Sys.time(), tz =
   created <- suppressWarnings(as.Date(p$quote_created))
   value   <- suppressWarnings(as.numeric(p$total))
   is_co   <- tolower(str_squish(p$client_is_company)) %in% c("yes", "true", "t", "1")
+  # A plan with no title column cannot show a quote is not maintenance, so it
+  # fails closed like the other checks.
+  is_maint <- if ("quote_title" %in% names(p))
+                str_detect(coalesce(p$quote_title, ""), SKIP_TITLE_RE)
+              else rep(TRUE, nrow(p))
 
   too_old   <- is.na(created) | created < oldest
   too_new   <- !is.na(created) & created > newest
   too_big   <- is.na(value) | value >= MAX_QUOTE_VALUE
-  blocked   <- is_co | too_old | too_new | too_big
+  blocked   <- is_co | is_maint | too_old | too_new | too_big
 
   if (any(blocked)) {
     log_line("auto-send: ", sum(blocked), " quote(s) held back - ",
              sum(is_co), " company/HOA, ",
              sum(!is_co & too_old), " older than ", MAX_QUOTE_AGE_MONTHS, " months, ",
              sum(!is_co & !too_old & too_new), " newer than ", MIN_QUOTE_AGE_MONTHS, " months, ",
-             sum(!is_co & !too_old & !too_new & too_big), " at or above the value ceiling")
+             sum(!is_co & !too_old & !too_new & too_big), " at or above the value ceiling, ",
+             sum(!is_co & is_maint), " monthly maintenance")
     p <- p[!blocked, , drop = FALSE]
   }
 
