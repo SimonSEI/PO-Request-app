@@ -150,6 +150,9 @@ jobs    <- rd("jobs.csv")
 # Older pulls predate the is_company column; treat it as unknown rather than
 # failing, so the rules still work before the next refresh.
 if (!"is_company" %in% names(clients)) clients$is_company <- NA_character_
+# Area codes arrive with the first full pull after they were added; until then
+# every client simply has none.
+if (!"phone_areas" %in% names(clients)) clients$phone_areas <- NA_character_
 
 read_exclude <- function(path) {
   if (!file.exists(path)) return(character())
@@ -325,7 +328,17 @@ props <- props %>% mutate(
   owner_country = map_chr(m, ~ .x$owner_country %||% NA_character_),
   homestead     = map_lgl(m, ~ .x$homestead     %||% NA),
   roll_second_home = !is.na(homestead) & !homestead &
-                     (coalesce(owner_country, "USA") != "USA" | coalesce(owner_state, "FL") != "FL"))
+                     (coalesce(owner_country, "USA") != "USA" | coalesce(owner_state, "FL") != "FL"),
+  # No homestead exemption, and the tax bill goes to this same Florida town.
+  # Someone who lives here all year almost always claims the exemption - it
+  # is worth thousands a year - so an owner who has not, and who gets their
+  # bill here rather than at a home elsewhere in Florida, most likely spends
+  # part of the year away. (Whether the owner IS our client is checked per
+  # client below: if the names differ, our client is probably a tenant.)
+  roll_absent_owner = !is.na(homestead) & !homestead & !roll_second_home &
+                      coalesce(owner_state, "") == "FL" &
+                      toupper(str_squish(coalesce(owner_city, ""))) ==
+                        toupper(str_squish(coalesce(prop_city, "-"))))
 
 # =============================================================================
 # 5. One verdict per client
@@ -342,6 +355,32 @@ state_code <- function(x) {
 NORTH_US <- c("CT","DE","IL","IN","IA","KS","ME","MD","MA","MI","MN","MO","NE","NH","NJ",
               "NY","ND","OH","PA","RI","SD","VT","WI","WV","DC","WA","OR","ID","MT","WY",
               "CO","UT","AK","KY","VA")
+# --- Phone area codes -----------------------------------------------------------
+# Florida's codes, overlays included. Anything else that is a real geographic
+# North American code says the phone was set up somewhere else - for most
+# snowbirds, the mobile they have always had at home up north.
+FL_AREA_CODES <- c("239", "305", "321", "324", "352", "386", "407", "448", "561", "645",
+                   "656", "689", "727", "728", "754", "772", "786", "813", "850", "863",
+                   "904", "941", "954")
+# Toll-free, premium and non-geographic codes say nothing about where anyone lives.
+NON_GEO_CODES <- c("500", "521", "522", "523", "524", "525", "526", "527", "528", "529",
+                   "533", "544", "566", "577", "588", "600", "622", "700", "710", "800",
+                   "833", "844", "855", "866", "877", "888", "900")
+away_codes <- function(areas) {
+  map_chr(str_split(coalesce(areas, ""), ";"), function(a) {
+    a <- a[grepl("^[2-9][0-9]{2}$", a) & !grepl("^.11$", a) &
+           !(a %in% c(FL_AREA_CODES, NON_GEO_CODES))]
+    if (length(a)) paste(a, collapse = ", ") else NA_character_
+  })
+}
+
+# Each new clue can be switched off without a deploy if it proves too loose.
+# The phone clue is the weaker: plenty of people who moved here for good keep
+# their old number too. A homestead exemption overrides it, but a year-round
+# resident whose property is not on a loaded roll has no homestead to show.
+USE_PHONE_CLUE     <- tolower(Sys.getenv("SNOWBIRD_USE_PHONE", "true")) %in% c("1", "true", "yes", "on")
+USE_NO_HMSTD_CLUE  <- tolower(Sys.getenv("SNOWBIRD_USE_NO_HOMESTEAD", "true")) %in% c("1", "true", "yes", "on")
+
 region_of <- function(state, country) case_when(
   !is.na(country) & !(toupper(country) %in% c("USA", "US", "UNITED STATES")) & toupper(country) != "CANADA" ~ "Overseas",
   toupper(coalesce(country, "")) == "CANADA" | state %in% names(CANADA)         ~ "Canada",
@@ -352,8 +391,12 @@ region_of <- function(state, country) case_when(
 
 best_prop <- props %>%
   group_by(client_id) %>%
-  # A client with several properties: the most informative match wins.
-  arrange(desc(roll_second_home), desc(!is.na(homestead))) %>%
+  # A client with several properties: the most informative match wins. A
+  # homestead anywhere outranks the weaker no-homestead clue, because a
+  # client who has sworn one of their properties is their permanent home is a
+  # resident, whatever their other properties say.
+  arrange(desc(roll_second_home), desc(homestead %in% TRUE),
+          desc(roll_absent_owner), desc(!is.na(homestead))) %>%
   summarise(n_properties  = n(),
             match_result  = first(match_result),
             county        = first(county),
@@ -364,6 +407,7 @@ best_prop <- props %>%
             owner_country = first(owner_country),
             homestead     = first(homestead),
             roll_second_home = first(roll_second_home),
+            roll_absent_owner = first(roll_absent_owner),
             property_address = first(str_squish(paste(prop_street1, coalesce(prop_street2, ""), prop_city))),
             .groups = "drop")
 
@@ -381,12 +425,23 @@ db <- clients %>%
     name_on_roll = if_else(is.na(owner_name) | is.na(last_name), NA,
                            str_detect(toupper(owner_name), fixed(toupper(str_squish(last_name))))),
 
+    phone_away_codes = if (USE_PHONE_CLUE) away_codes(phone_areas) else NA_character_,
+    phone_away   = !is.na(phone_away_codes),
+    # The no-homestead clue only counts when the owner on the roll is our
+    # client; a different name means our client most likely rents it.
+    absent_owner = USE_NO_HMSTD_CLUE & roll_absent_owner %in% TRUE & name_on_roll %in% TRUE,
+
+    # Strongest evidence first. A homestead exemption overrides every other
+    # clue: it is a sworn statement that this is the owner's permanent home.
     status = case_when(
       homestead %in% TRUE & bill_away   ~ "Check: homesteaded here but bills go out of state",
       homestead %in% TRUE               ~ "Year-round resident",
-      roll_second_home %in% TRUE & (bill_away | name_on_roll %in% TRUE) ~ "Second home - confirmed",
+      roll_second_home %in% TRUE & (bill_away | phone_away | name_on_roll %in% TRUE) ~ "Second home - confirmed",
       roll_second_home %in% TRUE        ~ "Second home - likely (roll only)",
       bill_away                         ~ "Second home - likely (billing address only)",
+      absent_owner & phone_away         ~ "Second home - likely (no homestead + phone)",
+      absent_owner                      ~ "Second home - likely (no homestead)",
+      phone_away                        ~ "Second home - likely (phone only)",
       TRUE                              ~ "Unknown"),
 
     snowbird     = str_starts(status, "Second home"),
@@ -395,16 +450,19 @@ db <- clients %>%
     home_country = if_else(roll_second_home %in% TRUE, coalesce(owner_country, bill_country), bill_country),
     home_region  = region_of(home_state, home_country),
     evidence = pmap_chr(list(roll_second_home, homestead, owner_city, owner_state, owner_country,
-                             bill_away, bill_state, county, match_result, name_on_roll),
-      function(rsh, hs, oc, os, oco, ba, bs, cty, mr, nm) {
+                             bill_away, bill_state, county, match_result, name_on_roll,
+                             absent_owner, phone_away_codes),
+      function(rsh, hs, oc, os, oco, ba, bs, cty, mr, nm, ao, pc) {
         bits <- c(
           if (isTRUE(rsh)) sprintf("%s County roll: no homestead, tax mail to %s", cty,
                                    str_squish(paste(str_to_title(coalesce(oc, "")),
                                                     if (!is.na(oco) && oco != "USA") str_to_title(oco) else coalesce(os, "")))),
           if (isTRUE(hs)) sprintf("%s County roll: homestead exemption", cty),
+          if (isTRUE(ao)) sprintf("%s County roll: owned by the client, no homestead exemption", cty),
           if (!is.na(mr) && !str_starts(mr, "matched")) paste("Roll:", mr),
           if (isTRUE(nm == FALSE)) "owner name on roll differs from client",
-          if (isTRUE(ba)) sprintf("Jobber billing address in %s", bs))
+          if (isTRUE(ba)) sprintf("Jobber billing address in %s", bs),
+          if (!is.na(pc)) sprintf("phone area code %s (outside Florida)", pc))
         if (length(bits) == 0) "no evidence either way" else paste(bits, collapse = "; ")
       })
   )
@@ -577,7 +635,8 @@ client_out <- db %>%
             status, snowbird, home_state, home_country, home_region,
             predicted_return, return_basis, evidence, n_properties, property_address, county,
             parcel_id, homestead, owner_city, owner_state, owner_country, name_on_roll,
-            bill_city, bill_state, bill_country, seasons_seen, client_link) %>%
+            bill_city, bill_state, bill_country,
+            phone_area_codes = phone_away_codes, seasons_seen, client_link) %>%
   arrange(desc(snowbird), status, client)
 
 write_csv(client_out, file.path(OUT_DIR, "client_second_homes.csv"), na = "")
@@ -597,6 +656,34 @@ print(client_out %>% filter(snowbird) %>% count(home_region, home_state, sort = 
 cat("\nProperty rolls used:", if (length(counties_loaded)) paste(str_to_title(counties_loaded), collapse = " + ") else "none", "\n")
 if (!"lee" %in% counties_loaded)
   cat("  (Lee County roll not loaded - Lee clients are judged on billing address alone.)\n")
+
+# Why the rest are still Unknown, so the next improvement goes where the
+# clients actually are rather than where they are assumed to be.
+cat("\nWhy the Unknown clients are unknown:\n")
+db %>%
+  filter(status == "Unknown") %>%
+  mutate(why = case_when(
+    is.na(match_result)                                  ~ "no property address on any quote or job",
+    str_detect(match_result, "outside the property rolls") ~ "property is outside the rolls loaded (e.g. Lee County)",
+    str_detect(match_result, "^no parcel")               ~ "address not found on the roll",
+    str_detect(match_result, "disagree")                 ~ "condo building, unit number missing in Jobber",
+    str_detect(match_result, "incomplete")               ~ "property address incomplete in Jobber",
+    str_starts(match_result, "matched") & name_on_roll %in% FALSE ~ "on the roll, but owned by someone else (tenant, trust or LLC)",
+    str_starts(match_result, "matched")                  ~ "on the roll, no homestead, tax mail elsewhere in Florida",
+    TRUE                                                 ~ match_result)) %>%
+  count(why, sort = TRUE, name = "clients") %>%
+  print(n = Inf)
+cat("Clients with a phone area code on file: ",
+    sum(!is.na(db$phone_areas)), " of ", nrow(db),
+    if (all(is.na(db$phone_areas))) " (none yet - area codes arrive with the next full refresh)" else "",
+    "\n", sep = "")
+# ZIPs, not addresses: enough to see which county the unmatched properties are in.
+outside <- props %>% filter(str_detect(match_result, "outside the property rolls"))
+if (nrow(outside)) {
+  cat("\nMost common ZIPs among properties outside the loaded rolls:\n")
+  print(outside %>% count(zip, sort = TRUE, name = "properties"), n = 12)
+}
+
 cat("Area forecast (", as.character(fc$county %||% "primary county"), "): season opens ",
     format(area_return, "%d %b %Y"), " | ", LEAD_DAYS, " day lead | ", DISCOUNT * 100, "% off\n", sep = "")
 cat("Eligible quotes: ", MIN_QUOTE_AGE_MONTHS, "-", MAX_QUOTE_AGE_MONTHS,

@@ -784,6 +784,9 @@ server <- function(input, output, session) {
       grepl("confirmed",  x, ignore.case = TRUE) ~ "Confirmed",
       grepl("billing",    x, ignore.case = TRUE) ~ "Likely (billing)",
       grepl("roll only",  x, ignore.case = TRUE) ~ "Likely (roll)",
+      grepl("no homestead \\+ phone", x, ignore.case = TRUE) ~ "Likely (no homestead + phone)",
+      grepl("no homestead", x, ignore.case = TRUE) ~ "Likely (no homestead)",
+      grepl("phone only", x, ignore.case = TRUE) ~ "Likely (phone)",
       grepl("Year-round", x, ignore.case = TRUE) ~ "Year-round",
       grepl("^Check",     x)                     ~ "Check",
       TRUE ~ x)

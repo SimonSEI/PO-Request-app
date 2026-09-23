@@ -68,6 +68,10 @@ if (!file.exists(TOKEN_FILE)) {
 
 res <- tryCatch({
   ensure_collier_roll(Sys.getenv("COLLIER_ROLL", "data/raw/collier_int_parcels.csv"))
+  # Lee is an extra, not a requirement: if its download fails the refresh goes
+  # on and Lee clients are judged the way they were before.
+  tryCatch(ensure_lee_roll(Sys.getenv("LEE_ROLL", "data/raw/lee_nal.csv")),
+           error = function(e) message("Lee roll skipped: ", conditionMessage(e)))
   Sys.setenv(PULL_SCOPE = scope)
   source("R/17_jobber_pull.R", local = new.env())
   source("R/18_client_second_homes.R", local = new.env())

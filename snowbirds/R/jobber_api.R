@@ -167,7 +167,12 @@ drop_field <- function(spec, field) {
     nm <- names(out)[i]
     if (!is.null(nm) && nzchar(nm)) out[[i]] <- drop_field(out[[i]], field)
   }
-  out
+  # A sub-selection whose last field was just dropped would render as
+  # "phones {  }", which is a syntax error rather than a missing field - the
+  # retry loop cannot recover from that, so an emptied group goes too.
+  nms   <- names(out) %||% rep("", length(out))
+  empty <- nzchar(nms) & vapply(out, length, 1L) == 0
+  out[!empty]
 }
 
 # Page through a top-level connection (quotes, clients, jobs). Returns a list
