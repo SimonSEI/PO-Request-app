@@ -234,23 +234,28 @@ table.dataTable { width:100% !important; }
 
 /* table-layout:fixed makes these shares binding. Without it the browser sizes
    columns by content, and the only column whose text can wrap - the long
-   explanation - is the one it takes the space from. They total 100. */
+   explanation - is the one it takes the space from. They total 100, and adding a
+   column means giving it a share and taking that share from the others. */
 table.plan-table { table-layout:fixed; }
 table.plan-table th:nth-child(1),  table.plan-table td:nth-child(1)  { width:7%; }
 table.plan-table th:nth-child(2),  table.plan-table td:nth-child(2)  { width:9%; }
 table.plan-table th:nth-child(3),  table.plan-table td:nth-child(3)  { width:5%; }
-table.plan-table th:nth-child(4),  table.plan-table td:nth-child(4)  { width:12%; }
+table.plan-table th:nth-child(4),  table.plan-table td:nth-child(4)  { width:10%; }
 table.plan-table th:nth-child(5),  table.plan-table td:nth-child(5)  { width:7%; }
 table.plan-table th:nth-child(6),  table.plan-table td:nth-child(6)  { width:6%; }
 table.plan-table th:nth-child(7),  table.plan-table td:nth-child(7)  { width:7%; }
 table.plan-table th:nth-child(8),  table.plan-table td:nth-child(8)  { width:4%; }
-table.plan-table th:nth-child(9),  table.plan-table td:nth-child(9)  { width:7%; }
+table.plan-table th:nth-child(9),  table.plan-table td:nth-child(9)  { width:6%; }
 table.plan-table th:nth-child(10), table.plan-table td:nth-child(10) { width:7%; }
 table.plan-table th:nth-child(11), table.plan-table td:nth-child(11) { width:6%; }
-table.plan-table th:nth-child(12), table.plan-table td:nth-child(12) { width:19%; }
+table.plan-table th:nth-child(12), table.plan-table td:nth-child(12) { width:13%; }
 table.plan-table th:nth-child(13), table.plan-table td:nth-child(13) { width:4%; }
+/* The Discount button. Every column needs a share here: under a fixed layout a
+   column left out gets whatever remains of 100%, which was nothing. */
+table.plan-table th:nth-child(14), table.plan-table td:nth-child(14) { width:9%; }
+table.plan-table td:nth-child(14) .btn { white-space:normal; line-height:1.25; }
 
-/* Below this the thirteen columns stop being readable at any share, so let the
+/* Below this the fourteen columns stop being readable at any share, so let the
    card scroll sideways instead of crushing them. */
 @media (max-width: 1100px) {
   .dataTables_wrapper { overflow-x:auto; }
