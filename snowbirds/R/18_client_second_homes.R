@@ -120,6 +120,14 @@ MAX_QUOTE_AGE_MONTHS <- as.integer(Sys.getenv("SNOWBIRD_MAX_QUOTE_AGE_MONTHS", "
 # on work that deserves a conversation, not an automated email.
 MAX_QUOTE_VALUE <- as.numeric(Sys.getenv("SNOWBIRD_MAX_QUOTE_VALUE", "14000"))
 
+# Kinds of quote this offer is never for, matched on the quote title. A monthly
+# maintenance programme is an ongoing service agreement, not a one-off job the
+# client has been sitting on - "welcome back, 10% off" is the wrong message and
+# gives away margin on recurring revenue. Matches "Monthly Maintenance",
+# "Monthly Maintenance Program", "MONTHLY IRRIGATION MAINT." and the like.
+# clients/auto_send.R reads the same setting, so the plan and the button agree.
+SKIP_TITLE_RE <- Sys.getenv("SNOWBIRD_SKIP_TITLE_PATTERN", "(?i)\\bmonthly\\b.*\\bmaint")
+
 # Hand-maintained lists of clients who must never be sent a resend, for the
 # ones no rule can catch. One column, client_id or client name, one per row.
 #
@@ -514,6 +522,8 @@ plan_all <- quotes %>%
     # skipping it - we cannot show it is inside the limit, so it does not go.
     excluded_because = case_when(
       is_org                       ~ org_reason,
+      str_detect(coalesce(title, ""), SKIP_TITLE_RE)
+                                   ~ "monthly maintenance quote - an ongoing service, not a resend",
       is.na(quote_created)         ~ "no creation date on the quote, so its age cannot be checked",
       quote_created < OLDEST_QUOTE ~ sprintf("quote is %d days old, past the %d-month limit",
                                              as.integer(round(quote_age_days)), MAX_QUOTE_AGE_MONTHS),
@@ -617,6 +627,7 @@ if (nrow(excluded) == 0) cat("Nothing excluded.\n") else {
       scales::dollar(sum(excluded$total, na.rm = TRUE)), ":\n", sep = "")
   excluded %>%
     mutate(rule = case_when(
+      str_detect(excluded_because, "^monthly maintenance") ~ "monthly maintenance quote",
       str_detect(excluded_because, "past the")  ~ sprintf("older than %d months", MAX_QUOTE_AGE_MONTHS),
       str_detect(excluded_because, "under the") ~ sprintf("newer than %d months", MIN_QUOTE_AGE_MONTHS),
       str_detect(excluded_because, "ceiling")   ~ sprintf("%s or more", scales::dollar(MAX_QUOTE_VALUE)),
