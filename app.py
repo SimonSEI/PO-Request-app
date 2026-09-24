@@ -3744,7 +3744,7 @@ def dashboard():
                                  full_name=full_name,
                                  tech_type=session.get('tech_type', ''),
                                  user_lang=session.get('user_lang', 'en'),
-                                 cashflow_ok=_cashflow_access_ok())
+                                 cashflow_ok=_cashflow_allowed())
 
 @app.route('/office_admin')
 def office_admin():
@@ -5715,6 +5715,10 @@ def list_backups():
 def download_backup(filename):
     """Download a backup file"""
     if 'username' not in session or session['role'] != 'office':
+        return 'Unauthorized', 401
+    # A backup is the whole database, company cash included: once Cash Flow
+    # is limited to named people, so are full backups.
+    if CASHFLOW_USERS and session['username'].lower() not in CASHFLOW_USERS:
         return 'Unauthorized', 401
 
     try:
@@ -37501,10 +37505,17 @@ except ImportError:  # Windows dev machines: fall back to in-process locks
     fcntl = None
 
 
-# Off unless CASHFLOW_ENABLED=true on the service. Switched off on the
-# owner's instruction until the stored Jobber/QuickBooks sign-ins are
-# encrypted and database backups can no longer carry them out.
+# Off unless CASHFLOW_ENABLED=true on the service (the owner switched it off
+# until sign-ins were encrypted and a second login step was in place).
 CASHFLOW_ENABLED = os.environ.get('CASHFLOW_ENABLED', '').lower() in ('1', 'true', 'yes', 'on')
+# Encrypts the Jobber/QuickBooks sign-ins and everyone's authenticator secret
+# in the database. It lives only in the service's variables, so a copy of the
+# database - a downloaded backup, say - holds nothing usable. Any random
+# string of 32+ characters. Changing it disconnects Jobber/QuickBooks and
+# makes everyone set up their authenticator again.
+CASHFLOW_TOKEN_KEY = os.environ.get('CASHFLOW_TOKEN_KEY', '')
+_CF_SECRET_STATES = ('jobber_tokens', 'qbo_tokens')
+_CF_2FA_HOURS = 12
 
 
 @app.before_request
@@ -37513,12 +37524,43 @@ def _cashflow_off_switch():
         return 'Not found', 404
 
 
-def _cashflow_access_ok():
+def _cashflow_allowed():
+    """May this login use Cash Flow at all (before the authenticator code)?"""
     if not CASHFLOW_ENABLED:
         return False
     if 'username' not in session or session.get('role') not in CASHFLOW_ROLES:
         return False
     return not CASHFLOW_USERS or session['username'].lower() in CASHFLOW_USERS
+
+
+def _cf_2fa_ok():
+    v = session.get('cf_2fa') or {}
+    return v.get('user') == (session.get('username') or '').lower() and float(v.get('until') or 0) > time.time()
+
+
+def _cashflow_access_ok():
+    return _cashflow_allowed() and _cf_2fa_ok()
+
+
+def _cf_page_gate():
+    """For pages: a redirect when this login can't see Cash Flow yet, else None."""
+    if not _cashflow_allowed():
+        return redirect(url_for('login'))
+    if not _cf_2fa_ok():
+        return redirect(url_for('cashflow_verify', next=request.full_path if request.method == 'GET' else None))
+    return None
+
+
+def _cf_fernet():
+    if len(CASHFLOW_TOKEN_KEY) < 32:
+        return None
+    import hashlib
+    from cryptography.fernet import Fernet
+    return Fernet(base64.urlsafe_b64encode(hashlib.sha256(CASHFLOW_TOKEN_KEY.encode()).digest()))
+
+
+def _cf_is_secret(key):
+    return key in _CF_SECRET_STATES or key.startswith('totp_')
 
 
 def _cf_today():
@@ -37657,14 +37699,31 @@ def _cf_settings():
 
 
 def _cf_state(key):
+    raw = get_setting(f'cashflow_{key}') or ''
+    if _cf_is_secret(key):
+        # Only ever read encrypted: anything else (or the wrong key) is treated
+        # as not connected rather than trusted.
+        f = _cf_fernet()
+        if not f or not raw.startswith('enc:'):
+            return {}
+        try:
+            raw = f.decrypt(raw[4:].encode()).decode()
+        except Exception:
+            return {}
     try:
-        return json.loads(get_setting(f'cashflow_{key}') or '{}')
+        return json.loads(raw or '{}')
     except (TypeError, ValueError):
         return {}
 
 
 def _cf_save_state(key, value):
-    set_setting(f'cashflow_{key}', json.dumps(value))
+    text = json.dumps(value)
+    if _cf_is_secret(key) and value:
+        f = _cf_fernet()
+        if not f:
+            raise RuntimeError('CASHFLOW_TOKEN_KEY (32+ characters) is not set on this service')
+        text = 'enc:' + f.encrypt(text.encode()).decode()
+    set_setting(f'cashflow_{key}', text)
 
 
 def init_cashflow_db():
@@ -39751,6 +39810,11 @@ CASHFLOW_TEMPLATE = r'''<!DOCTYPE html>
       <div class="chips" id="st-quick" style="margin-bottom:12px"></div>
       <div class="tw" id="st-items"></div>
     </div>
+    <div class="card">
+      <h2>Two-step sign-in</h2>
+      <p class="sub">Opening Cash Flow asks for a code from the authenticator app on each person's phone, as well as their password, once every 12 hours. Reset someone here if they get a new phone; they'll set it up again next time they open Cash Flow.</p>
+      <div class="tw" id="st-2fa"></div>
+    </div>
     <div class="grid2" style="margin-bottom:18px">
       <div class="card" id="st-qbo"></div>
       <div class="card" id="st-jobber"></div>
@@ -39839,6 +39903,7 @@ async function api(url, opts) {
   try { r = await fetch(url, opts); } catch (e) { toast('Network error. Check your connection.', 'bad'); throw e; }
   let data;
   try { data = await r.json(); } catch (e) { data = { success: false, error: r.status === 200 ? 'Your session expired. Reload the page.' : 'Server error (' + r.status + ')' }; }
+  if (data.reauth) { toast(data.error, 'bad'); setTimeout(() => location.reload(), 1200); throw new Error(data.error); }
   if (!r.ok || data.success === false) { toast(data.error || ('Error ' + r.status), 'bad'); throw new Error(data.error); }
   return data;
 }
@@ -40375,10 +40440,23 @@ function renderSetup() {
     await api('/cashflow/api/items/delete', { json: { id: i.id } }); load();
   }));
 
+  render2fa();
   renderLearned();
   renderQbo();
   renderJobber();
   renderImport();
+}
+
+function render2fa() {
+  const us = BOOT.twofa_users || [];
+  $('#st-2fa').innerHTML = us.length ? '<table class="t"><tbody>' + us.map(u => '<tr><td>' + esc(u) + (u === BOOT.me ? ' <span class="pill grey">you</span>' : '') + '</td><td style="text-align:right"><button class="btn sm danger" data-reset2fa="' + esc(u) + '">Reset code</button></td></tr>').join('') + '</tbody></table>' : '<div class="empty">No one has set up a code yet.</div>';
+  $$('[data-reset2fa]').forEach(b => b.addEventListener('click', async () => {
+    const u = b.dataset.reset2fa;
+    if (!confirm('Reset the authenticator for ' + u + '? They will set it up again next time they open Cash Flow.')) return;
+    await api('/cashflow/api/2fa/reset', { json: { username: u } });
+    if (u === BOOT.me) { location.reload(); return; }
+    BOOT.twofa_users = us.filter(x => x !== u); render2fa(); toast('Reset');
+  }));
 }
 
 function renderLearned() {
@@ -40631,9 +40709,134 @@ load().then(() => { renderQuick(); if (!S.m.has_data && !location.hash) location
 '''
 
 
+# ── Second login step: an authenticator code ─────────────────────────────────
+
+def _cf_totp(secret_b32, counter):
+    """RFC 6238 six-digit code - what Google/Microsoft Authenticator show."""
+    key = base64.b32decode(secret_b32)
+    h = hmac.new(key, counter.to_bytes(8, 'big'), 'sha1').digest()
+    o = h[-1] & 0x0f
+    return f"{(int.from_bytes(h[o:o + 4], 'big') & 0x7fffffff) % 1000000:06d}"
+
+
+def _cf_totp_check(user, code):
+    rec = _cf_state(f'totp_{user}')
+    code = re.sub(r'\D', '', code or '')
+    if not rec.get('secret') or len(code) != 6:
+        return False
+    now = int(time.time() // 30)
+    for counter in (now - 1, now, now + 1):     # allow a phone clock 30s out
+        # A code that already let someone in can't be used again.
+        if counter > int(rec.get('last') or 0) and hmac.compare_digest(_cf_totp(rec['secret'], counter), code):
+            rec.update(last=counter, confirmed=True)
+            _cf_save_state(f'totp_{user}', rec)
+            return True
+    return False
+
+
+CASHFLOW_VERIFY_TEMPLATE = """<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Cash Flow sign-in</title>
+<style>
+body{margin:0;font-family:Inter,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;background:#F8FAFC;color:#0F172A;line-height:1.5}
+.box{max-width:440px;margin:8vh auto;background:#fff;border:1px solid #E2E8F0;border-radius:14px;padding:28px;box-shadow:0 1px 3px rgba(15,23,42,.06)}
+h1{font-size:19px;margin:0 0 6px}p{color:#475569;font-size:14px;margin:0 0 14px}
+.key{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:17px;letter-spacing:2px;background:#F1F5F9;border-radius:8px;padding:12px;text-align:center;word-break:break-all;margin:0 0 10px;color:#0F172A}
+input{font:inherit;font-size:24px;letter-spacing:8px;text-align:center;width:100%;box-sizing:border-box;padding:10px;border:1px solid #CBD5E1;border-radius:10px}
+button{margin-top:14px;width:100%;padding:11px;border:none;border-radius:10px;background:#2563EB;color:#fff;font:inherit;font-weight:700;font-size:15px;cursor:pointer}
+.err{background:#FEF2F2;color:#B91C1C;border-radius:8px;padding:8px 12px;font-size:13px;margin-bottom:12px}
+ol{padding-left:20px;color:#475569;font-size:14px}li{margin:4px 0}a{color:#2563EB}.back{display:block;text-align:center;margin-top:16px;font-size:13px}
+</style></head><body><div class="box">
+{% if not configured %}
+<h1>Cash Flow isn't ready on this server</h1>
+<p>It needs a <b>CASHFLOW_TOKEN_KEY</b> variable (any random text of 32+ characters) on the Office App service in Railway before anyone can sign in.</p>
+{% else %}
+{% with msgs = get_flashed_messages() %}{% for m in msgs %}<div class="err">{{ m }}</div>{% endfor %}{% endwith %}
+{% if setup %}
+<h1>Set up your second login step</h1>
+<p>Cash Flow shows company cash, so it asks for a code from your phone as well as your password.</p>
+<ol><li>Install <b>Microsoft Authenticator</b> or <b>Google Authenticator</b> on your phone.</li>
+<li>Add an account → <b>Enter a setup key</b> (or "Other account"), name it <b>Office App Cash Flow</b>, and type this key (time-based):</li></ol>
+<div class="key">{{ secret_display }}</div>
+<p style="font-size:12px">On the phone itself you can tap <a href="{{ otpauth }}">this link</a> instead. Keep the key private.</p>
+<p>3. Enter the 6-digit code the app shows:</p>
+{% else %}
+<h1>Enter your code</h1>
+<p>Open your authenticator app and type the 6-digit code for <b>Office App Cash Flow</b>.</p>
+{% endif %}
+<form method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ next }}">
+<input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" pattern="[0-9 ]*" autofocus required placeholder="000000">
+<button type="submit">{{ 'Finish setup' if setup else 'Open Cash Flow' }}</button>
+</form>
+<p style="font-size:12px;margin-top:14px">Lost your phone? Ask another Cash Flow user to reset your code on the Setup tab.</p>
+{% endif %}
+<a class="back" href="{{ url_for('dashboard') }}">← Back to the dashboard</a>
+</div></body></html>"""
+
+
+@app.route('/cashflow/verify', methods=['GET', 'POST'])
+@limiter.limit("10 per minute", methods=['POST'])
+def cashflow_verify():
+    if not _cashflow_allowed():
+        return redirect(url_for('login'))
+    user = session['username'].lower()
+    nxt = request.values.get('next') or ''
+    if not nxt.startswith('/cashflow') or nxt.startswith('/cashflow/verify'):
+        nxt = url_for('cashflow_app')
+    if not _cf_fernet():
+        return render_template_string(CASHFLOW_VERIFY_TEMPLATE, configured=False)
+    rec = _cf_state(f'totp_{user}')
+    if not rec.get('secret'):
+        rec = {'secret': base64.b32encode(secrets.token_bytes(20)).decode(), 'confirmed': False}
+        _cf_save_state(f'totp_{user}', rec)
+    if request.method == 'POST':
+        if _cf_totp_check(user, request.form.get('code')):
+            session['cf_2fa'] = {'user': user, 'until': time.time() + _CF_2FA_HOURS * 3600}
+            log_activity(session['username'], 'CASHFLOW_2FA_OK', 'cashflow', None,
+                         'Set up authenticator' if not rec.get('confirmed') else 'Entered authenticator code')
+            return redirect(nxt)
+        log_activity(session['username'], 'CASHFLOW_2FA_FAIL', 'cashflow', None, 'Wrong authenticator code')
+        flash("That code didn't match. Check the phone's clock is right and try the newest code.")
+        return redirect(url_for('cashflow_verify', next=nxt))
+    from urllib.parse import quote
+    otpauth = (f"otpauth://totp/{quote('Office App Cash Flow:' + session['username'])}"
+               f"?secret={rec['secret']}&issuer={quote('Office App Cash Flow')}")
+    return render_template_string(CASHFLOW_VERIFY_TEMPLATE, configured=True, setup=not rec.get('confirmed'),
+                                  secret_display=' '.join(rec['secret'][i:i + 4] for i in range(0, len(rec['secret']), 4)),
+                                  otpauth=otpauth, next=nxt)
+
+
+@app.route('/cashflow/api/2fa/reset', methods=['POST'])
+def cashflow_api_2fa_reset():
+    """Make someone set up their authenticator again (a lost or new phone)."""
+    if not _cashflow_access_ok():
+        return _cf_denied()
+    who = ((request.get_json(silent=True) or {}).get('username') or '').strip().lower()
+    if not who:
+        return jsonify({'success': False, 'error': 'Whose code should be reset?'}), 400
+    _cf_save_state(f'totp_{who}', {})
+    log_activity(session['username'], 'CASHFLOW_2FA_RESET', 'cashflow', None, f'Reset authenticator for {who}')
+    if who == session['username'].lower():
+        session.pop('cf_2fa', None)
+    return jsonify({'success': True})
+
+
+def _cf_2fa_users():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        keys = [r[0] for r in conn.execute("SELECT key FROM app_settings WHERE key LIKE 'cashflow_totp_%' AND value LIKE 'enc:%'")]
+        conn.close()
+    except sqlite3.Error:
+        return []
+    return sorted(k[len('cashflow_totp_'):] for k in keys)
+
+
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 def _cf_denied():
+    if _cashflow_allowed() and not _cf_2fa_ok():
+        return jsonify({'success': False, 'reauth': True,
+                        'error': 'Your Cash Flow sign-in has expired. Reloading…'}), 403
     return jsonify({'success': False, 'error': 'Unauthorized'}), 403
 
 
@@ -40647,8 +40850,9 @@ def _cf_scenario_args():
 
 @app.route('/cashflow')
 def cashflow_app():
-    if not _cashflow_access_ok():
-        return redirect(url_for('login'))
+    gate = _cf_page_gate()
+    if gate:
+        return gate
     tokens = _cf_state('jobber_tokens')
     boot = {
         'jobber_configured': _cf_jobber_configured(),
@@ -40664,6 +40868,8 @@ def cashflow_app():
         'qbo_callback_url': _cf_qbo_callback_url(),
         'legal_url': request.url_root.rstrip('/') + '/cashflow/legal' if 'localhost' in (WEBSITE_URL or 'localhost') else WEBSITE_URL.rstrip('/') + '/cashflow/legal',
         'qbo_sandbox': QBO_ENVIRONMENT == 'sandbox',
+        'twofa_users': _cf_2fa_users(),
+        'me': session['username'].lower(),
     }
     return render_template_string(CASHFLOW_TEMPLATE, boot=boot,
                                   full_name=session.get('full_name', session.get('username', 'User')))
@@ -40890,8 +41096,12 @@ def cashflow_api_sync_status():
 
 @app.route('/cashflow/jobber/connect')
 def cashflow_jobber_connect():
-    if not _cashflow_access_ok():
-        return redirect(url_for('login'))
+    gate = _cf_page_gate()
+    if gate:
+        return gate
+    if not _cf_fernet():
+        flash('CASHFLOW_TOKEN_KEY is not set on this service, so sign-ins cannot be stored safely.')
+        return redirect(url_for('cashflow_app') + '#setup')
     if not _cf_jobber_configured():
         flash('Jobber is not set up on this server yet: JOBBER_CLIENT_ID and JOBBER_CLIENT_SECRET are missing.')
         return redirect(url_for('cashflow_app') + '#setup')
@@ -40905,8 +41115,9 @@ def cashflow_jobber_connect():
 
 @app.route('/cashflow/jobber/callback')
 def cashflow_jobber_callback():
-    if not _cashflow_access_ok():
-        return redirect(url_for('login'))
+    gate = _cf_page_gate()
+    if gate:
+        return gate
     expected = session.pop('cf_jobber_state', None)
     if not expected or not hmac.compare_digest(expected, request.args.get('state', '')):
         flash('The Jobber sign-in could not be verified. Please try Connect Jobber again.')
@@ -40939,8 +41150,12 @@ def cashflow_jobber_disconnect():
 
 @app.route('/cashflow/qbo/connect')
 def cashflow_qbo_connect():
-    if not _cashflow_access_ok():
-        return redirect(url_for('login'))
+    gate = _cf_page_gate()
+    if gate:
+        return gate
+    if not _cf_fernet():
+        flash('CASHFLOW_TOKEN_KEY is not set on this service, so sign-ins cannot be stored safely.')
+        return redirect(url_for('cashflow_app') + '#setup')
     if not _cf_qbo_configured():
         flash('QuickBooks is not set up on this server yet: QBO_CLIENT_ID and QBO_CLIENT_SECRET are missing.')
         return redirect(url_for('cashflow_app') + '#setup')
@@ -40954,8 +41169,9 @@ def cashflow_qbo_connect():
 
 @app.route('/cashflow/qbo/callback')
 def cashflow_qbo_callback():
-    if not _cashflow_access_ok():
-        return redirect(url_for('login'))
+    gate = _cf_page_gate()
+    if gate:
+        return gate
     expected = session.pop('cf_qbo_state', None)
     if not expected or not hmac.compare_digest(expected, request.args.get('state', '')):
         flash('The QuickBooks sign-in could not be verified. Please try Connect QuickBooks again.')
@@ -41057,8 +41273,9 @@ def cashflow_legal():
 
 @app.route('/cashflow/api/export.xlsx')
 def cashflow_api_export():
-    if not _cashflow_access_ok():
-        return redirect(url_for('login'))
+    gate = _cf_page_gate()
+    if gate:
+        return gate
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment
     m = cashflow_model(**_cf_scenario_args(), record_snapshot=False)
