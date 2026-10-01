@@ -1805,16 +1805,25 @@ def create_invoice_notification(invoice_number, invoice_cost, invoice_filename, 
 
 def log_email_processing(email_uid, email_sender, email_subject, email_date, attachments_count, results):
     """Log email processing to database and create notifications for unmatched invoices"""
+    conn = None
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=15)
         c = conn.cursor()
 
-        c.execute("""INSERT INTO email_processing_log
+        # OR IGNORE: an email already logged is not an error, and must not leave
+        # a half-finished write holding the database lock.
+        c.execute("""INSERT OR IGNORE INTO email_processing_log
                      (email_uid, email_sender, email_subject, email_date, attachments_processed, processed_at, results)
                      VALUES (?, ?, ?, ?, ?, ?, ?)""",
                  (email_uid, email_sender, email_subject, email_date, attachments_count,
                   datetime.now().strftime('%Y-%m-%d %H:%M:%S'), json.dumps(results)))
+        inserted = c.rowcount == 1
         conn.commit()
+        conn.close()
+        conn = None
+        if not inserted:
+            print(f"ℹ Email already logged, skipping: {email_sender}")
+            return
 
         # Create notifications for unmatched invoices
         if results.get('errors'):
@@ -1830,16 +1839,38 @@ def log_email_processing(email_uid, email_sender, email_subject, email_date, att
                         text_preview=error.get('text_preview', '')
                     )
 
-        conn.close()
         print(f"✓ Logged email processing: {email_sender}")
     except Exception as e:
         print(f"✗ Error logging email: {e}")
+    finally:
+        if conn is not None:
+            conn.close()
 
 def auto_check_po_emails():
-    """Background task: Automatically check PO emails every hour"""
+    """Background task: Automatically check PO emails every hour.
+
+    Every gunicorn worker schedules this, so a lock file beside the database
+    lets only one of them run it at a time; the others skip that round."""
     if not PO_EMAIL_MONITORING_ENABLED:
         return
+    try:
+        import fcntl
+    except ImportError:  # Windows dev machines: no cross-process lock
+        _auto_check_po_emails_run()
+        return
+    with open(os.path.join(DATA_DIR, '.po_email_check.lock'), 'w') as lock_file:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            print("ℹ Email check already running in another worker - skipping")
+            return
+        try:
+            _auto_check_po_emails_run()
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
 
+
+def _auto_check_po_emails_run():
     try:
         print(f"\n{'='*60}")
         print(f"📧 AUTO EMAIL CHECK - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -3665,7 +3696,7 @@ def login():
         username = request.form['username'].lower()
         password = request.form['password']
 
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=15)
         c = conn.cursor()
         c.execute("SELECT * FROM users WHERE LOWER(username)=?", (username,))
         user = c.fetchone()
@@ -3691,10 +3722,14 @@ def login():
         if user and password_ok:
             actual_username = user[1]
 
-            # Update last login
-            c.execute("UPDATE users SET last_login=? WHERE username=?",
-                     (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), actual_username))
-            conn.commit()
+            # Update last login. A busy database must not stop anyone signing in.
+            try:
+                c.execute("UPDATE users SET last_login=? WHERE username=?",
+                         (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), actual_username))
+                conn.commit()
+            except sqlite3.OperationalError as e:
+                conn.rollback()
+                print(f"⚠ Could not save last login for {actual_username}: {e}")
 
 
             session_id = create_session_id()
