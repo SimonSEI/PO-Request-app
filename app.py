@@ -3744,7 +3744,8 @@ def dashboard():
                                  full_name=full_name,
                                  tech_type=session.get('tech_type', ''),
                                  user_lang=session.get('user_lang', 'en'),
-                                 cashflow_ok=_cashflow_allowed())
+                                 cashflow_ok=_cashflow_allowed(),
+                                 timeoff_ok=timeoff_allowed())
 
 @app.route('/office_admin')
 def office_admin():
@@ -9550,6 +9551,15 @@ DASHBOARD_MENU_TEMPLATE = '''
             <div class="card-title">Snowbirds</div>
             <div class="card-desc">Forecast when snowbirds return to Naples, find clients with a home up north, and time discounted quote resends to their return.</div>
             <button class="card-cta">Open Snowbirds →</button>
+        </a>
+        {% endif %}
+
+        {% if timeoff_ok %}
+        <a class="app-card card-amber" href="{{ url_for('timeoff.page') }}">
+            <div class="card-icon-wrap">🗓️</div>
+            <div class="card-title">Time-Off Log</div>
+            <div class="card-desc">Approve or deny technician time-off requests, see sick call-outs, and check who's off on any day.</div>
+            <button class="card-cta">Open Time-Off →</button>
         </a>
         {% endif %}
 
@@ -41352,6 +41362,9 @@ def cashflow_api_export():
 init_db()
 print("✓ Database initialized on startup")
 init_cashflow_db()
+# Time-Off Log (technician time off and call-outs) lives in timeoff.py.
+from timeoff import init_timeoff, timeoff_allowed
+init_timeoff(app, csrf, DB_PATH)
 if not CASHFLOW_ENABLED:
     # Switched off: forget any Jobber or QuickBooks sign-in, so neither the
     # database nor a downloaded backup holds a working key to either account.
