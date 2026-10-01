@@ -3805,7 +3805,7 @@ def manage_office_admins():
         c = conn.cursor()
 
         # Get all office administrators
-        c.execute("""SELECT id, username, full_name, email, created_date, last_login, password
+        c.execute("""SELECT id, username, full_name, email, created_date, last_login, NULL
                      FROM users WHERE role='office'
                      ORDER BY full_name ASC""")
         admins = c.fetchall()
@@ -3900,6 +3900,30 @@ def delete_office_admin():
         return jsonify({'success': True, 'message': f'Administrator {admin[1]} deleted successfully'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/reset_tech_password', methods=['POST'])
+def reset_tech_password():
+    """Office sets a new password for a technician (passwords are stored hashed, so they can't be looked up)."""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
+    data = request.get_json(silent=True) or {}
+    new_password = str(data.get('password') or '').strip()
+    if len(new_password) < 6:
+        return jsonify({'success': False, 'error': 'Password must be at least 6 characters'})
+    conn = sqlite3.connect(DB_PATH, timeout=15)
+    try:
+        c = conn.cursor()
+        c.execute("SELECT username, full_name FROM users WHERE id = ? AND role = 'technician'", (data.get('tech_id'),))
+        tech = c.fetchone()
+        if not tech:
+            return jsonify({'success': False, 'error': 'Technician not found'})
+        c.execute("UPDATE users SET password = ? WHERE id = ?", (generate_password_hash(new_password), data.get('tech_id')))
+        conn.commit()
+    finally:
+        conn.close()
+    log_activity(session['username'], 'RESET_TECH_PASSWORD', 'user', data.get('tech_id'), f'Password reset for {tech[0]}')
+    return jsonify({'success': True, 'message': f'Password for {tech[1] or tech[0]} updated'})
+
 
 @app.route('/edit_office_admin_password', methods=['POST'])
 def edit_office_admin_password():
@@ -5334,13 +5358,13 @@ def manage_techs():
         c = conn.cursor()
 
         # Get all service technicians - include password
-        c.execute("""SELECT id, username, full_name, email, created_date, last_login, password
+        c.execute("""SELECT id, username, full_name, email, created_date, last_login, NULL
                      FROM users WHERE role='technician' AND tech_type='service'
                      ORDER BY full_name ASC""")
         service_techs = c.fetchall()
 
         # Get all install technicians - include password
-        c.execute("""SELECT id, username, full_name, email, created_date, last_login, password
+        c.execute("""SELECT id, username, full_name, email, created_date, last_login, NULL
                      FROM users WHERE role='technician' AND tech_type='install'
                      ORDER BY full_name ASC""")
         install_techs = c.fetchall()
@@ -5379,7 +5403,7 @@ def manage_service_techs():
         c = conn.cursor()
 
         # Get all service technicians (users with tech_type='service') - include password
-        c.execute("""SELECT id, username, full_name, email, created_date, last_login, password
+        c.execute("""SELECT id, username, full_name, email, created_date, last_login, NULL
                      FROM users WHERE role='technician' AND tech_type='service'
                      ORDER BY full_name ASC""")
         service_techs = c.fetchall()
@@ -5411,7 +5435,7 @@ def manage_install_techs():
         c = conn.cursor()
 
         # Get all install technicians (users with tech_type='install') - include password
-        c.execute("""SELECT id, username, full_name, email, created_date, last_login, password
+        c.execute("""SELECT id, username, full_name, email, created_date, last_login, NULL
                      FROM users WHERE role='technician' AND tech_type='install'
                      ORDER BY full_name ASC""")
         install_techs = c.fetchall()
@@ -5463,7 +5487,7 @@ def add_tech():
         now = datetime.now().strftime('%Y-%m-%d')
         c.execute("""INSERT INTO users (username, password, role, email, full_name, created_date, tech_type)
                      VALUES (?, ?, 'technician', ?, ?, ?, ?)""",
-                  (username, password, email if email else None, full_name, now, tech_type))
+                  (username, generate_password_hash(password), email if email else None, full_name, now, tech_type))
         conn.commit()
         conn.close()
 
@@ -7611,7 +7635,7 @@ MANAGE_TECHS_UNIFIED_TEMPLATE = '''
                             </div>
                             <div class="tech-creds">
                                 <p><strong>User:</strong> <span class="code">{{ tech[1] }}</span></p>
-                                <p><strong>Pass:</strong> <span class="code">{{ tech[6] }}</span></p>
+                                <p><strong>Pass:</strong> <button type="button" onclick="event.stopPropagation(); resetTechPassword({{ tech[0] }}, '{{ tech[2]|replace("'", "\\'") }}')" style="padding:2px 10px;font-size:12px;border:1px solid #CBD5E1;border-radius:5px;background:#fff;cursor:pointer;">🔑 Reset password</button></p>
                                 {% if tech[3] %}<p><strong>Email:</strong> {{ tech[3] }}</p>{% endif %}
                             </div>
                             <div class="tech-buttons">
@@ -7661,7 +7685,7 @@ MANAGE_TECHS_UNIFIED_TEMPLATE = '''
                             </div>
                             <div class="tech-creds">
                                 <p><strong>User:</strong> <span class="code">{{ tech[1] }}</span></p>
-                                <p><strong>Pass:</strong> <span class="code">{{ tech[6] }}</span></p>
+                                <p><strong>Pass:</strong> <button type="button" onclick="event.stopPropagation(); resetTechPassword({{ tech[0] }}, '{{ tech[2]|replace("'", "\\'") }}')" style="padding:2px 10px;font-size:12px;border:1px solid #CBD5E1;border-radius:5px;background:#fff;cursor:pointer;">🔑 Reset password</button></p>
                                 {% if tech[3] %}<p><strong>Email:</strong> {{ tech[3] }}</p>{% endif %}
                             </div>
                             <div class="tech-buttons">
@@ -7805,6 +7829,19 @@ MANAGE_TECHS_UNIFIED_TEMPLATE = '''
             }
         };
     </script>
+<script>
+function resetTechPassword(id, name) {
+    var pw = prompt('New password for ' + name + ' (at least 6 characters).\\nTell them the new password yourself - it will not be shown again.');
+    if (pw === null) return;
+    if (pw.trim().length < 6) { alert('Password must be at least 6 characters'); return; }
+    var csrf = (document.cookie.split('; ').find(function(c){ return c.indexOf('csrf_token=') === 0; }) || '').slice(11);
+    fetch('/reset_tech_password', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf},
+                                   body: JSON.stringify({tech_id: id, password: pw.trim()})})
+        .then(function(r){ return r.json(); })
+        .then(function(j){ alert(j.success ? j.message : ('Could not reset: ' + j.error)); })
+        .catch(function(){ alert('Could not reset the password - please try again'); });
+}
+</script>
 </body>
 </html>
 '''
@@ -8101,7 +8138,7 @@ MANAGE_SERVICE_TECHS_TEMPLATE = '''
                     <div class="tech-body" id="body-{{ tech[0] }}">
                         <div style="background: #f0f7ff; padding: 12px; border-radius: 5px; margin-bottom: 15px; border-left: 4px solid #007bff;">
                             <p style="color: #666; margin-bottom: 8px;"><strong>Username:</strong> <code style="background: white; padding: 2px 6px; border-radius: 3px;">{{ tech[1] }}</code></p>
-                            <p style="color: #666; margin-bottom: 8px;"><strong>Password:</strong> <code style="background: white; padding: 2px 6px; border-radius: 3px;">{{ tech[6] }}</code></p>
+                            <p style="color: #666; margin-bottom: 8px;"><strong>Password:</strong> <button type="button" onclick="event.stopPropagation(); resetTechPassword({{ tech[0] }}, '{{ tech[2]|replace("'", "\\'") }}')" style="padding:2px 10px;font-size:12px;border:1px solid #CBD5E1;border-radius:5px;background:#fff;cursor:pointer;">🔑 Reset password</button></p>
                             <p style="color: #666; margin-bottom: 0;"><strong>Email:</strong> {{ tech[3] if tech[3] else "N/A" }}</p>
                         </div>
                         {% if tech_pos[tech[0]] %}
@@ -8206,6 +8243,19 @@ MANAGE_SERVICE_TECHS_TEMPLATE = '''
             }
         });
     }
+</script>
+<script>
+function resetTechPassword(id, name) {
+    var pw = prompt('New password for ' + name + ' (at least 6 characters).\\nTell them the new password yourself - it will not be shown again.');
+    if (pw === null) return;
+    if (pw.trim().length < 6) { alert('Password must be at least 6 characters'); return; }
+    var csrf = (document.cookie.split('; ').find(function(c){ return c.indexOf('csrf_token=') === 0; }) || '').slice(11);
+    fetch('/reset_tech_password', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf},
+                                   body: JSON.stringify({tech_id: id, password: pw.trim()})})
+        .then(function(r){ return r.json(); })
+        .then(function(j){ alert(j.success ? j.message : ('Could not reset: ' + j.error)); })
+        .catch(function(){ alert('Could not reset the password - please try again'); });
+}
 </script>
 </body>
 </html>
@@ -8375,7 +8425,7 @@ MANAGE_INSTALL_TECHS_TEMPLATE = '''
                     <div class="tech-body" id="body-{{ tech[0] }}">
                         <div style="background: #f0fff4; padding: 12px; border-radius: 5px; margin-bottom: 15px; border-left: 4px solid #28a745;">
                             <p style="color: #666; margin-bottom: 8px;"><strong>Username:</strong> <code style="background: white; padding: 2px 6px; border-radius: 3px;">{{ tech[1] }}</code></p>
-                            <p style="color: #666; margin-bottom: 8px;"><strong>Password:</strong> <code style="background: white; padding: 2px 6px; border-radius: 3px;">{{ tech[6] }}</code></p>
+                            <p style="color: #666; margin-bottom: 8px;"><strong>Password:</strong> <button type="button" onclick="event.stopPropagation(); resetTechPassword({{ tech[0] }}, '{{ tech[2]|replace("'", "\\'") }}')" style="padding:2px 10px;font-size:12px;border:1px solid #CBD5E1;border-radius:5px;background:#fff;cursor:pointer;">🔑 Reset password</button></p>
                             <p style="color: #666; margin-bottom: 0;"><strong>Email:</strong> {{ tech[3] if tech[3] else "N/A" }}</p>
                         </div>
                         {% if tech_pos[tech[0]] %}
@@ -8480,6 +8530,19 @@ MANAGE_INSTALL_TECHS_TEMPLATE = '''
             }
         });
     }
+</script>
+<script>
+function resetTechPassword(id, name) {
+    var pw = prompt('New password for ' + name + ' (at least 6 characters).\\nTell them the new password yourself - it will not be shown again.');
+    if (pw === null) return;
+    if (pw.trim().length < 6) { alert('Password must be at least 6 characters'); return; }
+    var csrf = (document.cookie.split('; ').find(function(c){ return c.indexOf('csrf_token=') === 0; }) || '').slice(11);
+    fetch('/reset_tech_password', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf},
+                                   body: JSON.stringify({tech_id: id, password: pw.trim()})})
+        .then(function(r){ return r.json(); })
+        .then(function(j){ alert(j.success ? j.message : ('Could not reset: ' + j.error)); })
+        .catch(function(){ alert('Could not reset the password - please try again'); });
+}
 </script>
 </body>
 </html>
@@ -10134,7 +10197,6 @@ MANAGE_OFFICE_ADMINS_TEMPLATE = '''
                             <th>Username</th>
                             <th>Full Name</th>
                             <th>Email</th>
-                            <th>Password</th>
                             <th>Created Date</th>
                             <th>Last Login</th>
                             <th>Action</th>
@@ -10146,7 +10208,6 @@ MANAGE_OFFICE_ADMINS_TEMPLATE = '''
                             <td><strong>{{ admin[1] }}</strong></td>
                             <td>{{ admin[2] }}</td>
                             <td>{{ admin[3] }}</td>
-                            <td><code style="background: #f0f0f0; padding: 4px 8px; border-radius: 3px; font-family: monospace;">{{ admin[6] }}</code></td>
                             <td>{{ admin[4] or 'N/A' }}</td>
                             <td>{{ admin[5] or 'Never' }}</td>
                             <td>
@@ -41396,6 +41457,27 @@ def cashflow_api_export():
 
 init_db()
 print("✓ Database initialized on startup")
+
+
+def _hash_plaintext_passwords():
+    """Older accounts were saved with the password as typed. Hash them in place;
+    login already accepts both, so nobody's password changes."""
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        rows = conn.execute("SELECT id, password FROM users").fetchall()
+        plain = [(i, p) for i, p in rows if p and not p.startswith(('scrypt:', 'pbkdf2:'))]
+        for user_id, pw in plain:
+            conn.execute("UPDATE users SET password=? WHERE id=? AND password=?",
+                         (generate_password_hash(pw), user_id, pw))
+        conn.commit()
+        conn.close()
+        if plain:
+            print(f"✓ Hashed {len(plain)} password(s) that were stored as plain text")
+    except Exception as e:
+        print(f"⚠ Could not hash stored passwords: {e}")
+
+
+_hash_plaintext_passwords()
 init_cashflow_db()
 # Time-Off Log (technician time off and call-outs) lives in timeoff.py.
 from timeoff import init_timeoff, timeoff_allowed
