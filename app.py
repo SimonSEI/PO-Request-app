@@ -24083,7 +24083,7 @@ def job_costing_import_proposal():
         # Extract text — PDF via pdfplumber, images via OCR
         raw_text = ''
         try:
-            if suffix == '.pdf' and PDF_AVAILABLE:
+            if suffix == '.pdf' and PDF_SUPPORT:
                 import pdfplumber
                 with pdfplumber.open(tmp_path) as pdf:
                     for page in pdf.pages:
@@ -26412,7 +26412,8 @@ def community_import_house_numbers_excel():
                 if zone_num is None:
                     continue  # skip header rows, totals, blank rows, etc.
 
-                station = str(station_cell).strip()
+                station_cell = row[station_col].value if len(row) > station_col else None
+                station = str(station_cell).strip() if station_cell is not None else ''
                 if not station or station.lower() in SKIP_VALUES:
                     continue
 
@@ -32824,6 +32825,68 @@ def installation_co_send_approval():
         return jsonify({'success': True, 'email': client_email, 'approval_url': approval_url})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+
+# The page a client opens from a change order approval email. No login: the
+# token in the link is the key.
+INSTALLATION_CO_APPROVAL_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Change Order {{ co.co_number or '' }} - Stahlman-England</title>
+<style>
+  body { margin:0; font-family:system-ui,-apple-system,'Segoe UI',sans-serif; background:#F8FAFC; color:#0F172A; }
+  .wrap { max-width:620px; margin:0 auto; padding:32px 16px; }
+  .brand { font-weight:700; color:#1a3c5e; font-size:18px; margin-bottom:20px; }
+  .card { background:#fff; border:1px solid #E2E8F0; border-radius:14px; padding:24px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  h1 { font-size:21px; margin:0 0 4px; }
+  .sub { color:#64748B; font-size:14px; margin-bottom:18px; }
+  .row { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-top:1px solid #E2E8F0; font-size:15px; }
+  .row .k { color:#64748B; }
+  .amount { font-size:24px; font-weight:700; }
+  .desc { white-space:pre-wrap; line-height:1.55; font-size:15px; padding:12px 0; border-top:1px solid #E2E8F0; }
+  .actions { display:flex; gap:10px; margin-top:20px; flex-wrap:wrap; }
+  button { flex:1; min-width:140px; padding:13px 18px; border-radius:8px; border:none; font-size:15px; font-weight:600; cursor:pointer; }
+  .approve { background:#1a3c5e; color:#fff; }
+  .reject { background:#fff; color:#B91C1C; border:1.5px solid #FECACA; }
+  .done { margin-top:18px; padding:14px; border-radius:10px; font-weight:600; }
+  .done.approved { background:#DCFCE7; color:#166534; }
+  .done.rejected { background:#FEE2E2; color:#991B1B; }
+  .foot { color:#94A3B8; font-size:12px; text-align:center; margin-top:20px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">Stahlman-England Irrigation</div>
+  <div class="card">
+    <h1>Change Order {{ co.co_number or '' }}</h1>
+    <div class="sub">{{ job_name or '' }}</div>
+    <div class="row"><span class="k">Change</span><span>{{ co.title or '' }}</span></div>
+    <div class="row"><span class="k">Amount</span><span class="amount">${{ '{:,.2f}'.format(co.amount or 0) }}</span></div>
+    {% if co.description %}<div class="desc">{{ co.description }}</div>{% endif %}
+    {% if already_actioned %}
+      <div class="done {{ co.status }}">
+        {% if co.status == 'approved' %}Approved{% else %}Declined{% endif %}{% if co.approved_at %} on {{ co.approved_at[:10] }}{% endif %}.
+        Thank you - we have recorded your answer.
+      </div>
+    {% else %}
+      <form method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="actions">
+          <button class="approve" type="submit" name="action" value="approve">Approve change order</button>
+          <button class="reject" type="submit" name="action" value="reject"
+                  onclick="return confirm('Decline this change order?')">Decline</button>
+        </div>
+      </form>
+    {% endif %}
+  </div>
+  <div class="foot">Questions? Reply to the email this link came in.</div>
+</div>
+</body>
+</html>
+'''
 
 
 @app.route('/installation/co/approve/<token>', methods=['GET', 'POST'])
