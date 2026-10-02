@@ -93,9 +93,12 @@ def extraction(kind, number, po='', client='Lakeside Pines', subtotal=1000.0, ta
 class FakeJobber:
     """Stands in for Jobber: records every query and answers the ones Pumps sends."""
 
-    def __init__(self, invoice_status='draft'):
+    def __init__(self, invoice_status='draft', quote_status='draft', properties=None):
         self.calls = []
         self.invoice_status = invoice_status
+        self.quote_status = quote_status
+        self.properties = properties if properties is not None else [
+            {'id': 'P1', 'address': {'street1': '100 Lakeside Dr', 'city': 'Naples'}}]
 
     def __call__(self, query, variables=None):
         P.check_mutation_allowed(query)  # the real guard still runs
@@ -105,6 +108,13 @@ class FakeJobber:
                                                   'invoiceStatus': self.invoice_status,
                                                   'jobberWebUri': 'https://secure.getjobber.com/invoices/1'},
                                       'userErrors': []}}
+        if 'quoteCreate(' in query:
+            return {'quoteCreate': {'quote': {'id': 'Q1', 'quoteNumber': 812, 'quoteStatus': self.quote_status,
+                                              'jobberWebUri': 'https://secure.getjobber.com/quotes/1'},
+                                    'userErrors': []}}
+        if 'client(id' in query:
+            return {'client': {'id': variables['id'], 'name': 'Lakeside Pines HOA',
+                               'properties': self.properties, 'jobs': {'nodes': []}}}
         if 'jobCreateNote' in query:
             if 'attachments' in json.dumps(variables):
                 raise P.JobberError("Argument 'attachments' is invalid")
@@ -296,6 +306,7 @@ class PumpsTest(unittest.TestCase):
             with self.assertRaises(P.JobberError, msg=q):
                 P.check_mutation_allowed(q)
         P.check_mutation_allowed(P.INVOICE_CREATE)
+        P.check_mutation_allowed(P.QUOTE_CREATE)
         P.check_mutation_allowed('query { clients(first: 1) { nodes { id } } }')
         for target in P.NOTE_MUTATION.values():
             P.check_mutation_allowed(f'mutation N($id: EncodedId!, $input: {target[2]}!) {{ {target[0]}({target[1]}: $id, '
@@ -356,6 +367,141 @@ class PumpsTest(unittest.TestCase):
         r = self.c.post(f"/pumps/api/docs/{b['doc_id']}/invoice", json={})
         self.assertEqual(r.status_code, 409)
         self.assertTrue(r.get_json()['needs_client'])
+
+    def test_draft_quote_from_vendor_quote(self):
+        self.extracts['q-0800.pdf'] = extraction('quote', 'Q-120', po='PO800', client='Lakeside Pines', subtotal=2450)
+        q = self.upload('q-0800.pdf')
+        cid = q['case_id']
+        queue = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertIn(q['doc_id'], [d['id'] for d in queue['quotes_to_draft']])
+        fake = FakeJobber()
+        P.jobber_gql = fake
+        body = self.c.post(f"/pumps/api/docs/{q['doc_id']}/quote", json={}).get_json()
+        self.assertTrue(body['success'], body)
+        self.assertEqual(body['quote']['quote_status'], 'draft')
+        creates = [v for qq, v in fake.calls if 'quoteCreate(' in qq]
+        self.assertEqual(len(creates), 1)
+        attrs = creates[0]['attributes']
+        self.assertEqual(attrs['clientId'], 'C1', 'the clear best client, not the work-orders lead')
+        self.assertEqual(attrs['propertyId'], 'P1', "the client's only property")
+        self.assertEqual(len(attrs['lineItems']), 1, 'sales tax line left off')
+        self.assertEqual(attrs['lineItems'][0]['unitPrice'], 2450)
+        self.assertNotIn('quotation', attrs['lineItems'][0]['description'].lower())
+        self.assertIn('PO800', attrs['title'])
+        self.assertFalse(any(word in qq for qq, _ in fake.calls for word in ('Send', 'MarkAsSent')))
+        case = self.case(cid)
+        self.assertEqual(case['jobber']['quote']['number'], '812')
+        steps = {s['key']: s for s in case['step_list']}
+        self.assertFalse(steps['client_quote'].get('at'), 'a draft is not "sent to client"')
+        queue = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertNotIn(q['doc_id'], [d['id'] for d in queue['quotes_to_draft']])
+        # A second draft for the same vendor quote is refused.
+        r = self.c.post(f"/pumps/api/docs/{q['doc_id']}/quote", json={'client_id': 'C1', 'property_id': 'P1'})
+        self.assertEqual(r.status_code, 400)
+        # When the office sends it from Jobber, and the client approves, the steps tick themselves.
+        conn = P._conn()
+        try:
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, updated_at) "
+                         "VALUES ('Q1', 'quote', '812', 'Pump service', 'awaiting_response', '2026-10-03T10:00:00Z')")
+            P._follow_quotes(conn)
+            conn.commit()
+        finally:
+            conn.close()
+        steps = {s['key']: s for s in self.case(cid)['step_list']}
+        self.assertEqual(steps['client_quote'].get('at'), '2026-10-03')
+        self.assertFalse(steps['client_approved'].get('at'))
+        conn = P._conn()
+        try:
+            conn.execute("UPDATE pump_jobber_items SET status='approved', updated_at='2026-10-06T09:00:00Z' "
+                         "WHERE jobber_id='Q1'")
+            P._follow_quotes(conn)
+            conn.commit()
+        finally:
+            conn.close()
+        steps = {s['key']: s for s in self.case(cid)['step_list']}
+        self.assertEqual(steps['client_approved'].get('at'), '2026-10-06')
+
+    def test_draft_quote_asks_which_property(self):
+        self.extracts['q-0810.pdf'] = extraction('quote', 'Q-121', po='PO810', client='Lakeside Pines', subtotal=300)
+        q = self.upload('q-0810.pdf')
+        P.jobber_gql = FakeJobber(properties=[{'id': 'P1', 'address': {'street1': 'North gate'}},
+                                              {'id': 'P2', 'address': {'street1': 'South gate'}}])
+        r = self.c.post(f"/pumps/api/docs/{q['doc_id']}/quote", json={'client_id': 'C1'})
+        self.assertEqual(r.status_code, 409)
+        self.assertTrue(r.get_json()['needs_property'])
+        self.assertEqual([p['id'] for p in r.get_json()['properties']], ['P1', 'P2'])
+        r = self.c.post(f"/pumps/api/docs/{q['doc_id']}/quote", json={'client_id': 'C1', 'property_id': 'P2'})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+    def test_non_draft_quote_status_raises_issue(self):
+        self.extracts['q-0820.pdf'] = extraction('quote', 'Q-122', po='PO820', client='Sunset Cove', subtotal=400)
+        q = self.upload('q-0820.pdf')
+        P.jobber_gql = FakeJobber(quote_status='awaiting_response')
+        body = self.c.post(f"/pumps/api/docs/{q['doc_id']}/quote", json={'client_id': 'C9', 'property_id': 'P9'}).get_json()
+        self.assertTrue(body['success'], body)
+        self.assertTrue(any(i['kind'] == 'not_draft' and not i['resolved_at'] for i in self.case(q['case_id'])['issues']))
+
+    def test_openclaw_cannot_draft_client_quotes(self):
+        self.extracts['q-0830.pdf'] = extraction('quote', 'Q-123', po='PO830', client='Lakeside Pines', subtotal=500)
+        q = self.upload('q-0830.pdf')
+        fake = FakeJobber()
+        P.jobber_gql = fake
+        r = A.app.test_client().post(f"/api/pumps/docs/{q['doc_id']}/quote", json={'client_id': 'C1', 'property_id': 'P1'},
+                                     headers={'Authorization': 'Bearer test-openclaw-key'})
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(fake.calls, [])
+
+    def test_vendor_bill_due_once_client_pays(self):
+        self.extracts['q-0900.pdf'] = extraction('quote', 'Q-130', po='PO900', client='Lakeside Pines', subtotal=900)
+        self.extracts['b-0900.pdf'] = extraction('bill', '30100', po='PO900', client='Lakeside Pines', subtotal=900)
+        self.upload('q-0900.pdf')
+        b = self.upload('b-0900.pdf')
+        cid = b['case_id']
+        self.assertEqual(self.case(cid)['vendor_pay']['state'], 'unpaid')
+        P.jobber_gql = FakeJobber()
+        self.assertTrue(self.c.post(f"/pumps/api/docs/{b['doc_id']}/invoice", json={'client_id': 'C1'}).get_json()['success'])
+
+        def jobber_says(status):
+            conn = P._conn()
+            try:
+                conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status) "
+                             "VALUES ('INV1', 'invoice', '5001', 'Pump service', ?) "
+                             "ON CONFLICT(jobber_id) DO UPDATE SET status=excluded.status", (status,))
+                P._follow_invoices(conn)
+                conn.commit()
+            finally:
+                conn.close()
+
+        def to_pay():
+            return [c['id'] for c in self.c.get('/pumps/api/summary').get_json()['queue']['vendor_bills_to_pay']]
+        jobber_says('awaiting_payment')
+        self.assertEqual(self.case(cid)['vendor_pay']['state'], 'unpaid', 'sent, not paid yet')
+        self.assertNotIn(cid, to_pay())
+        # The item closes before the client pays; the alert must still come.
+        conn = P._conn()
+        try:
+            conn.execute("UPDATE pump_cases SET status='closed' WHERE id=?", (cid,))
+            conn.commit()
+        finally:
+            conn.close()
+        jobber_says('paid')
+        case = self.case(cid)
+        self.assertEqual(case['vendor_pay']['state'], 'due')
+        self.assertIn(cid, to_pay())
+        self.assertTrue(any(e['action'] == 'pay vendor' for e in case['events']))
+        # OpenClaw may not say a vendor was paid.
+        r = A.app.test_client().patch(f'/api/pumps/cases/{cid}', json={'vendor_paid_on': '2026-10-08'},
+                                      headers={'Authorization': 'Bearer test-openclaw-key'})
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(self.c.patch(f'/pumps/api/cases/{cid}', json={'vendor_paid_on': 'soon'}).status_code, 400)
+        r = self.c.patch(f'/pumps/api/cases/{cid}', json={'vendor_paid_on': '2026-10-08'})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        pay = r.get_json()['case']['vendor_pay']
+        self.assertEqual((pay['state'], pay['paid_on'], pay['paid_by']), ('paid', '2026-10-08', 'Office Tester'))
+        self.assertNotIn(cid, to_pay())
+        # Undo.
+        self.c.patch(f'/pumps/api/cases/{cid}', json={'vendor_paid_on': ''})
+        self.assertIn(cid, to_pay())
 
     # ── who can get in ───────────────────────────────────────────────────────
     def test_access(self):

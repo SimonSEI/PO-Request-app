@@ -7,6 +7,8 @@ first request to the invoice so nothing is lost.
               -> quote to the client -> approved -> scheduled with Wettech ->
               work done -> Wettech's bill -> bill checked against the quote ->
               draft invoice in Jobber -> report logged in Jobber -> closed.
+              Once the client pays the Jobber invoice, the vendor's bill is
+              flagged to be paid until someone marks it paid.
   Inbox       quotes, bills and pump reports read from the PO@ mailbox (or
               uploaded). Each is filed against its item by PO number, Wettech
               work-order number or client name.
@@ -18,9 +20,9 @@ first request to the invoice so nothing is lost.
   SCADA       every client on SCADA, when it was last renewed and when the
               next annual renewal is due, built from Jobber.
   Jobber      pump/diver/filter/SCADA requests, quotes, jobs and invoices.
-              Writes are limited to creating DRAFT invoices and notes: the
-              client gets those only when someone in the office sends them
-              from Jobber.
+              Writes are limited to creating DRAFT quotes, DRAFT invoices and
+              notes: the client gets a quote or invoice only when someone in
+              the office sends it from Jobber.
 
 Office logins use /pumps. OpenClaw uses the same actions at /api/pumps/...
 with "Authorization: Bearer <OPENCLAW_API_KEY>". See PUMPS_README.md and
@@ -78,8 +80,8 @@ STALE_DAYS = int(os.environ.get('PUMPS_STALE_DAYS', '7') or 7)
 WEBHOOK_URL = os.environ.get('PUMPS_WEBHOOK_URL', '')
 
 # ── Jobber ───────────────────────────────────────────────────────────────────
-# Pumps has its own Jobber app connection (it needs write access to invoices
-# and notes; the Cash Flow connection is read-only). JOBBER_API_TOKEN, if set,
+# Pumps has its own Jobber app connection (it needs write access to quotes,
+# invoices and notes; the Cash Flow connection is read-only). JOBBER_API_TOKEN, if set,
 # is used only when no connection has been made.
 JOBBER_CLIENT_ID = os.environ.get('PUMPS_JOBBER_CLIENT_ID', '')
 JOBBER_CLIENT_SECRET = os.environ.get('PUMPS_JOBBER_CLIENT_SECRET', '')
@@ -92,9 +94,9 @@ JOBBER_AUTHORIZE = 'https://api.getjobber.com/api/oauth/authorize'
 JOBBER_TOKEN = 'https://api.getjobber.com/api/oauth/token'
 
 # The only Jobber mutations this app may ever run. Nothing here sends,
-# emails, texts or marks anything as sent - invoices are created as drafts and
-# stay drafts until someone in the office sends them from Jobber.
-ALLOWED_MUTATIONS = frozenset({'invoiceCreate', 'jobCreateNote', 'clientCreateNote',
+# emails, texts or marks anything as sent - quotes and invoices are created as
+# drafts and stay drafts until someone in the office sends them from Jobber.
+ALLOWED_MUTATIONS = frozenset({'quoteCreate', 'invoiceCreate', 'jobCreateNote', 'clientCreateNote',
                                'requestCreateNote', 'quoteCreateNote'})
 
 # What counts as pump work when searching Jobber, by category.
@@ -405,6 +407,12 @@ def init_db():
                   ignored INTEGER DEFAULT 0,
                   synced_at TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS pump_state (key TEXT PRIMARY KEY, value TEXT)''')
+    # When the vendor's bill was paid, and who said so (added after launch).
+    for col in ('vendor_paid_on', 'vendor_paid_by'):
+        try:
+            c.execute(f"ALTER TABLE pump_cases ADD COLUMN {col} TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
     c.execute('''CREATE TABLE IF NOT EXISTS pump_email_scan_log (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   email_uid TEXT UNIQUE,
@@ -563,6 +571,7 @@ def _case_dict(row, conn=None):
         except (TypeError, ValueError):
             d[k] = {}
     d['compare'] = compare_amounts(d)
+    d['vendor_pay'] = vendor_pay_state(d)
     vendor = d.get('vendor') or 'vendor'
     d['step_list'] = [{'key': k, 'label': label.format(vendor=vendor), **(d['steps'].get(k) or {})}
                       for k, label in STEPS]
@@ -575,6 +584,24 @@ def _case_dict(row, conn=None):
         d['open_issues'] = [dict(r) for r in conn.execute(
             'SELECT * FROM pump_issues WHERE case_id=? AND resolved_at IS NULL ORDER BY id', (d['id'],))]
     return d
+
+
+def vendor_pay_state(case):
+    """Whether the vendor's bill is paid. 'due' once the client has paid our
+    Jobber invoice and the vendor has not been paid yet."""
+    has_bill = (case.get('vendor_bill_amount') is not None or case.get('vendor_bill_total') is not None
+                or bool(((case.get('steps') or {}).get('vendor_bill') or {}).get('at')))
+    client_status = (((case.get('jobber') or {}).get('invoice') or {}).get('status') or '').lower()
+    if case.get('vendor_paid_on'):
+        state = 'paid'
+    elif not has_bill:
+        state = ''
+    elif client_status == 'paid':
+        state = 'due'
+    else:
+        state = 'unpaid'
+    return {'state': state, 'paid_on': case.get('vendor_paid_on') or '', 'paid_by': case.get('vendor_paid_by') or '',
+            'client_invoice_status': client_status}
 
 
 def compare_amounts(case):
@@ -701,6 +728,14 @@ def update_case(conn, case_id, data, actor):
         sets.append('jobber=?')
         vals.append(json.dumps(j))
         changed.append('jobber')
+    if 'vendor_paid_on' in data:
+        v = _iso_date(data['vendor_paid_on']) if data['vendor_paid_on'] else ''
+        if data['vendor_paid_on'] and not v:
+            raise ValueError('vendor_paid_on must be a date (YYYY-MM-DD), or empty for not paid')
+        if v != (row['vendor_paid_on'] or ''):
+            sets += ['vendor_paid_on=?', 'vendor_paid_by=?']
+            vals += [v, actor if v else '']
+            changed.append('vendor paid' if v else 'vendor not paid')
     if 'status' in data and data['status'] in ('open', 'cancelled') and data['status'] != row['status']:
         sets.append('status=?')
         vals.append(data['status'])
@@ -1578,13 +1613,14 @@ def _mutation_fields(query):
 
 
 def check_mutation_allowed(query):
-    """Refuse anything but the draft-invoice and note mutations."""
+    """Refuse anything but the draft-quote, draft-invoice and note mutations."""
     if not re.match(r'\s*mutation\b', query):
         return
     fields = _mutation_fields(query)
     bad = [f for f in fields if f not in ALLOWED_MUTATIONS]
     if not fields or bad:
-        raise JobberError(f"Blocked Jobber mutation {bad or '(unreadable)'}: Pumps only creates draft invoices and notes.")
+        raise JobberError(f"Blocked Jobber mutation {bad or '(unreadable)'}: "
+                          'Pumps only creates draft quotes, draft invoices and notes.')
 
 
 def jobber_gql(query, variables=None):
@@ -1753,6 +1789,7 @@ def sync_jobber(full=False, actor='system'):
                               it['approved_at'], it['web_uri'], it['category'], it['po_number'], now))
             linked = _link_jobber_items(conn)
             _follow_invoices(conn)
+            _follow_quotes(conn)
             rebuild_scada(conn)
             conn.commit()
         finally:
@@ -1790,8 +1827,10 @@ def _link_jobber_items(conn):
 def _follow_invoices(conn):
     """Keep each item's Jobber invoice status current. Once the office has sent
     the invoice from Jobber and everything else on the item is done, the item
-    closes itself."""
-    for c in conn.execute("SELECT id, jobber, steps FROM pump_cases WHERE status='open' AND jobber LIKE '%invoice%'").fetchall():
+    closes itself. Closed items are followed too: when the client pays, the
+    vendor's bill is flagged to be paid."""
+    for c in conn.execute("SELECT id, status, jobber, steps, vendor_paid_on FROM pump_cases "
+                          "WHERE status != 'cancelled' AND jobber LIKE '%invoice%'").fetchall():
         j = json.loads(c['jobber'] or '{}')
         inv = j.get('invoice') or {}
         if not inv.get('id'):
@@ -1804,8 +1843,39 @@ def _follow_invoices(conn):
         conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(j), c['id']))
         _event(conn, 'jobber sync', 'invoice status', f"Jobber invoice #{inv.get('number')} is now {it['status']}",
                case_id=c['id'])
-        if it['status'] not in ('draft', 'voided', 'bad_debt') and _stage(json.loads(c['steps'] or '{}')) == 'closed':
+        if it['status'] == 'paid' and not c['vendor_paid_on']:
+            _event(conn, 'jobber sync', 'pay vendor', 'The client paid the Jobber invoice - the vendor\'s bill is due',
+                   case_id=c['id'])
+        if c['status'] == 'open' and it['status'] not in ('draft', 'voided', 'bad_debt') and \
+                _stage(json.loads(c['steps'] or '{}')) == 'closed':
             _set_step(conn, c['id'], 'closed', at=_today().isoformat(), by='jobber sync')
+
+
+def _follow_quotes(conn):
+    """Keep each item's Jobber quote status current, and tick "Quote sent to
+    client" / "Client approved" once the office has sent it and the client
+    has approved it in Jobber."""
+    for c in conn.execute("SELECT id, jobber, steps FROM pump_cases WHERE status='open' "
+                          "AND jobber LIKE '%quote%'").fetchall():
+        j = json.loads(c['jobber'] or '{}')
+        q = j.get('quote') or {}
+        if not q.get('id'):
+            continue
+        it = conn.execute('SELECT status, updated_at FROM pump_jobber_items WHERE jobber_id=?', (q['id'],)).fetchone()
+        if not it or it['status'] == q.get('status'):
+            continue
+        q['status'] = it['status']
+        j['quote'] = q
+        conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(j), c['id']))
+        _event(conn, 'jobber sync', 'quote status', f"Jobber quote #{q.get('number')} is now {it['status']}",
+               case_id=c['id'])
+        steps = json.loads(c['steps'] or '{}')
+        when = (it['updated_at'] or '')[:10] or _today().isoformat()
+        if it['status'] in ('awaiting_response', 'changes_requested', 'approved', 'converted') and \
+                not (steps.get('client_quote') or {}).get('at'):
+            _set_step(conn, c['id'], 'client_quote', at=when, by='jobber sync')
+        if it['status'] in ('approved', 'converted') and not (steps.get('client_approved') or {}).get('at'):
+            _set_step(conn, c['id'], 'client_approved', at=when, by='jobber sync')
 
 
 def _jobber_ref_text(it):
@@ -2080,6 +2150,107 @@ def _strip_vendor(text):
     return re.sub(r'\s{2,}', ' ', text).strip(' ,.-') + ('.' if text.strip().endswith('.') else '')
 
 
+def _jobber_lines(line_items, what):
+    """Line items as Jobber takes them. Nothing is saved to Products & Services."""
+    items = []
+    for it in line_items or []:
+        name = (it.get('name') or '').strip()
+        if not name:
+            continue
+        qty = float(it.get('quantity') or 1)
+        price = _money(it.get('unit_price'))
+        if price is None or qty <= 0:
+            continue
+        items.append({'name': name[:255], 'description': (it.get('description') or '')[:2000],
+                      'quantity': qty, 'unitPrice': price, 'taxable': bool(it.get('taxable', True)),
+                      'saveToProductsAndServices': False})
+    if not items:
+        raise ValueError(f'No line items to put on the {what}')
+    return items
+
+
+def suggest_quote(doc, case=None):
+    """Our quote to the client: the vendor quote's lines, the same way a bill
+    becomes our invoice (no vendor sales tax or name, plus any markup)."""
+    s = suggest_invoice(doc, case)
+    return {'title': s['subject'], 'line_items': s['line_items'], 'markup_pct': s['markup_pct']}
+
+
+QUOTE_CREATE = '''mutation PumpsDraftQuote($attributes: QuoteCreateAttributes!) {
+  quoteCreate(attributes: $attributes) {
+    quote { id quoteNumber quoteStatus jobberWebUri }
+    userErrors { message path }
+  }
+}'''
+
+
+def create_draft_quote(doc_id, client_id, property_id, line_items, title='', message='', actor='system'):
+    """Create our quote to the client in Jobber as a DRAFT, from the vendor's
+    quote. Nothing is sent: the only mutation used is quoteCreate, which makes
+    a draft, and check_mutation_allowed() refuses any other. The office
+    reviews it and sends it from Jobber. If Jobber ever hands back a status
+    other than draft, an issue is raised so someone looks at it."""
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+        if not row:
+            raise ValueError('No such document')
+        doc = _doc_dict(row)
+        if doc['kind'] != 'quote':
+            raise ValueError("Only a vendor's quote can be turned into a client quote")
+        if (doc.get('jobber') or {}).get('quote_id'):
+            raise ValueError(f"Already drafted as Jobber quote #{doc['jobber'].get('quote_number')}")
+        if not client_id:
+            raise ValueError('Choose the Jobber client first')
+        if not property_id:
+            raise ValueError("Choose the client's property first")
+        items = _jobber_lines(line_items, 'quote')
+        attrs = {'clientId': client_id, 'propertyId': property_id, 'title': (title or 'Pump service')[:255],
+                 'lineItems': items}
+        if message:
+            attrs['message'] = message[:4000]
+        try:
+            data = jobber_gql(QUOTE_CREATE, {'attributes': attrs})
+        except JobberError as e:
+            # Not every API version takes these on a quote line; try once without them.
+            if not any(w in str(e) for w in ('taxable', 'saveToProductsAndServices')):
+                raise
+            attrs['lineItems'] = [{k: v for k, v in i.items() if k not in ('taxable', 'saveToProductsAndServices')}
+                                  for i in items]
+            data = jobber_gql(QUOTE_CREATE, {'attributes': attrs})
+        payload = data.get('quoteCreate') or {}
+        errs = payload.get('userErrors') or []
+        if errs:
+            raise JobberError('Jobber: ' + '; '.join(e.get('message', '?') for e in errs))
+        q = payload.get('quote') or {}
+        status = (q.get('quoteStatus') or '').lower()
+        ref = {'quote_id': q.get('id'), 'quote_number': str(q.get('quoteNumber') or ''), 'quote_status': status,
+               'quote_uri': q.get('jobberWebUri'), 'client_id': client_id, 'property_id': property_id,
+               'quote_drafted_by': actor, 'quote_drafted_at': _now_text()}
+        conn.execute('UPDATE pump_docs SET jobber=?, updated_at=? WHERE id=?',
+                     (json.dumps({**(doc.get('jobber') or {}), **ref}), _now_text(), doc_id))
+        total = round(sum(i['quantity'] * i['unitPrice'] for i in items), 2)
+        if doc.get('case_id'):
+            cid = doc['case_id']
+            case = conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (cid,)).fetchone()
+            j = json.loads(case['jobber'] or '{}')
+            j['quote'] = {'id': q.get('id'), 'number': ref['quote_number'], 'uri': ref['quote_uri'], 'status': status}
+            j.setdefault('client', {'id': client_id})
+            conn.execute('UPDATE pump_cases SET jobber=?, jobber_client_id=?, jobber_property_id=?, updated_at=? '
+                         'WHERE id=?', (json.dumps(j), client_id, property_id, _now_text(), cid))
+            _event(conn, actor, 'draft quote created',
+                   f"Jobber quote #{ref['quote_number']} ({status or 'status unknown'}) - ${total:,.2f}. "
+                   'Review it and send it from Jobber.', case_id=cid, doc_id=doc_id)
+            if status and status != 'draft':
+                open_issue(conn, cid, 'not_draft',
+                           f"Jobber reports quote #{ref['quote_number']} as '{status}', not draft. "
+                           'Open it in Jobber and check it has not gone to the client.', doc_id=doc_id)
+        conn.commit()
+        return {**ref, 'total': total}
+    finally:
+        conn.close()
+
+
 INVOICE_CREATE = '''mutation PumpsDraftInvoice($input: InvoiceCreateInput!) {
   invoiceCreate(input: $input) {
     invoice { id invoiceNumber invoiceStatus jobberWebUri amounts { total } }
@@ -2105,20 +2276,7 @@ def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', a
             raise ValueError(f"Already drafted as Jobber invoice #{doc['jobber'].get('invoice_number')}")
         if not client_id:
             raise ValueError('Choose the Jobber client first')
-        items = []
-        for it in line_items or []:
-            name = (it.get('name') or '').strip()
-            if not name:
-                continue
-            qty = float(it.get('quantity') or 1)
-            price = _money(it.get('unit_price'))
-            if price is None or qty <= 0:
-                continue
-            items.append({'name': name[:255], 'description': (it.get('description') or '')[:2000],
-                          'quantity': qty, 'unitPrice': price, 'taxable': bool(it.get('taxable', True)),
-                          'saveToProductsAndServices': False})
-        if not items:
-            raise ValueError('No line items to put on the invoice')
+        items = _jobber_lines(line_items, 'invoice')
         inp = {'clientId': client_id, 'subject': (subject or 'Pump service')[:255], 'dueDetails': {},
                'tax': {'taxCalculationMethod': 'EXCLUSIVE'}, 'lineItems': items}
         if job_id:
@@ -2275,6 +2433,12 @@ def work_queue(conn):
         "SELECT d.* FROM pump_docs d JOIN pump_cases c ON c.id = d.case_id WHERE d.kind='bill' "
         "AND d.status != 'dismissed' AND (d.jobber IS NULL OR d.jobber NOT LIKE '%invoice_id%') "
         "AND c.status='open' ORDER BY d.id")]
+    to_quote_ids = {c['id'] for c in by_stage.get('client_quote', []) if not (c['jobber'].get('quote') or {}).get('id')}
+    quotes_to_draft = [d for d in (_doc_dict(r) for r in conn.execute(
+        "SELECT * FROM pump_docs WHERE kind='quote' AND status != 'dismissed' "
+        "AND (jobber IS NULL OR jobber NOT LIKE '%quote_id%') ORDER BY id")) if d['case_id'] in to_quote_ids]
+    vendor_bills_to_pay = [c for c in list_cases(conn, 'all') if c['status'] != 'cancelled'
+                           and c['vendor_pay']['state'] == 'due']
     reports_to_log = [_doc_dict(r) for r in conn.execute(
         "SELECT * FROM pump_docs WHERE kind='report' AND status != 'dismissed' "
         "AND (jobber IS NULL OR jobber NOT LIKE '%note_id%') ORDER BY id")]
@@ -2293,6 +2457,8 @@ def work_queue(conn):
         'waiting_bill': by_stage.get('vendor_bill', []),
         'bills_to_check': by_stage.get('bill_checked', []),
         'bills_to_draft': bills_to_draft,
+        'quotes_to_draft': quotes_to_draft,
+        'vendor_bills_to_pay': vendor_bills_to_pay,
         'reports_to_log': reports_to_log,
         'ready_to_close': by_stage.get('closed', []),
         'review_docs': review_docs,
@@ -2479,6 +2645,8 @@ def h_doc(actor, doc_id):
         case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (d['case_id'],)).fetchone()) if d['case_id'] else None
         if d['kind'] == 'bill':
             d['invoice_suggestion'] = suggest_invoice(d, case)
+        if d['kind'] == 'quote':
+            d['quote_suggestion'] = suggest_quote(d, case)
         if case:
             d['case_issues'] = [dict(r) for r in conn.execute(
                 'SELECT id, kind, message FROM pump_issues WHERE case_id=? AND resolved_at IS NULL', (case['id'],))]
@@ -2609,8 +2777,9 @@ def h_case_create(actor):
 @api('/cases/<int:case_id>', methods=('PATCH', 'POST'))
 def h_case_update(actor, case_id):
     data = _json()
-    if actor == BOT and (any(k in OFFICE_ONLY_STEPS for k in (data.get('steps') or {})) or data.get('status')):
-        return _office_only(actor, 'Checking a bill, closing or cancelling an item')
+    if actor == BOT and (any(k in OFFICE_ONLY_STEPS for k in (data.get('steps') or {})) or data.get('status')
+                         or 'vendor_paid_on' in data):
+        return _office_only(actor, 'Checking a bill, marking the vendor paid, closing or cancelling an item')
     conn = _conn()
     try:
         if not update_case(conn, case_id, data, actor):
@@ -2822,6 +2991,51 @@ def h_doc_invoice(actor, doc_id):
     res = create_draft_invoice(doc_id, client_id, data.get('line_items') or sugg['line_items'],
                                data.get('subject') or sugg['subject'], job_id or '', actor)
     return {'invoice': res}
+
+
+@api('/docs/<int:doc_id>/quote', methods=('POST',))
+def h_doc_quote(actor, doc_id):
+    """Create our DRAFT quote to the client in Jobber from a vendor's quote.
+    Body: {"client_id", "property_id", "line_items": [...], "title", "message"}.
+    Without client_id / property_id, the item's (or the one clear match) is
+    used, or the choices are returned. Nothing is ever sent to the client.
+    Office only: what we quote a client is the office's decision."""
+    if actor == BOT:
+        return _office_only(actor, 'Drafting a client quote')
+    data = _json()
+    client_id, property_id = data.get('client_id'), data.get('property_id')
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+        if not row:
+            return {'success': False, 'error': 'Not found'}, 404
+        doc = _doc_dict(row)
+        case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (doc['case_id'],)).fetchone()) if doc['case_id'] else {}
+    finally:
+        conn.close()
+    case_client = (json.loads(case.get('jobber') or '{}').get('client') or {}).get('id') or case.get('jobber_client_id')
+    if not client_id:
+        client_id = case_client
+    if not client_id:
+        cands = search_clients(case.get('client_name') or doc.get('client_name') or '')
+        pick = pick_client(cands)
+        if not pick:
+            return {'success': False, 'needs_client': True, 'candidates': cands,
+                    'error': 'More than one Jobber client could match - choose one.'}, 409
+        client_id = pick['id']
+    if not property_id and client_id == case_client:
+        property_id = case.get('jobber_property_id')
+    if not property_id:
+        props = client_jobs(client_id)['properties']
+        if len(props) != 1:
+            return {'success': False, 'needs_property': True, 'properties': props, 'client_id': client_id,
+                    'error': "Choose the client's property for the quote." if props else
+                             'This client has no property in Jobber - add one in Jobber first.'}, 409
+        property_id = props[0]['id']
+    sugg = suggest_quote(doc, case)
+    res = create_draft_quote(doc_id, client_id, property_id, data.get('line_items') or sugg['line_items'],
+                             data.get('title') or sugg['title'], data.get('message') or '', actor)
+    return {'quote': res}
 
 
 @api('/docs/<int:doc_id>/report_note', methods=('POST',))

@@ -100,7 +100,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 .step.done .dot{background:var(--green);border-color:var(--green);}
 .step .lbl{flex:1;}
 .step .when{font-size:12px;color:var(--muted);}
-.money{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+.money{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;}
 .money .m{border:1px solid var(--border);border-radius:10px;padding:10px;}
 .money .m .k{font-size:11.5px;color:var(--muted);}
 .money .m .v{font-size:17px;font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums;}
@@ -238,16 +238,19 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
     <li>When a bill arrives it compares it with the quote. If they differ - or there is no quote - an <b>issue</b> is raised and stays at the top of Today until someone resolves it.</li>
     <li>Rebrands Wettech's Word reports: our letterhead, our name, no technician names, "Stahlman-" taken off the customer name.</li>
     <li>Pulls pump, diver, filter and SCADA requests, quotes and jobs from Jobber every 6 hours, and works out when each SCADA client's annual renewal is due.</li>
+    <li>Follows our Jobber quotes and invoices: once the office sends a drafted quote, "Quote sent to client" ticks itself, and "Client approved" when the client approves it in Jobber. Once the client <b>pays</b> our Jobber invoice, Wettech's bill goes on Today as <b>due to be paid</b> until someone marks it paid.</li>
   </ul>
   <h3>What only happens when someone clicks</h3>
   <ul>
+    <li><b>Draft quote in Jobber</b> (from a Wettech quote): copies the quote's line items into a new Jobber quote for the client <b>as a draft</b>. It is never sent - the app cannot send quotes. Review it in Jobber and send it from there.</li>
+    <li><b>Mark Wettech paid</b>: records the date Wettech's bill was paid. The app does not pay anyone.</li>
     <li><b>Draft invoice in Jobber</b> (from a bill): copies the bill's line items into a new Jobber invoice <b>as a draft</b>. It is never sent - the app cannot send invoices. Review it in Jobber and send it from there.</li>
     <li><b>Log report in Jobber</b>: adds the report as a note on the pump's job (or the client).</li>
     <li><b>Email Wettech to schedule</b>: opens an email in your mail program, ready to send yourself.</li>
   </ul>
   <h3>Setup</h3>
   <ul>
-    <li>Jobber: create an app in Jobber's Developer Center with read access to clients, requests, quotes and jobs and <b>write access to invoices and notes</b>, set its callback URL to <code>{{ request.url_root.rstrip('/') }}/pumps/jobber/callback</code>, put its keys in Railway as <code>PUMPS_JOBBER_CLIENT_ID</code> and <code>PUMPS_JOBBER_CLIENT_SECRET</code>, then click Connect Jobber above.</li>
+    <li>Jobber: create an app in Jobber's Developer Center with read access to clients, requests and jobs and <b>write access to quotes, invoices and notes</b>, set its callback URL to <code>{{ request.url_root.rstrip('/') }}/pumps/jobber/callback</code>, put its keys in Railway as <code>PUMPS_JOBBER_CLIENT_ID</code> and <code>PUMPS_JOBBER_CLIENT_SECRET</code>, then click Connect Jobber above.</li>
     <li>OpenClaw: uses the same actions at <code>/api/pumps/…</code> with <code>OPENCLAW_API_KEY</code>. Its step-by-step instructions are in <code>PUMPS_OPENCLAW.md</code> in the repository.</li>
     <li>Markup on drafted invoices: {{ markup }}% (<code>PUMPS_MARKUP_PCT</code>).</li>
   </ul>
@@ -306,14 +309,16 @@ async function loadToday(){
   const j = await api('/summary');
   if (!j.success) { document.getElementById('todayGrid').innerHTML = `<div class="empty">${esc(j.error)}</div>`; return; }
   const q = j.queue;
-  setCount('n-today', q.issues.length + q.needs_scheduling.length + q.bills_to_draft.length + q.reports_to_log.length, q.issues.length > 0);
+  setCount('n-today', q.issues.length + q.vendor_bills_to_pay.length + q.needs_scheduling.length + q.quotes_to_draft.length + q.bills_to_draft.length + q.reports_to_log.length, q.issues.length > 0 || q.vendor_bills_to_pay.length > 0);
   setCount('n-inbox', q.review_docs.length, false);
   setCount('n-scada', q.scada_attention.length, q.scada_attention.some(s => s.state === 'overdue'));
   setCount('n-jobber', q.new_jobber_requests.length, false);
   updateScanInfo(j.scan);
   const g = [];
   g.push(box('⚠️ Issues to resolve', q.issues, i => `<div class="row" onclick="openCase(${i.case_id})"><div class="main"><div class="tt">${esc(i.title || i.client_name || 'Item ' + i.case_id)}</div><div class="sub">${esc(i.message)}</div></div></div>`, q.issues.length ? 'red' : ''));
+  g.push(box('💸 Pay Wettech - the client has paid', q.vendor_bills_to_pay, c => `<div class="row" onclick="openCase(${c.id})"><div class="main"><div class="tt">${esc(c.title || c.client_name)}</div><div class="sub">${esc(c.vendor || 'Wettech')} bill ${c.vendor_bill_number ? '#' + esc(c.vendor_bill_number) + ' · ' : ''}${money(c.vendor_bill_total ?? c.vendor_bill_amount)} · our Jobber invoice ${c.sei_invoice_number ? '#' + esc(c.sei_invoice_number) + ' ' : ''}is paid</div></div><button class="btn s p" onclick="event.stopPropagation();markVendorPaid(${c.id})">Mark paid</button></div>`, q.vendor_bills_to_pay.length ? 'red' : '', 'Our client paid the Jobber invoice - Wettech\'s bill needs to be paid.'));
   g.push(box('📅 Needs scheduling with Wettech', q.needs_scheduling, c => caseRow(c, c.scheduled_for ? 'for ' + esc(c.scheduled_for) : ''), q.needs_scheduling.length ? 'amber' : '', 'Client approved - get it on Wettech\'s calendar.'));
+  g.push(box('📝 Quotes to draft in Jobber', q.quotes_to_draft, d => `<div class="row" onclick="openCase(${d.case_id})"><div class="main"><div class="tt">${esc(d.client_name || d.file_name)}</div><div class="sub">${esc(d.vendor)} quote #${esc(d.doc_number)} · ${money(d.subtotal ?? d.total)}</div></div><button class="btn s p" onclick="event.stopPropagation();draftQuote(${d.id})">Draft quote</button></div>`));
   g.push(box('🧾 Bills to draft in Jobber', q.bills_to_draft, d => `<div class="row" onclick="openCase(${d.case_id})"><div class="main"><div class="tt">${esc(d.client_name || d.file_name)}</div><div class="sub">${esc(d.vendor)} bill #${esc(d.doc_number)} · ${money(d.total)}</div></div><button class="btn s p" onclick="event.stopPropagation();draftInvoice(${d.id})">Draft invoice</button></div>`));
   g.push(box('📄 Reports to log in Jobber', q.reports_to_log, d => `<div class="row" onclick="${d.case_id ? `openCase(${d.case_id})` : `openDoc(${d.id})`}"><div class="main"><div class="tt">${esc(d.client_name || d.file_name)}</div><div class="sub">${esc((d.report_fields||{}).title || 'Report')} · ${esc(d.doc_date)}</div></div><button class="btn s" onclick="event.stopPropagation();logReport(${d.id})">Log in Jobber</button></div>`));
   g.push(box('📥 Inbox needs a look', q.review_docs, d => `<div class="row" onclick="openDoc(${d.id})"><div class="main"><div class="tt">${kindChip(d.kind)} ${esc(d.client_name || d.file_name)}</div><div class="sub">${esc(d.review_reason || 'Not filed yet')}</div></div></div>`));
@@ -421,6 +426,8 @@ function renderCase(){
       <span style="flex:1"></span>
       <a class="btn s" href="/pumps/api/docs/${d.id}/file" target="_blank">Open</a>
       ${d.has_branded ? `<a class="btn s" href="/pumps/api/docs/${d.id}/file?version=branded&download=1">⬇ SE report</a>` : ''}
+      ${d.kind === 'quote' && !(d.jobber||{}).quote_id ? `<button class="btn s p" onclick="draftQuote(${d.id})">Draft quote in Jobber</button>` : ''}
+      ${d.kind === 'quote' && (d.jobber||{}).quote_id ? `<a class="chip g" target="_blank" href="${esc(d.jobber.quote_uri||'#')}">Jobber quote #${esc(d.jobber.quote_number)}</a>` : ''}
       ${d.kind === 'bill' && !(d.jobber||{}).invoice_id ? `<button class="btn s p" onclick="draftInvoice(${d.id})">Draft invoice in Jobber</button>` : ''}
       ${d.kind === 'bill' && (d.jobber||{}).invoice_id ? `<a class="chip g" target="_blank" href="${esc(d.jobber.invoice_uri||'#')}">Jobber draft #${esc(d.jobber.invoice_number)}</a>` : ''}
       ${d.kind === 'report' && !(d.jobber||{}).note_id ? `<button class="btn s" onclick="logReport(${d.id})">Log in Jobber</button>` : ''}
@@ -432,6 +439,7 @@ function renderCase(){
   <div class="hd"><div><h2>${esc(c.title || c.client_name)}</h2><div class="note">${catChip(c.category)} ${stageChip(c)} ${c.po_number ? 'PO ' + esc(c.po_number) : ''} · opened ${esc(c.opened_on)}</div></div>
     <div style="display:flex;gap:6px;align-items:flex-start"><button class="btn" onclick="closeDrawer()">✕</button></div></div>
   <div class="bd">
+    ${c.vendor_pay.state === 'due' ? `<div class="sec"><div class="issue">💸 Our client has paid the Jobber invoice - ${esc(v)}'s bill needs to be paid.<button class="btn s p" onclick="markVendorPaid(${c.id})">Mark ${esc(v)} paid</button></div></div>` : ''}
     ${issues ? `<div class="sec"><h4>Issues</h4><div style="display:flex;flex-direction:column;gap:8px">${issues}</div></div>` : ''}
     <div class="sec"><h4>Next</h4><div style="display:flex;gap:8px;flex-wrap:wrap">
       ${c.stage === 'scheduled' ? `<a class="btn p" href="${esc(c.schedule_email)}">✉️ Email ${esc(v)} to schedule</a>` : `<a class="btn" href="${esc(c.schedule_email)}">✉️ Email ${esc(v)}</a>`}
@@ -443,7 +451,8 @@ function renderCase(){
     <div class="sec"><h4>Quote vs bill</h4><div class="money">
       <div class="m"><div class="k">${esc(v)} quote ${c.vendor_quote_number ? '#' + esc(c.vendor_quote_number) : ''}</div><div class="v">${money(c.vendor_quote_amount ?? c.vendor_quote_total) || '—'}</div>${c.vendor_quote_total != null && c.vendor_quote_amount != null ? `<div class="note">${money(c.vendor_quote_total)} with tax</div>` : ''}</div>
       <div class="m"><div class="k">${esc(v)} bill ${c.vendor_bill_number ? '#' + esc(c.vendor_bill_number) : ''}</div><div class="v">${money(c.vendor_bill_amount ?? c.vendor_bill_total) || '—'}</div>${c.vendor_bill_total != null && c.vendor_bill_amount != null ? `<div class="note">${money(c.vendor_bill_total)} with tax</div>` : ''}</div>
-      <div class="m"><div class="k">Our invoice ${c.sei_invoice_number ? '#' + esc(c.sei_invoice_number) : ''}</div><div class="v">${money(c.amount) || '—'}</div></div>
+      <div class="m"><div class="k">Our invoice ${c.sei_invoice_number ? '#' + esc(c.sei_invoice_number) : ''}</div><div class="v">${money(c.amount) || '—'}</div>${c.vendor_pay.client_invoice_status ? `<div class="note">${c.vendor_pay.client_invoice_status === 'paid' ? '<b class="ok">Paid by client</b>' : 'Jobber: ' + esc(c.vendor_pay.client_invoice_status.replace(/_/g, ' '))}</div>` : ''}</div>
+      <div class="m"><div class="k">${esc(v)} bill paid?</div>${vendorPayHtml(c)}</div>
     </div>${cmpText ? `<div class="cmp ${esc(cmp.state)}">${cmpText}</div>` : ''}</div>
     <div class="sec"><h4>Documents</h4><div class="docs">${docs}</div></div>
     <div class="sec"><h4>Details</h4><div class="fields">
@@ -460,6 +469,21 @@ function renderCase(){
     </div><div style="margin-top:10px"><button class="btn p" onclick="saveCaseFields()">Save details</button></div></div>
     <div class="sec"><h4>History</h4>${(c.events || []).map(e => `<div class="ev">${esc(e.at)} · <b>${esc(e.actor)}</b> · ${esc(e.action)} ${e.detail ? '- ' + esc(e.detail) : ''}</div>`).join('') || '<div class="note">Nothing yet.</div>'}</div>
   </div>`;
+}
+function vendorPayHtml(c){
+  const p = c.vendor_pay || {};
+  if (p.state === 'paid') return `<div class="v ok">Paid</div><div class="note">${esc(p.paid_on)}${p.paid_by ? ' · ' + esc(p.paid_by) : ''} · <a href="#" onclick="event.preventDefault();patchCase({vendor_paid_on: ''})">not paid</a></div>`;
+  if (p.state === 'due') return `<div class="v bad">Due now</div><div class="note">The client has paid us. <a href="#" onclick="event.preventDefault();markVendorPaid(${c.id})">Mark paid</a></div>`;
+  if (p.state === 'unpaid') return `<div class="v">Not paid</div><div class="note">Due once the client pays our invoice. <a href="#" onclick="event.preventDefault();markVendorPaid(${c.id})">Mark paid</a></div>`;
+  return '<div class="v">—</div><div class="note">No bill yet</div>';
+}
+async function markVendorPaid(id){
+  const d = prompt('Date Wettech\'s bill was paid (YYYY-MM-DD):', new Date().toISOString().slice(0,10));
+  if (!d) return;
+  const j = await api('/cases/' + id, {method:'PATCH', body:{vendor_paid_on: d}});
+  if (!j.success) { toast(j.error || 'Not saved', true); return; }
+  toast('Marked paid.');
+  if (curCase && curCase.id === id) { curCase = j.case; renderCase(); } else loadToday();
 }
 async function patchCase(data){ const j = await api('/cases/' + curCase.id, {method:'PATCH', body:data}); if (j.success) { curCase = j.case; renderCase(); } else toast(j.error || 'Not saved', true); return j; }
 function setStep(k, v){ patchCase({steps: {[k]: v === 'today' ? new Date().toISOString().slice(0,10) : v}}); }
@@ -576,7 +600,7 @@ async function draftInvoice(docId){
   const j = await api('/docs/' + docId);
   if (!j.success) { toast(j.error, true); return; }
   const d = j.doc, s = d.invoice_suggestion || {line_items:[], subject:''};
-  inv = {doc: d, client_id: null, lines: s.line_items.map(x => Object.assign({}, x)), subject: s.subject};
+  inv = {mode: 'invoice', doc: d, client_id: null, lines: s.line_items.map(x => Object.assign({}, x)), subject: s.subject};
   openModal('Draft invoice in Jobber', `
     <div class="safe">This creates a DRAFT invoice in Jobber. Nothing is sent to the client - review it in Jobber and send it from there.</div>
     ${(d.case_issues || []).map(i => `<div class="issue">⚠️ ${esc(i.message)}</div>`).join('')}
@@ -599,7 +623,7 @@ function drawLines(){
     <td><button class="btn s" onclick="inv.lines.splice(${i},1);drawLines()">✕</button></td></tr>`).join('');
   invTotal();
 }
-function invTotal(){ const t = inv.lines.reduce((a, l) => a + (l.quantity || 0) * (l.unit_price || 0), 0); document.getElementById('invTotal').textContent = 'Before tax: ' + money(t) + (inv.doc.subtotal != null && Math.abs(t - inv.doc.subtotal) > 0.005 ? ` (bill: ${money(inv.doc.subtotal)})` : ''); }
+function invTotal(){ const t = inv.lines.reduce((a, l) => a + (l.quantity || 0) * (l.unit_price || 0), 0); document.getElementById('invTotal').textContent = 'Before tax: ' + money(t) + (inv.doc.subtotal != null && Math.abs(t - inv.doc.subtotal) > 0.005 ? ` (${inv.mode === 'quote' ? 'vendor quote' : 'bill'}: ${money(inv.doc.subtotal)})` : ''); }
 async function findClients(){
   const q = document.getElementById('cq').value.trim();
   const box = document.getElementById('cands');
@@ -612,8 +636,9 @@ async function findClients(){
      <div style="flex:1"><b>${esc(c.name)}</b>${c.is_lead ? ' <span class="chip a">lead</span>' : ''}<div class="note">${esc(c.address)}</div></div><span class="chip">${Math.round(c.score * 100)}%</span>
      <a href="${esc(c.uri)}" target="_blank" onclick="event.stopPropagation()" class="note">Jobber ↗</a></div>`).join('') || '<div class="note">No clients found - try a shorter name.</div>';
   if (!j.pick && (j.candidates || []).length) box.insertAdjacentHTML('afterbegin', '<div class="note" style="margin-bottom:6px"><b>Choose the client</b> - more than one could match.</div>');
+  if (inv.mode === 'quote') quoteProps();
 }
-function pickClient(el, id){ inv.client_id = id; document.querySelectorAll('#cands .cand').forEach(c => { c.classList.remove('on'); c.querySelector('input').checked = false; }); el.classList.add('on'); el.querySelector('input').checked = true; }
+function pickClient(el, id){ inv.client_id = id; document.querySelectorAll('#cands .cand').forEach(c => { c.classList.remove('on'); c.querySelector('input').checked = false; }); el.classList.add('on'); el.querySelector('input').checked = true; if (inv.mode === 'quote') quoteProps(); }
 async function createInvoice(){
   if (!inv.client_id) { toast('Choose the Jobber client first.', true); return; }
   const btn = document.getElementById('invGo'); btn.disabled = true; btn.textContent = 'Creating draft…';
@@ -622,6 +647,52 @@ async function createInvoice(){
   if (!j.success) { toast(j.error, true); return; }
   closeModal();
   toast(`Draft invoice #${j.invoice.invoice_number} created in Jobber (${j.invoice.invoice_status || 'draft'}). Review and send it from Jobber.`);
+  if (inv.doc.case_id) openCase(inv.doc.case_id); else loadToday();
+}
+
+// ── draft quote ───────────────────────────────────────
+async function draftQuote(docId){
+  if (!JOBBER_OK) { toast('Connect Jobber first (top of the page).', true); return; }
+  const j = await api('/docs/' + docId);
+  if (!j.success) { toast(j.error, true); return; }
+  const d = j.doc, s = d.quote_suggestion || {line_items:[], title:''};
+  inv = {mode: 'quote', doc: d, client_id: null, property_id: null, lines: s.line_items.map(x => Object.assign({}, x))};
+  openModal('Draft quote in Jobber', `
+    <div class="safe">This creates a DRAFT quote for the client in Jobber. Nothing is sent to the client - review it in Jobber and send it from there.</div>
+    <div class="note">From ${esc(d.vendor)} quote #${esc(d.doc_number)} - ${money(d.subtotal)} before tax, ${money(d.total)} total. The vendor's sales tax line and name are left off: Jobber adds the client's tax to taxable lines.${s.markup_pct ? ' Prices include ' + s.markup_pct + '% markup.' : ''}</div>
+    <div><b>Jobber client</b><div class="toolbar" style="margin:6px 0"><input type="text" id="cq" value="${esc(d.client_name)}" style="flex:1"><button class="btn" onclick="findClients()">Search</button></div><div id="cands"><div class="note">Searching…</div></div></div>
+    <div><b>Property</b><div id="qprops" class="note">Choose the client first.</div></div>
+    <label class="note">Quote title<input type="text" id="qTitle" value="${esc(s.title)}" style="width:100%"></label>
+    <label class="note">Message to the client (optional)<textarea id="qMsg" style="width:100%;min-height:44px"></textarea></label>
+    <div><b>Line items</b> <span class="note">(edit before creating)</span><table class="t" style="margin-top:6px"><thead><tr><th>Name</th><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th>Tax</th><th></th></tr></thead><tbody id="invLines"></tbody></table>
+      <button class="btn s" style="margin-top:6px" onclick="inv.lines.push({name:'',description:'',quantity:1,unit_price:0,taxable:true});drawLines()">＋ Line</button>
+      <div class="foot"><span id="invTotal"></span></div></div>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" id="qGo" onclick="createQuote()">Create draft quote in Jobber</button>`);
+  drawLines(); findClients();
+}
+async function quoteProps(){
+  const box = document.getElementById('qprops');
+  inv.property_id = null;
+  if (!inv.client_id) { box.innerHTML = 'Choose the client first.'; return; }
+  box.innerHTML = 'Loading properties…';
+  const id = inv.client_id;
+  const j = await api('/jobber/clients/' + encodeURIComponent(id) + '/jobs');
+  if (inv.client_id !== id) return;
+  if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
+  const props = j.properties || [];
+  if (props.length === 1) inv.property_id = props[0].id;
+  box.innerHTML = props.map(p => `<label class="cand ${inv.property_id === p.id ? 'on' : ''}"><input type="radio" name="qp" ${inv.property_id === p.id ? 'checked' : ''} onchange="inv.property_id='${esc(p.id)}'"><div>${esc(p.label || 'Property')}</div></label>`).join('')
+    || '<div class="issue">This client has no property in Jobber - add one in Jobber first.</div>';
+}
+async function createQuote(){
+  if (!inv.client_id) { toast('Choose the Jobber client first.', true); return; }
+  if (!inv.property_id) { toast("Choose the client's property first.", true); return; }
+  const btn = document.getElementById('qGo'); btn.disabled = true; btn.textContent = 'Creating draft…';
+  const j = await api('/docs/' + inv.doc.id + '/quote', {method:'POST', body:{client_id: inv.client_id, property_id: inv.property_id, line_items: inv.lines, title: document.getElementById('qTitle').value, message: document.getElementById('qMsg').value}});
+  btn.disabled = false; btn.textContent = 'Create draft quote in Jobber';
+  if (!j.success) { toast(j.error, true); return; }
+  closeModal();
+  toast(`Draft quote #${j.quote.quote_number} created in Jobber (${j.quote.quote_status || 'draft'}). Review and send it from Jobber.`);
   if (inv.doc.case_id) openCase(inv.doc.case_id); else loadToday();
 }
 
