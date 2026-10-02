@@ -1,0 +1,67 @@
+# Pumps
+
+The Pumps tile in The Office App tracks every pump, diver, filter and SCADA job for a client. It follows each one from the first request to the invoice so nothing gets lost between the request, Wettech, Wettech's bill and our invoice.
+
+- **Who can open it:** office logins, or only the usernames listed in `PUMPS_USERS`. Technicians and property managers never can.
+- **Code:** `pumps.py` (logic and API), `pumps_page.py` (the page), `pump_reports.py` (report rebranding), `pumps_assets/report_letterhead.docx` (our letterhead). It is hooked into `app.py` with `init_pumps(...)` and uses the same SQLite database, in tables starting `pump_`.
+- **OpenClaw:** see `PUMPS_OPENCLAW.md` for its instructions and the API.
+
+## What it does
+
+| | |
+|---|---|
+| **Items** | One row per client need (the old monthly pump sheet, one row per PO). Each item has a checklist: quote from Wettech → quote sent to client → client approved → scheduled with Wettech → work done → Wettech's bill → bill checked against the quote → draft invoice in Jobber → report logged in Jobber → invoice sent and closed. Steps that don't apply start crossed out. For example, maintenance visits have no quote. |
+| **PO@ mailbox** | Every 30 minutes it reads new mail for Wettech quotes, bills and Word pump reports. Each one is filed against its item by PO number, Wettech W/O number, the quote number or the client's name. If none match, a new item is opened. Mail from anyone other than a known pump vendor is only picked up when it is clearly about pump work, and it waits in the Inbox for someone to confirm it. |
+| **Bill check** | A bill that differs from its quote by more than $0.50, or arrives with no quote, raises an **issue**. Issues stay at the top of Today until someone resolves them and writes down how. |
+| **Draft invoices** | From a bill, *Draft invoice in Jobber* copies the bill's line items into a new Jobber invoice **as a draft**. It leaves off Wettech's sales tax (Jobber adds the client's), plus any `PUMPS_MARKUP_PCT`. The app cannot send invoices: the only Jobber changes it is allowed to make are creating draft invoices and adding notes (`ALLOWED_MUTATIONS` in `pumps.py`), and anything else is refused before it reaches Jobber. If Jobber ever reports the new invoice as anything other than a draft, an issue is raised. |
+| **Reports** | Wettech's Word reports are rebranded automatically. Our letterhead goes on top, Wettech's header is removed, their name becomes ours, their phone, email and licence number are removed, and the technician's signature row and name are removed (prose mentions become "our technician"). "Stahlman-" is also taken off the customer name. *Log in Jobber* then adds the report as a note on the pump's job (or the client). |
+| **SCADA** | Built from the SCADA jobs, quotes and invoices in Jobber: each client's last renewal, and the next due a year later. Overdue and due-within-60-days rows go on Today. *Start renewal* opens an item: quote the client, then order it from Wettech. |
+| **Jobber tab** | Open pump, diver, filter and SCADA requests, quotes, jobs and draft invoices, synced every 6 hours. *Track* turns one into an item, and anything with a PO number in its title links itself. Recurring pump maintenance jobs are listed as service contracts. |
+
+The preview's old sheet rows (`pump_invoices`) were copied into items the first time the app started. The old table is left untouched.
+
+## Setup (Railway → Office App → Variables)
+
+| Variable | Needed for | What it does |
+|---|---|---|
+| `PUMPS_JOBBER_CLIENT_ID`, `PUMPS_JOBBER_CLIENT_SECRET` | Jobber | Keys from a Jobber app made for Pumps (see below). |
+| `ANTHROPIC_API_KEY` | Reading quotes and bills | Already set for the PO app. Without it a basic reader is used and every document is marked for review. |
+| `OPENCLAW_API_KEY` | OpenClaw | Already used by Work Orders. OpenClaw sends it as `Authorization: Bearer <key>`. |
+| `PUMPS_USERS` | optional | e.g. `simon,beatriz`. Only these usernames can open Pumps. |
+| `PUMPS_MARKUP_PCT` | optional | Added to Wettech's prices on drafted invoices (default `0`, a straight copy). |
+| `PUMPS_SCAN_SINCE` | optional | The first mailbox scan only reads mail received on or after this date (`YYYY-MM-DD`). The default is 60 days back. |
+| `PUMPS_COMPANY_PHONE`, `PUMPS_COMPANY_EMAIL` | optional | Put in place of Wettech's on rebranded reports. Unset = theirs are simply removed. |
+| `PUMPS_WEBHOOK_URL` | optional | Receives a POST whenever an issue is raised (e.g. bill over quote), signed with `X-Pumps-Signature` (HMAC-SHA256 of the body using `OPENCLAW_API_KEY`). |
+| `PUMPS_VENDORS_JSON` | optional | More pump subs besides Wettech: `[{"key":"acme","display":"Acme Pumps","names":["Acme Pump Co"],"emails":["acmepumps.com"],"phones":[],"other":[],"sender_match":["acmepumps"]}]`. |
+
+### Connecting Jobber
+
+Pumps needs its own Jobber app because, unlike Cash Flow (read-only), it writes draft invoices and notes.
+
+1. At developer.getjobber.com, create an app called "Office App - Pumps".
+2. Scopes: **read** Requests and Quotes. **Read and write** Clients and Jobs (to add notes) and Invoices (to create drafts). Write scopes are broader than Pumps needs. What keeps it to drafts and notes is the app's allow-list, which refuses every other Jobber change, including anything that sends or marks as sent.
+3. Callback URL: `<WEBSITE_URL>/pumps/jobber/callback`. Set `PUMPS_JOBBER_CALLBACK_URL` if the app is reached at a different address.
+4. Put the app's Client ID and Secret in Railway as `PUMPS_JOBBER_CLIENT_ID` and `PUMPS_JOBBER_CLIENT_SECRET`, and let it redeploy.
+5. On the Pumps page, click **Connect Jobber** and allow access. The first sync of pump work starts on its own and takes a few minutes.
+
+The sign-in is stored encrypted (key: `PUMPS_TOKEN_KEY`, or derived from `SECRET_KEY` when unset) and refreshes itself.
+
+### PDFs of reports
+
+Rebranded reports are Word files. *PDF* works only if LibreOffice is installed on the server. On Railway that means adding `libreoffice-writer` to the build packages (`NIXPACKS_APT_PKGS=libreoffice-writer`), which makes the image much larger. Otherwise open the Word file and save it as PDF.
+
+## Not yet confirmed against the live Jobber account
+
+These Jobber calls were written from Jobber's API conventions and two public projects that use them. They have not been run against your Jobber account yet:
+
+- **Report attachments.** The note is first sent with the report attached by link. If Jobber rejects that, the note is saved again without the attachment and with a link to the report in this app. The item's history says which happened.
+- **Searching Jobber by keyword** (`searchTerm`). If a search is refused, the Jobber tab shows the error after a sync instead of failing silently.
+
+## Tests
+
+```
+pip install -r requirements.txt
+python -m unittest tests.test_pumps -v
+```
+
+The tests use a throwaway database, made-up documents, and a fake Jobber that also re-checks that only draft-invoice and note mutations are ever sent.
