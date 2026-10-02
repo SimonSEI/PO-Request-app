@@ -291,6 +291,38 @@ class PumpsTest(unittest.TestCase):
         doc = self.c.get(f"/pumps/api/docs/{res['doc_id']}").get_json()['doc']
         self.assertTrue(doc['case_id'])
 
+    def test_read_again_once_claude_is_back(self):
+        # Claude is down: the basic reader marks both for review and leaves them in the Inbox.
+        for name in ('Inv_29041_from_Water_Equipment.pdf', 'Inv_29042_from_Water_Equipment.pdf'):
+            self.texts[name] = 'INVOICE\nWater Equipment Technologies\nTotal $1,200.00'
+        a = self.upload('Inv_29041_from_Water_Equipment.pdf')
+        b = self.upload('Inv_29042_from_Water_Equipment.pdf')
+        for res in (a, b):
+            self.assertIsNone(res['case_id'])
+            self.assertIn('without Claude', res['review'])
+        # Claude is back.
+        for name, num in (('Inv_29041_from_Water_Equipment.pdf', '29041'), ('Inv_29042_from_Water_Equipment.pdf', '29042')):
+            self.extracts[name] = extraction('bill', num, po='PO950', client='Osprey Point', subtotal=1126.76)
+            self.texts.pop(name)
+        r = self.c.post(f"/pumps/api/docs/{a['doc_id']}/reread", json={})
+        body = r.get_json()
+        self.assertTrue(body['success'], body)
+        self.assertEqual(body['kind'], 'bill')
+        self.assertTrue(body['case_id'], 'filed onto an item once read cleanly')
+        doc = self.c.get(f"/pumps/api/docs/{a['doc_id']}").get_json()['doc']
+        self.assertEqual((doc['extracted_by'], doc['review_reason'], doc['doc_number']), ('claude', '', '29041'))
+        self.assertEqual(self.case(body['case_id'])['vendor_bill_number'], '29041')
+        # Already on an item: not read again over the office's work.
+        self.assertEqual(self.c.post(f"/pumps/api/docs/{a['doc_id']}/reread", json={}).status_code, 400)
+        # The next scan picks up the rest by itself.
+        P.ANTHROPIC_API_KEY, key = 'test', P.ANTHROPIC_API_KEY
+        try:
+            done = P.reread_pending('test')
+        finally:
+            P.ANTHROPIC_API_KEY = key
+        self.assertIn(b['doc_id'], [d['doc_id'] for d in done])
+        self.assertTrue(self.c.get(f"/pumps/api/docs/{b['doc_id']}").get_json()['doc']['case_id'])
+
     def test_same_file_twice_is_skipped(self):
         self.extracts['dup.pdf'] = extraction('quote', 'Q-91', client='Dup Lakes', subtotal=100)
         self.upload('dup.pdf')

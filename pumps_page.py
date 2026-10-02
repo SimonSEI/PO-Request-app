@@ -155,7 +155,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   <div>PO@ mailbox: {% if email %}<b class="ok">connected</b> · <span id="scanInfo">…</span>
     <button class="btn s" id="scanBtn" onclick="scanNow()">Scan now</button>{% else %}<b class="warn">not configured</b> (upload documents by hand){% endif %}</div>
   <div>Jobber: <span id="jobberInfo">{% if jobber.connected %}<b class="ok">connected</b>{% elif jobber.can_connect %}<a class="btn s p" href="{{ url_for('pumps.jobber_connect') }}">Connect Jobber</a>{% else %}<b class="warn">not set up</b> (see How it works){% endif %}</span></div>
-  <div>Reading documents: {% if claude %}<b class="ok">Claude</b>{% else %}<b class="warn">basic</b> (no ANTHROPIC_API_KEY - check amounts){% endif %}</div>
+  <div>Reading documents: {% if claude and claude_problem %}<b class="bad">Claude is not working</b> ({{ claude_problem }}) - new documents wait in the Inbox and are read again automatically once it works{% elif claude %}<b class="ok">Claude</b>{% else %}<b class="warn">basic</b> (no ANTHROPIC_API_KEY - check amounts){% endif %}</div>
   <div>OpenClaw: {% if openclaw %}<b class="ok">API on</b>{% else %}<b>off</b>{% endif %}</div>
 </div>
 {% if flash_msg %}<div class="flash">{{ flash_msg }}</div>{% endif %}
@@ -572,6 +572,7 @@ async function openDoc(id){
     `<a class="btn" href="/pumps/api/docs/${d.id}/file" target="_blank">Open original</a>
      ${d.has_branded ? `<a class="btn" href="/pumps/api/docs/${d.id}/file?version=branded&download=1">⬇ SE report (.docx)</a><a class="btn" href="/pumps/api/docs/${d.id}/pdf" target="_blank">PDF</a>` : ''}
      ${d.kind === 'report' && d.file_name.toLowerCase().endsWith('.docx') ? `<button class="btn" onclick="rebrand(${d.id})">Rebrand again…</button>` : ''}
+     ${!d.case_id && d.extracted_by === 'regex' && d.status !== 'dismissed' ? `<button class="btn" onclick="rereadDoc(${d.id})">Read again with Claude</button>` : ''}
      ${d.status !== 'dismissed' ? `<button class="btn danger" onclick="saveDoc(${d.id}, {status:'dismissed'})">Dismiss</button>` : ''}
      <button class="btn p" onclick="saveDocForm(${d.id})">Save &amp; file</button>`);
 }
@@ -585,6 +586,14 @@ async function saveDoc(id, data){
   if (!j.success) { toast(j.error, true); return; }
   closeModal(); toast('Saved');
   if (j.case_id) openCase(j.case_id); else if (curTab === 'inbox') loadInbox(); else loadToday();
+}
+async function rereadDoc(id){
+  toast('Reading with Claude…');
+  const j = await api('/docs/' + id + '/reread', {method:'POST', body:{}});
+  if (!j.success) { toast(j.error, true); return; }
+  closeModal();
+  toast(j.case_id ? `Read and filed as a ${j.kind}.` : `Read as a ${j.kind} - ${j.review}`);
+  if (j.case_id) openCase(j.case_id); else openDoc(id);
 }
 async function rebrand(id){
   const names = prompt('Any other technician names to remove? (comma separated, or leave blank)', '');
@@ -804,7 +813,7 @@ async function syncJobber(){ const j = await api('/jobber/sync', {method:'POST',
 function updateScanInfo(s){
   const el = document.getElementById('scanInfo'); if (!el) return;
   s = s || {};
-  el.textContent = s.state === 'running' ? 'scanning…' : (s.finished_at ? `last scan ${s.finished_at.slice(5,16)} - ${s.documents_added || 0} new` + ((s.errors||[]).length ? `, ${s.errors.length} errors` : '') : 'not scanned yet');
+  el.textContent = s.state === 'running' ? 'scanning…' : (s.finished_at ? `last scan ${s.finished_at.slice(5,16)} - ${s.documents_added || 0} new` + (s.read_again ? `, ${s.read_again} read again` : '') + ((s.errors||[]).length ? `, ${s.errors.length} errors` : '') : 'not scanned yet');
   if ((s.errors || []).length) el.title = s.errors.join('\n');
 }
 async function scanNow(){

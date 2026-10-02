@@ -1055,21 +1055,35 @@ def _claude_extract(text, sender='', subject='', filename=''):
         )
     except anthropic.BadRequestError as e:
         print(f'  ⚠ Pumps: Claude rejected the request: {e.message}')
+        _note_claude(f'Claude refused: {e.message}' if 'credit' not in str(e.message).lower() else
+                     'the Anthropic account is out of credits')
         return None
     except anthropic.APIStatusError as e:
         print(f'  ⚠ Pumps: Claude error {e.status_code}')
+        _note_claude(f'Claude error {e.status_code}')
         return None
     except anthropic.APIConnectionError:
         print('  ⚠ Pumps: could not reach Claude')
+        _note_claude('could not reach Claude')
         return None
     if resp.stop_reason in ('refusal', 'max_tokens'):
         print(f'  ⚠ Pumps: Claude stopped early ({resp.stop_reason})')
         return None
     raw = next((b.text for b in resp.content if b.type == 'text'), '')
+    _note_claude('')
     try:
         return json.loads(raw)
     except ValueError:
         return None
+
+
+def _note_claude(problem):
+    """Remember why Claude last failed ('' once it works), for the page header."""
+    try:
+        if problem or (_state_get('claude_problem') or {}).get('problem'):
+            _state_set('claude_problem', {'problem': problem, 'at': _now_text()})
+    except Exception:
+        pass
 
 
 def _regex_extract(text, sender='', subject=''):
@@ -1424,6 +1438,83 @@ def ingest_document(filename, data, source='upload', email=None, kind_hint=None,
         conn.close()
 
 
+def reread_doc(doc_id, actor='system'):
+    """Read a document again with Claude - for one the basic reader handled
+    while Claude was unavailable (e.g. the Anthropic account was out of
+    credits). Only documents not yet on an item, so nothing the office has
+    already worked on is overwritten. Files it when it now reads cleanly."""
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+        if not row:
+            raise ValueError('No such document')
+        doc = dict(row)
+        if doc['case_id']:
+            raise ValueError('This document is already on an item - correct it by hand there.')
+        if doc['status'] == 'dismissed':
+            raise ValueError('This document was dismissed.')
+        if doc['kind'] == 'report' or (doc['file_name'] or '').lower().endswith(('.docx', '.doc')):
+            raise ValueError('Reports are not read by Claude - use Rebrand again.')
+        try:
+            with open(doc['file_path'], 'rb') as f:
+                data = f.read()
+        except OSError:
+            raise ValueError('The stored file is missing.')
+        text = extract_text(doc['file_name'], data)
+        if not text.strip():
+            raise ValueError('No text could be read (a scanned image?) - enter the details by hand.')
+        x = _claude_extract(text, doc['email_from'] or '', doc['email_subject'] or '', doc['file_name'])
+        if not x:
+            raise ValueError('Claude could not read it - check the Anthropic account has credits, then try again.')
+        x = _clean_extraction(x)
+        known = _vendor_display(f"{doc['email_from'] or ''}\n{doc['email_subject'] or ''}\n{text[:3000]}")
+        review = ''
+        if x['kind'] in ('quote', 'bill') and x.get('total') is None and x.get('subtotal') is None:
+            review = 'No amount found - enter it by hand.'
+        elif doc['source'] == 'email' and not known:
+            review = 'Not from a known pump vendor - confirm it belongs here.'
+        elif x['kind'] == 'other':
+            review = 'Could not tell whether this is a quote, bill or report.'
+        desc = (x.get('description') or '') + (f"\n{x['notes']}" if x.get('notes') else '')
+        conn.execute('''UPDATE pump_docs SET kind=?, status=?, vendor=?, doc_number=?, doc_date=?, po_number=?,
+                          wo_number=?, quote_ref=?, ordered_by=?, client_name=?, site=?, category=?, description=?,
+                          line_items=?, subtotal=?, tax=?, total=?, extracted_by='claude', review_reason=?,
+                          updated_at=? WHERE id=?''',
+                     (x['kind'], 'review' if review else 'new', known or x.get('vendor') or doc['vendor'] or '',
+                      x.get('doc_number') or '', x.get('doc_date') or '', x.get('po_number') or '',
+                      x.get('wo_number') or '', x.get('quote_reference') or '', x.get('ordered_by') or '',
+                      x.get('client_name') or '', x.get('site') or '', x.get('category') or '', desc,
+                      json.dumps(x['line_items']), x.get('subtotal'), x.get('tax'), x.get('total'), review,
+                      _now_text(), doc_id))
+        _event(conn, actor, 'read again', f"{x['kind']}: {doc['file_name']} (Claude)", doc_id=doc_id)
+        filed = None if review else file_document(conn, doc_id, actor)
+        conn.commit()
+        return {'doc_id': doc_id, 'case_id': filed, 'kind': x['kind'], 'review': review}
+    finally:
+        conn.close()
+
+
+def reread_pending(actor='system', limit=25):
+    """Documents the basic reader handled while Claude was unavailable, read
+    again now that it is back. Stops at the first failure (Claude still down)."""
+    if not ANTHROPIC_API_KEY:
+        return []
+    conn = _conn()
+    try:
+        ids = [r[0] for r in conn.execute(
+            "SELECT id FROM pump_docs WHERE extracted_by='regex' AND case_id IS NULL AND status='review' "
+            "AND kind != 'report' ORDER BY id LIMIT ?", (limit,))]
+    finally:
+        conn.close()
+    done = []
+    for i in ids:
+        try:
+            done.append(reread_doc(i, actor))
+        except ValueError:
+            break
+    return done
+
+
 def _branded_name(filename):
     base = os.path.splitext(_safe_name(filename))[0]
     return f'{base} - Stahlman-England.docx'
@@ -1495,6 +1586,12 @@ def scan_mailbox(actor='system'):
                 conn.commit()
             finally:
                 conn.close()
+        try:
+            reread = reread_pending('email scan')
+        except Exception as e:
+            reread = []
+            summary['errors'].append(f'Reading again with Claude: {e}')
+        summary['read_again'] = len(reread)
         summary['finished_at'] = _now_text()
         _state_set('scan_status', {'state': 'done', **summary})
         return summary
@@ -2993,6 +3090,12 @@ def h_doc_invoice(actor, doc_id):
     return {'invoice': res}
 
 
+@api('/docs/<int:doc_id>/reread', methods=('POST',))
+def h_doc_reread(actor, doc_id):
+    """Read a document again with Claude, and file it if it now reads cleanly."""
+    return reread_doc(doc_id, actor)
+
+
 @api('/docs/<int:doc_id>/quote', methods=('POST',))
 def h_doc_quote(actor, doc_id):
     """Create our DRAFT quote to the client in Jobber from a vendor's quote.
@@ -3294,6 +3397,7 @@ def page():
                                   categories=CATEGORIES,
                                   jobber=jobber_status(),
                                   claude=bool(ANTHROPIC_API_KEY),
+                                  claude_problem=(_state_get('claude_problem') or {}).get('problem', ''),
                                   email=bool(CFG.get('email_enabled')),
                                   openclaw=bool(OPENCLAW_API_KEY),
                                   markup=MARKUP_PCT,
