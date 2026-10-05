@@ -2108,6 +2108,11 @@ def sync_jobber(full=False, actor='system'):
             _follow_quotes(conn)
             rebuild_scada(conn)
             conn.commit()
+            try:
+                status['scada_invoices'] = scan_scada_invoices(conn)
+                conn.commit()
+            except JobberError as e:
+                status['errors'].append(f'SCADA invoices: {e}')
         finally:
             conn.close()
         status.update(state='done', finished_at=_now_text(), items=len(seen), linked=linked)
@@ -4993,6 +4998,10 @@ def init_account_tables(c):
             c.execute(f'ALTER TABLE pump_dive_sites ADD COLUMN {col} {decl}')
         except sqlite3.OperationalError:
             pass
+    try:
+        c.execute("ALTER TABLE pump_scada_accounts ADD COLUMN jobber_names TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
     now = _now_text()
     seeded = lambda k: c.execute('SELECT 1 FROM pump_state WHERE key=?', (k,)).fetchone()
     mark = lambda k: c.execute('INSERT OR REPLACE INTO pump_state (key, value) VALUES (?,?)', (k, '"yes"'))
@@ -5029,6 +5038,7 @@ def init_account_tables(c):
                           (name, kind, joined, equip, addr or '', months, cost, bill, ne, notes or '', needs, active,
                            'Lake sheet (Oct 2026)', now))
         mark('lake_sheet_seeded')
+    _scada_jobber_migrate(c)
 
 
 def _anniversary(d, year):
@@ -5077,6 +5087,172 @@ def scada_rows(conn):
 def scada_years(rows):
     ys = {int(y) for r in rows for y in r['years'] if y.isdigit()} | {2023, _today().year}
     return [str(y) for y in range(min(ys), max(ys) + 1)]
+
+
+# ── SCADA renewals seen in Jobber ────────────────────────────────────────────
+# Our SCADA renewal invoices say "Renewal of Annual Cellular and cloud
+# subscription for SCADA system on irrigation pump station". Each Jobber sync
+# looks for them and writes the invoice # into the client's year, so the SCADA
+# tab keeps up without anyone typing it in.
+
+# What each row is called in Jobber: words of the client name, or a site named
+# on the invoice ("... for Cross Creek" is billed to Medallion Home).
+SCADA_JOBBER_NAMES = {
+    'ALLURE': 'Allura', 'AUTUMN WOODS': 'Autumn Woods', 'BANYAN BAY': 'Banyan Bay',
+    'Camas Willows 1': 'Camas Willows', 'CLUBCARE': 'Club Care', 'COCONUT LANDING': 'Coconut Landing',
+    'COMMUNITY SCHOOL': 'Community School', 'CROSS CREEK': 'Cross Creek',
+    'CORSA (formerly Estero Crossing)': 'Corsa; Estero Crossing', 'FGCU-Athletics': 'FGCU Athletics',
+    'FRUITVILLE COMMONS': 'Fruitville', 'LELY': 'Lely', 'OLD COLLIER': 'Old Collier',
+    'RESERVE AT ESTERO': 'Reserve Estero', 'Tuscany Point': 'Tuscany Pointe; Tuscany Point', 'WildBlue': 'Wild Blue',
+}
+
+# Checked against the paid SCADA renewal invoices in Jobber (Oct 2026); the
+# sheet stopped at 2024/2025. Only empty years are filled.
+SCADA_FROM_JOBBER_OCT26 = {
+    'ALLURE': {'2026': '35944'},
+    'BANYAN BAY': {'2026': '32863'},
+    'CLUBCARE': {'2025': '27166', '2026': '32861'},
+    'COCONUT LANDING': {'2025': '27840', '2026': '33254'},
+    'COMMUNITY SCHOOL': {'2025': '31344'},
+    'CROSS CREEK': {'2026': '33687'},
+    'CORSA (formerly Estero Crossing)': {'2025': '28997'},
+    'FGCU-Athletics': {'2025': '31939', '2026': '35279'},
+    'FRUITVILLE COMMONS': {'2026': '32860'},
+    'LELY': {'2025': '25555', '2026': '32638'},
+    'Tuscany Point': {'2026': '32875'},
+    'WildBlue': {'2026': '32858'},
+}
+# SCADA clients in Jobber that the sheet did not have.
+SCADA_NEW_FROM_JOBBER = [
+    ('Sopra Luxury Living @ The Forum', '2025-03-01', '$600.00', 'Sopra', {'2025': '26892', '2026': '32862'}),
+    ('Heritage Stations', '2025-03-15', '$600.00', 'Heritage Stations', {'2025': '28165', '2026': '33405'}),
+    ('FGCU - PGA program (Driving Range)', '2025-12-01', '$600.00', 'FGCU PGA; Driving Range',
+     {'2025': '32130', '2026': '36707'}),
+]
+
+
+def _scada_jobber_migrate(c):
+    if c.execute("SELECT 1 FROM pump_state WHERE key='scada_jobber_oct26'").fetchone():
+        return
+    now = _now_text()
+    for r in c.execute('SELECT id, client, years, jobber_names FROM pump_scada_accounts').fetchall():
+        years = json.loads(r[2] or '{}')
+        for y, v in SCADA_FROM_JOBBER_OCT26.get(r[1], {}).items():
+            if not str(years.get(y) or '').strip():
+                years[y] = v
+        names = r[3] or SCADA_JOBBER_NAMES.get(r[1], '')
+        c.execute('UPDATE pump_scada_accounts SET years=?, jobber_names=? WHERE id=?', (json.dumps(years), names, r[0]))
+    for client, due, bill, names, years in SCADA_NEW_FROM_JOBBER:
+        if not c.execute('SELECT 1 FROM pump_scada_accounts WHERE client=?', (client,)).fetchone():
+            c.execute('''INSERT INTO pump_scada_accounts (client, renewal_date, product, vendor_cost, our_bill, vendor,
+                           years, jobber_names, notes, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+                      (client, due, 'Annual Subscription - SCADA', 428.00, bill, 'Wettech', json.dumps(years), names,
+                       'Found in Jobber - not on the SCADA sheet', 'Jobber invoices (Oct 2026)', now))
+    c.execute("INSERT OR REPLACE INTO pump_state (key, value) VALUES ('scada_jobber_oct26', '\"yes\"')")
+
+
+def is_scada_renewal(text):
+    t = (text or '').lower()
+    return 'scada' in t and ('subscription' in t or 'renew' in t)
+
+
+def scada_invoice_year(text, issued):
+    """The year a renewal invoice counts for: "2025-2026 Renewal" is 2025 even
+    when it went out in January 2026; otherwise the year it was issued."""
+    m = re.search(r'\b(20\d\d)\s*[-–/]\s*(20\d\d)\b', text or '') or \
+        re.search(r'\b(20\d\d)\s+renewal', text or '', re.I)
+    return m.group(1) if m else (issued or '')[:4]
+
+
+def _scada_match(rows, client_name, text):
+    hits = []
+    for r in rows:
+        names = [n.strip() for n in re.split(r'[;,\n]', r['jobber_names'] or '') if n.strip()] or [r['client']]
+        if any(fuzzy_has(n, client_name) for n in names):
+            hits.append((0, r))
+        elif any(fuzzy_has(n, text) for n in names):
+            hits.append((1, r))
+    best = [r for p, r in hits if p == min((p for p, _ in hits), default=0)]
+    return best[0] if len(best) == 1 else None
+
+
+def record_scada_invoice(conn, inv):
+    """Put one Jobber SCADA renewal invoice on the SCADA tab: its number goes
+    in the client's year if that year is empty. A client not on the tab is
+    added. Returns what happened, or None."""
+    number = str(inv.get('invoiceNumber') or '').strip()
+    status = (inv.get('invoiceStatus') or '').lower()
+    lines = (inv.get('lineItems') or {}).get('nodes') if isinstance(inv.get('lineItems'), dict) else inv.get('lineItems')
+    text = ' '.join(f"{li.get('name') or ''} {li.get('description') or ''}" for li in lines or [])
+    if not number or status in ('draft', 'voided', 'bad_debt') or not is_scada_renewal(text):
+        return None
+    rows = [dict(r) for r in conn.execute('SELECT * FROM pump_scada_accounts')]
+    if any(number == str(v).strip() for r in rows for v in json.loads(r['years'] or '{}').values()):
+        return None
+    client = (inv.get('client') or {}).get('name') or ''
+    issued = (inv.get('issuedDate') or inv.get('createdAt') or '')[:10]
+    year = scada_invoice_year(text, issued)
+    row = _scada_match(rows, client, text)
+    now = _now_text()
+    if row is None:
+        if any(fuzzy_has(r['client'], client) for r in rows):
+            return None  # the client has several sites on the tab and the invoice doesn't say which
+        conn.execute('''INSERT INTO pump_scada_accounts (client, renewal_date, product, our_bill, vendor, years,
+                          jobber_names, notes, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)''',
+                     (client[:120], issued, 'Annual Subscription - SCADA', _fmt_money(inv), 'Wettech',
+                      json.dumps({year: number}), client[:120], f'Found in Jobber (invoice #{number})', 'jobber sync', now))
+        _event(conn, 'jobber sync', 'SCADA client found', f'{client}: invoice #{number} ({year})')
+        return 'added'
+    years = json.loads(row['years'] or '{}')
+    if str(years.get(year) or '').strip():
+        return None
+    years[year] = number
+    conn.execute('UPDATE pump_scada_accounts SET years=?, updated_by=?, updated_at=? WHERE id=?',
+                 (json.dumps(years), 'jobber sync', now, row['id']))
+    _event(conn, 'jobber sync', 'SCADA renewed', f"{row['client']} {year}: invoice #{number}")
+    return 'recorded'
+
+
+def _fmt_money(inv):
+    total = (inv.get('amounts') or {}).get('total')
+    return f'${float(total):,.2f}' if isinstance(total, (int, float)) else ''
+
+
+def scan_scada_invoices(conn, days=430):
+    """Read the last ~14 months of Jobber invoices for SCADA renewals."""
+    since = (_today() - timedelta(days=days)).isoformat()
+    lines = 'lineItems { nodes { name description } }'
+    fields = (f'id invoiceNumber invoiceStatus issuedDate createdAt jobberWebUri amounts {{ total }} '
+              f'client {{ id name }} {lines}')
+    filt = '(first: 50, after: $after, filter: { issuedDate: { after: $since } })'
+    done = {'added': 0, 'recorded': 0}
+    cursor, pages = None, 0
+    while pages < 30:
+        q = (f'query($after: String, $since: ISO8601DateTime) {{ invoices{filt} {{ nodes {{ {fields} }} '
+             f'pageInfo {{ hasNextPage endCursor }} }} }}')
+        try:
+            data = jobber_gql(q, {'after': cursor, 'since': since + 'T00:00:00Z'})
+        except JobberError as e:
+            if 'filter' in filt and re.search(r'filter|issuedDate|ISO8601DateTime', str(e)):
+                filt = '(first: 50, after: $after)'  # older API: read pages until they are older than `since`
+                fields = fields.replace('amounts { total } ', '')
+                continue
+            raise
+        page = (data or {}).get('invoices') or {}
+        nodes = page.get('nodes') or []
+        for inv in nodes:
+            what = record_scada_invoice(conn, inv)
+            if what:
+                done[what] += 1
+        pages += 1
+        info = page.get('pageInfo') or {}
+        if not info.get('hasNextPage') or not nodes:
+            break
+        if 'filter' not in filt and all((n.get('createdAt') or '')[:10] < since for n in nodes):
+            break
+        cursor = info.get('endCursor')
+        time.sleep(0.2)
+    return done
 
 
 @api('/scada')
@@ -5144,7 +5320,7 @@ def h_scada_update(actor, sid):
             conn.commit()
             return {'scada': scada_rows(conn)}
         sets, vals = [], []
-        for k in ('client', 'product', 'our_bill', 'vendor', 'notes'):
+        for k in ('client', 'product', 'our_bill', 'vendor', 'notes', 'jobber_names'):
             if k in d:
                 sets.append(f'{k}=?')
                 vals.append(str(d[k] or '').strip()[:1000])

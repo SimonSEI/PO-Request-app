@@ -1090,34 +1090,65 @@ class PumpsTest(unittest.TestCase):
         try:
             j = self.c.get('/pumps/api/scada').get_json()
             rows = {r['client']: r for r in j['scada']}
-            self.assertEqual(len(rows), 16)
+            self.assertEqual(len(rows), 19)  # the sheet's 16 + 3 found in Jobber
             self.assertEqual(j['years'], ['2023', '2024', '2025', '2026'])
             allure = rows['ALLURE']
             self.assertEqual((allure['vendor_cost'], allure['our_bill'], allure['years']['2025']), (428.0, '$482.00', '29448'))
-            self.assertEqual((allure['next_due_on'], allure['state']), ('2026-08-28', 'overdue'))
-            # Lely's sheet date (1/9/2023) is older than its 2024 invoice: next due a year after that.
-            self.assertEqual(rows['LELY']['next_due_on'], '2025-01-09')
+            # The sheet stopped at 2025; Jobber's invoices fill 2026.
+            self.assertEqual((allure['years']['2026'], allure['next_due_on'], allure['state']), ('35944', '2027-08-28', 'current'))
+            self.assertEqual(rows['LELY']['years'], {'2024': '19236', '2025': '25555', '2026': '32638'})
+            self.assertEqual((rows['LELY']['next_due_on'], rows['LELY']['state']), ('2027-01-09', 'current'))
+            self.assertEqual(rows['Heritage Stations']['years']['2026'], '33405')
             self.assertEqual(rows['OLD COLLIER']['next_due_on'], '2025-10-04')
             self.assertEqual(rows['AUTUMN WOODS']['years']['2024'], 'SEI pays for SCADA')
             self.assertEqual(rows['Tuscany Point']['vendor_cost'], 855.99)
+            states = [r['state'] for r in j['scada']]
+            self.assertEqual((states.count('overdue'), states.count('due_soon')), (4, 2))
             # Renewed: the invoice goes in the year it was due, and the date moves on a year.
-            sid = allure['id']
-            j = self.c.post(f'/pumps/api/scada/{sid}', json={'action': 'renewed', 'value': '31002'}).get_json()
-            allure = [r for r in j['scada'] if r['id'] == sid][0]
-            self.assertEqual((allure['years']['2026'], allure['renewal_date'], allure['state']),
-                             ('31002', '2027-08-28', 'current'))
+            sid = rows['CORSA (formerly Estero Crossing)']['id']
+            j = self.c.post(f'/pumps/api/scada/{sid}', json={'action': 'renewed', 'value': '36800'}).get_json()
+            corsa = [r for r in j['scada'] if r['id'] == sid][0]
+            self.assertEqual((corsa['years']['2026'], corsa['next_due_on'], corsa['state']),
+                             ('36800', '2027-11-20', 'current'))
+            # A Jobber sync finds next year's renewal invoices by themselves.
+            P.jobber_gql = lambda q, v=None: {'invoices': {'nodes': [
+                {'invoiceNumber': 40001, 'invoiceStatus': 'paid', 'issuedDate': '2027-01-20T00:00:00Z',
+                 'client': {'name': 'LELY CDD'}, 'lineItems': {'nodes': [{'name': 'PUMP SERVICE', 'description':
+                 '2027 Renewal Annual Cellular and cloud subscription for SCADA system on irrigation pump station'}]}},
+                {'invoiceNumber': 40002, 'invoiceStatus': 'awaiting_payment', 'issuedDate': '2027-03-02T00:00:00Z',
+                 'client': {'name': 'MEDALLION HOME'}, 'lineItems': {'nodes': [{'name': 'PUMP SERVICE', 'description':
+                 'Renewal of Annual Cellular and cloud subscription for SCADA system on irrigation pump station for '
+                 'Cross Creek completed. 2027-2028'}]}},
+                {'invoiceNumber': 40003, 'invoiceStatus': 'draft', 'issuedDate': '2027-03-02T00:00:00Z',
+                 'client': {'name': 'CLUB CARE'}, 'lineItems': {'nodes': [{'description': 'SCADA subscription renewal'}]}},
+                {'invoiceNumber': 40004, 'invoiceStatus': 'paid', 'issuedDate': '2027-02-02T00:00:00Z',
+                 'client': {'name': 'Pebblebrook HOA'}, 'amounts': {'total': 600}, 'lineItems': {'nodes': [
+                     {'description': 'Renewal of Annual Cellular and cloud subscription for SCADA system'}]}},
+                {'invoiceNumber': 40005, 'invoiceStatus': 'paid', 'issuedDate': '2027-02-02T00:00:00Z',
+                 'client': {'name': 'Barrington Cove'}, 'lineItems': {'nodes': [{'description': 'Pump Maintenance Complete'}]}},
+            ], 'pageInfo': {'hasNextPage': False}}}
+            conn = P._conn()
+            self.assertEqual(P.scan_scada_invoices(conn), {'added': 1, 'recorded': 2})
+            self.assertEqual(P.scan_scada_invoices(conn), {'added': 0, 'recorded': 0})  # once only
+            conn.commit(); conn.close()
+            rows = {r['client']: r for r in self.c.get('/pumps/api/scada').get_json()['scada']}
+            self.assertEqual(rows['LELY']['years']['2027'], '40001')
+            self.assertEqual(rows['CROSS CREEK']['years']['2027'], '40002')
+            self.assertNotIn('2027', rows['CLUBCARE']['years'])  # drafts don't count
+            self.assertEqual((rows['Pebblebrook HOA']['years'], rows['Pebblebrook HOA']['our_bill']), ({'2027': '40004'}, '$600.00'))
             # Edit and switch off.
             self.c.patch(f"/pumps/api/scada/{rows['CLUBCARE']['id']}", json={'active': False, 'notes': 'Left'})
             j = self.c.get('/pumps/api/scada').get_json()
             self.assertEqual([r for r in j['scada'] if r['client'] == 'CLUBCARE'][0]['state'], 'inactive')
             # A renewal item, one at a time.
-            lely = rows['LELY']['id']
-            cid = self.c.post(f'/pumps/api/scada/{lely}', json={'action': 'renewal_item'}).get_json()['case_id']
+            oc = rows['OLD COLLIER']['id']
+            cid = self.c.post(f'/pumps/api/scada/{oc}', json={'action': 'renewal_item'}).get_json()['case_id']
             self.assertEqual(self.case(cid)['category'], 'scada')
-            self.assertEqual(cid, self.c.post(f'/pumps/api/scada/{lely}', json={'action': 'renewal_item'}).get_json()['case_id'])
-            self.assertIn('LELY', [s['client_name'] for s in self.c.get('/pumps/api/summary').get_json()['queue']['scada_attention']])
+            self.assertEqual(cid, self.c.post(f'/pumps/api/scada/{oc}', json={'action': 'renewal_item'}).get_json()['case_id'])
+            self.assertIn('OLD COLLIER', [s['client_name'] for s in self.c.get('/pumps/api/summary').get_json()['queue']['scada_attention']])
         finally:
             P._today = today
+            P.jobber_gql = self._orig[2]
 
     def test_maintenance_accounts(self):
         today = P._today

@@ -331,7 +331,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
     <li>Reads the PO@ mailbox every 30 minutes for Wettech quotes, bills and Word pump reports, and files each against its item by PO number, Wettech W/O number or client name.</li>
     <li>When a bill arrives it compares it with the quote. If they differ - or there is no quote - an <b>issue</b> is raised and stays at the top of Today until someone resolves it.</li>
     <li>Rebrands Wettech's Word reports: our letterhead, our name, no technician names, "Stahlman-" taken off the customer name.</li>
-    <li>Pulls pump, diver, filter and SCADA requests, quotes and jobs from Jobber every 6 hours, and keeps the SCADA renewals from the office's SCADA sheet (Renewed... moves the date on a year).</li>
+    <li>Pulls pump, diver, filter and SCADA requests, quotes and jobs from Jobber every 6 hours, and keeps the SCADA renewals from the office's SCADA sheet, and fills in each year's invoice # from the SCADA renewal invoices it finds in Jobber (Renewed... records one by hand).</li>
     <li>Follows our Jobber quotes and invoices: once the office sends a drafted quote, "Quote sent to client" ticks itself, and "Client approved" when the client approves it in Jobber. Once the client <b>pays</b> our Jobber invoice, Wettech's bill goes on Today as <b>due to be paid</b> until someone marks it paid.</li>
   </ul>
   <h3>Service reports</h3>
@@ -1040,6 +1040,7 @@ function scadaEdit(id){
     <label>Amount (Wettech)<input type="number" step="0.01" id="sc_cost" value="${esc(s.vendor_cost ?? '')}"></label>
     <label>Our bill<input type="text" id="sc_bill" value="${esc(s.our_bill)}"></label>
     <label>Vendor<input type="text" id="sc_vendor" value="${esc(s.vendor)}"></label>
+    <label class="w">Name in Jobber <span class="note">(client or site on the invoice; separate several with ;)</span><input type="text" id="sc_jn" value="${esc(s.jobber_names || '')}" placeholder="e.g. Cross Creek"></label>
     ${yr.map(y => `<label>${y}<input type="text" class="sc_y" data-y="${y}" value="${esc((s.years || {})[y] || '')}" placeholder="invoice # or note"></label>`).join('')}
     <label class="w">Notes<textarea id="sc_notes">${esc(s.notes)}</textarea></label>
     <label><span><input type="checkbox" id="sc_active" ${s.active ? 'checked' : ''}> Still on SCADA</span></label></div>`,
@@ -1048,10 +1049,10 @@ function scadaEdit(id){
 async function scadaSave(id){
   const v = x => document.getElementById(x).value;
   const years = {}; document.querySelectorAll('.sc_y').forEach(el => years[el.dataset.y] = el.value);
-  const body = {client: v('sc_client'), renewal_date: v('sc_date'), product: v('sc_product'), vendor_cost: v('sc_cost'), our_bill: v('sc_bill'), vendor: v('sc_vendor'), notes: v('sc_notes'), active: document.getElementById('sc_active').checked, years};
+  const body = {client: v('sc_client'), renewal_date: v('sc_date'), product: v('sc_product'), vendor_cost: v('sc_cost'), our_bill: v('sc_bill'), vendor: v('sc_vendor'), notes: v('sc_notes'), jobber_names: v('sc_jn'), active: document.getElementById('sc_active').checked, years};
   const j = id ? await api('/scada/' + id, {method:'PATCH', body}) : await api('/scada', {method:'POST', body});
   if (!j.success) { toast(j.error, true); return; }
-  if (!id) { const n = j.scada.find(x => x.client === body.client.trim()); if (n) await api('/scada/' + n.id, {method:'PATCH', body:{years, active: body.active}}); }
+  if (!id) { const n = j.scada.find(x => x.client === body.client.trim()); if (n) await api('/scada/' + n.id, {method:'PATCH', body:{years, active: body.active, jobber_names: body.jobber_names}}); }
   closeModal(); loadScada();
 }
 // ── maintenance accounts ──────────────────────────────
