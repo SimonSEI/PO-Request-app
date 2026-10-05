@@ -288,6 +288,10 @@ SEED_SITE_ALIASES = [
      'client_name': 'Greenscapes', 'property_id': 'Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzUyOTc4MjYw',
      'property_label': '6945 Carlisle Court, The Carlisle Naples- Pump #1 Exit',
      'note': '"Back station" at the Carlisle means the Pump #1 exit pump (this account only).'},
+    {'place': 'Miramar Lakes', 'area': '', 'client_id': 'Z2lkOi8vSm9iYmVyL0NsaWVudC8zNTM3MDgwNw==',
+     'client_name': 'MIROMAR LAKES', 'property_id': 'Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzM4MTYzODEy',
+     'property_label': '17910 Ben Hill Griffin Pkwy, Miromar Lakes',
+     'note': 'Wettech writes "Miramar Lakes" for Miromar Lakes (its pumps and fountains).'},
 ]
 
 
@@ -2359,11 +2363,19 @@ def match_site_alias(doc, case=None, conn=None):
     """The office's own name for a site that fits this document, most specific
     first ("Carlisle" + "back station" beats "Carlisle")."""
     hay = _doc_hay(doc, case)
+    named = doc.get('client_name') or (case or {}).get('client_name') or ''
     best = None
     for a in site_aliases(conn):
         if not fuzzy_has(a['place'], hay):
             continue
         if a['area'] and not fuzzy_has(a['area'], hay):
+            continue
+        # "Miramar Lakes Beach Club" is a different client from "Miramar
+        # Lakes": the name on the document may not add words of its own.
+        mine = [w for w in _words(f"{a['place']} {a['area']}")]
+        extra = [w for w in _words(named) if w not in ('the', 'at', 'of', 'and', 'a', '-', '@')
+                 and not any(_tok_match(w, m) for m in mine)]
+        if extra:
             continue
         rank = (1 if a['area'] else 0, 1 if a['property_id'] else 0)
         if best is None or rank > best[0]:

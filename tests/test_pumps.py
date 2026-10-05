@@ -656,6 +656,18 @@ class PumpsTest(unittest.TestCase):
         d = [d for d in queue['quotes_to_draft'] if d['id'] == res['doc_id']][0]
         self.assertIn('Choose the Jobber client', d['jobber']['quote_pending']['reason'])
 
+    def test_miramar_is_miromar(self):
+        a = P.match_site_alias({'client_name': 'Miramar Lakes', 'file_name': 'Inv_29100.pdf'})
+        self.assertEqual((a['client_name'], a['property_id']),
+                         ('MIROMAR LAKES', 'Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzM4MTYzODEy'))
+        self.assertEqual(P.match_site_alias({'client_name': 'Miromar Lakes', 'file_name': 'x.pdf'})['client_name'],
+                         'MIROMAR LAKES')
+        for other in ('Miramar Lakes Beach and Gulf Club', 'Miramar Lakes CDD', 'Miramar Lakes Golf & Country Club'):
+            self.assertIsNone(P.match_site_alias({'client_name': other, 'file_name': 'x.pdf'}), other)
+        # The Carlisle names still apply ("The Carlise" adds nothing of its own).
+        self.assertEqual(P.match_site_alias({'client_name': 'The Carlise', 'file_name': 'Carslie Back Station .docx'})
+                         ['area'], 'back station')
+
     def test_site_names(self):
         names = self.c.get('/pumps/api/site-names').get_json()['site_names']
         self.assertIn(('Carlisle', 'back station', 'Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzUyOTc4MjYw'), [(n['place'], n['area'], n['property_id']) for n in names])
