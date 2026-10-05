@@ -28,24 +28,54 @@ A.app.config['WTF_CSRF_ENABLED'] = False
 
 
 class FakeGraph:
-    def __init__(self, messages):
+    def __init__(self, messages, attachments=None):
         self.messages = messages
+        self.attachments = attachments or {}
         self.calls = []
 
     def __call__(self, method, path, **kw):
         self.calls.append((method, path, kw))
         if method == 'GET' and path.endswith('/messages'):
             return {'value': self.messages}
+        if method == 'GET' and path.endswith('/attachments'):
+            mid = path.split('/messages/')[1].split('/')[0]
+            return {'value': [{'name': name, 'contentType': 'application/pdf', 'contentBytes': 'eA=='}
+                              for name in self.attachments.get(mid, [])]}
         return {}
+
+
+# What a Vertilinc maintenance request PDF reads as (made-up resident).
+FORM = '''VeronaWalk HOA
+8090 Sorrento Lane
+Maintenance Request
+Request # 20999-123456
+Date Received: 10/4/2026
+Time Received: 9:15 AM
+Received by: Jamie Q. Sample
+Service Location: Maintenance
+Unit #: 8100 Example Court
+Resident: Jamie Q. Sample
+Contact Phone: 5550100
+Work Requested:
+Service: Irrigation
+Status: New
+Notes: 10-04-2026 9:15 AM - Jamie Q. SampleThe rotor by the mailbox
+sprays the driveway. Please adjust it.
+Special Instructions:
+Pet Info:
+Completion Notes:'''
 
 
 class FakeJobber:
     def __init__(self, notes=None):
         self.calls = []
         self.notes = notes or []
+        self.jobs = None
 
     def __call__(self, query, variables=None):
         self.calls.append((query, variables))
+        if 'jobs(searchTerm' in query and self.jobs is not None:
+            return {'jobs': {'nodes': self.jobs}}
         if 'jobs(searchTerm' in query:
             return {'jobs': {'nodes': [{'id': 'JOB_ENC_1', 'jobNumber': 1234, 'title': 'Verona Walk Work Orders',
                                         'client': {'id': 'CLIENT_1'}, 'property': {'id': 'PROP_1'}}]}}
@@ -73,8 +103,8 @@ class FakeClaude:
         self.prompts.append(prompt)
         assert kw['model'] == W.CLAUDE_MODEL
         if prompt.startswith('Community:'):
-            out = {'is_work_order': True, 'wo_number': '5521', 'address': '8810 Example Lane',
-                   'description': 'Broken sprinkler head by the front walk.'}
+            out = {'orders': [{'wo_number': '5521', 'wo_date': '2026-10-05', 'address': '8810 Example Lane',
+                               'homeowner': 'Pat Example', 'description': 'Broken sprinkler head by the front walk.'}]}
         else:
             oid = int(prompt.split('- id ')[1].split(':')[0])
             out = {'work_order_id': oid, 'cleaned_notes': 'Replaced the broken spray head by the front walk.',
@@ -136,7 +166,75 @@ class WorkOrdersTest(unittest.TestCase):
         self.assertTrue(o['forwarded_at'] and o['jobber_logged_at'])
         note = [v for q, v in self.jobber.calls if 'jobCreateNote' in q][0]
         self.assertEqual(note['jobId'], 'JOB_ENC_1')
-        self.assertIn('OUTSTANDING - Work order 5521 at 8810 Example Lane', note['input']['message'])
+        self.assertIn('OUTSTANDING - Work order 5521 - 8810 Example Lane (Pat Example), 2026-10-05', note['input']['message'])
+
+    def test_maintenance_request_pdf_is_read_field_by_field(self):
+        self.graph.messages = [dict(EMAIL, id='MSG9', subject='Maintenance Request', hasAttachments=True,
+                                    body={'contentType': 'text', 'content': 'See attached.'})]
+        self.graph.attachments = {'MSG9': ['20999-123456.pdf']}
+        orig = W._pdf_text
+        W._pdf_text = lambda data: FORM
+        try:
+            W.run_cycle(manual=True)
+        finally:
+            W._pdf_text = orig
+        [o] = self.orders()
+        self.assertEqual((o['wo_number'], o['wo_date'], o['address'], o['homeowner'], o['phone']),
+                         ('20999-123456', '2026-10-04', '8100 Example Court', 'Jamie Q. Sample', '5550100'))
+        self.assertEqual(o['description'], 'The rotor by the mailbox sprays the driveway. Please adjust it.')
+        self.assertFalse([p for p in self.claude.prompts if p.startswith('Community:')], 'the form needs no Claude')
+        self.assertTrue([c for c in self.graph.calls if c[1].endswith('/MSG9/forward')])
+
+    def test_work_order_job_is_found_when_no_number_is_set(self):
+        conn = W._conn()
+        conn.execute("UPDATE wo_inbox_communities SET jobber_job=''")
+        conn.commit()
+        conn.close()
+        self.jobber.jobs = [
+            {'id': 'OLD', 'jobNumber': 1672, 'title': 'Verona Walk- Service Call', 'client': {'id': 'C', 'name': 'VERONA  WALK HOA'}},
+            {'id': 'WO_JOB', 'jobNumber': 11351, 'title': 'WORK ORDER', 'client': {'id': 'C', 'name': 'VERONA  WALK HOA'},
+             'property': {'id': 'P'}},
+            {'id': 'OTHER', 'jobNumber': 12000, 'title': 'Work order', 'client': {'id': 'X', 'name': 'Someone Else'}}]
+        W.run_cycle(manual=True)
+        note = [v for q, v in self.jobber.calls if 'jobCreateNote' in q][0]
+        self.assertEqual(note['jobId'], 'WO_JOB')
+        conn = W._conn()
+        self.assertEqual(conn.execute("SELECT jobber_job FROM wo_inbox_communities").fetchone()[0], '11351')
+        conn.close()
+
+    def test_spreadsheet_import_and_export_use_the_office_layout(self):
+        import io
+        from openpyxl import Workbook, load_workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = 'October 2026'
+        ws.append(['Work Order Date', 'workorder #', 'Address/Unit', 'Mary Hobbs, Trustee', 'Service Request', 'Results', 'TECH'])
+        ws.append(['10/2/2026', '20771-111111', '8300 Example Court', 'Alex Sample', 'Check the system please', '', ''])
+        ws.append(['10/3/202', '20775-222222', '8500 Example Court', 'Sam Sample', 'Adjust the head\nby the walk', 'Adjusted the head.', 'Regino'])
+        ws.append([None] * 7)
+        raw = io.BytesIO()
+        wb.save(raw)
+        data = raw.getvalue()
+        self.login()
+        cid = W._conn().execute('SELECT id FROM wo_inbox_communities').fetchone()[0]
+        r = self.c.post('/workorders/import', data={'community_id': str(cid), 'file': (io.BytesIO(data), 'sheet.xlsx')},
+                        content_type='multipart/form-data')
+        self.assertEqual(r.get_json(), {'success': True, 'added': 2, 'closed': 1})
+        rows = {o['wo_number']: o for o in self.orders()}
+        self.assertEqual(rows['20771-111111']['status'], 'open')
+        self.assertEqual((rows['20775-222222']['status'], rows['20775-222222']['wo_date'],
+                          rows['20775-222222']['description'], rows['20775-222222']['tech']),
+                         ('closed', '2026-10-03', 'Adjust the head by the walk', 'Regino'))
+        # Importing the same sheet again adds nothing.
+        r = self.c.post('/workorders/import', data={'community_id': str(cid), 'file': (io.BytesIO(data), 'sheet.xlsx')},
+                        content_type='multipart/form-data')
+        self.assertEqual(r.get_json()['added'], 0)
+        out = load_workbook(io.BytesIO(self.c.get(f'/workorders/export.xlsx?community_id={cid}').data))
+        self.assertEqual(out.sheetnames, ['October 2026'])
+        vals = list(out['October 2026'].iter_rows(values_only=True))
+        self.assertEqual(vals[0], W.SHEET_HEADERS)
+        self.assertEqual(vals[2][1:], ('20775-222222', '8500 Example Court', 'Sam Sample', 'Adjust the head by the walk',
+                                       'Adjusted the head.', 'Regino'))
 
     def test_same_email_is_not_picked_up_twice_and_replies_are_ignored(self):
         W.run_cycle(manual=True)

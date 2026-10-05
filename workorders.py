@@ -22,7 +22,9 @@ Claude (ANTHROPIC_API_KEY).
 
 Hooked into app.py with init_workorders(...).
 """
+import base64
 import html
+import io
 import json
 import os
 import re
@@ -52,7 +54,7 @@ DEFAULT_SETTINGS = {
     'inbox': '',                 # empty = the PO mailbox (PO_EMAIL_ADDRESS), which Microsoft 365 already lets the app read
     'forward_to': '',            # Regino's and Fredy's emails, comma separated
     'tech_name': 'Regino',       # whose Jobber notes count as technician's notes
-    'keywords': 'work order, workorder, work-order, w/o',
+    'keywords': 'work order, workorder, work-order, w/o, maintenance request',
     'auto_send': False,          # send manager emails without review
     'enabled': True,             # run the cycle on the schedule
 }
@@ -142,6 +144,13 @@ def init_db():
                   error TEXT DEFAULT '',
                   created_at TEXT,
                   sent_at TEXT)''')
+    # Added after first deploy: the email each order came from (one email can carry several
+    # orders), and the columns of the office's work order sheet.
+    have = {r[1] for r in c.execute("PRAGMA table_info(wo_inbox_orders)")}
+    for col, decl in (('graph_id', "TEXT DEFAULT ''"), ('homeowner', "TEXT DEFAULT ''"),
+                      ('wo_date', "TEXT DEFAULT ''"), ('tech', "TEXT DEFAULT ''"), ('phone', "TEXT DEFAULT ''")):
+        if col not in have:
+            c.execute(f"ALTER TABLE wo_inbox_orders ADD COLUMN {col} {decl}")
     c.execute('''CREATE TABLE IF NOT EXISTS wo_inbox_activity (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   at TEXT,
@@ -296,41 +305,104 @@ def _claude_json(system, prompt, schema):
 
 # ── 1. Inbox scan + forward ──────────────────────────────────────────────────
 
+_ORDER_FIELDS = {
+    'wo_number': {'type': 'string', 'description': 'the work order number exactly as written, e.g. 20771-121632, else ""'},
+    'wo_date': {'type': 'string', 'description': 'the work order date as YYYY-MM-DD, else ""'},
+    'address': {'type': 'string', 'description': 'street address or unit, e.g. 8399 Karina Court, else ""'},
+    'homeowner': {'type': 'string', 'description': 'the homeowner or person asking, else ""'},
+    'description': {'type': 'string', 'description': "the homeowner's service request in their own words"},
+}
 _EXTRACT_SCHEMA = {
-    'type': 'object', 'additionalProperties': False,
-    'required': ['is_work_order', 'wo_number', 'address', 'description'],
-    'properties': {
-        'is_work_order': {'type': 'boolean'},
-        'wo_number': {'type': 'string'},
-        'address': {'type': 'string'},
-        'description': {'type': 'string'},
-    },
+    'type': 'object', 'additionalProperties': False, 'required': ['orders'],
+    'properties': {'orders': {'type': 'array', 'items': {
+        'type': 'object', 'additionalProperties': False, 'required': list(_ORDER_FIELDS), 'properties': _ORDER_FIELDS}}},
 }
 
 
-def _extract_order(subject, text, community):
+def _extract_orders(subject, text, community):
+    """Every new work order in one email (an email can carry several). Empty when it holds none."""
     got = _claude_json(
-        'You read emails sent to an irrigation and landscape company. Decide whether the email is a NEW work '
-        'order request from a community (not a reply about an existing one, not an invoice, not marketing). '
-        'Pull out the work order number if there is one (else ""), the street address or unit/lot (else ""), and '
-        'a one or two sentence description of the work asked for, in plain English.',
-        f'Community: {community}\nSubject: {subject}\n\nEmail:\n{text[:12000]}',
+        'You read emails sent to an irrigation company by the community management office. List every NEW '
+        'irrigation work order in the email; an email may hold one or several. Leave out replies about work '
+        'already done, invoices and marketing; if there is no work order, return an empty list. For each one '
+        "give the work order number, date, address, homeowner name, and the homeowner's service request. Keep "
+        "the request in the homeowner's own words (drop greetings and sign-offs only).",
+        f'Community: {community}\nSubject: {subject}\n\nEmail:\n{text[:20000]}',
         _EXTRACT_SCHEMA)
     if got is not None:
-        return got
+        return got.get('orders') or []
     # No Claude: trust the keyword match and keep the email as-is.
-    m = re.search(r'(?i)work\s*-?\s*order\s*(?:#|no\.?|number)?\s*:?\s*([A-Z0-9][A-Z0-9\-]{2,})', subject + '\n' + text)
-    return {'is_work_order': True, 'wo_number': m.group(1) if m else '', 'address': '',
-            'description': (text[:400] + '…') if len(text) > 400 else text}
+    m = re.search(r'\b(\d{4,6}-\d{4,8})\b', subject + '\n' + text) or \
+        re.search(r'(?i)work\s*-?\s*order\s*(?:#|no\.?|number)?\s*:?\s*([A-Z0-9][A-Z0-9\-]{2,})', subject + '\n' + text)
+    return [{'wo_number': m.group(1) if m else '', 'wo_date': '', 'address': '', 'homeowner': '',
+             'description': (text[:1500] + '…') if len(text) > 1500 else text}]
+
+
+def _squash(text):
+    return re.sub(r'[^a-z0-9]', '', (text or '').lower())
 
 
 def _match_community(communities, text):
-    low = text.lower()
+    """Spaces and punctuation are ignored, so "Verona Walk" also finds "VeronaWalk HOA"."""
+    low = _squash(text)
     for com in communities:
-        keys = _keywords(com['keywords']) or [com['name'].lower()]
-        if any(k in low for k in keys):
+        keys = _keywords(com['keywords']) + [com['name'].lower()]
+        if any(_squash(k) and _squash(k) in low for k in keys):
             return com
     return None
+
+
+# ── Vertilinc "Maintenance Request" PDFs (how the community office sends work orders) ──
+
+def _field(text, label):
+    m = re.search(rf'(?im)^\s*{label}\s*:[ \t]*(.*)$', text)
+    return m.group(1).strip() if m else ''
+
+
+def parse_maintenance_request(text):
+    """Read one Vertilinc maintenance request form. None if the text is not one."""
+    if not re.search(r'(?i)maintenance request', text) or not re.search(r'(?i)request\s*#', text):
+        return None
+    m = re.search(r'(?i)request\s*#\s*:?\s*([A-Z0-9][A-Z0-9\-]*)', text)
+    resident = _field(text, 'Resident')
+    notes = ''
+    n = re.search(r'(?is)^\s*Notes:\s*(.*?)(?=^\s*(?:Special Instructions|Pet Info|Time In|Current Assignment)\s*:|\Z)', text, re.M)
+    if n:
+        notes = n.group(1)
+        # "10-03-2026 10:51 AM - Rodrick J. NeffI would like..." -> "I would like..."
+        notes = re.sub(r'^\s*\d{1,2}-\d{1,2}-\d{4}\s+\d{1,2}:\d{2}\s*[AP]M\s*-\s*', '', notes)
+        for who in (resident, _field(text, 'Received by')):
+            if who and notes.startswith(who):
+                notes = notes[len(who):]
+                break
+        notes = re.sub(r'\s*\n\s*', ' ', notes).strip()
+    return {'wo_number': m.group(1) if m else '',
+            'wo_date': _parse_date(_field(text, 'Date Received')),
+            'address': _field(text, r'Unit\s*#'),
+            'homeowner': resident,
+            'phone': _field(text, 'Contact Phone'),
+            'service': _field(text, 'Service'),
+            'description': notes}
+
+
+def _pdf_text(data):
+    import pdfplumber
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
+        return '\n'.join(p.extract_text() or '' for p in pdf.pages)
+
+
+def _attachment_texts(inbox, message_id):
+    """Text of each PDF attached to an email."""
+    out = []
+    data = _graph('GET', f'/users/{inbox}/messages/{message_id}/attachments')
+    for a in data.get('value', []):
+        name = (a.get('name') or '').lower()
+        if a.get('contentBytes') and (name.endswith('.pdf') or 'pdf' in (a.get('contentType') or '').lower()):
+            try:
+                out.append(_pdf_text(base64.b64decode(a['contentBytes'])))
+            except Exception as e:
+                _log('inbox', f"Could not read the PDF {a.get('name')}: {e}")
+    return out
 
 
 def scan_inbox():
@@ -349,7 +421,7 @@ def scan_inbox():
     scan_started = (datetime.now(timezone.utc) - timedelta(minutes=15)).strftime('%Y-%m-%dT%H:%M:%SZ')
     path = f'/users/{inbox}/mailFolders/inbox/messages'
     params = {'$filter': f'receivedDateTime ge {since}', '$orderby': 'receivedDateTime asc', '$top': 50,
-              '$select': 'id,subject,from,receivedDateTime,body'}
+              '$select': 'id,subject,from,receivedDateTime,body,hasAttachments'}
     messages = []
     data = _graph('GET', path, params=params)
     messages.extend(data.get('value', []))
@@ -369,53 +441,87 @@ def scan_inbox():
         if sender in ignore_from or re.match(r'(?i)^\s*re\s*:', subject):
             continue
         conn = _conn()
-        seen = conn.execute("SELECT 1 FROM wo_inbox_orders WHERE message_id=?", (m['id'],)).fetchone()
+        seen = conn.execute("SELECT 1 FROM wo_inbox_orders WHERE graph_id=? OR message_id=?", (m['id'], m['id'])).fetchone()
         conn.close()
         if seen:
             continue
         body = m.get('body') or {}
         text = _html_to_text(body.get('content', '')) if body.get('contentType') == 'html' else (body.get('content') or '')
-        haystack = f'{subject}\n{text}'
+        pdfs = []
+        if m.get('hasAttachments'):
+            try:
+                pdfs = _attachment_texts(inbox, m['id'])
+            except Exception as e:
+                _log('inbox', f'Could not open the attachments on "{subject}": {e}')
+        haystack = '\n'.join([subject, text] + pdfs)
         if not any(k in haystack.lower() for k in wo_keys):
             continue
         com = _match_community(communities, haystack)
         if not com:
             continue
-        info = _extract_order(subject, text, com['name'])
-        if not info.get('is_work_order'):
+        # Maintenance request PDFs are read field by field; anything else goes to Claude.
+        found = [f for f in (parse_maintenance_request(t) for t in pdfs) if f]
+        if not found:
+            found = _extract_orders(subject, '\n\n'.join([text] + pdfs), com['name'])
+        if not found:
             continue
-        now = _stamp()
-        conn = _conn()
-        cur = conn.execute('''INSERT OR IGNORE INTO wo_inbox_orders (message_id, community_id, subject, sender, received_at, body,
-                               wo_number, address, description, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
-                           (m['id'], com['id'], subject, sender, m.get('receivedDateTime', ''), text[:20000],
-                            info.get('wo_number', ''), info.get('address', ''), info.get('description', ''), now, now))
-        order_id = cur.lastrowid if cur.rowcount else None
-        conn.commit()
-        conn.close()
-        if not order_id:
+        received = m.get('receivedDateTime', '')
+        ids = []
+        for n, info in enumerate(found):
+            ids.append(_add_order(com, f"{m['id']}#{n}", info, graph_id=m['id'], subject=subject, sender=sender,
+                                  received_at=received, body=text))
+        ids = [i for i in ids if i]
+        if not ids:
             continue
-        new += 1
-        _log('inbox', f"New work order #{order_id} for {com['name']}: {subject}")
-        _forward(order_id, m['id'], com, s)
+        new += len(ids)
+        _log('inbox', f"{len(ids)} new work order(s) for {com['name']}: {subject}")
+        _forward(ids, m['id'], com, s)
     _set_state('last_scan', scan_started)
     _log('inbox', f'Scanned {len(messages)} email(s) in {inbox}; {new} new work order(s).')
 
 
-def _forward(order_id, message_id, com, s):
+def _add_order(com, key, info, graph_id='', subject='', sender='', received_at='', body='', status='open',
+               tech_notes='', tech=''):
+    """Save one work order unless that work order number is already here for the community. Returns its id or None."""
+    wo = (info.get('wo_number') or '').strip()
+    now = _stamp()
+    conn = _conn()
+    try:
+        if wo and conn.execute("SELECT 1 FROM wo_inbox_orders WHERE community_id=? AND wo_number=?", (com['id'], wo)).fetchone():
+            return None
+        cur = conn.execute('''INSERT OR IGNORE INTO wo_inbox_orders (message_id, graph_id, community_id, subject, sender,
+                               received_at, body, wo_number, wo_date, address, homeowner, phone, description, status, tech_notes,
+                               notes_updated_at, tech, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                           (key, graph_id, com['id'], subject, sender, received_at, body[:20000], wo,
+                            (info.get('wo_date') or received_at[:10] or now[:10]).strip(), (info.get('address') or '').strip(),
+                            (info.get('homeowner') or '').strip(), (info.get('phone') or '').strip(),
+                            (info.get('description') or '').strip(), status,
+                            tech_notes, now if tech_notes else None, tech, now, now))
+        conn.commit()
+        return cur.lastrowid if cur.rowcount else None
+    finally:
+        conn.close()
+
+
+def _forward(order_ids, message_id, com, s):
+    order_ids = order_ids if isinstance(order_ids, list) else [order_ids]
+    label = ', '.join(f'#{i}' for i in order_ids)
     to = _emails(s['forward_to'])
     if not to:
-        _set_order(order_id, forward_error='No tech emails on the Settings tab')
-        return _log('forward', f'Work order #{order_id} not forwarded: add Regino\'s and Fredy\'s emails on the Settings tab.')
+        for i in order_ids:
+            _set_order(i, forward_error='No tech emails on the Settings tab')
+        return _log('forward', f'Work order {label} not forwarded: add Regino\'s and Fredy\'s emails on the Settings tab.')
     try:
         _graph('POST', f"/users/{s['inbox'].strip()}/messages/{message_id}/forward", json={
             'comment': f"New work order for {com['name']}. It is logged in the Office App and on the Jobber work order job.",
             'toRecipients': [{'emailAddress': {'address': a}} for a in to]})
-        _set_order(order_id, forwarded_at=_stamp(), forward_error='')
-        _log('forward', f"Work order #{order_id} forwarded to {', '.join(to)}.")
+        for i in order_ids:
+            _set_order(i, forwarded_at=_stamp(), forward_error='')
+        _log('forward', f"Work order {label} forwarded to {', '.join(to)}.")
     except Exception as e:
-        _set_order(order_id, forward_error=str(e)[:500])
-        _log('forward', f'Work order #{order_id} forward failed: {e}')
+        for i in order_ids:
+            _set_order(i, forward_error=str(e)[:500])
+        _log('forward', f'Work order {label} forward failed: {e}')
 
 
 def _set_order(order_id, **fields):
@@ -429,11 +535,15 @@ def _set_order(order_id, **fields):
 
 def retry_forward(order_id):
     conn = _conn()
-    row = conn.execute('''SELECT o.message_id, c.* FROM wo_inbox_orders o JOIN wo_inbox_communities c ON c.id=o.community_id
+    row = conn.execute('''SELECT o.graph_id, o.message_id, c.* FROM wo_inbox_orders o JOIN wo_inbox_communities c ON c.id=o.community_id
                           WHERE o.id=?''', (order_id,)).fetchone()
     conn.close()
-    if row:
-        _forward(order_id, row['message_id'], dict(row), settings())
+    if not row:
+        return
+    graph_id = row['graph_id'] or row['message_id']
+    if not graph_id or graph_id.startswith('import:') or graph_id.startswith('manual:'):
+        return _set_order(order_id, forward_error='Not from an email, so there is nothing to forward')
+    _forward(order_id, graph_id, dict(row), settings())
 
 
 # ── 2. Jobber: the community's work order job ────────────────────────────────
@@ -444,7 +554,22 @@ def _resolve_job(com):
         return com
     ref = (com.get('jobber_job') or '').strip().lstrip('#')
     if not ref:
-        raise RuntimeError(f"No Jobber work order job set for {com['name']}")
+        # Not set: the community's open job titled "Work Order" (e.g. Verona Walk's recurring #11351).
+        data = _jobber('''query($q: String!) { jobs(searchTerm: $q, first: 50) {
+                              nodes { id jobNumber title client { id name } property { id } } } }''', {'q': com['name']})
+        nodes = ((data.get('jobs') or {}).get('nodes')) or []
+        words = [w for w in re.findall(r'[a-z0-9]+', com['name'].lower()) if w not in ('hoa', 'the')]
+        cands = [n for n in nodes if re.search(r'(?i)work\s*-?\s*orders?\b', n.get('title') or '')
+                 and all(w in ((n.get('client') or {}).get('name') or '').lower() for w in words)]
+        if not cands:
+            raise RuntimeError(f"No open \"Work Order\" job found in Jobber for {com['name']}; enter its job number on the Communities tab")
+        job = max(cands, key=lambda n: n.get('jobNumber') or 0)
+        com['jobber_job'] = str(job.get('jobNumber') or '')
+        conn = _conn()
+        conn.execute("UPDATE wo_inbox_communities SET jobber_job=? WHERE id=?", (com['jobber_job'], com['id']))
+        conn.commit()
+        conn.close()
+        ref = com['jobber_job']
     if ref.isdigit():
         data = _jobber('''query($q: String!) { jobs(searchTerm: $q, first: 10) {
                               nodes { id jobNumber title client { id } property { id } } } }''', {'q': ref})
@@ -479,19 +604,21 @@ def log_to_jobber():
     if not jobber_ready():
         return _log('jobber', 'Skipped: Jobber is not connected (connect it in the Pumps app).')
     conn = _conn()
-    rows = [dict(r) for r in conn.execute('''SELECT o.id, o.wo_number, o.address, o.description, o.received_at, o.community_id
+    rows = [dict(r) for r in conn.execute('''SELECT o.id, o.wo_number, o.wo_date, o.address, o.homeowner, o.phone, o.description,
+                                             o.received_at, o.community_id
                                              FROM wo_inbox_orders o WHERE o.jobber_logged_at IS NULL AND o.status != 'closed' ''')]
     coms = {r['id']: dict(r) for r in conn.execute("SELECT * FROM wo_inbox_communities")}
     conn.close()
     for o in rows:
         com = coms.get(o['community_id'])
-        if not com or not (com.get('jobber_job') or com.get('jobber_job_id')):
+        if not com:
             continue
         try:
             com = _resolve_job(com)
             label = f"Work order {o['wo_number']}" if o['wo_number'] else f"Work order (Office App #{o['id']})"
-            where = f" at {o['address']}" if o['address'] else ''
-            _job_note(com['jobber_job_id'], f"OUTSTANDING - {label}{where}, received {(o['received_at'] or '')[:10]}: {o['description']}")
+            where = f" - {o['address']}" if o['address'] else ''
+            who = f" ({o['homeowner']}{', ' + o['phone'] if o['phone'] else ''})" if o['homeowner'] else ''
+            _job_note(com['jobber_job_id'], f"OUTSTANDING - {label}{where}{who}, {o['wo_date'] or (o['received_at'] or '')[:10]}: {o['description']}")
             _set_order(o['id'], jobber_logged_at=_stamp(), jobber_error='')
             _log('jobber', f"Work order #{o['id']} logged on the {com['name']} work order job.")
         except Exception as e:
@@ -537,8 +664,8 @@ def _job_notes(job_id):
 
 
 def _clean_and_match(note, orders, tech):
-    listing = '\n'.join(f"- id {o['id']}: WO {o['wo_number'] or '(no number)'}, {o['address'] or '(no address)'}: {o['description']}"
-                        for o in orders) or '(none)'
+    listing = '\n'.join(f"- id {o['id']}: WO {o['wo_number'] or '(no number)'}, {o['address'] or '(no address)'}, "
+                        f"{o.get('homeowner') or '(no name)'}: {o['description']}" for o in orders) or '(none)'
     got = _claude_json(
         'You help an irrigation company office. A technician wrote a note on a Jobber job after a site visit. '
         '1) Pick which open work order the note is about (by work order number, address, or the problem '
@@ -561,7 +688,7 @@ def scan_tech_notes():
     s = settings()
     tech = s['tech_name'].strip()
     conn = _conn()
-    coms = [dict(r) for r in conn.execute("SELECT * FROM wo_inbox_communities WHERE active=1 AND (jobber_job != '' OR jobber_job_id != '')")]
+    coms = [dict(r) for r in conn.execute("SELECT * FROM wo_inbox_communities WHERE active=1")]
     conn.close()
     for com in coms:
         try:
@@ -572,7 +699,7 @@ def scan_tech_notes():
             continue
         conn = _conn()
         seen = {r[0] for r in conn.execute("SELECT jobber_note_id FROM wo_inbox_tech_notes WHERE community_id=?", (com['id'],))}
-        orders = [dict(r) for r in conn.execute('''SELECT id, wo_number, address, description, created_at FROM wo_inbox_orders
+        orders = [dict(r) for r in conn.execute('''SELECT id, wo_number, address, homeowner, description, created_at FROM wo_inbox_orders
                                                    WHERE community_id=? AND status != 'closed' ORDER BY id''', (com['id'],))]
         conn.close()
         first_scan = not seen
@@ -599,6 +726,7 @@ def scan_tech_notes():
             _store_note(n, com, oid, got.get('cleaned_notes', ''), bool(got.get('needs_quote')))
             if oid:
                 _apply_note(oid)
+                _set_order(oid, tech=(n.get('author') or tech).split(' ')[0])
                 _log('notes', f"{tech}'s note added to work order #{oid}.")
                 if got.get('needs_quote'):
                     start_quote(oid, got.get('quote_scope', ''))
@@ -710,7 +838,7 @@ def _compose(com, orders):
              f"Here is an update on the {com['name']} work orders from our technician's latest visit:", '']
     for o in orders:
         label = f"Work order {o['wo_number']}" if o['wo_number'] else 'Work order'
-        head = label + (f" - {o['address']}" if o['address'] else '')
+        head = label + (f" - {o['address']}" if o['address'] else '') + (f" ({o['homeowner']})" if o.get('homeowner') else '')
         lines.append(head)
         if o['description']:
             lines.append(f"Request: {o['description']}")
@@ -950,9 +1078,11 @@ def api_order():
     if not o:
         return jsonify({'success': False, 'error': 'Not found'}), 404
     fields = {}
-    for k in ('wo_number', 'address', 'description', 'tech_notes'):
+    for k in ('wo_number', 'address', 'homeowner', 'description', 'tech_notes', 'tech'):
         if k in d:
             fields[k] = str(d[k])[:10000]
+    if 'wo_date' in d:
+        fields['wo_date'] = _parse_date(d['wo_date']) or str(d['wo_date'])[:20]
     if 'tech_notes' in d:
         fields['notes_updated_at'] = _stamp()
     if d.get('status') in STATUSES:
@@ -1006,6 +1136,191 @@ def api_email():
         if not ok:
             return jsonify({'success': False, 'error': err}), 400
     return jsonify({'success': True})
+
+
+# ── Excel, in the office's work order sheet layout ───────────────────────────
+
+SHEET_HEADERS = ('Work Order Date', 'workorder #', 'Address/Unit', 'Homeowner', 'Service Request', 'Results', 'TECH')
+
+
+def _parse_date(value, year_hint=None):
+    """A sheet or email date as YYYY-MM-DD, or '' when it cannot be read."""
+    if isinstance(value, datetime):
+        return value.strftime('%Y-%m-%d')
+    if hasattr(value, 'isoformat') and not isinstance(value, str):
+        return value.isoformat()[:10]
+    text = str(value or '').strip()
+    m = re.match(r'^(\d{4})-(\d{1,2})-(\d{1,2})', text)
+    if m:
+        return f'{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}'
+    m = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{1,4})$', text)
+    if m:
+        y = int(m.group(3))
+        if y < 100 and len(m.group(3)) == 2:
+            y += 2000
+        elif y < 1000:  # a typo like 10/3/202: use the year of the sheet tab
+            y = year_hint or _now().year
+        return f'{y:04d}-{int(m.group(1)):02d}-{int(m.group(2)):02d}'
+    return ''
+
+
+@bp.route('/workorders/export.xlsx')
+def export_xlsx():
+    if not workorders_allowed():
+        return _deny()
+    from io import BytesIO
+    from flask import send_file
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    cid = request.args.get('community_id', type=int)
+    conn = _conn()
+    com = conn.execute("SELECT name FROM wo_inbox_communities WHERE id=?", (cid,)).fetchone() if cid else None
+    q = "SELECT * FROM wo_inbox_orders" + (" WHERE community_id=?" if cid else "")
+    rows = [dict(r) for r in conn.execute(q, (cid,) if cid else ())]
+    conn.close()
+    months = {}
+    for o in rows:
+        d = o['wo_date'] or (o['received_at'] or o['created_at'] or '')[:10]
+        o['_d'] = d
+        months.setdefault(d[:7] or 'undated', []).append(o)
+    wb = Workbook()
+    wb.remove(wb.active)
+    thin = Side(style='thin', color='000000')
+    box = Border(left=thin, right=thin, top=thin, bottom=thin)
+    widths = (13, 16, 22, 22, 60, 60, 12)
+    for key in sorted(months):
+        title = datetime.strptime(key, '%Y-%m').strftime('%B %Y') if key != 'undated' else 'Undated'
+        ws = wb.create_sheet(title[:31])
+        ws.append(SHEET_HEADERS)
+        for i, w in enumerate(widths):
+            ws.column_dimensions[chr(65 + i)].width = w
+        for cell in ws[1]:
+            cell.font = Font(bold=True, underline='single')
+            cell.fill = PatternFill('solid', fgColor='D9D9D9')
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            cell.border = box
+        for o in sorted(months[key], key=lambda o: (o['_d'], o['id'])):
+            d = o['_d']
+            ws.append([datetime.strptime(d, '%Y-%m-%d') if re.match(r'^\d{4}-\d{2}-\d{2}$', d) else d,
+                       o['wo_number'], o['address'], o['homeowner'], o['description'], o['tech_notes'],
+                       o['tech'] or ('' if not o['tech_notes'] else settings()['tech_name'])])
+            for cell in ws[ws.max_row]:
+                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                cell.border = box
+            ws.cell(ws.max_row, 1).number_format = 'm/d/yyyy'
+    if not wb.sheetnames:
+        wb.create_sheet(_now().strftime('%B %Y')).append(SHEET_HEADERS)
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    name = f"{(com['name'] if com else 'All communities')} Work Orders {_now().strftime('%Y-%m-%d')}.xlsx"
+    return send_file(buf, as_attachment=True, download_name=name,
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+
+def _sheet_columns(header):
+    """Map the office sheet's header cells to fields. The homeowner column has no fixed
+    title (it once said "Mary Hobbs, Trustee"), so it is whatever sits between address and request."""
+    cols = {}
+    for i, h in enumerate(header):
+        t = re.sub(r'\s+', ' ', str(h or '')).strip().lower()
+        if not t:
+            continue
+        if 'date' in t and 'date' not in cols:
+            cols['date'] = i
+        elif ('workorder' in t or 'work order' in t or t in ('#', 'wo #', 'wo')) and 'wo' not in cols:
+            cols['wo'] = i
+        elif 'address' in t or 'unit' in t:
+            cols['address'] = i
+        elif 'request' in t:
+            cols['request'] = i
+        elif 'result' in t:
+            cols['results'] = i
+        elif t == 'tech' or 'technician' in t:
+            cols['tech'] = i
+    if 'address' in cols and 'request' in cols and cols['request'] - cols['address'] == 2:
+        cols['homeowner'] = cols['address'] + 1
+    return cols
+
+
+def import_workbook(fileobj, com):
+    """Load the office's work order workbook. Rows with Results become closed work orders;
+    rows without are outstanding and get logged on the Jobber work order job like new ones."""
+    from openpyxl import load_workbook
+    wb = load_workbook(fileobj, data_only=True, read_only=True)
+    added = closed = 0
+    for ws in wb.worksheets:
+        rows = list(ws.iter_rows(values_only=True))
+        start = next((i for i, r in enumerate(rows[:15]) if 'request' in ' '.join(str(c or '').lower() for c in r)), None)
+        if start is None:
+            continue
+        cols = _sheet_columns(rows[start])
+        if 'request' not in cols:
+            continue
+        m = re.search(r'(20\d\d)', ws.title)
+        year = int(m.group(1)) if m else None
+        get = lambda r, k: (r[cols[k]] if k in cols and cols[k] < len(r) else None)
+        for r in rows[start + 1:]:
+            req = str(get(r, 'request') or '').strip()
+            wo = str(get(r, 'wo') or '').strip()
+            if not req and not wo:
+                continue
+            results = str(get(r, 'results') or '').strip()
+            info = {'wo_number': wo, 'wo_date': _parse_date(get(r, 'date'), year),
+                    'address': str(get(r, 'address') or '').strip(), 'homeowner': str(get(r, 'homeowner') or '').strip(),
+                    'description': re.sub(r'[ \t]*\n[ \t]*', ' ', req).strip()}
+            key = f"import:{com['id']}:{wo or ws.title + ':' + req[:60]}"
+            oid = _add_order(com, key, info, received_at=info['wo_date'], status='closed' if results else 'open',
+                             tech_notes=results, tech=str(get(r, 'tech') or '').strip())
+            if not oid:
+                continue
+            added += 1
+            if results:
+                closed += 1
+                now = _stamp()
+                _set_order(oid, jobber_logged_at=now, emailed_at=now)
+    return added, closed
+
+
+@bp.route('/workorders/import', methods=['POST'])
+def import_xlsx():
+    if not workorders_allowed():
+        return jsonify({'success': False, 'error': 'Office only'}), 403
+    f = request.files.get('file')
+    cid = request.form.get('community_id', type=int)
+    conn = _conn()
+    com = conn.execute("SELECT * FROM wo_inbox_communities WHERE id=?", (cid,)).fetchone() if cid else None
+    conn.close()
+    if not f or not com:
+        return jsonify({'success': False, 'error': 'Pick a community and an Excel file'}), 400
+    try:
+        added, closed = import_workbook(f.stream, dict(com))
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Could not read that file: {e}'}), 400
+    _log('import', f"{added} work order(s) loaded from {f.filename} for {com['name']} ({closed} already done, {added - closed} outstanding).")
+    if added - closed:
+        threading.Thread(target=log_to_jobber, daemon=True).start()
+    return jsonify({'success': True, 'added': added, 'closed': closed})
+
+
+@bp.route('/workorders/api/order/new', methods=['POST'])
+def api_order_new():
+    """Type in a work order that did not come by email."""
+    if not workorders_allowed():
+        return jsonify({'success': False, 'error': 'Office only'}), 403
+    d = request.get_json(silent=True) or {}
+    conn = _conn()
+    com = conn.execute("SELECT * FROM wo_inbox_communities WHERE id=?", (d.get('community_id'),)).fetchone()
+    conn.close()
+    if not com or not (d.get('description') or '').strip():
+        return jsonify({'success': False, 'error': 'Pick a community and enter the service request'}), 400
+    info = {k: str(d.get(k) or '') for k in ('wo_number', 'address', 'homeowner', 'description')}
+    info['wo_date'] = _parse_date(d.get('wo_date')) or _now().strftime('%Y-%m-%d')
+    oid = _add_order(dict(com), f"manual:{_now().timestamp()}", info, received_at=info['wo_date'])
+    if not oid:
+        return jsonify({'success': False, 'error': 'That work order number is already here'}), 400
+    threading.Thread(target=log_to_jobber, daemon=True).start()
+    return jsonify({'success': True, 'id': oid})
 
 
 def init_workorders(app, db_path, *, data_dir, get_setting, set_setting, graph_token, graph_enabled,
@@ -1101,6 +1416,26 @@ PAGE_TEMPLATE = r'''<!DOCTYPE html>
   </div>
 
   <section class="panel active" id="p-orders">
+    <div class="card">
+      <div class="row">
+        <select id="x-com" style="max-width:220px"></select>
+        <button onclick="downloadXlsx()">⬇ Download Excel</button>
+        <label class="small" style="margin:0;display:inline-flex;align-items:center;gap:6px;font-weight:600">
+          <span>⬆ Import Excel</span><input type="file" id="x-file" accept=".xlsx,.xlsm" style="width:auto" onchange="importXlsx()"></label>
+        <button onclick="toggleAdd()">+ Add work order</button>
+      </div>
+      <div class="small muted" style="margin-top:6px">Excel uses your work order sheet layout: one tab per month with Date, workorder #, Address/Unit, Homeowner, Service Request, Results and TECH. Importing your current sheet loads every row: rows with Results come in as closed, rows without as outstanding.</div>
+      <div id="addForm" style="display:none;margin-top:10px">
+        <div class="grid2">
+          <div><label>Date</label><input id="n-date" type="date"></div>
+          <div><label>Workorder #</label><input id="n-wo" placeholder="20775-121641"></div>
+          <div><label>Address/Unit</label><input id="n-address"></div>
+          <div><label>Homeowner</label><input id="n-homeowner"></div>
+        </div>
+        <label>Service request</label><textarea id="n-desc" style="min-height:60px"></textarea>
+        <div class="row" style="margin-top:8px"><button class="primary" onclick="addOrder()">Add</button></div>
+      </div>
+    </div>
     <div class="filters" id="filters"></div>
     <div id="unmatched"></div>
     <div id="orders"></div>
@@ -1109,14 +1444,14 @@ PAGE_TEMPLATE = r'''<!DOCTYPE html>
   <section class="panel" id="p-communities">
     <div class="card">
       <strong>Add or edit a community</strong>
-      <p class="muted small">Emails mentioning the community name or one of its keywords, plus a work order keyword, are picked up. The work order job is the Jobber job number where outstanding work orders get logged and where the tech leaves visit notes.</p>
+      <p class="muted small">Emails (and their PDF maintenance requests) that mention the community name or one of its keywords are picked up. The work order job is the community's Jobber job titled "WORK ORDER" (Verona Walk: #11351); leave the number blank and it is found for you.</p>
       <input type="hidden" id="c-id">
       <div class="grid2">
         <div><label>Community</label><input id="c-name" placeholder="Verona Walk"></div>
         <div><label>Keywords (comma separated)</label><input id="c-keywords" placeholder="verona walk, verona"></div>
         <div><label>Manager name</label><input id="c-manager" placeholder="Erwin"></div>
         <div><label>Manager email</label><input id="c-email" placeholder="erwin@…"></div>
-        <div><label>Jobber work order job number</label><input id="c-job" placeholder="e.g. 1234"></div>
+        <div><label>Jobber work order job number</label><input id="c-job" placeholder="Blank = find its &quot;WORK ORDER&quot; job"></div>
       </div>
       <div class="row" style="margin-top:10px"><button class="primary" onclick="saveCommunity()">Save community</button><button onclick="clearCommunity()">Clear</button></div>
     </div>
@@ -1159,6 +1494,9 @@ function render(){
   var st = D.status;
   document.getElementById('status').innerHTML = chip(st.graph,'Email (Microsoft 365)') + chip(st.jobber,'Jobber') + chip(st.claude,'Claude (grammar)');
   document.getElementById('lastRun').textContent = st.last_run ? 'Last run '+st.last_run : 'Not run yet';
+  var xs = document.getElementById('x-com'), cur = xs.value;
+  xs.innerHTML = (D.communities.length>1 ? '<option value="">All communities</option>' : '') + D.communities.map(function(c){ return '<option value="'+c.id+'">'+esc(c.name)+'</option>'; }).join('');
+  if(cur) xs.value = cur;
   renderOrders(); renderEmails(); renderCommunities(); renderSettings(); renderActivity();
 }
 function renderOrders(){
@@ -1176,29 +1514,42 @@ function renderOrders(){
   var list = D.orders.filter(function(o){ return FILTER=='all' || o.status==FILTER; });
   if(!list.length){ document.getElementById('orders').innerHTML = '<div class="empty">No work orders here.</div>'; return; }
   document.getElementById('orders').innerHTML = list.map(function(o){
-    var stepF = o.forwarded_at ? '<span class="step done">✓ Forwarded to techs</span>' : (o.forward_error ? '<span class="step err" title="'+esc(o.forward_error)+'">✗ Not forwarded</span>' : '<span class="step">Forward pending</span>');
+    var imported = (o.message_id||'').indexOf('import:')==0 || (o.message_id||'').indexOf('manual:')==0;
+    var stepF = imported ? '<span class="step">'+((o.message_id||'').indexOf('import:')==0?'From spreadsheet':'Typed in')+'</span>' : o.forwarded_at ? '<span class="step done">✓ Forwarded to techs</span>' : (o.forward_error ? '<span class="step err" title="'+esc(o.forward_error)+'">✗ Not forwarded</span>' : '<span class="step">Forward pending</span>');
     var stepJ = o.jobber_logged_at ? '<span class="step done">✓ Logged in Jobber</span>' : (o.jobber_error ? '<span class="step err" title="'+esc(o.jobber_error)+'">✗ Not in Jobber</span>' : '<span class="step">Jobber pending</span>');
     var stepN = o.tech_notes ? '<span class="step done">✓ Tech notes</span>' : '<span class="step">Waiting on tech notes</span>';
     var stepQ = o.status=='quote' ? (o.jobber_quote_number ? '<span class="step done">✓ Draft quote #'+esc(o.jobber_quote_number)+'</span>' : (o.quote_error ? '<span class="step err" title="'+esc(o.quote_error)+'">✗ Quote not drafted</span>' : '<span class="step">Quote being prepared</span>')) : '';
     var stepE = o.emailed_at ? '<span class="step done">✓ Emailed manager</span>' : '';
     var errs = [o.forward_error, o.jobber_error, o.quote_error].filter(Boolean).map(function(e){ return '<div class="small" style="color:var(--bad)">'+esc(e)+'</div>'; }).join('');
-    return '<div class="card wo"><div class="row"><h3>#'+o.id+' · '+esc(o.community_name||'')+(o.wo_number?' · WO '+esc(o.wo_number):'')+'</h3>'+
+    return '<div class="card wo"><div class="row"><h3>'+(o.wo_number?'WO '+esc(o.wo_number):'#'+o.id)+' · '+esc(o.address||'')+(o.homeowner?' · '+esc(o.homeowner):'')+'</h3>'+
       '<span class="badge b-'+o.status+'">'+(o.status=='quote'?'Quote being prepared':o.status=='open'?'Outstanding':'Closed')+'</span>'+
-      '<span class="spacer" style="flex:1"></span><span class="small muted">'+esc((o.received_at||'').slice(0,10))+' · '+esc(o.sender)+'</span></div>'+
-      '<div class="small muted">'+esc(o.subject)+'</div>'+
+      '<span class="spacer" style="flex:1"></span><span class="small muted">'+esc(o.community_name||'')+' · '+esc(o.wo_date||(o.received_at||'').slice(0,10))+(o.phone?' · '+esc(o.phone):'')+'</span></div>'+
+      (o.subject ? '<div class="small muted">'+esc(o.subject)+(o.sender?' · '+esc(o.sender):'')+'</div>' : '')+
       '<div class="steps">'+stepF+stepJ+stepN+stepQ+stepE+'</div>'+errs+
-      '<div class="grid2"><div><label>WO number</label><input id="wn-'+o.id+'" value="'+esc(o.wo_number)+'"></div><div><label>Address</label><input id="wa-'+o.id+'" value="'+esc(o.address)+'"></div></div>'+
-      '<label>Request</label><textarea id="wd-'+o.id+'" style="min-height:60px">'+esc(o.description)+'</textarea>'+
-      '<label>Technician\'s notes</label><textarea id="wt-'+o.id+'">'+esc(o.tech_notes)+'</textarea>'+
+      '<div class="grid2"><div><label>Date</label><input id="wdt-'+o.id+'" value="'+esc(o.wo_date)+'"></div><div><label>Workorder #</label><input id="wn-'+o.id+'" value="'+esc(o.wo_number)+'"></div>'+
+      '<div><label>Address/Unit</label><input id="wa-'+o.id+'" value="'+esc(o.address)+'"></div><div><label>Homeowner</label><input id="wh-'+o.id+'" value="'+esc(o.homeowner)+'"></div></div>'+
+      '<label>Service request</label><textarea id="wd-'+o.id+'" style="min-height:60px">'+esc(o.description)+'</textarea>'+
+      '<label>Results (technician\'s notes)</label><textarea id="wt-'+o.id+'">'+esc(o.tech_notes)+'</textarea>'+
+      '<div class="grid2"><div><label>Tech</label><input id="wtc-'+o.id+'" value="'+esc(o.tech)+'"></div></div>'+
       (o.jobber_quote_url ? '<div class="small" style="margin-top:6px"><a href="'+esc(o.jobber_quote_url)+'" target="_blank" rel="noopener">Open draft quote in Jobber →</a></div>' : '')+
       '<div class="row" style="margin-top:8px"><button class="primary" onclick="saveOrder('+o.id+')">Save</button>'+
       (o.status!='quote' ? '<button onclick="orderAction('+o.id+',\'quote\')">Needs a quote</button>' : '')+
-      (!o.forwarded_at ? '<button onclick="orderAction('+o.id+',\'forward\')">Forward to techs</button>' : '')+
+      (!o.forwarded_at && !imported ? '<button onclick="orderAction('+o.id+',\'forward\')">Forward to techs</button>' : '')+
       (!o.jobber_logged_at ? '<button onclick="orderAction('+o.id+',\'relog\')">Log in Jobber</button>' : '')+
       (o.status!='closed' ? '<button onclick="setStatus('+o.id+',\'closed\')">Close</button>' : '<button onclick="setStatus('+o.id+',\'open\')">Reopen</button>')+'</div></div>';
   }).join('');
 }
-function saveOrder(id){ post('/workorders/api/order', {id:id, wo_number:val('wn-'+id), address:val('wa-'+id), description:val('wd-'+id), tech_notes:val('wt-'+id)}).then(function(){ toast('Saved'); load(); }); }
+function saveOrder(id){ post('/workorders/api/order', {id:id, wo_date:val('wdt-'+id), wo_number:val('wn-'+id), address:val('wa-'+id), homeowner:val('wh-'+id), description:val('wd-'+id), tech_notes:val('wt-'+id), tech:val('wtc-'+id)}).then(function(){ toast('Saved'); load(); }); }
+function comPicked(){ var v = val('x-com'); if(!v){ toast('Pick a community first'); } return v; }
+function downloadXlsx(){ var v = val('x-com'); window.location = '/workorders/export.xlsx' + (v ? '?community_id='+v : ''); }
+function importXlsx(){ var inp = document.getElementById('x-file'); var cid = comPicked(); if(!cid || !inp.files.length){ inp.value=''; return; }
+  var fd = new FormData(); fd.append('file', inp.files[0]); fd.append('community_id', cid);
+  fetch('/workorders/import', {method:'POST', headers:{'X-CSRFToken':CSRF}, body:fd}).then(function(r){ return r.json(); }).then(function(j){
+    inp.value=''; if(!j.success){ toast(j.error||'Import failed'); return; } toast(j.added+' loaded ('+j.closed+' closed, '+(j.added-j.closed)+' outstanding)'); load(); }); }
+function toggleAdd(){ var f = document.getElementById('addForm'); f.style.display = f.style.display=='none' ? 'block' : 'none'; }
+function addOrder(){ var cid = comPicked(); if(!cid) return;
+  post('/workorders/api/order/new', {community_id:cid, wo_date:val('n-date'), wo_number:val('n-wo'), address:val('n-address'), homeowner:val('n-homeowner'), description:val('n-desc')})
+    .then(function(){ ['n-date','n-wo','n-address','n-homeowner','n-desc'].forEach(function(i){ document.getElementById(i).value=''; }); toggleAdd(); toast('Added'); load(); }); }
 function orderAction(id, a){ post('/workorders/api/order', {id:id, action:a}).then(function(){ toast(a=='quote'?'Quote being prepared — drafting in Jobber':'Working on it'); setTimeout(load, 2500); }); }
 function setStatus(id, s){ post('/workorders/api/order', {id:id, status:s}).then(load); }
 function assignNote(nid){ var oid = val('as-'+nid); if(!oid){ toast('Pick a work order'); return; } post('/workorders/api/note/assign', {note_id:nid, order_id:oid}).then(function(){ toast('Note added'); load(); }); }
