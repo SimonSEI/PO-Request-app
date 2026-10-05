@@ -155,7 +155,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   <div>PO@ mailbox: {% if email %}<b class="ok">connected</b> · <span id="scanInfo">…</span>
     <button class="btn s" id="scanBtn" onclick="scanNow()">Scan now</button>{% else %}<b class="warn">not configured</b> (upload documents by hand){% endif %}</div>
   <div>Jobber: <span id="jobberInfo">{% if jobber.connected %}<b class="ok">connected</b>{% elif jobber.can_connect %}<a class="btn s p" href="{{ url_for('pumps.jobber_connect') }}">Connect Jobber</a>{% else %}<b class="warn">not set up</b> (see How it works){% endif %}</span></div>
-  <div>Reading documents: {% if claude and claude_problem %}<b class="bad">Claude is not working</b> ({{ claude_problem }}) - new documents wait in the Inbox and are read again automatically once it works{% elif claude %}<b class="ok">Claude</b>{% else %}<b class="warn">basic</b> (no ANTHROPIC_API_KEY - check amounts){% endif %}</div>
+  <div>Reading documents: {% if claude and claude_problem %}<b class="bad">Claude is not working</b> ({{ claude_problem }}) - new documents wait in the Inbox and are read again automatically once it works{% elif claude %}<b class="ok">Claude</b>{% else %}<b class="ok">built-in reader</b> (Wettech's quotes, invoices and reports; anything it can't read waits in the Inbox){% endif %}</div>
   <div>OpenClaw: {% if openclaw %}<b class="ok">API on</b>{% else %}<b>off</b>{% endif %}</div>
 </div>
 {% if flash_msg %}<div class="flash">{{ flash_msg }}</div>{% endif %}

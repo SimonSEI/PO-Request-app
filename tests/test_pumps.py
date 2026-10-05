@@ -300,7 +300,9 @@ class PumpsTest(unittest.TestCase):
         self.assertTrue(doc['case_id'])
 
     def test_read_again_once_claude_is_back(self):
-        # Claude is down: the basic reader marks both for review and leaves them in the Inbox.
+        # Claude is switched on but down: the basic reader marks both for review and leaves them in the Inbox.
+        P.USE_CLAUDE, use = True, P.USE_CLAUDE
+        self.addCleanup(setattr, P, 'USE_CLAUDE', use)
         for name in ('Inv_29041_from_Water_Equipment.pdf', 'Inv_29042_from_Water_Equipment.pdf'):
             self.texts[name] = 'INVOICE\nWater Equipment Technologies\nTotal $1,200.00'
         a = self.upload('Inv_29041_from_Water_Equipment.pdf')
@@ -323,11 +325,7 @@ class PumpsTest(unittest.TestCase):
         # Already on an item: not read again over the office's work.
         self.assertEqual(self.c.post(f"/pumps/api/docs/{a['doc_id']}/reread", json={}).status_code, 400)
         # The next scan picks up the rest by itself.
-        P.ANTHROPIC_API_KEY, key = 'test', P.ANTHROPIC_API_KEY
-        try:
-            done = P.reread_pending('test')
-        finally:
-            P.ANTHROPIC_API_KEY = key
+        done = P.reread_pending('test')
         self.assertIn(b['doc_id'], [d['doc_id'] for d in done])
         self.assertTrue(self.c.get(f"/pumps/api/docs/{b['doc_id']}").get_json()['doc']['case_id'])
 
@@ -564,6 +562,39 @@ class PumpsTest(unittest.TestCase):
                              [('Service Proposal Amount', 1506.69)])
         finally:
             P.JOBBER_STATIC_TOKEN = saved
+
+    def test_carlise_quote_without_claude(self):
+        """No Anthropic key: the built-in reader alone turns Tom's emailed Word quote into the 9136 draft."""
+        self.assertFalse(P.USE_CLAUDE)
+        from docx import Document
+        d = Document()
+        for t in ('of Southwest Florida LLC', 'Email: wettec@verizon.net', 'October 5, 2026', 'Stahlman England',
+                  'Attn: Andrea', 'RE: The Carlise', 'We are pleased to quote you on the following services',
+                  'Field service to check out pump station, found pipe had melted at the fitting going into the pump '
+                  'suction.  Field service to pull and inspect suction line, clean screen and reinstall, furnish ans '
+                  'install PVC parts needed to repair suction line, prime and test.',
+                  'Your Cost --------------- $ 1158.99', 'Price includes Sales tax and in freight', 'Thank You'):
+            d.add_paragraph(t)
+        buf = io.BytesIO()
+        d.save(buf)
+        fake = FakeJobber()
+        P.jobber_gql = fake
+        P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN
+        try:
+            form = {'file': (io.BytesIO(buf.getvalue()), 'Carslie Back Station .docx')}
+            res = self.c.post('/pumps/api/docs', data=form, content_type='multipart/form-data').get_json()['results'][0]
+        finally:
+            P.JOBBER_STATIC_TOKEN = saved
+        self.assertEqual(res['review'], '', 'a Wettech quote read cleanly is trusted')
+        self.assertTrue(res['case_id'])
+        self.assertEqual(res['auto_quote']['quote_number'], '812', res)
+        attrs = [v for q, v in fake.calls if 'quoteCreate(' in q][0]['attributes']
+        self.assertEqual((attrs['clientId'], attrs['propertyId']), ('Z2lkOi8vSm9iYmVyL0NsaWVudC80OTAwNzI1OA==', 'Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzUyOTc4MjYw'))
+        self.assertEqual(attrs['title'], 'Proposal to pull and inspect suction line')
+        li = attrs['lineItems'][0]
+        self.assertEqual((li['name'], li['unitPrice'], li['taxable']), ('Service Proposal Amount', 1506.69, False))
+        self.assertTrue([v for q, v in fake.calls if 'quoteCreateNote' in q])
+        self.c.post(f"/pumps/api/cases/{res['case_id']}/delete", json={'reason': 'test done'})
 
     def test_client_found_through_its_property_despite_typos(self):
         props = [{'id': 'PX1', 'address': {'street1': '1 Osprey Ct', 'street2': 'Osprey Point - Pump #1', 'city': 'Naples'}},

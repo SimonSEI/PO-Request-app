@@ -29,7 +29,7 @@ The preview's old sheet rows (`pump_invoices`) were copied into items the first 
 | Variable | Needed for | What it does |
 |---|---|---|
 | `PUMPS_JOBBER_CLIENT_ID`, `PUMPS_JOBBER_CLIENT_SECRET` | Jobber | Keys from a Jobber app made for Pumps (see below). |
-| `ANTHROPIC_API_KEY` | Reading quotes and bills | Already set for the PO app. Without it a basic reader is used and every document is marked for review. |
+| `PUMPS_USE_CLAUDE` | optional | Off by default: Pumps reads Wettech's quotes (Word letters), invoices (PDF) and reports with its own reader, needs no Anthropic credits, and files and drafts on its own whatever it reads cleanly (a known vendor, an amount, and a client, PO or W/O). Anything else waits in the Inbox. `true` = use Claude (with the PO app's `ANTHROPIC_API_KEY`) for other vendors' layouts. |
 | `OPENCLAW_API_KEY` | OpenClaw | Already used by Work Orders. OpenClaw sends it as `Authorization: Bearer <key>`. |
 | `PUMPS_USERS` | optional | e.g. `simon,beatriz`. Only these usernames can open Pumps. |
 | `PUMPS_MARKUP_PCT` | optional | Added to Wettech's bill prices on drafted invoices when there is no client quote to copy (default `0`). When the bill matches Wettech's quote and the item has our Jobber quote, the invoice copies that quote's lines instead. |

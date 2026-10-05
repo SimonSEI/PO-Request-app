@@ -69,6 +69,10 @@ OPENCLAW_API_KEY = os.environ.get('OPENCLAW_API_KEY', '')
 # ── settings ─────────────────────────────────────────────────────────────────
 CLAUDE_MODEL = os.environ.get('PUMPS_CLAUDE_MODEL', 'claude-opus-5-5')
 ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
+# Pumps reads Wettech's quotes, bills and reports with its own reader. Claude
+# is only used when this is switched on (the key is shared with the PO app).
+USE_CLAUDE = os.environ.get('PUMPS_USE_CLAUDE', 'false').lower() in ('1', 'true', 'yes', 'on') \
+    and bool(ANTHROPIC_API_KEY)
 AUTO_SCAN = os.environ.get('PUMPS_AUTO_SCAN', 'true').lower() in ('1', 'true', 'yes', 'on')
 SCAN_EVERY_MIN = max(10, int(os.environ.get('PUMPS_SCAN_EVERY_MINUTES', '30') or 30))
 # The first scan only reads mail from this date on (default: 60 days back), so
@@ -1083,7 +1087,7 @@ Use "" for text you cannot find. Never invent numbers."""
 
 
 def _claude_extract(text, sender='', subject='', filename=''):
-    if not ANTHROPIC_API_KEY:
+    if not USE_CLAUDE:
         return None
     try:
         import anthropic
@@ -1497,7 +1501,11 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
             else:
                 x = _regex_extract(text, sender, subject)
                 extracted_by = 'regex'
-                review = 'Read without Claude - check the amounts and line items.'
+                if USE_CLAUDE:
+                    # Claude is meant to read it but failed: read again later.
+                    review = 'Read without Claude - check the amounts and line items.'
+                elif not (x.get('client_name') or x.get('po_number') or x.get('wo_number')):
+                    review = 'Could not find the client, PO or work order - enter it by hand.'
             x = _clean_extraction(x)
             if kind_hint:
                 x['kind'] = kind_hint
@@ -1608,7 +1616,7 @@ def reread_doc(doc_id, actor='system'):
 def reread_pending(actor='system', limit=25):
     """Documents the basic reader handled while Claude was unavailable, read
     again now that it is back. Stops at the first failure (Claude still down)."""
-    if not ANTHROPIC_API_KEY:
+    if not USE_CLAUDE:
         return []
     conn = _conn()
     try:
@@ -2561,11 +2569,21 @@ def suggest_quote(doc, case=None):
     if len(items) == 1:
         items[0]['name'] = 'Service Proposal Amount'
         items[0]['quantity'] = 1
-    title = (doc.get('proposal_title') or '').strip()
-    if not title:
-        work = short_name(items[0]['description'] if items else (doc.get('description') or ''), 70)
-        title = f'Proposal - {work}' if work else 'Pump service proposal'
+    title = (doc.get('proposal_title') or '').strip() or _proposal_title(
+        items[0]['description'] if items else (doc.get('description') or ''))
     return {'title': title[:255], 'line_items': items, 'markup_pct': QUOTE_MARKUP_PCT}
+
+
+def _proposal_title(work):
+    """"Field service to check out pump station ... Field service to pull and
+    inspect suction line, clean screen ..." -> "Proposal to pull and inspect
+    suction line": the last thing the vendor will do is the repair itself."""
+    tasks = re.findall(r'\b(?:service|labor|work|crew)\s+to\s+([^,.;]+)', work or '', re.I)
+    if tasks:
+        words = tasks[-1].split()
+        return 'Proposal to ' + ' '.join(words[:7]).rstrip(' -')
+    first = short_name(work or '', 70)
+    return f'Proposal - {first}' if first else 'Pump service proposal'
 
 
 def _quote_note_text(doc, total):
@@ -3106,7 +3124,7 @@ def h_summary(actor):
         return {'queue': q, 'counts': {k: len(v) for k, v in q.items() if isinstance(v, list)},
                 'scan': _state_get('scan_status') or {}, 'jobber': {**jobber_status(),
                                                                      'sync': _state_get('jobber_sync') or {}},
-                'claude': bool(ANTHROPIC_API_KEY), 'email': bool(CFG.get('email_enabled'))}
+                'claude': USE_CLAUDE, 'email': bool(CFG.get('email_enabled'))}
     finally:
         conn.close()
 
@@ -3874,7 +3892,7 @@ def page():
                                   steps=[{'key': k, 'label': l} for k, l in STEPS],
                                   categories=CATEGORIES,
                                   jobber=jobber_status(),
-                                  claude=bool(ANTHROPIC_API_KEY),
+                                  claude=USE_CLAUDE,
                                   claude_problem=(_state_get('claude_problem') or {}).get('problem', ''),
                                   email=bool(CFG.get('email_enabled')),
                                   openclaw=bool(OPENCLAW_API_KEY),
