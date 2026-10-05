@@ -130,7 +130,7 @@ class WorkOrdersTest(unittest.TestCase):
         self.assertEqual((o['wo_number'], o['address'], o['status']), ('5521', '8810 Example Lane', 'open'))
         fwd = [c for c in self.graph.calls if c[1].endswith('/forward')]
         self.assertEqual(len(fwd), 1)
-        self.assertIn('/users/simon@stahlman-england.com/messages/MSG1/forward', fwd[0][1])
+        self.assertIn('/users/po@stahlman-england.com/messages/MSG1/forward', fwd[0][1])
         self.assertEqual([r['emailAddress']['address'] for r in fwd[0][2]['json']['toRecipients']],
                          ['regino@example.com', 'fredy@example.com'])
         self.assertTrue(o['forwarded_at'] and o['jobber_logged_at'])

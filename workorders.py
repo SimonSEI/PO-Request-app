@@ -3,7 +3,7 @@ Work Orders: community work orders from the inbox to Jobber to the community man
 
 Office logins only. Every cycle (every 15 minutes, or "Run now"):
 
-  1. Scan the inbox (simon@stahlman-england.com by default) for new work orders
+  1. Scan the inbox (the PO mailbox, PO_EMAIL_ADDRESS, by default) for new work orders
      from a set-up community, save each one here and forward the email to the
      techs on the Settings tab (Regino and Fredy).
   2. Log each new work order as a note on that community's work order job in Jobber.
@@ -49,7 +49,7 @@ STATUSES = ('open', 'quote', 'closed')
 WORKORDERS_USERS = {u.strip().lower() for u in os.environ.get('WORKORDERS_USERS', '').split(',') if u.strip()}
 
 DEFAULT_SETTINGS = {
-    'inbox': 'simon@stahlman-england.com',
+    'inbox': '',                 # empty = the PO mailbox (PO_EMAIL_ADDRESS), which Microsoft 365 already lets the app read
     'forward_to': '',            # Regino's and Fredy's emails, comma separated
     'tech_name': 'Regino',       # whose Jobber notes count as technician's notes
     'keywords': 'work order, workorder, work-order, w/o',
@@ -157,6 +157,7 @@ def settings():
         s.update(json.loads(_cfg['get_setting']('workorders_settings') or '{}'))
     except (TypeError, ValueError):
         pass
+    s['inbox'] = (s.get('inbox') or '').strip() or _cfg.get('default_inbox') or 'po@stahlman-england.com'
     return s
 
 
@@ -690,8 +691,12 @@ def start_quote(order_id, scope=''):
         except Exception:
             pass
     except Exception as e:
-        _set_order(order_id, quote_error=str(e)[:500])
-        _log('quote', f'Work order #{order_id}: Jobber quote not drafted: {e}')
+        err = str(e)
+        if re.search(r'(?i)scope|permission|access denied|not authori[sz]ed|forbidden|HTTP 403', err):
+            err += (' - The Pumps Jobber app can only read quotes. In Jobber\'s Developer Center give it read and '
+                    'write access to Quotes, then reconnect Jobber in the Pumps app.')
+        _set_order(order_id, quote_error=err[:500])
+        _log('quote', f'Work order #{order_id}: Jobber quote not drafted: {err}')
 
 
 # ── 4. Email to the community manager ────────────────────────────────────────
@@ -1004,13 +1009,15 @@ def api_email():
 
 
 def init_workorders(app, db_path, *, data_dir, get_setting, set_setting, graph_token, graph_enabled,
-                    jobber_token, jobber_connected, jobber_version, anthropic_client=None, scheduler_cls=None):
+                    jobber_token, jobber_connected, jobber_version, anthropic_client=None, scheduler_cls=None,
+                    default_inbox=''):
     """Create the tables, register the routes and schedule the cycle every 15 minutes.
     jobber_token(force_refresh) hands over an access token from the Jobber app already
     connected for Pumps, so no new Jobber app is needed."""
     _cfg.update(db_path=db_path, data_dir=data_dir, get_setting=get_setting, set_setting=set_setting,
                 graph_token=graph_token, graph_enabled=graph_enabled, jobber_token=jobber_token,
-                jobber_connected=jobber_connected, jobber_version=jobber_version, anthropic_client=anthropic_client)
+                jobber_connected=jobber_connected, jobber_version=jobber_version, anthropic_client=anthropic_client,
+                default_inbox=(default_inbox or '').strip())
     init_db()
     app.register_blueprint(bp)
     if scheduler_cls and os.environ.get('WORKORDERS_AUTO_RUN', 'true').lower() not in ('0', 'false', 'no', 'off'):

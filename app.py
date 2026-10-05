@@ -39322,7 +39322,7 @@ if not CASHFLOW_ENABLED:
 import pumps as _pumps
 from workorders import init_workorders, workorders_allowed
 init_workorders(app, DB_PATH, data_dir=DATA_DIR, get_setting=get_setting, set_setting=set_setting,
-                graph_token=_get_graph_access_token, graph_enabled=MS_GRAPH_ENABLED,
+                graph_token=_get_graph_access_token, graph_enabled=MS_GRAPH_ENABLED, default_inbox=PO_EMAIL_ADDRESS,
                 jobber_token=_pumps._access_token, jobber_version=_pumps.JOBBER_API_VERSION,
                 jobber_connected=lambda: _pumps.jobber_status()['connected'],
                 anthropic_client=(anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
