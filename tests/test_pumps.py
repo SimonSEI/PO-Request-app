@@ -7,6 +7,7 @@ Runs against a throwaway database. Jobber and Claude are never called: Jobber
 is replaced by a fake that records every request, and documents are "read"
 from canned text. All names below are made up.
 """
+import atexit
 import io
 import json
 import os
@@ -155,7 +156,8 @@ class PumpsTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         P.extract_text, P._claude_extract, P.jobber_gql = cls._orig
-        shutil.rmtree(TMP, ignore_errors=True)
+        # Removed when the whole run ends: other test files share the same app (and this folder).
+        atexit.register(shutil.rmtree, TMP, True)
 
     def setUp(self):
         self.c = A.app.test_client()
