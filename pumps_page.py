@@ -137,24 +137,27 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 .pl .kpi .s{font-size:11.5px;color:var(--muted);}
 .pl .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:16px;}
 .pl .card h3{font-size:14px;margin-bottom:2px;} .pl .card .sub{font-size:12px;color:var(--muted);margin-bottom:10px;}
-.pl .flow{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:0;align-items:start;}
-.pl .st{position:relative;padding:0 10px;cursor:pointer;border-radius:10px;outline:none;}
-.pl .st:hover,.pl .st:focus-visible,.pl .st.on{background:#f3f6fb;}
-.pl .st .num{font-size:22px;font-weight:700;text-align:center;font-variant-numeric:tabular-nums;}
-.pl .st .amt{font-size:11.5px;color:var(--muted);text-align:center;min-height:16px;}
-.pl .st .well{height:150px;display:flex;align-items:flex-end;justify-content:center;margin:6px 0 0;border-bottom:1px solid var(--grid);}
-.pl .st .bar{width:62%;max-width:64px;border-radius:4px 4px 0 0;min-height:3px;}
-.pl .st .nm{font-size:13px;font-weight:600;text-align:center;margin-top:8px;}
-.pl .st .hint{font-size:11px;color:var(--muted);text-align:center;min-height:30px;}
-.pl .st .stuck{font-size:11px;text-align:center;color:var(--ink2);min-height:18px;}
-.pl .st .stuck b{color:#8a5a00;}
-.pl .st:not(:last-child)::after{content:'';position:absolute;right:-6px;bottom:104px;width:12px;height:12px;border-top:2px solid var(--grid);border-right:2px solid var(--grid);transform:rotate(45deg);}
 .pl .jobs{margin-top:12px;border-top:1px solid var(--border);padding-top:10px;}
 .pl .job{display:flex;gap:10px;align-items:center;padding:7px 4px;border-bottom:1px solid var(--border);font-size:13px;}
 .pl .job .t{flex:1;min-width:0;} .pl .job .t .c{font-size:11.5px;color:var(--muted);}
 .pl .job .d{font-size:12px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums;}
 .pl .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--ink2);margin-bottom:6px;}
 .pl .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px;}
+.pl .chevs{display:grid;grid-template-columns:repeat(6,minmax(118px,1fr));gap:6px;overflow-x:auto;padding:4px 2px 10px;}
+.pl .chev{position:relative;min-height:112px;padding:14px 26px 14px 34px;text-align:center;cursor:pointer;border:0;font:inherit;
+    clip-path:polygon(0 0,calc(100% - 22px) 0,100% 50%,calc(100% - 22px) 100%,0 100%,22px 50%);
+    display:flex;flex-direction:column;justify-content:center;gap:2px;transition:transform .12s, filter .12s;}
+.pl .chev:first-child{clip-path:polygon(0 0,calc(100% - 22px) 0,100% 50%,calc(100% - 22px) 100%,0 100%);padding-left:16px;border-radius:8px 0 0 8px;}
+.pl .chev:hover,.pl .chev:focus-visible{filter:brightness(1.07);outline:none;}
+.pl .chev.on{transform:translateY(-4px);}
+.pl .chev .n{font-size:12px;font-weight:600;opacity:.85;}
+.pl .chev .nm{font-size:15px;font-weight:700;}
+.pl .chev .ct{font-size:28px;font-weight:800;line-height:1.1;font-variant-numeric:tabular-nums;}
+.pl .chev .ex{font-size:11.5px;opacity:.9;min-height:15px;}
+.pl .chev.dk{color:#0b0b0b;} .pl .chev.lt{color:#fff;}
+.pl .marks{display:grid;grid-template-columns:repeat(6,minmax(118px,1fr));gap:6px;height:12px;margin-top:-6px;}
+.pl .marks span{display:block;margin:0 auto;width:0;height:0;border-left:9px solid transparent;border-right:9px solid transparent;border-bottom:10px solid var(--border);visibility:hidden;}
+.pl .marks span.on{visibility:visible;}
 .pl svg text{font-family:inherit;}
 .pl .tip{position:fixed;pointer-events:none;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 6px 18px rgba(15,23,42,.12);padding:8px 10px;font-size:12px;z-index:50;max-width:280px;}
 .pl .tip .v{font-weight:700;font-size:13px;} .pl .tip .l{color:var(--muted);}
@@ -163,7 +166,6 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 .pl .wk .w{color:var(--muted);font-size:12px;}
 .pl .ev{display:flex;gap:8px;align-items:baseline;} .pl .ev .dt{color:var(--muted);font-size:12px;width:52px;flex:none;font-variant-numeric:tabular-nums;}
 .pl .ev .ln{display:inline-block;width:10px;height:3px;border-radius:2px;flex:none;transform:translateY(-3px);}
-@media (max-width:900px){.pl .kpis{grid-template-columns:repeat(2,minmax(0,1fr));}.pl .flow{grid-template-columns:repeat(3,minmax(0,1fr));row-gap:16px;}.pl .st::after{display:none;}}
 @media (max-width:640px){.fields{grid-template-columns:1fr;}.money{grid-template-columns:1fr;}.top .r span{display:none;}.panel{padding:12px;}}
 </style>
 <script>
@@ -426,23 +428,20 @@ const plDay = iso => new Date(iso + 'T12:00:00').toLocaleDateString('en-US', {mo
 const KCOL = {maintenance:'var(--k1)', repair:'var(--k2)', scada:'var(--k3)', diver:'var(--k4)'};
 function drawPipeline(){
   const j = PL, k = j.kpis;
-  const max = Math.max(1, ...j.stages.map(s => s.count));
   const banner = j.sample
     ? `<div class="sample">🧪 <b>Sample data</b> - a mock example to judge the layout, not real jobs. <span class="sp" style="flex:1"></span><button class="btn s" onclick="plSetSample(false)">Show live data</button></div>`
     : `<div class="note" style="margin-bottom:10px">Live: items in Pumps and their Jobber records. <a href="#" onclick="event.preventDefault();plSetSample(true)">Show the sample</a></div>`;
-  const kpi = (label, v, sub) => `<div class="kpi"><div class="k">${label}</div><div class="v">${v}</div><div class="s">${sub}</div></div>`;
-  const stages = j.stages.map((s, i) => `<div class="st ${plStage === s.key ? 'on' : ''}" tabindex="0" role="button" aria-label="${esc(s.name)}: ${s.count} jobs" onclick="plPick('${s.key}')" onkeydown="if(event.key==='Enter')plPick('${s.key}')" onpointermove="plTipStage(event, ${i})" onpointerleave="plTipHide()" onfocus="plTipStage(event, ${i})" onblur="plTipHide()">
-      <div class="num">${s.count}</div><div class="amt">${plMoney(s.amount)}</div>
-      <div class="well"><div class="bar" style="height:${Math.round(s.count / max * 100)}%;background:var(--st${i + 1})"></div></div>
-      <div class="nm">${esc(s.name)}</div><div class="hint">${esc(s.hint)}</div>
-      <div class="stuck">${s.stuck ? `⚠ <b>${s.stuck} stuck</b> (7+ days)` : ''}</div></div>`).join('');
+  const chevs = j.stages.map((s, i) => `<button class="chev ${i < 2 ? 'dk' : 'lt'} ${plStage === s.key ? 'on' : ''}" style="background:var(--st${i + 1})" onclick="plPick('${s.key}')" aria-pressed="${plStage === s.key}" aria-label="${esc(s.name)}: ${s.count} jobs" title="${esc(s.hint)}">
+      <span class="n">${i + 1}.</span><span class="nm">${esc(s.name)}</span><span class="ct">${s.count}</span>
+      <span class="ex">${s.stuck ? '⚠ ' + s.stuck + ' stuck' : (s.amount ? plMoney(s.amount) : '')}</span></button>`).join('');
+  const marks = j.stages.map(s => `<span class="${plStage === s.key ? 'on' : ''}"></span>`).join('');
   const sel = j.stages.find(s => s.key === plStage);
-  const jobs = sel ? `<div class="jobs"><b>${esc(sel.name)}</b> <span class="note">- ${sel.count} jobs, longest waiting first</span>
-      ${sel.jobs.map(x => `<div class="job" ${x.id > 0 ? `style="cursor:pointer" onclick="openCase(${x.id})"` : ''}><div class="t"><b>${esc(x.title)}</b><div class="c">${esc(x.client)} · next: ${esc(x.next)}</div></div>
-        ${x.stuck ? '<span class="chip a">⚠ stuck</span>' : ''}<span class="d">${x.days}d in stage</span><span class="d">${plMoney(x.amount)}</span></div>`).join('') || '<div class="note" style="padding:8px 0">Nothing here.</div>'}</div>` : '<div class="note" style="margin-top:10px">Click a stage to see its jobs.</div>';
+  const jobs = sel ? `<div class="jobs"><b>${esc(sel.name)}</b> <span class="note">- ${esc(sel.hint)} · ${sel.count} jobs, longest waiting first</span>
+      ${sel.jobs.map(x => `<div class="job" ${x.id > 0 ? `style="cursor:pointer" onclick="openCase(${x.id})"` : `onclick="toast('Sample job - not a real item')"`}><div class="t"><b>${esc(x.title)}</b><div class="c">${esc(x.client)} · next: ${esc(x.next)}</div></div>
+        ${x.stuck ? '<span class="chip a">⚠ stuck</span>' : ''}<span class="d">${x.days}d in stage</span><span class="d">${plMoney(x.amount)}</span></div>`).join('') || '<div class="note" style="padding:8px 0">Nothing here.</div>'}</div>` : '<div class="note" style="margin-top:6px">Click a stage to see what\'s in it.</div>';
   document.getElementById('plBody').innerHTML = banner +
-    `<div class="kpis">${kpi('Open pump jobs', k.open, 'from quote to payment')}${kpi('Stuck 7+ days', k.stuck, k.stuck ? '⚠ need a nudge' : 'nothing stuck')}${kpi('Waiting on client approval', plMoney(k.awaiting_approval) || '$0', 'quoted, not yet approved')}${kpi('Coming up in 30 days', k.next_30_days, 'visits, repairs, renewals, dives')}</div>
-    <div class="card"><h3>Where every pump job is</h3><div class="sub">Each bar is the number of jobs at that stage. Work moves left to right.</div><div class="flow">${stages}</div>${jobs}</div>
+    `<div class="card"><h3>Where everything is</h3><div class="sub">${k.open} open pump jobs${k.stuck ? ` · ⚠ ${k.stuck} stuck 7+ days` : ''}. Work moves left to right.</div>
+      <div class="chevs">${chevs}</div><div class="marks">${marks}</div>${jobs}</div>
     <div class="card"><h3>Coming up - next 8 weeks</h3><div class="sub">Jobs per week by kind. Hover a bar for the week.</div>
       <div class="legend">${j.kinds.map(x => `<span><i style="background:${KCOL[x.key]}"></i>${esc(x.name)}</span>`).join('')}</div>
       <div id="plWeeks"></div><div id="plList" style="margin-top:10px"></div></div>`;
@@ -490,7 +489,6 @@ function plTipAt(ev, rows){
   const r = ev.clientX !== undefined && ev.type !== 'focus' ? {x: ev.clientX, y: ev.clientY} : (() => { const b = ev.target.getBoundingClientRect(); return {x: b.left + b.width / 2, y: b.top}; })();
   t.style.left = Math.min(window.innerWidth - 290, r.x + 14) + 'px'; t.style.top = (r.y + 14) + 'px';
 }
-function plTipStage(ev, i){ const s = PL.stages[i]; plTipAt(ev, [[s.count + ' jobs', s.name], ...(s.amount ? [[plMoney(s.amount), 'in this stage']] : []), ...(s.stuck ? [[s.stuck + ' stuck', '7+ days without a change']] : []), ['', s.hint]]); }
 function plTipWeek(ev, i){ const w = PL.weeks[i]; plTipAt(ev, [[plDay(w.start) + ' - ' + plDay(w.end), ''], ...PL.kinds.map(k => [String(w.counts[k.key]), k.name, KCOL[k.key]])]); }
 function plTipHide(){ document.getElementById('plTip').classList.add('hide'); }
 
