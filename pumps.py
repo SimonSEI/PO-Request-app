@@ -4655,6 +4655,22 @@ _STEP_TO_STAGE = {'vendor_quote': 'quote', 'client_quote': 'quote', 'client_appr
                   'scheduled': 'scheduling', 'work_done': 'work', 'vendor_bill': 'billing',
                   'bill_checked': 'billing', 'invoice_drafted': 'billing', 'report_logged': 'billing',
                   'closed': 'payment'}
+# The Jobber record that fits each stage, best first.
+_STAGE_JOBBER = {'quote': ('quote', 'request', 'job'), 'approval': ('quote', 'request', 'job'),
+                 'scheduling': ('job', 'quote', 'request'), 'work': ('job', 'quote', 'request'),
+                 'billing': ('invoice', 'job', 'quote'), 'payment': ('invoice', 'job', 'quote')}
+
+
+def _jobber_link(case_jobber, stage):
+    """(url, label) of the item's Jobber record for this stage, or ('', '')."""
+    j = case_jobber if isinstance(case_jobber, dict) else {}
+    for kind in _STAGE_JOBBER.get(stage, ('job', 'quote', 'invoice', 'request')):
+        ref = j.get(kind) or {}
+        if ref.get('uri'):
+            return ref['uri'], f"{kind} #{ref['number']}" if ref.get('number') else kind
+    return '', ''
+
+
 UPCOMING_KINDS = [('maintenance', 'Maintenance'), ('repair', 'Repair / install'), ('scada', 'SCADA renewal'),
                   ('diver', 'Diver')]
 
@@ -4680,7 +4696,9 @@ def pipeline_data(conn, today=None):
             continue
         if not stage:
             continue
+        uri, label = _jobber_link(c['jobber'], stage)
         jobs.append({'id': c['id'], 'title': c['title'] or c['client_name'], 'client': c['client_name'],
+                     'jobber_uri': uri, 'jobber_label': label,
                      'stage': stage, 'next': nxt, 'days': c['idle_days'], 'stuck': c['idle_days'] >= STALE_DAYS,
                      'amount': c.get('amount') or c.get('vendor_quote_amount') or c.get('vendor_quote_total') or 0,
                      'category': c['category']})
@@ -4690,7 +4708,8 @@ def pipeline_data(conn, today=None):
         when = _iso_date(c.get('scheduled_for'))
         if when and today.isoformat() <= when <= end.isoformat():
             events.append({'date': when, 'kind': 'maintenance' if c['category'] in ('maintenance', 'inspection')
-                           else 'repair', 'title': c['title'] or c['client_name'], 'where': c.get('site') or ''})
+                           else 'repair', 'title': c['title'] or c['client_name'], 'where': c.get('site') or '',
+                           'jobber_uri': _jobber_link(c['jobber'], 'work')[0], 'case_id': c['id']})
     for s in scada_rows(conn):
         due = s.get('next_due_on') or ''
         if due and today.isoformat() <= due <= end.isoformat():
@@ -4738,17 +4757,19 @@ def pipeline_sample(today=None):
     Delete this function and the "sample" switch once the office has seen it."""
     today = today or _today()
     d = lambda n: (today + timedelta(days=n)).isoformat()
-    J = lambda i, t, c, st, nxt, days, amt, cat='repair': {
+    J = lambda i, t, c, st, nxt, days, amt, cat='repair', uri='', label='': {
         'id': -i, 'title': t, 'client': c, 'stage': st, 'next': nxt, 'days': days, 'stuck': days >= STALE_DAYS,
-        'amount': amt, 'category': cat}
+        'amount': amt, 'category': cat, 'jobber_uri': uri, 'jobber_label': label}
     jobs = [
         J(1, 'Replace check valve - Pump #2', 'Heron Bay', 'quote', 'Quote from Wettech', 3, 0),
         J(2, 'VFD fault - lift station', 'Lely CDD', 'quote', 'Quote sent to client', 9, 2480),
-        J(3, 'Suction line repair', 'The Carlisle (Greenscapes)', 'approval', 'Client approved', 2, 1506.69),
+        J(3, 'Suction line repair', 'The Carlisle (Greenscapes)', 'approval', 'Client approved', 2, 1506.69,
+          uri='https://secure.getjobber.com/quotes/66752875', label='quote #9136'),
         J(4, 'New float switch', 'Sanctuary at Blue Heron', 'approval', 'Client approved', 12, 640),
         J(5, 'Fountain motor', 'Morton Grove', 'approval', 'Client approved', 5, 3120),
         J(6, 'Pressure transducer', 'Pebblebrook HOA', 'scheduling', 'Scheduled with Wettech', 1, 890),
-        J(7, 'Pump #1 rebuild', 'Spanish Wells (The Lake Club)', 'scheduling', 'Scheduled with Wettech', 8, 4650),
+        J(7, 'Pump #1 rebuild', 'Spanish Wells (The Lake Club)', 'scheduling', 'Scheduled with Wettech', 8, 4650,
+          uri='https://secure.getjobber.com/work_orders/41420018', label='job #1609'),
         J(8, 'Control panel replacement', 'Barrington Cove', 'work', 'Work done', 4, 5400),
         J(9, 'Quarterly maintenance', 'Tuscany Pointe Trail', 'work', 'Work done', 2, 550, 'maintenance'),
         J(10, 'Check valve install', 'Miromar Lakes', 'billing', "Bill from Wettech", 6, 1180),
@@ -4759,7 +4780,8 @@ def pipeline_sample(today=None):
         J(14, 'Lift station repair', 'University Square CDD', 'payment', 'Pay Wettech', 3, 1340),
     ]
     events = [
-        {'date': d(1), 'kind': 'maintenance', 'title': 'Quarterly pump - Spanish Wells (The Lake Club)', 'where': '4 pumps'},
+        {'date': d(1), 'kind': 'maintenance', 'title': 'Quarterly pump - Spanish Wells (The Lake Club)', 'where': '4 pumps',
+         'jobber_uri': 'https://secure.getjobber.com/work_orders/41420018'},
         {'date': d(2), 'kind': 'repair', 'title': 'Pressure transducer - Pebblebrook HOA', 'where': 'Station 2'},
         {'date': d(4), 'kind': 'maintenance', 'title': 'Quarterly pump - The Carlisle', 'where': 'Pump #1 exit'},
         {'date': d(6), 'kind': 'diver', 'title': 'Diver - 26 sites (Jordan)', 'where': ''},

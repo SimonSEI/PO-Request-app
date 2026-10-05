@@ -437,17 +437,24 @@ function drawPipeline(){
   const marks = j.stages.map(s => `<span class="${plStage === s.key ? 'on' : ''}"></span>`).join('');
   const sel = j.stages.find(s => s.key === plStage);
   const jobs = sel ? `<div class="jobs"><b>${esc(sel.name)}</b> <span class="note">- ${esc(sel.hint)} · ${sel.count} jobs, longest waiting first</span>
-      ${sel.jobs.map(x => `<div class="job" ${x.id > 0 ? `style="cursor:pointer" onclick="openCase(${x.id})"` : `onclick="toast('Sample job - not a real item')"`}><div class="t"><b>${esc(x.title)}</b><div class="c">${esc(x.client)} · next: ${esc(x.next)}</div></div>
-        ${x.stuck ? '<span class="chip a">⚠ stuck</span>' : ''}<span class="d">${x.days}d in stage</span><span class="d">${plMoney(x.amount)}</span></div>`).join('') || '<div class="note" style="padding:8px 0">Nothing here.</div>'}</div>` : '<div class="note" style="margin-top:6px">Click a stage to see what\'s in it.</div>';
+      ${sel.jobs.map(x => `<div class="job" style="cursor:pointer" onclick="plOpenJob(${x.id}, '${esc(x.jobber_uri || '')}')" title="${x.jobber_uri ? 'Open in Jobber' : 'Not linked to Jobber yet'}"><div class="t"><b>${esc(x.title)}</b><div class="c">${esc(x.client)} · next: ${esc(x.next)}</div></div>
+        ${x.stuck ? '<span class="chip a">⚠ stuck</span>' : ''}<span class="d">${x.days}d in stage</span><span class="d">${plMoney(x.amount)}</span>
+        ${x.jobber_uri ? `<span class="chip b">Jobber ${esc(x.jobber_label || '')} ↗</span>` : '<span class="note" style="font-size:11.5px">no Jobber link yet</span>'}
+        ${x.id > 0 ? `<button class="btn s" onclick="event.stopPropagation();openCase(${x.id})">Pumps</button>` : ''}</div>`).join('') || '<div class="note" style="padding:8px 0">Nothing here.</div>'}</div>` : '<div class="note" style="margin-top:6px">Click a stage to see what\'s in it, then a job to open it in Jobber.</div>';
   document.getElementById('plBody').innerHTML = banner +
     `<div class="card"><h3>Where everything is</h3><div class="sub">${k.open} open pump jobs${k.stuck ? ` · ⚠ ${k.stuck} stuck 7+ days` : ''}. Work moves left to right.</div>
       <div class="chevs">${chevs}</div><div class="marks">${marks}</div>${jobs}</div>
-    <div class="card"><h3>Coming up - next 8 weeks</h3><div class="sub">Jobs per week by kind. Hover a bar for the week.</div>
+    <div class="card"><h3>Coming up - next 8 weeks</h3><div class="sub">Jobs per week by kind. Hover a bar for the week; click a job below to open it in Jobber.</div>
       <div class="legend">${j.kinds.map(x => `<span><i style="background:${KCOL[x.key]}"></i>${esc(x.name)}</span>`).join('')}</div>
       <div id="plWeeks"></div><div id="plList" style="margin-top:10px"></div></div>`;
   drawWeeks();
 }
 window.addEventListener('resize', () => { if (PL && curTab === 'pipeline') { clearTimeout(window._plr); window._plr = setTimeout(drawWeeks, 150); } });
+function plOpenJob(id, uri){
+  if (/^https:\/\/[\w.-]*getjobber\.com\//.test(uri)) { window.open(uri, '_blank', 'noopener'); return; }
+  if (id > 0) { toast('Not linked to a Jobber record yet - opening it in Pumps.'); openCase(id); }
+  else toast('Sample job - not linked to Jobber.');
+}
 function plPick(key){ plStage = plStage === key ? null : key; drawPipeline(); }
 function drawWeeks(){
   const box = document.getElementById('plWeeks');
@@ -476,7 +483,7 @@ function drawWeeks(){
 }
 function plShowWeek(i){
   const ws = i === null ? PL.weeks.slice(0, 4) : [PL.weeks[i]];
-  document.getElementById('plList').innerHTML = (i === null ? '<div class="note" style="margin-bottom:4px">Next 4 weeks (click a bar for any week):</div>' : '') + ws.map(w => `<div class="wk"><div class="w">${plDay(w.start)} - ${plDay(w.end)}</div><div>${w.events.map(e => `<div class="ev"><span class="dt">${plDay(e.date)}</span><span class="ln" style="background:${KCOL[e.kind]}"></span><span>${esc(e.title)}${e.where ? ' <span class="note">· ' + esc(e.where) + '</span>' : ''}</span></div>`).join('') || '<span class="note">Nothing scheduled.</span>'}</div></div>`).join('');
+  document.getElementById('plList').innerHTML = (i === null ? '<div class="note" style="margin-bottom:4px">Next 4 weeks (click a bar for any week):</div>' : '') + ws.map(w => `<div class="wk"><div class="w">${plDay(w.start)} - ${plDay(w.end)}</div><div>${w.events.map(e => `<div class="ev"><span class="dt">${plDay(e.date)}</span><span class="ln" style="background:${KCOL[e.kind]}"></span><span>${e.jobber_uri ? `<a href="${esc(e.jobber_uri)}" target="_blank" rel="noopener">${esc(e.title)} ↗</a>` : esc(e.title)}${e.where ? ' <span class="note">· ' + esc(e.where) + '</span>' : ''}</span></div>`).join('') || '<span class="note">Nothing scheduled.</span>'}</div></div>`).join('');
 }
 function plTipAt(ev, rows){
   const t = document.getElementById('plTip'); t.textContent = '';

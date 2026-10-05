@@ -957,11 +957,23 @@ class PumpsTest(unittest.TestCase):
         quote = [st for st in live['stages'] if st['key'] == 'quote'][0]
         mine = [j for j in quote['jobs'] if j['id'] == q['case_id']][0]
         self.assertEqual(mine['next'], 'Quote sent to client')
+        self.assertEqual(mine['jobber_uri'], '', 'not linked to Jobber yet')
+        # Once linked, the job opens its Jobber record - the quote while quoting.
+        self.c.patch(f"/pumps/api/cases/{q['case_id']}", json={'jobber': {
+            'quote': {'id': 'QX', 'number': '9136', 'uri': 'https://secure.getjobber.com/quotes/66752875'},
+            'job': {'id': 'JX', 'number': '1609', 'uri': 'https://secure.getjobber.com/work_orders/41420018'}}})
+        live = self.c.get('/pumps/api/pipeline').get_json()
+        mine = [j for st in live['stages'] for j in st['jobs'] if j['id'] == q['case_id']][0]
+        self.assertEqual((mine['jobber_uri'], mine['jobber_label']),
+                         ('https://secure.getjobber.com/quotes/66752875', 'quote #9136'))
+        self.assertTrue(any(j['jobber_uri'] for st in sample['stages'] for j in st['jobs']))
         # Scheduled work shows up in the weeks ahead.
         when = (P._today() + P.timedelta(days=3)).isoformat()
         self.c.patch(f"/pumps/api/cases/{q['case_id']}", json={'scheduled_for': when})
         live = self.c.get('/pumps/api/pipeline').get_json()
         self.assertIn(when, [e['date'] for w in live['weeks'] for e in w['events']])
+        ev = [e for w in live['weeks'] for e in w['events'] if e['date'] == when][0]
+        self.assertEqual(ev['jobber_uri'], 'https://secure.getjobber.com/work_orders/41420018', 'the job, for a visit')
 
     # ── who can get in ───────────────────────────────────────────────────────
     def test_access(self):
