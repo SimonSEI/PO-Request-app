@@ -1,11 +1,3 @@
-> **Archived (October 2026).** The Time-Off Log is switched off. Its code is kept here for
-> reference only: it is no longer imported by `app.py`, the dashboard tile is gone, and
-> `/timeoff` and `/api/time-off*` return 404. Existing rows in the `timeoff_requests` and
-> `timeoff_audit` tables were left in the database untouched. The Railway variables
-> `TIMEOFF_API_TOKEN`, `OPENCLAW_WEBHOOK_URL`, `OPENCLAW_WEBHOOK_SECRET` and `TIMEOFF_USERS`
-> are no longer read and can be deleted. To bring it back, move `timeoff.py` to the repo root
-> and restore the `init_timeoff` hook and dashboard tile in `app.py`.
-
 # Time-Off Log
 
 A new app tile in The Office App for technician time-off requests and sick call-outs.

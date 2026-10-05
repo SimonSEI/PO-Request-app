@@ -3349,6 +3349,7 @@ def dashboard():
                                  tech_type=session.get('tech_type', ''),
                                  user_lang=session.get('user_lang', 'en'),
                                  cashflow_ok=_cashflow_allowed(),
+                                 timeoff_ok=timeoff_allowed(),
                                  pumps_ok=pumps_allowed(),
                                  workorders_ok=workorders_allowed())
 
@@ -9242,7 +9243,7 @@ DASHBOARD_MENU_TEMPLATE = '''
 
     </div>
 
-    {% if role == 'office' %}
+    {% if role == 'office' or timeoff_ok %}
     <details class="folder">
         <summary>
             <span class="folder-icon">📁</span>
@@ -9251,12 +9252,23 @@ DASHBOARD_MENU_TEMPLATE = '''
         </summary>
         <div class="cards-grid folder-grid">
 
+            {% if role == 'office' %}
             <a class="app-card card-teal" href="{{ url_for('installation') }}">
                 <div class="card-icon-wrap">🏗️</div>
                 <div class="card-title">Installation <span class="soon-badge">Coming Soon</span></div>
                 <div class="card-desc">Manage install jobs, site plans, crew scheduling, daily logs, and job costing all in one place.</div>
                 <button class="card-cta">Open Installation →</button>
             </a>
+            {% endif %}
+
+            {% if timeoff_ok %}
+            <a class="app-card card-amber" href="{{ url_for('timeoff.page') }}">
+                <div class="card-icon-wrap">🗓️</div>
+                <div class="card-title">Time-Off Log <span class="soon-badge">Coming Soon</span></div>
+                <div class="card-desc">Approve or deny technician time-off requests, see sick call-outs, and check who's off on any day.</div>
+                <button class="card-cta">Open Time-Off →</button>
+            </a>
+            {% endif %}
 
         </div>
     </details>
@@ -39287,6 +39299,10 @@ def _hash_plaintext_passwords():
 
 _hash_plaintext_passwords()
 init_cashflow_db()
+# Time-Off Log (technician time off and call-outs) lives in timeoff.py.
+from timeoff import init_timeoff, timeoff_allowed
+init_timeoff(app, csrf, DB_PATH)
+
 # Pumps (pump/diver/filter/SCADA work from request to invoice) lives in pumps.py.
 from pumps import init_pumps, pumps_allowed
 init_pumps(app, csrf, DB_PATH, data_dir=DATA_DIR, secret_key=app.secret_key, website_url=WEBSITE_URL,
