@@ -825,8 +825,14 @@ class PumpsTest(unittest.TestCase):
     def test_diver_sites_and_monthly_email(self):
         j = self.c.get('/pumps/api/dives').get_json()
         names = {x['name']: x for x in j['sites']}
-        self.assertEqual(len(names), 26, "Andrea's October list")
-        self.assertTrue(all(x['needs_dive'] for x in j['sites']))
+        self.assertTrue({"Anna's Place", 'Spanish Wells Lake Club', 'Clubside', 'Riviera Golf Estates 2'} <= set(names))
+        # From the lake sheet: quarterly, January only, April/October; former accounts kept but off the lists.
+        self.assertEqual(names["Anna's Place"]['months'], '1,4,7,10')
+        self.assertEqual((names["Anna's Place"]['diver_cost'], names["Anna's Place"]['our_bill']), ('$125.00', '$400.00'))
+        self.assertEqual(names['Evergreen (Bradenton)']['months'], '1')
+        self.assertEqual(names['Riviera Golf Estates 2']['months'], '4,10')
+        self.assertEqual(names['Bentley Village']['active'], 0)
+        self.assertEqual(names['Warm Springs Comm. Assoc.']['needs_dive'], 0, 'Naples Electric does it')
         self.assertEqual(names['Spanish Wells Lake Club']['status'], 'meet')
         self.assertEqual(names['Sopra Luxury Living']['status'], 'hold')
         self.assertEqual(j['settings']['to'], 'Gulfshoreyachts@gmail.com')
@@ -834,25 +840,31 @@ class PumpsTest(unittest.TestCase):
         r = self.c.post('/pumps/api/dives/sites', json={'name': 'Lely Pump Station', 'equipment': '1 Pump',
                                                          'needs_dive': False})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.c.post('/pumps/api/dives/sites', json={'id': names['Morton Grove']['id'], 'months': '1,4,7,10'})
+        self.c.post('/pumps/api/dives/sites', json={'id': names['Morton Grove']['id'], 'months': '4,7,10'})
         self.c.post('/pumps/api/dives/sites', json={'id': names['Caymas']['id'],
                                                      'month_note': 'Gate is being replaced - call the office.'})
-        p = self.c.get('/pumps/api/dives/preview?month=2026-11-01').get_json()
-        self.assertEqual(p['subject'], 'Diver schedule - November 2026 - Stahlman-England')
-        self.assertEqual(p['sites'], 25, 'Morton Grove is quarterly; Lely needs no diver')
+        self.assertEqual(self.c.get('/pumps/api/dives/preview?month=2026-11-01').get_json()['sites'], 0,
+                         'nobody is due in November')
+        p = self.c.get('/pumps/api/dives/preview?month=2027-01-01').get_json()
+        self.assertEqual(p['subject'], 'Diver schedule - January 2027 - Stahlman-England')
         t = p['text']
         self.assertTrue(t.startswith('Hi Jordan!'))
-        self.assertIn('Please see the attached list for November. Please note that Spanish Wells Lake Club has '
+        for name in ("Anna's Place", 'Clubside', 'Evergreen (Bradenton)', 'The Reserve @ Estero'):
+            self.assertIn(name, t)
+        for name in ('Riviera Golf Estates 2', 'Bentley Village', 'Warm Springs', 'Morton Grove'):
+            self.assertNotIn(name, t)
+        self.assertIn('Please see the attached list for January. Please note that Spanish Wells Lake Club has '
                       'requested to meet with you onsite.', t)
         self.assertIn('HOLD OFF - Called client to set up visit - waiting on approval. - Sopra Luxury Living', t)
         self.assertIn('Diver to check the rope that holds the float and filter.', t)
         self.assertIn('Gate code #0422', t)
         self.assertIn('Gate is being replaced', t)
         self.assertNotIn('Lely', t)
-        self.assertNotIn('Morton Grove', t)
         self.assertIn('Andrea Mitchell', t)
         self.assertIn('<b>Anna&#x27;s Place</b>' if '&#x27;' in p['html'] else "<b>Anna's Place</b>", p['html'])
-        self.assertIn('Morton Grove', self.c.get('/pumps/api/dives/preview?month=2026-10-01').get_json()['text'])
+        october = self.c.get('/pumps/api/dives/preview?month=2026-10-01').get_json()['text']
+        self.assertIn('Morton Grove', october)
+        self.assertIn('Riviera Golf Estates 2', october)
 
         # Sending: once a month, from the PO mailbox, copied to Andrea, Word list attached.
         sent = []
@@ -864,7 +876,7 @@ class PumpsTest(unittest.TestCase):
         P.http_requests.post = lambda url, **kw: (sent.append((url, kw['json'])), Resp())[1]
         P.CFG['graph_token'], P.CFG['mail_from'] = (lambda: 'tok'), 'PO@stahlman-england.com'
         try:
-            res = P.send_dive_email(P.datetime(2026, 11, 1).date())
+            res = P.send_dive_email(P.datetime(2027, 1, 1).date())
             self.assertTrue(res['sent'])
             url, body = sent[0]
             self.assertIn('/users/PO@stahlman-england.com/sendMail', url)
@@ -872,15 +884,15 @@ class PumpsTest(unittest.TestCase):
             self.assertEqual([r['emailAddress']['address'] for r in m['toRecipients']], ['Gulfshoreyachts@gmail.com'])
             self.assertEqual([r['emailAddress']['address'] for r in m['ccRecipients']], ['Andrea@stahlman-england.com'])
             self.assertEqual([r['emailAddress']['address'] for r in m['replyTo']], ['Andrea@stahlman-england.com'])
-            self.assertEqual(m['attachments'][0]['name'], 'Diver schedule November 2026.docx')
+            self.assertEqual(m['attachments'][0]['name'], 'Diver schedule January 2027.docx')
             self.assertGreater(len(m['attachments'][0]['contentBytes']), 1000)
             # The one-time note was for that email only; the month is not sent twice.
             caymas = [x for x in self.c.get('/pumps/api/dives').get_json()['sites'] if x['name'] == 'Caymas'][0]
             self.assertEqual(caymas['month_note'], '')
-            self.assertEqual(P.send_dive_email(P.datetime(2026, 11, 1).date()), {'skipped': 'already sent this month'})
+            self.assertEqual(P.send_dive_email(P.datetime(2027, 1, 1).date()), {'skipped': 'already sent this month'})
             self.assertEqual(len(sent), 1)
             # Automatic sending is off for now: the 1st only adds the to-do.
-            P._now, real_now = (lambda: P.datetime(2026, 12, 1, 8, 5, tzinfo=P.TZ)), P._now
+            P._now, real_now = (lambda: P.datetime(2027, 4, 1, 8, 5, tzinfo=P.TZ)), P._now
             try:
                 P._scheduled_dive_email()
                 self.assertEqual(len(sent), 1)
@@ -889,8 +901,8 @@ class PumpsTest(unittest.TestCase):
                 P._scheduled_dive_email()
                 P._scheduled_dive_email()
                 self.assertEqual(len(sent), 2)
-                self.assertIn('December 2026', sent[1][1]['message']['subject'])
-                P._now = lambda: P.datetime(2026, 12, 15, 8, 5, tzinfo=P.TZ)
+                self.assertIn('April 2027', sent[1][1]['message']['subject'])
+                P._now = lambda: P.datetime(2027, 4, 15, 8, 5, tzinfo=P.TZ)
                 P._scheduled_dive_email()
                 self.assertEqual(len(sent), 2)
             finally:
@@ -904,8 +916,8 @@ class PumpsTest(unittest.TestCase):
                     return {'error': {'message': 'Access is denied'}}
             P.http_requests.post = lambda url, **kw: Bad()
             with self.assertRaises(RuntimeError):
-                P.send_dive_email(P.datetime(2027, 1, 1).date())
-            self.assertIsNone(P._state_get('dive_email:2027-01'))
+                P.send_dive_email(P.datetime(2027, 7, 1).date())
+            self.assertIsNone(P._state_get('dive_email:2027-07'))
             log = self.c.get('/pumps/api/dives').get_json()['sent']
             self.assertIn('Access is denied', log[0]['error'])
         finally:
@@ -919,16 +931,19 @@ class PumpsTest(unittest.TestCase):
 
     def test_todo_list_and_diver_email_todo(self):
         P.ensure_monthly_todos(P.datetime(2026, 11, 1).date())
-        P.ensure_monthly_todos(P.datetime(2026, 11, 1).date())
+        self.assertFalse([t for t in self.c.get('/pumps/api/todos').get_json()['todos']
+                          if t['key'] == 'diver-email:2026-11'], 'no sites due in November - no to-do')
+        P.ensure_monthly_todos(P.datetime(2027, 1, 1).date())
+        P.ensure_monthly_todos(P.datetime(2027, 1, 1).date())
         todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
-        nov = [t for t in todos if t['key'] == 'diver-email:2026-11']
+        nov = [t for t in todos if t['key'] == 'diver-email:2027-01']
         self.assertEqual(len(nov), 1, 'one per month')
-        self.assertEqual(nov[0]['title'], 'Email Jordan the November diver list')
+        self.assertEqual(nov[0]['title'], 'Email Jordan the January diver list')
         self.assertIn('Gulfshoreyachts@gmail.com', nov[0]['detail'])
         # The list is ready to attach.
-        r = self.c.get('/pumps/api/dives/docx?month=2026-11-01')
+        r = self.c.get('/pumps/api/dives/docx?month=2027-01-01')
         self.assertEqual(r.status_code, 200)
-        self.assertIn('Diver schedule November 2026.docx', r.headers['Content-Disposition'])
+        self.assertIn('Diver schedule January 2027.docx', r.headers['Content-Disposition'])
         # Ticked off, and back again.
         j = self.c.post(f"/pumps/api/todos/{nov[0]['id']}/done", json={'done': True}).get_json()
         self.assertTrue([t for t in j['todos'] if t['id'] == nov[0]['id']][0]['done_at'])
@@ -957,11 +972,23 @@ class PumpsTest(unittest.TestCase):
         quote = [st for st in live['stages'] if st['key'] == 'quote'][0]
         mine = [j for j in quote['jobs'] if j['id'] == q['case_id']][0]
         self.assertEqual(mine['next'], 'Quote sent to client')
+        self.assertEqual(mine['jobber_uri'], '', 'not linked to Jobber yet')
+        # Once linked, the job opens its Jobber record - the quote while quoting.
+        self.c.patch(f"/pumps/api/cases/{q['case_id']}", json={'jobber': {
+            'quote': {'id': 'QX', 'number': '9136', 'uri': 'https://secure.getjobber.com/quotes/66752875'},
+            'job': {'id': 'JX', 'number': '1609', 'uri': 'https://secure.getjobber.com/work_orders/41420018'}}})
+        live = self.c.get('/pumps/api/pipeline').get_json()
+        mine = [j for st in live['stages'] for j in st['jobs'] if j['id'] == q['case_id']][0]
+        self.assertEqual((mine['jobber_uri'], mine['jobber_label']),
+                         ('https://secure.getjobber.com/quotes/66752875', 'quote #9136'))
+        self.assertTrue(any(j['jobber_uri'] for st in sample['stages'] for j in st['jobs']))
         # Scheduled work shows up in the weeks ahead.
         when = (P._today() + P.timedelta(days=3)).isoformat()
         self.c.patch(f"/pumps/api/cases/{q['case_id']}", json={'scheduled_for': when})
         live = self.c.get('/pumps/api/pipeline').get_json()
         self.assertIn(when, [e['date'] for w in live['weeks'] for e in w['events']])
+        ev = [e for w in live['weeks'] for e in w['events'] if e['date'] == when][0]
+        self.assertEqual(ev['jobber_uri'], 'https://secure.getjobber.com/work_orders/41420018', 'the job, for a visit')
 
     # ── who can get in ───────────────────────────────────────────────────────
     def test_access(self):
@@ -1056,37 +1083,62 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.data[:2] == b'PK')
 
-    def test_scada_due_dates(self):
-        conn = P._conn()
-        rows = [('S1', 'job', '101', 'Estimate to Renew the SCADA Annual Cellular subcription', 'archived', 'one_off',
-                 'CL1', 'Overdue Club', '2025-07-10T14:00:00Z'),
-                ('S2', 'job', '102', 'Estimate to Renew the SCADA system- Driving Range', 'archived', 'one_off',
-                 'CL2', 'Current Golf', '2026-08-01T14:00:00Z'),
-                ('S3', 'job', '103', 'Estimate to Renew the SCADA system', 'archived', 'one_off', 'CL3',
-                 'Due Soon School', '2025-11-18T02:10:39Z')]
-        for jid, kind, num, title, status, jt, cid, cname, created in rows:
-            conn.execute('''INSERT OR REPLACE INTO pump_jobber_items (jobber_id, kind, number, title, status, job_type,
-                              client_id, client_name, created_at, completed_at, category)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
-                         (jid, kind, num, title, status, jt, cid, cname, created, created, 'scada'))
-        P.rebuild_scada(conn)
-        conn.commit()
-        conn.close()
+    def test_scada_sheet(self):
+        """The office's SCADA sheet: renewal date = when it's next due; a year's cell holds the invoice # or a note."""
         today = P._today
-        P._today = lambda: __import__('datetime').date(2026, 10, 2)
+        P._today = lambda: P.datetime(2026, 10, 5).date()
         try:
-            rows = {r['client_name']: r for r in self.c.get('/pumps/api/scada').get_json()['scada']}
+            j = self.c.get('/pumps/api/scada').get_json()
+            rows = {r['client']: r for r in j['scada']}
+            self.assertEqual(len(rows), 16)
+            self.assertEqual(j['years'], ['2023', '2024', '2025', '2026'])
+            allure = rows['ALLURE']
+            self.assertEqual((allure['vendor_cost'], allure['our_bill'], allure['years']['2025']), (428.0, '$482.00', '29448'))
+            self.assertEqual((allure['next_due_on'], allure['state']), ('2026-08-28', 'overdue'))
+            # Lely's sheet date (1/9/2023) is older than its 2024 invoice: next due a year after that.
+            self.assertEqual(rows['LELY']['next_due_on'], '2025-01-09')
+            self.assertEqual(rows['OLD COLLIER']['next_due_on'], '2025-10-04')
+            self.assertEqual(rows['AUTUMN WOODS']['years']['2024'], 'SEI pays for SCADA')
+            self.assertEqual(rows['Tuscany Point']['vendor_cost'], 855.99)
+            # Renewed: the invoice goes in the year it was due, and the date moves on a year.
+            sid = allure['id']
+            j = self.c.post(f'/pumps/api/scada/{sid}', json={'action': 'renewed', 'value': '31002'}).get_json()
+            allure = [r for r in j['scada'] if r['id'] == sid][0]
+            self.assertEqual((allure['years']['2026'], allure['renewal_date'], allure['state']),
+                             ('31002', '2027-08-28', 'current'))
+            # Edit and switch off.
+            self.c.patch(f"/pumps/api/scada/{rows['CLUBCARE']['id']}", json={'active': False, 'notes': 'Left'})
+            j = self.c.get('/pumps/api/scada').get_json()
+            self.assertEqual([r for r in j['scada'] if r['client'] == 'CLUBCARE'][0]['state'], 'inactive')
+            # A renewal item, one at a time.
+            lely = rows['LELY']['id']
+            cid = self.c.post(f'/pumps/api/scada/{lely}', json={'action': 'renewal_item'}).get_json()['case_id']
+            self.assertEqual(self.case(cid)['category'], 'scada')
+            self.assertEqual(cid, self.c.post(f'/pumps/api/scada/{lely}', json={'action': 'renewal_item'}).get_json()['case_id'])
+            self.assertIn('LELY', [s['client_name'] for s in self.c.get('/pumps/api/summary').get_json()['queue']['scada_attention']])
         finally:
             P._today = today
-        self.assertEqual(rows['Overdue Club']['state'], 'overdue')
-        self.assertEqual(rows['Current Golf']['state'], 'current')
-        self.assertEqual(rows['Current Golf']['site'], 'Driving Range')
-        self.assertEqual(rows['Due Soon School']['state'], 'due_soon')
-        sid = rows['Overdue Club']['id']
-        cid = self.c.post(f'/pumps/api/scada/{sid}', json={'action': 'renewal_item'}).get_json()['case_id']
-        self.assertEqual(self.case(cid)['category'], 'scada')
-        again = self.c.post(f'/pumps/api/scada/{sid}', json={'action': 'renewal_item'}).get_json()['case_id']
-        self.assertEqual(cid, again, 'one renewal item at a time')
+
+    def test_maintenance_accounts(self):
+        today = P._today
+        P._today = lambda: P.datetime(2026, 10, 5).date()
+        try:
+            j = self.c.get('/pumps/api/maint').get_json()
+        finally:
+            P._today = today
+        acc = {a['name']: a for a in j['accounts']}
+        self.assertEqual(sum(1 for a in j['accounts'] if a['active']), 39)
+        self.assertEqual(sum(1 for a in j['accounts'] if not a['active']), 13)
+        lc = acc['Lake Club (Spanish Wells)']
+        self.assertEqual((lc['months'], lc['vendor_cost'], lc['due_this_month']), ('1,4,7,10', '$200.00', True))
+        self.assertTrue(acc['Quail Run']['monthly'])
+        self.assertFalse(acc['Forum c/o LandQwest Commercial Property']['due_this_month'], 'January/July only')
+        self.assertEqual(acc['Warm Springs Comm. Assoc.']['naples_electric'], '$250.00')
+        self.assertFalse(acc['Sapphire Lakes']['active'])
+        r = self.c.post('/pumps/api/maint', json={'id': acc['Wilshire']['id'], 'active': True, 'months': 'jan apr'})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.c.post('/api/pumps/maint', json={'name': 'X'},
+                                     headers={'Authorization': 'Bearer test-openclaw-key'}).status_code, 403)
 
     def test_matching_helpers(self):
         self.assertGreater(P.similarity('Reserve at Estero - Lee County',
