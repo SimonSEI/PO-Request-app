@@ -58,6 +58,20 @@ DEFAULT_VENDORS = [{
     'other': ['CFC1429137', '#CFC1429137', '451 Interstate Court', '451 interstate Court',
               'State of Florida Certified Plumbing Contractor'],
     'sender_match': ['wettec', 'wetech', 'wettech', 'water equipment technologies'],
+    # Approved quotes go back to Tommy.
+    'contact_email': 'tomm@wettec.biz',
+    'contact_name': 'Tommy',
+}, {
+    'key': 'gulfshore',
+    'display': 'Gulfshore',
+    'names': ['Gulfshore Yacht Services', 'Gulfshore Yacht Service', 'Gulf Shore Yacht Services',
+              'Gulf Shore Yacht Service', 'Gulfshore Yachts', 'Gulf Shore Yachts', 'Gulfshore', 'Gulf Shore Yacht'],
+    'emails': ['gulfshoreyachts@gmail.com'],
+    'phones': [],
+    'other': [],
+    'sender_match': ['gulfshoreyachts', 'gulfshore yacht', 'gulf shore yacht'],
+    'contact_email': 'Gulfshoreyachts@gmail.com',
+    'contact_name': 'Jordan',
 }]
 
 # A whole cell that is a technician label: "Service Technician Signature",

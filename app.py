@@ -18,6 +18,7 @@ from email.mime.multipart import MIMEMultipart
 from markupsafe import Markup
 import imaplib
 import email
+import email.utils
 from email.parser import Parser
 from email.header import decode_header
 import base64
@@ -549,7 +550,7 @@ Return ONLY valid JSON, no explanation:
     return result
 
 
-def _fetch_emails_for_vi_scan(log_table='vendor_invoice_email_log', extensions=('.pdf',), since=None):
+def _fetch_emails_for_vi_scan(log_table='vendor_invoice_email_log', extensions=('.pdf',), since=None, plain_since=None):
     """
     Fetch emails for vendor invoice scanning using a SEPARATE log table
     (vendor_invoice_email_log) so it runs independently of the PO scanner.
@@ -557,6 +558,8 @@ def _fetch_emails_for_vi_scan(log_table='vendor_invoice_email_log', extensions=(
     own history instead.
     extensions: attachment types worth fetching the email for (Pumps also
     wants Word reports). since: 'YYYY-MM-DD' - skip mail received before it.
+    plain_since: 'YYYY-MM-DD' - also return emails with no wanted attachment
+    received since then (Pumps reads plain service-call emails).
     Returns {'emails': [(uid, msg), ...], 'diagnostics': {...}, 'source': '...'}
     """
     if log_table not in ('vendor_invoice_email_log', 'pump_email_scan_log'):
@@ -608,6 +611,21 @@ def _fetch_emails_for_vi_scan(log_table='vendor_invoice_email_log', extensions=(
                         emails_out.append((msg_id, msg_data))
                 url = data.get('@odata.nextLink')
                 params = None
+            if plain_since:
+                seen = {m for m, _ in emails_out}
+                url = f'https://graph.microsoft.com/v1.0/users/{PO_EMAIL_ADDRESS}/messages'
+                params = {'$filter': f'receivedDateTime ge {plain_since}T00:00:00Z', '$top': 100,
+                          '$select': 'id,subject,from,receivedDateTime,hasAttachments,bodyPreview',
+                          '$orderby': 'receivedDateTime desc'}
+                while url:
+                    resp = http_requests.get(url, headers=headers, params=params, timeout=30)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    for msg_data in data.get('value', []):
+                        if msg_data['id'] not in scanned_uids and msg_data['id'] not in seen:
+                            emails_out.append((msg_data['id'], msg_data))
+                    url = data.get('@odata.nextLink')
+                    params = None
             diagnostics['source'] = 'graph_api'
             diagnostics['found'] = len(emails_out)
         except Exception as e:
@@ -640,6 +658,13 @@ def _fetch_emails_for_vi_scan(log_table='vendor_invoice_email_log', extensions=(
                         )
                         if has_pdf:
                             emails_out.append((uid_str, msg))
+                        elif plain_since:
+                            try:
+                                sent = email.utils.parsedate_to_datetime(msg.get('Date', '')).strftime('%Y-%m-%d')
+                            except (TypeError, ValueError):
+                                sent = ''
+                            if sent >= plain_since:
+                                emails_out.append((uid_str, msg))
             mail.close()
             mail.logout()
             diagnostics['source'] = 'imap'
