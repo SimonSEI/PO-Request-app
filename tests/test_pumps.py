@@ -323,6 +323,37 @@ class PumpsTest(unittest.TestCase):
         self.assertIn(b['doc_id'], [d['doc_id'] for d in done])
         self.assertTrue(self.c.get(f"/pumps/api/docs/{b['doc_id']}").get_json()['doc']['case_id'])
 
+    def test_wettech_letter_quote(self):
+        """Wettech quotes are Word letters: "RE: The Carlise", one "Your Cost" price that includes sales tax."""
+        from docx import Document
+        d = Document()
+        for t in ('of Southwest Florida LLC', 'State of Florida Certified Plumbing Contractor', '#CFC1429137',
+                  'Phone 941-232-4629   FAX 941-371-5151', 'Email: wettec@verizon.net', 'October 5, 2026',
+                  'Stahlman England', 'Attn: Andrea',
+                  'RE: The Carlise', 'We are pleased to quote you on the following services',
+                  'Field service to check out pump station, found pipe had melted at the fitting going into the pump '
+                  'suction.  Field service to pull and inspect suction line, clean screen and reinstall.',
+                  'Your Cost --------------- $ 1158.99', 'Price includes Sales tax and in freight',
+                  'Terms: Net 10 days', 'Thank You', 'H. H. (Tom) Morgan III'):
+            d.add_paragraph(t)
+        buf = io.BytesIO()
+        d.save(buf)
+        res = self.upload('Carslie Back Station .docx', data=buf.getvalue())
+        self.assertEqual(res['kind'], 'quote', 'a quote letter, not a pump report')
+        doc = self.c.get(f"/pumps/api/docs/{res['doc_id']}").get_json()['doc']
+        self.assertEqual((doc['vendor'], doc['client_name'], doc['doc_date']), ('Wettech', 'The Carlise', '2026-10-05'))
+        self.assertEqual((doc['subtotal'], doc['total']), (None, 1158.99))
+        self.assertEqual(len(doc['line_items']), 1)
+        line = doc['quote_suggestion']['line_items'][0]
+        self.assertEqual(line['unit_price'], 1158.99)
+        self.assertFalse(line['taxable'], 'tax is already in the price - Jobber must not add it again')
+        # Claude's reading of the same letter is cleaned up the same way.
+        x = P._clean_extraction(extraction('quote', '', client='The Carlise', subtotal=1158.99, tax=0, items=[
+            {'name': 'Suction line repair', 'description': 'Field service...', 'quantity': 1, 'unit_price': 1158.99,
+             'amount': 1158.99, 'taxable': True, 'is_tax': False}]) | {'tax': None, 'subtotal': None, 'total': None,
+                                                                       'tax_included': True})
+        self.assertEqual((x['subtotal'], x['total'], x['line_items'][0]['taxable']), (None, 1158.99, False))
+
     def test_same_file_twice_is_skipped(self):
         self.extracts['dup.pdf'] = extraction('quote', 'Q-91', client='Dup Lakes', subtotal=100)
         self.upload('dup.pdf')

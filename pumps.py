@@ -993,11 +993,12 @@ EXTRACT_SCHEMA = {
         'subtotal': _NUM,
         'tax': _NUM,
         'total': _NUM,
+        'tax_included': {'type': 'boolean'},
         'notes': {'type': 'string'},
     },
     'required': ['kind', 'vendor', 'doc_number', 'doc_date', 'po_number', 'ordered_by', 'wo_number',
                  'quote_reference', 'client_name', 'site', 'category', 'description', 'line_items', 'subtotal',
-                 'tax', 'total', 'notes'],
+                 'tax', 'total', 'tax_included', 'notes'],
     'additionalProperties': False,
 }
 
@@ -1017,7 +1018,8 @@ Classify the document and pull out its fields:
   field holds a person's name, leave po_number "" and put the name in ordered_by.
 - wo_number: the vendor's work order (W/O) number, or "".
 - quote_reference: the vendor quote number a bill refers to, or "".
-- client_name: the client/community the work is for (not Stahlman-England). site: the pump, station or area
+- client_name: the client/community the work is for (not Stahlman-England) - on Wettech's letter-style quotes
+  it is the "RE:" line (e.g. "RE: The Carlise" -> "The Carlise"). site: the pump, station or area
   if named separately (e.g. "Pump #2", "Fountain", "South pump station"), else "".
 - category: repair, maintenance (routine/contract visit), install (new pump/equipment), diver, filter, scada,
   inspection, or other.
@@ -1025,7 +1027,12 @@ Classify the document and pull out its fields:
 - line_items: every priced line, in order, as written. name is a short label (under 60 characters) and
   description the full text of the line. Set is_tax true for sales-tax lines and taxable true where the line
   is marked taxable (e.g. a trailing "T") or tax is charged on it. Use null for numbers that are not shown.
+  A quote written as a letter with a single price (e.g. "Your Cost ------ $1158.99") is one line item: name a
+  short label for the work, description the work paragraph, quantity 1, unit_price and amount the price.
 - subtotal (before tax), tax, total: as printed; null when not shown.
+- tax_included: true when the document says its price already includes sales tax (e.g. "Price includes Sales
+  tax and freight"). Then put that price in total, leave subtotal and tax null, and set taxable false on its
+  lines. Otherwise false.
 - notes: anything a person checking this against a quote should know ("as per quotation", exclusions, etc).
 Use "" for text you cannot find. Never invent numbers."""
 
@@ -1158,10 +1165,42 @@ def _regex_extract(text, sender='', subject=''):
         out['subtotal'] = round(out['total'] - out['tax'], 2)
     if re.search(r'as per quot', text, re.I):
         out['notes'] = 'Bill says "as per quotation".'
+    _letter_quote(text, out)
     # "Reserve at Estero - Lee County" names the county for tax: drop it.
     out['client_name'] = re.sub(r'\s*[-–]\s*(Lee|Collier|Charlotte|Sarasota|Hendry|Manatee)\s+County\s*$', '',
                                 out['client_name'] or '', flags=re.I)
     return out
+
+
+_MONTH_DATE = re.compile(r'\b((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},\s+\d{4})')
+
+
+def _letter_quote(text, out):
+    """Wettech's quotes are letters, not tables: "RE: The Carlise", a work
+    paragraph after "We are pleased to quote you on the following services",
+    one "Your Cost ---- $ 1158.99" and often "Price includes Sales tax"."""
+    if out['total'] is None:
+        m = re.search(r'(?:your|total)\s+(?:cost|price)\b[\s\-–—_.:]*\$\s*([\d,]+\.\d{2})', text, re.I)
+        if m:
+            out['total'] = _money(m.group(1))
+    if not out['doc_date']:
+        m = _MONTH_DATE.search(text[:2000])
+        if m:
+            out['doc_date'] = _iso_date(m.group(1).replace('.', '').replace('Sept ', 'Sep '))
+    m = re.search(r'^\s*RE\s*:\s*(.+?)\s*$', text, re.I | re.M)
+    if m:
+        out['client_name'] = m.group(1)[:120]
+    out['tax_included'] = bool(re.search(r'\b(?:price|cost)s?\s+includes?\s+(?:the\s+)?sales\s+tax', text, re.I))
+    if out['line_items'] or out['total'] is None:
+        return
+    m = re.search(r'following\s+(?:services|work|items?)[^\n]*\n(.+?)\n\s*(?:your|total)\s+(?:cost|price)', text,
+                  re.I | re.S)
+    work = re.sub(r'\s+', ' ', m.group(1)).strip() if m else ''
+    if work:
+        out['description'] = work[:300]
+    out['line_items'] = [{'name': short_name(work) or 'Pump service', 'description': work, 'quantity': 1.0,
+                          'unit_price': out['total'], 'amount': out['total'],
+                          'taxable': not out['tax_included'], 'is_tax': False}]
 
 
 def short_name(text, limit=60):
@@ -1190,7 +1229,20 @@ def _clean_extraction(x):
         it['is_tax'] = bool(it.get('is_tax')) or bool(re.match(r'^\s*(sales\s+)?tax\b', desc, re.I))
         items.append(it)
     x['line_items'] = items
-    if x['subtotal'] is None:
+    if x.get('tax_included'):
+        # The price already carries the vendor's sales tax: it is the total,
+        # and our client quote/invoice must not add tax on top of it.
+        for it in items:
+            it['taxable'] = False
+        if x['total'] is None and len(items) == 1 and items[0].get('amount') is not None:
+            x['total'] = items[0]['amount']
+        if x['subtotal'] is not None and x['tax'] is None and x['total'] is None:
+            x['total'], x['subtotal'] = x['subtotal'], None
+        if x['tax'] is None:
+            x['subtotal'] = None
+        if 'includes sales tax' not in (x.get('notes') or '').lower():
+            x['notes'] = ((x.get('notes') or '') + ' Price includes sales tax.').strip()
+    elif x['subtotal'] is None:
         priced = [i['amount'] for i in items if not i['is_tax'] and i.get('amount') is not None]
         if priced:
             x['subtotal'] = round(sum(priced), 2)
