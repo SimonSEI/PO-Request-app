@@ -942,6 +942,27 @@ class PumpsTest(unittest.TestCase):
         self.c.post(f"/pumps/api/todos/{mine['id']}/delete", json={})
         self.assertNotIn(mine['id'], [t['id'] for t in self.c.get('/pumps/api/todos').get_json()['todos']])
 
+    def test_pipeline_dashboard(self):
+        sample = self.c.get('/pumps/api/pipeline?sample=1').get_json()
+        self.assertTrue(sample['sample'])
+        self.assertEqual([st['key'] for st in sample['stages']],
+                         ['quote', 'approval', 'scheduling', 'work', 'billing', 'payment'])
+        self.assertEqual(sum(st['count'] for st in sample['stages']), sample['kpis']['open'])
+        self.assertEqual(len(sample['weeks']), 8)
+        # Live: a real item lands in its stage, with what's next.
+        self.extracts['q-pl.pdf'] = extraction('quote', 'Q-150', po='PO990', client='Pipeline Pines', subtotal=700)
+        q = self.upload('q-pl.pdf')
+        live = self.c.get('/pumps/api/pipeline').get_json()
+        self.assertFalse(live['sample'])
+        quote = [st for st in live['stages'] if st['key'] == 'quote'][0]
+        mine = [j for j in quote['jobs'] if j['id'] == q['case_id']][0]
+        self.assertEqual(mine['next'], 'Quote sent to client')
+        # Scheduled work shows up in the weeks ahead.
+        when = (P._today() + P.timedelta(days=3)).isoformat()
+        self.c.patch(f"/pumps/api/cases/{q['case_id']}", json={'scheduled_for': when})
+        live = self.c.get('/pumps/api/pipeline').get_json()
+        self.assertIn(when, [e['date'] for w in live['weeks'] for e in w['events']])
+
     # ── who can get in ───────────────────────────────────────────────────────
     def test_access(self):
         anon = A.app.test_client()

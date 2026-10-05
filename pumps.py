@@ -4636,6 +4636,168 @@ def h_reports(actor):
 
 
 
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Pipeline dashboard
+# ═════════════════════════════════════════════════════════════════════════════
+# Where every pump job is (quote -> approval -> scheduling -> work -> billing
+# -> payment) and what's coming up week by week.
+
+PIPELINE_STAGES = [
+    ('quote', 'Quote', 'Wettech quoting, or our quote to send'),
+    ('approval', 'Approval', 'Quote sent - waiting on the client'),
+    ('scheduling', 'Scheduling', 'Approved - get it on Wettech\'s calendar'),
+    ('work', 'Work', 'Scheduled - waiting for the work'),
+    ('billing', 'Billing', "Wettech's bill, check it, draft our invoice, log the report"),
+    ('payment', 'Payment', 'Invoice to send, client to pay, Wettech to pay'),
+]
+_STEP_TO_STAGE = {'vendor_quote': 'quote', 'client_quote': 'quote', 'client_approved': 'approval',
+                  'scheduled': 'scheduling', 'work_done': 'work', 'vendor_bill': 'billing',
+                  'bill_checked': 'billing', 'invoice_drafted': 'billing', 'report_logged': 'billing',
+                  'closed': 'payment'}
+UPCOMING_KINDS = [('maintenance', 'Maintenance'), ('repair', 'Repair / install'), ('scada', 'SCADA renewal'),
+                  ('diver', 'Diver')]
+
+
+def pipeline_data(conn, today=None):
+    """The live pipeline: open items by stage, closed ones still waiting on
+    money, and the next eight weeks of work."""
+    today = today or _today()
+    step_label = dict(STEPS)
+    jobs = []
+    for c in list_cases(conn, 'all'):
+        if c['status'] == 'cancelled':
+            continue
+        pay = c['vendor_pay']
+        if c['status'] == 'open':
+            stage = _STEP_TO_STAGE.get(c['stage'])
+            nxt = step_label.get(c['stage'], '').format(vendor=c.get('vendor') or 'Wettech')
+        elif pay['state'] == 'due' or (pay['client_invoice_status'] and pay['client_invoice_status'] != 'paid'
+                                       and pay['state'] == 'unpaid'):
+            stage = 'payment'
+            nxt = 'Pay Wettech' if pay['state'] == 'due' else 'Client to pay our invoice'
+        else:
+            continue
+        if not stage:
+            continue
+        jobs.append({'id': c['id'], 'title': c['title'] or c['client_name'], 'client': c['client_name'],
+                     'stage': stage, 'next': nxt, 'days': c['idle_days'], 'stuck': c['idle_days'] >= STALE_DAYS,
+                     'amount': c.get('amount') or c.get('vendor_quote_amount') or c.get('vendor_quote_total') or 0,
+                     'category': c['category']})
+    end = today + timedelta(days=56)
+    events = []
+    for c in list_cases(conn, 'open'):
+        when = _iso_date(c.get('scheduled_for'))
+        if when and today.isoformat() <= when <= end.isoformat():
+            events.append({'date': when, 'kind': 'maintenance' if c['category'] in ('maintenance', 'inspection')
+                           else 'repair', 'title': c['title'] or c['client_name'], 'where': c.get('site') or ''})
+    for s in scada_rows(conn):
+        due = s.get('next_due_on') or ''
+        if due and today.isoformat() <= due <= end.isoformat():
+            events.append({'date': due, 'kind': 'scada', 'title': f"SCADA renewal - {s['client_name']}",
+                           'where': s.get('site') or ''})
+    m = today.replace(day=1)
+    while m <= end:
+        if m >= today.replace(day=1):
+            n = len(sites_for_month(conn, m))
+            if n:
+                when = max(m, today)
+                events.append({'date': when.isoformat(), 'kind': 'diver',
+                               'title': f"Diver - {m.strftime('%B')} list ({n} sites)", 'where': ''})
+        m = (m + timedelta(days=32)).replace(day=1)
+    return _pipeline_shape(jobs, events, today, sample=False)
+
+
+def _pipeline_shape(jobs, events, today, sample):
+    stages = []
+    for key, name, hint in PIPELINE_STAGES:
+        js = sorted([j for j in jobs if j['stage'] == key], key=lambda j: -j['days'])
+        stages.append({'key': key, 'name': name, 'hint': hint, 'count': len(js),
+                       'stuck': sum(1 for j in js if j['stuck']), 'amount': round(sum(j['amount'] or 0 for j in js), 2),
+                       'jobs': js})
+    start = today - timedelta(days=today.weekday())
+    weeks = []
+    for w in range(8):
+        a = start + timedelta(days=7 * w)
+        b = a + timedelta(days=6)
+        evs = sorted([e for e in events if a.isoformat() <= e['date'] <= b.isoformat()], key=lambda e: e['date'])
+        weeks.append({'start': a.isoformat(), 'end': b.isoformat(), 'events': evs,
+                      'counts': {k: sum(1 for e in evs if e['kind'] == k) for k, _ in UPCOMING_KINDS}})
+    month_end = (today + timedelta(days=30)).isoformat()
+    return {
+        'sample': sample, 'today': today.isoformat(), 'stages': stages, 'weeks': weeks,
+        'kinds': [{'key': k, 'name': n} for k, n in UPCOMING_KINDS],
+        'kpis': {'open': len(jobs), 'stuck': sum(1 for j in jobs if j['stuck']),
+                 'awaiting_approval': round(sum(j['amount'] or 0 for j in jobs if j['stage'] == 'approval'), 2),
+                 'next_30_days': sum(1 for e in events if today.isoformat() <= e['date'] <= month_end)},
+    }
+
+
+def pipeline_sample(today=None):
+    """MOCK DATA for judging the dashboard's layout - not real jobs.
+    Delete this function and the "sample" switch once the office has seen it."""
+    today = today or _today()
+    d = lambda n: (today + timedelta(days=n)).isoformat()
+    J = lambda i, t, c, st, nxt, days, amt, cat='repair': {
+        'id': -i, 'title': t, 'client': c, 'stage': st, 'next': nxt, 'days': days, 'stuck': days >= STALE_DAYS,
+        'amount': amt, 'category': cat}
+    jobs = [
+        J(1, 'Replace check valve - Pump #2', 'Heron Bay', 'quote', 'Quote from Wettech', 3, 0),
+        J(2, 'VFD fault - lift station', 'Lely CDD', 'quote', 'Quote sent to client', 9, 2480),
+        J(3, 'Suction line repair', 'The Carlisle (Greenscapes)', 'approval', 'Client approved', 2, 1506.69),
+        J(4, 'New float switch', 'Sanctuary at Blue Heron', 'approval', 'Client approved', 12, 640),
+        J(5, 'Fountain motor', 'Morton Grove', 'approval', 'Client approved', 5, 3120),
+        J(6, 'Pressure transducer', 'Pebblebrook HOA', 'scheduling', 'Scheduled with Wettech', 1, 890),
+        J(7, 'Pump #1 rebuild', 'Spanish Wells (The Lake Club)', 'scheduling', 'Scheduled with Wettech', 8, 4650),
+        J(8, 'Control panel replacement', 'Barrington Cove', 'work', 'Work done', 4, 5400),
+        J(9, 'Quarterly maintenance', 'Tuscany Pointe Trail', 'work', 'Work done', 2, 550, 'maintenance'),
+        J(10, 'Check valve install', 'Miromar Lakes', 'billing', "Bill from Wettech", 6, 1180),
+        J(11, 'Butterfly valve', 'Sample Lakes', 'billing', 'Bill checked against quote', 10, 1921.06),
+        J(12, 'Quarterly maintenance', 'Enclave at Palmira', 'billing', 'Report logged in Jobber', 1, 450,
+          'maintenance'),
+        J(13, 'Impeller replacement', 'Westminster HOA', 'payment', 'Client to pay our invoice', 15, 2760),
+        J(14, 'Lift station repair', 'University Square CDD', 'payment', 'Pay Wettech', 3, 1340),
+    ]
+    events = [
+        {'date': d(1), 'kind': 'maintenance', 'title': 'Quarterly pump - Spanish Wells (The Lake Club)', 'where': '4 pumps'},
+        {'date': d(2), 'kind': 'repair', 'title': 'Pressure transducer - Pebblebrook HOA', 'where': 'Station 2'},
+        {'date': d(4), 'kind': 'maintenance', 'title': 'Quarterly pump - The Carlisle', 'where': 'Pump #1 exit'},
+        {'date': d(6), 'kind': 'diver', 'title': 'Diver - 26 sites (Jordan)', 'where': ''},
+        {'date': d(8), 'kind': 'maintenance', 'title': 'Quarterly pump - Barrington Cove', 'where': '2 stations'},
+        {'date': d(9), 'kind': 'repair', 'title': 'Pump #1 rebuild - Spanish Wells', 'where': 'Pump #1'},
+        {'date': d(11), 'kind': 'scada', 'title': 'SCADA renewal - Lely CDD', 'where': ''},
+        {'date': d(13), 'kind': 'maintenance', 'title': 'Quarterly pump - Kurt Biggs', 'where': ''},
+        {'date': d(15), 'kind': 'maintenance', 'title': 'Quarterly pump - Rosewood HOA', 'where': ''},
+        {'date': d(16), 'kind': 'maintenance', 'title': 'Fountain quarterly - Miromar Lakes', 'where': ''},
+        {'date': d(20), 'kind': 'repair', 'title': 'Control panel - Barrington Cove', 'where': 'North station'},
+        {'date': d(22), 'kind': 'scada', 'title': 'SCADA renewal - Pebblebrook HOA', 'where': ''},
+        {'date': d(24), 'kind': 'maintenance', 'title': 'Quarterly pump - Turn Leaf HOA', 'where': ''},
+        {'date': d(27), 'kind': 'maintenance', 'title': 'Quarterly pump - Cypress Legends', 'where': ''},
+        {'date': d(29), 'kind': 'maintenance', 'title': 'Quarterly pump - Pine Air Lakes', 'where': ''},
+        {'date': d(33), 'kind': 'diver', 'title': 'Diver - next month (26 sites)', 'where': ''},
+        {'date': d(35), 'kind': 'maintenance', 'title': 'Quarterly pump - Enclave at Palmira', 'where': ''},
+        {'date': d(36), 'kind': 'maintenance', 'title': 'Quarterly pump - Water Crest', 'where': ''},
+        {'date': d(41), 'kind': 'scada', 'title': 'SCADA renewal - Sapphire Lakes', 'where': ''},
+        {'date': d(43), 'kind': 'repair', 'title': 'Float switch - Sanctuary at Blue Heron', 'where': ''},
+        {'date': d(48), 'kind': 'maintenance', 'title': 'Quarterly pump - Escala at Quail West', 'where': ''},
+        {'date': d(52), 'kind': 'maintenance', 'title': 'Quarterly pump - Diplomat RV', 'where': ''},
+    ]
+    return _pipeline_shape(jobs, events, today, sample=True)
+
+
+@api('/pipeline')
+def h_pipeline(actor):
+    """?sample=1 for the mock example (until the office signs off on the layout)."""
+    if request.args.get('sample') == '1':
+        return pipeline_sample()
+    conn = _conn()
+    try:
+        return pipeline_data(conn)
+    finally:
+        conn.close()
+
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # pages and the Jobber sign-in
 # ═════════════════════════════════════════════════════════════════════════════
