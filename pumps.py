@@ -445,6 +445,7 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS pump_state (key TEXT PRIMARY KEY, value TEXT)''')
     init_dive_tables(c)
     init_todo_table(c)
+    init_account_tables(c)
     # Account-specific names on vendor paperwork: "Carlisle" is a Greenscapes
     # property, and its "back station" is the Pump #1 exit pump.
     c.execute('''CREATE TABLE IF NOT EXISTS pump_site_aliases (
@@ -2273,45 +2274,6 @@ def rebuild_scada(conn):
                           amount, 'jobber', now))
 
 
-def scada_rows(conn):
-    out = []
-    today = _today()
-    for r in conn.execute('SELECT * FROM pump_scada ORDER BY client_name, site'):
-        d = dict(r)
-        for k in ('open_quote', 'history'):
-            try:
-                d[k] = json.loads(d[k]) if d[k] else ({} if k == 'open_quote' else [])
-            except ValueError:
-                d[k] = {} if k == 'open_quote' else []
-        due = d['next_due_override'] or ''
-        if not due and d['last_renewed_on']:
-            try:
-                last = datetime.strptime(d['last_renewed_on'][:10], '%Y-%m-%d').date()
-                try:
-                    due = last.replace(year=last.year + 1).isoformat()
-                except ValueError:
-                    due = (last + timedelta(days=365)).isoformat()
-            except ValueError:
-                due = ''
-        d['next_due_on'] = due
-        if not d['active']:
-            d['state'] = 'inactive'
-        elif d['recurring'] and not d['next_due_override']:
-            d['state'] = 'recurring'
-        elif not due:
-            d['state'] = 'unknown'
-        else:
-            days = (datetime.strptime(due, '%Y-%m-%d').date() - today).days
-            d['days_left'] = days
-            d['state'] = 'overdue' if days < 0 else ('due_soon' if days <= SCADA_DUE_SOON_DAYS else 'current')
-        if d['open_quote'] and d['state'] in ('overdue', 'due_soon'):
-            d['state_note'] = f"Renewal quote #{d['open_quote'].get('number')} is {d['open_quote'].get('status', '').replace('_', ' ')}"
-        out.append(d)
-    order = {'overdue': 0, 'due_soon': 1, 'unknown': 2, 'current': 3, 'recurring': 4, 'inactive': 5}
-    out.sort(key=lambda d: (order.get(d['state'], 9), d.get('next_due_on') or '9999', d['client_name']))
-    return out
-
-
 # ── draft invoices and notes ─────────────────────────────────────────────────
 
 def _tok_match(a, b):
@@ -3452,15 +3414,6 @@ def h_doc_pdf(actor, doc_id):
                      download_name=os.path.splitext(_branded_name(row['file_name']))[0] + '.pdf')
 
 
-@api('/scada')
-def h_scada(actor):
-    conn = _conn()
-    try:
-        return {'scada': scada_rows(conn)}
-    finally:
-        conn.close()
-
-
 @api('/jobber/items')
 def h_jobber_items(actor):
     conn = _conn()
@@ -3974,69 +3927,6 @@ def _link_item(conn, jobber_id, case_id, actor):
     _event(conn, actor, 'linked Jobber', f"{it['kind']} #{it['number'] or ''} {it['title']}", case_id=case_id)
 
 
-@api('/scada', methods=('POST',))
-def h_scada_add(actor):
-    data = _json()
-    if not data.get('client_name'):
-        raise ValueError('client_name is required')
-    conn = _conn()
-    try:
-        conn.execute('''INSERT INTO pump_scada (client_name, jobber_client_id, site, provider, annual_amount,
-                          last_renewed_on, notes, source, updated_at) VALUES (?,?,?,?,?,?,?,?,?)''',
-                     (data['client_name'], data.get('jobber_client_id') or f"manual:{data['client_name']}",
-                      data.get('site', ''), data.get('provider') or 'Wettech', _money(data.get('annual_amount')),
-                      _iso_date(data.get('last_renewed_on')), data.get('notes', ''), 'manual', _now_text()))
-        conn.commit()
-        return {}
-    finally:
-        conn.close()
-
-
-@api('/scada/<int:sid>', methods=('PATCH', 'POST'))
-def h_scada_update(actor, sid):
-    """Edit a SCADA row, or {"action": "renewal_item"} to open an item for
-    this year's renewal (quote the client, then order it from Wettech)."""
-    data = _json()
-    conn = _conn()
-    try:
-        row = conn.execute('SELECT * FROM pump_scada WHERE id=?', (sid,)).fetchone()
-        if not row:
-            return {'success': False, 'error': 'Not found'}, 404
-        if data.get('action') == 'renewal_item':
-            if row['case_id']:
-                c = conn.execute("SELECT status FROM pump_cases WHERE id=?", (row['case_id'],)).fetchone()
-                if c and c['status'] == 'open':
-                    return {'case_id': row['case_id']}
-            cid = create_case(conn, {
-                'title': f"SCADA annual renewal - {row['client_name']}" + (f" ({row['site']})" if row['site'] else ''),
-                'category': 'scada', 'client_name': row['client_name'], 'site': row['site'],
-                'vendor': row['provider'] or 'Wettech', 'jobber_client_id': '' if row['jobber_client_id'].startswith('manual:') else row['jobber_client_id'],
-                'description': 'Annual SCADA cellular subscription renewal.',
-                'vendor_quote_amount': row['annual_amount']}, actor, source='scada')
-            conn.execute('UPDATE pump_scada SET case_id=?, updated_at=? WHERE id=?', (cid, _now_text(), sid))
-            conn.commit()
-            return {'case_id': cid}
-        sets, vals = [], []
-        for k in ('client_name', 'site', 'provider', 'notes'):
-            if k in data:
-                sets.append(f'{k}=?')
-                vals.append(str(data[k] or ''))
-        for k in ('last_renewed_on', 'next_due_override'):
-            if k in data:
-                sets.append(f'{k}=?')
-                vals.append(_iso_date(data[k]))
-        if 'annual_amount' in data:
-            sets.append('annual_amount=?')
-            vals.append(_money(data['annual_amount']))
-        if 'active' in data:
-            sets.append('active=?')
-            vals.append(1 if data['active'] else 0)
-        if sets:
-            conn.execute(f"UPDATE pump_scada SET {', '.join(sets)}, updated_at=? WHERE id=?", (*vals, _now_text(), sid))
-            conn.commit()
-        return {}
-    finally:
-        conn.close()
 
 
 @api('/export.xlsx')
@@ -4195,8 +4085,18 @@ def dive_settings():
     return s
 
 
+_MONTH_NAMES = {m: i for i, m in enumerate(('jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct',
+                                             'nov', 'dec'), 1)}
+
+
 def _month_list(months):
-    return [int(m) for m in re.findall(r'\d+', months or '') if 1 <= int(m) <= 12]
+    """"1,4,7,10" or "JAN, APR, JULY, OCT" -> [1, 4, 7, 10]."""
+    out = []
+    for tok in re.findall(r'\d+|[A-Za-z]+', months or ''):
+        m = int(tok) if tok.isdigit() else _MONTH_NAMES.get(tok[:3].lower())
+        if m and 1 <= m <= 12 and m not in out:
+            out.append(m)
+    return sorted(out)
 
 
 def dive_sites(conn, include_all=True):
@@ -4209,6 +4109,8 @@ def sites_for_month(conn, month_date):
     that month (no months listed = every month)."""
     out = []
     for s in dive_sites(conn, include_all=False):
+        if not s.get('active', 1):
+            continue
         months = _month_list(s['months'])
         if not months or month_date.month in months:
             out.append(s)
@@ -4365,6 +4267,12 @@ def _scheduled_dive_email():
         return
     if _state_get(f"dive_email:{now.strftime('%Y-%m')}"):
         return
+    conn = _conn()
+    try:
+        if not sites_for_month(conn, now.date().replace(day=1)):
+            return   # nobody to visit this month
+    finally:
+        conn.close()
     try:
         send_dive_email(now.date().replace(day=1))
     except (ValueError, RuntimeError) as e:
@@ -4372,7 +4280,7 @@ def _scheduled_dive_email():
 
 
 DIVE_FIELDS = ('name', 'equipment', 'address', 'diver_notes', 'months', 'status_note', 'month_note',
-               'jobber_client_id')
+               'jobber_client_id', 'kind', 'joined', 'diver_cost', 'our_bill', 'naples_electric')
 
 
 @api('/dives')
@@ -4411,8 +4319,9 @@ def h_dive_site_save(actor):
         return _office_only(actor, "Changing the diver's sites")
     d = _json()
     vals = {k: str(d.get(k) or '').strip()[:1000] for k in DIVE_FIELDS if k in d}
-    if 'needs_dive' in d:
-        vals['needs_dive'] = 1 if d['needs_dive'] in (True, 1, '1', 'true', 'yes', 'on') else 0
+    for k in ('needs_dive', 'active'):
+        if k in d:
+            vals[k] = 1 if d[k] in (True, 1, '1', 'true', 'yes', 'on') else 0
     if 'status' in d:
         if d['status'] not in DIVE_STATUSES:
             raise ValueError('status must be active, meet or hold')
@@ -4502,8 +4411,8 @@ def ensure_monthly_todos(today=None):
     conn = _conn()
     try:
         key = f"diver-email:{month.strftime('%Y-%m')}"
-        if not conn.execute('SELECT 1 FROM pump_todos WHERE key=?', (key,)).fetchone():
-            n = len(sites_for_month(conn, month))
+        n = len(sites_for_month(conn, month))
+        if n and not conn.execute('SELECT 1 FROM pump_todos WHERE key=?', (key,)).fetchone():
             who = st.get('diver_name') or 'the diver'
             conn.execute('INSERT OR IGNORE INTO pump_todos (kind, key, title, detail, due_on, link, created_by, '
                          'created_at) VALUES (?,?,?,?,?,?,?,?)',
@@ -4815,6 +4724,520 @@ def h_pipeline(actor):
     conn = _conn()
     try:
         return pipeline_data(conn)
+    finally:
+        conn.close()
+
+
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# The office's account sheets: SCADA renewals, Wettech pump maintenance, and
+# the lake/diver accounts (Oct 2026 versions loaded once; edited here after)
+# ═════════════════════════════════════════════════════════════════════════════
+
+Q = '1,4,7,10'   # JAN, APR, JULY, OCT
+
+# SCADA: (client, renewal date, product, Wettech cost, our bill, vendor, {year: invoice # or note})
+# "Renewal date" is when the next renewal is due (the office moves it on a
+# year when they renew).
+SEED_SCADA = [
+    ('ALLURE', '2025-08-28', 'Annual Scada - Pump Station', 428.00, '$482.00', 'Wettech',
+     {'2023': '16467', '2024': '22702', '2025': '29448'}),
+    ('AUTUMN WOODS', '2026-03-13', 'Annual Inspection - SCADA', 428.00, '$600.00', 'Wettech',
+     {'2023': 'SEI pays for SCADA', '2024': 'SEI pays for SCADA', '2025': 'SEI pays for SCADA'}),
+    ('BANYAN BAY', '2026-03-08', 'Annual Inspection - SCADA', 428.00, '$600.00', 'Wettech',
+     {'2023': '17360', '2024': '19716', '2025': '25695'}),
+    ('Camas Willows 1', '2024-09-08', 'Annual Inspection - SCADA', 428.00, 'N/A - approved as part of our bid',
+     'Wettech', {'2024': 'N/A - approved as part of our bid'}),
+    ('CLUBCARE', '2024-03-15', 'Annual Inspection - SCADA', 428.00, '$600.00', 'Wettech',
+     {'2023': '19732', '2024': '19732'}),
+    ('COCONUT LANDING', '2023-04-30', 'Annual Inspection - SCADA', 428.00, '$600.00', 'Wettech',
+     {'2023': 'n/a', '2024': '20122'}),
+    ('COMMUNITY SCHOOL', '2023-12-01', 'Annual Scada - Pump Station', 428.00, '$600.00', 'Wettech',
+     {'2023': '18014', '2024': '23773'}),
+    ('CROSS CREEK', '2026-02-23', 'Annual Scada - Pump Station', 428.00, 'No charge', 'Wettech',
+     {'2024': '19542', '2025': '26587'}),
+    ('CORSA (formerly Estero Crossing)', '2023-11-20', 'Annual Scada - Pump Station', 428.00, '$600.00', 'Wettech',
+     {'2024': '23788'}),
+    ('FGCU-Athletics', '2023-07-03', 'Annual Subscription - SCADA', 428.00, '$500.00', 'Wettech',
+     {'2023': '15283', '2024': '22704'}),
+    ('FRUITVILLE COMMONS', '2026-02-28', 'Annual Subscription - SCADA', 428.00, '', 'Wettech',
+     {'2024': '19617', '2025': '25844'}),
+    ('LELY', '2023-01-09', 'Annual Subscription - SCADA', 428.00, '$600.00', 'Wettech', {'2024': '19236'}),
+    ('OLD COLLIER', '2025-10-04', 'Annual Subscription - SCADA', 428.00, '$600.00', 'Wettech',
+     {'2023': 'No charge', '2024': '23967'}),
+    ('RESERVE AT ESTERO', '2026-03-13', 'Annual Inspection - SCADA', 428.00, '$600.00', 'Wettech',
+     {'2023': 'Included in monthly'}),
+    ('Tuscany Point', '2026-02-27', 'Annual Scada - Pump Station (2 pump stations)', 855.99, '$1,095.00', 'Wettech',
+     {'2024': '20271', '2025': '26523'}),
+    ('WildBlue', '2026-04-30', 'Annual Scada - Pump Station', 428.00, '$600.00', 'Wettech',
+     {'2024': 'No charge - paid by us during ongoing project', '2025': 'No charge - paid by us during ongoing project'}),
+]
+
+# Wettech pump maintenance accounts:
+# (name, kind, joined, equipment, location, months, Wettech $/visit, Naples Electric, our bill, notes, active)
+SEED_MAINT = [
+    ('Allura', 'Pump', '2022-04-01', '1 Pump, 1 Lake Filter', 'Veterans Memorial Blvd.', Q, '$125.00', '', '$320.00', '', 1),
+    ("Anna's Place", 'Pump', '2016-11-01', '1 Lake 2 Filters', '5897 Ashford Ln', Q, '$75.00', '', 'N/A', '', 1),
+    ('Autumn Woods', 'Pump', '2016-12-01', '2 Pumps', '6710 Goodlette Frank', Q, '$300.00', '', 'N/A', '', 1),
+    ('Banyan Bay', 'Pump', '2025-04-24', '1 Pump, 1 Lake Filter',
+     '8125 Banyan Breeze Way, Clubhouse, Fort Myers, FL 33908', Q, '$125.00', '', '$780.00', '', 1),
+    ('Barrington Cove', 'Pump', '2024-08-19', '2 Pumps 2 Filters',
+     'First pump station: west entrance of the parking area, next to 16164 Aberdeen. Second: north side of the '
+     'property (north entrance), across from 16420 Aberdeen.', Q, '$250.00', '', '$600.00', '', 1),
+    ('Carlisle (The Carlisle)', 'Pumps', '2022-04-23', '2 Pumps', '6945 Carlisle Ct. - Pump #1; 6495 Carlisle Ct. - Pump #2',
+     Q, '$125.00', '', '$500.00', '', 1),
+    ('Caymas', 'Both', '2024-09-24', '2 Pumps (lakes?)', '5684 Barbuda Lane', Q, '$250.00', '', '$3,706.25 for both', '', 1),
+    ('Charlotte County - Sunshine Lake Park', 'Pump', '2017-01-01', '2 Pumps (1 inside, 1 outside)',
+     '21125 McGuire Ave, Port Charlotte', '', '$150.00', '', '$300.00', 'Monthly', 1),
+    ('Cypress Legends', 'Pump', '2019-10-01', '1 Pump, 1 Lake Filter', '3427 Forum Blvd., Ft. Myers, FL', Q, '$75.00', '',
+     'N/A', '', 1),
+    ('Diplomat', 'Both', '2025-04-11', '1 Pump, 1 Lake Filter', '2900 Diplomat Parkway E., Cape Coral, FL 33909', Q,
+     '$150.00', '', '', '', 1),
+    ('Pine Air Lakes - Edgemont Office Park', 'Pump', '2019-01-01', '1 Pump, 1 Lake 1 Filter', '5695 Naples Blvd, Naples, FL',
+     Q, '$75.00', '', '$400.00', '', 1),
+    ('Enclave @ Palmira', 'Pump', '2019-09-01', '2 Pumps, 2 Lakes 2 Filters', '28613 & 28653 San Lucas Lane, Bonita Springs',
+     Q, '$100.00', '', 'N/A', '', 1),
+    ('Escala @ Quail West', 'Pump', '2024-03-08', '1 Pump Station', '28892 Blaisdell Drive', Q, '$125.00', '', '$375.00', '', 1),
+    ('Evergreen (Bradenton)', 'Pump', '2021-06-02', '1 Pump (monthly), 1 Lake (annually)',
+     '3831 Turning Tides Terrace, Bradenton, FL 34201', '', '$100.00', '', 'N/A', 'Monthly', 1),
+    ('FGCU - PGA Program', 'Pump', '2026-08-24', '1 Pump', '5820 Buckingham Road, Fort Myers, FL 33905', Q, '$150.00', '',
+     '', '', 1),
+    ('Falling Waters II - Watercrest', 'Pump', '2022-12-01', '1 Pump', '2300 Hidden Lakes Dr., Naples', Q, '$120.00', '',
+     '$315.00', '', 1),
+    ('Forum c/o LandQwest Commercial Property', 'Pump', '2024-06-17', '1 Pump',
+     '3049 Forum Boulevard, NE side of Starbucks, Fort Myers, FL 33905', '1,7', '$125.00', '', '$475.00', '', 1),
+    ('Hodges Funeral Home', 'Pump', '2021-10-01', 'Pump', '525 111th Avenue, Naples FL', '1,5,9', '$125.00', '',
+     '$1,125.00', 'SiteOne, not Tommy', 1),
+    ('Honda Fort Myers', 'Pump', '2020-01-01', '1 Pump Station', '3550 Colonial Blvd, Fort Myers', Q, '$125.00', '', 'N/A',
+     '', 1),
+    ('Huntington Lakes Residence Assoc.', 'Pump', '2023-10-24', '10 Pumps, 1 Lake 1 Filter',
+     '6585 Huntington Lakes Circle, Naples, FL', Q, '$1,000.00', '', '$3,500', '', 1),
+    ('Lake Club (Spanish Wells)', 'Pumps', '2016-04-16', '3 Pump Stations (4 Pumps), 3 Lakes/6 Filters',
+     '28409 High Gate Dr, Bonita Springs, FL', Q, '$200.00', '', '', '', 1),
+    ('Lely CDD - Lely Pump Station', 'Pump', '2022-02-22', '1 Pump Station', '6815 Wildflower Way, Naples, FL 34113', Q,
+     '$570.00', '', '$825.00', '', 1),
+    ('Magnolia Cove at Falling Waters', 'Pump', '2022-07-12', '1 Pump', '2326 Magnolia Lane, Naples', Q, '$250.00', '',
+     '$450.00', '', 1),
+    ('Magnolia Falls at Falling Waters', 'Pump', '2023-02-01', '1 Pump, 4 Filters (behind the Magnolia Falls sign)',
+     '2370 Magnolia Avenue, Naples, FL 34112', Q, '$150.00', '', '$450.00', '', 1),
+    ('Miromar Lakes', 'Fountain', '2025-11-25', '3 Fountains', '17910 Ben Hill Griffin Pkwy, Miromar Lakes, FL 33913 (Chris Bevers)',
+     Q, '$750.00', '', '', 'Dog: no', 1),
+    ('Miromar Outlets', 'Pump', '2016-01-01', '1 Lake Fountain, 2 Pump Stations', '10801 Corkscrew Rd.', Q, '$75.00', '',
+     'N/A', '', 1),
+    ('Pebblebrook HOA', 'Both', '2023-11-17', '4 Pump Stations, 9 Lake Fountains', '8610 Pebblebrook Drive', Q,
+     '$1,700.00', '', '$3,850 for both', '', 1),
+    ('Quail Run', 'Pump', '2020-12-14', '1 Pump 60HP', '1 Forest Lakes Dr., Naples, FL 34105', '', '$100.00', '', '$135.00',
+     'Monthly', 1),
+    ('Rosewood HOA', 'Lake', '2026-07-13', '1 Lake', 'Left of 1655 Windy Pines Drive', Q, '$125.00', '', '$687.50', '', 1),
+    ('Sanctuary @ Blue Heron', 'Pumps', '2016-01-01', '3 Lakes, 3 Pump Stations (Clubhouse, Sanctuary Dr., Sanctuary Circle)',
+     '706 Haven Drive, Naples, FL', Q, '$100.00', '', '', '', 1),
+    ('Sopra Luxury Living', 'Pump', '2025-04-01', '1 Pump 1 Lake', '3280 Champion Ring Road, Fort Myers, FL 33905', Q,
+     '$125.00', '', '', 'Call the client to set up before each visit.', 1),
+    ('St. Moritz HOA', 'Fountain', '2025-09-11', '1 Fountain', '10079 Saint Moritz Drive, Miromar Lakes, FL 33913', '2,9',
+     '$400 twice a year', '', '', 'Semi-annual (September, February); sheet also says April/October.', 1),
+    ('The Reserve @ Estero', 'Pumps', '2025-01-14', '1 Pump 1 Lake', '9350 La Bianco St, Estero, FL 33967', '1,7', '$350.00',
+     '', '', '', 1),
+    ('Turn Leaf', 'Pumps', '2026-06-30', '2 Pumps', '10600 Chevrolet Way suite 202, Estero, FL 33928', Q, '$500.00', '', '',
+     '', 1),
+    ('Tuscany Point Trail Association', 'Pump', '2022-04-29', '1 Lake, Pump', 'Tuscany Pointe Trl, Naples, FL 34120', Q,
+     '$125.00', '', '$550.00', '', 1),
+    ('University Square CDD', 'Pump', '2024-12-24', '3 Pumps and 2 Lakes', '10801 Corkscrew Road, Estero, FL', Q, '$350.00',
+     '', '', '', 1),
+    ('Warm Springs Comm. Assoc.', 'Pumps', '2023-08-23', '10 Pump Stations', '3813 Helsman Drive, Naples FL 34120', Q, '',
+     '$250.00', '$475.00', 'Naples Electric does this.', 1),
+    ('Watercrest @ Falling Waters', 'Pump', '2017-01-01', '2 Filters, pump at the rear of building 2300',
+     '2326 Magnolia Lane, Naples', Q, '$75.00', '', '', '', 1),
+    ('Wild Blue', 'Pump', '2026-03-17', '1 Pump', '8396 Sea Glass Court, Sarasota, FL 34240', Q, '$250.00', '', '', '', 1),
+    # Former accounts (the sheet's bottom block; archived in Jobber)
+    ('Bentley Village / Retreat at Bentley', 'Pump', '2018-01-01', '1 Lake 6 Filters, 1 Pump',
+     'LR 602 Lake Louise Circle (The Retreat)', Q, '$100.00', '', 'N/A', '', 0),
+    ('Carlton Lakes HOA III', 'Pumps', '2022-05-01', 'Pumps, 1 Lake, Filters',
+     'Rear of 6104 Manchester Place, Naples, FL 34110 - gate code 2073', Q, '$125.00', '', '$320.00 for both', '', 0),
+    ('Silverstone South @ Willow Hammock (Bradenton)', 'Pump', '2022-01-01', '2 Lakes, 1 Filter each lake',
+     '4002 Willow Branch Place, Palmetto FL 34221', Q, '$200.00', '', '$525.00 quarterly', '', 0),
+    ('Wilshire', 'Pump', '2016-12-01', '1 Pump', '9741 Wilshire Lake Blvd, Naples', Q, '$100.00', '', '', '', 0),
+    ('Sapphire Lakes', 'Pumps', '2023-04-01', '8 Pump Stations', '8001 Radio Road, Naples, FL 34104', Q, '$600.00', '',
+     '$1,200.00 (lake & pumps)', '', 0),
+    ('Plantation Homes & Condos', 'Both', '2022-05-04', '1 Lake, 1 VFD Pump', '15077 Royal Fern Court, Naples, FL 34110', Q,
+     '$125.00', '', '$550.00', '', 0),
+    ('Boca Ciega', 'Pump', '2018-01-01', '1 Pump, 1 Lake 2 Filters', '2071-2099 Pine Isle Lane, Naples, FL', Q, '$100.00', '',
+     'N/A', '', 0),
+    ('Solera @ Lakewood Ranch', 'Pump', '2021-05-25', '2 Pump Stations (#1 & 2) monthly, lake annually',
+     '16812 Harvest Moon Way, Lakewood Ranch, FL 34211', '', '$100.00', '', '$250.00 for both lake & filter', 'Monthly', 0),
+    ('Horse Creek', 'Pump', '2016-12-01', '1 Pump', '331 Saddlebrook Lane, Naples, FL', Q, '$75.00', '', 'N/A', '', 0),
+    ('Fruitville Commons', 'Pump', '2023-11-10', 'Pump', '3130 Fruitville Commons Boulevard, Sarasota FL', Q, '$125.00', '',
+     '$595.00', '', 0),
+    ('Abaco Bay', 'Pump', '2025-06-17', '1 Pump, 1 Lake 1 Filter', '14759 Kingfisher Loop (pump location: left)', Q,
+     '$200.00', '', '$500.00', '', 0),
+    ('Heritage Stations c/o Wilmington Land Company', 'Pump', '2024-10-02', '1 Pump',
+     '15351 Burnt Store Road, Punta Gorda, FL 33955', Q, '$250.00', '', 'Included with irrigation maintenance', '', 0),
+    ('Liberty Shores', 'Pump', '2025-04-16', '1 Pump Station', '904 Admiral Bull Halsey Avenue, LGI Homes, LaBelle, FL 33935',
+     Q, '$250.00', '', '', '', 0),
+]
+MAINT_MONTHLY = {'Charlotte County - Sunshine Lake Park', 'Evergreen (Bradenton)', 'Quail Run', 'Solera @ Lakewood Ranch'}
+
+# Lake / diver accounts (Gulfshore Yacht Service - Jordan):
+# (name as on the diver list, kind, joined, equipment, location, months, diver $, our bill, Naples Electric,
+#  diver notes, needs the diver, active)
+SEED_LAKES = [
+    ("Anna's Place", 'Lake', '2016-11-01', '1 Lake 2 Filters', '5897 Ashford Ln', Q, '$125.00', '$400.00', '', None, 1, 1),
+    ('Autumn Woods', 'Lake', '2016-01-01', '1 Lake 2 Filters', '6710 Goodlette Frank Rd.', Q, '$125.00', 'N/A', '', None, 1, 1),
+    ('Banyan Bay', 'Lake', '2025-05-01', '1 Pump 1 Lake 1 Filter', None, Q, '$125.00', '$780 for both', '', None, 1, 1),
+    ('Barrington Cove', 'Both', '2024-08-19', '2 Pumps 2 Filters', None, Q, '$175.00', '$600.00', '', None, 1, 1),
+    ('Carlisle (The Carlisle)', 'Both', '2022-04-23', '2 Lakes 3 Filters', None, Q, '$175.00', '$500.00', '', None, 1, 1),
+    ('Caymas', 'Both', '2024-09-24', '2 Pumps 2 Lakes', None, Q, '$125.00', '$3,706.25 for both', '', None, 1, 1),
+    ('Cypress Legends (Behind Clubhouse)', 'Lake', '2019-10-01', '1 Pump 1 Lake Filter', None, Q, '$125.00', '$500.00', '',
+     None, 1, 1),
+    ('Clubside', 'Lake', '', '5 Pumps 2 Lakes', '5862 3 Iron Drive', '1', '', '', '', 'January only.', 1, 1),
+    ('Diplomat RV', 'Lake', '2025-05-01', '1 Pump 1 Lake Filter', '2900 Diplomat Parkway E., Cape Coral, FL 33909', Q,
+     '$175.00', '', '', 'Sheet marks it "January".', 1, 1),
+    ('Edgemont Office Park (Pine Air Lakes)', 'Lake', '2019-01-01', '1 Pump 1 Lake 1 Filter', None, Q, '$125.00', '$400.00', '',
+     None, 1, 1),
+    ('Enclave @ Palmira', 'Lake', '2019-09-01', '2 Lakes 4 Filters', None, Q, '$175.00', '$450.00', '', None, 1, 1),
+    ('Evergreen (Bradenton)', 'Lake', '2021-06-02', '2 Pumps 2 Lakes', '3831 Turning Tides Terrace, Bradenton, FL 34201', '1',
+     '$350.00', '$250.00 for lake & pump', '',
+     'January only. North pump is in Evergreen Estates - the first pump on the left when you drive in.', 1, 1),
+    ('Falling Waters II', 'Lake', '2016-12-01', '1 Lake 3 Filters', None, Q, '$125.00', '$315.00', '', None, 1, 1),
+    ('Huntington Lakes Residence Assoc.', 'Lake', '2023-10-24', '10 Pumps 1 Lake 1 Filter', None, Q, '$575.00',
+     '$3,500 with maintenance', '', None, 1, 1),
+    ('Kurt Biggs', 'Lake', '2026-02-16', '1 Lake 1 Filter', None, Q, '', '', '', None, 1, 1),
+    ('Magnolia Cove at Falling Waters', 'Lake', '2022-07-12', '1 Pump 1 Lake Filter', None, Q, '$125.00', '$450.00', '', None, 1, 1),
+    ('Magnolia Falls at Falling Waters', 'Pump', '2023-02-01', '1 Pump 4 Filters', None, Q, '$125.00', '$450.00', '', None, 1, 1),
+    ('Miromar Outlets', 'Lake', '2016-01-01', '1 Lake Fountain (2 Filters)', None, Q, '$200.00 (lake filter)',
+     '$980.00 with maintenance', '', None, 1, 1),
+    ('Morton Grove', 'Lake', '2026-08-05', '1 Lake Fountain', None, Q, '$125.00', '$250.00', '', None, 1, 1),
+    ('Pebblebrook HOA', 'Both', '2023-11-17', '4 Pump Stations 9 Lake Fountains', None, Q, '$275.00', '$3,850 for both', '',
+     None, 1, 1),
+    ('Riviera Golf Estates 2', 'Lake', '2022-01-01', '1 Lake 1 Filter', '351 Charlemagne Blvd, Naples', '4,10', '$125.00',
+     '$200.00', '', 'April and October.', 1, 1),
+    ('Rosewood HOA', 'Lake', '2026-07-13', '1 Lake', None, Q, '$125.00', '$687.50', '', None, 1, 1),
+    ('Sanctuary @ Blue Heron', 'Lake', '2016-01-01', '3 Lakes 9 Filters 3 Pump Stations', None, Q, '$225.00', '$490.00', '',
+     None, 1, 1),
+    ('Spanish Wells Lake Club', 'Lake', '2016-04-16', '3 Lakes 6 Filters 3 Pump Stations (4 Pumps)', None, Q, '$225.00',
+     '$850.00', '', None, 1, 1),
+    ('Sopra Luxury Living', 'Pump', '2025-04-01', '1 Pump 1 Lake', None, Q, '$125.00', '', '', None, 1, 1),
+    ('The Reserve @ Estero', 'Both', '2025-01-14', '1 Pump 1 Lake', '9350 La Bianco St, Estero, FL 33967', '1,7', '$125.00',
+     'Approx. $125.00', '', 'January and July.', 1, 1),
+    ('Tuscany Point Trail Association', 'Both', '2022-04-29', '1 Lake', None, Q, '$125.00', '$550.00', '', None, 1, 1),
+    ('University Square CDD', 'Both', '2024-12-06', '1 Pump 1 Filter', None, Q, '$125.00', '', '', None, 1, 1),
+    ('Warm Springs Comm. Assoc.', 'Both', '2023-08-23', 'Lake', '3813 Helsman Drive, Naples FL 34120', '10', '', '$450.00',
+     '$450.00', 'October only - Naples Electric does this, not the diver.', 0, 1),
+    ('Watercrest @ Falling Waters', 'Both', '2017-01-01', '1 Lake 1 Filter', None, Q, '$125.00', '', '', None, 1, 1),
+    ('Westminster HOA', 'Lake', '2016-12-01', '4 Lakes 9 Filters', None, Q, '$325.00', 'Included in m/m $780', '', None, 1, 1),
+    ('Wild Blue', 'Pump', '2026-03-17', '1 Pump 1 Lake', None, Q, '$250.00', '', '', None, 1, 1),
+    # Former accounts (yellow on the sheet)
+    ('Bentley Village', 'Lake', '2018-01-01', '1 Lake 6 Filters', 'LR 602 Lake Louise Circle (The Retreat)', Q, '$145.00',
+     '$500.00', '', '', 1, 0),
+    ('Carlton Lakes HOA III', 'Both', '2022-05-01', 'Pumps, 1 Lake, Filters',
+     'Rear of 6104 Manchester Place, Naples, FL 34110', Q, '$125.00', '$320.00', '', 'Gate code 2073', 1, 0),
+    ('Silverstone South @ Willow Hammock (Bradenton)', 'Lake', '2022-01-01', '2 Lakes, 1 Filter each lake',
+     '4002 Willow Branch Place, Palmetto FL 34221', '1', '$400.00', 'Combined with pump', '', 'January only.', 1, 0),
+    ('Sapphire Lakes', 'Pumps', '2023-04-01', '4 Lakes 8 Filters', '8001 Radio Road, Naples, FL 34104', Q, '$475.00',
+     '$1,200.00 (lake & pump)', '', '', 1, 0),
+    ('Plantation Homes & Condos - Storrington', 'Lake', '2022-05-04', '1 Lake 3 Filters',
+     '15077 Royal Fern Court, Naples, FL 34110', Q, '$375.00', 'Combined with pump', '', '', 1, 0),
+    ('Boca Ciega', 'Lake', '2018-01-01', '1 Pump 1 Lake 2 Filters', '2071-2099 Pine Isle Lane, Naples, FL', Q, '$150.00',
+     '$400.00', '', '', 1, 0),
+    ('VeronaWalk HOA', 'Lake', '2022-04-13', '3 Fountains', '8090 Sorrento Lane, Suite 1, Naples, FL 34114', Q, '$300.00',
+     '$1,440.00', '', '', 1, 0),
+    ('Solera @ Lakewood Ranch', 'Lake', '2021-05-25', '1 Lake (alligator)', '16812 Harvest Moon Way, Lakewood Ranch, FL 34211',
+     '4', '$100.00', '$250.00', '', 'April only.', 1, 0),
+    ('Horse Creek', 'Lake', '2016-12-01', '1 Lake 2 Filters', '331 Saddlebrook Lane, Naples, FL', Q, '$125.00', '$525.00', '',
+     '', 1, 0),
+    ('Riviera Golf Estates 1', 'Lake', '2022-01-01', '1 Lake 1 Filter', '325 Charlemagne Blvd., Naples', '1,7', '$125.00',
+     '$100.00', '', 'January and July.', 1, 0),
+    ('Heritage Stations c/o Wilmington Land Company', 'Lake', '2024-10-02', '1 Pump 1 Lake Filter',
+     '15351 Burnt Store Road, Punta Gorda, FL 33955', '1', '$175.00', 'Included with irrigation maintenance', '',
+     'January only.', 1, 0),
+    ('Liberty Shores', 'Lake', '2025-05-01', '1 Pump, lake filters?', '904 Admiral Bull Halsey Avenue, LGI Homes, LaBelle, FL 33935',
+     Q, '$250.00?', '', '', '', 1, 0),
+]
+
+
+def init_account_tables(c):
+    c.execute('''CREATE TABLE IF NOT EXISTS pump_scada_accounts (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  client TEXT NOT NULL,
+                  renewal_date TEXT DEFAULT '',
+                  product TEXT DEFAULT '',
+                  vendor_cost REAL,
+                  our_bill TEXT DEFAULT '',
+                  vendor TEXT DEFAULT 'Wettech',
+                  years TEXT DEFAULT '{}',
+                  active INTEGER DEFAULT 1,
+                  notes TEXT DEFAULT '',
+                  case_id INTEGER,
+                  updated_by TEXT DEFAULT '',
+                  updated_at TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS pump_maint_accounts (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  name TEXT NOT NULL,
+                  kind TEXT DEFAULT 'Pump',
+                  joined TEXT DEFAULT '',
+                  equipment TEXT DEFAULT '',
+                  address TEXT DEFAULT '',
+                  months TEXT DEFAULT '',
+                  monthly INTEGER DEFAULT 0,
+                  vendor_cost TEXT DEFAULT '',
+                  naples_electric TEXT DEFAULT '',
+                  our_bill TEXT DEFAULT '',
+                  notes TEXT DEFAULT '',
+                  active INTEGER DEFAULT 1,
+                  updated_by TEXT DEFAULT '',
+                  updated_at TEXT)''')
+    for col, decl in (('kind', "TEXT DEFAULT 'Lake'"), ('joined', "TEXT DEFAULT ''"), ('diver_cost', "TEXT DEFAULT ''"),
+                      ('our_bill', "TEXT DEFAULT ''"), ('naples_electric', "TEXT DEFAULT ''"),
+                      ('active', 'INTEGER DEFAULT 1')):
+        try:
+            c.execute(f'ALTER TABLE pump_dive_sites ADD COLUMN {col} {decl}')
+        except sqlite3.OperationalError:
+            pass
+    now = _now_text()
+    seeded = lambda k: c.execute('SELECT 1 FROM pump_state WHERE key=?', (k,)).fetchone()
+    mark = lambda k: c.execute('INSERT OR REPLACE INTO pump_state (key, value) VALUES (?,?)', (k, '"yes"'))
+    if not seeded('scada_sheet_seeded'):
+        for client, due, product, cost, bill, vendor, years in SEED_SCADA:
+            c.execute('''INSERT INTO pump_scada_accounts (client, renewal_date, product, vendor_cost, our_bill, vendor,
+                           years, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?)''',
+                      (client, due, product, cost, bill, vendor, json.dumps(years), 'SCADA sheet (Oct 2026)', now))
+        mark('scada_sheet_seeded')
+    if not seeded('maint_sheet_seeded'):
+        for (name, kind, joined, equip, addr, months, cost, ne, bill, notes, active) in SEED_MAINT:
+            c.execute('''INSERT INTO pump_maint_accounts (name, kind, joined, equipment, address, months, monthly,
+                           vendor_cost, naples_electric, our_bill, notes, active, updated_by, updated_at)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                      (name, kind, joined, equip, addr, months, 1 if name in MAINT_MONTHLY else 0, cost, ne, bill,
+                       notes, active, 'Maintenance sheet (Oct 2026)', now))
+        mark('maint_sheet_seeded')
+    if not seeded('lake_sheet_seeded'):
+        for (name, kind, joined, equip, addr, months, cost, bill, ne, notes, needs, active) in SEED_LAKES:
+            row = c.execute('SELECT id, diver_notes FROM pump_dive_sites WHERE name=?', (name,)).fetchone()
+            if row:
+                sets = {'kind': kind, 'joined': joined, 'equipment': equip, 'months': months, 'diver_cost': cost,
+                        'our_bill': bill, 'naples_electric': ne, 'needs_dive': needs, 'active': active}
+                if addr is not None:
+                    sets['address'] = addr
+                if notes and not (row[1] or '').strip():
+                    sets['diver_notes'] = notes
+                c.execute(f"UPDATE pump_dive_sites SET {', '.join(k + '=?' for k in sets)}, updated_by=?, updated_at=? "
+                          f"WHERE id=?", (*sets.values(), 'Lake sheet (Oct 2026)', now, row[0]))
+            else:
+                c.execute('''INSERT INTO pump_dive_sites (name, kind, joined, equipment, address, months, diver_cost,
+                               our_bill, naples_electric, diver_notes, needs_dive, active, updated_by, updated_at)
+                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                          (name, kind, joined, equip, addr or '', months, cost, bill, ne, notes or '', needs, active,
+                           'Lake sheet (Oct 2026)', now))
+        mark('lake_sheet_seeded')
+
+
+def _anniversary(d, year):
+    try:
+        return d.replace(year=year)
+    except ValueError:
+        return d.replace(year=year, day=28)
+
+
+def _scada_row(r, today):
+    d = dict(r)
+    try:
+        d['years'] = json.loads(d.get('years') or '{}')
+    except ValueError:
+        d['years'] = {}
+    due = None
+    try:
+        due = datetime.strptime((d['renewal_date'] or '')[:10], '%Y-%m-%d').date()
+    except ValueError:
+        pass
+    filled = sorted(int(y) for y, v in d['years'].items() if str(v).strip() and y.isdigit())
+    if due and filled and _anniversary(due, filled[-1] + 1) > due:
+        # A later year was recorded than the sheet's date shows: due a year after it.
+        due = _anniversary(due, filled[-1] + 1)
+    d['next_due_on'] = due.isoformat() if due else ''
+    d['client_name'], d['site'] = d['client'], ''
+    if not d['active']:
+        d['state'] = 'inactive'
+    elif not due:
+        d['state'] = 'unknown'
+    else:
+        days = (due - today).days
+        d['days_left'] = days
+        d['state'] = 'overdue' if days < 0 else ('due_soon' if days <= SCADA_DUE_SOON_DAYS else 'current')
+    return d
+
+
+def scada_rows(conn):
+    today = _today()
+    out = [_scada_row(r, today) for r in conn.execute('SELECT * FROM pump_scada_accounts')]
+    order = {'overdue': 0, 'due_soon': 1, 'unknown': 2, 'current': 3, 'inactive': 4}
+    out.sort(key=lambda d: (order.get(d['state'], 9), d.get('next_due_on') or '9999', d['client'].lower()))
+    return out
+
+
+def scada_years(rows):
+    ys = {int(y) for r in rows for y in r['years'] if y.isdigit()} | {2023, _today().year}
+    return [str(y) for y in range(min(ys), max(ys) + 1)]
+
+
+@api('/scada')
+def h_scada(actor):
+    conn = _conn()
+    try:
+        rows = scada_rows(conn)
+        return {'scada': rows, 'years': scada_years(rows)}
+    finally:
+        conn.close()
+
+
+@api('/scada', methods=('POST',))
+def h_scada_add(actor):
+    d = _json()
+    if not (d.get('client') or '').strip():
+        raise ValueError('Give the client')
+    conn = _conn()
+    try:
+        conn.execute('''INSERT INTO pump_scada_accounts (client, renewal_date, product, vendor_cost, our_bill, vendor,
+                          years, notes, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)''',
+                     (d['client'].strip()[:120], _iso_date(d.get('renewal_date')), (d.get('product') or '')[:200],
+                      _money(d.get('vendor_cost')), (d.get('our_bill') or '')[:120], (d.get('vendor') or 'Wettech')[:60],
+                      '{}', (d.get('notes') or '')[:1000], actor, _now_text()))
+        conn.commit()
+        return {'scada': scada_rows(conn)}
+    finally:
+        conn.close()
+
+
+@api('/scada/<int:sid>', methods=('PATCH', 'POST'))
+def h_scada_update(actor, sid):
+    """Edit a row; {"action": "renewed", "value": "29448"} records this
+    renewal (invoice # or a note) in its year and moves the date on a year;
+    {"action": "renewal_item"} opens an item to quote and order it."""
+    d = _json()
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_scada_accounts WHERE id=?', (sid,)).fetchone()
+        if not row:
+            return {'success': False, 'error': 'Not found'}, 404
+        cur = _scada_row(row, _today())
+        if d.get('action') == 'renewal_item':
+            if row['case_id']:
+                c = conn.execute("SELECT status FROM pump_cases WHERE id=?", (row['case_id'],)).fetchone()
+                if c and c['status'] == 'open':
+                    return {'case_id': row['case_id']}
+            cid = create_case(conn, {'title': f"SCADA annual renewal - {row['client']}", 'category': 'scada',
+                                     'client_name': row['client'], 'vendor': row['vendor'] or 'Wettech',
+                                     'description': f"{row['product'] or 'Annual SCADA'} - due {cur['next_due_on']}.",
+                                     'vendor_quote_amount': row['vendor_cost']}, actor, source='scada')
+            conn.execute('UPDATE pump_scada_accounts SET case_id=?, updated_at=? WHERE id=?', (cid, _now_text(), sid))
+            conn.commit()
+            return {'case_id': cid}
+        if d.get('action') == 'renewed':
+            value = str(d.get('value') or '').strip()
+            if not value:
+                raise ValueError('Give the invoice # (or a note such as "No charge")')
+            due = datetime.strptime(cur['next_due_on'], '%Y-%m-%d').date() if cur['next_due_on'] else _today()
+            years = cur['years']
+            years[str(due.year)] = value[:120]
+            conn.execute('UPDATE pump_scada_accounts SET years=?, renewal_date=?, updated_by=?, updated_at=? WHERE id=?',
+                         (json.dumps(years), _anniversary(due, due.year + 1).isoformat(), actor, _now_text(), sid))
+            _event(conn, actor, 'SCADA renewed', f"{row['client']} {due.year}: {value}")
+            conn.commit()
+            return {'scada': scada_rows(conn)}
+        sets, vals = [], []
+        for k in ('client', 'product', 'our_bill', 'vendor', 'notes'):
+            if k in d:
+                sets.append(f'{k}=?')
+                vals.append(str(d[k] or '').strip()[:1000])
+        if 'renewal_date' in d:
+            sets.append('renewal_date=?')
+            vals.append(_iso_date(d['renewal_date']))
+        if 'vendor_cost' in d:
+            sets.append('vendor_cost=?')
+            vals.append(_money(d['vendor_cost']))
+        if 'active' in d:
+            sets.append('active=?')
+            vals.append(1 if d['active'] else 0)
+        if isinstance(d.get('years'), dict):
+            years = cur['years']
+            for y, v in d['years'].items():
+                if str(y).isdigit():
+                    if str(v or '').strip():
+                        years[str(y)] = str(v).strip()[:120]
+                    else:
+                        years.pop(str(y), None)
+            sets.append('years=?')
+            vals.append(json.dumps(years))
+        if sets:
+            conn.execute(f"UPDATE pump_scada_accounts SET {', '.join(sets)}, updated_by=?, updated_at=? WHERE id=?",
+                         (*vals, actor, _now_text(), sid))
+            conn.commit()
+        return {'scada': scada_rows(conn)}
+    finally:
+        conn.close()
+
+
+MAINT_FIELDS = ('name', 'kind', 'joined', 'equipment', 'address', 'months', 'vendor_cost', 'naples_electric', 'our_bill',
+                'notes')
+
+
+def maint_accounts(conn):
+    rows = [dict(r) for r in conn.execute('SELECT * FROM pump_maint_accounts ORDER BY active DESC, name COLLATE NOCASE')]
+    m = _today().month
+    for r in rows:
+        r['due_this_month'] = bool(r['active']) and (bool(r['monthly']) or m in _month_list(r['months']))
+    return rows
+
+
+@api('/maint')
+def h_maint(actor):
+    conn = _conn()
+    try:
+        return {'accounts': maint_accounts(conn), 'month': _today().month}
+    finally:
+        conn.close()
+
+
+@api('/maint', methods=('POST',))
+def h_maint_save(actor):
+    if actor == BOT:
+        return _office_only(actor, 'Changing the maintenance accounts')
+    d = _json()
+    vals = {k: str(d.get(k) or '').strip()[:1000] for k in MAINT_FIELDS if k in d}
+    if 'joined' in vals:
+        vals['joined'] = _iso_date(vals['joined']) or vals['joined']
+    if 'months' in vals:
+        vals['months'] = ','.join(str(x) for x in _month_list(vals['months']))
+    for k in ('active', 'monthly'):
+        if k in d:
+            vals[k] = 1 if d[k] in (True, 1, '1', 'true', 'on') else 0
+    conn = _conn()
+    try:
+        if d.get('id'):
+            if 'name' in vals and not vals['name']:
+                raise ValueError('An account needs a name')
+            conn.execute(f"UPDATE pump_maint_accounts SET {', '.join(k + '=?' for k in vals)}, updated_by=?, "
+                         f"updated_at=? WHERE id=?", (*vals.values(), actor, _now_text(), int(d['id'])))
+        else:
+            if not vals.get('name'):
+                raise ValueError('An account needs a name')
+            cols = list(vals) + ['updated_by', 'updated_at']
+            conn.execute(f"INSERT INTO pump_maint_accounts ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                         (*vals.values(), actor, _now_text()))
+        conn.commit()
+        return {'accounts': maint_accounts(conn)}
+    finally:
+        conn.close()
+
+
+@api('/maint/<int:aid>/delete', methods=('POST',))
+def h_maint_delete(actor, aid):
+    if actor == BOT:
+        return _office_only(actor, 'Changing the maintenance accounts')
+    conn = _conn()
+    try:
+        conn.execute('DELETE FROM pump_maint_accounts WHERE id=?', (aid,))
+        conn.commit()
+        return {'accounts': maint_accounts(conn)}
     finally:
         conn.close()
 

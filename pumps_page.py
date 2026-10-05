@@ -205,6 +205,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   <div class="tab" data-tab="tracker">Tracker</div>
   <div class="tab" data-tab="inbox">Inbox <span class="n" id="n-inbox"></span></div>
   <div class="tab" data-tab="scada">SCADA <span class="n" id="n-scada"></span></div>
+  <div class="tab" data-tab="maint">Maintenance</div>
   <div class="tab" data-tab="jobber">Jobber <span class="n" id="n-jobber"></span></div>
   <div class="tab" data-tab="reports">Reports</div>
   <div class="tab" data-tab="divers">Divers</div>
@@ -248,9 +249,10 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 
 <!-- SCADA -->
 <div class="panel hide" id="p-scada">
-  <div class="toolbar"><div class="note">Every client with SCADA work in Jobber. A renewal is due a year after the last one. Due within {{ scada_days }} days or overdue → open a renewal item: quote the client, then order it from Wettech.</div><div class="sp"></div>
-    <button class="btn" onclick="addScada()">＋ Add client</button></div>
-  <div class="scroll"><table class="t"><thead><tr><th>Status</th><th>Client</th><th>Site</th><th>Last renewed</th><th>Next due</th><th class="num">Annual</th><th>Provider</th><th>Notes</th><th></th></tr></thead><tbody id="scadaBody"></tbody></table></div>
+  <div class="toolbar"><div class="note">The SCADA sheet: <b>Renewal date</b> is when the next renewal is due; each year holds our invoice # or a note. When one's renewed, <b>Renewed…</b> records it and moves the date on a year. Due within {{ scada_days }} days or overdue shows on Today.</div><div class="sp"></div>
+    <select id="scShow" onchange="loadScada()"><option value="active">On SCADA</option><option value="all">All, incl. stopped</option></select>
+    <button class="btn" onclick="scadaEdit(0)">＋ Add client</button></div>
+  <div class="scroll"><table class="t" id="scadaTable"></table></div>
 </div>
 
 <!-- JOBBER -->
@@ -288,18 +290,30 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   <div id="repBody"></div>
 </div>
 
+<!-- MAINTENANCE -->
+<div class="panel hide" id="p-maint">
+  <div class="toolbar">
+    <span id="mtInfo" class="note"></span><div class="sp"></div>
+    <input type="text" id="mtSearch" placeholder="Find an account…" oninput="drawMaint()" style="width:180px">
+    <select id="mtShow" onchange="drawMaint()"><option value="active">Active</option><option value="due">Due this month</option><option value="former">Former</option><option value="">All</option></select>
+    <button class="btn" onclick="maintEdit(0)">＋ Account</button>
+  </div>
+  <div class="note" style="margin-bottom:10px">Wettech's pump maintenance accounts (Tommy, 941-915-4327, wettec@verizon.net) - pump reports come with Wettech's invoices. Lakes and filters are on the Divers tab.</div>
+  <div class="scroll"><table class="t"><thead><tr><th>Account</th><th>Type</th><th>Size &amp; make</th><th>Location</th><th>Schedule</th><th class="num">Wettech / visit</th><th class="num">Naples Electric</th><th>Our bill</th><th>Joined</th><th></th></tr></thead><tbody id="mtBody"></tbody></table></div>
+</div>
+
 <!-- DIVERS -->
 <div class="panel hide" id="p-divers">
   <div class="toolbar">
     <span id="diveInfo" class="note"></span><div class="sp"></div>
-    <select id="diveFilter" onchange="drawDiveSites()"><option value="dive">Need a diver</option><option value="nodive">No diving</option><option value="">All sites</option></select>
+    <select id="diveFilter" onchange="drawDiveSites()"><option value="dive">Need a diver</option><option value="month">On the next list</option><option value="nodive">No diving</option><option value="former">Former</option><option value="">All sites</option></select>
     <button class="btn" onclick="editDiveSite()">＋ Site</button>
     <button class="btn" onclick="diverTodo(diveMonth())">Email ready to copy</button>
     <a class="btn" id="diveDocx" href="#">⬇ Word list</a>
     <button class="btn" onclick="sendDiveEmail()" title="Send it from the PO mailbox">Send from PO@…</button>
   </div>
   <div class="note" style="margin-bottom:10px">Every site that needs the diver goes on the month's list. On the 1st, a to-do appears on Today - "Email Jordan the &lt;month&gt; diver list" - with the email written and the Word list ready to attach; tick it when it's sent. <b>Meet</b> adds "the HOA wants to meet you onsite"; <b>Hold</b> lists it as HOLD OFF; a <b>one-time note</b> goes on the next email only. Months left blank = every month.</div>
-  <div class="scroll"><table class="t"><thead><tr><th>Site</th><th>Lakes / filters / pumps</th><th>Address</th><th>Notes for the diver</th><th>Diver?</th><th>Months</th><th>Status</th><th></th></tr></thead><tbody id="diveBody"></tbody></table></div>
+  <div class="scroll"><table class="t"><thead><tr><th>Site</th><th>Lakes / filters / pumps</th><th>Address</th><th>Notes for the diver</th><th>Diver?</th><th>Schedule</th><th class="num">Gulfshore</th><th>Our bill</th><th>Status</th><th></th></tr></thead><tbody id="diveBody"></tbody></table></div>
   <h3 style="margin:18px 0 8px;font-size:14px">Email to the diver</h3>
   <div class="fields" id="diveSettings"></div>
   <h3 style="margin:18px 0 8px;font-size:14px">Sent</h3>
@@ -317,14 +331,14 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
     <li>Reads the PO@ mailbox every 30 minutes for Wettech quotes, bills and Word pump reports, and files each against its item by PO number, Wettech W/O number or client name.</li>
     <li>When a bill arrives it compares it with the quote. If they differ - or there is no quote - an <b>issue</b> is raised and stays at the top of Today until someone resolves it.</li>
     <li>Rebrands Wettech's Word reports: our letterhead, our name, no technician names, "Stahlman-" taken off the customer name.</li>
-    <li>Pulls pump, diver, filter and SCADA requests, quotes and jobs from Jobber every 6 hours, and works out when each SCADA client's annual renewal is due.</li>
+    <li>Pulls pump, diver, filter and SCADA requests, quotes and jobs from Jobber every 6 hours, and keeps the SCADA renewals from the office's SCADA sheet (Renewed... moves the date on a year).</li>
     <li>Follows our Jobber quotes and invoices: once the office sends a drafted quote, "Quote sent to client" ticks itself, and "Client approved" when the client approves it in Jobber. Once the client <b>pays</b> our Jobber invoice, Wettech's bill goes on Today as <b>due to be paid</b> until someone marks it paid.</li>
   </ul>
   <h3>Service reports</h3>
   <ul><li>Wettech's monthly service reports are rebranded on every page (our letterhead, no Wettech details, no technician, not "Stahlman England" as the customer), kept on the <b>Reports</b> tab by year and month, and put on the site's pump job in Jobber as a note - "October Pump Maintenance" with the PDF - when the job is clear (e.g. Spanish Wells = The Lake Club, job #1609). Otherwise it waits on Today under Reports to log.</li></ul>
   <h3>To do and the diver</h3>
   <ul><li><b>To do</b> on Today lists what the office has to do; tick each one when it's done, or add your own.</li>
-  <li>The <b>Divers</b> tab lists which pump sites need the diver and which don't. On the 1st of every month a to-do appears - "Email Jordan the &lt;month&gt; diver list" - with the email written the way Andrea writes it and the Word list ready to attach.</li></ul>
+  <li>The <b>Divers</b> tab lists which sites need the diver (from the Lake Maintenance sheet: mostly quarterly, Jan/Apr/Jul/Oct). The <b>Maintenance</b> tab is Wettech's pump accounts. On the 1st of a month with sites due a to-do appears - "Email Jordan the &lt;month&gt; diver list" - with the email written the way Andrea writes it and the Word list ready to attach.</li></ul>
   <h3>What only happens when someone clicks</h3>
   <ul>
     <li><b>Client quotes are drafted on their own.</b> When a Wettech quote is read and filed, the app drafts our quote in Jobber the way the office writes them: Wettech's price plus 30%, one "Service Proposal Amount" line with Wettech's description of the work (no Wettech name or sales tax line), titled "Proposal to …", on the right client and property - found by the item, a saved site name (e.g. "Carlisle back station" = Greenscapes, Pump #1 exit) or a Jobber search, typos allowed. Wettech's quote is saved as a note on it. It stays a <b>draft</b>: the app cannot send quotes. When the client or property is not clear, the quote waits on Today for <b>Draft quote</b>.</li>
@@ -375,7 +389,7 @@ function showTab(name){
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('hide', p.id !== 'p-' + name));
   if (name === 'today') loadToday(); else if (name === 'tracker') loadTracker(); else if (name === 'inbox') loadInbox();
   else if (name === 'scada') loadScada(); else if (name === 'jobber') loadJobber(); else if (name === 'divers') loadDivers();
-  else if (name === 'reports') loadReports(); else if (name === 'pipeline') loadPipeline();
+  else if (name === 'reports') loadReports(); else if (name === 'pipeline') loadPipeline(); else if (name === 'maint') loadMaint();
   history.replaceState(null, '', '#' + name);
 }
 
@@ -989,39 +1003,102 @@ async function sendReport(){
 }
 
 // ── SCADA ─────────────────────────────────────────────
+let SC = null;
 async function loadScada(){
   const j = await api('/scada');
-  const lab = {overdue:['r','Overdue'], due_soon:['a','Due soon'], current:['g','Current'], recurring:['g','Recurring job'], unknown:['','No date'], inactive:['','Not on SCADA']};
-  document.getElementById('scadaBody').innerHTML = (j.scada || []).map(s => `<tr>
-    <td><span class="chip ${lab[s.state][0]}">${lab[s.state][1]}</span>${s.days_left != null && s.state !== 'current' ? `<div class="note">${s.days_left < 0 ? -s.days_left + ' days late' : s.days_left + ' days'}</div>` : ''}</td>
-    <td><b>${esc(s.client_name)}</b>${s.state_note ? `<div class="note">${esc(s.state_note)}</div>` : ''}</td><td>${esc(s.site)}</td>
-    <td>${esc(s.last_renewed_on)}</td><td>${esc(s.next_due_on)}</td><td class="num">${money(s.annual_amount)}</td><td>${esc(s.provider)}</td>
-    <td class="note">${esc(s.notes)}</td>
-    <td style="white-space:nowrap">${s.active && ['overdue','due_soon','unknown'].includes(s.state) ? `<button class="btn s p" onclick="scadaRenew(${s.id})">${s.case_id ? 'Open renewal' : 'Start renewal'}</button>` : ''}
-      <button class="btn s" onclick="scadaEdit(${s.id}, ${esc(JSON.stringify(s))})">Edit</button></td></tr>`).join('') || '<tr><td colspan="9" class="empty">No SCADA clients yet - connect Jobber and sync, or add one.</td></tr>';
+  if (!j.success) { toast(j.error, true); return; }
+  SC = j;
+  const show = document.getElementById('scShow').value;
+  const lab = {overdue:['r','Overdue'], due_soon:['a','Due soon'], current:['g','Current'], unknown:['','No date'], inactive:['','Stopped']};
+  const rows = j.scada.filter(s => show === 'all' || s.state !== 'inactive');
+  const yr = j.years;
+  const cell = v => !v ? '' : (/^\d{4,6}$/.test(v) ? `<b>${esc(v)}</b>` : `<span class="note">${esc(v)}</span>`);
+  document.getElementById('scadaTable').innerHTML = `<thead><tr><th>Status</th><th>Client</th><th>Renewal date</th><th>Product</th><th class="num">Amount</th><th>Our bill</th><th>Vendor</th>${yr.map(y => `<th>${y}</th>`).join('')}<th></th></tr></thead><tbody>` +
+    (rows.map(s => `<tr>
+      <td><span class="chip ${lab[s.state][0]}">${lab[s.state][1]}</span>${s.days_left != null && s.state !== 'current' && s.state !== 'inactive' ? `<div class="note">${s.days_left < 0 ? -s.days_left + ' days late' : 'in ' + s.days_left + ' days'}</div>` : ''}</td>
+      <td><b>${esc(s.client)}</b>${s.notes ? `<div class="note">${esc(s.notes)}</div>` : ''}</td>
+      <td style="white-space:nowrap">${esc(s.next_due_on)}</td><td class="note">${esc(s.product)}</td>
+      <td class="num">${money(s.vendor_cost)}</td><td>${esc(s.our_bill)}</td><td>${esc(s.vendor)}</td>
+      ${yr.map(y => `<td>${cell(s.years[y])}</td>`).join('')}
+      <td style="white-space:nowrap">${s.state !== 'inactive' ? `<button class="btn s p" onclick="scadaRenewed(${s.id})">Renewed…</button> ` : ''}${['overdue','due_soon'].includes(s.state) ? `<button class="btn s" onclick="scadaRenew(${s.id})">${s.case_id ? 'Open item' : 'Start item'}</button> ` : ''}<button class="btn s" onclick="scadaEdit(${s.id})">Edit</button></td></tr>`).join('') || `<tr><td colspan="${8 + yr.length}" class="empty">No SCADA clients.</td></tr>`) + '</tbody>';
 }
 async function scadaRenew(id){ const j = await api('/scada/' + id, {method:'POST', body:{action:'renewal_item'}}); if (j.success) openCase(j.case_id); else toast(j.error, true); }
-function scadaEdit(id, s){
-  openModal('SCADA - ' + esc(s.client_name), `<div class="fields">
-    <label>Last renewed<input type="date" id="sc_last" value="${esc(s.last_renewed_on)}"></label>
-    <label>Next due (only to override)<input type="date" id="sc_due" value="${esc(s.next_due_override)}"></label>
-    <label>Annual $<input type="number" id="sc_amt" value="${esc(s.annual_amount ?? '')}"></label>
-    <label>Provider<input type="text" id="sc_prov" value="${esc(s.provider)}"></label>
+async function scadaRenewed(id){
+  const s = SC.scada.find(x => x.id === id);
+  const v = prompt(`${s.client}: renewal due ${s.next_due_on}.\nOur invoice # for it (or a note such as "No charge"):`, '');
+  if (!v) return;
+  const j = await api('/scada/' + id, {method:'POST', body:{action:'renewed', value: v}});
+  if (j.success) { toast('Recorded - next renewal moved on a year.'); loadScada(); } else toast(j.error, true);
+}
+function scadaEdit(id){
+  const s = id ? SC.scada.find(x => x.id === id) : {client:'', renewal_date:'', product:'Annual Scada - Pump Station', vendor_cost:428, our_bill:'$600.00', vendor:'Wettech', years:{}, notes:'', active:1};
+  const yr = SC ? SC.years : [];
+  openModal(id ? 'SCADA - ' + esc(s.client) : 'Add SCADA client', `<div class="fields">
+    <label class="w">Client<input type="text" id="sc_client" value="${esc(s.client)}"></label>
+    <label>Renewal date (next due)<input type="date" id="sc_date" value="${esc(s.renewal_date)}"></label>
+    <label>Product<input type="text" id="sc_product" value="${esc(s.product)}"></label>
+    <label>Amount (Wettech)<input type="number" step="0.01" id="sc_cost" value="${esc(s.vendor_cost ?? '')}"></label>
+    <label>Our bill<input type="text" id="sc_bill" value="${esc(s.our_bill)}"></label>
+    <label>Vendor<input type="text" id="sc_vendor" value="${esc(s.vendor)}"></label>
+    ${yr.map(y => `<label>${y}<input type="text" class="sc_y" data-y="${y}" value="${esc((s.years || {})[y] || '')}" placeholder="invoice # or note"></label>`).join('')}
     <label class="w">Notes<textarea id="sc_notes">${esc(s.notes)}</textarea></label>
-    <label><span><input type="checkbox" id="sc_active" ${s.active ? 'checked' : ''}> Still on SCADA</span></label></div>
-    ${(s.history || []).length ? `<div><b>From Jobber</b>${s.history.map(h => `<div class="ev">${esc(h.date)} · ${esc(h.kind)} #${esc(h.number)} · ${esc(h.title)} · ${esc(h.status)} <a target="_blank" href="${esc(h.uri)}">↗</a></div>`).join('')}</div>` : ''}`,
+    <label><span><input type="checkbox" id="sc_active" ${s.active ? 'checked' : ''}> Still on SCADA</span></label></div>`,
     `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="scadaSave(${id})">Save</button>`);
 }
 async function scadaSave(id){
   const v = x => document.getElementById(x).value;
-  const j = await api('/scada/' + id, {method:'PATCH', body:{last_renewed_on:v('sc_last'), next_due_override:v('sc_due'), annual_amount:v('sc_amt'), provider:v('sc_prov'), notes:v('sc_notes'), active:document.getElementById('sc_active').checked}});
-  if (j.success) { closeModal(); loadScada(); } else toast(j.error, true);
+  const years = {}; document.querySelectorAll('.sc_y').forEach(el => years[el.dataset.y] = el.value);
+  const body = {client: v('sc_client'), renewal_date: v('sc_date'), product: v('sc_product'), vendor_cost: v('sc_cost'), our_bill: v('sc_bill'), vendor: v('sc_vendor'), notes: v('sc_notes'), active: document.getElementById('sc_active').checked, years};
+  const j = id ? await api('/scada/' + id, {method:'PATCH', body}) : await api('/scada', {method:'POST', body});
+  if (!j.success) { toast(j.error, true); return; }
+  if (!id) { const n = j.scada.find(x => x.client === body.client.trim()); if (n) await api('/scada/' + n.id, {method:'PATCH', body:{years, active: body.active}}); }
+  closeModal(); loadScada();
 }
-function addScada(){
-  openModal('Add SCADA client', `<div class="fields"><label>Client<input type="text" id="sa_client"></label><label>Site<input type="text" id="sa_site"></label>
-    <label>Last renewed<input type="date" id="sa_last"></label><label>Annual $<input type="number" id="sa_amt"></label></div>`,
-    `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="scadaAdd()">Add</button>`);
+// ── maintenance accounts ──────────────────────────────
+let MT = null;
+const MSHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function schedText(a){ if (a.monthly) return 'Monthly'; const m = (a.months || '').split(',').filter(Boolean).map(Number); return m.length === 12 ? 'Monthly' : m.map(x => MSHORT[x - 1]).join(', ') || '—'; }
+async function loadMaint(){ const j = await api('/maint'); if (!j.success) { toast(j.error, true); return; } MT = j; drawMaint(); }
+function drawMaint(){
+  if (!MT) return;
+  const show = document.getElementById('mtShow').value, q = document.getElementById('mtSearch').value.trim().toLowerCase();
+  const rows = MT.accounts.filter(a => (show === 'active' ? a.active : show === 'former' ? !a.active : show === 'due' ? a.due_this_month : true) && (!q || (a.name + ' ' + a.address).toLowerCase().includes(q)));
+  const act = MT.accounts.filter(a => a.active);
+  document.getElementById('mtInfo').innerHTML = `${act.length} active accounts · <b>${act.filter(a => a.due_this_month).length} due in ${MSHORT[MT.month - 1]}</b> · ${MT.accounts.length - act.length} former`;
+  document.getElementById('mtBody').innerHTML = rows.map(a => `<tr>
+    <td><b>${esc(a.name)}</b>${a.notes ? `<div class="note">${esc(a.notes)}</div>` : ''}${!a.active ? ' <span class="chip">former</span>' : ''}</td>
+    <td>${esc(a.kind)}</td><td class="note">${esc(a.equipment)}</td><td class="note">${esc(a.address)}</td>
+    <td style="white-space:nowrap">${a.due_this_month ? '<b>' + esc(schedText(a)) + '</b> <span class="chip b">due now</span>' : esc(schedText(a))}</td>
+    <td class="num">${esc(a.vendor_cost)}</td><td class="num">${esc(a.naples_electric)}</td><td>${esc(a.our_bill)}</td><td class="note">${esc(a.joined)}</td>
+    <td><button class="btn s" onclick="maintEdit(${a.id})">Edit</button></td></tr>`).join('') || '<tr><td colspan="10" class="empty">None.</td></tr>';
 }
+function maintEdit(id){
+  const a = id ? MT.accounts.find(x => x.id === id) : {name:'', kind:'Pump', joined:'', equipment:'', address:'', months:'1,4,7,10', monthly:0, vendor_cost:'', naples_electric:'', our_bill:'', notes:'', active:1};
+  const months = (a.months || '').split(',').filter(Boolean).map(Number);
+  openModal(id ? 'Account - ' + esc(a.name) : 'Add maintenance account', `<div class="fields">
+    <label class="w">Account<input type="text" id="mt_name" value="${esc(a.name)}"></label>
+    <label>Type<select id="mt_kind">${['Pump','Pumps','Both','Fountain','Lake'].map(k => `<option ${k === a.kind ? 'selected' : ''}>${k}</option>`).join('')}</select></label>
+    <label>Date joined<input type="text" id="mt_joined" value="${esc(a.joined)}" placeholder="YYYY-MM-DD"></label>
+    <label class="w">Size &amp; make<input type="text" id="mt_equipment" value="${esc(a.equipment)}"></label>
+    <label class="w">Location of pump<textarea id="mt_address">${esc(a.address)}</textarea></label>
+    <label>Wettech / visit<input type="text" id="mt_vendor_cost" value="${esc(a.vendor_cost)}"></label>
+    <label>Naples Electric<input type="text" id="mt_naples_electric" value="${esc(a.naples_electric)}"></label>
+    <label>Our bill (Stahlman invoice)<input type="text" id="mt_our_bill" value="${esc(a.our_bill)}"></label>
+    <label><span><input type="checkbox" id="mt_monthly" ${a.monthly ? 'checked' : ''}> Monthly</span></label>
+    <div class="w"><b class="note">Months</b><div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px">${MSHORT.map((m, i) => `<label style="display:flex;gap:3px;align-items:center"><input type="checkbox" class="mt_m" value="${i + 1}" ${months.includes(i + 1) ? 'checked' : ''}>${m}</label>`).join('')}</div></div>
+    <label class="w">Notes<textarea id="mt_notes">${esc(a.notes)}</textarea></label>
+    <label><span><input type="checkbox" id="mt_active" ${a.active ? 'checked' : ''}> Active account</span></label></div>`,
+    `${id ? `<button class="btn danger" onclick="maintDelete(${id})">Remove</button>` : ''}<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="maintSave(${id})">Save</button>`);
+}
+async function maintSave(id){
+  const v = k => document.getElementById('mt_' + k).value;
+  const body = {name: v('name'), kind: v('kind'), joined: v('joined'), equipment: v('equipment'), address: v('address'), vendor_cost: v('vendor_cost'), naples_electric: v('naples_electric'), our_bill: v('our_bill'), notes: v('notes'), monthly: document.getElementById('mt_monthly').checked, active: document.getElementById('mt_active').checked, months: [...document.querySelectorAll('.mt_m:checked')].map(x => x.value).join(',')};
+  if (id) body.id = id;
+  const j = await api('/maint', {method:'POST', body});
+  if (!j.success) { toast(j.error, true); return; }
+  closeModal(); MT.accounts = j.accounts; drawMaint();
+}
+async function maintDelete(id){ if (!confirm('Remove this account? (Untick "Active" instead to keep it as a former account.)')) return; const j = await api('/maint/' + id + '/delete', {method:'POST', body:{}}); if (j.success) { closeModal(); MT.accounts = j.accounts; drawMaint(); } }
 async function scadaAdd(){ const v = x => document.getElementById(x).value; const j = await api('/scada', {method:'POST', body:{client_name:v('sa_client'), site:v('sa_site'), last_renewed_on:v('sa_last'), annual_amount:v('sa_amt')}}); if (j.success) { closeModal(); loadScada(); } else toast(j.error, true); }
 
 // ── Jobber ────────────────────────────────────────────
@@ -1034,7 +1111,7 @@ async function loadDivers(){
   DV = j;
   const nm = new Date(j.next_month + 'T12:00:00').toLocaleString('en-US', {month:'long', year:'numeric'});
   const st = j.settings;
-  document.getElementById('diveInfo').innerHTML = `${j.sites.filter(s => s.needs_dive).length} sites need a diver · next email: <b>${esc(nm)}</b> (${j.next_count} sites) to ${esc(st.to)}` + (st.auto ? ' - sent automatically on the 1st' : ' - a to-do on the 1st') + (j.can_send ? '' : ' · <b class="bad">Microsoft 365 is not set up to send</b>');
+  document.getElementById('diveInfo').innerHTML = `${j.sites.filter(s => s.active && s.needs_dive).length} active sites need a diver · next email: <b>${esc(nm)}</b> (${j.next_count} sites) to ${esc(st.to)}` + (st.auto ? ' - sent automatically on the 1st' : ' - a to-do on the 1st') + (j.can_send ? '' : ' · <b class="bad">Microsoft 365 is not set up to send</b>');
   drawDiveSites();
   document.getElementById('diveDocx').href = '/pumps/api/dives/docx?month=' + encodeURIComponent(j.next_month);
   document.getElementById('diveSettings').innerHTML = `
@@ -1050,15 +1127,18 @@ async function loadDivers(){
 function drawDiveSites(){
   if (!DV) return;
   const f = document.getElementById('diveFilter').value;
-  const rows = DV.sites.filter(s => !f || (f === 'dive' ? s.needs_dive : !s.needs_dive));
+  const nm = new Date(DV.next_month + 'T12:00:00').getMonth() + 1;
+  const on = s => s.active && s.needs_dive && (!s.months || s.months.split(',').map(Number).includes(nm));
+  const rows = DV.sites.filter(s => !f ? true : f === 'dive' ? s.active && s.needs_dive : f === 'month' ? on(s) : f === 'former' ? !s.active : s.active && !s.needs_dive);
   const stat = {active: '', meet: '<span class="chip a">meet HOA</span>', hold: '<span class="chip r">hold</span>'};
   document.getElementById('diveBody').innerHTML = rows.map(s => `<tr>
     <td><b>${esc(s.name)}</b></td><td>${esc(s.equipment)}</td><td class="note">${esc(s.address)}</td>
     <td class="note">${esc(s.diver_notes)}${s.month_note ? '<div><b>Next email only:</b> ' + esc(s.month_note) + '</div>' : ''}</td>
     <td>${s.needs_dive ? '<span class="chip b">diver</span>' : '<span class="note">no</span>'}</td>
-    <td class="note">${s.months ? s.months.split(',').map(m => MONTHS[m - 1]).join(', ') : 'every month'}</td>
+    <td class="note">${s.months ? (s.months === '1,4,7,10' ? 'Quarterly (Jan, Apr, Jul, Oct)' : s.months.split(',').map(m => MONTHS[m - 1]).join(', ')) : 'every month'}${!s.active ? ' <span class="chip">former</span>' : ''}</td>
+    <td class="num">${esc(s.diver_cost || '')}</td><td class="note">${esc(s.our_bill || '')}${s.naples_electric ? '<div>Naples Electric ' + esc(s.naples_electric) + '</div>' : ''}</td>
     <td>${stat[s.status] || ''}${s.status_note ? '<div class="note">' + esc(s.status_note) + '</div>' : ''}</td>
-    <td><button class="btn s" onclick="editDiveSite(${s.id})">Edit</button></td></tr>`).join('') || '<tr><td colspan="8" class="note">No sites.</td></tr>';
+    <td><button class="btn s" onclick="editDiveSite(${s.id})">Edit</button></td></tr>`).join('') || '<tr><td colspan="10" class="note">No sites.</td></tr>';
 }
 function editDiveSite(id){
   const s = (DV.sites || []).find(x => x.id === id) || {name:'', equipment:'', address:'', diver_notes:'', needs_dive:1, months:'', status:'active', status_note:'', month_note:''};
@@ -1067,6 +1147,10 @@ function editDiveSite(id){
     <label class="w">Site<input type="text" id="ds_name" value="${esc(s.name)}"></label>
     <label>Lakes / filters / pumps<input type="text" id="ds_equipment" value="${esc(s.equipment)}" placeholder="e.g. 1 Pump 1 Lake 2 Filters"></label>
     <label><span><input type="checkbox" id="ds_needs" ${s.needs_dive ? 'checked' : ''}> Needs the diver</span></label>
+    <label>Gulfshore (diver) $<input type="text" id="ds_diver_cost" value="${esc(s.diver_cost || '')}"></label>
+    <label>Our bill<input type="text" id="ds_our_bill" value="${esc(s.our_bill || '')}"></label>
+    <label>Date joined<input type="text" id="ds_joined" value="${esc(s.joined || '')}"></label>
+    <label><span><input type="checkbox" id="ds_active" ${s.active === 0 ? '' : 'checked'}> Active account</span></label>
     <label class="w">Address / where the pumps are<textarea id="ds_address">${esc(s.address)}</textarea></label>
     <label class="w">Notes for the diver (every month - gate codes, what to check)<textarea id="ds_notes">${esc(s.diver_notes)}</textarea></label>
     <label>Status<select id="ds_status">${[['active','Normal'],['meet','HOA wants to meet the diver'],['hold','Hold off']].map(([v,l]) => `<option value="${v}" ${s.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
@@ -1077,7 +1161,7 @@ function editDiveSite(id){
 }
 async function saveDiveSite(id){
   const v = k => document.getElementById('ds_' + k).value;
-  const body = {name: v('name'), equipment: v('equipment'), address: v('address'), diver_notes: v('notes'), status: v('status'), status_note: v('status_note'), month_note: v('month_note'), needs_dive: document.getElementById('ds_needs').checked, months: [...document.querySelectorAll('.ds_m:checked')].map(x => x.value).join(',')};
+  const body = {name: v('name'), equipment: v('equipment'), address: v('address'), diver_notes: v('notes'), status: v('status'), status_note: v('status_note'), month_note: v('month_note'), needs_dive: document.getElementById('ds_needs').checked, active: document.getElementById('ds_active').checked, diver_cost: v('diver_cost'), our_bill: v('our_bill'), joined: v('joined'), months: [...document.querySelectorAll('.ds_m:checked')].map(x => x.value).join(',')};
   if (id) body.id = id;
   const j = await api('/dives/sites', {method:'POST', body});
   if (!j.success) { toast(j.error, true); return; }
