@@ -6219,7 +6219,7 @@ def page():
                                   email=bool(CFG.get('email_enabled')),
                                   openclaw=bool(OPENCLAW_API_KEY),
                                   markup=MARKUP_PCT,
-                                  scada_days=SCADA_DUE_SOON_DAYS,
+                                  scada_days=SCADA_DUE_SOON_DAYS, digest_to=DIGEST_TO, digest_hour=DIGEST_HOUR,
                                   flash_msg=request.args.get('msg', ''))
 
 
