@@ -983,8 +983,27 @@ def extract_text(filename, data):
             return '\n'.join(out)
         if low.endswith('.docx'):
             from docx import Document
+            from docx.oxml.ns import qn
             doc = Document(io.BytesIO(data))
-            out = [p.text for p in doc.paragraphs]
+            # Letterheads live in page headers and text boxes (Wettech's
+            # address and email are there): read those first.
+            out = []
+            for sec in doc.sections:
+                parts = [sec.header] + ([sec.first_page_header] if sec.different_first_page_header_footer else [])
+                for part in parts:
+                    try:
+                        lines = [p.text for p in part.paragraphs]
+                        for t in part.tables:
+                            lines += [' | '.join(dict.fromkeys(c.text for c in r.cells)) for r in t.rows]
+                    except Exception:
+                        continue
+                    out += [l for l in lines if l.strip() and l not in out]
+            for box in doc.element.body.iter(qn('w:txbxContent')):
+                for p in box.iter(qn('w:p')):
+                    line = ''.join(t.text or '' for t in p.iter(qn('w:t'))).strip()
+                    if line and line not in out:
+                        out.append(line)
+            out += [p.text for p in doc.paragraphs]
             for t in doc.tables:
                 for r in t.rows:
                     cells = []
@@ -1462,7 +1481,9 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
             return {'skipped': 'already have this file', 'doc_id': dup['id'], 'case_id': dup['case_id']}
         text = extract_text(filename, data)
         sender, subject = email.get('from', ''), email.get('subject', '')
-        vendor = _vendor_display(f'{sender}\n{subject}\n{text[:3000]}')
+        # A forwarded email is from one of us; the vendor shows in the
+        # forwarded header at the top of the body, or on the document.
+        vendor = _vendor_display(f"{sender}\n{subject}\n{email.get('preview', '')}\n{text[:3000]}")
         if source == 'email' and not vendor and not STRONG_TERMS.search(f'{subject}\n{filename}\n{text[:5000]}'):
             return {'skipped': 'not pump related'}
         path, sha = _store_file(data, filename)
@@ -1512,7 +1533,7 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
             rec.update({k: v for k, v in x.items() if k in rec})
             rec['quote_ref'] = x.get('quote_reference') or ''
             if not rec['vendor']:
-                rec['vendor'] = x.get('vendor') or ''
+                rec['vendor'] = x.get('vendor') or vendor
             if x.get('notes'):
                 rec['notes'] = x['notes']
             if rec['kind'] in ('quote', 'bill') and rec['total'] is None and rec['subtotal'] is None:
@@ -1648,6 +1669,18 @@ def _scan_since():
     return d or (_today() - timedelta(days=60)).isoformat()
 
 
+def _mail_preview(msg, limit=1000):
+    """The start of an IMAP message's plain-text body."""
+    try:
+        for part in msg.walk():
+            if part.get_content_type() == 'text/plain' and not part.get_filename():
+                return (part.get_payload(decode=True) or b'').decode(part.get_content_charset() or 'utf-8',
+                                                                    'replace')[:limit]
+    except Exception:
+        pass
+    return ''
+
+
 def scan_mailbox(actor='system'):
     """Read new mail in the PO@ inbox for pump quotes, bills and reports.
     Every email is looked at once (pump_email_scan_log)."""
@@ -1669,23 +1702,26 @@ def scan_mailbox(actor='system'):
         source = fetched.get('source')
         for uid, msg in fetched.get('emails', []):
             summary['emails_checked'] += 1
-            sender = subject = when = ''
+            sender = subject = when = preview = ''
             found = 0
             try:
                 if source == 'graph_api':
                     sender = ((msg.get('from') or {}).get('emailAddress') or {}).get('address', '')
                     subject = msg.get('subject', '')
+                    preview = msg.get('bodyPreview', '')
                     when = msg.get('receivedDateTime', '')
                     attachments = CFG['graph_attachments'](uid)
                 else:
                     sender, subject, when = msg.get('From', ''), msg.get('Subject', ''), msg.get('Date', '')
+                    preview = _mail_preview(msg)
                     attachments = CFG['email_attachments'](msg)
                 for filename, data in attachments:
                     if not (filename or '').lower().endswith(('.pdf', '.docx', '.doc')) or not data:
                         continue
                     try:
                         res = ingest_document(filename, data, source='email', actor='email scan',
-                                              email={'uid': str(uid), 'from': sender, 'subject': subject, 'date': when})
+                                              email={'uid': str(uid), 'from': sender, 'subject': subject, 'date': when,
+                                                     'preview': preview})
                     except Exception as e:
                         summary['errors'].append(f'{filename}: {e}')
                         continue

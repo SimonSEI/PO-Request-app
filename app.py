@@ -599,7 +599,7 @@ def _fetch_emails_for_vi_scan(log_table='vendor_invoice_email_log', extensions=(
             params = {
                 '$filter': graph_filter,
                 '$top': 100,
-                '$select': 'id,subject,from,receivedDateTime,hasAttachments',
+                '$select': 'id,subject,from,receivedDateTime,hasAttachments,bodyPreview',
                 '$expand': 'attachments($select=id,name,contentType,size)',
                 '$orderby': 'receivedDateTime desc',
             }

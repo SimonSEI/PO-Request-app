@@ -596,6 +596,36 @@ class PumpsTest(unittest.TestCase):
         self.assertTrue([v for q, v in fake.calls if 'quoteCreateNote' in q])
         self.c.post(f"/pumps/api/cases/{res['case_id']}/delete", json={'reason': 'test done'})
 
+    def test_forwarded_quote_with_letterhead_in_page_header(self):
+        """Simon forwards Tom's quote to PO@: the sender is one of us and Wettech's details are only in the
+        Word page header - it must still be read as a Wettech quote."""
+        from docx import Document
+        d = Document()
+        hdr = d.sections[0].header.paragraphs[0]
+        hdr.text = 'Water Equipment Technologies of Southwest Florida LLC - Email: wettec@verizon.net'
+        for t in ('October 6, 2026', 'Stahlman England', 'RE: Egret Landing',
+                  'We are pleased to quote you on the following services',
+                  'Field service to replace check valve on pump #1, prime and test.',
+                  'Your Cost --------------- $ 840.00', 'Price includes Sales tax and in freight'):
+            d.add_paragraph(t)
+        buf = io.BytesIO()
+        d.save(buf)
+        text = P.extract_text('Egret.docx', buf.getvalue())
+        self.assertIn('wettec@verizon.net', text)
+        res = P.ingest_document('Egret Landing pump.docx', buf.getvalue(), source='email', actor='email scan',
+                                email={'uid': 'fw-1', 'from': 'simon@stahlman-england.com',
+                                       'subject': 'FW: Egret Landing', 'preview': ''})
+        self.assertEqual((res['kind'], res['review']), ('quote', ''), res)
+        doc = self.c.get(f"/pumps/api/docs/{res['doc_id']}").get_json()['doc']
+        self.assertEqual((doc['vendor'], doc['client_name'], doc['total']), ('Wettech', 'Egret Landing', 840.0))
+        # A PDF forward whose only Wettech mark is the forwarded header in the email body.
+        self.texts['fw-invoice.pdf'] = 'INVOICE\nBill To Stahlman-England\nRE: Egret Landing\nTotal $840.00'
+        res = P.ingest_document('fw-invoice.pdf', b'%PDF fw', source='email', actor='email scan',
+                                email={'uid': 'fw-2', 'from': 'simon@stahlman-england.com', 'subject': 'FW: Invoice',
+                                       'preview': 'From: Tom Morgan <tomm@wettec.biz> Sent: Monday'})
+        doc = self.c.get(f"/pumps/api/docs/{res['doc_id']}").get_json()['doc']
+        self.assertEqual(doc['vendor'], 'Wettech')
+
     def test_client_found_through_its_property_despite_typos(self):
         props = [{'id': 'PX1', 'address': {'street1': '1 Osprey Ct', 'street2': 'Osprey Point - Pump #1', 'city': 'Naples'}},
                  {'id': 'PX2', 'address': {'street1': '2 Osprey Ct', 'street2': 'Osprey Point - Pump #2', 'city': 'Naples'}}]
