@@ -9079,6 +9079,10 @@ DASHBOARD_MENU_TEMPLATE = '''
         .soon-badge{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;
             background:#FEF3C7;color:#92400E;border:1px solid #FDE68A;padding:2px 8px;border-radius:100px;
             vertical-align:middle;margin-left:6px;}
+        .app-card.card-disabled{cursor:default;opacity:.7;}
+        .app-card.card-disabled:hover{transform:none;box-shadow:var(--shadow-md);border-color:var(--border);}
+        .app-card.card-disabled:hover::before{opacity:0;}
+        .app-card.card-disabled .card-cta{background:#E2E8F0;color:#64748B;box-shadow:none;cursor:not-allowed;}
 
         /* ── FOOTER ── */
         footer{margin-top:auto;text-align:center;padding:20px;
@@ -9223,15 +9227,6 @@ DASHBOARD_MENU_TEMPLATE = '''
         </a>
         {% endif %}
 
-        {% if timeoff_ok %}
-        <a class="app-card card-amber" href="{{ url_for('timeoff.page') }}">
-            <div class="card-icon-wrap">🗓️</div>
-            <div class="card-title">Time-Off Log</div>
-            <div class="card-desc">Approve or deny technician time-off requests, see sick call-outs, and check who's off on any day.</div>
-            <button class="card-cta">Open Time-Off →</button>
-        </a>
-        {% endif %}
-
         {% if pumps_ok %}
         <a class="app-card card-teal" href="{{ url_for('pumps.page') }}">
             <div class="card-icon-wrap">⚙️</div>
@@ -9252,7 +9247,7 @@ DASHBOARD_MENU_TEMPLATE = '''
 
     </div>
 
-    {% if role == 'office' %}
+    {% if role == 'office' or timeoff_ok %}
     <details class="folder">
         <summary>
             <span class="folder-icon">📁</span>
@@ -9261,12 +9256,23 @@ DASHBOARD_MENU_TEMPLATE = '''
         </summary>
         <div class="cards-grid folder-grid">
 
+            {% if role == 'office' %}
             <a class="app-card card-teal" href="{{ url_for('installation') }}">
                 <div class="card-icon-wrap">🏗️</div>
                 <div class="card-title">Installation <span class="soon-badge">Coming Soon</span></div>
                 <div class="card-desc">Manage install jobs, site plans, crew scheduling, daily logs, and job costing all in one place.</div>
                 <button class="card-cta">Open Installation →</button>
             </a>
+            {% endif %}
+
+            {% if timeoff_ok %}
+            <div class="app-card card-amber card-disabled" aria-disabled="true">
+                <div class="card-icon-wrap">🗓️</div>
+                <div class="card-title">Time-Off Log <span class="soon-badge">Coming Soon</span></div>
+                <div class="card-desc">Approve or deny technician time-off requests, see sick call-outs, and check who's off on any day.</div>
+                <button class="card-cta" type="button" disabled>Not available yet</button>
+            </div>
+            {% endif %}
 
         </div>
     </details>
@@ -39297,9 +39303,13 @@ def _hash_plaintext_passwords():
 
 _hash_plaintext_passwords()
 init_cashflow_db()
-# Time-Off Log (technician time off and call-outs) lives in timeoff.py.
+# Time-Off Log (technician time off and call-outs) lives in timeoff.py. It is parked under
+# "Features Coming Soon": the tile shows but nothing is registered, so /timeoff and
+# /api/time-off* return 404. Set this to True to switch it back on.
+TIMEOFF_ENABLED = False
 from timeoff import init_timeoff, timeoff_allowed
-init_timeoff(app, csrf, DB_PATH)
+if TIMEOFF_ENABLED:
+    init_timeoff(app, csrf, DB_PATH)
 
 # Pumps (pump/diver/filter/SCADA work from request to invoice) lives in pumps.py.
 from pumps import init_pumps, pumps_allowed
