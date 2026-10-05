@@ -39317,7 +39317,8 @@ init_pumps(app, csrf, DB_PATH, data_dir=DATA_DIR, secret_key=app.secret_key, web
            email_enabled=PO_EMAIL_MONITORING_ENABLED, fetch_emails=_fetch_emails_for_vi_scan,
            graph_attachments=extract_attachments_from_graph_message,
            email_attachments=extract_attachments_from_email, log_activity=log_activity,
-           scheduler_available=SCHEDULER_AVAILABLE)
+           scheduler_available=SCHEDULER_AVAILABLE,
+           graph_token=_get_graph_access_token if MS_GRAPH_ENABLED else None, mail_from=PO_EMAIL_ADDRESS)
 if not CASHFLOW_ENABLED:
     # Switched off: forget any Jobber or QuickBooks sign-in, so neither the
     # database nor a downloaded backup holds a working key to either account.
