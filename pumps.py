@@ -31,6 +31,7 @@ PUMPS_OPENCLAW.md.
 Hooked into app.py with init_pumps(app, csrf, DB_PATH, ...).
 """
 import base64
+import difflib
 import hashlib
 import hmac
 import io
@@ -74,6 +75,12 @@ SCAN_EVERY_MIN = max(10, int(os.environ.get('PUMPS_SCAN_EVERY_MINUTES', '30') or
 # turning the app on does not run years of old mail through it.
 SCAN_SINCE = os.environ.get('PUMPS_SCAN_SINCE', '')
 MARKUP_PCT = float(os.environ.get('PUMPS_MARKUP_PCT', '0') or 0)
+# Our quote to the client = the vendor's price plus this (Simon's Jobber quote
+# 9136: Wettech $1,158.99 tax included -> $1,506.69, i.e. 30%).
+QUOTE_MARKUP_PCT = float(os.environ.get('PUMPS_QUOTE_MARKUP_PCT', '30') or 0)
+# A vendor quote that is read cleanly and filed is drafted as our client
+# quote in Jobber straight away (a draft - the office still sends it).
+AUTO_DRAFT_QUOTES = os.environ.get('PUMPS_AUTO_DRAFT_QUOTES', 'true').lower() in ('1', 'true', 'yes', 'on')
 MATCH_TOLERANCE = float(os.environ.get('PUMPS_MATCH_TOLERANCE', '0.50') or 0.5)
 SCADA_DUE_SOON_DAYS = int(os.environ.get('PUMPS_SCADA_DUE_SOON_DAYS', '60') or 60)
 STALE_DAYS = int(os.environ.get('PUMPS_STALE_DAYS', '7') or 7)
@@ -268,6 +275,18 @@ def _vendor_email(vendor_name):
 # database
 # ═════════════════════════════════════════════════════════════════════════════
 
+# What the office told us (Oct 2026) about one account's names.
+SEED_SITE_ALIASES = [
+    {'place': 'Carlisle', 'area': '', 'client_id': 'Z2lkOi8vSm9iYmVyL0NsaWVudC80OTAwNzI1OA==',
+     'client_name': 'Greenscapes', 'property_id': '', 'property_label': '',
+     'note': 'The Carlisle (Naples) is on the Greenscapes account.'},
+    {'place': 'Carlisle', 'area': 'back station', 'client_id': 'Z2lkOi8vSm9iYmVyL0NsaWVudC80OTAwNzI1OA==',
+     'client_name': 'Greenscapes', 'property_id': 'Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzUyOTc4MjYw',
+     'property_label': '6945 Carlisle Court, The Carlisle Naples- Pump #1 Exit',
+     'note': '"Back station" at the Carlisle means the Pump #1 exit pump (this account only).'},
+]
+
+
 def init_db():
     conn = _conn()
     c = conn.cursor()
@@ -407,6 +426,29 @@ def init_db():
                   ignored INTEGER DEFAULT 0,
                   synced_at TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS pump_state (key TEXT PRIMARY KEY, value TEXT)''')
+    # Account-specific names on vendor paperwork: "Carlisle" is a Greenscapes
+    # property, and its "back station" is the Pump #1 exit pump.
+    c.execute('''CREATE TABLE IF NOT EXISTS pump_site_aliases (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  place TEXT NOT NULL,
+                  area TEXT DEFAULT '',
+                  client_id TEXT NOT NULL,
+                  client_name TEXT DEFAULT '',
+                  property_id TEXT DEFAULT '',
+                  property_label TEXT DEFAULT '',
+                  note TEXT DEFAULT '',
+                  created_by TEXT DEFAULT '',
+                  created_at TEXT,
+                  UNIQUE(place, area))''')
+    for a in SEED_SITE_ALIASES:
+        c.execute('''INSERT OR IGNORE INTO pump_site_aliases (place, area, client_id, client_name, property_id,
+                       property_label, note, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?)''',
+                  (a['place'], a['area'], a['client_id'], a['client_name'], a['property_id'], a['property_label'],
+                   a['note'], 'office', _now_text()))
+    try:
+        c.execute("ALTER TABLE pump_docs ADD COLUMN proposal_title TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
     # When the vendor's bill was paid, and who said so (added after launch).
     for col in ('vendor_paid_on', 'vendor_paid_by'):
         try:
@@ -994,11 +1036,12 @@ EXTRACT_SCHEMA = {
         'tax': _NUM,
         'total': _NUM,
         'tax_included': {'type': 'boolean'},
+        'proposal_title': {'type': 'string'},
         'notes': {'type': 'string'},
     },
     'required': ['kind', 'vendor', 'doc_number', 'doc_date', 'po_number', 'ordered_by', 'wo_number',
                  'quote_reference', 'client_name', 'site', 'category', 'description', 'line_items', 'subtotal',
-                 'tax', 'total', 'tax_included', 'notes'],
+                 'tax', 'total', 'tax_included', 'proposal_title', 'notes'],
     'additionalProperties': False,
 }
 
@@ -1033,6 +1076,8 @@ Classify the document and pull out its fields:
 - tax_included: true when the document says its price already includes sales tax (e.g. "Price includes Sales
   tax and freight"). Then put that price in total, leave subtotal and tax null, and set taxable false on its
   lines. Otherwise false.
+- proposal_title: for a quote, a short title for our proposal to the client, starting "Proposal to" and naming
+  the main work (e.g. "Proposal to inspect suction line", "Proposal to replace pump motor"). "" otherwise.
 - notes: anything a person checking this against a quote should know ("as per quotation", exclusions, etc).
 Use "" for text you cannot find. Never invent numbers."""
 
@@ -1390,6 +1435,15 @@ def _apply(conn, case_id, fill):
 
 
 def ingest_document(filename, data, source='upload', email=None, kind_hint=None, actor='system', case_id=None):
+    """Read, store and file one document, then draft our client quote in
+    Jobber when it is a vendor quote that read cleanly."""
+    res = _ingest_document(filename, data, source, email, kind_hint, actor, case_id)
+    if res.get('kind') == 'quote' and res.get('case_id') and not res.get('review'):
+        res['auto_quote'] = auto_draft_quote(res['doc_id'])
+    return res
+
+
+def _ingest_document(filename, data, source='upload', email=None, kind_hint=None, actor='system', case_id=None):
     """Read, store and file one document. Returns {'doc_id', 'case_id', ...}
     or {'skipped': reason}."""
     email = email or {}
@@ -1411,7 +1465,7 @@ def ingest_document(filename, data, source='upload', email=None, kind_hint=None,
         rec = {'kind': kind_hint or 'other', 'vendor': vendor, 'line_items': [], 'category': '',
                'doc_number': '', 'doc_date': '', 'po_number': '', 'wo_number': '', 'quote_reference': '',
                'ordered_by': '', 'client_name': '', 'site': '', 'description': '', 'subtotal': None, 'tax': None,
-               'total': None, 'notes': ''}
+               'total': None, 'notes': '', 'proposal_title': ''}
         extracted_by, review, report_fields, branded_path, branded_info = '', '', {}, '', {}
         if low.endswith('.docx') and (kind_hint in (None, 'report')) and _is_report(filename, text):
             rec['kind'] = 'report'
@@ -1478,6 +1532,8 @@ def ingest_document(filename, data, source='upload', email=None, kind_hint=None,
                       json.dumps(report_fields), text[:4000], source, email.get('uid', ''), sender, subject,
                       email.get('date', ''), case_id, extracted_by, review, now, now))
         doc_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        if rec.get('proposal_title'):
+            conn.execute('UPDATE pump_docs SET proposal_title=? WHERE id=?', (rec['proposal_title'][:200], doc_id))
         _event(conn, actor, 'document received', f'{rec["kind"]}: {filename} ({source})', doc_id=doc_id)
         filed = None
         # Documents that need a person's eye wait in the inbox unfiled - except
@@ -1531,19 +1587,22 @@ def reread_doc(doc_id, actor='system'):
         conn.execute('''UPDATE pump_docs SET kind=?, status=?, vendor=?, doc_number=?, doc_date=?, po_number=?,
                           wo_number=?, quote_ref=?, ordered_by=?, client_name=?, site=?, category=?, description=?,
                           line_items=?, subtotal=?, tax=?, total=?, extracted_by='claude', review_reason=?,
-                          updated_at=? WHERE id=?''',
+                          proposal_title=?, updated_at=? WHERE id=?''',
                      (x['kind'], 'review' if review else 'new', known or x.get('vendor') or doc['vendor'] or '',
                       x.get('doc_number') or '', x.get('doc_date') or '', x.get('po_number') or '',
                       x.get('wo_number') or '', x.get('quote_reference') or '', x.get('ordered_by') or '',
                       x.get('client_name') or '', x.get('site') or '', x.get('category') or '', desc,
                       json.dumps(x['line_items']), x.get('subtotal'), x.get('tax'), x.get('total'), review,
-                      _now_text(), doc_id))
+                      (x.get('proposal_title') or '')[:200], _now_text(), doc_id))
         _event(conn, actor, 'read again', f"{x['kind']}: {doc['file_name']} (Claude)", doc_id=doc_id)
         filed = None if review else file_document(conn, doc_id, actor)
         conn.commit()
-        return {'doc_id': doc_id, 'case_id': filed, 'kind': x['kind'], 'review': review}
     finally:
         conn.close()
+    out = {'doc_id': doc_id, 'case_id': filed, 'kind': x['kind'], 'review': review}
+    if x['kind'] == 'quote' and filed:
+        out['auto_quote'] = auto_draft_quote(doc_id)
+    return out
 
 
 def reread_pending(actor='system', limit=25):
@@ -2148,39 +2207,197 @@ def scada_rows(conn):
 
 # ── draft invoices and notes ─────────────────────────────────────────────────
 
+def _tok_match(a, b):
+    """Two words that are the same name, allowing for typos ("Carlise",
+    "Carslie" and "Carlisle")."""
+    return a == b or (len(a) >= 4 and len(b) >= 4 and difflib.SequenceMatcher(None, a, b).ratio() >= 0.8)
+
+
+def _words(text):
+    return re.findall(r'[a-z0-9#]+', (text or '').lower())
+
+
+def fuzzy_has(phrase, text):
+    """Every word of phrase (bar "the") shows up in text, typos allowed."""
+    want = [t for t in _words(phrase) if t not in ('the', 'at', 'of')]
+    have = _words(text)
+    return bool(want) and all(any(_tok_match(w, h) for h in have) for w in want)
+
+
+def place_score(name, label):
+    """How much of a place name ("The Carlise") a property address covers."""
+    want = list(name_tokens(name))
+    have = _words(label)
+    if not want or not have:
+        return 0.0
+    return round(sum(1 for w in want if any(_tok_match(w, h) for h in have)) / len(want), 2)
+
+
 def search_clients(name, limit=8):
-    """Jobber clients that could be the one on a document, best first."""
+    """Jobber clients that could be the one on a document, best first. A
+    vendor often names the community, which in Jobber is a property of a
+    management or landscape company (The Carlisle is a Greenscapes property),
+    so property addresses count as much as client names; matching_properties
+    lists the client's properties that fit."""
     q_terms = [name]
     toks = sorted(name_tokens(name), key=len, reverse=True)
     if toks:
         q_terms.append(toks[0])
+        if len(toks[0]) >= 6:
+            q_terms.append(toks[0][:5])  # a misspelt name still finds "Carli..."
     found = {}
+    spec = ['id', 'name', 'isLead', 'isArchived', 'jobberWebUri', ('billingAddress', ['street1', 'city']),
+            ('properties', ['id', _ADDR])]
     for term in q_terms:
         if not term:
             continue
         def make(fields):
             return f'query($q: String!) {{ clients(searchTerm: $q, first: 15) {{ nodes {{ {fields} }} }} }}'
         try:
-            data, _ = _gql_tolerant(make, ['id', 'name', 'isLead', 'isArchived', 'jobberWebUri',
-                                           ('billingAddress', ['street1', 'city'])], {'q': term},
-                                    required=('id', 'name'))
+            data, spec = _gql_tolerant(make, spec, {'q': term}, required=('id', 'name'))
         except JobberError:
-            if found:
+            if ('properties', ['id', _ADDR]) in spec:
+                spec = [f for f in spec if f != ('properties', ['id', _ADDR])]
+                try:
+                    data, spec = _gql_tolerant(make, spec, {'q': term}, required=('id', 'name'))
+                except JobberError:
+                    if found:
+                        break
+                    raise
+            elif found:
                 break
-            raise
+            else:
+                raise
         for n in (data.get('clients') or {}).get('nodes') or []:
             if n.get('isArchived'):
                 continue
+            props = n.get('properties') or []
+            if isinstance(props, dict):
+                props = props.get('nodes') or []
+            plist = [{'id': p['id'], 'label': _prop_label(p), 'score': place_score(name, _prop_label(p))}
+                     for p in props if p and p.get('id')]
+            matching = [p for p in plist if p['score'] >= 0.99]
             # A lead is a prospect, not who we bill.
-            score = similarity(name, n.get('name') or '') - (0.25 if n.get('isLead') else 0)
+            score = max(similarity(name, n.get('name') or ''), 0.95 if matching else 0) \
+                - (0.25 if n.get('isLead') else 0)
             if n['id'] not in found or found[n['id']]['score'] < score:
                 found[n['id']] = {'id': n['id'], 'name': n.get('name'), 'is_lead': bool(n.get('isLead')),
                                   'uri': n.get('jobberWebUri'), 'score': round(score, 2),
+                                  'matching_properties': matching,
                                   'address': ', '.join(x for x in [(n.get('billingAddress') or {}).get('street1'),
                                                                    (n.get('billingAddress') or {}).get('city')] if x)}
         if any(v['score'] >= 0.85 for v in found.values()):
             break
     return sorted(found.values(), key=lambda v: -v['score'])[:limit]
+
+
+# ── account-specific site names ──────────────────────────────────────────────
+
+def site_aliases(conn=None):
+    own = conn is None
+    conn = conn or _conn()
+    try:
+        return [dict(r) for r in conn.execute('SELECT * FROM pump_site_aliases ORDER BY place, area')]
+    finally:
+        if own:
+            conn.close()
+
+
+def _doc_hay(doc, case=None):
+    """Everything on a document that can name the site: the RE: line, the
+    file name ("Carslie Back Station.docx"), the email subject, the site."""
+    case = case or {}
+    return ' '.join(str(x or '') for x in (doc.get('client_name'), doc.get('file_name'), doc.get('email_subject'),
+                                            doc.get('site'), case.get('client_name'), case.get('site')))
+
+
+def match_site_alias(doc, case=None, conn=None):
+    """The office's own name for a site that fits this document, most specific
+    first ("Carlisle" + "back station" beats "Carlisle")."""
+    hay = _doc_hay(doc, case)
+    best = None
+    for a in site_aliases(conn):
+        if not fuzzy_has(a['place'], hay):
+            continue
+        if a['area'] and not fuzzy_has(a['area'], hay):
+            continue
+        rank = (1 if a['area'] else 0, 1 if a['property_id'] else 0)
+        if best is None or rank > best[0]:
+            best = (rank, a)
+    return best[1] if best else None
+
+
+def resolve_quote_target(doc, case=None):
+    """Which Jobber client and property a vendor quote is for. Returns the ids
+    found (either may be None when a person has to choose), how, and the
+    choices."""
+    case = case or {}
+    out = {'client_id': None, 'client_name': '', 'property_id': None, 'property_label': '', 'how': '',
+           'candidates': [], 'properties': []}
+    j = case.get('jobber') if isinstance(case.get('jobber'), dict) else json.loads(case.get('jobber') or '{}')
+    item_client = (j.get('client') or {}).get('id') or case.get('jobber_client_id')
+    if item_client:
+        out.update(client_id=item_client, how='the item')
+        if case.get('jobber_property_id'):
+            out.update(property_id=case['jobber_property_id'])
+            return out
+    alias = match_site_alias(doc, case)
+    if alias and (not item_client or item_client == alias['client_id']):
+        out.update(client_id=alias['client_id'], client_name=alias['client_name'],
+                   how=f'site name "{alias["place"]}{" " + alias["area"] if alias["area"] else ""}"')
+        if alias['property_id']:
+            out.update(property_id=alias['property_id'], property_label=alias['property_label'])
+            return out
+    name = doc.get('client_name') or case.get('client_name') or ''
+    matching = []
+    if not out['client_id'] and name:
+        cands = search_clients(name)
+        out['candidates'] = cands
+        pick = pick_client(cands)
+        if pick:
+            out.update(client_id=pick['id'], client_name=pick['name'], how=f'Jobber search for "{name}"')
+            matching = pick.get('matching_properties') or []
+    if out['client_id']:
+        props = client_jobs(out['client_id'])['properties']
+        out['properties'] = props
+        if not out['client_name']:
+            out['client_name'] = next((c['name'] for c in out['candidates'] if c['id'] == out['client_id']), '')
+        pick = None
+        if len(props) == 1:
+            pick = props[0]
+        else:
+            fits = [p for p in props if (matching and p['id'] in {m['id'] for m in matching})
+                    or (name and place_score(name, p['label']) >= 0.99)] or props
+            site = ' '.join(x for x in (doc.get('site'), case.get('site')) if x)
+            if site:
+                narrowed = [p for p in fits if fuzzy_has(site, p['label'])]
+                fits = narrowed or fits
+            if len(fits) == 1:
+                pick = fits[0]
+        if pick:
+            out.update(property_id=pick['id'], property_label=pick['label'])
+    return out
+
+
+def save_site_alias(place, area, client_id, client_name, property_id, property_label, note, actor):
+    place, area = (place or '').strip()[:80], (area or '').strip()[:80]
+    if not place or not client_id:
+        raise ValueError('A site name needs the name as written and the Jobber client')
+    conn = _conn()
+    try:
+        conn.execute('''INSERT INTO pump_site_aliases (place, area, client_id, client_name, property_id,
+                          property_label, note, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(place, area) DO UPDATE SET client_id=excluded.client_id,
+                          client_name=excluded.client_name, property_id=excluded.property_id,
+                          property_label=excluded.property_label, note=excluded.note,
+                          created_by=excluded.created_by, created_at=excluded.created_at''',
+                     (place, area, client_id, client_name or '', property_id or '', property_label or '',
+                      (note or '')[:300], actor, _now_text()))
+        said = f'{place} {area}'.strip()
+        _event(conn, actor, 'site name saved', f'"{said}" -> {client_name} {property_label}'.strip())
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def pick_client(candidates):
@@ -2319,10 +2536,156 @@ def _jobber_lines(line_items, what):
 
 
 def suggest_quote(doc, case=None):
-    """Our quote to the client: the vendor quote's lines, the same way a bill
-    becomes our invoice (no vendor sales tax or name, plus any markup)."""
-    s = suggest_invoice(doc, case)
-    return {'title': s['subject'], 'line_items': s['line_items'], 'markup_pct': s['markup_pct']}
+    """Our quote to the client, the way the office writes them (Jobber quote
+    9136): the vendor's price plus QUOTE_MARKUP_PCT, no vendor name or sales
+    tax line, a single-price quote as one "Service Proposal Amount" line
+    carrying the vendor's description of the work, titled "Proposal to ...".
+    A price that already includes the vendor's tax stays not taxable."""
+    items = []
+    for it in doc.get('line_items') or []:
+        if it.get('is_tax'):
+            continue
+        price = it.get('unit_price') if it.get('unit_price') is not None else it.get('amount')
+        if price is None:
+            continue
+        desc = _strip_vendor((it.get('description') or it.get('name') or '').strip())
+        items.append({'name': short_name(_strip_vendor((it.get('name') or desc or 'Pump service').strip()), 80),
+                      'description': desc[:2000], 'quantity': it.get('quantity') or 1,
+                      'unit_price': round(price * (1 + QUOTE_MARKUP_PCT / 100), 2),
+                      'taxable': bool(it.get('taxable', True))})
+    if not items and (doc.get('total') or doc.get('subtotal')):
+        amt = doc.get('subtotal') if doc.get('subtotal') is not None else doc.get('total')
+        items = [{'name': '', 'description': _strip_vendor((doc.get('description') or '').split('\n')[0]),
+                  'quantity': 1, 'unit_price': round(amt * (1 + QUOTE_MARKUP_PCT / 100), 2),
+                  'taxable': doc.get('subtotal') is not None}]
+    if len(items) == 1:
+        items[0]['name'] = 'Service Proposal Amount'
+        items[0]['quantity'] = 1
+    title = (doc.get('proposal_title') or '').strip()
+    if not title:
+        work = short_name(items[0]['description'] if items else (doc.get('description') or ''), 70)
+        title = f'Proposal - {work}' if work else 'Pump service proposal'
+    return {'title': title[:255], 'line_items': items, 'markup_pct': QUOTE_MARKUP_PCT}
+
+
+def _quote_note_text(doc, total):
+    vendor = doc.get('vendor') or 'Vendor'
+    price = doc.get('total') if doc.get('total') is not None else doc.get('subtotal')
+    lines = [f"{vendor} quote{' #' + doc['doc_number'] if doc.get('doc_number') else ''}"
+             f"{' dated ' + doc['doc_date'] if doc.get('doc_date') else ''}: {doc.get('file_name')}"]
+    if price is not None:
+        lines.append(f"{vendor} price: ${price:,.2f}" + (' (includes sales tax)' if doc.get('subtotal') is None and
+                                                        doc.get('total') is not None else ''))
+    lines.append(f'Our price: ${total:,.2f} ({QUOTE_MARKUP_PCT:g}% markup). Drafted by the Pumps app.')
+    base = (CFG.get('website_url') or '').rstrip('/')
+    if base and 'localhost' not in base:
+        lines.append(f"File: {base}/pumps#doc-{doc['id']}")
+    return '\n'.join(lines)
+
+
+def note_vendor_file(doc, target_type, target_id, text):
+    """A note on a Jobber record with the vendor's own document attached (or
+    linked, when Jobber will not take the attachment)."""
+    mutation, id_arg, input_type, field = NOTE_MUTATION[target_type]
+    q = (f'mutation PumpsVendorNote($id: EncodedId!, $input: {input_type}!) {{ {mutation}({id_arg}: $id, '
+         f'input: $input) {{ {field} {{ id }} userErrors {{ message path }} }} }}')
+    url = _signed_file_url(doc['id'], 'original', days=7)
+    ctype = 'application/pdf' if (doc.get('file_name') or '').lower().endswith('.pdf') else \
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    if url:
+        try:
+            data = jobber_gql(q, {'id': target_id, 'input': {'message': text, 'attachments': [
+                {'url': url, 'fileName': doc.get('file_name'), 'contentType': ctype}]}})
+            payload = data.get(mutation) or {}
+            if not payload.get('userErrors'):
+                return {'note_id': (payload.get(field) or {}).get('id'), 'attached': True}
+        except JobberError as e:
+            print(f'  ⚠ Pumps: Jobber would not take the attachment ({e}); saving the note without it')
+    data = jobber_gql(q, {'id': target_id, 'input': {'message': text}})
+    payload = data.get(mutation) or {}
+    if payload.get('userErrors'):
+        raise JobberError('Jobber: ' + '; '.join(e.get('message', '?') for e in payload['userErrors']))
+    return {'note_id': (payload.get(field) or {}).get('id'), 'attached': False}
+
+
+def auto_draft_quote(doc_id, actor='Pumps (automatic)'):
+    """Draft our client quote in Jobber as soon as a vendor quote is filed,
+    when the client and property are clear. Otherwise say on the document what
+    a person has to choose. Never raises: the quote still waits in Today."""
+    if not AUTO_DRAFT_QUOTES or not jobber_status()['connected']:
+        return None
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+        doc = _doc_dict(row) if row else None
+        case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (doc['case_id'],)).fetchone()) \
+            if doc and doc.get('case_id') else None
+    finally:
+        conn.close()
+    if not doc or not case or doc['kind'] != 'quote' or doc['status'] in ('review', 'dismissed') \
+            or (doc.get('jobber') or {}).get('quote_id') \
+            or (json.loads(case.get('jobber') or '{}').get('quote') or {}).get('id'):
+        return None
+    reason = ''
+    try:
+        t = resolve_quote_target(doc, case)
+        if not t['client_id']:
+            reason = f'Choose the Jobber client - no clear match for "{doc.get("client_name") or case.get("client_name")}".'
+        elif not t['property_id']:
+            reason = f"Choose which {t['client_name'] or 'client'} property this is for."
+        else:
+            sugg = suggest_quote(doc, case)
+            res = create_draft_quote(doc_id, t['client_id'], t['property_id'], sugg['line_items'], sugg['title'],
+                                     '', actor)
+            return {**res, 'how': t['how']}
+    except (JobberError, ValueError) as e:
+        reason = f'Could not draft it automatically: {e}'
+    conn = _conn()
+    try:
+        j = {**(doc.get('jobber') or {}), 'quote_pending': {'reason': reason, 'at': _now_text()}}
+        conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(j), doc_id))
+        _event(conn, actor, 'client quote not drafted', reason, case_id=case['id'], doc_id=doc_id)
+        conn.commit()
+    finally:
+        conn.close()
+    return {'pending': reason}
+
+
+def fetch_quote_lines(quote_id):
+    """Our client quote's lines from Jobber, as the invoice should repeat them."""
+    for lines_spec in ('lineItems { nodes { name description quantity unitPrice taxable } }',
+                       'lineItems { name description quantity unitPrice taxable }'):
+        try:
+            data = jobber_gql(f'query($id: EncodedId!) {{ quote(id: $id) {{ quoteNumber {lines_spec} }} }}',
+                              {'id': quote_id})
+        except JobberError:
+            continue
+        q = data.get('quote') or {}
+        raw = q.get('lineItems') or []
+        if isinstance(raw, dict):
+            raw = raw.get('nodes') or []
+        lines = [{'name': li.get('name') or '', 'description': li.get('description') or '',
+                  'quantity': li.get('quantity') or 1, 'unit_price': li.get('unitPrice'),
+                  'taxable': bool(li.get('taxable'))} for li in raw if li.get('unitPrice') is not None]
+        return {'number': str(q.get('quoteNumber') or ''), 'line_items': lines}
+    return None
+
+
+def invoice_suggestion(doc, case=None):
+    """The invoice for a bill: when the bill matches the vendor's quote and
+    the item has our client quote in Jobber, the client is invoiced what they
+    were quoted (and approved). Otherwise the bill's lines plus any markup."""
+    sugg = suggest_invoice(doc, case)
+    case = case or {}
+    qid = (json.loads(case.get('jobber') or '{}').get('quote') or {}).get('id') if case else None
+    if qid and compare_amounts(case).get('state') == 'match' and jobber_status()['connected']:
+        try:
+            q = fetch_quote_lines(qid)
+        except Exception:
+            q = None
+        if q and q['line_items']:
+            sugg.update(line_items=q['line_items'], from_quote=q['number'] or True)
+    return sugg
 
 
 QUOTE_CREATE = '''mutation PumpsDraftQuote($attributes: QuoteCreateAttributes!) {
@@ -2345,6 +2708,7 @@ def create_draft_quote(doc_id, client_id, property_id, line_items, title='', mes
         if not row:
             raise ValueError('No such document')
         doc = _doc_dict(row)
+        doc['jobber'] = {k: v for k, v in (doc.get('jobber') or {}).items() if k != 'quote_pending'}
         if doc['kind'] != 'quote':
             raise ValueError("Only a vendor's quote can be turned into a client quote")
         if (doc.get('jobber') or {}).get('quote_id'):
@@ -2395,6 +2759,23 @@ def create_draft_quote(doc_id, client_id, property_id, line_items, title='', mes
                            f"Jobber reports quote #{ref['quote_number']} as '{status}', not draft. "
                            'Open it in Jobber and check it has not gone to the client.', doc_id=doc_id)
         conn.commit()
+        # The vendor's quote goes on our quote as a note, for whoever reviews it.
+        if q.get('id'):
+            try:
+                note = note_vendor_file({**doc, 'id': doc_id}, 'quote', q['id'], _quote_note_text(doc, total))
+                ref.update(quote_note_id=note['note_id'], quote_note_attached=note['attached'])
+                conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?',
+                             (json.dumps({**(doc.get('jobber') or {}), **ref}), doc_id))
+                if doc.get('case_id'):
+                    _event(conn, actor, 'vendor quote saved on Jobber quote',
+                           'attached' if note['attached'] else 'linked (Jobber would not take the file)',
+                           case_id=doc['case_id'], doc_id=doc_id)
+                conn.commit()
+            except JobberError as e:
+                if doc.get('case_id'):
+                    _event(conn, actor, 'vendor quote not saved on Jobber quote', str(e), case_id=doc['case_id'],
+                           doc_id=doc_id)
+                    conn.commit()
         return {**ref, 'total': total}
     finally:
         conn.close()
@@ -2793,7 +3174,7 @@ def h_doc(actor, doc_id):
         d = _doc_dict(row)
         case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (d['case_id'],)).fetchone()) if d['case_id'] else None
         if d['kind'] == 'bill':
-            d['invoice_suggestion'] = suggest_invoice(d, case)
+            d['invoice_suggestion'] = invoice_suggestion(d, case)
         if d['kind'] == 'quote':
             d['quote_suggestion'] = suggest_quote(d, case)
         if case:
@@ -3133,7 +3514,7 @@ def h_doc_invoice(actor, doc_id):
             return {'success': False, 'needs_client': True, 'candidates': cands,
                     'error': 'More than one Jobber client could match - choose one.'}, 409
         client_id = pick['id']
-    sugg = suggest_invoice(doc, case)
+    sugg = invoice_suggestion(doc, case)
     job_id = data.get('job_id')
     if job_id is None:
         job_id = (json.loads(case.get('jobber') or '{}').get('job') or {}).get('id') or ''
@@ -3168,29 +3549,74 @@ def h_doc_quote(actor, doc_id):
         case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (doc['case_id'],)).fetchone()) if doc['case_id'] else {}
     finally:
         conn.close()
-    case_client = (json.loads(case.get('jobber') or '{}').get('client') or {}).get('id') or case.get('jobber_client_id')
-    if not client_id:
-        client_id = case_client
-    if not client_id:
-        cands = search_clients(case.get('client_name') or doc.get('client_name') or '')
-        pick = pick_client(cands)
-        if not pick:
-            return {'success': False, 'needs_client': True, 'candidates': cands,
+    if not (client_id and property_id):
+        t = resolve_quote_target(doc, case) if not client_id else \
+            resolve_quote_target(doc, {**case, 'jobber': '{}', 'jobber_client_id': client_id,
+                                       'jobber_property_id': ''})
+        client_id = client_id or t['client_id']
+        if not client_id:
+            return {'success': False, 'needs_client': True, 'candidates': t['candidates'],
                     'error': 'More than one Jobber client could match - choose one.'}, 409
-        client_id = pick['id']
-    if not property_id and client_id == case_client:
-        property_id = case.get('jobber_property_id')
-    if not property_id:
-        props = client_jobs(client_id)['properties']
-        if len(props) != 1:
+        property_id = property_id or (t['property_id'] if t['client_id'] == client_id else None)
+        if not property_id:
+            props = t['properties'] or client_jobs(client_id)['properties']
             return {'success': False, 'needs_property': True, 'properties': props, 'client_id': client_id,
                     'error': "Choose the client's property for the quote." if props else
                              'This client has no property in Jobber - add one in Jobber first.'}, 409
-        property_id = props[0]['id']
     sugg = suggest_quote(doc, case)
     res = create_draft_quote(doc_id, client_id, property_id, data.get('line_items') or sugg['line_items'],
                              data.get('title') or sugg['title'], data.get('message') or '', actor)
+    rem = data.get('remember') or {}
+    if rem.get('place'):
+        save_site_alias(rem.get('place'), rem.get('area'), client_id, rem.get('client_name'), property_id,
+                        rem.get('property_label'), rem.get('note'), actor)
     return {'quote': res}
+
+
+@api('/docs/<int:doc_id>/quote_target')
+def h_doc_quote_target(actor, doc_id):
+    """Who the app thinks a vendor quote is for, to start the dialog from."""
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+        if not row:
+            return {'success': False, 'error': 'Not found'}, 404
+        doc = _doc_dict(row)
+        case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (doc['case_id'],)).fetchone()) if doc['case_id'] else {}
+    finally:
+        conn.close()
+    return {'target': resolve_quote_target(doc, case)}
+
+
+@api('/site-names')
+def h_site_names(actor):
+    return {'site_names': site_aliases()}
+
+
+@api('/site-names', methods=('POST',))
+def h_site_name_save(actor):
+    """{"place": "Carlisle", "area": "back station", "client_id", "client_name",
+    "property_id", "property_label", "note"} - how one account names a site."""
+    if actor == BOT:
+        return _office_only(actor, 'Saving a site name')
+    d = _json()
+    save_site_alias(d.get('place'), d.get('area'), d.get('client_id'), d.get('client_name'), d.get('property_id'),
+                    d.get('property_label'), d.get('note'), actor)
+    return {'site_names': site_aliases()}
+
+
+@api('/site-names/<int:alias_id>/delete', methods=('POST',))
+def h_site_name_delete(actor, alias_id):
+    if actor == BOT:
+        return _office_only(actor, 'Removing a site name')
+    conn = _conn()
+    try:
+        conn.execute('DELETE FROM pump_site_aliases WHERE id=?', (alias_id,))
+        _event(conn, actor, 'site name removed', str(alias_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {'site_names': site_aliases()}
 
 
 @api('/docs/<int:doc_id>/report_note', methods=('POST',))

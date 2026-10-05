@@ -224,6 +224,9 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   <div class="scroll"><table class="t"><thead><tr><th>Kind</th><th>Status</th><th>Title</th><th>Client</th><th>Property</th><th class="num">Total</th><th>Created</th><th>Item</th><th></th></tr></thead><tbody id="jobberBody"></tbody></table></div>
   <h3 style="margin:18px 0 8px;font-size:14px">Recurring pump maintenance (service contracts)</h3>
   <div class="scroll" style="max-height:40vh"><table class="t"><thead><tr><th>Client</th><th>Job</th><th>Property</th><th class="num">Per visit</th><th>Status</th></tr></thead><tbody id="contractBody"></tbody></table></div>
+  <h3 style="margin:18px 0 8px;font-size:14px">Site names</h3>
+  <div class="note" style="margin-bottom:8px">How an account's sites are named on Wettech's paperwork, so quotes go to the right Jobber client and property on their own - e.g. "Carlisle" is on the Greenscapes account and its "back station" is the Pump #1 exit. Typos are allowed. Add one from <b>Draft quote</b> (tick "Remember").</div>
+  <div class="scroll" style="max-height:40vh"><table class="t"><thead><tr><th>Written as</th><th>Area</th><th>Jobber client</th><th>Property</th><th>Note</th><th></th></tr></thead><tbody id="siteNamesBody"></tbody></table></div>
 </div>
 
 <!-- HELP -->
@@ -242,7 +245,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   </ul>
   <h3>What only happens when someone clicks</h3>
   <ul>
-    <li><b>Draft quote in Jobber</b> (from a Wettech quote): copies the quote's line items into a new Jobber quote for the client <b>as a draft</b>. It is never sent - the app cannot send quotes. Review it in Jobber and send it from there.</li>
+    <li><b>Client quotes are drafted on their own.</b> When a Wettech quote is read and filed, the app drafts our quote in Jobber the way the office writes them: Wettech's price plus 30%, one "Service Proposal Amount" line with Wettech's description of the work (no Wettech name or sales tax line), titled "Proposal to …", on the right client and property - found by the item, a saved site name (e.g. "Carlisle back station" = Greenscapes, Pump #1 exit) or a Jobber search, typos allowed. Wettech's quote is saved as a note on it. It stays a <b>draft</b>: the app cannot send quotes. When the client or property is not clear, the quote waits on Today for <b>Draft quote</b>.</li>
     <li><b>Mark Wettech paid</b>: records the date Wettech's bill was paid. The app does not pay anyone.</li>
     <li><b>Draft invoice in Jobber</b> (from a bill): copies the bill's line items into a new Jobber invoice <b>as a draft</b>. It is never sent - the app cannot send invoices. Review it in Jobber and send it from there.</li>
     <li><b>Log report in Jobber</b>: adds the report as a note on the pump's job (or the client).</li>
@@ -318,7 +321,7 @@ async function loadToday(){
   g.push(box('⚠️ Issues to resolve', q.issues, i => `<div class="row" onclick="openCase(${i.case_id})"><div class="main"><div class="tt">${esc(i.title || i.client_name || 'Item ' + i.case_id)}</div><div class="sub">${esc(i.message)}</div></div></div>`, q.issues.length ? 'red' : ''));
   g.push(box('💸 Pay Wettech - the client has paid', q.vendor_bills_to_pay, c => `<div class="row" onclick="openCase(${c.id})"><div class="main"><div class="tt">${esc(c.title || c.client_name)}</div><div class="sub">${esc(c.vendor || 'Wettech')} bill ${c.vendor_bill_number ? '#' + esc(c.vendor_bill_number) + ' · ' : ''}${money(c.vendor_bill_total ?? c.vendor_bill_amount)} · our Jobber invoice ${c.sei_invoice_number ? '#' + esc(c.sei_invoice_number) + ' ' : ''}is paid</div></div><button class="btn s p" onclick="event.stopPropagation();markVendorPaid(${c.id})">Mark paid</button></div>`, q.vendor_bills_to_pay.length ? 'red' : '', 'Our client paid the Jobber invoice - Wettech\'s bill needs to be paid.'));
   g.push(box('📅 Needs scheduling with Wettech', q.needs_scheduling, c => caseRow(c, c.scheduled_for ? 'for ' + esc(c.scheduled_for) : ''), q.needs_scheduling.length ? 'amber' : '', 'Client approved - get it on Wettech\'s calendar.'));
-  g.push(box('📝 Quotes to draft in Jobber', q.quotes_to_draft, d => `<div class="row" onclick="openCase(${d.case_id})"><div class="main"><div class="tt">${esc(d.client_name || d.file_name)}</div><div class="sub">${esc(d.vendor)} quote #${esc(d.doc_number)} · ${money(d.subtotal ?? d.total)}</div></div><button class="btn s p" onclick="event.stopPropagation();draftQuote(${d.id})">Draft quote</button></div>`));
+  g.push(box('📝 Quotes to draft in Jobber', q.quotes_to_draft, d => `<div class="row" onclick="openCase(${d.case_id})"><div class="main"><div class="tt">${esc(d.client_name || d.file_name)}</div><div class="sub">${esc(d.vendor)} quote ${d.doc_number ? '#' + esc(d.doc_number) + ' ' : ''}· ${money(d.subtotal ?? d.total)}${((d.jobber || {}).quote_pending || {}).reason ? ' · <b class="warn">' + esc(d.jobber.quote_pending.reason) + '</b>' : ''}</div></div><button class="btn s p" onclick="event.stopPropagation();draftQuote(${d.id})">Draft quote</button></div>`, '', 'Drafted automatically when the client and property are clear - these need a person to choose.'));
   g.push(box('🧾 Bills to draft in Jobber', q.bills_to_draft, d => `<div class="row" onclick="openCase(${d.case_id})"><div class="main"><div class="tt">${esc(d.client_name || d.file_name)}</div><div class="sub">${esc(d.vendor)} bill #${esc(d.doc_number)} · ${money(d.total)}</div></div><button class="btn s p" onclick="event.stopPropagation();draftInvoice(${d.id})">Draft invoice</button></div>`));
   g.push(box('📄 Reports to log in Jobber', q.reports_to_log, d => `<div class="row" onclick="${d.case_id ? `openCase(${d.case_id})` : `openDoc(${d.id})`}"><div class="main"><div class="tt">${esc(d.client_name || d.file_name)}</div><div class="sub">${esc((d.report_fields||{}).title || 'Report')} · ${esc(d.doc_date)}</div></div><button class="btn s" onclick="event.stopPropagation();logReport(${d.id})">Log in Jobber</button></div>`));
   g.push(box('📥 Inbox needs a look', q.review_docs, d => `<div class="row" onclick="openDoc(${d.id})"><div class="main"><div class="tt">${kindChip(d.kind)} ${esc(d.client_name || d.file_name)}</div><div class="sub">${esc(d.review_reason || 'Not filed yet')}</div></div></div>`));
@@ -610,6 +613,7 @@ async function draftInvoice(docId){
   if (!j.success) { toast(j.error, true); return; }
   const d = j.doc, s = d.invoice_suggestion || {line_items:[], subject:''};
   inv = {mode: 'invoice', doc: d, client_id: null, lines: s.line_items.map(x => Object.assign({}, x)), subject: s.subject};
+  if (s.from_quote) setTimeout(() => { const n = document.querySelector('#modal .note'); if (n) n.insertAdjacentHTML('afterbegin', `<b>Lines copied from our Jobber quote #${esc(String(s.from_quote))}</b> - the bill matches ${esc(d.vendor)}'s quote, so the client is invoiced what they were quoted. `); }, 0);
   openModal('Draft invoice in Jobber', `
     <div class="safe">This creates a DRAFT invoice in Jobber. Nothing is sent to the client - review it in Jobber and send it from there.</div>
     ${(d.case_issues || []).map(i => `<div class="issue">⚠️ ${esc(i.message)}</div>`).join('')}
@@ -671,13 +675,23 @@ async function draftQuote(docId){
     <div class="note">From ${esc(d.vendor)} quote #${esc(d.doc_number)} - ${money(d.subtotal)} before tax, ${money(d.total)} total. The vendor's sales tax line and name are left off: Jobber adds the client's tax to taxable lines.${s.markup_pct ? ' Prices include ' + s.markup_pct + '% markup.' : ''}${d.subtotal == null && d.total != null && s.line_items.length && s.line_items.every(l => !l.taxable) ? " <b>The vendor's price already includes sales tax</b>, so its lines are set not taxable - change that if this client should be taxed on top." : ''}</div>
     <div><b>Jobber client</b><div class="toolbar" style="margin:6px 0"><input type="text" id="cq" value="${esc(d.client_name)}" style="flex:1"><button class="btn" onclick="findClients()">Search</button></div><div id="cands"><div class="note">Searching…</div></div></div>
     <div><b>Property</b><div id="qprops" class="note">Choose the client first.</div></div>
+    <div id="qHow" class="note"></div>
+    <label class="note" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="qRemember"> Remember: when Wettech writes <input type="text" id="qPlace" value="${esc(d.client_name)}" style="width:140px"> <input type="text" id="qArea" value="${esc(d.site)}" placeholder="area, e.g. back station" style="width:160px"> it means this client and property</label>
     <label class="note">Quote title<input type="text" id="qTitle" value="${esc(s.title)}" style="width:100%"></label>
     <label class="note">Message to the client (optional)<textarea id="qMsg" style="width:100%;min-height:44px"></textarea></label>
     <div><b>Line items</b> <span class="note">(edit before creating)</span><table class="t" style="margin-top:6px"><thead><tr><th>Name</th><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th>Tax</th><th></th></tr></thead><tbody id="invLines"></tbody></table>
       <button class="btn s" style="margin-top:6px" onclick="inv.lines.push({name:'',description:'',quantity:1,unit_price:0,taxable:true});drawLines()">＋ Line</button>
       <div class="foot"><span id="invTotal"></span></div></div>`,
     `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" id="qGo" onclick="createQuote()">Create draft quote in Jobber</button>`);
-  drawLines(); findClients();
+  drawLines();
+  const t = await api('/docs/' + docId + '/quote_target');
+  const tg = (t.success && t.target) || {};
+  if (tg.client_id) {
+    inv.client_id = tg.client_id; inv.want_property = tg.property_id || null;
+    document.getElementById('cands').innerHTML = `<div class="cand on"><input type="radio" checked><div style="flex:1"><b>${esc(tg.client_name || 'Client from ' + tg.how)}</b><div class="note">found by ${esc(tg.how)} · <a href="#" onclick="event.preventDefault();findClients()">search for another client</a></div></div></div>`;
+    document.getElementById('qHow').textContent = tg.property_id ? `Matched by ${tg.how}: ${tg.client_name || ''}${tg.property_label ? ' · ' + tg.property_label : ''}.` : '';
+    quoteProps();
+  } else findClients();
 }
 async function quoteProps(){
   const box = document.getElementById('qprops');
@@ -690,6 +704,8 @@ async function quoteProps(){
   if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
   const props = j.properties || [];
   if (props.length === 1) inv.property_id = props[0].id;
+  if (inv.want_property && props.some(p => p.id === inv.want_property)) { inv.property_id = inv.want_property; inv.want_property = null; }
+  inv.props = props;
   box.innerHTML = props.map(p => `<label class="cand ${inv.property_id === p.id ? 'on' : ''}"><input type="radio" name="qp" ${inv.property_id === p.id ? 'checked' : ''} onchange="inv.property_id='${esc(p.id)}'"><div>${esc(p.label || 'Property')}</div></label>`).join('')
     || '<div class="issue">This client has no property in Jobber - add one in Jobber first.</div>';
 }
@@ -697,7 +713,12 @@ async function createQuote(){
   if (!inv.client_id) { toast('Choose the Jobber client first.', true); return; }
   if (!inv.property_id) { toast("Choose the client's property first.", true); return; }
   const btn = document.getElementById('qGo'); btn.disabled = true; btn.textContent = 'Creating draft…';
-  const j = await api('/docs/' + inv.doc.id + '/quote', {method:'POST', body:{client_id: inv.client_id, property_id: inv.property_id, line_items: inv.lines, title: document.getElementById('qTitle').value, message: document.getElementById('qMsg').value}});
+  const body = {client_id: inv.client_id, property_id: inv.property_id, line_items: inv.lines, title: document.getElementById('qTitle').value, message: document.getElementById('qMsg').value};
+  if (document.getElementById('qRemember').checked && document.getElementById('qPlace').value.trim()) {
+    const cand = document.querySelector('#cands .cand.on b'), prop = (inv.props || []).find(p => p.id === inv.property_id);
+    body.remember = {place: document.getElementById('qPlace').value.trim(), area: document.getElementById('qArea').value.trim(), client_name: cand ? cand.textContent : '', property_label: prop ? prop.label : ''};
+  }
+  const j = await api('/docs/' + inv.doc.id + '/quote', {method:'POST', body});
   btn.disabled = false; btn.textContent = 'Create draft quote in Jobber';
   if (!j.success) { toast(j.error, true); return; }
   closeModal();
@@ -790,7 +811,14 @@ function addScada(){
 async function scadaAdd(){ const v = x => document.getElementById(x).value; const j = await api('/scada', {method:'POST', body:{client_name:v('sa_client'), site:v('sa_site'), last_renewed_on:v('sa_last'), annual_amount:v('sa_amt')}}); if (j.success) { closeModal(); loadScada(); } else toast(j.error, true); }
 
 // ── Jobber ────────────────────────────────────────────
+async function loadSiteNames(){
+  const j = await api('/site-names');
+  const el = document.getElementById('siteNamesBody'); if (!el) return;
+  el.innerHTML = (j.site_names || []).map(n => `<tr><td><b>${esc(n.place)}</b></td><td>${esc(n.area) || '<span class="note">any</span>'}</td><td>${esc(n.client_name)}</td><td>${esc(n.property_label) || '<span class="note">choose each time</span>'}</td><td class="note">${esc(n.note)}</td><td><button class="btn s" onclick="deleteSiteName(${n.id})">Remove</button></td></tr>`).join('') || '<tr><td colspan="6" class="note">None yet.</td></tr>';
+}
+async function deleteSiteName(id){ if (!confirm('Remove this site name?')) return; const j = await api('/site-names/' + id + '/delete', {method:'POST', body:{}}); if (j.success) loadSiteNames(); else toast(j.error, true); }
 async function loadJobber(){
+  loadSiteNames();
   const c = document.getElementById('jCat').value, k = document.getElementById('jKind').value, o = document.getElementById('jOpen').value;
   const j = await api('/jobber/items?open=' + o + (c ? '&category=' + c : '') + (k ? '&kind=' + k : ''));
   const s = j.sync || {};

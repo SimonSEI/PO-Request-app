@@ -51,7 +51,7 @@ Responses are JSON with `"success": true|false`. When it is false, `error` says 
 | `review_docs` | Documents the app couldn't read or file with confidence | You (step 3), else office |
 | `needs_scheduling` | Client approved, Wettech not scheduled yet | You draft the email (step 5), office sends |
 | `vendor_bills_to_pay` | The client paid our Jobber invoice; Wettech's bill still needs to be paid | Office (report it) |
-| `quotes_to_draft` | Wettech quotes ready to become our draft quote to the client in Jobber | Office |
+| `quotes_to_draft` | Wettech quotes the app could not draft as a client quote on its own (`jobber.quote_pending.reason` says what a person must choose) | Office |
 | `bills_to_draft` | Wettech bills ready to become a Jobber draft invoice | Phase 2: you (step 4). Phase 1: office |
 | `reports_to_log` | Rebranded reports not yet logged in Jobber | Phase 2: you (step 6). Phase 1: office |
 | `scada_attention` | SCADA renewals overdue or due within 60 days | You (step 7) |
