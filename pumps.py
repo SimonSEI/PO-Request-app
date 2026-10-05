@@ -85,6 +85,10 @@ QUOTE_MARKUP_PCT = float(os.environ.get('PUMPS_QUOTE_MARKUP_PCT', '30') or 0)
 # A vendor quote that is read cleanly and filed is drafted as our client
 # quote in Jobber straight away (a draft - the office still sends it).
 AUTO_DRAFT_QUOTES = os.environ.get('PUMPS_AUTO_DRAFT_QUOTES', 'true').lower() in ('1', 'true', 'yes', 'on')
+# A rebranded service report is put on the site's pump job in Jobber as a
+# note ("October Pump Maintenance" + the PDF) as soon as it arrives, when the
+# job is clear.
+AUTO_LOG_REPORTS = os.environ.get('PUMPS_AUTO_LOG_REPORTS', 'true').lower() in ('1', 'true', 'yes', 'on')
 MATCH_TOLERANCE = float(os.environ.get('PUMPS_MATCH_TOLERANCE', '0.50') or 0.5)
 SCADA_DUE_SOON_DAYS = int(os.environ.get('PUMPS_SCADA_DUE_SOON_DAYS', '60') or 60)
 STALE_DAYS = int(os.environ.get('PUMPS_STALE_DAYS', '7') or 7)
@@ -292,6 +296,11 @@ SEED_SITE_ALIASES = [
      'client_name': 'MIROMAR LAKES', 'property_id': 'Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzM4MTYzODEy',
      'property_label': '17910 Ben Hill Griffin Pkwy, Miromar Lakes',
      'note': 'Wettech writes "Miramar Lakes" for Miromar Lakes (its pumps and fountains).'},
+    {'place': 'Spanish Wells', 'area': '', 'client_id': 'Z2lkOi8vSm9iYmVyL0NsaWVudC8zNTM3MDUzOQ==',
+     'client_name': 'The Lake Club', 'property_id': 'Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzM4MTYzNTQ0',
+     'property_label': '28432 Highgate Drive, Bonita Springs',
+     'job_id': 'Z2lkOi8vSm9iYmVyL0pvYi80MTQyMDAxOA==', 'job_label': '#1609 Quarterly Pump- 850',
+     'note': 'Spanish Wells reports go on The Lake Club account, job #1609 "Quarterly Pump- 850".'},
 ]
 
 
@@ -435,6 +444,7 @@ def init_db():
                   synced_at TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS pump_state (key TEXT PRIMARY KEY, value TEXT)''')
     init_dive_tables(c)
+    init_todo_table(c)
     # Account-specific names on vendor paperwork: "Carlisle" is a Greenscapes
     # property, and its "back station" is the Pump #1 exit pump.
     c.execute('''CREATE TABLE IF NOT EXISTS pump_site_aliases (
@@ -454,10 +464,16 @@ def init_db():
                        property_label, note, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?)''',
                   (a['place'], a['area'], a['client_id'], a['client_name'], a['property_id'], a['property_label'],
                    a['note'], 'office', _now_text()))
-    try:
-        c.execute("ALTER TABLE pump_docs ADD COLUMN proposal_title TEXT DEFAULT ''")
-    except sqlite3.OperationalError:
-        pass
+    for table, col in (('pump_docs', 'proposal_title'), ('pump_site_aliases', 'job_id'),
+                       ('pump_site_aliases', 'job_label')):
+        try:
+            c.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
+    for a in SEED_SITE_ALIASES:
+        if a.get('job_id'):
+            c.execute("UPDATE pump_site_aliases SET job_id=?, job_label=? WHERE place=? AND area=? AND "
+                      "COALESCE(job_id, '')=''", (a['job_id'], a['job_label'], a['place'], a['area']))
     # When the vendor's bill was paid, and who said so (added after launch).
     for col in ('vendor_paid_on', 'vendor_paid_by'):
         try:
@@ -1468,6 +1484,8 @@ def ingest_document(filename, data, source='upload', email=None, kind_hint=None,
     res = _ingest_document(filename, data, source, email, kind_hint, actor, case_id)
     if res.get('kind') == 'quote' and res.get('case_id') and not res.get('review'):
         res['auto_quote'] = auto_draft_quote(res['doc_id'])
+    if res.get('kind') == 'report' and res.get('doc_id') and not res.get('review'):
+        res['auto_note'] = auto_log_report(res['doc_id'])
     return res
 
 
@@ -1500,7 +1518,8 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
         if low.endswith('.docx') and (kind_hint in (None, 'report')) and _is_report(filename, text):
             rec['kind'] = 'report'
             report_fields = pump_reports.read_report(data)
-            rec.update(client_name=report_fields.get('customer') or '', site=report_fields.get('location') or '',
+            rec.update(client_name=report_fields.get('customer') or _site_from_filename(filename),
+                       site=report_fields.get('location') or '',
                        doc_date=_iso_date(report_fields.get('date')), description=report_fields.get('title') or '',
                        category='maintenance')
             extracted_by = 'report'
@@ -1508,6 +1527,7 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
                 vprof = pump_reports.vendor_for(f'{sender}\n{text}')
                 branded, branded_info = pump_reports.rebrand_report(data, vendor=vprof)
                 branded_path, _ = _store_file(branded, _branded_name(filename))
+                _make_branded_pdf(branded_path, branded)
                 # What goes into Jobber is read from OUR version: no technician,
                 # no sub's name or contact details.
                 report_fields = {**pump_reports.read_report(branded), 'from_branded': True}
@@ -1663,6 +1683,44 @@ def reread_pending(actor='system', limit=25):
 def _branded_name(filename):
     base = os.path.splitext(_safe_name(filename))[0]
     return f'{base} - Stahlman-England.docx'
+
+
+def _pdf_name(filename):
+    """"10-26  Spanish Wells.docx" -> "10-26 Spanish Wells.pdf", as the office names them."""
+    return re.sub(r'\s+', ' ', os.path.splitext(_safe_name(filename))[0]).strip() + '.pdf'
+
+
+def _branded_pdf_path(branded_path):
+    return os.path.splitext(branded_path)[0] + '.pdf' if branded_path else ''
+
+
+def _make_branded_pdf(branded_path, docx_bytes=None):
+    """The rebranded report as a PDF beside the Word file (needs LibreOffice)."""
+    if not branded_path:
+        return ''
+    try:
+        if docx_bytes is None:
+            with open(branded_path, 'rb') as f:
+                docx_bytes = f.read()
+        pdf = pump_reports.docx_to_pdf(docx_bytes)
+    except Exception as e:
+        print(f'  ⚠ Pumps: no PDF of {os.path.basename(branded_path)}: {e}')
+        pdf = None
+    if not pdf:
+        return ''
+    path = _branded_pdf_path(branded_path)
+    with open(path, 'wb') as f:
+        f.write(pdf)
+    return path
+
+
+def _site_from_filename(filename):
+    """"10-26  Spanish Wells.docx" -> "Spanish Wells" (the report's own customer
+    box only holds our name)."""
+    base = os.path.splitext(os.path.basename(filename or ''))[0]
+    base = re.sub(r'^\s*\d{1,2}[-_./]\d{1,4}(?:[-_./]\d{2,4})?\s*', '', base)
+    base = re.sub(r'\b(pump|fountain|maintenance|service|system|report|monthly|quarterly)s?\b', ' ', base, flags=re.I)
+    return re.sub(r'[\s_\-]+', ' ', base).strip(' -')[:80]
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -2436,20 +2494,23 @@ def resolve_quote_target(doc, case=None):
     return out
 
 
-def save_site_alias(place, area, client_id, client_name, property_id, property_label, note, actor):
+def save_site_alias(place, area, client_id, client_name, property_id, property_label, note, actor,
+                    job_id='', job_label=''):
     place, area = (place or '').strip()[:80], (area or '').strip()[:80]
     if not place or not client_id:
         raise ValueError('A site name needs the name as written and the Jobber client')
     conn = _conn()
     try:
         conn.execute('''INSERT INTO pump_site_aliases (place, area, client_id, client_name, property_id,
-                          property_label, note, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?)
+                          property_label, note, created_by, created_at, job_id, job_label)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?)
                         ON CONFLICT(place, area) DO UPDATE SET client_id=excluded.client_id,
                           client_name=excluded.client_name, property_id=excluded.property_id,
                           property_label=excluded.property_label, note=excluded.note,
-                          created_by=excluded.created_by, created_at=excluded.created_at''',
+                          created_by=excluded.created_by, created_at=excluded.created_at,
+                          job_id=excluded.job_id, job_label=excluded.job_label''',
                      (place, area, client_id, client_name or '', property_id or '', property_label or '',
-                      (note or '')[:300], actor, _now_text()))
+                      (note or '')[:300], actor, _now_text(), job_id or '', job_label or ''))
         said = f'{place} {area}'.strip()
         _event(conn, actor, 'site name saved', f'"{said}" -> {client_name} {property_label}'.strip())
         conn.commit()
@@ -2953,6 +3014,83 @@ NOTE_MUTATION = {
 }
 
 
+def report_note_title(doc):
+    """"October Pump Maintenance": the month of the visit, as the office titles them."""
+    rf = doc.get('report_fields') or {}
+    when = _iso_date(rf.get('date')) or doc.get('doc_date') or _today().isoformat()
+    try:
+        month = datetime.strptime(when[:10], '%Y-%m-%d').strftime('%B')
+    except ValueError:
+        month = _today().strftime('%B')
+    what = 'Fountain Maintenance' if re.search(r'fountain', rf.get('title') or '', re.I) else 'Pump Maintenance'
+    return f'{month} {what}'
+
+
+def resolve_report_target(doc, case=None):
+    """Where a report's note goes: the job a site name points at, else the
+    pump job of the item's (or the clear match's) client. Returns
+    {'type','id','label','how'} or {'needs': reason, ...choices}."""
+    case = case or {}
+    alias = match_site_alias(doc, case)
+    if alias and alias.get('job_id'):
+        return {'type': 'job', 'id': alias['job_id'], 'label': f"{alias['client_name']} {alias['job_label']}".strip(),
+                'how': f'site name "{alias["place"]}"'}
+    j = case.get('jobber') if isinstance(case.get('jobber'), dict) else json.loads(case.get('jobber') or '{}')
+    client_id = (alias or {}).get('client_id') or (j.get('client') or {}).get('id') or case.get('jobber_client_id')
+    how = f'site name "{alias["place"]}"' if alias else 'the item'
+    cands = []
+    if not client_id:
+        name = doc.get('client_name') or case.get('client_name') or ''
+        cands = search_clients(name) if name else []
+        pick = pick_client(cands)
+        client_id, how = (pick['id'], f'Jobber search for "{name}"') if pick else (None, '')
+    if not client_id:
+        return {'needs': 'Choose the Jobber client for this report.', 'candidates': cands}
+    cj = client_jobs(client_id)
+    props = cj['properties']
+    if alias and alias.get('property_id'):
+        props = [p for p in props if p['id'] == alias['property_id']] or props
+    job = best_job_for_report(cj['jobs'], props, doc.get('site'), (doc.get('report_fields') or {}).get('title'))
+    if not job:
+        return {'needs': 'No clear pump job for this report - choose the job, or log it on the client.',
+                'client_id': client_id, 'jobs': cj['jobs'], 'properties': cj['properties']}
+    return {'type': 'job', 'id': job['id'], 'label': f"#{job.get('number')} {job.get('title')}", 'how': how}
+
+
+def auto_log_report(doc_id, actor='Pumps (automatic)'):
+    """Put a newly rebranded report on its pump job in Jobber, when the job is
+    clear. Otherwise say on the report what a person has to choose."""
+    if not AUTO_LOG_REPORTS or not jobber_status()['connected']:
+        return None
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+        doc = _doc_dict(row) if row else None
+        case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (doc['case_id'],)).fetchone()) \
+            if doc and doc.get('case_id') else {}
+    finally:
+        conn.close()
+    if not doc or doc['kind'] != 'report' or not doc['has_branded'] or doc['status'] in ('review', 'dismissed') \
+            or (doc.get('jobber') or {}).get('note_id'):
+        return None
+    try:
+        t = resolve_report_target(doc, case)
+        if t.get('id'):
+            return {**log_report_to_jobber(doc_id, t['type'], t['id'], actor), 'target': t['label'], 'how': t['how']}
+        reason = t['needs']
+    except (JobberError, ValueError) as e:
+        reason = f'Could not log it automatically: {e}'
+    conn = _conn()
+    try:
+        j = {**(doc.get('jobber') or {}), 'note_pending': {'reason': reason, 'at': _now_text()}}
+        conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(j), doc_id))
+        _event(conn, actor, 'report not logged in Jobber', reason, case_id=doc.get('case_id'), doc_id=doc_id)
+        conn.commit()
+    finally:
+        conn.close()
+    return {'pending': reason}
+
+
 def log_report_to_jobber(doc_id, target_type, target_id, actor='system', message=None):
     """Add the report as a note on the pump's job (or the client). Tries to
     attach the rebranded file; if Jobber will not take the attachment, the note
@@ -2968,33 +3106,43 @@ def log_report_to_jobber(doc_id, target_type, target_id, actor='system', message
         if doc['kind'] != 'report':
             raise ValueError('Only a report can be logged as a note')
         mutation, id_arg, input_type, field = NOTE_MUTATION[target_type]
-        text = message or report_note_text(doc)
+        text = message or report_note_title(doc)
         q = (f'mutation PumpsReportNote($id: EncodedId!, $input: {input_type}!) {{ {mutation}({id_arg}: $id, '
              f'input: $input) {{ {field} {{ id }} userErrors {{ message path }} }} }}')
-        url = _signed_file_url(doc_id, 'branded' if doc['has_branded'] else 'original', days=7)
+        # The PDF, as the office attaches them; the Word file when there is no PDF.
+        has_pdf = bool(row['branded_path']) and (os.path.exists(_branded_pdf_path(row['branded_path'])) or
+                                                  bool(_make_branded_pdf(row['branded_path'])))
+        version = 'branded_pdf' if has_pdf else ('branded' if doc['has_branded'] else 'original')
+        url = _signed_file_url(doc_id, version, days=7)
         attached = False
         data = None
         if url:
-            fname = _branded_name(doc['file_name']) if doc['has_branded'] else doc['file_name']
+            fname = _pdf_name(doc['file_name']) if has_pdf else \
+                (_branded_name(doc['file_name']) if doc['has_branded'] else doc['file_name'])
+            ctype = 'application/pdf' if has_pdf else \
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
             try:
                 data = jobber_gql(q, {'id': target_id, 'input': {'message': text, 'attachments': [{
-                    'url': url, 'fileName': fname,
-                    'contentType': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'}]}})
+                    'url': url, 'fileName': fname, 'contentType': ctype}]}})
                 attached = not ((data.get(mutation) or {}).get('userErrors'))
             except JobberError as e:
                 print(f'  ⚠ Pumps: Jobber would not take the attachment ({e}); saving the note without it')
                 data = None
         if not attached:
-            data = jobber_gql(q, {'id': target_id, 'input': {'message': text}})
+            # No file on the note: put the (rebranded) report's text and a link in it.
+            data = jobber_gql(q, {'id': target_id, 'input': {'message': f'{text}\n\n{report_note_text(doc)}'
+                                                                        if not message else text}})
         payload = data.get(mutation) or {}
         errs = payload.get('userErrors') or []
         if errs:
             raise JobberError('Jobber: ' + '; '.join(e.get('message', '?') for e in errs))
         note_id = (payload.get(field) or {}).get('id')
         ref = {'note_id': note_id, 'note_target': target_type, 'note_target_id': target_id,
-               'note_attached_file': attached, 'logged_by': actor, 'logged_at': _now_text()}
+               'note_attached_file': attached, 'note_title': text, 'note_pdf': has_pdf, 'logged_by': actor,
+               'logged_at': _now_text()}
+        j = {k: v for k, v in (doc.get('jobber') or {}).items() if k != 'note_pending'}
         conn.execute('UPDATE pump_docs SET jobber=?, status=?, updated_at=? WHERE id=?',
-                     (json.dumps({**(doc.get('jobber') or {}), **ref}), 'done', _now_text(), doc_id))
+                     (json.dumps({**j, **ref}), 'done', _now_text(), doc_id))
         if doc.get('case_id'):
             _set_step(conn, doc['case_id'], 'report_logged', at=_today().isoformat(), by=actor)
             if target_type == 'job':
@@ -3054,6 +3202,8 @@ def work_queue(conn):
         'waiting_bill': by_stage.get('vendor_bill', []),
         'bills_to_check': by_stage.get('bill_checked', []),
         'bills_to_draft': bills_to_draft,
+        'todos': [_todo_dict(r) for r in conn.execute("SELECT * FROM pump_todos WHERE done_at IS NULL "
+                                                      "ORDER BY COALESCE(NULLIF(due_on, ''), created_at), id")],
         'quotes_to_draft': quotes_to_draft,
         'vendor_bills_to_pay': vendor_bills_to_pay,
         'reports_to_log': reports_to_log,
@@ -3167,6 +3317,7 @@ def _office_only(actor, what):
 
 @api('/summary')
 def h_summary(actor):
+    ensure_monthly_todos()
     conn = _conn()
     try:
         q = work_queue(conn)
@@ -3266,6 +3417,14 @@ def _send_doc_file(doc_id, version):
         conn.close()
     if not row:
         return {'success': False, 'error': 'Not found'}, 404
+    if version == 'branded_pdf':
+        path = _branded_pdf_path(row['branded_path'])
+        if row['branded_path'] and not os.path.exists(path):
+            path = _make_branded_pdf(row['branded_path'])
+        if not path or not os.path.exists(path):
+            return {'success': False, 'error': 'No PDF of this report on this server - download the Word file.'}, 404
+        return send_file(path, mimetype='application/pdf', as_attachment=request.args.get('download') == '1',
+                         download_name=_pdf_name(row['file_name']))
     path = row['branded_path'] if version == 'branded' else row['file_path']
     if not path or not os.path.exists(path):
         return {'success': False, 'error': 'File not available'}, 404
@@ -3533,6 +3692,7 @@ def h_doc_rebrand(actor, doc_id):
             src = f.read()
         out, info = pump_reports.rebrand_report(src, extra_tech_names=data.get('technician_names') or [])
         path, _ = _store_file(out, _branded_name(row['file_name']))
+        _make_branded_pdf(path, out)
         rf = {**pump_reports.read_report(out), 'from_branded': True}
         conn.execute("UPDATE pump_docs SET branded_path=?, branded_info=?, report_fields=?, kind='report', "
                      "review_reason='', updated_at=? WHERE id=?",
@@ -3668,7 +3828,7 @@ def h_site_name_save(actor):
         return _office_only(actor, 'Saving a site name')
     d = _json()
     save_site_alias(d.get('place'), d.get('area'), d.get('client_id'), d.get('client_name'), d.get('property_id'),
-                    d.get('property_label'), d.get('note'), actor)
+                    d.get('property_label'), d.get('note'), actor, d.get('job_id'), d.get('job_label'))
     return {'site_names': site_aliases()}
 
 
@@ -3700,23 +3860,10 @@ def h_doc_report_note(actor, doc_id):
             case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (doc['case_id'],)).fetchone()) if doc['case_id'] else {}
         finally:
             conn.close()
-        client_id = (json.loads(case.get('jobber') or '{}').get('client') or {}).get('id') or case.get('jobber_client_id')
-        cands = []
-        if not client_id:
-            cands = search_clients(doc.get('client_name') or case.get('client_name') or '')
-            pick = pick_client(cands)
-            client_id = pick and pick['id']
-        if not client_id:
-            return {'success': False, 'needs_target': True, 'candidates': cands,
-                    'error': 'Choose the Jobber client for this report.'}, 409
-        cj = client_jobs(client_id)
-        job = best_job_for_report(cj['jobs'], cj['properties'], doc.get('site'),
-                                  (doc.get('report_fields') or {}).get('title'))
-        if not job:
-            return {'success': False, 'needs_target': True, 'client_id': client_id, 'jobs': cj['jobs'],
-                    'properties': cj['properties'],
-                    'error': "No clear pump job for this report - choose the job, or log it on the client."}, 409
-        ttype, tid = 'job', job['id']
+        t = resolve_report_target(doc, case)
+        if not t.get('id'):
+            return {'success': False, 'needs_target': True, 'error': t.pop('needs'), **t}, 409
+        ttype, tid = t['type'], t['id']
     return {'note': log_report_to_jobber(doc_id, ttype, tid, actor, data.get('message'))}
 
 
@@ -3940,7 +4087,8 @@ DIVE_DEFAULTS = {
     'diver_name': os.environ.get('PUMPS_DIVER_NAME', 'Jordan'),
     'cc': os.environ.get('PUMPS_DIVE_CC', 'Andrea@stahlman-england.com'),
     'from': os.environ.get('PUMPS_DIVE_FROM', ''),   # empty = the PO mailbox
-    'auto': os.environ.get('PUMPS_DIVE_EMAIL_AUTO', 'true').lower() in ('1', 'true', 'yes', 'on'),
+    # Off for now: the email is a to-do on the 1st, with the list ready to send.
+    'auto': os.environ.get('PUMPS_DIVE_EMAIL_AUTO', 'false').lower() in ('1', 'true', 'yes', 'on'),
     'signature': os.environ.get('PUMPS_DIVE_SIGNATURE', 'Best Regards,\n\nAndrea Mitchell\nAssistant Client Service Manager\n'
                                 'Andrea@stahlman-england.com\nO 239.514.1200\n\nStahlman-England\n'
                                 '2063 Trade Center Way\nNaples, FL 34109'),
@@ -3987,6 +4135,21 @@ SEED_DIVE_SITES = [
     ('Westminster HOA', '4 Lakes 9 Filters', '2001 Oxford Ridge Circle, Lehigh Acres', '', 'active', ''),
     ('Wild Blue', '1 Pump 1 Lake', '8396 Sea Glass Court, Sarasota, Florida 34240', '', 'active', ''),
 ]
+
+
+def init_todo_table(c):
+    c.execute('''CREATE TABLE IF NOT EXISTS pump_todos (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  kind TEXT DEFAULT 'manual',
+                  key TEXT UNIQUE,
+                  title TEXT NOT NULL,
+                  detail TEXT DEFAULT '',
+                  due_on TEXT DEFAULT '',
+                  link TEXT DEFAULT '{}',
+                  done_at TEXT,
+                  done_by TEXT DEFAULT '',
+                  created_by TEXT DEFAULT '',
+                  created_at TEXT)''')
 
 
 def init_dive_tables(c):
@@ -4091,8 +4254,9 @@ def build_dive_email(conn, month_date):
         '<p style="margin:0 0 12px">' + '<br>'.join(
             (f'<b>{esc(l)}</b>' if i == 0 else esc(l)) for i, l in enumerate(_site_lines(s))) + '</p>'
         for s in sites)
-    html = (f'<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt"><p>{esc(hi)}</p><p>{esc(intro)}</p>'
-            f'{html_sites}<p>{"<br>".join(esc(l) for l in st["signature"].splitlines())}</p></div>')
+    para = '<p style="margin:0 0 12px">'
+    html = (f'<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt">{para}{esc(hi)}</p>{para}{esc(intro)}</p>'
+            f'{html_sites}{para}{"<br>".join(esc(l) for l in st["signature"].splitlines())}</p></div>')
     subject = f"Diver schedule - {month_date.strftime('%B %Y')} - Stahlman-England"
     return {'subject': subject, 'text': '\n'.join(text), 'html': html, 'sites': sites,
             'docx': _dive_docx(sites, month_date), 'docx_name': f"Diver schedule {month_date.strftime('%B %Y')}.docx",
@@ -4177,6 +4341,8 @@ def send_dive_email(month_date=None, actor='Pumps (1st of the month)', force=Fal
         else:
             conn.execute('INSERT OR REPLACE INTO pump_state (key, value) VALUES (?,?)', (key, json.dumps(_now_text())))
             # One-off notes were for this email only.
+            conn.execute("UPDATE pump_todos SET done_at=?, done_by=? WHERE key=? AND done_at IS NULL",
+                         (_now_text(), actor, f"diver-email:{month_date.strftime('%Y-%m')}"))
             ids = [s['id'] for s in mail['sites'] if s['month_note']]
             if ids:
                 conn.execute(f"UPDATE pump_dive_sites SET month_note='' WHERE id IN ({','.join('?' * len(ids))})", ids)
@@ -4191,7 +4357,9 @@ def send_dive_email(month_date=None, actor='Pumps (1st of the month)', force=Fal
 
 
 def _scheduled_dive_email():
-    """Hourly: on the 1st (or the 2nd/3rd if the app was down), from 7am."""
+    """Hourly: the month's to-do, and (if switched on) the email itself on the
+    1st (or the 2nd/3rd if the app was down), from 7am."""
+    ensure_monthly_todos()
     now = _now()
     if not dive_settings()['auto'] or now.day > 3 or now.hour < DIVE_SEND_HOUR:
         return
@@ -4319,6 +4487,155 @@ def h_dive_send(actor):
         return {'success': False, 'error': str(e)}, 502
 
 
+
+# ═════════════════════════════════════════════════════════════════════════════
+# To-do list
+# ═════════════════════════════════════════════════════════════════════════════
+# Things the office has to do, ticked off when done. The app adds the
+# recurring ones itself: on the 1st, "Email Jordan the <month> diver list",
+# with the list ready to send.
+
+def ensure_monthly_todos(today=None):
+    today = today or _today()
+    month = today.replace(day=1)
+    st = dive_settings()
+    conn = _conn()
+    try:
+        key = f"diver-email:{month.strftime('%Y-%m')}"
+        if not conn.execute('SELECT 1 FROM pump_todos WHERE key=?', (key,)).fetchone():
+            n = len(sites_for_month(conn, month))
+            who = st.get('diver_name') or 'the diver'
+            conn.execute('INSERT OR IGNORE INTO pump_todos (kind, key, title, detail, due_on, link, created_by, '
+                         'created_at) VALUES (?,?,?,?,?,?,?,?)',
+                         ('diver_email', key, f"Email {who} the {month.strftime('%B')} diver list",
+                          f"{n} sites. The email and the Word list are ready: copy the email, attach the list and "
+                          f"send it to {st['to']} (cc {st['cc']}).", month.isoformat(),
+                          json.dumps({'month': month.isoformat()}), 'Pumps', _now_text()))
+            conn.commit()
+    finally:
+        conn.close()
+
+
+def _todo_dict(r):
+    d = dict(r)
+    try:
+        d['link'] = json.loads(d.get('link') or '{}')
+    except ValueError:
+        d['link'] = {}
+    return d
+
+
+@api('/todos')
+def h_todos(actor):
+    ensure_monthly_todos()
+    conn = _conn()
+    try:
+        rows = [_todo_dict(r) for r in conn.execute(
+            'SELECT * FROM pump_todos WHERE done_at IS NULL OR done_at >= ? ORDER BY done_at IS NOT NULL, '
+            'COALESCE(NULLIF(due_on, \'\'), created_at), id', ((_today() - timedelta(days=30)).isoformat(),))]
+        return {'todos': rows}
+    finally:
+        conn.close()
+
+
+@api('/todos', methods=('POST',))
+def h_todo_add(actor):
+    d = _json()
+    title = (d.get('title') or '').strip()
+    if not title:
+        raise ValueError('Say what needs doing')
+    conn = _conn()
+    try:
+        conn.execute('INSERT INTO pump_todos (kind, title, detail, due_on, created_by, created_at) VALUES (?,?,?,?,?,?)',
+                     ('manual', title[:300], (d.get('detail') or '')[:2000], _iso_date(d.get('due_on')), actor,
+                      _now_text()))
+        conn.commit()
+    finally:
+        conn.close()
+    return h_todos(actor)
+
+
+@api('/todos/<int:todo_id>/done', methods=('POST',))
+def h_todo_done(actor, todo_id):
+    """{"done": true|false}"""
+    done = _json().get('done', True)
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT title FROM pump_todos WHERE id=?', (todo_id,)).fetchone()
+        if not row:
+            return {'success': False, 'error': 'Not found'}, 404
+        conn.execute('UPDATE pump_todos SET done_at=?, done_by=? WHERE id=?',
+                     (_now_text() if done else None, actor if done else '', todo_id))
+        _event(conn, actor, 'to-do done' if done else 'to-do reopened', row['title'])
+        conn.commit()
+    finally:
+        conn.close()
+    return h_todos(actor)
+
+
+@api('/todos/<int:todo_id>/delete', methods=('POST',))
+def h_todo_delete(actor, todo_id):
+    conn = _conn()
+    try:
+        conn.execute("DELETE FROM pump_todos WHERE id=? AND kind='manual'", (todo_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return h_todos(actor)
+
+
+@api('/dives/docx')
+def h_dives_docx(actor):
+    """The month's list as a Word file, to attach to the email."""
+    month = _iso_date(request.args.get('month')) or _today().replace(day=1).isoformat()
+    conn = _conn()
+    try:
+        m = build_dive_email(conn, datetime.strptime(month[:10], '%Y-%m-%d').date().replace(day=1))
+    finally:
+        conn.close()
+    return send_file(io.BytesIO(m['docx']), as_attachment=True, download_name=m['docx_name'],
+                     mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Reports library
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _report_date(d):
+    rf = d.get('report_fields') or {}
+    return _iso_date(rf.get('date')) or d.get('doc_date') or (d.get('created_at') or '')[:10]
+
+
+@api('/reports')
+def h_reports(actor):
+    """Every service report, rebranded, by year: ?year=2026&q=..."""
+    q = (request.args.get('q') or '').strip().lower()
+    conn = _conn()
+    try:
+        docs = [_doc_dict(r) for r in conn.execute(
+            "SELECT * FROM pump_docs WHERE kind='report' AND status != 'dismissed' ORDER BY id DESC")]
+    finally:
+        conn.close()
+    years = sorted({_report_date(d)[:4] for d in docs if _report_date(d)}, reverse=True)
+    year = request.args.get('year') or (years[0] if years else str(_today().year))
+    out = []
+    for d in docs:
+        when = _report_date(d)
+        if (when or '')[:4] != str(year):
+            continue
+        if q and q not in f"{d.get('client_name')} {d.get('site')} {d.get('file_name')}".lower():
+            continue
+        j = d.get('jobber') or {}
+        out.append({'id': d['id'], 'date': when, 'site': d.get('client_name') or '', 'location': d.get('site') or '',
+                    'title': (d.get('report_fields') or {}).get('title') or 'Report', 'file_name': d['file_name'],
+                    'case_id': d.get('case_id'), 'has_branded': d['has_branded'],
+                    'jobber': {'logged': bool(j.get('note_id')), 'title': j.get('note_title') or '',
+                               'pending': (j.get('note_pending') or {}).get('reason', '')}})
+    out.sort(key=lambda r: (r['date'] or '', r['site']), reverse=True)
+    return {'year': str(year), 'years': years or [str(year)], 'reports': out}
+
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # pages and the Jobber sign-in
 # ═════════════════════════════════════════════════════════════════════════════
@@ -4344,7 +4661,7 @@ def page():
 @bp.route('/pumps/f/<int:doc_id>/<version>/<int:exp>/<sig>')
 def signed_file(doc_id, version, exp, sig):
     """Short-lived link Jobber uses to fetch a report it is attaching to a note."""
-    if version not in ('branded', 'original') or not _check_signed(doc_id, version, exp, sig):
+    if version not in ('branded', 'branded_pdf', 'original') or not _check_signed(doc_id, version, exp, sig):
         return 'Link expired', 403
     out = _send_doc_file(doc_id, version)
     if isinstance(out, tuple):

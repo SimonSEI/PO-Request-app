@@ -1,0 +1,5 @@
+# Extra system packages for the Railway build ("..." keeps Nixpacks' own).
+# LibreOffice Writer turns rebranded pump reports into the PDFs that go on
+# Jobber notes; Carlito/Liberation stand in for Calibri/Arial so the layout holds.
+[phases.setup]
+aptPkgs = ["...", "libreoffice-writer-nogui", "fonts-crosextra-carlito", "fonts-liberation"]

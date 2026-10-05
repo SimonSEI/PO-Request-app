@@ -235,6 +235,78 @@ class PumpsTest(unittest.TestCase):
         steps = {s['key']: s for s in self.case(res['case_id'])['step_list']}
         self.assertTrue(steps['report_logged'].get('at'))
 
+    def test_multi_page_report_like_spanish_wells(self):
+        """Wettech's Spanish Wells report (Oct 2026): one page per pump, each with Wettech's letterhead,
+        "CUSTOMER: Stahlman England", an empty comments box and the technician - rebranded on every page, then
+        put on The Lake Club's "Quarterly Pump- 850" job as "October Pump Maintenance"."""
+        from docx import Document
+        d = Document()
+        for pump in ('Pump #1', 'Pump #2', 'Pump #3', 'Pump #5'):
+            for t in ('Water Equipment Technologies of Southwest Florida LLC',
+                      'State of Florida Certified Plumbing Contractor #CFC1429137',
+                      '451 Interstate Court - Sarasota, FL  34240',
+                      'Phone 941-232-4629   FAX 941-371-5151      EMAIL wettec@verizon.net', '',
+                      '                   IRRIGATION PUMP SYSTEM REPORT'):
+                d.add_paragraph(t)
+            t = d.add_table(rows=2, cols=4)
+            t.rows[0].cells[2].text, t.rows[0].cells[3].text = 'DATE', '10-1-2026'
+            for cell, text in zip(t.rows[1].cells, ('CUSTOMER', 'Stahlman England', 'LOCATION', pump)):
+                cell.text = text
+            t = d.add_table(rows=1, cols=2)
+            t.rows[0].cells[0].text, t.rows[0].cells[1].text = '√', 'GREASE MOTOR BEARINGS'
+            d.add_paragraph('COMMENTS:')
+            d.add_table(rows=1, cols=1)
+            t = d.add_table(rows=1, cols=2)
+            t.rows[0].cells[0].text, t.rows[0].cells[1].text = 'SERVICE TECHNICIAN', 'Justin Burnett'
+            d.add_paragraph('')
+        buf = io.BytesIO()
+        d.save(buf)
+        out, info = R.rebrand_report(buf.getvalue())
+        self.assertEqual(info['pages_rebranded'], 4)
+        self.assertEqual(info['technicians_removed'], ['Justin Burnett'])
+        self.assertEqual(info['leftovers'], [])
+        doc = Document(io.BytesIO(out))
+        text = '\n'.join(p.text for p in doc.paragraphs) + '\n'.join(
+            c.text for t in doc.tables for r in t.rows for c in r.cells)
+        for gone in ('Water Equipment', 'wettec', '941-', 'Sarasota', 'CFC1429137', 'Justin', 'Burnett',
+                     'Stahlman England', 'CUSTOMER', 'TECHNICIAN', 'COMMENTS'):
+            self.assertNotIn(gone.lower(), text.lower(), gone)
+        self.assertEqual(text.count('STAHLMAN – ENGLAND, INC.'), 4, 'our letterhead on every page')
+        self.assertEqual(sum(1 for p in doc.paragraphs if p.paragraph_format.page_break_before), 3)
+        for pump in ('Pump #1', 'Pump #2', 'Pump #3', 'Pump #5'):
+            self.assertIn(pump, text)
+        self.assertNotIn('   IRRIGATION', '\n'.join(p.text for p in doc.paragraphs))
+        # Into the app and onto The Lake Club's job, with no one choosing anything.
+        fake = FakeJobber()
+        P.jobber_gql = fake
+        P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN
+        try:
+            res = P.ingest_document('10-26  Spanish Wells.docx', buf.getvalue(), source='email', actor='email scan',
+                                    email={'uid': 'sw-1', 'from': 'simon@stahlman-england.com',
+                                           'subject': 'FW: Inv 29099', 'preview': ''})
+        finally:
+            P.JOBBER_STATIC_TOKEN = saved
+        self.assertEqual((res['kind'], res['review']), ('report', ''), res)
+        got = self.c.get(f"/pumps/api/docs/{res['doc_id']}").get_json()['doc']
+        self.assertEqual(got['client_name'], 'Spanish Wells')
+        notes = [v for q, v in fake.calls if 'jobCreateNote' in q]
+        self.assertTrue(notes, res)
+        self.assertEqual(notes[0]['id'], 'Z2lkOi8vSm9iYmVyL0pvYi80MTQyMDAxOA==', 'job #1609 Quarterly Pump- 850')
+        self.assertEqual(notes[0]['input']['message'], 'October Pump Maintenance')
+        att = notes[0]['input'].get('attachments') or []
+        # The PDF where the server can make one (LibreOffice), else the Word file.
+        if self.c.get(f"/pumps/api/docs/{res['doc_id']}/file?version=branded_pdf").status_code == 200:
+            self.assertEqual((att[0]['fileName'], att[0]['contentType']), ('10-26 Spanish Wells.pdf', 'application/pdf'))
+        else:
+            self.assertTrue(att[0]['fileName'].endswith('.docx'))
+        self.assertEqual(res['auto_note']['target'], 'The Lake Club #1609 Quarterly Pump- 850')
+        # Kept in the app by year.
+        lib = self.c.get('/pumps/api/reports?year=2026').get_json()
+        row = [r for r in lib['reports'] if r['id'] == res['doc_id']][0]
+        self.assertEqual((row['date'], row['site'], row['jobber']['logged'], row['jobber']['title']),
+                         ('2026-10-01', 'Spanish Wells', True, 'October Pump Maintenance'))
+        self.assertIn('2026', lib['years'])
+
     # ── quotes, bills, issues ───────────────────────────────────────────────
     def test_quote_then_matching_bill_checks_itself(self):
         self.extracts['q-0322.pdf'] = extraction('quote', 'Q-77', po='PO322', subtotal=1500)
@@ -807,9 +879,13 @@ class PumpsTest(unittest.TestCase):
             self.assertEqual(caymas['month_note'], '')
             self.assertEqual(P.send_dive_email(P.datetime(2026, 11, 1).date()), {'skipped': 'already sent this month'})
             self.assertEqual(len(sent), 1)
-            # On the 1st the hourly check sends the month once; mid-month it does nothing.
+            # Automatic sending is off for now: the 1st only adds the to-do.
             P._now, real_now = (lambda: P.datetime(2026, 12, 1, 8, 5, tzinfo=P.TZ)), P._now
             try:
+                P._scheduled_dive_email()
+                self.assertEqual(len(sent), 1)
+                # Switched on, the hourly check sends the month once; mid-month it does nothing.
+                self.c.post('/pumps/api/dives/settings', json={'auto': True})
                 P._scheduled_dive_email()
                 P._scheduled_dive_email()
                 self.assertEqual(len(sent), 2)
@@ -819,6 +895,7 @@ class PumpsTest(unittest.TestCase):
                 self.assertEqual(len(sent), 2)
             finally:
                 P._now = real_now
+                self.c.post('/pumps/api/dives/settings', json={'auto': False})
             # A failed send is logged and tried again later.
             class Bad:
                 status_code, content, text = 403, b'x', 'Access denied'
@@ -839,6 +916,31 @@ class PumpsTest(unittest.TestCase):
         h = {'Authorization': 'Bearer test-openclaw-key'}
         self.assertEqual(bot.post('/api/pumps/dives/send', json={}, headers=h).status_code, 403)
         self.assertEqual(bot.post('/api/pumps/dives/sites', json={'name': 'X'}, headers=h).status_code, 403)
+
+    def test_todo_list_and_diver_email_todo(self):
+        P.ensure_monthly_todos(P.datetime(2026, 11, 1).date())
+        P.ensure_monthly_todos(P.datetime(2026, 11, 1).date())
+        todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
+        nov = [t for t in todos if t['key'] == 'diver-email:2026-11']
+        self.assertEqual(len(nov), 1, 'one per month')
+        self.assertEqual(nov[0]['title'], 'Email Jordan the November diver list')
+        self.assertIn('Gulfshoreyachts@gmail.com', nov[0]['detail'])
+        # The list is ready to attach.
+        r = self.c.get('/pumps/api/dives/docx?month=2026-11-01')
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('Diver schedule November 2026.docx', r.headers['Content-Disposition'])
+        # Ticked off, and back again.
+        j = self.c.post(f"/pumps/api/todos/{nov[0]['id']}/done", json={'done': True}).get_json()
+        self.assertTrue([t for t in j['todos'] if t['id'] == nov[0]['id']][0]['done_at'])
+        self.assertNotIn(nov[0]['id'], [t['id'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']])
+        self.c.post(f"/pumps/api/todos/{nov[0]['id']}/done", json={'done': False})
+        self.assertIn(nov[0]['id'], [t['id'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']])
+        # The office's own to-dos.
+        j = self.c.post('/pumps/api/todos', json={'title': 'Call Spanish Wells HOA about the dive'}).get_json()
+        mine = [t for t in j['todos'] if t['title'] == 'Call Spanish Wells HOA about the dive'][0]
+        self.assertEqual(self.c.post('/pumps/api/todos', json={'title': ' '}).status_code, 400)
+        self.c.post(f"/pumps/api/todos/{mine['id']}/delete", json={})
+        self.assertNotIn(mine['id'], [t['id'] for t in self.c.get('/pumps/api/todos').get_json()['todos']])
 
     # ── who can get in ───────────────────────────────────────────────────────
     def test_access(self):

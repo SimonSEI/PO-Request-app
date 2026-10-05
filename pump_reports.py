@@ -28,6 +28,7 @@ import re
 
 from docx import Document
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -70,6 +71,10 @@ CUSTOMER_LABEL = re.compile(r'^\s*(customer|client|customer\s+name|community|pro
 # (but never our own name on its own).
 OUR_PREFIX = re.compile(r'^\s*(?:Stahlman(?:[\s\-–]*England)?|S\.?E\.?I\.?)\s*[-–:/]\s*(?!England\b)', re.I)
 TITLE = re.compile(r'\bREPORT\b')
+# A customer box that only holds our own name ("Stahlman England") says
+# nothing to the client: it is cleared, label and all.
+OUR_NAME_ONLY = re.compile(r'^\s*(?:Stahlman[\s\-–]*England(?:\s*,?\s*(?:Irrigation|Inc\.?))*|S\.?E\.?I\.?)\s*$', re.I)
+COMMENTS_LABEL = re.compile(r'^\s*(?:comments?|notes?|remarks?)\s*:?\s*$', re.I)
 
 W_P, W_TBL, W_TR, W_TC, W_SECTPR = qn('w:p'), qn('w:tbl'), qn('w:tr'), qn('w:tc'), qn('w:sectPr')
 
@@ -318,11 +323,117 @@ def _fix_customer(elements):
                     if CUSTOMER_LABEL.match(_el_text(tc)):
                         for p in _paragraphs_in(tcs[i + 1]):
                             fixed += _replace_in_paragraph(p, OUR_PREFIX, '')
+                        if OUR_NAME_ONLY.match(_el_text(tcs[i + 1])):
+                            for cell in (tc, tcs[i + 1]):
+                                for t in cell.iter(qn('w:t')):
+                                    t.text = ''
+                            fixed += 1
         for p in _paragraphs_in(el):
             m = re.match(r'^\s*(customer|client)\s*:\s*', _el_text(p), re.I)
             if m:
                 fixed += _replace_in_paragraph(p, re.compile(r'(?<=:)\s*(?:Stahlman(?:[\s\-–]*England)?|SEI)\s*[-–/]\s*(?!England\b)', re.I), ' ')
     return fixed
+
+
+def _set_page_break_before(p):
+    """Start a paragraph on a new page (w:pageBreakBefore, in schema order)."""
+    pPr = p.find(qn('w:pPr'))
+    if pPr is None:
+        pPr = OxmlElement('w:pPr')
+        p.insert(0, pPr)
+    if pPr.find(qn('w:pageBreakBefore')) is not None:
+        return
+    pos = 0
+    for i, child in enumerate(pPr):
+        if child.tag in (qn('w:pStyle'), qn('w:keepNext'), qn('w:keepLines')):
+            pos = i + 1
+    pPr.insert(pos, OxmlElement('w:pageBreakBefore'))
+
+
+def _is_title(el):
+    text = _el_text(el).strip()
+    return el.tag == W_P and bool(text) and bool(TITLE.search(text.upper())) and len(text) < 80
+
+
+def _replace_repeated_headers(elements, vendor, our_head):
+    """Reports with one page per pump repeat the sub's letterhead above each
+    page's title. Each repeat becomes our letterhead, starting a new page.
+    Returns how many were replaced."""
+    keys = [n.lower() for n in vendor.get('names', [])] + [e.lower() for e in vendor.get('emails', [])] + \
+        [p.lower() for p in vendor.get('phones', [])] + [o.lower() for o in vendor.get('other', [])]
+    count, i = 0, 1
+    while i < len(elements):
+        if not _is_title(elements[i]):
+            i += 1
+            continue
+        j = i - 1
+        while j >= 0 and elements[j].tag == W_P and not _is_title(elements[j]) and \
+                _looks_like_sub_header(elements[j], vendor):
+            j -= 1
+        block = elements[j + 1:i]
+        if any(k and k in _el_text(b).lower() for b in block for k in keys):
+            for b in block:
+                _remove(b)
+            del elements[j + 1:i]
+            i = j + 1
+            new = [copy.deepcopy(h) for h in our_head]
+            if new:
+                _set_page_break_before(new[0])
+            for n in new:
+                elements[i].addprevious(n)
+            elements[i:i] = new
+            i += len(new)
+            count += 1
+        i += 1
+    return count
+
+
+def _tidy(elements):
+    """Drop empty comment boxes (and their label), tables with nothing in
+    them, and the spaces some subs use to centre a title by hand."""
+    removed = 0
+    for el in list(elements):
+        if el.tag == W_TBL and not _el_text(el).strip() and not list(el.iter(qn('w:drawing'))):
+            _remove(el)
+            elements.remove(el)
+            removed += 1
+    for el in list(elements):
+        if el.tag != W_P or not COMMENTS_LABEL.match(_el_text(el)):
+            continue
+        k = elements.index(el) + 1
+        while k < len(elements) and elements[k].tag == W_P and not _el_text(elements[k]).strip() and \
+                elements[k].find('.//' + qn('w:pageBreakBefore')) is None:
+            k += 1
+        nxt = elements[k] if k < len(elements) else None
+        # Comments, when there are any, are in a box right after the label.
+        if nxt is None or nxt.tag != W_TBL:
+            _remove(el)
+            elements.remove(el)
+            removed += 1
+    for el in elements:
+        if _is_title(el) and re.match(r'^\s{3,}', _el_text(el)):
+            # Centred by hand with spaces: centre it properly instead.
+            for t in el.iter(qn('w:t')):
+                if t.text and t.text.strip():
+                    t.text = t.text.lstrip()
+                    break
+                t.text = ''
+            pPr = el.find(qn('w:pPr'))
+            if pPr is None:
+                pPr = OxmlElement('w:pPr')
+                el.insert(0, pPr)
+            jc = pPr.find(qn('w:jc'))
+            if jc is None:
+                jc = OxmlElement('w:jc')
+                # jc sits after spacing/ind in pPr; before rPr / sectPr.
+                tail = [c for c in pPr if c.tag in (qn('w:rPr'), qn('w:sectPr'), qn('w:pPrChange'),
+                                                     qn('w:textAlignment'), qn('w:outlineLvl'))]
+                if tail:
+                    tail[0].addprevious(jc)
+                else:
+                    pPr.append(jc)
+            jc.set(qn('w:val'), 'center')
+    return removed
 
 
 def _replace_vendor(elements, vendor):
@@ -379,6 +490,8 @@ def read_report(docx_bytes):
                 if row:
                     out['lines'].append(row)
     out['customer'] = OUR_PREFIX.sub('', out['customer']).strip()
+    if OUR_NAME_ONLY.match(out['customer']):
+        out['customer'] = ''
     return out
 
 
@@ -400,6 +513,7 @@ def rebrand_report(docx_bytes, vendor=None, extra_tech_names=None, letterhead_pa
     # title (FOUNTAIN MAINTENANCE REPORT, PUMP REPORT...) takes its place.
     dst_kids = _body_children(dst)
     cut = next((i for i, el in enumerate(dst_kids) if TITLE.search(_el_text(el).upper())), len(dst_kids))
+    our_head = [copy.deepcopy(el) for el in dst_kids[:cut]]
     for el in dst_kids[cut:]:
         if el.tag != qn('w:bookmarkEnd'):
             body.remove(el)
@@ -417,11 +531,13 @@ def rebrand_report(docx_bytes, vendor=None, extra_tech_names=None, letterhead_pa
         else:
             body.append(el)
 
+    pages = _replace_repeated_headers(copied, vendor, our_head)
     techs = _remove_technicians(copied)
     techs |= {n for n in (extra_tech_names or []) if n}
     scrubbed = _scrub_names(copied, techs)
     customer_fixed = _fix_customer(copied)
     vendor_hits = _replace_vendor(copied, vendor)
+    tidied = _tidy(copied)
 
     # Trim trailing blank paragraphs left behind by removed rows.
     while copied and copied[-1].tag == W_P and not _el_text(copied[-1]).strip() and \
@@ -440,6 +556,8 @@ def rebrand_report(docx_bytes, vendor=None, extra_tech_names=None, letterhead_pa
         'vendor': vendor.get('display') or vendor.get('key'),
         'header_removed_by': how,
         'header_elements_removed': start,
+        'pages_rebranded': 1 + pages,
+        'empty_boxes_removed': tidied,
         'technicians_removed': sorted(techs),
         'technician_mentions_scrubbed': scrubbed,
         'customer_prefix_fixed': customer_fixed,

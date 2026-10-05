@@ -166,6 +166,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   <div class="tab" data-tab="inbox">Inbox <span class="n" id="n-inbox"></span></div>
   <div class="tab" data-tab="scada">SCADA <span class="n" id="n-scada"></span></div>
   <div class="tab" data-tab="jobber">Jobber <span class="n" id="n-jobber"></span></div>
+  <div class="tab" data-tab="reports">Reports</div>
   <div class="tab" data-tab="divers">Divers</div>
   <div class="tab" data-tab="help">How it works</div>
 </div>
@@ -230,16 +231,28 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   <div class="scroll" style="max-height:40vh"><table class="t"><thead><tr><th>Written as</th><th>Area</th><th>Jobber client</th><th>Property</th><th>Note</th><th></th></tr></thead><tbody id="siteNamesBody"></tbody></table></div>
 </div>
 
+<!-- REPORTS -->
+<div class="panel hide" id="p-reports">
+  <div class="toolbar">
+    <select id="repYear" onchange="loadReports()"></select>
+    <input type="text" id="repSearch" placeholder="Find a site…" oninput="clearTimeout(window._rq);window._rq=setTimeout(loadReports,300)" style="width:200px">
+    <div class="sp"></div><span class="note" id="repInfo"></span>
+  </div>
+  <div class="note" style="margin-bottom:10px">Every service report from Wettech, rebranded (our letterhead, no Wettech details, no technician, not "Stahlman England" as the customer), by month. Each one goes on the site's pump job in Jobber as "&lt;Month&gt; Pump Maintenance" with the PDF.</div>
+  <div id="repBody"></div>
+</div>
+
 <!-- DIVERS -->
 <div class="panel hide" id="p-divers">
   <div class="toolbar">
     <span id="diveInfo" class="note"></span><div class="sp"></div>
     <select id="diveFilter" onchange="drawDiveSites()"><option value="dive">Need a diver</option><option value="nodive">No diving</option><option value="">All sites</option></select>
     <button class="btn" onclick="editDiveSite()">＋ Site</button>
-    <button class="btn" onclick="previewDiveEmail()">Preview email</button>
-    <button class="btn p" onclick="sendDiveEmail()">Send now…</button>
+    <button class="btn" onclick="diverTodo(diveMonth())">Email ready to copy</button>
+    <a class="btn" id="diveDocx" href="#">⬇ Word list</a>
+    <button class="btn" onclick="sendDiveEmail()" title="Send it from the PO mailbox">Send from PO@…</button>
   </div>
-  <div class="note" style="margin-bottom:10px">Every site that needs the diver goes on the email to the diver on the 1st of each month (from 7am), copied to the office. <b>Meet</b> adds "the HOA wants to meet you onsite"; <b>Hold</b> lists it as HOLD OFF; a <b>one-time note</b> goes on the next email only. Months left blank = every month.</div>
+  <div class="note" style="margin-bottom:10px">Every site that needs the diver goes on the month's list. On the 1st, a to-do appears on Today - "Email Jordan the &lt;month&gt; diver list" - with the email written and the Word list ready to attach; tick it when it's sent. <b>Meet</b> adds "the HOA wants to meet you onsite"; <b>Hold</b> lists it as HOLD OFF; a <b>one-time note</b> goes on the next email only. Months left blank = every month.</div>
   <div class="scroll"><table class="t"><thead><tr><th>Site</th><th>Lakes / filters / pumps</th><th>Address</th><th>Notes for the diver</th><th>Diver?</th><th>Months</th><th>Status</th><th></th></tr></thead><tbody id="diveBody"></tbody></table></div>
   <h3 style="margin:18px 0 8px;font-size:14px">Email to the diver</h3>
   <div class="fields" id="diveSettings"></div>
@@ -261,8 +274,11 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
     <li>Pulls pump, diver, filter and SCADA requests, quotes and jobs from Jobber every 6 hours, and works out when each SCADA client's annual renewal is due.</li>
     <li>Follows our Jobber quotes and invoices: once the office sends a drafted quote, "Quote sent to client" ticks itself, and "Client approved" when the client approves it in Jobber. Once the client <b>pays</b> our Jobber invoice, Wettech's bill goes on Today as <b>due to be paid</b> until someone marks it paid.</li>
   </ul>
-  <h3>The diver</h3>
-  <ul><li>The <b>Divers</b> tab lists which pump sites need the diver (lakes, filters, fountains) and which don't. On the 1st of every month, from 7am, the app emails the diver that month's list, the way Andrea used to: sites, lakes/filters/pumps, addresses, gate codes, HOAs that want to meet, sites on hold, with a Word copy attached. It's sent from the PO mailbox and copied to the office, and replies go to the office. <b>Preview email</b> shows it first; <b>Send now</b> sends it straight away.</li></ul>
+  <h3>Service reports</h3>
+  <ul><li>Wettech's monthly service reports are rebranded on every page (our letterhead, no Wettech details, no technician, not "Stahlman England" as the customer), kept on the <b>Reports</b> tab by year and month, and put on the site's pump job in Jobber as a note - "October Pump Maintenance" with the PDF - when the job is clear (e.g. Spanish Wells = The Lake Club, job #1609). Otherwise it waits on Today under Reports to log.</li></ul>
+  <h3>To do and the diver</h3>
+  <ul><li><b>To do</b> on Today lists what the office has to do; tick each one when it's done, or add your own.</li>
+  <li>The <b>Divers</b> tab lists which pump sites need the diver and which don't. On the 1st of every month a to-do appears - "Email Jordan the &lt;month&gt; diver list" - with the email written the way Andrea writes it and the Word list ready to attach.</li></ul>
   <h3>What only happens when someone clicks</h3>
   <ul>
     <li><b>Client quotes are drafted on their own.</b> When a Wettech quote is read and filed, the app drafts our quote in Jobber the way the office writes them: Wettech's price plus 30%, one "Service Proposal Amount" line with Wettech's description of the work (no Wettech name or sales tax line), titled "Proposal to …", on the right client and property - found by the item, a saved site name (e.g. "Carlisle back station" = Greenscapes, Pump #1 exit) or a Jobber search, typos allowed. Wettech's quote is saved as a note on it. It stays a <b>draft</b>: the app cannot send quotes. When the client or property is not clear, the quote waits on Today for <b>Draft quote</b>.</li>
@@ -313,6 +329,7 @@ function showTab(name){
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('hide', p.id !== 'p-' + name));
   if (name === 'today') loadToday(); else if (name === 'tracker') loadTracker(); else if (name === 'inbox') loadInbox();
   else if (name === 'scada') loadScada(); else if (name === 'jobber') loadJobber(); else if (name === 'divers') loadDivers();
+  else if (name === 'reports') loadReports();
   history.replaceState(null, '', '#' + name);
 }
 
@@ -324,6 +341,51 @@ function caseRow(c, extra){
     <div class="sub">${esc(who)}${po}${extra ? ' · ' + extra : ''}</div></div>
     <div style="text-align:right">${c.idle_days >= 7 ? `<div class="chip a">${c.idle_days}d idle</div>` : ''}</div></div>`;
 }
+function todoBox(todos){
+  const row = t => `<div class="row"><div class="main"><div class="tt"><label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer"><input type="checkbox" onchange="todoDone(${t.id}, this.checked)" style="margin-top:3px"><span>${esc(t.title)}</span></label></div>
+      ${t.detail ? `<div class="sub" style="margin-left:24px">${esc(t.detail)}</div>` : ''}
+      ${t.kind === 'diver_email' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="diverTodo('${esc(t.link.month || '')}')">Email ready - copy &amp; attach</button><a class="btn s" href="/pumps/api/dives/docx?month=${encodeURIComponent(t.link.month || '')}">⬇ Word list</a></div>` : ''}</div>
+      ${t.kind === 'manual' ? `<button class="btn s" title="Remove" onclick="todoDelete(${t.id})">✕</button>` : ''}</div>`;
+  return `<div class="box ${todos.length ? 'amber' : ''}"><h3>✅ To do<span class="c">${todos.length}</span></h3>
+    ${todos.map(row).join('') || '<div class="empty">Nothing to do.</div>'}
+    <div class="row"><input type="text" id="todoNew" placeholder="Add a to-do…" style="flex:1" onkeydown="if(event.key==='Enter')todoAdd()"><button class="btn s" onclick="todoAdd()">Add</button></div></div>`;
+}
+async function todoDone(id, done){ const j = await api('/todos/' + id + '/done', {method:'POST', body:{done}}); if (!j.success) toast(j.error, true); else { toast(done ? 'Done' : 'Reopened'); loadToday(); } }
+async function todoAdd(){ const el = document.getElementById('todoNew'); const t = el.value.trim(); if (!t) return; const j = await api('/todos', {method:'POST', body:{title: t}}); if (!j.success) toast(j.error, true); else loadToday(); }
+async function todoDelete(id){ const j = await api('/todos/' + id + '/delete', {method:'POST', body:{}}); if (j.success) loadToday(); }
+async function diverTodo(month){
+  const j = await api('/dives/preview?month=' + encodeURIComponent(month));
+  if (!j.success) { toast(j.error, true); return; }
+  openModal('Email to the diver - ready to send', `
+    <div class="note">1. <a href="/pumps/api/dives/docx?month=${encodeURIComponent(month)}"><b>Download the Word list</b></a> · 2. <a href="#" onclick="event.preventDefault();copyDiveEmail()"><b>Copy the email</b></a> · 3. Paste it into a new email in Outlook, attach the list and send it · 4. Tick the to-do.</div>
+    <div class="note">To <b>${esc(j.to)}</b> · cc ${esc(j.cc)} · subject <b>${esc(j.subject)}</b> <a href="#" onclick="event.preventDefault();navigator.clipboard.writeText(${JSON.stringify(j.subject).replace(/"/g, '&quot;')});toast('Subject copied')">copy</a> · ${j.sites} sites</div>
+    <div id="diveMail" style="border:1px solid var(--border);border-radius:8px;padding:12px;max-height:55vh;overflow:auto;background:#fff;color:#111">${j.html}</div>`,
+    `<button class="btn" onclick="closeModal()">Close</button><button class="btn p" onclick="copyDiveEmail()">Copy email</button>`);
+}
+async function copyDiveEmail(){
+  const el = document.getElementById('diveMail'); if (!el) return;
+  try { await navigator.clipboard.write([new ClipboardItem({'text/html': new Blob([el.innerHTML], {type:'text/html'}), 'text/plain': new Blob([el.innerText], {type:'text/plain'})})]); }
+  catch (e) { const r = document.createRange(); r.selectNodeContents(el); const s = getSelection(); s.removeAllRanges(); s.addRange(r); document.execCommand('copy'); s.removeAllRanges(); }
+  toast('Email copied - paste it into Outlook');
+}
+// ── reports ───────────────────────────────────────────
+async function loadReports(){
+  const y = document.getElementById('repYear').value, q = document.getElementById('repSearch').value.trim();
+  const j = await api('/reports?' + (y ? 'year=' + y + '&' : '') + 'q=' + encodeURIComponent(q));
+  if (!j.success) { document.getElementById('repBody').innerHTML = `<div class="empty">${esc(j.error)}</div>`; return; }
+  document.getElementById('repYear').innerHTML = j.years.map(x => `<option ${x === j.year ? 'selected' : ''}>${esc(x)}</option>`).join('');
+  document.getElementById('repInfo').textContent = `${j.reports.length} reports in ${j.year}`;
+  const byMonth = {};
+  j.reports.forEach(r => { const m = (r.date || '').slice(0, 7) || 'undated'; (byMonth[m] = byMonth[m] || []).push(r); });
+  document.getElementById('repBody').innerHTML = Object.keys(byMonth).sort().reverse().map(m => {
+    const label = m === 'undated' ? 'No date' : new Date(m + '-15T12:00:00').toLocaleString('en-US', {month:'long', year:'numeric'});
+    return `<h3 style="margin:14px 0 6px;font-size:14px">${esc(label)} <span class="note">(${byMonth[m].length})</span></h3>
+      <div class="scroll"><table class="t"><thead><tr><th>Date</th><th>Site</th><th>Pump / location</th><th>Report</th><th>Jobber</th><th></th></tr></thead><tbody>
+      ${byMonth[m].map(r => `<tr><td>${esc(r.date)}</td><td><b>${esc(r.site)}</b></td><td>${esc(r.location)}</td><td class="note">${esc(r.title)}</td>
+        <td>${r.jobber.logged ? '<span class="chip g">' + esc(r.jobber.title || 'logged') + '</span>' : (r.jobber.pending ? '<span class="chip a" title="' + esc(r.jobber.pending) + '">needs a job</span>' : '<span class="note">not yet</span>')}</td>
+        <td style="white-space:nowrap">${r.has_branded ? `<a class="btn s" target="_blank" href="/pumps/api/docs/${r.id}/file?version=branded_pdf">PDF</a> <a class="btn s" href="/pumps/api/docs/${r.id}/file?version=branded&download=1">Word</a>` : ''} <button class="btn s" onclick="openDoc(${r.id})">Details</button>${!r.jobber.logged ? ` <button class="btn s" onclick="logReport(${r.id})">Log in Jobber</button>` : ''}</td></tr>`).join('')}
+      </tbody></table></div>`; }).join('') || '<div class="empty">No reports this year.</div>';
+}
 function box(title, items, render, cls, hint){
   return `<div class="box ${cls||''}"><h3>${title}<span class="c">${items.length}</span></h3>${hint ? `<div class="note" style="padding:6px 14px 0">${hint}</div>` : ''}
     ${items.length ? items.map(render).join('') : '<div class="empty">Nothing waiting.</div>'}</div>`;
@@ -332,12 +394,13 @@ async function loadToday(){
   const j = await api('/summary');
   if (!j.success) { document.getElementById('todayGrid').innerHTML = `<div class="empty">${esc(j.error)}</div>`; return; }
   const q = j.queue;
-  setCount('n-today', q.issues.length + q.vendor_bills_to_pay.length + q.needs_scheduling.length + q.quotes_to_draft.length + q.bills_to_draft.length + q.reports_to_log.length, q.issues.length > 0 || q.vendor_bills_to_pay.length > 0);
+  setCount('n-today', q.todos.length + q.issues.length + q.vendor_bills_to_pay.length + q.needs_scheduling.length + q.quotes_to_draft.length + q.bills_to_draft.length + q.reports_to_log.length, q.issues.length > 0 || q.vendor_bills_to_pay.length > 0);
   setCount('n-inbox', q.review_docs.length, false);
   setCount('n-scada', q.scada_attention.length, q.scada_attention.some(s => s.state === 'overdue'));
   setCount('n-jobber', q.new_jobber_requests.length, false);
   updateScanInfo(j.scan);
   const g = [];
+  g.push(todoBox(q.todos));
   g.push(box('⚠️ Issues to resolve', q.issues, i => `<div class="row" onclick="openCase(${i.case_id})"><div class="main"><div class="tt">${esc(i.title || i.client_name || 'Item ' + i.case_id)}</div><div class="sub">${esc(i.message)}</div></div></div>`, q.issues.length ? 'red' : ''));
   g.push(box('💸 Pay Wettech - the client has paid', q.vendor_bills_to_pay, c => `<div class="row" onclick="openCase(${c.id})"><div class="main"><div class="tt">${esc(c.title || c.client_name)}</div><div class="sub">${esc(c.vendor || 'Wettech')} bill ${c.vendor_bill_number ? '#' + esc(c.vendor_bill_number) + ' · ' : ''}${money(c.vendor_bill_total ?? c.vendor_bill_amount)} · our Jobber invoice ${c.sei_invoice_number ? '#' + esc(c.sei_invoice_number) + ' ' : ''}is paid</div></div><button class="btn s p" onclick="event.stopPropagation();markVendorPaid(${c.id})">Mark paid</button></div>`, q.vendor_bills_to_pay.length ? 'red' : '', 'Our client paid the Jobber invoice - Wettech\'s bill needs to be paid.'));
   g.push(box('📅 Needs scheduling with Wettech', q.needs_scheduling, c => caseRow(c, c.scheduled_for ? 'for ' + esc(c.scheduled_for) : ''), q.needs_scheduling.length ? 'amber' : '', 'Client approved - get it on Wettech\'s calendar.'));
@@ -448,7 +511,7 @@ function renderCase(){
       <span class="note">${d.doc_number ? '#' + esc(d.doc_number) + ' · ' : ''}${d.total != null ? money(d.total) : ''} ${esc(d.doc_date)}</span>
       <span style="flex:1"></span>
       <a class="btn s" href="/pumps/api/docs/${d.id}/file" target="_blank">Open</a>
-      ${d.has_branded ? `<a class="btn s" href="/pumps/api/docs/${d.id}/file?version=branded&download=1">⬇ SE report</a>` : ''}
+      ${d.has_branded ? `<a class="btn s" target="_blank" href="/pumps/api/docs/${d.id}/file?version=branded_pdf">SE report PDF</a> <a class="btn s" href="/pumps/api/docs/${d.id}/file?version=branded&download=1">⬇ Word</a>` : ''}
       ${d.kind === 'quote' && !(d.jobber||{}).quote_id ? `<button class="btn s p" onclick="draftQuote(${d.id})">Draft quote in Jobber</button>` : ''}
       ${d.kind === 'quote' && (d.jobber||{}).quote_id ? `<a class="chip g" target="_blank" href="${esc(d.jobber.quote_uri||'#')}">Jobber quote #${esc(d.jobber.quote_number)}</a>` : ''}
       ${d.kind === 'bill' && !(d.jobber||{}).invoice_id ? `<button class="btn s p" onclick="draftInvoice(${d.id})">Draft invoice in Jobber</button>` : ''}
@@ -840,15 +903,16 @@ async function loadDivers(){
   DV = j;
   const nm = new Date(j.next_month + 'T12:00:00').toLocaleString('en-US', {month:'long', year:'numeric'});
   const st = j.settings;
-  document.getElementById('diveInfo').innerHTML = `${j.sites.filter(s => s.needs_dive).length} sites need a diver · next email: <b>${esc(nm)}</b> (${j.next_count} sites) to ${esc(st.to)}` + (st.auto ? ' on the 1st' : ' - <b class="warn">automatic sending is off</b>') + (j.can_send ? '' : ' · <b class="bad">Microsoft 365 is not set up to send</b>');
+  document.getElementById('diveInfo').innerHTML = `${j.sites.filter(s => s.needs_dive).length} sites need a diver · next email: <b>${esc(nm)}</b> (${j.next_count} sites) to ${esc(st.to)}` + (st.auto ? ' - sent automatically on the 1st' : ' - a to-do on the 1st') + (j.can_send ? '' : ' · <b class="bad">Microsoft 365 is not set up to send</b>');
   drawDiveSites();
+  document.getElementById('diveDocx').href = '/pumps/api/dives/docx?month=' + encodeURIComponent(j.next_month);
   document.getElementById('diveSettings').innerHTML = `
     <label>Diver's email<input type="text" id="dvTo" value="${esc(st.to)}"></label>
     <label>Diver's name (greeting)<input type="text" id="dvName" value="${esc(st.diver_name)}"></label>
     <label>Copy to (replies go here)<input type="text" id="dvCc" value="${esc(st.cc)}"></label>
     <label>Send from (mailbox)<input type="text" id="dvFrom" value="${esc(st.from)}"></label>
     <label class="w">Signature<textarea id="dvSig" style="min-height:120px">${esc(st.signature)}</textarea></label>
-    <label><span><input type="checkbox" id="dvAuto" ${st.auto ? 'checked' : ''}> Send automatically on the 1st of each month</span></label>
+    <label><span><input type="checkbox" id="dvAuto" ${st.auto ? 'checked' : ''}> Send it automatically from the PO mailbox on the 1st (off = to-do only)</span></label>
     <div><button class="btn p" onclick="saveDiveSettings()">Save</button></div>`;
   document.getElementById('diveSent').innerHTML = (j.sent || []).map(e => `<tr><td>${esc(e.month)}</td><td>${esc(e.sent_at)}</td><td>${esc(e.sent_by)}</td><td>${esc(e.to_addr)}${e.cc_addr ? '<div class="note">cc ' + esc(e.cc_addr) + '</div>' : ''}</td><td class="num">${e.sites}</td><td>${e.error ? '<b class="bad">' + esc(e.error) + '</b>' : '<span class="ok">sent</span>'}</td></tr>`).join('') || '<tr><td colspan="6" class="note">Nothing sent yet.</td></tr>';
 }
