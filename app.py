@@ -3349,7 +3349,6 @@ def dashboard():
                                  tech_type=session.get('tech_type', ''),
                                  user_lang=session.get('user_lang', 'en'),
                                  cashflow_ok=_cashflow_allowed(),
-                                 timeoff_ok=timeoff_allowed(),
                                  pumps_ok=pumps_allowed(),
                                  workorders_ok=workorders_allowed())
 
@@ -9220,15 +9219,6 @@ DASHBOARD_MENU_TEMPLATE = '''
             <div class="card-title">Snowbirds</div>
             <div class="card-desc">Forecast when snowbirds return to Naples, find clients with a home up north, and time discounted quote resends to their return.</div>
             <button class="card-cta">Open Snowbirds →</button>
-        </a>
-        {% endif %}
-
-        {% if timeoff_ok %}
-        <a class="app-card card-amber" href="{{ url_for('timeoff.page') }}">
-            <div class="card-icon-wrap">🗓️</div>
-            <div class="card-title">Time-Off Log</div>
-            <div class="card-desc">Approve or deny technician time-off requests, see sick call-outs, and check who's off on any day.</div>
-            <button class="card-cta">Open Time-Off →</button>
         </a>
         {% endif %}
 
@@ -39297,10 +39287,6 @@ def _hash_plaintext_passwords():
 
 _hash_plaintext_passwords()
 init_cashflow_db()
-# Time-Off Log (technician time off and call-outs) lives in timeoff.py.
-from timeoff import init_timeoff, timeoff_allowed
-init_timeoff(app, csrf, DB_PATH)
-
 # Pumps (pump/diver/filter/SCADA work from request to invoice) lives in pumps.py.
 from pumps import init_pumps, pumps_allowed
 init_pumps(app, csrf, DB_PATH, data_dir=DATA_DIR, secret_key=app.secret_key, website_url=WEBSITE_URL,
