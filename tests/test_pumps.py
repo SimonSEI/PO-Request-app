@@ -7,6 +7,7 @@ Runs against a throwaway database. Jobber and Claude are never called: Jobber
 is replaced by a fake that records every request, and documents are "read"
 from canned text. All names below are made up.
 """
+import atexit
 import io
 import json
 import os
@@ -93,9 +94,14 @@ def extraction(kind, number, po='', client='Lakeside Pines', subtotal=1000.0, ta
 class FakeJobber:
     """Stands in for Jobber: records every query and answers the ones Pumps sends."""
 
-    def __init__(self, invoice_status='draft'):
+    def __init__(self, invoice_status='draft', quote_status='draft', properties=None, clients=None, quote_lines=None):
         self.calls = []
+        self.clients = clients
+        self.quote_lines = quote_lines or []
         self.invoice_status = invoice_status
+        self.quote_status = quote_status
+        self.properties = properties if properties is not None else [
+            {'id': 'P1', 'address': {'street1': '100 Lakeside Dr', 'city': 'Naples'}}]
 
     def __call__(self, query, variables=None):
         P.check_mutation_allowed(query)  # the real guard still runs
@@ -105,10 +111,23 @@ class FakeJobber:
                                                   'invoiceStatus': self.invoice_status,
                                                   'jobberWebUri': 'https://secure.getjobber.com/invoices/1'},
                                       'userErrors': []}}
+        if 'quoteCreate(' in query:
+            return {'quoteCreate': {'quote': {'id': 'Q1', 'quoteNumber': 812, 'quoteStatus': self.quote_status,
+                                              'jobberWebUri': 'https://secure.getjobber.com/quotes/1'},
+                                    'userErrors': []}}
+        if 'quote(id' in query:
+            return {'quote': {'quoteNumber': 812, 'lineItems': {'nodes': self.quote_lines}}}
+        if 'quoteCreateNote' in query:
+            return {'quoteCreateNote': {'quoteNote': {'id': 'QN1'}, 'userErrors': []}}
+        if 'client(id' in query:
+            return {'client': {'id': variables['id'], 'name': 'Lakeside Pines HOA',
+                               'properties': self.properties, 'jobs': {'nodes': []}}}
         if 'jobCreateNote' in query:
             if 'attachments' in json.dumps(variables):
                 raise P.JobberError("Argument 'attachments' is invalid")
             return {'jobCreateNote': {'jobNote': {'id': 'NOTE1'}, 'userErrors': []}}
+        if 'clients(' in query and self.clients is not None:
+            return {'clients': {'nodes': self.clients}}
         if 'clients(' in query:
             return {'clients': {'nodes': [
                 {'id': 'C1', 'name': 'Lakeside Pines HOA c/o Example Management', 'isLead': False, 'isArchived': False},
@@ -137,7 +156,8 @@ class PumpsTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         P.extract_text, P._claude_extract, P.jobber_gql = cls._orig
-        shutil.rmtree(TMP, ignore_errors=True)
+        # Removed when the whole run ends: other test files share the same app (and this folder).
+        atexit.register(shutil.rmtree, TMP, True)
 
     def setUp(self):
         self.c = A.app.test_client()
@@ -281,6 +301,68 @@ class PumpsTest(unittest.TestCase):
         doc = self.c.get(f"/pumps/api/docs/{res['doc_id']}").get_json()['doc']
         self.assertTrue(doc['case_id'])
 
+    def test_read_again_once_claude_is_back(self):
+        # Claude is switched on but down: the basic reader marks both for review and leaves them in the Inbox.
+        P.USE_CLAUDE, use = True, P.USE_CLAUDE
+        self.addCleanup(setattr, P, 'USE_CLAUDE', use)
+        for name in ('Inv_29041_from_Water_Equipment.pdf', 'Inv_29042_from_Water_Equipment.pdf'):
+            self.texts[name] = 'INVOICE\nWater Equipment Technologies\nTotal $1,200.00'
+        a = self.upload('Inv_29041_from_Water_Equipment.pdf')
+        b = self.upload('Inv_29042_from_Water_Equipment.pdf')
+        for res in (a, b):
+            self.assertIsNone(res['case_id'])
+            self.assertIn('without Claude', res['review'])
+        # Claude is back.
+        for name, num in (('Inv_29041_from_Water_Equipment.pdf', '29041'), ('Inv_29042_from_Water_Equipment.pdf', '29042')):
+            self.extracts[name] = extraction('bill', num, po='PO950', client='Osprey Point', subtotal=1126.76)
+            self.texts.pop(name)
+        r = self.c.post(f"/pumps/api/docs/{a['doc_id']}/reread", json={})
+        body = r.get_json()
+        self.assertTrue(body['success'], body)
+        self.assertEqual(body['kind'], 'bill')
+        self.assertTrue(body['case_id'], 'filed onto an item once read cleanly')
+        doc = self.c.get(f"/pumps/api/docs/{a['doc_id']}").get_json()['doc']
+        self.assertEqual((doc['extracted_by'], doc['review_reason'], doc['doc_number']), ('claude', '', '29041'))
+        self.assertEqual(self.case(body['case_id'])['vendor_bill_number'], '29041')
+        # Already on an item: not read again over the office's work.
+        self.assertEqual(self.c.post(f"/pumps/api/docs/{a['doc_id']}/reread", json={}).status_code, 400)
+        # The next scan picks up the rest by itself.
+        done = P.reread_pending('test')
+        self.assertIn(b['doc_id'], [d['doc_id'] for d in done])
+        self.assertTrue(self.c.get(f"/pumps/api/docs/{b['doc_id']}").get_json()['doc']['case_id'])
+
+    def test_wettech_letter_quote(self):
+        """Wettech quotes are Word letters: "RE: The Carlise", one "Your Cost" price that includes sales tax."""
+        from docx import Document
+        d = Document()
+        for t in ('of Southwest Florida LLC', 'State of Florida Certified Plumbing Contractor', '#CFC1429137',
+                  'Phone 941-232-4629   FAX 941-371-5151', 'Email: wettec@verizon.net', 'October 5, 2026',
+                  'Stahlman England', 'Attn: Andrea',
+                  'RE: The Carlise', 'We are pleased to quote you on the following services',
+                  'Field service to check out pump station, found pipe had melted at the fitting going into the pump '
+                  'suction.  Field service to pull and inspect suction line, clean screen and reinstall.',
+                  'Your Cost --------------- $ 1158.99', 'Price includes Sales tax and in freight',
+                  'Terms: Net 10 days', 'Thank You', 'H. H. (Tom) Morgan III'):
+            d.add_paragraph(t)
+        buf = io.BytesIO()
+        d.save(buf)
+        res = self.upload('Carslie Back Station .docx', data=buf.getvalue())
+        self.assertEqual(res['kind'], 'quote', 'a quote letter, not a pump report')
+        doc = self.c.get(f"/pumps/api/docs/{res['doc_id']}").get_json()['doc']
+        self.assertEqual((doc['vendor'], doc['client_name'], doc['doc_date']), ('Wettech', 'The Carlise', '2026-10-05'))
+        self.assertEqual((doc['subtotal'], doc['total']), (None, 1158.99))
+        self.assertEqual(len(doc['line_items']), 1)
+        line = doc['quote_suggestion']['line_items'][0]
+        self.assertEqual(line['unit_price'], 1506.69, 'Simon quoted $1,506.69 in Jobber quote 9136')
+        self.assertEqual(line['name'], 'Service Proposal Amount')
+        self.assertFalse(line['taxable'], 'tax is already in the price - Jobber must not add it again')
+        # Claude's reading of the same letter is cleaned up the same way.
+        x = P._clean_extraction(extraction('quote', '', client='The Carlise', subtotal=1158.99, tax=0, items=[
+            {'name': 'Suction line repair', 'description': 'Field service...', 'quantity': 1, 'unit_price': 1158.99,
+             'amount': 1158.99, 'taxable': True, 'is_tax': False}]) | {'tax': None, 'subtotal': None, 'total': None,
+                                                                       'tax_included': True})
+        self.assertEqual((x['subtotal'], x['total'], x['line_items'][0]['taxable']), (None, 1158.99, False))
+
     def test_same_file_twice_is_skipped(self):
         self.extracts['dup.pdf'] = extraction('quote', 'Q-91', client='Dup Lakes', subtotal=100)
         self.upload('dup.pdf')
@@ -296,6 +378,7 @@ class PumpsTest(unittest.TestCase):
             with self.assertRaises(P.JobberError, msg=q):
                 P.check_mutation_allowed(q)
         P.check_mutation_allowed(P.INVOICE_CREATE)
+        P.check_mutation_allowed(P.QUOTE_CREATE)
         P.check_mutation_allowed('query { clients(first: 1) { nodes { id } } }')
         for target in P.NOTE_MUTATION.values():
             P.check_mutation_allowed(f'mutation N($id: EncodedId!, $input: {target[2]}!) {{ {target[0]}({target[1]}: $id, '
@@ -356,6 +439,315 @@ class PumpsTest(unittest.TestCase):
         r = self.c.post(f"/pumps/api/docs/{b['doc_id']}/invoice", json={})
         self.assertEqual(r.status_code, 409)
         self.assertTrue(r.get_json()['needs_client'])
+
+    def test_draft_quote_from_vendor_quote(self):
+        self.extracts['q-0800.pdf'] = extraction('quote', 'Q-120', po='PO800', client='Lakeside Pines', subtotal=2450)
+        q = self.upload('q-0800.pdf')
+        cid = q['case_id']
+        queue = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertIn(q['doc_id'], [d['id'] for d in queue['quotes_to_draft']])
+        fake = FakeJobber()
+        P.jobber_gql = fake
+        body = self.c.post(f"/pumps/api/docs/{q['doc_id']}/quote", json={}).get_json()
+        self.assertTrue(body['success'], body)
+        self.assertEqual(body['quote']['quote_status'], 'draft')
+        creates = [v for qq, v in fake.calls if 'quoteCreate(' in qq]
+        self.assertEqual(len(creates), 1)
+        attrs = creates[0]['attributes']
+        self.assertEqual(attrs['clientId'], 'C1', 'the clear best client, not the work-orders lead')
+        self.assertEqual(attrs['propertyId'], 'P1', "the client's only property")
+        self.assertEqual(len(attrs['lineItems']), 1, 'sales tax line left off')
+        self.assertEqual(attrs['lineItems'][0]['unitPrice'], 3185.0, "Wettech's price plus 30%")
+        self.assertEqual(attrs['lineItems'][0]['name'], 'Service Proposal Amount')
+        self.assertNotIn('quotation', attrs['lineItems'][0]['description'].lower())
+        self.assertTrue(attrs['title'].startswith('Proposal'))
+        notes = [v for qq, v in fake.calls if 'quoteCreateNote' in qq]
+        self.assertEqual(notes[0]['id'], 'Q1', "Wettech's quote is saved as a note on our quote")
+        self.assertFalse(any(word in qq for qq, _ in fake.calls for word in ('Send', 'MarkAsSent')))
+        case = self.case(cid)
+        self.assertEqual(case['jobber']['quote']['number'], '812')
+        steps = {s['key']: s for s in case['step_list']}
+        self.assertFalse(steps['client_quote'].get('at'), 'a draft is not "sent to client"')
+        queue = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertNotIn(q['doc_id'], [d['id'] for d in queue['quotes_to_draft']])
+        # A second draft for the same vendor quote is refused.
+        r = self.c.post(f"/pumps/api/docs/{q['doc_id']}/quote", json={'client_id': 'C1', 'property_id': 'P1'})
+        self.assertEqual(r.status_code, 400)
+        # When the office sends it from Jobber, and the client approves, the steps tick themselves.
+        conn = P._conn()
+        try:
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, updated_at) "
+                         "VALUES ('Q1', 'quote', '812', 'Pump service', 'awaiting_response', '2026-10-03T10:00:00Z')")
+            P._follow_quotes(conn)
+            conn.commit()
+        finally:
+            conn.close()
+        steps = {s['key']: s for s in self.case(cid)['step_list']}
+        self.assertEqual(steps['client_quote'].get('at'), '2026-10-03')
+        self.assertFalse(steps['client_approved'].get('at'))
+        conn = P._conn()
+        try:
+            conn.execute("UPDATE pump_jobber_items SET status='approved', updated_at='2026-10-06T09:00:00Z' "
+                         "WHERE jobber_id='Q1'")
+            P._follow_quotes(conn)
+            conn.commit()
+        finally:
+            conn.close()
+        steps = {s['key']: s for s in self.case(cid)['step_list']}
+        self.assertEqual(steps['client_approved'].get('at'), '2026-10-06')
+
+    def test_draft_quote_asks_which_property(self):
+        self.extracts['q-0810.pdf'] = extraction('quote', 'Q-121', po='PO810', client='Lakeside Pines', subtotal=300)
+        q = self.upload('q-0810.pdf')
+        P.jobber_gql = FakeJobber(properties=[{'id': 'P1', 'address': {'street1': 'North gate'}},
+                                              {'id': 'P2', 'address': {'street1': 'South gate'}}])
+        r = self.c.post(f"/pumps/api/docs/{q['doc_id']}/quote", json={'client_id': 'C1'})
+        self.assertEqual(r.status_code, 409)
+        self.assertTrue(r.get_json()['needs_property'])
+        self.assertEqual([p['id'] for p in r.get_json()['properties']], ['P1', 'P2'])
+        r = self.c.post(f"/pumps/api/docs/{q['doc_id']}/quote", json={'client_id': 'C1', 'property_id': 'P2'})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+    def test_non_draft_quote_status_raises_issue(self):
+        self.extracts['q-0820.pdf'] = extraction('quote', 'Q-122', po='PO820', client='Sunset Cove', subtotal=400)
+        q = self.upload('q-0820.pdf')
+        P.jobber_gql = FakeJobber(quote_status='awaiting_response')
+        body = self.c.post(f"/pumps/api/docs/{q['doc_id']}/quote", json={'client_id': 'C9', 'property_id': 'P9'}).get_json()
+        self.assertTrue(body['success'], body)
+        self.assertTrue(any(i['kind'] == 'not_draft' and not i['resolved_at'] for i in self.case(q['case_id'])['issues']))
+
+    def test_quote_drafted_on_its_own_like_jobber_quote_9136(self):
+        """Tom's Carlise quote (Oct 5 2026), as Simon then entered it by hand: Greenscapes, the Carlisle Pump #1
+        exit ("back station"), "Proposal to inspect suction line", one Service Proposal Amount line of
+        $1,506.69 (Wettech's $1,158.99 tax included, plus 30%), not taxable."""
+        work = ('Field service to check out pump station, found pipe had melted at the fitting going into the pump '
+                'suction. Field service to pull and inspect suction line, clean screen and reinstall, furnish ans '
+                'install PVC parts needed to repair suction line, prime and test.')
+        name = 'Carslie Back Station .docx'
+        self.extracts[name] = extraction('quote', '', client='The Carlise', items=[
+            {'name': 'Pump station repair', 'description': work, 'quantity': 1, 'unit_price': 1158.99,
+             'amount': 1158.99, 'taxable': False, 'is_tax': False}]) | {
+            'subtotal': None, 'tax': None, 'total': 1158.99, 'tax_included': True,
+            'proposal_title': 'Proposal to inspect suction line', 'doc_date': '2026-10-05'}
+        fake = FakeJobber(quote_lines=[{'name': 'Service Proposal Amount', 'description': work, 'quantity': 1,
+                                         'unitPrice': 1506.69, 'taxable': False}])
+        P.jobber_gql = fake
+        P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN
+        try:
+            res = self.upload(name, data=b'docx bytes')
+            self.assertEqual(res['auto_quote']['quote_number'], '812', res)
+            attrs = [v for q, v in fake.calls if 'quoteCreate(' in q][0]['attributes']
+            self.assertEqual(attrs['clientId'], 'Z2lkOi8vSm9iYmVyL0NsaWVudC80OTAwNzI1OA==', '"Carlisle" is the Greenscapes account')
+            self.assertEqual(attrs['propertyId'], 'Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzUyOTc4MjYw', '"back station" is the Pump #1 exit')
+            self.assertEqual(attrs['title'], 'Proposal to inspect suction line')
+            self.assertEqual(len(attrs['lineItems']), 1)
+            li = attrs['lineItems'][0]
+            self.assertEqual((li['name'], li['unitPrice'], li['quantity'], li['taxable']),
+                             ('Service Proposal Amount', 1506.69, 1.0, False))
+            self.assertEqual(li['description'], work)
+            note = [v for q, v in fake.calls if 'quoteCreateNote' in q][0]
+            self.assertEqual(note['id'], 'Q1')
+            self.assertIn('Wettech quote', note['input']['message'])
+            self.assertIn('$1,158.99 (includes sales tax)', note['input']['message'])
+            self.assertIn('$1,506.69 (30% markup)', note['input']['message'])
+            self.assertFalse(any(w in q for q, _ in fake.calls for w in ('Send', 'MarkAsSent')))
+            queue = self.c.get('/pumps/api/summary').get_json()['queue']
+            self.assertNotIn(res['doc_id'], [d['id'] for d in queue['quotes_to_draft']])
+            # Wettech's bill matches its quote: the client is invoiced what they were quoted.
+            self.extracts['b-carlise.pdf'] = extraction('bill', '29150', client='The Carlise', subtotal=1088.25,
+                                                        tax=70.74)
+            b = self.upload('b-carlise.pdf')
+            self.assertEqual(b['case_id'], res['case_id'])
+            sugg = self.c.get(f"/pumps/api/docs/{b['doc_id']}").get_json()['doc']['invoice_suggestion']
+            self.assertEqual(sugg['from_quote'], '812')
+            self.assertEqual([(l['name'], l['unit_price']) for l in sugg['line_items']],
+                             [('Service Proposal Amount', 1506.69)])
+        finally:
+            P.JOBBER_STATIC_TOKEN = saved
+
+    def test_carlise_quote_without_claude(self):
+        """No Anthropic key: the built-in reader alone turns Tom's emailed Word quote into the 9136 draft."""
+        self.assertFalse(P.USE_CLAUDE)
+        from docx import Document
+        d = Document()
+        for t in ('of Southwest Florida LLC', 'Email: wettec@verizon.net', 'October 5, 2026', 'Stahlman England',
+                  'Attn: Andrea', 'RE: The Carlise', 'We are pleased to quote you on the following services',
+                  'Field service to check out pump station, found pipe had melted at the fitting going into the pump '
+                  'suction.  Field service to pull and inspect suction line, clean screen and reinstall, furnish ans '
+                  'install PVC parts needed to repair suction line, prime and test.',
+                  'Your Cost --------------- $ 1158.99', 'Price includes Sales tax and in freight', 'Thank You'):
+            d.add_paragraph(t)
+        buf = io.BytesIO()
+        d.save(buf)
+        fake = FakeJobber()
+        P.jobber_gql = fake
+        P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN
+        try:
+            form = {'file': (io.BytesIO(buf.getvalue()), 'Carslie Back Station .docx')}
+            res = self.c.post('/pumps/api/docs', data=form, content_type='multipart/form-data').get_json()['results'][0]
+        finally:
+            P.JOBBER_STATIC_TOKEN = saved
+        self.assertEqual(res['review'], '', 'a Wettech quote read cleanly is trusted')
+        self.assertTrue(res['case_id'])
+        self.assertEqual(res['auto_quote']['quote_number'], '812', res)
+        attrs = [v for q, v in fake.calls if 'quoteCreate(' in q][0]['attributes']
+        self.assertEqual((attrs['clientId'], attrs['propertyId']), ('Z2lkOi8vSm9iYmVyL0NsaWVudC80OTAwNzI1OA==', 'Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzUyOTc4MjYw'))
+        self.assertEqual(attrs['title'], 'Proposal to pull and inspect suction line')
+        li = attrs['lineItems'][0]
+        self.assertEqual((li['name'], li['unitPrice'], li['taxable']), ('Service Proposal Amount', 1506.69, False))
+        self.assertTrue([v for q, v in fake.calls if 'quoteCreateNote' in q])
+        self.c.post(f"/pumps/api/cases/{res['case_id']}/delete", json={'reason': 'test done'})
+
+    def test_forwarded_quote_with_letterhead_in_page_header(self):
+        """Simon forwards Tom's quote to PO@: the sender is one of us and Wettech's details are only in the
+        Word page header - it must still be read as a Wettech quote."""
+        from docx import Document
+        d = Document()
+        hdr = d.sections[0].header.paragraphs[0]
+        hdr.text = 'Water Equipment Technologies of Southwest Florida LLC - Email: wettec@verizon.net'
+        for t in ('October 6, 2026', 'Stahlman England', 'RE: Egret Landing',
+                  'We are pleased to quote you on the following services',
+                  'Field service to replace check valve on pump #1, prime and test.',
+                  'Your Cost --------------- $ 840.00', 'Price includes Sales tax and in freight'):
+            d.add_paragraph(t)
+        buf = io.BytesIO()
+        d.save(buf)
+        text = P.extract_text('Egret.docx', buf.getvalue())
+        self.assertIn('wettec@verizon.net', text)
+        res = P.ingest_document('Egret Landing pump.docx', buf.getvalue(), source='email', actor='email scan',
+                                email={'uid': 'fw-1', 'from': 'simon@stahlman-england.com',
+                                       'subject': 'FW: Egret Landing', 'preview': ''})
+        self.assertEqual((res['kind'], res['review']), ('quote', ''), res)
+        doc = self.c.get(f"/pumps/api/docs/{res['doc_id']}").get_json()['doc']
+        self.assertEqual((doc['vendor'], doc['client_name'], doc['total']), ('Wettech', 'Egret Landing', 840.0))
+        # A PDF forward whose only Wettech mark is the forwarded header in the email body.
+        self.texts['fw-invoice.pdf'] = 'INVOICE\nBill To Stahlman-England\nRE: Egret Landing\nTotal $840.00'
+        res = P.ingest_document('fw-invoice.pdf', b'%PDF fw', source='email', actor='email scan',
+                                email={'uid': 'fw-2', 'from': 'simon@stahlman-england.com', 'subject': 'FW: Invoice',
+                                       'preview': 'From: Tom Morgan <tomm@wettec.biz> Sent: Monday'})
+        doc = self.c.get(f"/pumps/api/docs/{res['doc_id']}").get_json()['doc']
+        self.assertEqual(doc['vendor'], 'Wettech')
+
+    def test_client_found_through_its_property_despite_typos(self):
+        props = [{'id': 'PX1', 'address': {'street1': '1 Osprey Ct', 'street2': 'Osprey Point - Pump #1', 'city': 'Naples'}},
+                 {'id': 'PX2', 'address': {'street1': '2 Osprey Ct', 'street2': 'Osprey Point - Pump #2', 'city': 'Naples'}}]
+        fake = FakeJobber(properties=props, clients=[
+            {'id': 'LS1', 'name': 'Sunrise Landscaping', 'isLead': False, 'isArchived': False, 'properties': props},
+            {'id': 'XX', 'name': 'Bayview Towers', 'isLead': False, 'isArchived': False, 'properties': []}])
+        P.jobber_gql = fake
+        cands = P.search_clients('The Ospray Pointe')
+        self.assertEqual(cands[0]['id'], 'LS1', 'the community is a property of the landscape company')
+        self.assertEqual(len(cands[0]['matching_properties']), 2)
+        t = P.resolve_quote_target({'client_name': 'Ospray Pointe', 'site': 'Pump #2', 'file_name': 'q.pdf'})
+        self.assertEqual((t['client_id'], t['property_id']), ('LS1', 'PX2'))
+        t = P.resolve_quote_target({'client_name': 'Ospray Pointe', 'file_name': 'q.pdf'})
+        self.assertEqual((t['client_id'], t['property_id']), ('LS1', None), 'two pumps, no hint: a person picks')
+
+    def test_auto_draft_waits_for_a_person_when_unsure(self):
+        self.extracts['q-unsure.pdf'] = extraction('quote', 'Q-140', client='Nowhere Isles', subtotal=700)
+        fake = FakeJobber(clients=[])
+        P.jobber_gql = fake
+        P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN
+        try:
+            res = self.upload('q-unsure.pdf')
+        finally:
+            P.JOBBER_STATIC_TOKEN = saved
+        self.assertIn('Choose the Jobber client', res['auto_quote']['pending'])
+        self.assertEqual([q for q, _ in fake.calls if 'quoteCreate(' in q], [])
+        queue = self.c.get('/pumps/api/summary').get_json()['queue']
+        d = [d for d in queue['quotes_to_draft'] if d['id'] == res['doc_id']][0]
+        self.assertIn('Choose the Jobber client', d['jobber']['quote_pending']['reason'])
+
+    def test_miramar_is_miromar(self):
+        a = P.match_site_alias({'client_name': 'Miramar Lakes', 'file_name': 'Inv_29100.pdf'})
+        self.assertEqual((a['client_name'], a['property_id']),
+                         ('MIROMAR LAKES', 'Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzM4MTYzODEy'))
+        self.assertEqual(P.match_site_alias({'client_name': 'Miromar Lakes', 'file_name': 'x.pdf'})['client_name'],
+                         'MIROMAR LAKES')
+        for other in ('Miramar Lakes Beach and Gulf Club', 'Miramar Lakes CDD', 'Miramar Lakes Golf & Country Club'):
+            self.assertIsNone(P.match_site_alias({'client_name': other, 'file_name': 'x.pdf'}), other)
+        # The Carlisle names still apply ("The Carlise" adds nothing of its own).
+        self.assertEqual(P.match_site_alias({'client_name': 'The Carlise', 'file_name': 'Carslie Back Station .docx'})
+                         ['area'], 'back station')
+
+    def test_site_names(self):
+        names = self.c.get('/pumps/api/site-names').get_json()['site_names']
+        self.assertIn(('Carlisle', 'back station', 'Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzUyOTc4MjYw'), [(n['place'], n['area'], n['property_id']) for n in names])
+        r = self.c.post('/pumps/api/site-names', json={'place': 'Heron Bay', 'area': 'front pump', 'client_id': 'C7',
+                                                       'client_name': 'Heron Bay HOA', 'property_id': 'P7'})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        a = P.match_site_alias({'client_name': 'Heron Bay', 'file_name': 'Heron Bay front pump quote.pdf'})
+        self.assertEqual(a['property_id'], 'P7')
+        self.assertIsNone(P.match_site_alias({'client_name': 'Heron Glen', 'file_name': 'x.pdf'}))
+        aid = [n['id'] for n in r.get_json()['site_names'] if n['place'] == 'Heron Bay'][0]
+        bot = A.app.test_client()
+        h = {'Authorization': 'Bearer test-openclaw-key'}
+        self.assertEqual(bot.post('/api/pumps/site-names', json={'place': 'X', 'client_id': 'Y'}, headers=h).status_code, 403)
+        self.assertEqual(bot.post(f'/api/pumps/site-names/{aid}/delete', json={}, headers=h).status_code, 403)
+        self.c.post(f'/pumps/api/site-names/{aid}/delete', json={})
+        self.assertIsNone(P.match_site_alias({'client_name': 'Heron Bay', 'file_name': 'Heron Bay front pump.pdf'}))
+
+    def test_openclaw_cannot_draft_client_quotes(self):
+        self.extracts['q-0830.pdf'] = extraction('quote', 'Q-123', po='PO830', client='Lakeside Pines', subtotal=500)
+        q = self.upload('q-0830.pdf')
+        fake = FakeJobber()
+        P.jobber_gql = fake
+        r = A.app.test_client().post(f"/api/pumps/docs/{q['doc_id']}/quote", json={'client_id': 'C1', 'property_id': 'P1'},
+                                     headers={'Authorization': 'Bearer test-openclaw-key'})
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(fake.calls, [])
+
+    def test_vendor_bill_due_once_client_pays(self):
+        self.extracts['q-0900.pdf'] = extraction('quote', 'Q-130', po='PO900', client='Lakeside Pines', subtotal=900)
+        self.extracts['b-0900.pdf'] = extraction('bill', '30100', po='PO900', client='Lakeside Pines', subtotal=900)
+        self.upload('q-0900.pdf')
+        b = self.upload('b-0900.pdf')
+        cid = b['case_id']
+        self.assertEqual(self.case(cid)['vendor_pay']['state'], 'unpaid')
+        P.jobber_gql = FakeJobber()
+        self.assertTrue(self.c.post(f"/pumps/api/docs/{b['doc_id']}/invoice", json={'client_id': 'C1'}).get_json()['success'])
+
+        def jobber_says(status):
+            conn = P._conn()
+            try:
+                conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status) "
+                             "VALUES ('INV1', 'invoice', '5001', 'Pump service', ?) "
+                             "ON CONFLICT(jobber_id) DO UPDATE SET status=excluded.status", (status,))
+                P._follow_invoices(conn)
+                conn.commit()
+            finally:
+                conn.close()
+
+        def to_pay():
+            return [c['id'] for c in self.c.get('/pumps/api/summary').get_json()['queue']['vendor_bills_to_pay']]
+        jobber_says('awaiting_payment')
+        self.assertEqual(self.case(cid)['vendor_pay']['state'], 'unpaid', 'sent, not paid yet')
+        self.assertNotIn(cid, to_pay())
+        # The item closes before the client pays; the alert must still come.
+        conn = P._conn()
+        try:
+            conn.execute("UPDATE pump_cases SET status='closed' WHERE id=?", (cid,))
+            conn.commit()
+        finally:
+            conn.close()
+        jobber_says('paid')
+        case = self.case(cid)
+        self.assertEqual(case['vendor_pay']['state'], 'due')
+        self.assertIn(cid, to_pay())
+        self.assertTrue(any(e['action'] == 'pay vendor' for e in case['events']))
+        # OpenClaw may not say a vendor was paid.
+        r = A.app.test_client().patch(f'/api/pumps/cases/{cid}', json={'vendor_paid_on': '2026-10-08'},
+                                      headers={'Authorization': 'Bearer test-openclaw-key'})
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(self.c.patch(f'/pumps/api/cases/{cid}', json={'vendor_paid_on': 'soon'}).status_code, 400)
+        r = self.c.patch(f'/pumps/api/cases/{cid}', json={'vendor_paid_on': '2026-10-08'})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        pay = r.get_json()['case']['vendor_pay']
+        self.assertEqual((pay['state'], pay['paid_on'], pay['paid_by']), ('paid', '2026-10-08', 'Office Tester'))
+        self.assertNotIn(cid, to_pay())
+        # Undo.
+        self.c.patch(f'/pumps/api/cases/{cid}', json={'vendor_paid_on': ''})
+        self.assertIn(cid, to_pay())
 
     # ── who can get in ───────────────────────────────────────────────────────
     def test_access(self):
