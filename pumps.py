@@ -434,6 +434,7 @@ def init_db():
                   ignored INTEGER DEFAULT 0,
                   synced_at TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS pump_state (key TEXT PRIMARY KEY, value TEXT)''')
+    init_dive_tables(c)
     # Account-specific names on vendor paperwork: "Carlisle" is a Greenscapes
     # property, and its "back station" is the Pump #1 exit pump.
     c.execute('''CREATE TABLE IF NOT EXISTS pump_site_aliases (
@@ -3928,6 +3929,397 @@ def h_export(actor):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# Diver schedule
+# ═════════════════════════════════════════════════════════════════════════════
+# Which pump sites need a diver (lake intakes, filters, fountains) and which
+# do not, and the email the diver gets on the 1st of every month with that
+# month's sites - the email Andrea used to write by hand.
+
+DIVE_DEFAULTS = {
+    'to': os.environ.get('PUMPS_DIVER_EMAIL', 'Gulfshoreyachts@gmail.com'),
+    'diver_name': os.environ.get('PUMPS_DIVER_NAME', 'Jordan'),
+    'cc': os.environ.get('PUMPS_DIVE_CC', 'Andrea@stahlman-england.com'),
+    'from': os.environ.get('PUMPS_DIVE_FROM', ''),   # empty = the PO mailbox
+    'auto': os.environ.get('PUMPS_DIVE_EMAIL_AUTO', 'true').lower() in ('1', 'true', 'yes', 'on'),
+    'signature': os.environ.get('PUMPS_DIVE_SIGNATURE', 'Best Regards,\n\nAndrea Mitchell\nAssistant Client Service Manager\n'
+                                'Andrea@stahlman-england.com\nO 239.514.1200\n\nStahlman-England\n'
+                                '2063 Trade Center Way\nNaples, FL 34109'),
+}
+DIVE_STATUSES = ('active', 'meet', 'hold')
+DIVE_SEND_HOUR = 7   # on the 1st, from 7am Naples time (a missed 1st is caught up on the 2nd or 3rd)
+
+# Andrea's October 2026 list to the diver.
+SEED_DIVE_SITES = [
+    ("Anna's Place", '1 Lake 2 Filters', '5897 Ashford Ln', '', 'active', ''),
+    ('Autumn Woods', '1 Lake 2 Filters', '6710 Goodlette Frank Rd.', '', 'active', ''),
+    ('Banyan Bay', '1 Pump 1 Lake 1 Filter', '8125 Banyan Breeze Way #6107 (Clubhouse), Fort Myers, FL 33908',
+     'Diver to check the rope that holds the float and filter. Replace if needed and bill us.', 'active', ''),
+    ('Barrington Cove', '2 Pumps 2 Filters',
+     'First pump station: west entrance of the parking area, next to 16164 Aberdeen. Second pump station: north side '
+     'of the property (north entrance), across from 16420 Aberdeen.', '', 'active', ''),
+    ('Carlisle (The Carlisle)', '2 Lakes 3 Filters', '6945 Carlisle Ct. - Pump #1; 6495 Carlisle Ct. - Pump #2', '',
+     'active', ''),
+    ('Caymas', '2 Pumps 2 Lakes', '5684 Barbuda Lane',
+     '2nd pump is next to the roundabout at the front of the neighborhood, just past the guard gate.', 'active', ''),
+    ('Cypress Legends (Behind Clubhouse)', '1 Pump 1 Lake Filter', '3427 Forum Blvd., Ft. Myers, FL', '', 'active', ''),
+    ('Edgemont Office Park (Pine Air Lakes)', '1 Pump 1 Lake 1 Filter', '5695 Naples Blvd, Naples, FL', '', 'active', ''),
+    ('Enclave @ Palmira', '2 Lakes 4 Filters', '28613 & 28653 San Lucas Lane, Bonita Springs', '', 'active', ''),
+    ('Falling Waters II', '1 Lake 3 Filters', '2300 Hidden Lakes Dr., Naples', '', 'active', ''),
+    ('Huntington Lakes Residence Assoc.', '10 Pumps 1 Lake 1 Filter', '6585 Huntington Lakes Circle, Naples, FL',
+     'Gate code #0422', 'active', ''),
+    ('Kurt Biggs', '1 Lake 1 Filter', '181 Eugenia Drive', 'Technician (Ramon) to be present for dive.', 'active', ''),
+    ('Magnolia Cove at Falling Waters', '1 Pump 1 Lake Filter', '2344 Magnolia Lane', '', 'active', ''),
+    ('Magnolia Falls at Falling Waters', '1 Pump 4 Filters', '2370 Magnolia Avenue, Naples, FL 34112',
+     'Behind the Magnolia Falls sign.', 'active', ''),
+    ('Miromar Outlets', '1 Lake Fountain (2 Filters)', '10801 Corkscrew Rd.', '', 'active', ''),
+    ('Morton Grove', '1 Lake Fountain', '26801 Robinhood Lane, Bonita Springs 34135', '', 'active', ''),
+    ('Pebblebrook HOA', '4 Pump Stations 9 Lake Fountains', '8610 Pebblebrook Drive', 'Gate code 22334', 'active', ''),
+    ('Rosewood HOA', '1 Lake, 1 Lake', 'Left of 1655 Windy Pines Drive', '', 'active', ''),
+    ('Sanctuary @ Blue Heron', '3 Lakes 9 Filters 3 Pump Stations', '706 Haven Drive, Naples, FL', '', 'active', ''),
+    ('Spanish Wells Lake Club', '3 Lakes 6 Filters 3 Pump Stations (4 Pumps)', '28409 High Gate Dr, Bonita Springs, FL',
+     '', 'meet', 'The HOA has asked to meet the diver onsite.'),
+    ('Sopra Luxury Living', '1 Pump 1 Lake', '3280 Champion Ring Road, Fort Myers, Florida 33905', '', 'hold',
+     'Called client to set up visit - waiting on approval.'),
+    ('Tuscany Point Trail Association', '1 Lake', 'Tuscany Pointe Trl, Naples, FL 34120', 'Gate 2253', 'active', ''),
+    ('University Square CDD', '1 Pump 1 Filter', '10801 Corkscrew Road, Estero, FL',
+     'Second pump and lake filter not used.', 'active', ''),
+    ('Watercrest @ Falling Waters', '1 Lake 1 Filter', '2326 Magnolia Lane, Naples', '', 'active', ''),
+    ('Westminster HOA', '4 Lakes 9 Filters', '2001 Oxford Ridge Circle, Lehigh Acres', '', 'active', ''),
+    ('Wild Blue', '1 Pump 1 Lake', '8396 Sea Glass Court, Sarasota, Florida 34240', '', 'active', ''),
+]
+
+
+def init_dive_tables(c):
+    c.execute('''CREATE TABLE IF NOT EXISTS pump_dive_sites (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  name TEXT NOT NULL,
+                  equipment TEXT DEFAULT '',
+                  address TEXT DEFAULT '',
+                  diver_notes TEXT DEFAULT '',
+                  needs_dive INTEGER DEFAULT 1,
+                  months TEXT DEFAULT '',
+                  status TEXT DEFAULT 'active',
+                  status_note TEXT DEFAULT '',
+                  month_note TEXT DEFAULT '',
+                  jobber_client_id TEXT DEFAULT '',
+                  updated_by TEXT DEFAULT '',
+                  updated_at TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS pump_dive_emails (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  month TEXT,
+                  sent_at TEXT,
+                  sent_by TEXT,
+                  to_addr TEXT,
+                  cc_addr TEXT,
+                  subject TEXT,
+                  body TEXT,
+                  sites INTEGER,
+                  error TEXT DEFAULT '')''')
+    if not c.execute('SELECT 1 FROM pump_state WHERE key=?', ('dive_sites_seeded',)).fetchone():
+        if not c.execute('SELECT 1 FROM pump_dive_sites').fetchone():
+            now = _now_text()
+            for name, equip, addr, notes, status, snote in SEED_DIVE_SITES:
+                c.execute('''INSERT INTO pump_dive_sites (name, equipment, address, diver_notes, status, status_note,
+                               updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?)''',
+                          (name, equip, addr, notes, status, snote, "Andrea's October list", now))
+        c.execute('INSERT OR REPLACE INTO pump_state (key, value) VALUES (?,?)', ('dive_sites_seeded', '"yes"'))
+
+
+def dive_settings():
+    s = dict(DIVE_DEFAULTS)
+    s.update({k: v for k, v in (_state_get('dive_settings') or {}).items() if k in DIVE_DEFAULTS})
+    s['from'] = (s.get('from') or CFG.get('mail_from') or '').strip()
+    return s
+
+
+def _month_list(months):
+    return [int(m) for m in re.findall(r'\d+', months or '') if 1 <= int(m) <= 12]
+
+
+def dive_sites(conn, include_all=True):
+    rows = [dict(r) for r in conn.execute('SELECT * FROM pump_dive_sites ORDER BY name COLLATE NOCASE')]
+    return rows if include_all else [r for r in rows if r['needs_dive']]
+
+
+def sites_for_month(conn, month_date):
+    """The sites the diver visits in a month: they need a diver and are on for
+    that month (no months listed = every month)."""
+    out = []
+    for s in dive_sites(conn, include_all=False):
+        months = _month_list(s['months'])
+        if not months or month_date.month in months:
+            out.append(s)
+    return out
+
+
+def _site_lines(s):
+    head = s['name']
+    if s['status'] == 'hold':
+        head = f"HOLD OFF - {s['status_note'] or 'waiting on the client'} - {s['name']}"
+    elif s['status'] == 'meet':
+        head = f"{s['name']} - the HOA wants to meet you onsite"
+    lines = [head, s['equipment'], s['address']]
+    for note in (s['diver_notes'], s['status_note'] if s['status'] == 'meet' else '', s['month_note']):
+        if note:
+            lines.append(note)
+    return [l for l in lines if l]
+
+
+def build_dive_email(conn, month_date):
+    """Subject, plain text, HTML and a Word copy of the month's list."""
+    st = dive_settings()
+    sites = sites_for_month(conn, month_date)
+    month = month_date.strftime('%B')
+    meet = [s['name'] for s in sites if s['status'] == 'meet']
+    intro = f"Please see the attached list for {month}."
+    if meet:
+        names = ', '.join(meet[:-1]) + (' and ' if len(meet) > 1 else '') + meet[-1]
+        verb = 'have' if len(meet) > 1 else 'has'
+        intro += (f" Please note that {names} {verb} requested to meet with you onsite. When you know what day you "
+                  "are going to dive please let me know a couple of days ahead so I can coordinate with the HOA to "
+                  "meet you there.")
+    else:
+        intro += ' When you know what days you are going to dive please let me know a couple of days ahead.'
+    intro += ' Thanks!'
+    hi = f"Hi {st['diver_name']}!" if st.get('diver_name') else 'Hi!'
+    text = [hi, '', intro, '']
+    for s in sites:
+        text += _site_lines(s) + ['']
+    text += [st['signature']]
+    esc = lambda t: (t or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    html_sites = ''.join(
+        '<p style="margin:0 0 12px">' + '<br>'.join(
+            (f'<b>{esc(l)}</b>' if i == 0 else esc(l)) for i, l in enumerate(_site_lines(s))) + '</p>'
+        for s in sites)
+    html = (f'<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt"><p>{esc(hi)}</p><p>{esc(intro)}</p>'
+            f'{html_sites}<p>{"<br>".join(esc(l) for l in st["signature"].splitlines())}</p></div>')
+    subject = f"Diver schedule - {month_date.strftime('%B %Y')} - Stahlman-England"
+    return {'subject': subject, 'text': '\n'.join(text), 'html': html, 'sites': sites,
+            'docx': _dive_docx(sites, month_date), 'docx_name': f"Diver schedule {month_date.strftime('%B %Y')}.docx",
+            'to': st['to'], 'cc': st['cc'], 'from': st['from']}
+
+
+def _dive_docx(sites, month_date):
+    from docx import Document
+    d = Document()
+    d.add_heading(f"Stahlman-England - diver schedule - {month_date.strftime('%B %Y')}", level=1)
+    t = d.add_table(rows=1, cols=4)
+    t.style = 'Table Grid'
+    for cell, head in zip(t.rows[0].cells, ('Site', 'Lakes / filters / pumps', 'Address', 'Notes')):
+        cell.text = head
+    for s in sites:
+        lines = _site_lines(s)
+        notes = '\n'.join(lines[3:]) if len(lines) > 3 else ''
+        row = t.add_row().cells
+        row[0].text, row[1].text, row[2].text, row[3].text = lines[0], s['equipment'], s['address'], notes
+    buf = io.BytesIO()
+    d.save(buf)
+    return buf.getvalue()
+
+
+def _emails(text):
+    return [a for a in re.split(r'[\s,;]+', text or '') if '@' in a]
+
+
+def send_dive_email(month_date=None, actor='Pumps (1st of the month)', force=False):
+    """Email the diver this month's list. Once per month unless forced (the
+    office's "Send now"). Sent from the PO mailbox through Microsoft 365, with
+    the office copied and replies going to them."""
+    month_date = month_date or _today().replace(day=1)
+    key = f"dive_email:{month_date.strftime('%Y-%m')}"
+    st = dive_settings()
+    to, cc = _emails(st['to']), _emails(st['cc'])
+    if not to:
+        raise ValueError("No diver email address - set it on the Divers tab")
+    if not (CFG.get('graph_token') and st['from']):
+        raise ValueError('Microsoft 365 is not connected for sending (MS_TENANT_ID / MS_CLIENT_ID / MS_CLIENT_SECRET)')
+    conn = _conn()
+    try:
+        if not force:
+            # Claim the month first, so two app workers never both send it.
+            cur = conn.execute('INSERT OR IGNORE INTO pump_state (key, value) VALUES (?,?)', (key, json.dumps(_now_text())))
+            conn.commit()
+            if cur.rowcount == 0:
+                return {'skipped': 'already sent this month'}
+        mail = build_dive_email(conn, month_date)
+    finally:
+        conn.close()
+    msg = {'subject': mail['subject'], 'body': {'contentType': 'HTML', 'content': mail['html']},
+           'toRecipients': [{'emailAddress': {'address': a}} for a in to],
+           'ccRecipients': [{'emailAddress': {'address': a}} for a in cc],
+           'replyTo': [{'emailAddress': {'address': a}} for a in (cc or [st['from']])],
+           'attachments': [{'@odata.type': '#microsoft.graph.fileAttachment', 'name': mail['docx_name'],
+                            'contentType': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                            'contentBytes': base64.b64encode(mail['docx']).decode()}]}
+    error = ''
+    try:
+        r = http_requests.post(f"https://graph.microsoft.com/v1.0/users/{st['from']}/sendMail", timeout=60,
+                               headers={'Authorization': f"Bearer {CFG['graph_token']()}",
+                                        'Content-Type': 'application/json'},
+                               json={'message': msg, 'saveToSentItems': True})
+        if r.status_code >= 400:
+            try:
+                error = (r.json().get('error') or {}).get('message') or r.text[:300]
+            except ValueError:
+                error = r.text[:300]
+            error = f'Microsoft 365 said HTTP {r.status_code}: {error}'
+    except Exception as e:
+        error = f'Could not reach Microsoft 365: {e}'
+    conn = _conn()
+    try:
+        conn.execute('''INSERT INTO pump_dive_emails (month, sent_at, sent_by, to_addr, cc_addr, subject, body, sites,
+                          error) VALUES (?,?,?,?,?,?,?,?,?)''',
+                     (month_date.strftime('%Y-%m'), _now_text(), actor, ', '.join(to), ', '.join(cc), mail['subject'],
+                      mail['text'], len(mail['sites']), error))
+        if error:
+            if not force:
+                conn.execute('DELETE FROM pump_state WHERE key=?', (key,))   # try again next hour
+        else:
+            conn.execute('INSERT OR REPLACE INTO pump_state (key, value) VALUES (?,?)', (key, json.dumps(_now_text())))
+            # One-off notes were for this email only.
+            ids = [s['id'] for s in mail['sites'] if s['month_note']]
+            if ids:
+                conn.execute(f"UPDATE pump_dive_sites SET month_note='' WHERE id IN ({','.join('?' * len(ids))})", ids)
+        _event(conn, actor, 'diver schedule ' + ('NOT sent' if error else 'sent'),
+               f"{mail['subject']} to {', '.join(to)}" + (f' - {error}' if error else ''))
+        conn.commit()
+    finally:
+        conn.close()
+    if error:
+        raise RuntimeError(error)
+    return {'sent': True, 'to': to, 'cc': cc, 'subject': mail['subject'], 'sites': len(mail['sites'])}
+
+
+def _scheduled_dive_email():
+    """Hourly: on the 1st (or the 2nd/3rd if the app was down), from 7am."""
+    now = _now()
+    if not dive_settings()['auto'] or now.day > 3 or now.hour < DIVE_SEND_HOUR:
+        return
+    if _state_get(f"dive_email:{now.strftime('%Y-%m')}"):
+        return
+    try:
+        send_dive_email(now.date().replace(day=1))
+    except (ValueError, RuntimeError) as e:
+        print(f'  ⚠ Pumps: diver schedule not sent: {e}')
+
+
+DIVE_FIELDS = ('name', 'equipment', 'address', 'diver_notes', 'months', 'status_note', 'month_note',
+               'jobber_client_id')
+
+
+@api('/dives')
+def h_dives(actor):
+    conn = _conn()
+    try:
+        month = _today().replace(day=1)
+        if _today().day > 3:   # after the 1st, show next month's email
+            month = (month + timedelta(days=32)).replace(day=1)
+        sent = [dict(r) for r in conn.execute('SELECT id, month, sent_at, sent_by, to_addr, cc_addr, subject, sites, '
+                                              'error FROM pump_dive_emails ORDER BY id DESC LIMIT 24')]
+        return {'sites': dive_sites(conn), 'settings': dive_settings(), 'next_month': month.isoformat(),
+                'next_count': len(sites_for_month(conn, month)), 'sent': sent,
+                'can_send': bool(CFG.get('graph_token') and dive_settings()['from'])}
+    finally:
+        conn.close()
+
+
+@api('/dives/preview')
+def h_dives_preview(actor):
+    month = _iso_date(request.args.get('month')) or _today().replace(day=1).isoformat()
+    conn = _conn()
+    try:
+        m = build_dive_email(conn, datetime.strptime(month[:10], '%Y-%m-%d').date().replace(day=1))
+    finally:
+        conn.close()
+    return {'subject': m['subject'], 'text': m['text'], 'html': m['html'], 'to': m['to'], 'cc': m['cc'],
+            'from': m['from'], 'sites': len(m['sites'])}
+
+
+@api('/dives/sites', methods=('POST',))
+def h_dive_site_save(actor):
+    """Add or change a site: {"id"?, "name", "equipment", "address", "diver_notes",
+    "needs_dive", "months", "status", "status_note", "month_note"}."""
+    if actor == BOT:
+        return _office_only(actor, "Changing the diver's sites")
+    d = _json()
+    vals = {k: str(d.get(k) or '').strip()[:1000] for k in DIVE_FIELDS if k in d}
+    if 'needs_dive' in d:
+        vals['needs_dive'] = 1 if d['needs_dive'] in (True, 1, '1', 'true', 'yes', 'on') else 0
+    if 'status' in d:
+        if d['status'] not in DIVE_STATUSES:
+            raise ValueError('status must be active, meet or hold')
+        vals['status'] = d['status']
+    if 'months' in vals:
+        vals['months'] = ','.join(str(m) for m in _month_list(vals['months']))
+    conn = _conn()
+    try:
+        if d.get('id'):
+            if 'name' in vals and not vals['name']:
+                raise ValueError('A site needs a name')
+            if vals:
+                conn.execute(f"UPDATE pump_dive_sites SET {', '.join(k + '=?' for k in vals)}, updated_by=?, "
+                             f"updated_at=? WHERE id=?", (*vals.values(), actor, _now_text(), int(d['id'])))
+            sid = int(d['id'])
+        else:
+            if not vals.get('name'):
+                raise ValueError('A site needs a name')
+            cols = list(vals) + ['updated_by', 'updated_at']
+            conn.execute(f"INSERT INTO pump_dive_sites ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                         (*vals.values(), actor, _now_text()))
+            sid = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        _event(conn, actor, 'diver site saved', vals.get('name') or f'site {sid}')
+        conn.commit()
+        return {'sites': dive_sites(conn)}
+    finally:
+        conn.close()
+
+
+@api('/dives/sites/<int:site_id>/delete', methods=('POST',))
+def h_dive_site_delete(actor, site_id):
+    if actor == BOT:
+        return _office_only(actor, "Changing the diver's sites")
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT name FROM pump_dive_sites WHERE id=?', (site_id,)).fetchone()
+        conn.execute('DELETE FROM pump_dive_sites WHERE id=?', (site_id,))
+        _event(conn, actor, 'diver site removed', row['name'] if row else str(site_id))
+        conn.commit()
+        return {'sites': dive_sites(conn)}
+    finally:
+        conn.close()
+
+
+@api('/dives/settings', methods=('POST',))
+def h_dive_settings(actor):
+    if actor == BOT:
+        return _office_only(actor, "Changing the diver's email")
+    d = _json()
+    cur = _state_get('dive_settings') or {}
+    for k in ('to', 'diver_name', 'cc', 'from', 'signature'):
+        if k in d:
+            cur[k] = str(d[k] or '').strip()[:2000]
+    if 'auto' in d:
+        cur['auto'] = bool(d['auto'])
+    if 'to' in cur and cur['to'] and not _emails(cur['to']):
+        raise ValueError("The diver's email address doesn't look right")
+    _state_set('dive_settings', cur)
+    return {'settings': dive_settings()}
+
+
+@api('/dives/send', methods=('POST',))
+def h_dive_send(actor):
+    """Send this month's (or {"month": "YYYY-MM-01"}) list to the diver now."""
+    if actor == BOT:
+        return _office_only(actor, 'Emailing the diver')
+    d = _json()
+    month = _iso_date(d.get('month')) or _today().replace(day=1).isoformat()
+    try:
+        return send_dive_email(datetime.strptime(month[:10], '%Y-%m-%d').date().replace(day=1), actor, force=True)
+    except RuntimeError as e:
+        return {'success': False, 'error': str(e)}, 502
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # pages and the Jobber sign-in
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -4042,10 +4434,12 @@ def openclaw_intake():
 # ═════════════════════════════════════════════════════════════════════════════
 
 def init_pumps(app, csrf, db_path, *, data_dir, secret_key, website_url, email_enabled, fetch_emails,
-               graph_attachments, email_attachments, log_activity=None, scheduler_available=True):
+               graph_attachments, email_attachments, log_activity=None, scheduler_available=True,
+               graph_token=None, mail_from=''):
     CFG.update(db_path=db_path, data_dir=data_dir, secret_key=secret_key, website_url=website_url,
                email_enabled=email_enabled, fetch_emails=fetch_emails, graph_attachments=graph_attachments,
-               email_attachments=email_attachments, log_activity=log_activity)
+               email_attachments=email_attachments, log_activity=log_activity, graph_token=graph_token,
+               mail_from=mail_from)
     init_db()
     _register_routes(app, csrf)
     csrf.exempt(openclaw_intake)
@@ -4059,6 +4453,8 @@ def init_pumps(app, csrf, db_path, *, data_dir, secret_key, website_url, email_e
                               next_run_time=datetime.now() + timedelta(minutes=2))
             sched.add_job(_safe(_scheduled_jobber_sync), 'interval', hours=6, id='pumps_jobber_sync',
                           next_run_time=datetime.now() + timedelta(minutes=5))
+            sched.add_job(_safe(_scheduled_dive_email), 'interval', hours=1, id='pumps_dive_email',
+                          next_run_time=datetime.now() + timedelta(minutes=3))
             sched.start()
             print(f'✓ Pumps: mailbox scan every {SCAN_EVERY_MIN} min' if email_enabled else
                   'ℹ Pumps: mailbox not configured - no automatic scan')

@@ -166,6 +166,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   <div class="tab" data-tab="inbox">Inbox <span class="n" id="n-inbox"></span></div>
   <div class="tab" data-tab="scada">SCADA <span class="n" id="n-scada"></span></div>
   <div class="tab" data-tab="jobber">Jobber <span class="n" id="n-jobber"></span></div>
+  <div class="tab" data-tab="divers">Divers</div>
   <div class="tab" data-tab="help">How it works</div>
 </div>
 
@@ -229,6 +230,23 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   <div class="scroll" style="max-height:40vh"><table class="t"><thead><tr><th>Written as</th><th>Area</th><th>Jobber client</th><th>Property</th><th>Note</th><th></th></tr></thead><tbody id="siteNamesBody"></tbody></table></div>
 </div>
 
+<!-- DIVERS -->
+<div class="panel hide" id="p-divers">
+  <div class="toolbar">
+    <span id="diveInfo" class="note"></span><div class="sp"></div>
+    <select id="diveFilter" onchange="drawDiveSites()"><option value="dive">Need a diver</option><option value="nodive">No diving</option><option value="">All sites</option></select>
+    <button class="btn" onclick="editDiveSite()">＋ Site</button>
+    <button class="btn" onclick="previewDiveEmail()">Preview email</button>
+    <button class="btn p" onclick="sendDiveEmail()">Send now…</button>
+  </div>
+  <div class="note" style="margin-bottom:10px">Every site that needs the diver goes on the email to the diver on the 1st of each month (from 7am), copied to the office. <b>Meet</b> adds "the HOA wants to meet you onsite"; <b>Hold</b> lists it as HOLD OFF; a <b>one-time note</b> goes on the next email only. Months left blank = every month.</div>
+  <div class="scroll"><table class="t"><thead><tr><th>Site</th><th>Lakes / filters / pumps</th><th>Address</th><th>Notes for the diver</th><th>Diver?</th><th>Months</th><th>Status</th><th></th></tr></thead><tbody id="diveBody"></tbody></table></div>
+  <h3 style="margin:18px 0 8px;font-size:14px">Email to the diver</h3>
+  <div class="fields" id="diveSettings"></div>
+  <h3 style="margin:18px 0 8px;font-size:14px">Sent</h3>
+  <div class="scroll" style="max-height:30vh"><table class="t"><thead><tr><th>Month</th><th>Sent</th><th>By</th><th>To</th><th class="num">Sites</th><th>Result</th></tr></thead><tbody id="diveSent"></tbody></table></div>
+</div>
+
 <!-- HELP -->
 <div class="panel hide" id="p-help"><div class="howto">
   <p>Pumps keeps every pump, diver, filter and SCADA need for a client in one place until it is invoiced, so nothing is lost between the request, Wettech, and the bill.</p>
@@ -243,6 +261,8 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
     <li>Pulls pump, diver, filter and SCADA requests, quotes and jobs from Jobber every 6 hours, and works out when each SCADA client's annual renewal is due.</li>
     <li>Follows our Jobber quotes and invoices: once the office sends a drafted quote, "Quote sent to client" ticks itself, and "Client approved" when the client approves it in Jobber. Once the client <b>pays</b> our Jobber invoice, Wettech's bill goes on Today as <b>due to be paid</b> until someone marks it paid.</li>
   </ul>
+  <h3>The diver</h3>
+  <ul><li>The <b>Divers</b> tab lists which pump sites need the diver (lakes, filters, fountains) and which don't. On the 1st of every month, from 7am, the app emails the diver that month's list, the way Andrea used to: sites, lakes/filters/pumps, addresses, gate codes, HOAs that want to meet, sites on hold, with a Word copy attached. It's sent from the PO mailbox and copied to the office, and replies go to the office. <b>Preview email</b> shows it first; <b>Send now</b> sends it straight away.</li></ul>
   <h3>What only happens when someone clicks</h3>
   <ul>
     <li><b>Client quotes are drafted on their own.</b> When a Wettech quote is read and filed, the app drafts our quote in Jobber the way the office writes them: Wettech's price plus 30%, one "Service Proposal Amount" line with Wettech's description of the work (no Wettech name or sales tax line), titled "Proposal to …", on the right client and property - found by the item, a saved site name (e.g. "Carlisle back station" = Greenscapes, Pump #1 exit) or a Jobber search, typos allowed. Wettech's quote is saved as a note on it. It stays a <b>draft</b>: the app cannot send quotes. When the client or property is not clear, the quote waits on Today for <b>Draft quote</b>.</li>
@@ -292,7 +312,7 @@ function showTab(name){
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === name));
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('hide', p.id !== 'p-' + name));
   if (name === 'today') loadToday(); else if (name === 'tracker') loadTracker(); else if (name === 'inbox') loadInbox();
-  else if (name === 'scada') loadScada(); else if (name === 'jobber') loadJobber();
+  else if (name === 'scada') loadScada(); else if (name === 'jobber') loadJobber(); else if (name === 'divers') loadDivers();
   history.replaceState(null, '', '#' + name);
 }
 
@@ -811,6 +831,81 @@ function addScada(){
 async function scadaAdd(){ const v = x => document.getElementById(x).value; const j = await api('/scada', {method:'POST', body:{client_name:v('sa_client'), site:v('sa_site'), last_renewed_on:v('sa_last'), annual_amount:v('sa_amt')}}); if (j.success) { closeModal(); loadScada(); } else toast(j.error, true); }
 
 // ── Jobber ────────────────────────────────────────────
+// ── divers ────────────────────────────────────────────
+let DV = null;
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+async function loadDivers(){
+  const j = await api('/dives');
+  if (!j.success) { document.getElementById('diveBody').innerHTML = `<tr><td colspan="8">${esc(j.error)}</td></tr>`; return; }
+  DV = j;
+  const nm = new Date(j.next_month + 'T12:00:00').toLocaleString('en-US', {month:'long', year:'numeric'});
+  const st = j.settings;
+  document.getElementById('diveInfo').innerHTML = `${j.sites.filter(s => s.needs_dive).length} sites need a diver · next email: <b>${esc(nm)}</b> (${j.next_count} sites) to ${esc(st.to)}` + (st.auto ? ' on the 1st' : ' - <b class="warn">automatic sending is off</b>') + (j.can_send ? '' : ' · <b class="bad">Microsoft 365 is not set up to send</b>');
+  drawDiveSites();
+  document.getElementById('diveSettings').innerHTML = `
+    <label>Diver's email<input type="text" id="dvTo" value="${esc(st.to)}"></label>
+    <label>Diver's name (greeting)<input type="text" id="dvName" value="${esc(st.diver_name)}"></label>
+    <label>Copy to (replies go here)<input type="text" id="dvCc" value="${esc(st.cc)}"></label>
+    <label>Send from (mailbox)<input type="text" id="dvFrom" value="${esc(st.from)}"></label>
+    <label class="w">Signature<textarea id="dvSig" style="min-height:120px">${esc(st.signature)}</textarea></label>
+    <label><span><input type="checkbox" id="dvAuto" ${st.auto ? 'checked' : ''}> Send automatically on the 1st of each month</span></label>
+    <div><button class="btn p" onclick="saveDiveSettings()">Save</button></div>`;
+  document.getElementById('diveSent').innerHTML = (j.sent || []).map(e => `<tr><td>${esc(e.month)}</td><td>${esc(e.sent_at)}</td><td>${esc(e.sent_by)}</td><td>${esc(e.to_addr)}${e.cc_addr ? '<div class="note">cc ' + esc(e.cc_addr) + '</div>' : ''}</td><td class="num">${e.sites}</td><td>${e.error ? '<b class="bad">' + esc(e.error) + '</b>' : '<span class="ok">sent</span>'}</td></tr>`).join('') || '<tr><td colspan="6" class="note">Nothing sent yet.</td></tr>';
+}
+function drawDiveSites(){
+  if (!DV) return;
+  const f = document.getElementById('diveFilter').value;
+  const rows = DV.sites.filter(s => !f || (f === 'dive' ? s.needs_dive : !s.needs_dive));
+  const stat = {active: '', meet: '<span class="chip a">meet HOA</span>', hold: '<span class="chip r">hold</span>'};
+  document.getElementById('diveBody').innerHTML = rows.map(s => `<tr>
+    <td><b>${esc(s.name)}</b></td><td>${esc(s.equipment)}</td><td class="note">${esc(s.address)}</td>
+    <td class="note">${esc(s.diver_notes)}${s.month_note ? '<div><b>Next email only:</b> ' + esc(s.month_note) + '</div>' : ''}</td>
+    <td>${s.needs_dive ? '<span class="chip b">diver</span>' : '<span class="note">no</span>'}</td>
+    <td class="note">${s.months ? s.months.split(',').map(m => MONTHS[m - 1]).join(', ') : 'every month'}</td>
+    <td>${stat[s.status] || ''}${s.status_note ? '<div class="note">' + esc(s.status_note) + '</div>' : ''}</td>
+    <td><button class="btn s" onclick="editDiveSite(${s.id})">Edit</button></td></tr>`).join('') || '<tr><td colspan="8" class="note">No sites.</td></tr>';
+}
+function editDiveSite(id){
+  const s = (DV.sites || []).find(x => x.id === id) || {name:'', equipment:'', address:'', diver_notes:'', needs_dive:1, months:'', status:'active', status_note:'', month_note:''};
+  const months = (s.months || '').split(',').filter(Boolean).map(Number);
+  openModal(id ? 'Edit dive site' : 'Add dive site', `<div class="fields">
+    <label class="w">Site<input type="text" id="ds_name" value="${esc(s.name)}"></label>
+    <label>Lakes / filters / pumps<input type="text" id="ds_equipment" value="${esc(s.equipment)}" placeholder="e.g. 1 Pump 1 Lake 2 Filters"></label>
+    <label><span><input type="checkbox" id="ds_needs" ${s.needs_dive ? 'checked' : ''}> Needs the diver</span></label>
+    <label class="w">Address / where the pumps are<textarea id="ds_address">${esc(s.address)}</textarea></label>
+    <label class="w">Notes for the diver (every month - gate codes, what to check)<textarea id="ds_notes">${esc(s.diver_notes)}</textarea></label>
+    <label>Status<select id="ds_status">${[['active','Normal'],['meet','HOA wants to meet the diver'],['hold','Hold off']].map(([v,l]) => `<option value="${v}" ${s.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    <label>Status note<input type="text" id="ds_status_note" value="${esc(s.status_note)}"></label>
+    <label class="w">One-time note (next email only)<input type="text" id="ds_month_note" value="${esc(s.month_note)}"></label>
+    <div class="w"><b class="note">Months</b> <span class="note">(none ticked = every month)</span><div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px">${MONTHS.map((m, i) => `<label style="display:flex;gap:3px;align-items:center"><input type="checkbox" class="ds_m" value="${i + 1}" ${months.includes(i + 1) ? 'checked' : ''}>${m}</label>`).join('')}</div></div>
+  </div>`, `${id ? `<button class="btn danger" onclick="deleteDiveSite(${id})">Remove</button>` : ''}<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="saveDiveSite(${id || 0})">Save</button>`);
+}
+async function saveDiveSite(id){
+  const v = k => document.getElementById('ds_' + k).value;
+  const body = {name: v('name'), equipment: v('equipment'), address: v('address'), diver_notes: v('notes'), status: v('status'), status_note: v('status_note'), month_note: v('month_note'), needs_dive: document.getElementById('ds_needs').checked, months: [...document.querySelectorAll('.ds_m:checked')].map(x => x.value).join(',')};
+  if (id) body.id = id;
+  const j = await api('/dives/sites', {method:'POST', body});
+  if (!j.success) { toast(j.error, true); return; }
+  closeModal(); toast('Saved'); loadDivers();
+}
+async function deleteDiveSite(id){ if (!confirm('Remove this site from the diver list?')) return; const j = await api('/dives/sites/' + id + '/delete', {method:'POST', body:{}}); if (j.success) { closeModal(); loadDivers(); } else toast(j.error, true); }
+async function saveDiveSettings(){
+  const j = await api('/dives/settings', {method:'POST', body:{to: document.getElementById('dvTo').value, diver_name: document.getElementById('dvName').value, cc: document.getElementById('dvCc').value, from: document.getElementById('dvFrom').value, signature: document.getElementById('dvSig').value, auto: document.getElementById('dvAuto').checked}});
+  if (j.success) { toast('Saved'); loadDivers(); } else toast(j.error, true);
+}
+function diveMonth(){ return DV ? DV.next_month : ''; }
+async function previewDiveEmail(){
+  const j = await api('/dives/preview?month=' + encodeURIComponent(diveMonth()));
+  if (!j.success) { toast(j.error, true); return; }
+  openModal('Email to the diver - preview', `<div class="note">To ${esc(j.to)} · cc ${esc(j.cc)} · from ${esc(j.from || '(PO mailbox)')} · ${j.sites} sites · the list is also attached as a Word file</div><div class="note"><b>${esc(j.subject)}</b></div><div style="border:1px solid var(--border);border-radius:8px;padding:12px;max-height:60vh;overflow:auto;background:#fff;color:#111">${j.html}</div>`, `<button class="btn" onclick="closeModal()">Close</button><button class="btn p" onclick="sendDiveEmail()">Send now…</button>`);
+}
+async function sendDiveEmail(){
+  const nm = new Date(diveMonth() + 'T12:00:00').toLocaleString('en-US', {month:'long', year:'numeric'});
+  if (!confirm(`Email the ${nm} list to the diver now (${DV ? DV.settings.to : ''})?`)) return;
+  const j = await api('/dives/send', {method:'POST', body:{month: diveMonth()}});
+  if (!j.success) { toast(j.error, true); loadDivers(); return; }
+  closeModal(); toast(`Sent to ${j.to.join(', ')} (${j.sites} sites).`); loadDivers();
+}
 async function loadSiteNames(){
   const j = await api('/site-names');
   const el = document.getElementById('siteNamesBody'); if (!el) return;

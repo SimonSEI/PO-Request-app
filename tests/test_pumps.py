@@ -749,6 +749,97 @@ class PumpsTest(unittest.TestCase):
         self.c.patch(f'/pumps/api/cases/{cid}', json={'vendor_paid_on': ''})
         self.assertIn(cid, to_pay())
 
+    # ── the diver ───────────────────────────────────────────────────────────
+    def test_diver_sites_and_monthly_email(self):
+        j = self.c.get('/pumps/api/dives').get_json()
+        names = {x['name']: x for x in j['sites']}
+        self.assertEqual(len(names), 26, "Andrea's October list")
+        self.assertTrue(all(x['needs_dive'] for x in j['sites']))
+        self.assertEqual(names['Spanish Wells Lake Club']['status'], 'meet')
+        self.assertEqual(names['Sopra Luxury Living']['status'], 'hold')
+        self.assertEqual(j['settings']['to'], 'Gulfshoreyachts@gmail.com')
+        # A site that doesn't need diving, one only in some months, and a one-time note.
+        r = self.c.post('/pumps/api/dives/sites', json={'name': 'Lely Pump Station', 'equipment': '1 Pump',
+                                                         'needs_dive': False})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.c.post('/pumps/api/dives/sites', json={'id': names['Morton Grove']['id'], 'months': '1,4,7,10'})
+        self.c.post('/pumps/api/dives/sites', json={'id': names['Caymas']['id'],
+                                                     'month_note': 'Gate is being replaced - call the office.'})
+        p = self.c.get('/pumps/api/dives/preview?month=2026-11-01').get_json()
+        self.assertEqual(p['subject'], 'Diver schedule - November 2026 - Stahlman-England')
+        self.assertEqual(p['sites'], 25, 'Morton Grove is quarterly; Lely needs no diver')
+        t = p['text']
+        self.assertTrue(t.startswith('Hi Jordan!'))
+        self.assertIn('Please see the attached list for November. Please note that Spanish Wells Lake Club has '
+                      'requested to meet with you onsite.', t)
+        self.assertIn('HOLD OFF - Called client to set up visit - waiting on approval. - Sopra Luxury Living', t)
+        self.assertIn('Diver to check the rope that holds the float and filter.', t)
+        self.assertIn('Gate code #0422', t)
+        self.assertIn('Gate is being replaced', t)
+        self.assertNotIn('Lely', t)
+        self.assertNotIn('Morton Grove', t)
+        self.assertIn('Andrea Mitchell', t)
+        self.assertIn('<b>Anna&#x27;s Place</b>' if '&#x27;' in p['html'] else "<b>Anna's Place</b>", p['html'])
+        self.assertIn('Morton Grove', self.c.get('/pumps/api/dives/preview?month=2026-10-01').get_json()['text'])
+
+        # Sending: once a month, from the PO mailbox, copied to Andrea, Word list attached.
+        sent = []
+
+        class Resp:
+            status_code, content = 202, b''
+
+        real_post = P.http_requests.post
+        P.http_requests.post = lambda url, **kw: (sent.append((url, kw['json'])), Resp())[1]
+        P.CFG['graph_token'], P.CFG['mail_from'] = (lambda: 'tok'), 'PO@stahlman-england.com'
+        try:
+            res = P.send_dive_email(P.datetime(2026, 11, 1).date())
+            self.assertTrue(res['sent'])
+            url, body = sent[0]
+            self.assertIn('/users/PO@stahlman-england.com/sendMail', url)
+            m = body['message']
+            self.assertEqual([r['emailAddress']['address'] for r in m['toRecipients']], ['Gulfshoreyachts@gmail.com'])
+            self.assertEqual([r['emailAddress']['address'] for r in m['ccRecipients']], ['Andrea@stahlman-england.com'])
+            self.assertEqual([r['emailAddress']['address'] for r in m['replyTo']], ['Andrea@stahlman-england.com'])
+            self.assertEqual(m['attachments'][0]['name'], 'Diver schedule November 2026.docx')
+            self.assertGreater(len(m['attachments'][0]['contentBytes']), 1000)
+            # The one-time note was for that email only; the month is not sent twice.
+            caymas = [x for x in self.c.get('/pumps/api/dives').get_json()['sites'] if x['name'] == 'Caymas'][0]
+            self.assertEqual(caymas['month_note'], '')
+            self.assertEqual(P.send_dive_email(P.datetime(2026, 11, 1).date()), {'skipped': 'already sent this month'})
+            self.assertEqual(len(sent), 1)
+            # On the 1st the hourly check sends the month once; mid-month it does nothing.
+            P._now, real_now = (lambda: P.datetime(2026, 12, 1, 8, 5, tzinfo=P.TZ)), P._now
+            try:
+                P._scheduled_dive_email()
+                P._scheduled_dive_email()
+                self.assertEqual(len(sent), 2)
+                self.assertIn('December 2026', sent[1][1]['message']['subject'])
+                P._now = lambda: P.datetime(2026, 12, 15, 8, 5, tzinfo=P.TZ)
+                P._scheduled_dive_email()
+                self.assertEqual(len(sent), 2)
+            finally:
+                P._now = real_now
+            # A failed send is logged and tried again later.
+            class Bad:
+                status_code, content, text = 403, b'x', 'Access denied'
+
+                def json(self):
+                    return {'error': {'message': 'Access is denied'}}
+            P.http_requests.post = lambda url, **kw: Bad()
+            with self.assertRaises(RuntimeError):
+                P.send_dive_email(P.datetime(2027, 1, 1).date())
+            self.assertIsNone(P._state_get('dive_email:2027-01'))
+            log = self.c.get('/pumps/api/dives').get_json()['sent']
+            self.assertIn('Access is denied', log[0]['error'])
+        finally:
+            P.http_requests.post = real_post
+            P.CFG['graph_token'] = None
+        # OpenClaw can't change the list or email the diver.
+        bot = A.app.test_client()
+        h = {'Authorization': 'Bearer test-openclaw-key'}
+        self.assertEqual(bot.post('/api/pumps/dives/send', json={}, headers=h).status_code, 403)
+        self.assertEqual(bot.post('/api/pumps/dives/sites', json={'name': 'X'}, headers=h).status_code, 403)
+
     # ── who can get in ───────────────────────────────────────────────────────
     def test_access(self):
         anon = A.app.test_client()
