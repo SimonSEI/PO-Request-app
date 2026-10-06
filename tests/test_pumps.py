@@ -1363,6 +1363,31 @@ class PumpsTest(unittest.TestCase):
         doc = self.c.get(f"/pumps/api/docs/{b['doc_id']}").get_json()['doc']
         self.assertEqual(doc['invoice_suggestion']['line_items'][0]['unit_price'], 650.0)
 
+    def test_picking_a_client_is_remembered_for_the_vendors_name(self):
+        """Wettech still writes "Lee Memorial"; the office picks Hodges Funeral Home once."""
+        hodges = [{'id': 'CH', 'name': 'Hodges Funeral Home', 'isLead': False, 'isArchived': False}]
+        fake = FakeJobber(clients=hodges)
+        P.jobber_gql = fake
+        self.extracts['b-lee1.pdf'] = extraction('bill', '31001', client='Lee Memorial', subtotal=200)
+        b = self.upload('b-lee1.pdf')
+        r = self.c.post(f"/pumps/api/docs/{b['doc_id']}/invoice",
+                        json={'client_id': 'CH', 'client_name': 'Hodges Funeral Home'}).get_json()
+        self.assertTrue(r['success'], r)
+        names = {n['place']: n for n in self.c.get('/pumps/api/site-names').get_json()['site_names']}
+        self.assertEqual(names['Lee Memorial']['client_name'], 'Hodges Funeral Home')
+        # Searching the name now offers Hodges first, already chosen.
+        j = self.c.get('/pumps/api/jobber/clients?q=Lee%20Memorial').get_json()
+        self.assertEqual((j['pick']['id'], j['candidates'][0]['remembered'] != ''), ('CH', True))
+        # The next Lee Memorial bill goes to Hodges without asking.
+        fake.clients = []
+        self.extracts['b-lee2.pdf'] = extraction('bill', '31002', client='Lee Memorial', subtotal=300)
+        b2 = self.upload('b-lee2.pdf')
+        r = self.c.post(f"/pumps/api/docs/{b2['doc_id']}/invoice", json={}).get_json()
+        self.assertTrue(r['success'], r)
+        self.assertEqual([v for q, v in fake.calls if 'invoiceCreate' in q][-1]['input']['clientId'], 'CH')
+        # A client picked under its own name teaches nothing.
+        self.assertIsNone(P.remember_choice({'client_name': 'Hodges Funeral Home'}, 'CH', 'Hodges Funeral Home'))
+
     def test_maintenance_accounts(self):
         today = P._today
         P._today = lambda: P.datetime(2026, 10, 5).date()

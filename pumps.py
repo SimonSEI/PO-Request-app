@@ -2517,6 +2517,28 @@ def save_site_alias(place, area, client_id, client_name, property_id, property_l
         conn.close()
 
 
+def remember_choice(doc, client_id, client_name='', property_id='', property_label='', actor='system'):
+    """The office picked this Jobber client for a vendor's name (Wettech still
+    writes "Lee Memorial" for what is now Hodges Funeral Home): remember it, so
+    every later quote, bill and report with that name goes there by itself."""
+    place = re.sub(r'\s+', ' ', (doc.get('client_name') or '').strip())[:80]
+    if not place or not client_id:
+        return None
+    a = match_site_alias({'client_name': place})
+    if a and a['client_id'] == client_id and (a['property_id'] or not property_id):
+        return None
+    if not client_name:
+        try:
+            client_name = (client_jobs(client_id).get('client') or {}).get('name') or ''
+        except JobberError:
+            client_name = ''
+    if not a and client_name and similarity(place, client_name) >= 0.85:
+        return None   # the vendor's name is the client's own name - nothing to learn
+    save_site_alias(place, '', client_id, client_name, property_id or '', property_label or '',
+                    f'Picked by {actor} on {_today().isoformat()}', actor)
+    return place
+
+
 def pick_client(candidates):
     """The one clear match, or None when a person has to choose."""
     if not candidates:
@@ -3511,6 +3533,15 @@ def h_jobber_clients(actor):
     if not name:
         raise ValueError('q is required')
     cands = search_clients(name)
+    a = match_site_alias({'client_name': name})
+    if a:
+        # A name the office has matched before: that client, first and chosen.
+        mine = next((c for c in cands if c['id'] == a['client_id']), None) or \
+            {'id': a['client_id'], 'name': a['client_name'], 'is_lead': False, 'uri': '', 'address': '',
+             'matching_properties': []}
+        mine = {**mine, 'score': 1.0, 'remembered': f'You matched "{a["place"]}" to {a["client_name"]} before'}
+        cands = [mine] + [c for c in cands if c['id'] != a['client_id']]
+        return {'candidates': cands, 'pick': mine}
     return {'candidates': cands, 'pick': pick_client(cands)}
 
 
@@ -3741,8 +3772,13 @@ def h_doc_invoice(actor, doc_id):
         if open_n or not ((steps.get('bill_checked') or {}).get('at') or (steps.get('bill_checked') or {}).get('na')):
             return {'success': False, 'error': 'The bill has not been checked against the quote (or the item has '
                                                'open issues) - the office decides this one.'}, 409
+    if client_id:
+        remember_choice(doc, client_id, data.get('client_name') or '', actor=actor)
     if not client_id:
         client_id = (json.loads(case.get('jobber') or '{}').get('client') or {}).get('id') or case.get('jobber_client_id')
+    if not client_id:
+        alias = match_site_alias(doc, case)
+        client_id = alias['client_id'] if alias else None
     if not client_id:
         cands = search_clients(case.get('client_name') or doc.get('client_name') or '')
         pick = pick_client(cands)
@@ -3806,6 +3842,9 @@ def h_doc_quote(actor, doc_id):
     if rem.get('place'):
         save_site_alias(rem.get('place'), rem.get('area'), client_id, rem.get('client_name'), property_id,
                         rem.get('property_label'), rem.get('note'), actor)
+    elif data.get('client_id'):
+        remember_choice(doc, client_id, data.get('client_name') or '', property_id, data.get('property_label') or '',
+                        actor)
     return {'quote': res}
 
 

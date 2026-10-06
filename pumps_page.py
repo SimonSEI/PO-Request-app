@@ -260,6 +260,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   <div class="fields" id="diveSettings"></div>
   <div class="scroll" style="max-height:30vh;margin-top:10px"><table class="t"><thead><tr><th>Month</th><th>Sent</th><th>By</th><th>To</th><th class="num">Sites</th><th>Result</th></tr></thead><tbody id="diveSent"></tbody></table></div>
   <h3 style="margin:22px 0 8px;font-size:14px">Site names</h3>
+  <div class="toolbar"><button class="btn" onclick="siteNameAdd()">＋ Site name</button></div>
   <div class="note" style="margin-bottom:8px">How a site is written on the vendors' paperwork, so quotes and reports go to the right Jobber client and job - e.g. "Carlisle" is on the Greenscapes account. Add one from <b>Draft quote</b> (tick "Remember").</div>
   <div class="scroll" style="max-height:40vh"><table class="t"><thead><tr><th>Written as</th><th>Area</th><th>Jobber client</th><th>Property</th><th>Note</th><th></th></tr></thead><tbody id="siteNamesBody"></tbody></table></div>
 </div>
@@ -623,6 +624,7 @@ async function draftInvoice(docId){
     ${(d.case_issues || []).map(i => `<div class="issue">⚠️ ${esc(i.message)}</div>`).join('')}
     <div class="note">From ${esc(d.vendor)} bill #${esc(d.doc_number)} - ${money(d.subtotal)} before tax, ${money(d.total)} total. One Service Proposal Amount line: the bill before tax${s.markup_pct ? ' plus ' + s.markup_pct + '%' : ''}; Jobber adds the client's tax.</div>
     <div><b>Jobber client</b><div class="toolbar" style="margin:6px 0"><input type="text" id="cq" value="${esc(d.client_name)}" style="flex:1"><button class="btn" onclick="findClients()">Search</button></div><div id="cands"><div class="note">Searching…</div></div></div>
+    <div class="note">The client you pick is remembered for "${esc(d.client_name)}", so next time it's filled in by itself.</div>
     <label class="note">Invoice subject<input type="text" id="invSubject" value="${esc(inv.subject)}" style="width:100%"></label>
     <div><b>Line items</b> <span class="note">(edit before creating)</span><table class="t" style="margin-top:6px"><thead><tr><th>Name</th><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th>Tax</th><th></th></tr></thead><tbody id="invLines"></tbody></table>
       <button class="btn s" style="margin-top:6px" onclick="inv.lines.push({name:'',description:'',quantity:1,unit_price:0,taxable:true});drawLines()">＋ Line</button>
@@ -650,7 +652,7 @@ async function findClients(){
   if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
   inv.client_id = j.pick ? j.pick.id : null;
   box.innerHTML = (j.candidates || []).map(c => `<div class="cand ${c.id === inv.client_id ? 'on' : ''}" onclick="pickClient(this, '${esc(c.id)}')"><input type="radio" name="cl" ${c.id === inv.client_id ? 'checked' : ''}>
-     <div style="flex:1"><b>${esc(c.name)}</b>${c.is_lead ? ' <span class="chip a">lead</span>' : ''}<div class="note">${esc(c.address)}</div></div><span class="chip">${Math.round(c.score * 100)}%</span>
+     <div style="flex:1"><b>${esc(c.name)}</b>${c.is_lead ? ' <span class="chip a">lead</span>' : ''}${c.remembered ? ' <span class="chip g">remembered</span>' : ''}<div class="note">${esc(c.remembered || c.address)}</div></div><span class="chip">${Math.round(c.score * 100)}%</span>
      <a href="${esc(c.uri)}" target="_blank" onclick="event.stopPropagation()" class="note">Jobber ↗</a></div>`).join('') || '<div class="note">No clients found - try a shorter name.</div>';
   if (!j.pick && (j.candidates || []).length) box.insertAdjacentHTML('afterbegin', '<div class="note" style="margin-bottom:6px"><b>Choose the client</b> - more than one could match.</div>');
   if (inv.mode === 'quote') quoteProps();
@@ -659,7 +661,7 @@ function pickClient(el, id){ inv.client_id = id; document.querySelectorAll('#can
 async function createInvoice(){
   if (!inv.client_id) { toast('Choose the Jobber client first.', true); return; }
   const btn = document.getElementById('invGo'); btn.disabled = true; btn.textContent = 'Creating draft…';
-  const j = await api('/docs/' + inv.doc.id + '/invoice', {method:'POST', body:{client_id: inv.client_id, line_items: inv.lines, subject: document.getElementById('invSubject').value}});
+  const j = await api('/docs/' + inv.doc.id + '/invoice', {method:'POST', body:{client_id: inv.client_id, client_name: ((document.querySelector('#cands .cand.on b') || {}).textContent || ''), line_items: inv.lines, subject: document.getElementById('invSubject').value}});
   btn.disabled = false; btn.textContent = 'Create draft in Jobber';
   if (!j.success) { toast(j.error, true); return; }
   closeModal();
@@ -680,7 +682,7 @@ async function draftQuote(docId){
     <div><b>Jobber client</b><div class="toolbar" style="margin:6px 0"><input type="text" id="cq" value="${esc(d.client_name)}" style="flex:1"><button class="btn" onclick="findClients()">Search</button></div><div id="cands"><div class="note">Searching…</div></div></div>
     <div><b>Property</b><div id="qprops" class="note">Choose the client first.</div></div>
     <div id="qHow" class="note"></div>
-    <label class="note" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="qRemember"> Remember: when Wettech writes <input type="text" id="qPlace" value="${esc(d.client_name)}" style="width:140px"> <input type="text" id="qArea" value="${esc(d.site)}" placeholder="area, e.g. back station" style="width:160px"> it means this client and property</label>
+    <label class="note" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="qRemember" checked> Remember: when Wettech writes <input type="text" id="qPlace" value="${esc(d.client_name)}" style="width:140px"> <input type="text" id="qArea" value="${esc(d.site)}" placeholder="area, e.g. back station" style="width:160px"> it means this client and property</label>
     <label class="note">Quote title<input type="text" id="qTitle" value="${esc(s.title)}" style="width:100%"></label>
     <label class="note">Message to the client (optional)<textarea id="qMsg" style="width:100%;min-height:44px"></textarea></label>
     <div><b>Line items</b> <span class="note">(edit before creating)</span><table class="t" style="margin-top:6px"><thead><tr><th>Name</th><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th>Tax</th><th></th></tr></thead><tbody id="invLines"></tbody></table>
@@ -717,7 +719,8 @@ async function createQuote(){
   if (!inv.client_id) { toast('Choose the Jobber client first.', true); return; }
   if (!inv.property_id) { toast("Choose the client's property first.", true); return; }
   const btn = document.getElementById('qGo'); btn.disabled = true; btn.textContent = 'Creating draft…';
-  const body = {client_id: inv.client_id, property_id: inv.property_id, line_items: inv.lines, title: document.getElementById('qTitle').value, message: document.getElementById('qMsg').value};
+  const cand0 = document.querySelector('#cands .cand.on b'), prop0 = (inv.props || []).find(p => p.id === inv.property_id);
+  const body = {client_id: inv.client_id, client_name: cand0 ? cand0.textContent : '', property_id: inv.property_id, property_label: prop0 ? prop0.label : '', line_items: inv.lines, title: document.getElementById('qTitle').value, message: document.getElementById('qMsg').value};
   if (document.getElementById('qRemember').checked && document.getElementById('qPlace').value.trim()) {
     const cand = document.querySelector('#cands .cand.on b'), prop = (inv.props || []).find(p => p.id === inv.property_id);
     body.remember = {place: document.getElementById('qPlace').value.trim(), area: document.getElementById('qArea').value.trim(), client_name: cand ? cand.textContent : '', property_label: prop ? prop.label : ''};
@@ -1003,6 +1006,22 @@ async function loadSiteNames(){
   const j = await api('/site-names');
   const el = document.getElementById('siteNamesBody'); if (!el) return;
   el.innerHTML = (j.site_names || []).map(n => `<tr><td><b>${esc(n.place)}</b></td><td>${esc(n.area) || '<span class="note">any</span>'}</td><td>${esc(n.client_name)}</td><td>${esc(n.property_label) || '<span class="note">choose each time</span>'}</td><td class="note">${esc(n.note)}</td><td><button class="btn s" onclick="deleteSiteName(${n.id})">Remove</button></td></tr>`).join('') || '<tr><td colspan="6" class="note">None yet.</td></tr>';
+}
+function siteNameAdd(){
+  inv = {mode: 'alias', doc: {}, client_id: null, lines: []};
+  openModal('Add a site name', `<div class="fields">
+    <label>Vendor writes<input type="text" id="snPlace" placeholder="e.g. Lee Memorial"></label>
+    <label>Area (optional)<input type="text" id="snArea" placeholder="e.g. back station"></label></div>
+    <div><b>It means this Jobber client</b><div class="toolbar" style="margin:6px 0"><input type="text" id="cq" placeholder="e.g. Hodges Funeral Home" style="flex:1"><button class="btn" onclick="findClients()">Search</button></div><div id="cands"></div></div>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="siteNameSave()">Save</button>`);
+}
+async function siteNameSave(){
+  const place = document.getElementById('snPlace').value.trim();
+  if (!place || !inv.client_id) { toast('Type the name and choose the Jobber client.', true); return; }
+  const cand = document.querySelector('#cands .cand.on b');
+  const j = await api('/site-names', {method:'POST', body:{place, area: document.getElementById('snArea').value.trim(), client_id: inv.client_id, client_name: cand ? cand.textContent : ''}});
+  if (!j.success) { toast(j.error, true); return; }
+  closeModal(); toast('Saved'); loadSiteNames();
 }
 async function deleteSiteName(id){ if (!confirm('Remove this site name?')) return; const j = await api('/site-names/' + id + '/delete', {method:'POST', body:{}}); if (j.success) loadSiteNames(); else toast(j.error, true); }
 function jobberLinkHtml(c){
