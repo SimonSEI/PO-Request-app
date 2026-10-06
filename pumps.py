@@ -138,6 +138,7 @@ STRONG_TERMS = re.compile(r'pump\s+station|pump\s+report|pump\s+maintenance|pump
 
 CATEGORIES = ('repair', 'maintenance', 'install', 'diver', 'filter', 'scada', 'inspection', 'other')
 STEPS = [
+    ('assessment', '{vendor} visit to assess'),
     ('vendor_quote', 'Quote from {vendor}'),
     ('client_quote', 'Quote sent to client'),
     ('client_approved', 'Client approved'),
@@ -150,6 +151,13 @@ STEPS = [
     ('closed', 'Invoice sent from Jobber - close out'),
 ]
 STEP_KEYS = [k for k, _ in STEPS]
+# Steps an item only has when switched on: the vendor's visit to look before
+# quoting. Absent means not needed, so items made before it existed are unchanged.
+OPTIONAL_STEPS = ('assessment',)
+
+
+def _with_optional(steps):
+    return {**{k: {'na': True} for k in OPTIONAL_STEPS if k not in steps}, **steps}
 # Steps that do not apply by default, per kind of work. Any step can be
 # switched on or off on the item.
 NA_BY_CATEGORY = {
@@ -636,6 +644,7 @@ def _steps_for(category):
 def _stage(steps, status='open'):
     if status == 'cancelled':
         return 'cancelled'
+    steps = _with_optional(steps)
     for k in STEP_KEYS:
         s = steps.get(k) or {}
         if not s.get('at') and not s.get('na'):
@@ -653,7 +662,7 @@ def _case_dict(row, conn=None):
     d['compare'] = compare_amounts(d)
     d['vendor_pay'] = vendor_pay_state(d)
     vendor = d.get('vendor') or 'vendor'
-    d['step_list'] = [{'key': k, 'label': label.format(vendor=vendor), **(d['steps'].get(k) or {})}
+    d['step_list'] = [{'key': k, 'label': label.format(vendor=vendor), **(_with_optional(d['steps']).get(k) or {})}
                       for k, label in STEPS]
     last = d.get('last_activity_at') or d.get('updated_at') or d.get('created_at') or ''
     try:
@@ -734,7 +743,7 @@ def _refresh_case(conn, case_id):
 # Steps that must have happened if a later one has: work that is done was
 # scheduled, and a bill means the work is done. (Quotes and the bill check are
 # never assumed - those gaps are the point of tracking.)
-IMPLIED = {'work_done': ['scheduled'], 'vendor_bill': ['scheduled', 'work_done'],
+IMPLIED = {'vendor_quote': ['assessment'], 'client_quote': ['assessment'], 'work_done': ['scheduled'], 'vendor_bill': ['scheduled', 'work_done'],
            'report_logged': ['scheduled', 'work_done']}
 
 
@@ -746,11 +755,16 @@ def _set_step(conn, case_id, key, at=None, by='system', na=None):
     if na is True:
         steps[key] = {'na': True, 'by': by}
     elif at is None and na is False:
-        steps.pop(key, None)
+        if key in OPTIONAL_STEPS:
+            steps[key] = {k: v for k, v in (steps.get(key) or {}).items() if k == 'due'}
+        else:
+            steps.pop(key, None)
     elif at is not None:
         when = at[:10] if at else _today().isoformat()
         steps[key] = {'at': when, 'by': by}
         for earlier in IMPLIED.get(key, []):
+            if earlier in OPTIONAL_STEPS and earlier not in steps:
+                continue
             cur = steps.get(earlier) or {}
             if not cur.get('at') and not cur.get('na'):
                 steps[earlier] = {'at': when, 'by': f'{by} (implied)'}
@@ -3437,6 +3451,7 @@ def work_queue(conn):
     return {
         'issues': issues,
         'needs_scheduling': by_stage.get('scheduled', []),
+        'waiting_assessment': by_stage.get('assessment', []),
         'waiting_vendor_quote': by_stage.get('vendor_quote', []),
         'to_quote_client': by_stage.get('client_quote', []),
         'waiting_approval': by_stage.get('client_approved', []),
@@ -4293,20 +4308,36 @@ def h_jobber_item(actor, jobber_id):
             if it['kind'] == 'quote' and it['status'] == 'approved':
                 _set_step(conn, cid, 'client_quote', at=(it['created_at'] or '')[:10] or None, by=actor)
                 _set_step(conn, cid, 'client_approved', at=(it['updated_at'] or '')[:10] or None, by=actor)
-            if it['kind'] == 'job':
+            if it['kind'] == 'job' and (it['completed_at'] or it['status'] == 'requires_invoicing'):
                 _set_step(conn, cid, 'client_approved', at=(it['created_at'] or '')[:10] or None, by=actor)
-                if it['completed_at'] or it['status'] == 'requires_invoicing':
-                    _set_step(conn, cid, 'work_done', at=(it['completed_at'] or it['updated_at'] or '')[:10] or None,
-                              by=actor)
-                elif it['start_at']:
-                    _set_step(conn, cid, 'scheduled', at=(it['created_at'] or '')[:10] or None, by=actor)
-                    conn.execute('UPDATE pump_cases SET scheduled_for=? WHERE id=?', (it['start_at'][:10], cid))
+                _set_step(conn, cid, 'work_done', at=(it['completed_at'] or it['updated_at'] or '')[:10] or None,
+                          by=actor)
+            elif it['kind'] == 'job' and cat == 'maintenance':
+                _set_step(conn, cid, 'client_approved', at=(it['created_at'] or '')[:10] or None, by=actor)
+            elif it['kind'] in ('job', 'request'):
+                # Made in Jobber before any quote: the vendor goes out to look first.
+                _set_assessment(conn, cid, (it['start_at'] or '')[:10],
+                                done=it['kind'] == 'request' and it['status'] == 'assessment_completed', by=actor)
         else:
             raise ValueError('action must be track, link, ignore or unignore')
         conn.commit()
         return {'case_id': cid}
     finally:
         conn.close()
+
+
+def _set_assessment(conn, case_id, due='', done=False, by='system'):
+    """Switch on the vendor's visit to assess, with the visit date when known."""
+    row = conn.execute('SELECT steps FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+    steps = json.loads(row['steps'] or '{}')
+    a = {k: v for k, v in (steps.get('assessment') or {}).items() if k != 'na'}
+    if due:
+        a['due'] = due
+    if done and not a.get('at'):
+        a.update(at=_today().isoformat(), by=by)
+    steps['assessment'] = a
+    conn.execute('UPDATE pump_cases SET steps=?, updated_at=? WHERE id=?', (json.dumps(steps), _now_text(), case_id))
+    _refresh_case(conn, case_id)
 
 
 def _link_item(conn, jobber_id, case_id, actor):
