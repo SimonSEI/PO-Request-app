@@ -2850,6 +2850,30 @@ def invoice_suggestion(doc, case=None):
     return sugg
 
 
+_LINE_FIELD_REFUSED = re.compile(r'lineItems\.\d+\.(\w+)[^.]*?(?:Field is not defined|is not defined|unknown|invalid)', re.I)
+
+
+def gql_with_lines(query, variables, key):
+    """Run a create mutation whose variables[key]['lineItems'] may carry line
+    fields this Jobber API version doesn't take on that kind of record
+    (invoice lines don't take saveToProductsAndServices): drop each field
+    Jobber names and try again."""
+    dropped = []
+    for _ in range(4):
+        try:
+            return jobber_gql(query, variables)
+        except JobberError as e:
+            m = _LINE_FIELD_REFUSED.search(str(e))
+            field = m.group(1) if m else next((f for f in ('saveToProductsAndServices', 'taxable')
+                                               if f in str(e) and f not in dropped), None)
+            if not field or field in dropped or field in ('name', 'quantity', 'unitPrice'):
+                raise
+            dropped.append(field)
+            variables[key]['lineItems'] = [{k: v for k, v in li.items() if k != field}
+                                           for li in variables[key]['lineItems']]
+    return jobber_gql(query, variables)
+
+
 QUOTE_CREATE = '''mutation PumpsDraftQuote($attributes: QuoteCreateAttributes!) {
   quoteCreate(attributes: $attributes) {
     quote { id quoteNumber quoteStatus jobberWebUri }
@@ -2884,15 +2908,7 @@ def create_draft_quote(doc_id, client_id, property_id, line_items, title='', mes
                  'lineItems': items}
         if message:
             attrs['message'] = message[:4000]
-        try:
-            data = jobber_gql(QUOTE_CREATE, {'attributes': attrs})
-        except JobberError as e:
-            # Not every API version takes these on a quote line; try once without them.
-            if not any(w in str(e) for w in ('taxable', 'saveToProductsAndServices')):
-                raise
-            attrs['lineItems'] = [{k: v for k, v in i.items() if k not in ('taxable', 'saveToProductsAndServices')}
-                                  for i in items]
-            data = jobber_gql(QUOTE_CREATE, {'attributes': attrs})
+        data = gql_with_lines(QUOTE_CREATE, {'attributes': attrs}, 'attributes')
         payload = data.get('quoteCreate') or {}
         errs = payload.get('userErrors') or []
         if errs:
@@ -2973,7 +2989,7 @@ def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', a
                'tax': {'taxCalculationMethod': 'EXCLUSIVE'}, 'lineItems': items}
         if job_id:
             inp['jobId'] = job_id
-        data = jobber_gql(INVOICE_CREATE, {'input': inp})
+        data = gql_with_lines(INVOICE_CREATE, {'input': inp}, 'input')
         payload = data.get('invoiceCreate') or {}
         errs = payload.get('userErrors') or []
         if errs:
@@ -6046,9 +6062,9 @@ def scada_due_actions(today=None):
                     items = _jobber_lines([{'name': 'Service Proposal Amount', 'description':
                                             SCADA_QUOTE_TEXT.format(y1=y, y2=y + 1), 'quantity': 1,
                                             'unit_price': price, 'taxable': False}], 'quote')
-                    data = jobber_gql(QUOTE_CREATE, {'attributes': {
+                    data = gql_with_lines(QUOTE_CREATE, {'attributes': {
                         'clientId': client['id'], 'propertyId': prop['id'],
-                        'title': 'Proposal to renew the SCADA annual cellular subscription', 'lineItems': items}})
+                        'title': 'Proposal to renew the SCADA annual cellular subscription', 'lineItems': items}}, 'attributes')
                     payload = data.get('quoteCreate') or {}
                     if payload.get('userErrors'):
                         raise JobberError('; '.join(e.get('message', '?') for e in payload['userErrors']))
