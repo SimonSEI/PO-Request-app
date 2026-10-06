@@ -337,7 +337,27 @@ async function api(path, opts){
 }
 function toast(msg, bad){ const d = document.createElement('div'); d.textContent = msg; d.style.cssText = 'position:fixed;bottom:18px;left:50%;transform:translateX(-50%);padding:10px 16px;border-radius:10px;z-index:99;font-size:13px;font-weight:600;box-shadow:0 6px 20px rgba(0,0,0,.15);background:' + (bad ? '#FEE2E2;color:#B91C1C' : '#0F172A;color:#fff'); document.body.appendChild(d); setTimeout(() => d.remove(), bad ? 6000 : 3000); }
 function catChip(c){ const m = {scada:'v', diver:'b', filter:'b', maintenance:'g', install:'a'}; return `<span class="chip ${m[c]||''}">${esc(c)}</span>`; }
-function stageChip(c){ if (c.status === 'closed') return '<span class="chip g">closed</span>'; if (c.status === 'cancelled') return '<span class="chip">cancelled</span>'; const due = c.stage === 'assessment' && (c.steps || {}).assessment && c.steps.assessment.due ? ' · ' + c.steps.assessment.due : ''; return `<span class="chip ${c.open_issues && c.open_issues.length ? 'r' : 'b'}">${esc(stepLabel(c.stage, c.vendor) + due)}</span>`; }
+// What a job is waiting on, in plain words, from the first step not done.
+function stageText(c){
+  const v = c.vendor || 'Wettech', st = c.steps || {};
+  const hasBill = c.vendor_bill_amount != null || c.vendor_bill_total != null || !!(st.vendor_bill || {}).at;
+  if (c.stage === 'vendor_quote' && hasBill) return 'Bill came with no quote';
+  return ({
+    assessment: `Waiting on ${v} to assess` + ((st.assessment || {}).due ? ' · ' + st.assessment.due : ''),
+    vendor_quote: `Waiting on quote from ${v}`,
+    client_quote: 'Send our quote to the client',
+    client_approved: 'Waiting on client approval',
+    scheduled: `Schedule with ${v}`,
+    work_done: `Waiting on ${v} to do the work` + (c.scheduled_for ? ' · ' + c.scheduled_for : ''),
+    vendor_bill: `Waiting on bill from ${v}`,
+    bill_checked: 'Check the bill against the quote',
+    invoice_drafted: 'Draft our invoice in Jobber',
+    report_logged: 'Log the report in Jobber',
+    closed: 'Send our invoice from Jobber',
+    done: 'Done',
+  })[c.stage] || stepLabel(c.stage, v);
+}
+function stageChip(c){ if (c.status === 'closed') return '<span class="chip g">closed</span>'; if (c.status === 'cancelled') return '<span class="chip">cancelled</span>'; const t = stageText(c), red = (c.open_issues && c.open_issues.length) || t === 'Bill came with no quote'; return `<span class="chip ${red ? 'r' : /^Waiting/.test(t) ? '' : 'b'}">${esc(t)}</span>`; }
 function kindChip(k){ const m = {quote:'b', bill:'a', report:'g', other:''}; return `<span class="chip ${m[k]||''}">${esc(k)}</span>`; }
 
 // ── tabs ───────────────────────────────────────────────
@@ -468,7 +488,7 @@ function searchCases(v){
   searchTimer = setTimeout(async () => {
     const j = await api('/cases?status=all&q=' + encodeURIComponent(v.trim()));
     box.classList.remove('hide');
-    box.innerHTML = `<div class="grp">Search · ${(j.cases||[]).length}</div>` + ((j.cases||[]).slice(0,30).map(c => todoItem(stepLabel(c.stage, c.vendor), c.status === 'open' ? 'b' : 'g', caseTitle(c), caseSub(c), `openCase(${c.id})`, '')).join('') || '<div class="empty">No items match.</div>');
+    box.innerHTML = `<div class="grp">Search · ${(j.cases||[]).length}</div>` + ((j.cases||[]).slice(0,30).map(c => todoItem(esc(stageText(c)), c.status === 'open' ? 'b' : 'g', caseTitle(c), caseSub(c), `openCase(${c.id})`, '')).join('') || '<div class="empty">No items match.</div>');
   }, 250);
 }
 
