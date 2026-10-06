@@ -1388,6 +1388,26 @@ class PumpsTest(unittest.TestCase):
         # A client picked under its own name teaches nothing.
         self.assertIsNone(P.remember_choice({'client_name': 'Hodges Funeral Home'}, 'CH', 'Hodges Funeral Home'))
 
+    def test_invoice_retries_without_fields_jobber_refuses(self):
+        """Jobber's invoice lines don't take saveToProductsAndServices (quote lines do)."""
+        class Picky(FakeJobber):
+            def __call__(self, query, variables=None):
+                if 'invoiceCreate' in query and 'saveToProductsAndServices' in json.dumps(variables):
+                    self.calls.append((query, variables))
+                    raise P.JobberError('Variable $input of type InvoiceCreateInput! was provided invalid value for '
+                                        'lineItems.0.saveToProductsAndServices (Field is not defined on '
+                                        'InvoiceCreationLineItemInput)')
+                return super().__call__(query, variables)
+        fake = Picky()
+        P.jobber_gql = fake
+        self.extracts['b-picky.pdf'] = extraction('bill', '31100', client='Lakeside Pines', subtotal=600)
+        b = self.upload('b-picky.pdf')
+        r = self.c.post(f"/pumps/api/docs/{b['doc_id']}/invoice", json={'client_id': 'C1'}).get_json()
+        self.assertTrue(r['success'], r)
+        sent = [v for q, v in fake.calls if 'invoiceCreate' in q][-1]['input']['lineItems'][0]
+        self.assertNotIn('saveToProductsAndServices', sent)
+        self.assertEqual((sent['name'], sent['unitPrice'], sent['taxable']), ('Service Proposal Amount', 780.0, True))
+
     def test_maintenance_accounts(self):
         today = P._today
         P._today = lambda: P.datetime(2026, 10, 5).date()
