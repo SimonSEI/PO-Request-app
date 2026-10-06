@@ -2594,33 +2594,48 @@ def best_job_for_report(jobs, properties, location, title):
     return ranked[0] if ranked and score(ranked[0])[0] >= 3 else None
 
 
+def one_line_items(doc, markup_pct):
+    """Our quotes and invoices are always one "Service Proposal Amount" line:
+    the vendor's work described (without their name), priced at their total
+    before tax plus the markup. A price that already includes the vendor's
+    sales tax stays not taxable."""
+    lines = [it for it in (doc.get('line_items') or []) if not it.get('is_tax')]
+    descs = []
+    for it in lines:
+        d = _strip_vendor((it.get('description') or it.get('name') or '').strip())
+        if d and d not in descs:
+            descs.append(d)
+    if not descs and doc.get('description'):
+        descs = [_strip_vendor(doc['description'].split('\n')[0])]
+    def amt(it):
+        if it.get('amount') is not None:
+            return it['amount']
+        if it.get('unit_price') is not None:
+            return it['unit_price'] * (it.get('quantity') or 1)
+        return None
+    known = [amt(it) for it in lines if amt(it) is not None]
+    if doc.get('subtotal') is not None:
+        base, taxable = doc['subtotal'], any(it.get('taxable', True) for it in lines) if lines else True
+    elif known:
+        base, taxable = sum(known), doc.get('total') is None and any(it.get('taxable', True) for it in lines)
+    elif doc.get('total') is not None:
+        base, taxable = doc['total'], False
+    else:
+        return []
+    return [{'name': 'Service Proposal Amount', 'description': '\n'.join(descs)[:2000], 'quantity': 1,
+             'unit_price': round(base * (1 + (markup_pct or 0) / 100), 2), 'taxable': bool(taxable)}]
+
+
 def suggest_invoice(doc, case=None):
-    """Line items for our invoice: the bill's lines, without the sub's sales
-    tax (Jobber adds the client's tax itself), priced at the bill's rates plus
-    any PUMPS_MARKUP_PCT."""
-    items = []
-    for it in doc.get('line_items') or []:
-        if it.get('is_tax'):
-            continue
-        price = it.get('unit_price') if it.get('unit_price') is not None else it.get('amount')
-        if price is None:
-            continue
-        qty = it.get('quantity') or 1
-        if MARKUP_PCT:
-            price = round(price * (1 + MARKUP_PCT / 100), 2)
-        desc = _strip_vendor((it.get('description') or '').strip())
-        items.append({'name': short_name(_strip_vendor((it.get('name') or desc or 'Pump service').strip()), 80),
-                      'description': desc[:2000], 'quantity': qty, 'unit_price': round(price, 2),
-                      'taxable': bool(it.get('taxable', True))})
-    if not items and (doc.get('subtotal') or doc.get('total')):
-        amt = doc.get('subtotal') if doc.get('subtotal') is not None else doc.get('total')
-        items = [{'name': 'Pump service', 'description': _strip_vendor(doc.get('description') or ''),
-                  'quantity': 1, 'unit_price': round(amt * (1 + MARKUP_PCT / 100), 2), 'taxable': True}]
+    """Our invoice for a vendor bill when there is no client quote to copy:
+    one Service Proposal Amount line, the bill before tax plus the quote
+    markup (30%). Jobber adds the client's tax itself."""
+    items = one_line_items(doc, QUOTE_MARKUP_PCT)
     where = (case or {}).get('client_name') or doc.get('client_name') or ''
     subject = f"Pump service - {where}" if where else 'Pump service'
     if (case or {}).get('po_number') or doc.get('po_number'):
         subject += f" (PO {(case or {}).get('po_number') or doc.get('po_number')})"
-    return {'subject': subject[:255], 'line_items': items, 'markup_pct': MARKUP_PCT}
+    return {'subject': subject[:255], 'line_items': items, 'markup_pct': QUOTE_MARKUP_PCT}
 
 
 def _strip_vendor(text):
@@ -2658,23 +2673,7 @@ def suggest_quote(doc, case=None):
     tax line, a single-price quote as one "Service Proposal Amount" line
     carrying the vendor's description of the work, titled "Proposal to ...".
     A price that already includes the vendor's tax stays not taxable."""
-    items = []
-    for it in doc.get('line_items') or []:
-        if it.get('is_tax'):
-            continue
-        price = it.get('unit_price') if it.get('unit_price') is not None else it.get('amount')
-        if price is None:
-            continue
-        desc = _strip_vendor((it.get('description') or it.get('name') or '').strip())
-        items.append({'name': short_name(_strip_vendor((it.get('name') or desc or 'Pump service').strip()), 80),
-                      'description': desc[:2000], 'quantity': it.get('quantity') or 1,
-                      'unit_price': round(price * (1 + QUOTE_MARKUP_PCT / 100), 2),
-                      'taxable': bool(it.get('taxable', True))})
-    if not items and (doc.get('total') or doc.get('subtotal')):
-        amt = doc.get('subtotal') if doc.get('subtotal') is not None else doc.get('total')
-        items = [{'name': '', 'description': _strip_vendor((doc.get('description') or '').split('\n')[0]),
-                  'quantity': 1, 'unit_price': round(amt * (1 + QUOTE_MARKUP_PCT / 100), 2),
-                  'taxable': doc.get('subtotal') is not None}]
+    items = one_line_items(doc, QUOTE_MARKUP_PCT)
     words = ' '.join([doc.get('description') or ''] + [f"{i.get('name') or ''} {i.get('description') or ''}"
                                                        for i in doc.get('line_items') or []])
     markup = QUOTE_MARKUP_PCT
@@ -2692,9 +2691,6 @@ def suggest_quote(doc, case=None):
             items = [{'name': 'Service Proposal Amount', 'description': desc, 'quantity': 1, 'unit_price': price,
                       'taxable': False}]
             markup = 0
-    if len(items) == 1:
-        items[0]['name'] = 'Service Proposal Amount'
-        items[0]['quantity'] = 1
     title = (doc.get('proposal_title') or '').strip() or _proposal_title(
         items[0]['description'] if items else (doc.get('description') or ''))
     return {'title': title[:255], 'line_items': items, 'markup_pct': markup}
@@ -3878,6 +3874,32 @@ def h_doc_report_note(actor, doc_id):
             return {'success': False, 'needs_target': True, 'error': t.pop('needs'), **t}, 409
         ttype, tid = t['type'], t['id']
     return {'note': log_report_to_jobber(doc_id, ttype, tid, actor, data.get('message'))}
+
+
+@api('/issues/<int:issue_id>/bill-anyway', methods=('POST',))
+def h_issue_bill_anyway(actor, issue_id):
+    """The office's override for a bill with no quote: clear the alert and
+    invoice the bill plus 30%. Returns the bill to draft."""
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_issues WHERE id=?', (issue_id,)).fetchone()
+        if not row:
+            return {'success': False, 'error': 'Not found'}, 404
+        conn.execute('UPDATE pump_issues SET resolved_at=?, resolved_by=?, resolution=? WHERE id=?',
+                     (_now_text(), actor, f'Billed at the vendor bill plus {QUOTE_MARKUP_PCT:g}%', issue_id))
+        _event(conn, actor, 'issue resolved', f"{row['message']} -> billed plus {QUOTE_MARKUP_PCT:g}%",
+               case_id=row['case_id'])
+        doc_id = row['doc_id']
+        if row['case_id']:
+            _set_step(conn, row['case_id'], 'bill_checked', at=_today().isoformat(), by=actor)
+            if not doc_id:
+                d = conn.execute("SELECT id FROM pump_docs WHERE case_id=? AND kind='bill' AND status != 'dismissed' "
+                                 "ORDER BY id DESC", (row['case_id'],)).fetchone()
+                doc_id = d['id'] if d else None
+        conn.commit()
+        return {'doc_id': doc_id}
+    finally:
+        conn.close()
 
 
 @api('/issues/<int:issue_id>/resolve', methods=('POST',))
