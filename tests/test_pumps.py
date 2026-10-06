@@ -572,6 +572,43 @@ class PumpsTest(unittest.TestCase):
         steps = {s['key']: s for s in self.case(cid)['step_list']}
         self.assertEqual(steps['client_approved'].get('at'), '2026-10-06')
 
+    def test_job_made_in_jobber_shows_up_to_track(self):
+        """A pump job made straight in Jobber (no request) is listed to track, and
+        tracking it makes an item that is already scheduled."""
+        conn = P._conn()
+        try:
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, job_type, client_id, "
+                         "client_name, property_id, created_at, start_at, category, po_number) VALUES "
+                         "('J14542', 'job', '14542', 'Homewood Suites - PO 9323 Pump Service', 'upcoming', 'one_off', "
+                         "'CHW', 'Homewood Suites', 'PHW', '2026-10-05T12:00:00Z', '2026-10-13T08:00:00Z', 'pump', '9323')")
+            conn.commit()
+        finally:
+            conn.close()
+        queue = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertIn('J14542', [i['jobber_id'] for i in queue['new_jobber_requests']])
+        body = self.c.get('/pumps/api/jobber/items?open=1&kind=request,quote,job').get_json()
+        items = body['items']
+        self.assertIn('J14542', [i['jobber_id'] for i in items])
+        cid = self.c.post('/pumps/api/jobber/items/J14542', json={'action': 'track'}).get_json()['case_id']
+        case = self.case(cid)
+        self.assertEqual(case['jobber']['job']['number'], '14542')
+        self.assertEqual(case['scheduled_for'], '2026-10-13')
+        self.assertTrue({s['key']: s for s in case['step_list']}['scheduled'].get('at'))
+        queue = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertNotIn('J14542', [i['jobber_id'] for i in queue['new_jobber_requests']])
+        # A quote Jobber makes later for the same client and property joins that item by itself.
+        conn = P._conn()
+        try:
+            conn.execute("UPDATE pump_cases SET jobber_property_id='PHW' WHERE id=?", (cid,))
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id, "
+                         "property_id, created_at, category, po_number) VALUES ('Q14600', 'quote', '14600', "
+                         "'Extra pump work', 'awaiting_response', 'CHW', 'PHW', '2026-10-07T12:00:00Z', 'pump', '')")
+            P._link_jobber_items(conn)
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(self.case(cid)['jobber']['quote']['number'], '14600')
+
     def test_draft_quote_asks_which_property(self):
         self.extracts['q-0810.pdf'] = extraction('quote', 'Q-121', po='PO810', client='Lakeside Pines', subtotal=300)
         q = self.upload('q-0810.pdf')

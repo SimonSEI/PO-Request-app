@@ -230,7 +230,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   <div class="scroll"><table class="t"><thead><tr><th>Job</th><th>Where it is</th><th>Vendor</th><th class="num">Vendor quote</th><th>Our quote</th><th class="num">Vendor bill</th><th>Our invoice</th><th>Vendor paid</th><th></th></tr></thead><tbody id="jobsBody"></tbody></table></div>
   <h3 style="margin:18px 0 8px;font-size:14px">New in Jobber - not tracked yet</h3>
   <div class="note" style="margin-bottom:8px">Open pump, diver, filter and SCADA requests in Jobber. <b>Track</b> follows it here to the invoice; <b>Ignore</b> hides it.</div>
-  <div class="scroll" style="max-height:40vh"><table class="t"><thead><tr><th>Request</th><th>Client</th><th>Created</th><th></th></tr></thead><tbody id="jbNewBody"></tbody></table></div>
+  <div class="scroll" style="max-height:40vh"><table class="t"><thead><tr><th>In Jobber</th><th>Client</th><th>Created</th><th></th></tr></thead><tbody id="jbNewBody"></tbody></table></div>
 </div>
 
 <!-- SCADA -->
@@ -390,7 +390,7 @@ async function loadToday(){
   g.push(box('📄 Reports to log in Jobber', q.reports_to_log, d => `<div class="row" onclick="${d.case_id ? `openCase(${d.case_id})` : `openDoc(${d.id})`}"><div class="main"><div class="tt">${esc(d.client_name || d.file_name)}</div><div class="sub">${esc((d.report_fields||{}).title || 'Report')} · ${esc(d.doc_date)}</div></div><button class="btn s" onclick="event.stopPropagation();logReport(${d.id})">Log in Jobber</button></div>`));
   g.push(box('📥 Documents that need a look', q.review_docs, d => `<div class="row" onclick="openDoc(${d.id})"><div class="main"><div class="tt">${kindChip(d.kind)} ${esc(d.client_name || d.file_name)}</div><div class="sub">${esc(d.review_reason || 'Not filed yet')}</div></div></div>`));
   g.push(box('🛰️ SCADA renewals due', q.scada_attention, s => `<div class="row" onclick="showTab('scada')"><div class="main"><div class="tt">${esc(s.client_name)}${s.site ? ' · ' + esc(s.site) : ''}</div><div class="sub">${s.state === 'overdue' ? `<b class="bad">Overdue</b> since ${esc(s.next_due_on)}` : 'Due ' + esc(s.next_due_on)}${s.state_note ? ' · ' + esc(s.state_note) : ''}</div></div></div>`, q.scada_attention.some(s => s.state === 'overdue') ? 'red' : ''));
-  g.push(box('🆕 New pump requests in Jobber', q.new_jobber_requests, it => `<div class="row" onclick="showTab('jobs')"><div class="main"><div class="tt">${esc(it.title)}</div><div class="sub">${esc(it.client_name)} · ${d10(it.created_at)}</div></div><button class="btn s" onclick="event.stopPropagation();jobberAct('${esc(it.jobber_id)}','track')">Track</button></div>`));
+  g.push(box('🆕 New pump work in Jobber', q.new_jobber_requests, it => `<div class="row" onclick="showTab('jobs')"><div class="main"><div class="tt">${esc(it.title)}</div><div class="sub">${esc(it.kind)}${it.number ? ' #' + esc(it.number) : ''} · ${esc(it.client_name)} · ${d10(it.created_at)}</div></div><button class="btn s" onclick="event.stopPropagation();jobberAct('${esc(it.jobber_id)}','track')">Track</button> <button class="btn s" onclick="event.stopPropagation();jobberAct('${esc(it.jobber_id)}','ignore')">Ignore</button></div>`, '', 'Requests, quotes and jobs made in Jobber that Pumps is not following yet.'));
   g.push(box('💬 Quote to send to client', q.to_quote_client, c => caseRow(c)));
   g.push(box('⏳ Waiting on client approval', q.waiting_approval, c => caseRow(c)));
   g.push(box('🔧 Waiting on Wettech quote', q.waiting_vendor_quote, c => caseRow(c)));
@@ -1049,7 +1049,7 @@ function jobberLinkHtml(c){
 }
 async function loadJobs(){
   const st = document.getElementById('jbShow').value, q = document.getElementById('jbSearch').value.trim();
-  const [j, ji] = await Promise.all([api('/cases?status=' + st + (q ? '&q=' + encodeURIComponent(q) : '')), api('/jobber/items?open=1&kind=request')]);
+  const [j, ji] = await Promise.all([api('/cases?status=' + st + (q ? '&q=' + encodeURIComponent(q) : '')), api('/jobber/items?open=1&kind=request,quote,job')]);
   if (!j.success) { document.getElementById('jobsBody').innerHTML = `<tr><td colspan="9" class="empty">${esc(j.error)}</td></tr>`; return; }
   const ref = r => r ? (r.uri ? `<a href="${esc(r.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">#${esc(r.number || '')} ↗</a>` : (r.number ? '#' + esc(r.number) : '')) : '';
   document.getElementById('jobsBody').innerHTML = (j.cases || []).map(c => { const jb = c.jobber || {}, vp = c.vendor_pay || {};
@@ -1065,10 +1065,10 @@ async function loadJobs(){
   const s = ji.sync || {};
   document.getElementById('syncInfo').innerHTML = !JOBBER_OK ? '<b class="warn">Jobber is not connected.</b>' :
     (s.state === 'running' ? 'Syncing Jobber…' : (s.finished_at ? `Last sync ${esc(s.finished_at)}` : 'Not synced yet.')) + ((s.errors || []).length ? ` · <span class="bad" title="${esc(s.errors.join('\n'))}">${s.errors.length} errors</span>` : '');
-  document.getElementById('jbNewBody').innerHTML = (ji.items || []).filter(it => !it.case_id).map(it => `<tr>
-    <td><a href="${esc(it.web_uri)}" target="_blank" rel="noopener">${it.number ? '#' + esc(it.number) + ' ' : ''}${esc(it.title)}</a> ${catChip(it.category)}</td>
+  document.getElementById('jbNewBody').innerHTML = (ji.items || []).filter(it => !it.case_id && !(it.kind === 'quote' && it.status === 'draft')).map(it => `<tr>
+    <td><span class="note">${esc(it.kind)}</span> <a href="${esc(it.web_uri)}" target="_blank" rel="noopener">${it.number ? '#' + esc(it.number) + ' ' : ''}${esc(it.title)}</a> ${catChip(it.category)}</td>
     <td>${esc(it.client_name)}<div class="note">${esc(it.property_label)}</div></td><td>${esc(d10(it.created_at))}</td>
-    <td style="white-space:nowrap"><button class="btn s p" onclick="jobberAct('${esc(it.jobber_id)}','track')">Track</button> <button class="btn s" onclick="jobberLink('${esc(it.jobber_id)}')">Add to job…</button> <button class="btn s" onclick="jobberAct('${esc(it.jobber_id)}','ignore')">Ignore</button></td></tr>`).join('') || `<tr><td colspan="4" class="empty">${JOBBER_OK ? 'Nothing new.' : 'Connect Jobber to see requests.'}</td></tr>`;
+    <td style="white-space:nowrap"><button class="btn s p" onclick="jobberAct('${esc(it.jobber_id)}','track')">Track</button> <button class="btn s" onclick="jobberLink('${esc(it.jobber_id)}')">Add to job…</button> <button class="btn s" onclick="jobberAct('${esc(it.jobber_id)}','ignore')">Ignore</button></td></tr>`).join('') || `<tr><td colspan="4" class="empty">${JOBBER_OK ? 'Nothing new.' : 'Connect Jobber to see pump work.'}</td></tr>`;
 }
 async function jobberAct(id, action){ const j = await api('/jobber/items/' + encodeURIComponent(id), {method:'POST', body:{action}}); if (!j.success) { toast(j.error, true); return; } if (action === 'track' && j.case_id) openCase(j.case_id); else if (curTab === 'jobs') loadJobs(); else loadToday(); }
 async function jobberLink(id){ const n = prompt('Job number in Pumps to add it to:'); if (!n) return; const j = await api('/jobber/items/' + encodeURIComponent(id), {method:'POST', body:{action:'link', case_id: parseInt(n)}}); if (j.success) loadJobs(); else toast(j.error, true); }
