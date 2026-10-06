@@ -2065,6 +2065,31 @@ def _category(title, prop_label=''):
 
 
 def sync_jobber(full=False, actor='system'):
+    """A Jobber sync that never leaves "running" behind when it fails."""
+    try:
+        return _sync_jobber(full, actor)
+    except Exception as e:
+        st = _state_get('jobber_sync') or {}
+        if st.get('state') == 'running':
+            st.update(state='failed', finished_at=_now_text(), errors=(st.get('errors') or []) + [str(e)])
+            _state_set('jobber_sync', st)
+        raise
+
+
+def jobber_sync_state():
+    """The last sync's status. "running" with nobody holding the sync lock means
+    the sync died (a restart mid-sync), so it reads as interrupted."""
+    st = _state_get('jobber_sync') or {}
+    if st.get('state') == 'running':
+        with _FileLock('jobber_sync', blocking=False) as got:
+            if got:
+                st.update(state='interrupted', finished_at=_now_text(),
+                          errors=(st.get('errors') or []) + ['The sync stopped part way (the app restarted) - run it again.'])
+                _state_set('jobber_sync', st)
+    return st
+
+
+def _sync_jobber(full=False, actor='system'):
     """Pull pump, diver, filter and SCADA requests, quotes, jobs and invoices
     from Jobber, then rebuild the SCADA list and link items by PO number."""
     with _FileLock('jobber_sync', blocking=False) as got:
@@ -2275,14 +2300,8 @@ def _jobber_ref_text(it):
 
 
 def start_jobber_sync(full=False, actor='system'):
-    st = _state_get('jobber_sync') or {}
-    if st.get('state') == 'running':
-        try:
-            started = datetime.strptime(st.get('started_at', '')[:19], '%Y-%m-%d %H:%M:%S')
-            if (_now().replace(tzinfo=None) - started).total_seconds() < 3600:
-                return False
-        except ValueError:
-            pass
+    if jobber_sync_state().get('state') == 'running':
+        return False
     threading.Thread(target=_safe(sync_jobber), args=(full, actor), daemon=True).start()
     return True
 
@@ -3494,7 +3513,7 @@ def h_summary(actor):
         q = work_queue(conn)
         return {'queue': q, 'counts': {k: len(v) for k, v in q.items() if isinstance(v, list)},
                 'scan': _state_get('scan_status') or {}, 'jobber': {**jobber_status(),
-                                                                     'sync': _state_get('jobber_sync') or {}},
+                                                                     'sync': jobber_sync_state()},
                 'claude': USE_CLAUDE, 'email': bool(CFG.get('email_enabled'))}
     finally:
         conn.close()
@@ -3647,7 +3666,7 @@ def h_jobber_items(actor):
                     and not (r['kind'] == 'job' and r['job_type'] == 'recurring')]
         if request.args.get('show_ignored') != '1':
             rows = [r for r in rows if not r['ignored']]
-        return {'items': rows[:1000], 'sync': _state_get('jobber_sync') or {}, 'jobber': jobber_status()}
+        return {'items': rows[:1000], 'sync': jobber_sync_state(), 'jobber': jobber_status()}
     finally:
         conn.close()
 
@@ -4181,7 +4200,7 @@ def h_scan_status(actor):
 def h_jobber_sync(actor):
     if not jobber_status()['connected']:
         raise ValueError('Connect Jobber first')
-    return {'started': start_jobber_sync(bool(_json().get('full')), actor), 'status': _state_get('jobber_sync') or {}}
+    return {'started': start_jobber_sync(bool(_json().get('full')), actor), 'status': jobber_sync_state()}
 
 
 @api('/jobber/items/<path:jobber_id>', methods=('POST',))

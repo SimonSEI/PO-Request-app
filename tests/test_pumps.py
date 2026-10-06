@@ -572,6 +572,31 @@ class PumpsTest(unittest.TestCase):
         steps = {s['key']: s for s in self.case(cid)['step_list']}
         self.assertEqual(steps['client_approved'].get('at'), '2026-10-06')
 
+    def test_sync_left_running_by_a_restart_reads_as_interrupted(self):
+        P._state_set('jobber_sync', {'state': 'running', 'started_at': P._now_text(), 'errors': []})
+        st = self.c.get('/pumps/api/jobber/items').get_json()['sync']
+        self.assertEqual(st['state'], 'interrupted')
+        self.assertTrue(st['errors'])
+        # While a sync really holds the lock, it still reads as running.
+        P._state_set('jobber_sync', {'state': 'running', 'started_at': P._now_text(), 'errors': []})
+        with P._FileLock('jobber_sync', blocking=False):
+            self.assertEqual(P.jobber_sync_state()['state'], 'running')
+
+    def test_failed_sync_does_not_stay_running(self):
+        real = P._sync_jobber
+        def boom(full=False, actor='system'):
+            P._state_set('jobber_sync', {'state': 'running', 'started_at': P._now_text(), 'errors': []})
+            raise RuntimeError('database is locked')
+        P._sync_jobber = boom
+        try:
+            with self.assertRaises(RuntimeError):
+                P.sync_jobber()
+        finally:
+            P._sync_jobber = real
+        st = P._state_get('jobber_sync')
+        self.assertEqual(st['state'], 'failed')
+        self.assertIn('database is locked', st['errors'][-1])
+
     def test_job_made_in_jobber_shows_up_to_track(self):
         """A pump job made straight in Jobber (no request) is listed to track, and
         tracking it makes an item that is already scheduled."""
