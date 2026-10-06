@@ -505,6 +505,57 @@ class PumpsTest(unittest.TestCase):
         self.assertTrue(body['success'], body)
         self.assertTrue(any(i['kind'] == 'not_draft' and not i['resolved_at'] for i in self.case(b['case_id'])['issues']))
 
+    def test_draft_invoice_is_net_30(self):
+        self.extracts['b-0630.pdf'] = extraction('bill', '29730', po='PO630', client='Sunset Cove', subtotal=400)
+        b = self.upload('b-0630.pdf')
+
+        class Net30Jobber(FakeJobber):
+            reject_terms = False
+
+            def __call__(self, query, variables=None):
+                if '__type' in query:
+                    n = variables['n']
+                    if n == 'InvoiceCreateAttributes':
+                        return {'__type': {'inputFields': [{'name': 'dueDetails', 'type': {
+                            'kind': 'NON_NULL', 'ofType': {'kind': 'INPUT_OBJECT', 'name': 'InvoiceDueDetailsAttributes'}}}]}}
+                    if n == 'InvoiceDueDetailsAttributes':
+                        return {'__type': {'inputFields': [{'name': 'netTerms', 'type': {
+                            'kind': 'ENUM', 'name': 'InvoiceNetTermsEnum'}}]}}
+                    if n == 'InvoiceNetTermsEnum':
+                        return {'__type': {'kind': 'ENUM', 'enumValues': [
+                            {'name': 'DUE_ON_RECEIPT'}, {'name': 'NET_15'}, {'name': 'NET_30'}, {'name': 'NET_45'}]}}
+                    return {'__type': {}}
+                if 'invoiceCreate' in query and self.reject_terms and variables['input']['dueDetails']:
+                    raise P.JobberError('Variable $input dueDetails is invalid')
+                return super().__call__(query, variables)
+
+        P._SCHEMA_CACHE.clear()
+        fake = P.jobber_gql = Net30Jobber()
+        try:
+            body = self.c.post(f"/pumps/api/docs/{b['doc_id']}/invoice", json={'client_id': 'C9'}).get_json()
+            self.assertTrue(body['success'], body)
+            sent = [v for q, v in fake.calls if 'invoiceCreate' in q][-1]['input']
+            self.assertEqual(sent['dueDetails'], {'netTerms': 'NET_30'})
+            # The invoice's amount in Jobber (with the client's tax) shows on the item once synced.
+            inv_id = self.case(b['case_id'])['jobber']['invoice']['id']
+            conn = P._conn()
+            try:
+                conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, status, total) "
+                             "VALUES (?, 'invoice', '5001', 'draft', 556.4)", (inv_id,))
+                P._follow_invoices(conn)
+                conn.commit()
+            finally:
+                conn.close()
+            self.assertEqual(self.case(b['case_id'])['jobber']['invoice']['total'], 556.4)
+            # If Jobber won't take the terms, the draft is still made with its defaults.
+            self.extracts['b-0631.pdf'] = extraction('bill', '29731', po='PO631', client='Sunset Cove', subtotal=400)
+            b2 = self.upload('b-0631.pdf')
+            fake.reject_terms = True
+            body = self.c.post(f"/pumps/api/docs/{b2['doc_id']}/invoice", json={'client_id': 'C9'}).get_json()
+            self.assertTrue(body['success'], body)
+        finally:
+            P._SCHEMA_CACHE.clear()
+
     def test_ambiguous_client_asks_a_person(self):
         self.extracts['b-amb.pdf'] = extraction('bill', '29800', client='Twin Oaks', subtotal=100)
         b = self.upload('b-amb.pdf')

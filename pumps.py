@@ -2248,8 +2248,14 @@ def _follow_invoices(conn):
         inv = j.get('invoice') or {}
         if not inv.get('id'):
             continue
-        it = conn.execute('SELECT status FROM pump_jobber_items WHERE jobber_id=?', (inv['id'],)).fetchone()
-        if not it or it['status'] == inv.get('status'):
+        it = conn.execute('SELECT status, total FROM pump_jobber_items WHERE jobber_id=?', (inv['id'],)).fetchone()
+        if not it:
+            continue
+        if it['total'] is not None and it['total'] != inv.get('total'):
+            inv['total'] = it['total']
+            j['invoice'] = inv
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(j), c['id']))
+        if it['status'] == inv.get('status'):
             continue
         inv['status'] = it['status']
         j['invoice'] = inv
@@ -3109,6 +3115,44 @@ INVOICE_CREATE = '''mutation PumpsDraftInvoice($input: InvoiceCreateInput!) {
 }'''
 
 
+INVOICE_NET_DAYS = 30
+
+
+def invoice_due_details(days=INVOICE_NET_DAYS):
+    """Jobber's dueDetails for Net 30, from whatever this API version names
+    it: a payment-terms enum value like NET_30, or else a due date 30 days
+    out. Empty (Jobber's default terms) when the schema can't be read."""
+    try:
+        top = _type_fields('InvoiceCreateAttributes').get('inputFields') or []
+        f = next((x for x in top if x['name'] == 'dueDetails'), None)
+        tname = _type_ref(f['type'])[2] if f else None
+        fields = (_type_fields(tname).get('inputFields') or []) if tname else []
+        for fld in fields:
+            ename = _type_ref(fld['type'])[2]
+            values = _enum_values(ename)
+            pick = next((v for v in values if re.fullmatch(rf'(?i)net_?{days}(_days)?', v)), None) or \
+                next((v for v in values if re.search(rf'(?<!\d){days}(?!\d)', v)), None)
+            if pick:
+                return {fld['name']: pick}
+        for fld in fields:
+            if re.search(r'(?i)due.*date|date.*due', fld['name']):
+                return {fld['name']: (_today() + timedelta(days=days)).isoformat()}
+    except (JobberError, KeyError, TypeError):
+        pass
+    return {}
+
+
+def _enum_values(name):
+    if not name:
+        return []
+    key = f'enum:{name}'
+    if key not in _SCHEMA_CACHE:
+        data = jobber_gql('query($n: String!) { __type(name: $n) { kind enumValues { name } } }', {'n': name})
+        t = data.get('__type') or {}
+        _SCHEMA_CACHE[key] = [v['name'] for v in t.get('enumValues') or []] if t.get('kind') == 'ENUM' else []
+    return _SCHEMA_CACHE[key]
+
+
 def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', actor='system'):
     """Create the invoice in Jobber as a DRAFT. Nothing is sent: the only
     mutation used is invoiceCreate, and check_mutation_allowed() refuses any
@@ -3127,11 +3171,19 @@ def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', a
         if not client_id:
             raise ValueError('Choose the Jobber client first')
         items = _jobber_lines(line_items, 'invoice')
-        inp = {'clientId': client_id, 'subject': (subject or 'Pump service')[:255], 'dueDetails': {},
+        due = invoice_due_details()
+        inp = {'clientId': client_id, 'subject': (subject or 'Pump service')[:255], 'dueDetails': due,
                'tax': {'taxCalculationMethod': 'EXCLUSIVE'}, 'lineItems': items}
         if job_id:
             inp['jobId'] = job_id
-        data = gql_with_lines(INVOICE_CREATE, {'input': inp}, 'input')
+        try:
+            data = gql_with_lines(INVOICE_CREATE, {'input': inp}, 'input')
+        except JobberError as e:
+            if not due or 'due' not in str(e).lower():
+                raise
+            print(f'  ⚠ Pumps: Jobber would not take Net {INVOICE_NET_DAYS} ({e}); drafting with its default terms')
+            inp['dueDetails'] = {}
+            data = gql_with_lines(INVOICE_CREATE, {'input': inp}, 'input')
         payload = data.get('invoiceCreate') or {}
         errs = payload.get('userErrors') or []
         if errs:
@@ -3149,7 +3201,7 @@ def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', a
             case = conn.execute('SELECT jobber, sei_invoice_number FROM pump_cases WHERE id=?', (cid,)).fetchone()
             j = json.loads(case['jobber'] or '{}')
             j['invoice'] = {'id': inv.get('id'), 'number': ref['invoice_number'], 'uri': ref['invoice_uri'],
-                            'status': status}
+                            'status': status, 'total': _money((inv.get('amounts') or {}).get('total'))}
             j.setdefault('client', {'id': client_id})
             conn.execute('UPDATE pump_cases SET jobber=?, sei_invoice_number=?, amount=?, jobber_client_id=?, '
                          'updated_at=? WHERE id=?',
