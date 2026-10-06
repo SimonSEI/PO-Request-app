@@ -319,7 +319,7 @@ function caseRow(c, extra){
   const po = c.po_number ? ` · PO ${esc(c.po_number)}` : '';
   return `<div class="row" onclick="openCase(${c.id})"><div class="main"><div class="tt">${esc(c.title || c.client_name)}</div>
     <div class="sub">${esc(who)}${po}${extra ? ' · ' + extra : ''}</div></div>
-    <div style="text-align:right">${c.idle_days >= 7 ? `<div class="chip a">${c.idle_days}d idle</div>` : ''}</div></div>`;
+    <div style="text-align:right;display:flex;gap:6px;align-items:center">${c.idle_days >= 7 ? `<div class="chip a">${c.idle_days}d idle</div>` : ''}<button class="btn s" title="Mark done" onclick="event.stopPropagation();caseDone(${c.id})">✓</button><button class="btn s" title="Remove" onclick="event.stopPropagation();caseRemove(${c.id})">✕</button></div></div>`;
 }
 function todoBox(todos){
   const row = t => `<div class="row"><div class="main"><div class="tt"><label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer"><input type="checkbox" onchange="todoDone(${t.id}, this.checked)" style="margin-top:3px"><span>${esc(t.title)}</span></label></div>
@@ -463,7 +463,7 @@ function renderCase(){
       ${c.stage === 'scheduled' ? `<a class="btn p" href="${esc(c.schedule_email)}">✉️ Email ${esc(v)} to schedule</a>` : `<a class="btn" href="${esc(c.schedule_email)}">✉️ Email ${esc(v)}</a>`}
       <button class="btn" onclick="uploadForCase()">⬆ Add document</button>
       <button class="btn" onclick="addNote()">✎ Add note</button>
-      ${c.status === 'open' ? '<button class="btn danger" onclick="cancelCase()">Cancel item</button>' : ''}
+      ${c.status === 'open' ? `<button class="btn p" onclick="caseDone(${c.id})">✓ Mark done</button><button class="btn danger" onclick="caseRemove(${c.id})">✕ Remove</button>` : `<button class="btn" onclick="caseReopen(${c.id})">↺ Reopen</button>`}
     </div></div>
     <div class="sec"><h4>Checklist</h4><div class="steps">${steps}</div></div>
     <div class="sec"><h4>Quote vs bill</h4><div class="money">
@@ -516,6 +516,20 @@ function saveCaseFields(){
   patchCase(data).then(j => j.success && toast('Saved'));
 }
 function addNote(){ const t = prompt('Note for this item:'); if (t) patchCase({note: t}); }
+async function caseDone(id){
+  const note = prompt('Mark this job done. Note (optional):', '');
+  if (note === null) return;
+  const j = await api('/cases/' + id + '/done', {method:'POST', body:{note}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast('Marked done'); closeDrawer(); if (curTab === 'jobs') loadJobs(); else loadToday();
+}
+async function caseRemove(id){
+  if (!confirm('Remove this job from Pumps? (It is kept in the history - the "All" list on Jobs still shows it.)')) return;
+  const j = await api('/cases/' + id + '/delete', {method:'POST', body:{reason:'Removed'}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast('Removed'); closeDrawer(); if (curTab === 'jobs') loadJobs(); else loadToday();
+}
+async function caseReopen(id){ const j = await api('/cases/' + id + '/done', {method:'POST', body:{reopen:true}}); if (j.success) { toast('Reopened'); openCase(id); } else toast(j.error, true); }
 async function cancelCase(){ const r = prompt('Why is this item being cancelled?'); if (r === null) return; await api('/cases/' + curCase.id + '/delete', {method:'POST', body:{reason:r}}); closeDrawer(); }
 async function billAnyway(id){
   const j = await api('/issues/' + id + '/bill-anyway', {method:'POST', body:{}});
@@ -1047,7 +1061,7 @@ async function loadJobs(){
     <td class="num">${money(c.vendor_bill_amount ?? c.vendor_bill_total)}</td>
     <td>${ref(jb.invoice) || (c.sei_invoice_number ? '#' + esc(c.sei_invoice_number) : '')}${jb.invoice && jb.invoice.status ? ` <span class="note">${esc(jb.invoice.status.replace(/_/g, ' '))}</span>` : ''}</td>
     <td>${vp.state === 'paid' ? '<span class="chip g">paid</span>' : vp.state === 'due' ? '<span class="chip r">pay now</span>' : vp.state === 'unpaid' ? '<span class="note">not yet</span>' : ''}</td>
-    <td style="white-space:nowrap">${jb.job && jb.job.uri ? `<a class="btn s" href="${esc(jb.job.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ↗</a>` : ''}</td></tr>`; }).join('') || '<tr><td colspan="9" class="empty">No jobs.</td></tr>';
+    <td style="white-space:nowrap">${jb.job && jb.job.uri ? `<a class="btn s" href="${esc(jb.job.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ↗</a> ` : ''}${c.status === 'open' ? `<button class="btn s" title="Mark done" onclick="event.stopPropagation();caseDone(${c.id})">✓ Done</button> <button class="btn s" title="Remove" onclick="event.stopPropagation();caseRemove(${c.id})">✕</button>` : `<button class="btn s" onclick="event.stopPropagation();caseReopen(${c.id})">↺ Reopen</button>`}</td></tr>`; }).join('') || '<tr><td colspan="9" class="empty">No jobs.</td></tr>';
   const s = ji.sync || {};
   document.getElementById('syncInfo').innerHTML = !JOBBER_OK ? '<b class="warn">Jobber is not connected.</b>' :
     (s.state === 'running' ? 'Syncing Jobber…' : (s.finished_at ? `Last sync ${esc(s.finished_at)}` : 'Not synced yet.')) + ((s.errors || []).length ? ` · <span class="bad" title="${esc(s.errors.join('\n'))}">${s.errors.length} errors</span>` : '');
