@@ -488,7 +488,7 @@ def init_db():
             c.execute("UPDATE pump_site_aliases SET job_id=?, job_label=? WHERE place=? AND area=? AND "
                       "COALESCE(job_id, '')=''", (a['job_id'], a['job_label'], a['place'], a['area']))
     # When the vendor's bill was paid, and who said so (added after launch).
-    for col in ('vendor_paid_on', 'vendor_paid_by'):
+    for col in ('vendor_paid_on', 'vendor_paid_by', 'closed_by_hand'):
         try:
             c.execute(f"ALTER TABLE pump_cases ADD COLUMN {col} TEXT DEFAULT ''")
         except sqlite3.OperationalError:
@@ -710,9 +710,12 @@ def compare_amounts(case):
 
 
 def _refresh_case(conn, case_id):
-    row = conn.execute('SELECT steps, status FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+    row = conn.execute('SELECT steps, status, COALESCE(closed_by_hand, \'\') AS by_hand FROM pump_cases WHERE id=?',
+                       (case_id,)).fetchone()
     if not row:
         return
+    if row['status'] == 'closed' and row['by_hand']:
+        return   # marked done by the office: stays done until reopened
     try:
         steps = json.loads(row['steps'] or '{}')
     except (TypeError, ValueError):
@@ -3695,6 +3698,33 @@ def h_case_update(actor, case_id):
         conn.close()
 
 
+@api('/cases/<int:case_id>/done', methods=('POST',))
+def h_case_done(actor, case_id):
+    """The office marks a job done by hand ({"note": "..."}): it leaves the
+    lists and its open issues are cleared. {"reopen": true} undoes it."""
+    d = _json()
+    conn = _conn()
+    try:
+        if not conn.execute('SELECT 1 FROM pump_cases WHERE id=?', (case_id,)).fetchone():
+            return {'success': False, 'error': 'Not found'}, 404
+        if d.get('reopen'):
+            conn.execute("UPDATE pump_cases SET status='open', closed_by_hand='', closed_at=NULL, updated_at=? WHERE id=?",
+                         (_now_text(), case_id))
+            _refresh_case(conn, case_id)
+            _event(conn, actor, 'reopened', '', case_id=case_id)
+        else:
+            note = (d.get('note') or '').strip()
+            conn.execute("UPDATE pump_cases SET status='closed', stage='done', closed_by_hand=?, closed_at=?, updated_at=? "
+                         "WHERE id=?", (f'{actor}: {note}' if note else actor, _now_text(), _now_text(), case_id))
+            conn.execute("UPDATE pump_issues SET resolved_at=?, resolved_by=?, resolution=? WHERE case_id=? AND "
+                         "resolved_at IS NULL", (_now_text(), actor, 'Job marked done by hand', case_id))
+            _event(conn, actor, 'marked done by hand', note, case_id=case_id)
+        conn.commit()
+        return {}
+    finally:
+        conn.close()
+
+
 @api('/cases/<int:case_id>/delete', methods=('POST',))
 def h_case_delete(actor, case_id):
     """Cancel (kept, with its history) - items are never hard-deleted."""
@@ -3704,6 +3734,8 @@ def h_case_delete(actor, case_id):
     try:
         conn.execute("UPDATE pump_cases SET status='cancelled', stage='cancelled', updated_at=? WHERE id=?",
                      (_now_text(), case_id))
+        conn.execute("UPDATE pump_issues SET resolved_at=?, resolved_by=?, resolution=? WHERE case_id=? AND "
+                     "resolved_at IS NULL", (_now_text(), actor, 'Job removed', case_id))
         _event(conn, actor, 'cancelled', _json().get('reason', ''), case_id=case_id)
         conn.commit()
         return {}

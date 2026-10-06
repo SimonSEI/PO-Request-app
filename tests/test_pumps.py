@@ -1462,6 +1462,23 @@ class PumpsTest(unittest.TestCase):
         finally:
             P.JOBBER_STATIC_TOKEN = saved
 
+    def test_mark_done_remove_and_reopen(self):
+        self.extracts['b-done.pdf'] = extraction('bill', '31700', client='Coral Isles', subtotal=500)
+        b = self.upload('b-done.pdf')
+        cid = b['case_id']
+        self.assertTrue([i for i in self.case(cid)['issues'] if not i['resolved_at']])
+        self.assertTrue(self.c.post(f'/pumps/api/cases/{cid}/done', json={'note': 'Handled by phone'}).get_json()['success'])
+        case = self.case(cid)
+        self.assertEqual((case['status'], [i for i in case['issues'] if not i['resolved_at']]), ('closed', []))
+        # Step changes later don't reopen a job marked done by hand.
+        self.c.patch(f'/pumps/api/cases/{cid}', json={'notes': 'x'})
+        self.assertEqual(self.case(cid)['status'], 'closed')
+        self.assertNotIn(cid, [c['id'] for c in self.c.get('/pumps/api/cases?status=open').get_json()['cases']])
+        self.c.post(f'/pumps/api/cases/{cid}/done', json={'reopen': True})
+        self.assertEqual(self.case(cid)['status'], 'open')
+        self.c.post(f'/pumps/api/cases/{cid}/delete', json={'reason': 'Removed'})
+        self.assertEqual(self.case(cid)['status'], 'cancelled')
+
     def test_maintenance_accounts(self):
         today = P._today
         P._today = lambda: P.datetime(2026, 10, 5).date()
