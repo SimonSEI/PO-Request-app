@@ -2160,6 +2160,17 @@ def sync_jobber(full=False, actor='system'):
         return status
 
 
+def untracked_jobber_items(conn):
+    """Open pump requests, quotes and one-off jobs made in Jobber that no item
+    here follows yet and nobody has ignored."""
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM pump_jobber_items WHERE kind IN ('request','quote','job') AND case_id IS NULL "
+        "AND ignored=0 ORDER BY created_at DESC")]
+    return [r for r in rows if r['status'] in OPEN_STATUSES[r['kind']]
+            and not (r['kind'] == 'job' and r['job_type'] == 'recurring')
+            and not (r['kind'] == 'quote' and r['status'] == 'draft')]
+
+
 def _link_jobber_items(conn):
     """Attach Jobber records to items by PO number, and fill the item's Jobber links."""
     linked = 0
@@ -2181,6 +2192,22 @@ def _link_jobber_items(conn):
                      "THEN ? ELSE jobber_request_made END WHERE id=?",
                      (json.dumps(j), _jobber_ref_text(it), c['id']))
         _event(conn, 'jobber sync', 'linked', f"{it['kind']} {it['number'] or ''} {it['title']}", case_id=c['id'])
+        linked += 1
+    # A quote or job made in Jobber from a request we already follow: same client
+    # and property, and only one open item there that has no quote/job of that kind.
+    open_cases = [dict(r) for r in conn.execute(
+        "SELECT id, jobber, jobber_client_id, jobber_property_id, opened_on FROM pump_cases "
+        "WHERE status='open' AND jobber_client_id != '' AND jobber_property_id != ''")]
+    for it in conn.execute("SELECT * FROM pump_jobber_items WHERE kind IN ('quote','job') AND case_id IS NULL "
+                           "AND ignored=0 AND client_id != '' AND property_id != ''").fetchall():
+        hits = [c for c in open_cases if c['jobber_client_id'] == it['client_id']
+                and c['jobber_property_id'] == it['property_id']
+                and not json.loads(c['jobber'] or '{}').get(it['kind'])
+                and (it['created_at'] or '')[:10] >= (c['opened_on'] or '')[:10]]
+        if len(hits) != 1:
+            continue
+        _link_item(conn, it['jobber_id'], hits[0]['id'], 'jobber sync')
+        hits[0]['jobber'] = json.dumps({**json.loads(hits[0]['jobber'] or '{}'), it['kind']: {'id': it['jobber_id']}})
         linked += 1
     return linked
 
@@ -3334,9 +3361,7 @@ def work_queue(conn):
         "SELECT * FROM pump_docs WHERE kind='report' AND status != 'dismissed' "
         "AND (jobber IS NULL OR jobber NOT LIKE '%note_id%') ORDER BY id")]
     scada = [s for s in scada_rows(conn) if s['state'] in ('overdue', 'due_soon')]
-    new_requests = [dict(r) for r in conn.execute(
-        "SELECT * FROM pump_jobber_items WHERE kind='request' AND status IN ('new','overdue','unscheduled') "
-        "AND case_id IS NULL AND ignored=0 ORDER BY created_at DESC")]
+    new_requests = untracked_jobber_items(conn)
     stale = [c for c in cases if c['idle_days'] >= STALE_DAYS]
     return {
         'issues': issues,
@@ -3613,8 +3638,9 @@ def h_jobber_items(actor):
             sql += ' AND category=?'
             args.append(request.args['category'])
         if request.args.get('kind'):
-            sql += ' AND kind=?'
-            args.append(request.args['kind'])
+            kinds = [k for k in request.args['kind'].split(',') if k]
+            sql += f" AND kind IN ({','.join('?' * len(kinds))})"
+            args += kinds
         rows = [dict(r) for r in conn.execute(sql + ' ORDER BY updated_at DESC', args)]
         if request.args.get('open', '1') == '1':
             rows = [r for r in rows if r['status'] in OPEN_STATUSES.get(r['kind'], set())
@@ -4198,6 +4224,12 @@ def h_jobber_item(actor, jobber_id):
                 _set_step(conn, cid, 'client_approved', at=(it['updated_at'] or '')[:10] or None, by=actor)
             if it['kind'] == 'job':
                 _set_step(conn, cid, 'client_approved', at=(it['created_at'] or '')[:10] or None, by=actor)
+                if it['completed_at'] or it['status'] == 'requires_invoicing':
+                    _set_step(conn, cid, 'work_done', at=(it['completed_at'] or it['updated_at'] or '')[:10] or None,
+                              by=actor)
+                elif it['start_at']:
+                    _set_step(conn, cid, 'scheduled', at=(it['created_at'] or '')[:10] or None, by=actor)
+                    conn.execute('UPDATE pump_cases SET scheduled_for=? WHERE id=?', (it['start_at'][:10], cid))
         else:
             raise ValueError('action must be track, link, ignore or unignore')
         conn.commit()
