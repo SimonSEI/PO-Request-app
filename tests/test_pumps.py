@@ -1185,6 +1185,11 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(tech.get('/pumps/api/summary').status_code, 401)
         self.assertEqual(tech.get('/pumps').status_code, 302)
         self.assertEqual(self.c.get('/pumps').status_code, 200)
+        # The job panel's script uses these; a page without them can't open a job.
+        page = self.c.get('/pumps').get_data(as_text=True)
+        for name in ('MONEY', 'CATS', 'STEPS'):
+            self.assertRegex(page, rf'\bconst {name}\s*=', name)
+        self.assertIn('function journeyHtml', page)
 
     def test_office_writes_need_csrf_but_openclaw_does_not(self):
         A.app.config['WTF_CSRF_ENABLED'] = True
