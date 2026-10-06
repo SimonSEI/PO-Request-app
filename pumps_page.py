@@ -381,7 +381,7 @@ async function loadToday(){
   updateScanInfo(j.scan);
   const g = [];
   g.push(todoBox(q.todos));
-  g.push(box('⚠️ Issues to resolve', q.issues, i => `<div class="row" onclick="openCase(${i.case_id})"><div class="main"><div class="tt">${esc(i.title || i.client_name || 'Item ' + i.case_id)}</div><div class="sub">${esc(i.message)}</div></div></div>`, q.issues.length ? 'red' : ''));
+  g.push(box('⚠️ Issues to resolve', q.issues, i => `<div class="row" onclick="openCase(${i.case_id})"><div class="main"><div class="tt">${esc(i.title || i.client_name || 'Item ' + i.case_id)}</div><div class="sub">${esc(i.message)}</div></div>${i.kind === 'no_quote' ? `<button class="btn s p" onclick="event.stopPropagation();billAnyway(${i.id})">Bill it +30%</button>` : ''}</div>`, q.issues.length ? 'red' : ''));
   g.push(box('💸 Pay the vendor - the client has paid', q.vendor_bills_to_pay, c => `<div class="row" onclick="openCase(${c.id})"><div class="main"><div class="tt">${esc(c.title || c.client_name)}</div><div class="sub">${esc(c.vendor || 'Wettech')} bill ${c.vendor_bill_number ? '#' + esc(c.vendor_bill_number) + ' · ' : ''}${money(c.vendor_bill_total ?? c.vendor_bill_amount)} · our Jobber invoice ${c.sei_invoice_number ? '#' + esc(c.sei_invoice_number) + ' ' : ''}is paid</div></div><button class="btn s p" onclick="event.stopPropagation();markVendorPaid(${c.id})">Mark paid</button></div>`, q.vendor_bills_to_pay.length ? 'red' : '', 'Our client paid the Jobber invoice - the vendor\'s bill needs to be paid.'));
   g.push(box('📅 Needs scheduling with Wettech', q.needs_scheduling, c => caseRow(c, c.scheduled_for ? 'for ' + esc(c.scheduled_for) : ''), q.needs_scheduling.length ? 'amber' : '', 'Client approved - get it on Wettech\'s calendar.'));
   g.push(box('📝 Quotes to draft in Jobber', q.quotes_to_draft, d => `<div class="row" onclick="openCase(${d.case_id})"><div class="main"><div class="tt">${esc(d.client_name || d.file_name)}</div><div class="sub">${esc(d.vendor)} quote ${d.doc_number ? '#' + esc(d.doc_number) + ' ' : ''}· ${money(d.subtotal ?? d.total)}${((d.jobber || {}).quote_pending || {}).reason ? ' · <b class="warn">' + esc(d.jobber.quote_pending.reason) + '</b>' : ''}</div></div><button class="btn s p" onclick="event.stopPropagation();draftQuote(${d.id})">Draft quote</button></div>`, '', 'Drafted automatically when the client and property are clear - these need a person to choose.'));
@@ -450,7 +450,7 @@ function renderCase(){
       ${d.kind === 'report' && !(d.jobber||{}).note_id ? `<button class="btn s" onclick="logReport(${d.id})">Log in Jobber</button>` : ''}
       ${d.kind === 'report' && (d.jobber||{}).note_id ? '<span class="chip g">logged in Jobber</span>' : ''}
       <button class="btn s" onclick="openDoc(${d.id})">Details</button></div>`).join('') || '<div class="note">No documents yet.</div>';
-  const issues = (c.issues || []).map(i => `<div class="issue ${i.resolved_at ? 'done' : ''}"><div>${esc(i.message)}${i.resolved_at ? `<div class="note">Resolved by ${esc(i.resolved_by)}: ${esc(i.resolution)}</div>` : ''}</div>${i.resolved_at ? '' : `<button class="btn s" onclick="resolveIssue(${i.id})">Resolve…</button>`}</div>`).join('');
+  const issues = (c.issues || []).map(i => `<div class="issue ${i.resolved_at ? 'done' : ''}"><div>${esc(i.message)}${i.resolved_at ? `<div class="note">Resolved by ${esc(i.resolved_by)}: ${esc(i.resolution)}</div>` : ''}</div>${i.resolved_at ? '' : `${i.kind === 'no_quote' ? `<button class="btn s p" onclick="billAnyway(${i.id})">Bill it +30%</button> ` : ''}<button class="btn s" onclick="resolveIssue(${i.id})">Resolve…</button>`}</div>`).join('');
   const f = (k, label, type, w) => `<label class="${w ? 'w' : ''}">${label}${type === 'area' ? `<textarea data-f="${k}">${esc(c[k])}</textarea>` : `<input type="${type || 'text'}" data-f="${k}" value="${esc(MONEY.has(k) || k.endsWith('_amount') ? (c[k] ?? '') : c[k])}">`}</label>`;
   document.getElementById('drawer').innerHTML = `
   <div class="hd"><div><h2>${esc(c.title || c.client_name)}</h2><div class="note">${catChip(c.category)} ${stageChip(c)} ${c.po_number ? 'PO ' + esc(c.po_number) : ''} · opened ${esc(c.opened_on)}</div></div>
@@ -516,6 +516,12 @@ function saveCaseFields(){
 }
 function addNote(){ const t = prompt('Note for this item:'); if (t) patchCase({note: t}); }
 async function cancelCase(){ const r = prompt('Why is this item being cancelled?'); if (r === null) return; await api('/cases/' + curCase.id + '/delete', {method:'POST', body:{reason:r}}); closeDrawer(); }
+async function billAnyway(id){
+  const j = await api('/issues/' + id + '/bill-anyway', {method:'POST', body:{}});
+  if (!j.success) { toast(j.error, true); return; }
+  closeDrawer(); loadToday();
+  if (j.doc_id) draftInvoice(j.doc_id); else toast('Alert cleared');
+}
 async function resolveIssue(id){ const r = prompt('How was it resolved? (e.g. "Wettech confirmed extra fittings, client approved")'); if (!r) return; const j = await api('/issues/' + id + '/resolve', {method:'POST', body:{resolution:r}}); if (j.success) openCase(curCase ? curCase.id : null).then(loadToday); else toast(j.error, true); }
 function uploadForCase(){ const i = document.createElement('input'); i.type = 'file'; i.multiple = true; i.accept = '.pdf,.docx,.doc'; i.onchange = () => uploadFiles(i.files, curCase.id); i.click(); }
 
@@ -615,7 +621,7 @@ async function draftInvoice(docId){
   openModal('Draft invoice in Jobber', `
     <div class="safe">This creates a DRAFT invoice in Jobber. Nothing is sent to the client - review it in Jobber and send it from there.</div>
     ${(d.case_issues || []).map(i => `<div class="issue">⚠️ ${esc(i.message)}</div>`).join('')}
-    <div class="note">From ${esc(d.vendor)} bill #${esc(d.doc_number)} - ${money(d.subtotal)} before tax, ${money(d.total)} total. The vendor's sales tax line is left off: Jobber adds the client's tax to taxable lines.${s.markup_pct ? ' Prices include ' + s.markup_pct + '% markup.' : ''}</div>
+    <div class="note">From ${esc(d.vendor)} bill #${esc(d.doc_number)} - ${money(d.subtotal)} before tax, ${money(d.total)} total. One Service Proposal Amount line: the bill before tax${s.markup_pct ? ' plus ' + s.markup_pct + '%' : ''}; Jobber adds the client's tax.</div>
     <div><b>Jobber client</b><div class="toolbar" style="margin:6px 0"><input type="text" id="cq" value="${esc(d.client_name)}" style="flex:1"><button class="btn" onclick="findClients()">Search</button></div><div id="cands"><div class="note">Searching…</div></div></div>
     <label class="note">Invoice subject<input type="text" id="invSubject" value="${esc(inv.subject)}" style="width:100%"></label>
     <div><b>Line items</b> <span class="note">(edit before creating)</span><table class="t" style="margin-top:6px"><thead><tr><th>Name</th><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th>Tax</th><th></th></tr></thead><tbody id="invLines"></tbody></table>

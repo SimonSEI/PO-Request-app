@@ -485,7 +485,8 @@ class PumpsTest(unittest.TestCase):
         inp = creates[0]['input']
         self.assertEqual(inp['clientId'], 'C1', 'the clear best client, not the work-orders lead')
         self.assertEqual(len(inp['lineItems']), 1, 'sales tax line left off')
-        self.assertEqual(inp['lineItems'][0]['unitPrice'], 1803.81)
+        # No Jobber quote to copy: one line, the bill before tax plus 30%.
+        self.assertEqual((inp['lineItems'][0]['name'], inp['lineItems'][0]['unitPrice']), ('Service Proposal Amount', 2344.95))
         self.assertNotIn('quotation', inp['lineItems'][0]['description'].lower())
         self.assertEqual(inp['tax'], {'taxCalculationMethod': 'EXCLUSIVE'})
         self.assertFalse(any(word in q for q, _ in fake.calls for word in ('Send', 'MarkAsSent')))
@@ -1335,6 +1336,32 @@ class PumpsTest(unittest.TestCase):
         car = rows['Carlisle (The Carlisle)']
         self.assertTrue(car['pump'] and car['lake'])
         self.assertFalse(any(r['pump'] is None and r['name'] == 'Carlisle (The Carlisle)' for r in rows.values()))
+
+    def test_quotes_and_invoices_are_one_service_proposal_line(self):
+        doc = {'subtotal': 600.0, 'total': 639.0, 'description': 'Pump repair', 'line_items': [
+            {'name': 'After making repairs to get pump running', 'description': 'After making repairs to get pump running, replace the contactor.',
+             'quantity': 1, 'unit_price': 450.0, 'amount': 450.0, 'taxable': True},
+            {'name': 'Labor', 'description': 'Labor 2 hours', 'quantity': 2, 'unit_price': 75.0, 'amount': 150.0, 'taxable': True},
+            {'name': 'Sales Tax', 'description': 'Sales Tax 6.5%', 'amount': 39.0, 'is_tax': True}]}
+        for sugg in (P.suggest_quote(doc), P.suggest_invoice(doc)):
+            self.assertEqual(len(sugg['line_items']), 1)
+            line = sugg['line_items'][0]
+            self.assertEqual((line['name'], line['quantity'], line['unit_price']), ('Service Proposal Amount', 1, 780.0))
+            self.assertIn('replace the contactor', line['description'])
+            self.assertIn('Labor 2 hours', line['description'])
+            self.assertNotIn('Sales Tax', line['description'])
+
+    def test_bill_without_quote_can_be_billed_plus_30(self):
+        self.extracts['b-noq2.pdf'] = extraction('bill', '30990', client='Coral Isles', subtotal=500)
+        b = self.upload('b-noq2.pdf')
+        issue = [i for i in self.case(b['case_id'])['issues'] if i['kind'] == 'no_quote' and not i['resolved_at']][0]
+        r = self.c.post(f"/pumps/api/issues/{issue['id']}/bill-anyway", json={}).get_json()
+        self.assertEqual(r['doc_id'], b['doc_id'])
+        case = self.case(b['case_id'])
+        self.assertEqual([i for i in case['issues'] if not i['resolved_at']], [])
+        self.assertTrue({s['key']: s for s in case['step_list']}['bill_checked'].get('at'))
+        doc = self.c.get(f"/pumps/api/docs/{b['doc_id']}").get_json()['doc']
+        self.assertEqual(doc['invoice_suggestion']['line_items'][0]['unit_price'], 650.0)
 
     def test_maintenance_accounts(self):
         today = P._today
