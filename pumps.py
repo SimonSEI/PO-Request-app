@@ -3441,7 +3441,8 @@ def work_queue(conn):
     quotes_to_draft = [d for d in (_doc_dict(r) for r in conn.execute(
         "SELECT * FROM pump_docs WHERE kind='quote' AND status != 'dismissed' "
         "AND (jobber IS NULL OR jobber NOT LIKE '%quote_id%') ORDER BY id")) if d['case_id'] in to_quote_ids]
-    vendor_bills_to_pay = [c for c in list_cases(conn, 'all') if c['status'] != 'cancelled'
+    vendor_bills_to_pay = [{**c, 'pay_email': _state_get(f"pay_email:{c['id']}", conn=conn) or {}}
+                           for c in list_cases(conn, 'all') if c['status'] != 'cancelled'
                            and c['vendor_pay']['state'] == 'due']
     reports_to_log = [_doc_dict(r) for r in conn.execute(
         "SELECT * FROM pump_docs WHERE kind='report' AND status != 'dismissed' "
@@ -3645,6 +3646,56 @@ def vendor_pay_email(conn, case_id, signer=''):
                        + (f' - {c["client_name"]}' if c.get('client_name') else ''),
             'body': body, 'bill_doc_id': bill['id'] if bill else None,
             'bill_file': bill['file_name'] if bill else ''}
+
+
+def send_vendor_pay_email(case_id, actor, body=None):
+    """Send the pay-the-vendor email to Christian when someone in the office
+    clicks Send, from the PO mailbox, with the vendor's bill attached."""
+    import html as _html
+    conn = _conn()
+    try:
+        e = vendor_pay_email(conn, case_id, actor)
+        bill = conn.execute('SELECT file_name, file_path FROM pump_docs WHERE id=?',
+                            (e['bill_doc_id'],)).fetchone() if e and e['bill_doc_id'] else None
+    finally:
+        conn.close()
+    if not e:
+        raise ValueError('No such item')
+    if not e['to']:
+        raise ValueError("No email address is saved for Christian - add it in the main app's Settings")
+    html = ('<div style="font-family:Arial,sans-serif;font-size:14px">'
+            + '<br>'.join(_html.escape(line) for line in ((body or '').strip() or e['body']).split('\n')) + '</div>')
+    atts = []
+    if bill and bill['file_path'] and os.path.exists(bill['file_path']):
+        with open(bill['file_path'], 'rb') as f:
+            atts.append({'@odata.type': '#microsoft.graph.fileAttachment', 'name': bill['file_name'] or 'invoice.pdf',
+                         'contentType': 'application/pdf' if (bill['file_name'] or '').lower().endswith('.pdf')
+                         else 'application/octet-stream', 'contentBytes': base64.b64encode(f.read()).decode()})
+    error = ''
+    try:
+        graph_send(e['to'], e['subject'], html, atts or None)
+    except Exception as ex:
+        error = str(ex)
+    rec = {'at': _now_text(), 'to': e['to'], 'by': actor, **({'error': error} if error else {'sent': True})}
+    _state_set(f'pay_email:{case_id}', rec)
+    conn = _conn()
+    try:
+        _event(conn, actor, 'could not email Christian' if error else 'emailed Christian to pay the vendor',
+               error or f"To {e['to']}: {e['subject']}", case_id=case_id)
+        conn.commit()
+    finally:
+        conn.close()
+    return rec
+
+
+@api('/cases/<int:case_id>/pay_email/send', methods=('POST',))
+def h_pay_email_send(actor, case_id):
+    if actor == BOT:
+        return {'success': False, 'error': 'Only the office can send this'}, 403
+    rec = send_vendor_pay_email(case_id, actor, str(_json().get('body') or '')[:20000])
+    if rec.get('error'):
+        return {'success': False, 'error': 'Not sent - ' + rec['error']}, 502
+    return {'sent': rec}
 
 
 @api('/cases/<int:case_id>/pay_email')

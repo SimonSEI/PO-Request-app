@@ -408,8 +408,8 @@ async function loadToday(){
   const urgent = [], todo = [], waiting = [];
   q.issues.forEach(i => urgent.push(todoItem(i.kind === 'no_quote' ? 'No quote' : 'Fix', 'r', esc(i.title || i.client_name || 'Item ' + i.case_id), esc(i.message), `openCase(${i.case_id})`,
     (i.kind === 'no_quote' ? `<button class="btn s p" onclick="billAnyway(${i.id})">Bill it +30%</button>` : '') + `<button class="btn s" onclick="resolveIssue(${i.id})">Resolved</button>`)));
-  q.vendor_bills_to_pay.forEach(c => urgent.push(todoItem('Pay ' + esc(c.vendor || 'Wettech'), 'r', caseTitle(c), `${esc(c.vendor || 'Wettech')} bill ${c.vendor_bill_number ? '#' + esc(c.vendor_bill_number) + ' · ' : ''}${money(c.vendor_bill_total ?? c.vendor_bill_amount)} · the client paid our invoice${c.sei_invoice_number ? ' #' + esc(c.sei_invoice_number) : ''}`, open(c),
-    `<button class="btn s p" onclick="payEmail(${c.id})">✉ Email Christian</button><button class="btn s" onclick="markVendorPaid(${c.id})">Mark paid</button>`)));
+  q.vendor_bills_to_pay.forEach(c => urgent.push(todoItem('Pay ' + esc(c.vendor || 'Wettech'), 'r', caseTitle(c), `${esc(c.vendor || 'Wettech')} bill ${c.vendor_bill_number ? '#' + esc(c.vendor_bill_number) + ' · ' : ''}${money(c.vendor_bill_total ?? c.vendor_bill_amount)} · the client paid our invoice${c.sei_invoice_number ? ' #' + esc(c.sei_invoice_number) : ''}${(c.pay_email || {}).sent ? `<br><b class="ok">✓ Emailed Christian ${esc(c.pay_email.at.slice(0, 16))}</b>` : (c.pay_email || {}).error ? `<br><b class="bad">Email not sent: ${esc(c.pay_email.error)}</b>` : ''}`, open(c),
+    `<button class="btn s p" onclick="sendPayEmail(${c.id}, this)">✉ ${(c.pay_email || {}).sent ? 'Send again' : 'Send email'}</button><button class="btn s" onclick="payEmail(${c.id})">Preview</button><button class="btn s" onclick="markVendorPaid(${c.id})">Mark paid</button>`)));
   q.scada_attention.filter(s => s.state === 'overdue').forEach(s => urgent.push(todoItem('SCADA overdue', 'r', esc(s.client_name) + (s.site ? ' · ' + esc(s.site) : ''), 'Renewal overdue since ' + esc(s.next_due_on) + (s.state_note ? ' · ' + esc(s.state_note) : ''), "showTab('scada')", '')));
   q.bills_to_draft.forEach(d => todo.push(todoItem('Draft invoice', 'a', esc(d.client_name || d.file_name), `${esc(d.vendor)} bill #${esc(d.doc_number)} · ${money(d.total)}`, `openCase(${d.case_id})`,
     `<button class="btn s p" onclick="draftInvoice(${d.id})">Draft invoice</button>`)));
@@ -540,11 +540,20 @@ async function payEmail(id){
   const e = j.email;
   window._payMail = e;
   openModal('Email Christian to pay the vendor', `
-    <div class="note">Copy the email, paste it into a new email in Outlook${e.bill_doc_id ? ', attach the vendor\'s invoice' : ''} and send it. Then press <b>Mark paid</b> once it's paid.</div>
+    <div class="note">${e.to ? `<b>Send email</b> sends it from the PO mailbox${e.bill_doc_id ? ' with the vendor\'s invoice attached' : ''} - edit it first if you like. Or copy` : 'Copy'} it into Outlook yourself. Press <b>Mark paid</b> once it's paid.</div>
     <div class="note">To <b>${esc(e.to || 'Christian (no email address saved)')}</b> ${e.to ? `<a href="#" onclick="event.preventDefault();navigator.clipboard.writeText(_payMail.to);toast('Address copied')">copy</a>` : ''} · Subject <b>${esc(e.subject)}</b> <a href="#" onclick="event.preventDefault();navigator.clipboard.writeText(_payMail.subject);toast('Subject copied')">copy</a></div>
     <textarea id="payMailBody" style="width:100%;min-height:220px;font:inherit">${esc(e.body)}</textarea>
     ${e.bill_doc_id ? `<div><a class="btn s" target="_blank" href="/pumps/api/docs/${e.bill_doc_id}/file">⬇ ${esc(e.bill_file || 'Vendor invoice')}</a></div>` : ''}`,
-    `<button class="btn" onclick="closeModal()">Close</button>${e.to ? `<a class="btn" href="mailto:${encodeURIComponent(e.to)}?subject=${encodeURIComponent(e.subject)}&body=${encodeURIComponent(e.body)}">Open in email</a>` : ''}<button class="btn p" onclick="navigator.clipboard.writeText(document.getElementById('payMailBody').value);toast('Email copied - paste it into Outlook')">Copy email</button>`);
+    `<button class="btn" onclick="closeModal()">Close</button>${e.to ? `<a class="btn" href="mailto:${encodeURIComponent(e.to)}?subject=${encodeURIComponent(e.subject)}&body=${encodeURIComponent(e.body)}">Open in email</a>` : ''}<button class="btn" onclick="navigator.clipboard.writeText(document.getElementById('payMailBody').value);toast('Email copied - paste it into Outlook')">Copy email</button>${e.to ? `<button class="btn p" onclick="sendPayEmail(${id}, this)">✉ Send email</button>` : ''}`);
+}
+async function sendPayEmail(id, btn){
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  const edited = document.getElementById('payMailBody');
+  const j = await api('/cases/' + id + '/pay_email/send', {method:'POST', body:{body: edited && !document.getElementById('modalWrap').classList.contains('hide') ? edited.value : ''}});
+  if (btn) { btn.disabled = false; btn.textContent = '✉ Send email'; }
+  if (!j.success) { toast(j.error, true); loadToday(); return; }
+  toast('Sent to ' + j.sent.to);
+  closeModal(); loadToday();
 }
 async function markVendorPaid(id){
   const d = prompt('Date Wettech\'s bill was paid (YYYY-MM-DD):', new Date().toISOString().slice(0,10));
