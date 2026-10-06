@@ -65,6 +65,8 @@ NEVER_ROLES = ('technician', 'property_manager')
 PUMPS_USERS = {u.strip().lower() for u in os.environ.get('PUMPS_USERS', '').split(',') if u.strip()}
 # OpenClaw's key, shared with the older /api/openclaw/pumps intake.
 OPENCLAW_API_KEY = os.environ.get('OPENCLAW_API_KEY', '')
+# Switched off (Oct 2026): Pumps is used by the office only.
+OPENCLAW_ENABLED = os.environ.get('PUMPS_OPENCLAW', 'false').lower() in ('1', 'true', 'yes', 'on')
 
 # ── settings ─────────────────────────────────────────────────────────────────
 CLAUDE_MODEL = os.environ.get('PUMPS_CLAUDE_MODEL', 'claude-opus-5-5')
@@ -90,7 +92,7 @@ AUTO_DRAFT_QUOTES = os.environ.get('PUMPS_AUTO_DRAFT_QUOTES', 'true').lower() in
 # job is clear.
 AUTO_LOG_REPORTS = os.environ.get('PUMPS_AUTO_LOG_REPORTS', 'true').lower() in ('1', 'true', 'yes', 'on')
 MATCH_TOLERANCE = float(os.environ.get('PUMPS_MATCH_TOLERANCE', '0.50') or 0.5)
-SCADA_DUE_SOON_DAYS = int(os.environ.get('PUMPS_SCADA_DUE_SOON_DAYS', '60') or 60)
+SCADA_DUE_SOON_DAYS = int(os.environ.get('PUMPS_SCADA_DUE_SOON_DAYS', '30') or 30)
 STALE_DAYS = int(os.environ.get('PUMPS_STALE_DAYS', '7') or 7)
 WEBHOOK_URL = os.environ.get('PUMPS_WEBHOOK_URL', '')
 
@@ -112,7 +114,9 @@ JOBBER_TOKEN = 'https://api.getjobber.com/api/oauth/token'
 # emails, texts or marks anything as sent - quotes and invoices are created as
 # drafts and stay drafts until someone in the office sends them from Jobber.
 ALLOWED_MUTATIONS = frozenset({'quoteCreate', 'invoiceCreate', 'jobCreateNote', 'clientCreateNote',
-                               'requestCreateNote', 'quoteCreateNote'})
+                               'requestCreateNote', 'quoteCreateNote',
+                               # An approved quote made a job, and a service-call visit on a job (Oct 2026).
+                               'jobCreate', 'visitCreate', 'jobAddVisit', 'jobCreateVisit', 'jobVisitCreate'})
 
 # What counts as pump work when searching Jobber, by category.
 JOBBER_TERMS = {
@@ -889,10 +893,18 @@ def _check_bill(conn, case_id, actor='system'):
             _set_step(conn, case_id, 'bill_checked', at=_today().isoformat(), by='system')
             _event(conn, 'system', 'bill matches quote', f"${cmp['bill']:,.2f}", case_id=case_id)
     elif cmp['state'] in ('over', 'under'):
+        # The client is invoiced what they approved; the difference is
+        # between us and the vendor - a to-do, not a hold.
         word = 'more' if cmp['state'] == 'over' else 'less'
-        open_issue(conn, case_id, 'amount_mismatch',
-                   f"Bill ${cmp['bill']:,.2f} is ${abs(cmp['diff']):,.2f} {word} than the quote ${cmp['quote']:,.2f}"
-                   f" - check with {case.get('vendor') or 'the vendor'} before invoicing.")
+        name, email = _vendor_contact(case.get('vendor'))
+        add_todo(conn, f"bill-check:{case_id}:{case.get('vendor_bill_number') or ''}",
+                 f"Check with {name} - {case.get('vendor') or 'vendor'} bill doesn't match the quote "
+                 f"({case.get('client_name') or case.get('title') or ''})",
+                 f"Bill {('#' + case['vendor_bill_number'] + ' ') if case.get('vendor_bill_number') else ''}"
+                 f"${cmp['bill']:,.2f} is ${abs(cmp['diff']):,.2f} {word} than their quote ${cmp['quote']:,.2f}. "
+                 f"Our invoice is drafted at the quoted price. {email}", {'case_id': case_id})
+        if not (steps.get('bill_checked') or {}).get('at'):
+            _set_step(conn, case_id, 'bill_checked', at=_today().isoformat(), by='system (see the to-do)')
     elif cmp['state'] == 'no_quote' and not (steps.get('vendor_quote') or {}).get('na') \
             and not (steps.get('bill_checked') or {}).get('na'):
         open_issue(conn, case_id, 'no_quote',
@@ -1487,6 +1499,8 @@ def ingest_document(filename, data, source='upload', email=None, kind_hint=None,
         res['auto_quote'] = auto_draft_quote(res['doc_id'])
     if res.get('kind') == 'report' and res.get('doc_id') and not res.get('review'):
         res['auto_note'] = auto_log_report(res['doc_id'])
+    if res.get('kind') == 'bill' and res.get('case_id') and not res.get('review'):
+        res['auto_invoice'] = auto_draft_invoice(res['doc_id'])
     return res
 
 
@@ -1754,9 +1768,14 @@ def scan_mailbox(actor='system'):
         summary = {'emails_checked': 0, 'documents_added': 0, 'skipped': 0, 'errors': [], 'added': [],
                    'started_at': _now_text()}
         _state_set('scan_status', {'state': 'running', **summary})
+        plain_since = max(_scan_since() or '', (_today() - timedelta(days=SERVICE_CALL_DAYS)).isoformat())
         try:
-            fetched = CFG['fetch_emails'](log_table='pump_email_scan_log', extensions=('.pdf', '.docx', '.doc'),
-                                          since=_scan_since())
+            try:
+                fetched = CFG['fetch_emails'](log_table='pump_email_scan_log', extensions=('.pdf', '.docx', '.doc'),
+                                              since=_scan_since(), plain_since=plain_since)
+            except TypeError:
+                fetched = CFG['fetch_emails'](log_table='pump_email_scan_log', extensions=('.pdf', '.docx', '.doc'),
+                                              since=_scan_since())
         except Exception as e:
             summary['errors'].append(f'Mailbox: {e}')
             fetched = {'emails': []}
@@ -1774,7 +1793,7 @@ def scan_mailbox(actor='system'):
                     subject = msg.get('subject', '')
                     preview = msg.get('bodyPreview', '')
                     when = msg.get('receivedDateTime', '')
-                    attachments = CFG['graph_attachments'](uid)
+                    attachments = CFG['graph_attachments'](uid) if msg.get('hasAttachments', True) else []
                 else:
                     sender, subject, when = msg.get('From', ''), msg.get('Subject', ''), msg.get('Date', '')
                     preview = _mail_preview(msg)
@@ -1795,6 +1814,10 @@ def scan_mailbox(actor='system'):
                         summary['added'].append({'doc_id': res['doc_id'], 'kind': res.get('kind'), 'file': filename})
                     else:
                         summary['skipped'] += 1
+                if not found and not any((f or '').lower().endswith(('.pdf', '.docx', '.doc')) for f, _ in attachments):
+                    call = handle_service_call_email(str(uid), sender, subject, preview)
+                    if call:
+                        summary.setdefault('service_calls', []).append(call)
             except Exception as e:
                 summary['errors'].append(f'Email {uid}: {e}')
             conn = _conn()
@@ -1935,8 +1958,9 @@ def check_mutation_allowed(query):
     fields = _mutation_fields(query)
     bad = [f for f in fields if f not in ALLOWED_MUTATIONS]
     if not fields or bad:
-        raise JobberError(f"Blocked Jobber mutation {bad or '(unreadable)'}: "
-                          'Pumps only creates draft quotes, draft invoices and notes.')
+            raise JobberError(f"Blocked Jobber mutation {bad or '(unreadable)'}: "
+                          'Pumps only creates draft quotes, draft invoices, notes, jobs from approved quotes '
+                          'and visits.')
 
 
 def jobber_gql(query, variables=None):
@@ -2105,7 +2129,7 @@ def sync_jobber(full=False, actor='system'):
                               it['approved_at'], it['web_uri'], it['category'], it['po_number'], now))
             linked = _link_jobber_items(conn)
             _follow_invoices(conn)
-            _follow_quotes(conn)
+            approved = _follow_quotes(conn)
             rebuild_scada(conn)
             conn.commit()
             try:
@@ -2115,6 +2139,11 @@ def sync_jobber(full=False, actor='system'):
                 status['errors'].append(f'SCADA invoices: {e}')
         finally:
             conn.close()
+        for cid in approved:
+            try:
+                on_quote_approved(cid)
+            except Exception as e:
+                status['errors'].append(f'Approved quote (item {cid}): {e}')
         status.update(state='done', finished_at=_now_text(), items=len(seen), linked=linked)
         _state_set('jobber_sync', status)
         return status
@@ -2175,7 +2204,8 @@ def _follow_invoices(conn):
 def _follow_quotes(conn):
     """Keep each item's Jobber quote status current, and tick "Quote sent to
     client" / "Client approved" once the office has sent it and the client
-    has approved it in Jobber."""
+    has approved it in Jobber. Returns the items just approved."""
+    approved = []
     for c in conn.execute("SELECT id, jobber, steps FROM pump_cases WHERE status='open' "
                           "AND jobber LIKE '%quote%'").fetchall():
         j = json.loads(c['jobber'] or '{}')
@@ -2197,6 +2227,8 @@ def _follow_quotes(conn):
             _set_step(conn, c['id'], 'client_quote', at=when, by='jobber sync')
         if it['status'] in ('approved', 'converted') and not (steps.get('client_approved') or {}).get('at'):
             _set_step(conn, c['id'], 'client_approved', at=when, by='jobber sync')
+            approved.append(c['id'])
+    return approved
 
 
 def _jobber_ref_text(it):
@@ -2643,12 +2675,29 @@ def suggest_quote(doc, case=None):
         items = [{'name': '', 'description': _strip_vendor((doc.get('description') or '').split('\n')[0]),
                   'quantity': 1, 'unit_price': round(amt * (1 + QUOTE_MARKUP_PCT / 100), 2),
                   'taxable': doc.get('subtotal') is not None}]
+    words = ' '.join([doc.get('description') or ''] + [f"{i.get('name') or ''} {i.get('description') or ''}"
+                                                       for i in doc.get('line_items') or []])
+    markup = QUOTE_MARKUP_PCT
+    if is_scada_renewal(words):
+        # SCADA is not marked up: each client pays their price from the SCADA tab.
+        conn = _conn()
+        try:
+            rows = [dict(r) for r in conn.execute('SELECT * FROM pump_scada_accounts WHERE active=1')]
+        finally:
+            conn.close()
+        row = _scada_match(rows, (case or {}).get('client_name') or doc.get('client_name') or '', words)
+        price = _money(row.get('our_bill')) if row else None
+        if price:
+            desc = items[0]['description'] if items else ''
+            items = [{'name': 'Service Proposal Amount', 'description': desc, 'quantity': 1, 'unit_price': price,
+                      'taxable': False}]
+            markup = 0
     if len(items) == 1:
         items[0]['name'] = 'Service Proposal Amount'
         items[0]['quantity'] = 1
     title = (doc.get('proposal_title') or '').strip() or _proposal_title(
         items[0]['description'] if items else (doc.get('description') or ''))
-    return {'title': title[:255], 'line_items': items, 'markup_pct': QUOTE_MARKUP_PCT}
+    return {'title': title[:255], 'line_items': items, 'markup_pct': markup}
 
 
 def _proposal_title(work):
@@ -2678,19 +2727,19 @@ def _quote_note_text(doc, total):
     return '\n'.join(lines)
 
 
-def note_vendor_file(doc, target_type, target_id, text):
+def note_vendor_file(doc, target_type, target_id, text, version='original', file_name=None, content_type=None):
     """A note on a Jobber record with the vendor's own document attached (or
     linked, when Jobber will not take the attachment)."""
     mutation, id_arg, input_type, field = NOTE_MUTATION[target_type]
     q = (f'mutation PumpsVendorNote($id: EncodedId!, $input: {input_type}!) {{ {mutation}({id_arg}: $id, '
          f'input: $input) {{ {field} {{ id }} userErrors {{ message path }} }} }}')
-    url = _signed_file_url(doc['id'], 'original', days=7)
-    ctype = 'application/pdf' if (doc.get('file_name') or '').lower().endswith('.pdf') else \
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    url = _signed_file_url(doc['id'], version, days=7)
+    ctype = content_type or ('application/pdf' if (doc.get('file_name') or '').lower().endswith('.pdf') else
+                             'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
     if url:
         try:
             data = jobber_gql(q, {'id': target_id, 'input': {'message': text, 'attachments': [
-                {'url': url, 'fileName': doc.get('file_name'), 'contentType': ctype}]}})
+                {'url': url, 'fileName': file_name or doc.get('file_name'), 'contentType': ctype}]}})
             payload = data.get(mutation) or {}
             if not payload.get('userErrors'):
                 return {'note_id': (payload.get(field) or {}).get('id'), 'attached': True}
@@ -2773,7 +2822,7 @@ def invoice_suggestion(doc, case=None):
     sugg = suggest_invoice(doc, case)
     case = case or {}
     qid = (json.loads(case.get('jobber') or '{}').get('quote') or {}).get('id') if case else None
-    if qid and compare_amounts(case).get('state') == 'match' and jobber_status()['connected']:
+    if qid and jobber_status()['connected']:
         try:
             q = fetch_quote_lines(qid)
         except Exception:
@@ -3212,7 +3261,7 @@ def pumps_allowed():
 
 
 def _bearer_ok():
-    if not OPENCLAW_API_KEY:
+    if not OPENCLAW_API_KEY or not OPENCLAW_ENABLED:
         return False
     return hmac.compare_digest(request.headers.get('Authorization', ''), f'Bearer {OPENCLAW_API_KEY}')
 
@@ -3392,6 +3441,12 @@ def _send_doc_file(doc_id, version):
             return {'success': False, 'error': 'No PDF of this report on this server - download the Word file.'}, 404
         return send_file(path, mimetype='application/pdf', as_attachment=request.args.get('download') == '1',
                          download_name=_pdf_name(row['file_name']))
+    if version == 'approved':
+        path = (json.loads(row['jobber'] or '{}')).get('approved_path')
+        if not path or not os.path.exists(path):
+            return {'success': False, 'error': 'No approved copy of this quote yet'}, 404
+        return send_file(path, mimetype='application/pdf', as_attachment=request.args.get('download') == '1',
+                         download_name=_approved_name(row['file_name']))
     path = row['branded_path'] if version == 'branded' else row['file_path']
     if not path or not os.path.exists(path):
         return {'success': False, 'error': 'File not available'}, 404
@@ -3982,8 +4037,8 @@ DIVE_DEFAULTS = {
     'diver_name': os.environ.get('PUMPS_DIVER_NAME', 'Jordan'),
     'cc': os.environ.get('PUMPS_DIVE_CC', 'Andrea@stahlman-england.com'),
     'from': os.environ.get('PUMPS_DIVE_FROM', ''),   # empty = the PO mailbox
-    # Off for now: the email is a to-do on the 1st, with the list ready to send.
-    'auto': os.environ.get('PUMPS_DIVE_EMAIL_AUTO', 'false').lower() in ('1', 'true', 'yes', 'on'),
+    # Sent by itself on the 1st (Oct 2026); if it can't send, it stays a to-do.
+    'auto': os.environ.get('PUMPS_DIVE_EMAIL_AUTO', 'true').lower() in ('1', 'true', 'yes', 'on'),
     'signature': os.environ.get('PUMPS_DIVE_SIGNATURE', 'Best Regards,\n\nAndrea Mitchell\nAssistant Client Service Manager\n'
                                 'Andrea@stahlman-england.com\nO 239.514.1200\n\nStahlman-England\n'
                                 '2063 Trade Center Way\nNaples, FL 34109'),
@@ -4998,10 +5053,12 @@ def init_account_tables(c):
             c.execute(f'ALTER TABLE pump_dive_sites ADD COLUMN {col} {decl}')
         except sqlite3.OperationalError:
             pass
-    try:
-        c.execute("ALTER TABLE pump_scada_accounts ADD COLUMN jobber_names TEXT DEFAULT ''")
-    except sqlite3.OperationalError:
-        pass
+    for col, decl in (('jobber_names', "TEXT DEFAULT ''"), ('complimentary', 'INTEGER DEFAULT 0'),
+                      ('quote', "TEXT DEFAULT '{}'")):
+        try:
+            c.execute(f'ALTER TABLE pump_scada_accounts ADD COLUMN {col} {decl}')
+        except sqlite3.OperationalError:
+            pass
     now = _now_text()
     seeded = lambda k: c.execute('SELECT 1 FROM pump_state WHERE key=?', (k,)).fetchone()
     mark = lambda k: c.execute('INSERT OR REPLACE INTO pump_state (key, value) VALUES (?,?)', (k, '"yes"'))
@@ -5039,6 +5096,22 @@ def init_account_tables(c):
                            'Lake sheet (Oct 2026)', now))
         mark('lake_sheet_seeded')
     _scada_jobber_migrate(c)
+    if not seeded('office_answers_oct26'):
+        # What the office said (Oct 2026): Old Collier and Camas Willows are off
+        # SCADA; Autumn Woods (we pay) and Reserve at Estero (in their monthly)
+        # are complimentary - reminded, never quoted. The diver list goes by itself.
+        c.execute("UPDATE pump_scada_accounts SET active=0, notes=TRIM(COALESCE(notes,'') || ' No longer on SCADA (Oct 2026).') "
+                  "WHERE client IN ('OLD COLLIER', 'Camas Willows 1')")
+        c.execute("UPDATE pump_scada_accounts SET complimentary=1, notes=TRIM(COALESCE(notes,'') || ' Complimentary - "
+                  "our company pays for it.') WHERE client='AUTUMN WOODS'")
+        c.execute("UPDATE pump_scada_accounts SET complimentary=1, notes=TRIM(COALESCE(notes,'') || ' Complimentary - "
+                  "included with their monthly.') WHERE client='RESERVE AT ESTERO'")
+        saved = c.execute("SELECT value FROM pump_state WHERE key='dive_settings'").fetchone()
+        if saved:
+            ds = json.loads(saved[0] or '{}')
+            ds['auto'] = True
+            c.execute("UPDATE pump_state SET value=? WHERE key='dive_settings'", (json.dumps(ds),))
+        mark('office_answers_oct26')
 
 
 def _anniversary(d, year):
@@ -5333,6 +5406,9 @@ def h_scada_update(actor, sid):
         if 'active' in d:
             sets.append('active=?')
             vals.append(1 if d['active'] else 0)
+        if 'complimentary' in d:
+            sets.append('complimentary=?')
+            vals.append(1 if d['complimentary'] else 0)
         if isinstance(d.get('years'), dict):
             years = cur['years']
             for y, v in d['years'].items():
@@ -5420,6 +5496,712 @@ def h_maint_delete(actor, aid):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# The office's flow (Oct 2026): request -> vendor quote -> our Jobber quote ->
+# approved (stamped, sent back, made a job) -> vendor bill -> our invoice at
+# the quoted price -> client pays -> pay the vendor. Plus SCADA renewals, the
+# daily email and the accounts list.
+# ═════════════════════════════════════════════════════════════════════════════
+
+APPROVER = os.environ.get('PUMPS_APPROVER', 'Simon Weardon')
+AUTO_DRAFT_INVOICES = os.environ.get('PUMPS_AUTO_DRAFT_INVOICES', 'true').lower() in ('1', 'true', 'yes', 'on')
+DIGEST_TO = os.environ.get('PUMPS_DIGEST_TO', 'simon@stahlman-england.com')
+DIGEST_HOUR = int(os.environ.get('PUMPS_DIGEST_HOUR', '8') or 8)
+SERVICE_CALL_DAYS = int(os.environ.get('PUMPS_SERVICE_CALL_DAYS', '14') or 14)
+SERVICE_WORDS = re.compile(r'\b(pumps?|pump\s+station|scada|divers?|aerators?|fountains?|lake\s+filters?|'
+                           r'filters?|lakes?)\b', re.I)
+
+
+def add_todo(conn, key, title, detail='', link=None, kind='auto', due_on=''):
+    """A to-do the app adds itself, once per key (a done one is not re-added)."""
+    conn.execute('INSERT OR IGNORE INTO pump_todos (kind, key, title, detail, due_on, link, created_by, created_at) '
+                 'VALUES (?,?,?,?,?,?,?,?)', (kind, key, title[:300], (detail or '')[:2000], due_on or '',
+                                              json.dumps(link or {}), 'Pumps', _now_text()))
+
+
+def _vendor_contact(vendor):
+    v = _vendor_profile(vendor or 'Wettech')
+    return (v.get('contact_name') or v.get('display') or vendor or 'the vendor',
+            v.get('contact_email') or _vendor_email(vendor))
+
+
+# ── Jobber actions that depend on what Jobber's API offers ───────────────────
+# Adding a visit to a job and turning an approved quote into a job are not in
+# every Jobber API version under the same name. The app asks Jobber's schema
+# which exist and fills only what it knows; anything it cannot do becomes a
+# to-do instead.
+
+VISIT_MUTATIONS = ('visitCreate', 'jobAddVisit', 'jobCreateVisit', 'jobVisitCreate')
+JOB_FROM_QUOTE_MUTATIONS = ('jobCreate',)
+_SCHEMA_CACHE = {}
+
+
+def _type_ref(t):
+    """(NON_NULL?, LIST?, named type) of an introspected type."""
+    nn = lst = False
+    while t and t.get('kind') in ('NON_NULL', 'LIST'):
+        if t['kind'] == 'NON_NULL':
+            nn = True
+        else:
+            lst = True
+        t = t.get('ofType')
+    return nn, lst, (t or {}).get('name')
+
+
+_TYPE_Q = 'kind name ofType { kind name ofType { kind name ofType { kind name } } }'
+
+
+def _mutation_schema():
+    if 'mutations' not in _SCHEMA_CACHE:
+        data = jobber_gql('query { __schema { mutationType { fields { name type { ' + _TYPE_Q + ' } '
+                          'args { name type { ' + _TYPE_Q + ' } } } } } }')
+        _SCHEMA_CACHE['mutations'] = {f['name']: f for f in
+                                      (((data.get('__schema') or {}).get('mutationType') or {}).get('fields') or [])}
+    return _SCHEMA_CACHE['mutations']
+
+
+def _type_fields(name):
+    key = f'type:{name}'
+    if key not in _SCHEMA_CACHE:
+        data = jobber_gql('query($n: String!) { __type(name: $n) { name inputFields { name type { ' + _TYPE_Q +
+                          ' } } fields { name type { ' + _TYPE_Q + ' } } } }', {'n': name})
+        _SCHEMA_CACHE[key] = data.get('__type') or {}
+    return _SCHEMA_CACHE[key]
+
+
+def try_mutation(candidates, values, want=None):
+    """Run the first of the candidate mutations Jobber has, filling its
+    arguments (and its input object's fields) from values by name. Returns
+    the payload, or None when none exists or a required field is unknown.
+    Raises JobberError when Jobber refuses it."""
+    values = {k: v for k, v in values.items() if v not in (None, '')}
+    schema = _mutation_schema()
+    for name in candidates:
+        f = schema.get(name)
+        if not f or name not in ALLOWED_MUTATIONS:
+            continue
+        args, decls, ok = {}, [], True
+        for a in f.get('args') or []:
+            nn, lst, tname = _type_ref(a['type'])
+            if a['name'] in values:
+                args[a['name']] = values[a['name']]
+            else:
+                inner = _type_fields(tname).get('inputFields') if tname else None
+                if inner is None:
+                    if nn:
+                        ok = False
+                    continue
+                obj = {}
+                for fld in inner:
+                    fnn = _type_ref(fld['type'])[0]
+                    if fld['name'] in values:
+                        obj[fld['name']] = values[fld['name']]
+                    elif fnn:
+                        ok = False
+                if not obj and not nn:
+                    continue
+                args[a['name']] = obj
+            decl_t = tname + ('!' if nn else '')
+            decls.append(f"${a['name']}: {'[' + decl_t + ']' if lst else decl_t}")
+        if not ok:
+            continue
+        payload_t = _type_ref(f['type'])[2]
+        pfields = {x['name'] for x in (_type_fields(payload_t).get('fields') or [])} if payload_t else set()
+        sel = ['userErrors { message }'] if 'userErrors' in pfields else ['__typename']
+        for obj, sub in (want or {}).items():
+            if obj in pfields:
+                sel.append(f'{obj} {{ {sub} }}')
+        q = (f"mutation Pumps({', '.join(decls)}) {{ {name}("
+             f"{', '.join(a + ': $' + a for a in args)}) {{ {' '.join(sel)} }} }}")
+        data = jobber_gql(q, args)
+        payload = data.get(name) or {}
+        errs = payload.get('userErrors') or []
+        if errs:
+            raise JobberError('Jobber: ' + '; '.join(e.get('message', '?') for e in errs))
+        return {'mutation': name, **payload}
+    return None
+
+
+# ── approval: stamp the vendor's quote, send it back, make it a job ───────────
+
+def _pdf_text(s):
+    return s.replace('\\', '\\\\').replace('(', '\\(').replace(')', '\\)').encode('latin-1', 'replace').decode('latin-1')
+
+
+def stamp_approved(pdf_bytes, who, when):
+    """The vendor's quote with a red APPROVED box (name, date) on its first page."""
+    from PyPDF2 import PdfReader, PdfWriter, PageObject
+    from PyPDF2.generic import DecodedStreamObject, DictionaryObject, NameObject
+    reader, writer = PdfReader(io.BytesIO(pdf_bytes)), PdfWriter()
+    for i, page in enumerate(reader.pages):
+        if i == 0:
+            w, h = float(page.mediabox.width), float(page.mediabox.height)
+            bw, bh = 240, 78
+            x, y = w - bw - 24, h - bh - 24
+            stamp = PageObject.create_blank_page(width=w, height=h)
+            font = DictionaryObject({NameObject('/Type'): NameObject('/Font'), NameObject('/Subtype'): NameObject('/Type1'),
+                                     NameObject('/BaseFont'): NameObject('/Helvetica-Bold')})
+            stamp[NameObject('/Resources')] = DictionaryObject({NameObject('/Font'): DictionaryObject(
+                {NameObject('/FS'): font})})
+            ops = (f'q 1 1 1 rg {x} {y} {bw} {bh} re f 0.78 0.1 0.1 RG 2.5 w {x} {y} {bw} {bh} re S '
+                   f'0.78 0.1 0.1 rg BT /FS 24 Tf {x + 12} {y + 48} Td (APPROVED) Tj ET '
+                   f'BT /FS 11 Tf {x + 12} {y + 28} Td ({_pdf_text(who)}) Tj ET '
+                   f'BT /FS 11 Tf {x + 12} {y + 12} Td ({_pdf_text(when)}) Tj ET Q')
+            s = DecodedStreamObject()
+            s.set_data(ops.encode('latin-1'))
+            stamp[NameObject('/Contents')] = s
+            page.merge_page(stamp)
+        writer.add_page(page)
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+def _approved_name(file_name):
+    return os.path.splitext(file_name or 'quote')[0] + ' - APPROVED.pdf'
+
+
+def make_approved_pdf(doc, when=None):
+    """Stamp the vendor's quote file (a Word quote is turned into a PDF first)."""
+    with open(doc['file_path'], 'rb') as f:
+        data = f.read()
+    if not (doc.get('file_name') or '').lower().endswith('.pdf'):
+        data = pump_reports.docx_to_pdf(data)
+        if not data:
+            raise ValueError('The quote is a Word file and PDF conversion is not available on this server')
+    when = when or _today()
+    stamped = stamp_approved(data, f'{APPROVER}', when.strftime('%B %d, %Y').replace(' 0', ' '))
+    path, _ = _store_file(stamped, _approved_name(doc.get('file_name')))
+    return path
+
+
+def on_quote_approved(case_id, actor='Jobber sync'):
+    """The client approved our Jobber quote: stamp the vendor's quote APPROVED
+    by Simon Weardon, keep it on the item and on the Jobber quote, make the
+    quote a job, and add the to-do to send it back to the vendor."""
+    conn = _conn()
+    try:
+        case = conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+        if not case:
+            return None
+        case = dict(case)
+        row = conn.execute("SELECT * FROM pump_docs WHERE case_id=? AND kind='quote' AND status != 'dismissed' "
+                           "ORDER BY id DESC", (case_id,)).fetchone()
+        doc = {**_doc_dict(row), 'file_path': row['file_path']} if row else None
+    finally:
+        conn.close()
+    j = json.loads(case.get('jobber') or '{}')
+    q = j.get('quote') or {}
+    out = {'case_id': case_id}
+    name, email = _vendor_contact(case.get('vendor'))
+    who = case.get('client_name') or case.get('title') or f'item {case_id}'
+    if doc and not (doc.get('jobber') or {}).get('approved_path'):
+        try:
+            path = make_approved_pdf(doc)
+            conn = _conn()
+            try:
+                dj = {**(doc.get('jobber') or {}), 'approved_path': path, 'approved_at': _now_text(),
+                      'approved_by': APPROVER}
+                conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(dj), doc['id']))
+                _event(conn, actor, 'quote stamped approved', f'{APPROVER} - {_approved_name(doc["file_name"])}',
+                       case_id=case_id, doc_id=doc['id'])
+                conn.commit()
+            finally:
+                conn.close()
+            doc['jobber'] = dj
+            out['stamped'] = True
+        except Exception as e:
+            out['stamp_error'] = str(e)
+    if doc and (doc.get('jobber') or {}).get('approved_path') and q.get('id') and jobber_status()['connected'] \
+            and not (doc.get('jobber') or {}).get('approved_note_id'):
+        try:
+            note = note_vendor_file(doc, 'quote', q['id'], f"Approved - {doc.get('vendor') or 'vendor'} quote "
+                                    f"{('#' + doc['doc_number']) if doc.get('doc_number') else ''} signed by "
+                                    f"{APPROVER} on {_today().strftime('%m/%d/%Y')}.", version='approved',
+                                    file_name=_approved_name(doc['file_name']), content_type='application/pdf')
+            conn = _conn()
+            try:
+                dj = {**(doc.get('jobber') or {}), 'approved_note_id': note['note_id']}
+                conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(dj), doc['id']))
+                conn.commit()
+            finally:
+                conn.close()
+        except JobberError as e:
+            out['note_error'] = str(e)
+    conn = _conn()
+    try:
+        if doc:
+            add_todo(conn, f"approved-quote:{doc['id']}", f'Send the approved quote back to {name} ({email})',
+                     f"{who} - {doc.get('vendor') or 'vendor'} quote {('#' + doc['doc_number']) if doc.get('doc_number') else ''}"
+                     f" is stamped APPROVED by {APPROVER}. Download it, reply to {name} with it attached, then tick this.",
+                     {'case_id': case_id, 'doc_id': doc['id'], 'to': email,
+                      'subject': f"Approved - {who} {('quote #' + doc['doc_number']) if doc.get('doc_number') else ''}".strip()},
+                     kind='approved_quote')
+        conn.commit()
+    finally:
+        conn.close()
+    if q.get('id') and not (j.get('job') or {}).get('id'):
+        out['job'] = make_job_from_quote(case_id)
+    return out
+
+
+def make_job_from_quote(case_id, actor='Jobber sync'):
+    conn = _conn()
+    try:
+        case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone())
+    finally:
+        conn.close()
+    j = json.loads(case.get('jobber') or '{}')
+    q = j.get('quote') or {}
+    res, err = None, ''
+    if jobber_status()['connected']:
+        try:
+            res = try_mutation(JOB_FROM_QUOTE_MUTATIONS,
+                               {'quoteId': q['id'], 'clientId': (j.get('client') or {}).get('id') or case.get('jobber_client_id'),
+                                'propertyId': case.get('jobber_property_id'), 'title': case.get('title')},
+                               want={'job': 'id jobNumber jobberWebUri'})
+        except JobberError as e:
+            err = str(e)
+    conn = _conn()
+    try:
+        job = (res or {}).get('job') or {}
+        if job.get('id'):
+            j['job'] = {'id': job['id'], 'number': str(job.get('jobNumber') or ''), 'uri': job.get('jobberWebUri')}
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(j), case_id))
+            _event(conn, actor, 'quote made a job', f"Jobber job #{j['job']['number']}", case_id=case_id)
+        else:
+            add_todo(conn, f'quote-to-job:{case_id}', f"Convert Jobber quote #{q.get('number') or ''} to a job",
+                     f"{case.get('client_name') or ''} approved it. " + (f'(Jobber: {err})' if err else
+                     "Jobber's API can't do this one by itself."),
+                     {'case_id': case_id, 'uri': q.get('uri') or ''})
+        conn.commit()
+    finally:
+        conn.close()
+    return j.get('job')
+
+
+# ── the vendor's bill: our invoice at the quoted price ───────────────────────
+
+def auto_draft_invoice(doc_id, actor='Pumps (automatic)'):
+    """When the vendor's bill comes in for work we quoted, draft our Jobber
+    invoice on the job at the price the client approved. A bill that doesn't
+    match the vendor's quote still gets the quoted price, and a to-do to
+    check with the vendor."""
+    if not AUTO_DRAFT_INVOICES or not jobber_status()['connected']:
+        return None
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+        doc = _doc_dict(row) if row else None
+        case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (doc['case_id'],)).fetchone()) \
+            if doc and doc.get('case_id') else None
+    finally:
+        conn.close()
+    if not doc or not case or doc['kind'] != 'bill' or (doc.get('jobber') or {}).get('invoice_id'):
+        return None
+    j = json.loads(case.get('jobber') or '{}')
+    q = j.get('quote') or {}
+    if not q.get('id') or (j.get('invoice') or {}).get('id'):
+        return None
+    try:
+        lines = fetch_quote_lines(q['id'])
+        if not lines or not lines['line_items']:
+            return {'pending': 'Could not read our quote from Jobber'}
+        client_id = (j.get('client') or {}).get('id') or case.get('jobber_client_id')
+        where = case.get('client_name') or ''
+        subject = (doc.get('proposal_title') or case.get('title') or f'Pump service - {where}')[:255]
+        return create_draft_invoice(doc_id, client_id, lines['line_items'], subject,
+                                    (j.get('job') or {}).get('id') or '', actor)
+    except (JobberError, ValueError) as e:
+        return {'pending': str(e)}
+
+
+# ── service-call emails: a visit on the client's maintenance job ─────────────
+
+def _account_names(conn):
+    """Every name an account goes by, the maintenance sheets' names first."""
+    names = []
+    for sql in ('SELECT name FROM pump_maint_accounts WHERE active=1',
+                'SELECT name FROM pump_dive_sites WHERE COALESCE(active, 1)=1',
+                'SELECT place FROM pump_site_aliases',
+                'SELECT client FROM pump_scada_accounts WHERE active=1'):
+        names += [r[0] for r in conn.execute(sql) if r[0] not in names]
+    return names
+
+
+def _core_name(name):
+    """"Carlisle (The Carlisle)" -> "Carlisle"; "Spanish Wells Lake Club" stays."""
+    return re.sub(r'\s*[\(\[].*?[\)\]]', '', name or '').split(' c/o ')[0].split(' - ')[0].strip()
+
+
+def match_account(text, conn=None):
+    """The account a service-call email is about: the longest name it mentions."""
+    own = conn is None
+    conn = conn or _conn()
+    try:
+        best = None
+        for n in _account_names(conn):
+            core = _core_name(n)
+            if len(core) < 4 or not fuzzy_has(core, text):
+                continue
+            if best is None or len(core) > len(_core_name(best)):
+                best = n
+        return best
+    finally:
+        if own:
+            conn.close()
+
+
+def service_call_summary(subject, preview=''):
+    s = re.sub(r'^\s*((re|fw|fwd)\s*:\s*)+', '', subject or '', flags=re.I).strip()
+    return short_name(s or (preview or '').strip().split('\n')[0], 70) or 'Service call'
+
+
+def handle_service_call_email(uid, sender, subject, preview, actor='email scan'):
+    """A plain email to PO@ about a pump, lake or SCADA at one of our accounts:
+    open an item and put a "Service call" visit on the client's ongoing
+    maintenance job (or a to-do to add it)."""
+    text = f'{subject}\n{preview}'
+    if pump_reports.vendor_for(sender) or not SERVICE_WORDS.search(text):
+        return None
+    conn = _conn()
+    try:
+        account = match_account(text, conn)
+        if not account:
+            return None
+        if conn.execute("SELECT 1 FROM pump_cases WHERE source='service_call' AND description LIKE ?",
+                        (f'%[{uid}]%',)).fetchone():
+            return None
+        summary = service_call_summary(subject, preview)
+        cid = create_case(conn, {'title': f'Service call - {summary}', 'category': 'repair', 'client_name': account,
+                                 'vendor': 'Gulfshore' if re.search(r'\b(divers?|lakes?)\b', text, re.I) else 'Wettech',
+                                 'description': f'{preview[:1500]}\n\nFrom {sender} [{uid}]',
+                                 'opened_on': _today().isoformat()}, actor, source='service_call')
+        conn.commit()
+    finally:
+        conn.close()
+    visit = add_service_visit(cid, account, summary, preview)
+    return {'case_id': cid, 'account': account, 'visit': visit}
+
+
+def add_service_visit(case_id, account, summary, detail=''):
+    title = f'Service call - {summary}'
+    job, err, done = None, '', None
+    if jobber_status()['connected']:
+        try:
+            pick = pick_client(search_clients(account))
+            if pick:
+                jobs = client_jobs(pick['id'])['jobs']
+                live = [x for x in jobs if x.get('type') == 'recurring' and x.get('status') not in ('archived',)]
+                job = best_job_for_report(live, [], '', '') or (live[0] if len(live) == 1 else None)
+            if job:
+                done = try_mutation(VISIT_MUTATIONS, {'jobId': job['id'], 'title': title,
+                                                      'instructions': (detail or '')[:2000]},
+                                    want={'visit': 'id'})
+        except JobberError as e:
+            err = str(e)
+    conn = _conn()
+    try:
+        if done:
+            jj = json.loads(conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (case_id,)).fetchone()[0] or '{}')
+            jj['job'] = {'id': job['id'], 'number': str(job.get('number') or ''), 'uri': job.get('uri')}
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(jj), case_id))
+            _event(conn, 'email scan', 'service visit added', f"{title} on job #{job.get('number')}", case_id=case_id)
+        else:
+            where = f"job #{job['number']} ({job['title']})" if job else f"{account}'s maintenance job"
+            add_todo(conn, f'service-visit:{case_id}', f'Add a "{title}" visit to {where}',
+                     f'{account}. ' + (f'(Jobber: {err})' if err else "The app couldn't add it in Jobber itself."),
+                     {'case_id': case_id, 'uri': (job or {}).get('uri') or ''})
+        conn.commit()
+    finally:
+        conn.close()
+    return bool(done)
+
+
+# ── SCADA renewals coming due ────────────────────────────────────────────────
+
+SCADA_QUOTE_TEXT = ('Renewal of Annual Cellular and cloud subscription for SCADA system on irrigation pump station '
+                    'for {y1}-{y2}.\n\nThe SCADA Flow Shield service provides remote access to the pump station via a '
+                    'cellular device inside the unit. The annual service is basic cellular service. It allows you to:'
+                    '\n\n•\tAccess the pump remotely\n•\tTurn the pump on and off\n•\tCheck status of pump\n'
+                    '•\tSee Pressure\n•\tSee Flow rate\n•\tSee total flow on flow meter\n'
+                    '•\tSends you important alerts regarding the pump system:\n•\tOver heating\n•\tLow voltage\n'
+                    '•\tHigh voltage\n•\tHigh amperage')
+
+
+def _scada_client(row):
+    names = [n.strip() for n in re.split(r'[;,\n]', row.get('jobber_names') or '') if n.strip()] + [row['client']]
+    for n in names:
+        pick = pick_client(search_clients(n))
+        if pick:
+            return pick
+    return None
+
+
+def scada_due_actions(today=None):
+    """30 days before a SCADA renewal: draft the client's quote in Jobber at
+    their price from the SCADA sheet (a to-do says to send it), or, for a
+    complimentary one, just a reminder."""
+    conn = _conn()
+    try:
+        rows = [r for r in scada_rows(conn) if r['active'] and r['state'] in ('due_soon', 'overdue')]
+    finally:
+        conn.close()
+    done = []
+    for r in rows:
+        year = (r['next_due_on'] or '')[:4]
+        key = f"scada:{r['id']}:{year}"
+        conn = _conn()
+        try:
+            if r.get('complimentary'):
+                add_todo(conn, key, f"SCADA renewal due - {r['client']} (complimentary)",
+                         f"Due {r['next_due_on']}. Wettech renews it; no client quote. {r.get('notes') or ''}".strip(),
+                         {'scada_id': r['id']}, due_on=r['next_due_on'])
+                conn.commit()
+                continue
+            quote = json.loads(r.get('quote') or '{}') if isinstance(r.get('quote'), str) else (r.get('quote') or {})
+            if quote.get('year') == year:
+                continue
+        finally:
+            conn.close()
+        price = _money(r.get('our_bill'))
+        err = ''
+        if not price:
+            err = 'no price on the SCADA tab'
+        elif not jobber_status()['connected']:
+            err = 'Jobber is not connected'
+        made = None
+        if not err:
+            try:
+                client = _scada_client(r)
+                props = client_jobs(client['id'])['properties'] if client else []
+                prop = props[0] if len(props) == 1 else next(
+                    (p for p in props if place_score(_core_name(r['client']), p['label']) >= 0.99), None)
+                if not client:
+                    err = f"can't tell which Jobber client {r['client']} is - set its Name in Jobber"
+                elif not prop:
+                    err = f"{client['name']} has {len(props)} properties - choose one"
+                else:
+                    y = int(year)
+                    items = _jobber_lines([{'name': 'Service Proposal Amount', 'description':
+                                            SCADA_QUOTE_TEXT.format(y1=y, y2=y + 1), 'quantity': 1,
+                                            'unit_price': price, 'taxable': False}], 'quote')
+                    data = jobber_gql(QUOTE_CREATE, {'attributes': {
+                        'clientId': client['id'], 'propertyId': prop['id'],
+                        'title': 'Proposal to renew the SCADA annual cellular subscription', 'lineItems': items}})
+                    payload = data.get('quoteCreate') or {}
+                    if payload.get('userErrors'):
+                        raise JobberError('; '.join(e.get('message', '?') for e in payload['userErrors']))
+                    made = payload.get('quote') or {}
+            except (JobberError, ValueError, TypeError) as e:
+                err = str(e)
+        conn = _conn()
+        try:
+            if made:
+                ref = {'year': year, 'id': made.get('id'), 'number': str(made.get('quoteNumber') or ''),
+                       'uri': made.get('jobberWebUri'), 'at': _now_text()}
+                conn.execute('UPDATE pump_scada_accounts SET quote=? WHERE id=?', (json.dumps(ref), r['id']))
+                _event(conn, 'Pumps', 'SCADA quote drafted', f"{r['client']} {year}: Jobber quote #{ref['number']} "
+                       f"${price:,.2f}")
+                add_todo(conn, f"scada-send:{r['id']}:{year}", f"Send the SCADA renewal quote #{ref['number']} - {r['client']}",
+                         f"Drafted in Jobber at ${price:,.2f}. Renewal due {r['next_due_on']}.",
+                         {'scada_id': r['id'], 'uri': ref['uri'] or ''}, due_on=r['next_due_on'])
+                done.append(r['client'])
+            else:
+                add_todo(conn, key, f"Quote the SCADA renewal - {r['client']}",
+                         f"Due {r['next_due_on']} at {r.get('our_bill') or 'their price'}. The app couldn't draft it: {err}.",
+                         {'scada_id': r['id']}, due_on=r['next_due_on'])
+            conn.commit()
+        finally:
+            conn.close()
+    return done
+
+
+# ── the daily email ──────────────────────────────────────────────────────────
+
+def graph_send(to, subject, html, attachments=None, sender=None):
+    sender = sender or dive_settings()['from']
+    if not (CFG.get('graph_token') and sender):
+        raise RuntimeError('Microsoft 365 is not set up to send from the PO mailbox')
+    msg = {'subject': subject, 'body': {'contentType': 'HTML', 'content': html},
+           'toRecipients': [{'emailAddress': {'address': a}} for a in _emails(to)]}
+    if attachments:
+        msg['attachments'] = attachments
+    r = http_requests.post(f'https://graph.microsoft.com/v1.0/users/{sender}/sendMail', timeout=60,
+                           headers={'Authorization': f"Bearer {CFG['graph_token']()}", 'Content-Type': 'application/json'},
+                           json={'message': msg, 'saveToSentItems': True})
+    if r.status_code >= 400:
+        try:
+            why = (r.json().get('error') or {}).get('message') or r.text[:300]
+        except ValueError:
+            why = r.text[:300]
+        raise RuntimeError(f'Microsoft 365 said HTTP {r.status_code}: {why}')
+
+
+def build_digest(conn=None):
+    own = conn is None
+    conn = conn or _conn()
+    try:
+        q = work_queue(conn)
+    finally:
+        if own:
+            conn.close()
+    base = (CFG.get('website_url') or '').rstrip('/')
+    link = f'{base}/pumps' if base else ''
+    e = lambda s: (str(s or '')).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    sections = []
+
+    def sec(title, rows):
+        if rows:
+            sections.append(f'<h3 style="margin:16px 0 6px;font:600 15px Arial">{e(title)} ({len(rows)})</h3><ul '
+                            f'style="margin:0;padding-left:18px;font:14px Arial">' +
+                            ''.join(f'<li style="margin:3px 0">{r}</li>' for r in rows) + '</ul>')
+    sec('To do', [e(t['title']) + (f" <span style='color:#666'>- {e(t['detail'][:140])}</span>" if t['detail'] else '')
+                  for t in q['todos']])
+    sec('Pay the vendor - the client has paid', [f"{e(c['title'] or c['client_name'])} - {e(c['vendor'])} bill "
+                                                 f"#{e(c.get('vendor_bill_number'))}" for c in q['vendor_bills_to_pay']])
+    sec('Problems', [f"{e(i.get('title') or i.get('client_name'))}: {e(i['message'])}" for i in q['issues']])
+    sec('SCADA renewals', [f"{e(s['client_name'])} - {'overdue since' if s['state'] == 'overdue' else 'due'} "
+                           f"{e(s['next_due_on'])}" for s in q['scada_attention']])
+    sec('Quotes to send / waiting on the client', [e(c['title'] or c['client_name']) for c in
+                                                   q['to_quote_client'] + q['waiting_approval']])
+    sec('Waiting on the vendor', [e(c['title'] or c['client_name']) for c in
+                                  q['waiting_vendor_quote'] + q['needs_scheduling'] + q['waiting_work'] + q['waiting_bill']])
+    sec('Ready to invoice / close', [e(c['title'] or c['client_name']) for c in q['ready_to_close']])
+    sec('Documents that need a look', [e(d.get('client_name') or d.get('file_name')) + f" - {e(d.get('review_reason'))}"
+                                       for d in q['review_docs'][:15]])
+    day = _today().strftime('%A %B %d').replace(' 0', ' ')
+    body = ''.join(sections) or '<p style="font:14px Arial">Nothing needs doing today.</p>'
+    html = (f'<div style="font:14px Arial;color:#111"><p>Pumps - {e(day)}. {q["open_count"]} open jobs.'
+            + (f' <a href="{link}">Open Pumps</a>' if link else '') + f'</p>{body}</div>')
+    n = len(q['todos']) + len(q['vendor_bills_to_pay']) + len(q['issues'])
+    return {'subject': f'Pumps today - {n} to do' if n else 'Pumps today - nothing urgent', 'html': html}
+
+
+def send_digest(force=False, actor='Pumps (8am)'):
+    key = f"digest:{_today().isoformat()}"
+    conn = _conn()
+    try:
+        if not force:
+            cur = conn.execute('INSERT OR IGNORE INTO pump_state (key, value) VALUES (?,?)', (key, json.dumps(_now_text())))
+            conn.commit()
+            if cur.rowcount == 0:
+                return {'skipped': 'already sent today'}
+        mail = build_digest(conn)
+    finally:
+        conn.close()
+    try:
+        graph_send(DIGEST_TO, mail['subject'], mail['html'])
+    except Exception as ex:
+        _state_set('digest_status', {'at': _now_text(), 'error': str(ex)})
+        if not force:
+            conn = _conn()
+            try:
+                conn.execute('DELETE FROM pump_state WHERE key=?', (key,))
+                conn.commit()
+            finally:
+                conn.close()
+        raise RuntimeError(str(ex))
+    _state_set('digest_status', {'at': _now_text(), 'to': DIGEST_TO, 'error': ''})
+    return {'sent': True, 'to': DIGEST_TO, 'subject': mail['subject']}
+
+
+def _scheduled_hourly():
+    """Every hour: the month's diver to-do / email, SCADA renewals coming due,
+    and the weekday 8am email."""
+    _scheduled_dive_email()
+    try:
+        scada_due_actions()
+    except Exception as e:
+        print(f'  ⚠ Pumps: SCADA renewals: {e}')
+    now = _now()
+    if now.weekday() < 5 and now.hour >= DIGEST_HOUR:
+        try:
+            send_digest()
+        except RuntimeError as e:
+            print(f'  ⚠ Pumps: daily email not sent: {e}')
+
+
+@api('/digest')
+def h_digest(actor):
+    mail = build_digest()
+    return {**mail, 'to': DIGEST_TO, 'status': _state_get('digest_status') or {}}
+
+
+@api('/digest/send', methods=('POST',))
+def h_digest_send(actor):
+    try:
+        return send_digest(force=True, actor=actor)
+    except RuntimeError as e:
+        return {'success': False, 'error': str(e)}, 502
+
+
+@api('/cases/<int:case_id>/approved', methods=('POST',))
+def h_case_approved(actor, case_id):
+    """Do the approval steps now (normally the Jobber sync does them when the
+    client approves the quote)."""
+    conn = _conn()
+    try:
+        steps = json.loads((conn.execute('SELECT steps FROM pump_cases WHERE id=?', (case_id,)).fetchone() or ['{}'])[0])
+        if not (steps.get('client_approved') or {}).get('at'):
+            _set_step(conn, case_id, 'client_approved', at=_today().isoformat(), by=actor)
+            conn.commit()
+    finally:
+        conn.close()
+    return {'approval': on_quote_approved(case_id, actor)}
+
+
+# ── accounts: Wettech pumps, Gulfshore lakes and SCADA in one list ───────────
+
+def _same_account(a, b):
+    ca, cb = _core_name(a).lower(), _core_name(b).lower()
+    if not ca or not cb:
+        return False
+    return ca == cb or similarity(ca, cb) >= 0.8 or fuzzy_has(ca, cb) or fuzzy_has(cb, ca)
+
+
+def accounts(conn):
+    maint = maint_accounts(conn)
+    lakes = [dict(r) for r in conn.execute('SELECT * FROM pump_dive_sites ORDER BY name')]
+    scada = scada_rows(conn)
+    out, used_l, used_s = [], set(), set()
+    for m in maint:
+        lake = next((l for l in lakes if l['id'] not in used_l and _same_account(m['name'], l['name'])), None)
+        if lake:
+            used_l.add(lake['id'])
+        out.append({'name': m['name'], 'pump': m, 'lake': lake})
+    for l in lakes:
+        if l['id'] not in used_l:
+            out.append({'name': l['name'], 'pump': None, 'lake': l})
+    for a in out:
+        s = next((s for s in scada if s['id'] not in used_s and _same_account(a['name'], s['client'])), None)
+        if s:
+            used_s.add(s['id'])
+        a['scada'] = s
+        a['active'] = bool((a['pump'] and a['pump'].get('active')) or (a['lake'] and (a['lake'].get('active') if
+                                                                                       a['lake'].get('active') is not None else 1)))
+    out.sort(key=lambda a: a['name'].lower())
+    return out
+
+
+@api('/accounts')
+def h_accounts(actor):
+    conn = _conn()
+    try:
+        rows = accounts(conn)
+        month = _today().month
+        for a in rows:
+            for k in ('pump', 'lake'):
+                x = a[k]
+                if x:
+                    ms = _month_list(x.get('months'))
+                    x['due_this_month'] = bool(x.get('active', 1)) and (bool(x.get('monthly')) or
+                                                                         (month in ms if ms else k == 'lake'))
+        return {'accounts': rows, 'month': _today().strftime('%B')}
+    finally:
+        conn.close()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # pages and the Jobber sign-in
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -5437,14 +6219,14 @@ def page():
                                   email=bool(CFG.get('email_enabled')),
                                   openclaw=bool(OPENCLAW_API_KEY),
                                   markup=MARKUP_PCT,
-                                  scada_days=SCADA_DUE_SOON_DAYS,
+                                  scada_days=SCADA_DUE_SOON_DAYS, digest_to=DIGEST_TO, digest_hour=DIGEST_HOUR,
                                   flash_msg=request.args.get('msg', ''))
 
 
 @bp.route('/pumps/f/<int:doc_id>/<version>/<int:exp>/<sig>')
 def signed_file(doc_id, version, exp, sig):
     """Short-lived link Jobber uses to fetch a report it is attaching to a note."""
-    if version not in ('branded', 'branded_pdf', 'original') or not _check_signed(doc_id, version, exp, sig):
+    if version not in ('branded', 'branded_pdf', 'original', 'approved') or not _check_signed(doc_id, version, exp, sig):
         return 'Link expired', 403
     out = _send_doc_file(doc_id, version)
     if isinstance(out, tuple):
@@ -5553,7 +6335,7 @@ def init_pumps(app, csrf, db_path, *, data_dir, secret_key, website_url, email_e
                               next_run_time=datetime.now() + timedelta(minutes=2))
             sched.add_job(_safe(_scheduled_jobber_sync), 'interval', hours=6, id='pumps_jobber_sync',
                           next_run_time=datetime.now() + timedelta(minutes=5))
-            sched.add_job(_safe(_scheduled_dive_email), 'interval', hours=1, id='pumps_dive_email',
+            sched.add_job(_safe(_scheduled_hourly), 'interval', hours=1, id='pumps_hourly',
                           next_run_time=datetime.now() + timedelta(minutes=3))
             sched.start()
             print(f'✓ Pumps: mailbox scan every {SCAN_EVERY_MIN} min' if email_enabled else

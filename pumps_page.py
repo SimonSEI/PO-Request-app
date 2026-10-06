@@ -193,90 +193,75 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 <div class="strip">
   <div>PO@ mailbox: {% if email %}<b class="ok">connected</b> · <span id="scanInfo">…</span>
     <button class="btn s" id="scanBtn" onclick="scanNow()">Scan now</button>{% else %}<b class="warn">not configured</b> (upload documents by hand){% endif %}</div>
-  <div>Jobber: <span id="jobberInfo">{% if jobber.connected %}<b class="ok">connected</b>{% elif jobber.can_connect %}<a class="btn s p" href="{{ url_for('pumps.jobber_connect') }}">Connect Jobber</a>{% else %}<b class="warn">not set up</b> (see How it works){% endif %}</span></div>
-  <div>Reading documents: {% if claude and claude_problem %}<b class="bad">Claude is not working</b> ({{ claude_problem }}) - new documents wait in the Inbox and are read again automatically once it works{% elif claude %}<b class="ok">Claude</b>{% else %}<b class="ok">built-in reader</b> (Wettech's quotes, invoices and reports; anything it can't read waits in the Inbox){% endif %}</div>
-  <div>OpenClaw: {% if openclaw %}<b class="ok">API on</b>{% else %}<b>off</b>{% endif %}</div>
+  <div>Jobber: <span id="jobberInfo">{% if jobber.connected %}<b class="ok">connected</b>{% elif jobber.can_connect %}<a class="btn s p" href="{{ url_for('pumps.jobber_connect') }}">Connect Jobber</a>{% else %}<b class="warn">not set up</b>{% endif %}</span></div>
+  <div>Reading documents: {% if claude and claude_problem %}<b class="bad">Claude is not working</b> ({{ claude_problem }}) - new documents wait on Today and are read again automatically once it works{% elif claude %}<b class="ok">Claude</b>{% else %}<b class="ok">built-in reader</b> (Wettech and Gulfshore quotes, invoices and reports; anything it can't read waits on Today){% endif %}</div>
+  <div>Daily email: <span id="digestInfo">to {{ digest_to }} at {{ digest_hour }}am on weekdays</span>
+    <button class="btn s" onclick="previewDigest()">Preview</button></div>
 </div>
 {% if flash_msg %}<div class="flash">{{ flash_msg }}</div>{% endif %}
 
 <div class="tabs" id="tabs">
   <div class="tab on" data-tab="today">Today <span class="n" id="n-today"></span></div>
-  <div class="tab" data-tab="pipeline">Pipeline</div>
-  <div class="tab" data-tab="tracker">Tracker</div>
-  <div class="tab" data-tab="inbox">Inbox <span class="n" id="n-inbox"></span></div>
+  <div class="tab" data-tab="jobs">Jobs <span class="n" id="n-jobs"></span></div>
   <div class="tab" data-tab="scada">SCADA <span class="n" id="n-scada"></span></div>
-  <div class="tab" data-tab="maint">Maintenance</div>
-  <div class="tab" data-tab="jobber">Jobber <span class="n" id="n-jobber"></span></div>
+  <div class="tab" data-tab="accounts">Accounts</div>
   <div class="tab" data-tab="reports">Reports</div>
-  <div class="tab" data-tab="divers">Divers</div>
-  <div class="tab" data-tab="help">How it works</div>
 </div>
 
 <!-- TODAY -->
 <div class="panel" id="p-today">
   <div class="toolbar"><div class="note" id="todayNote">Everything waiting on someone, oldest first. Click any row to open it.</div><div class="sp"></div>
-    <input type="text" id="caseSearch" placeholder="Find an item…" oninput="searchCases(this.value)" style="width:220px"></div>
+    <input type="text" id="caseSearch" placeholder="Find a job…" oninput="searchCases(this.value)" style="width:220px">
+    <select id="uploadKind" title="What the files are"><option value="">Upload: let the app decide</option><option value="quote">Upload quotes</option><option value="bill">Upload bills</option><option value="report">Upload reports</option></select>
+    <button class="btn" onclick="document.getElementById('fileIn').click()">⬆ Upload</button>
+    <input type="file" id="fileIn" multiple accept=".pdf,.docx,.doc" class="hide" onchange="uploadFiles(this.files)"></div>
   <div id="searchResults" class="box hide" style="margin-bottom:14px"></div>
   <div class="grid" id="todayGrid"></div>
 </div>
 
-<!-- TRACKER -->
-<div class="panel hide" id="p-tracker">
+<!-- JOBS -->
+<div class="panel hide" id="p-jobs">
   <div class="toolbar">
-    <button class="btn" onclick="addSheetRow()">＋ Add row</button>
-    <a class="btn" id="exportBtn" href="#">⬇ Excel</a>
-    <span class="note">One row per PO / client need - the monthly pump sheet. Click a cell to edit; it saves when you leave the cell. ↗ opens the item.</span>
+    <input type="text" id="jbSearch" placeholder="Find a job, client or PO…" oninput="clearTimeout(window._jq);window._jq=setTimeout(loadJobs,300)" style="width:240px">
+    <select id="jbShow" onchange="loadJobs()"><option value="open">Open</option><option value="closed">Done</option><option value="all">All</option></select>
+    <div class="sp"></div><span id="syncInfo" class="note"></span>
+    <button class="btn" onclick="syncJobber()">↻ Sync Jobber</button>
   </div>
-  <div class="scroll"><table class="sheet"><thead><tr>
-    <th></th><th>PO#</th><th>Date</th><th>Vendor</th><th>Job Name /Address</th><th>Description of Work</th><th>Approved By</th>
-    <th>Jobber Request Made</th><th>Vendor Quote Amount</th><th>Vendor Invoice Amount</th><th>Vendor Invoice#</th>
-    <th>Sei Invoice#</th><th>Amount</th><th>Notes</th><th>Stage</th></tr></thead><tbody id="sheetBody"></tbody></table></div>
-  <div class="foot"><span id="footCount"></span><span id="footQuote"></span><span id="footBill"></span><span id="footAmt"></span></div>
-  <div class="months" id="months"></div>
-</div>
-
-<!-- INBOX -->
-<div class="panel hide" id="p-inbox">
-  <div class="drop" id="drop" onclick="document.getElementById('fileIn').click()">Drop Wettech quotes, bills or Word pump reports here, or click to choose files.
-    <input type="file" id="fileIn" multiple accept=".pdf,.docx,.doc" class="hide" onchange="uploadFiles(this.files)">
-    <div style="margin-top:8px"><select id="uploadKind" onclick="event.stopPropagation()"><option value="">Let the app decide what it is</option><option value="quote">These are quotes</option><option value="bill">These are bills</option><option value="report">These are reports</option></select></div>
-  </div>
-  <div class="toolbar" style="margin-top:14px"><b>Documents</b><div class="sp"></div>
-    <select id="docKind" onchange="loadInbox()"><option value="">All kinds</option><option value="quote">Quotes</option><option value="bill">Bills</option><option value="report">Reports</option><option value="other">Other</option></select>
-    <select id="docStatus" onchange="loadInbox()"><option value="">Any status</option><option value="review">Needs review</option><option value="new">Not filed</option><option value="filed">Filed</option><option value="done">Done</option><option value="dismissed">Dismissed</option></select></div>
-  <div class="scroll"><table class="t"><thead><tr><th>Received</th><th>Kind</th><th>From / file</th><th>Client</th><th>#</th><th class="num">Before tax</th><th class="num">Total</th><th>Item</th><th>Status</th><th></th></tr></thead><tbody id="docBody"></tbody></table></div>
+  <div class="scroll"><table class="t"><thead><tr><th>Job</th><th>Where it is</th><th>Vendor</th><th class="num">Vendor quote</th><th>Our quote</th><th class="num">Vendor bill</th><th>Our invoice</th><th>Vendor paid</th><th></th></tr></thead><tbody id="jobsBody"></tbody></table></div>
+  <h3 style="margin:18px 0 8px;font-size:14px">New in Jobber - not tracked yet</h3>
+  <div class="note" style="margin-bottom:8px">Open pump, diver, filter and SCADA requests in Jobber. <b>Track</b> follows it here to the invoice; <b>Ignore</b> hides it.</div>
+  <div class="scroll" style="max-height:40vh"><table class="t"><thead><tr><th>Request</th><th>Client</th><th>Created</th><th></th></tr></thead><tbody id="jbNewBody"></tbody></table></div>
 </div>
 
 <!-- SCADA -->
 <div class="panel hide" id="p-scada">
-  <div class="toolbar"><div class="note">The SCADA sheet: <b>Renewal date</b> is when the next renewal is due; each year holds our invoice # or a note. When one's renewed, <b>Renewed…</b> records it and moves the date on a year. Due within {{ scada_days }} days or overdue shows on Today.</div><div class="sp"></div>
+  <div class="toolbar"><div class="note">The SCADA sheet: <b>Renewal date</b> is when the next renewal is due; each year holds our invoice # or a note. When one's renewed, <b>Renewed…</b> records it and moves the date on a year. Due within {{ scada_days }} days: the app drafts the client's quote in Jobber at their price (complimentary ones are just a reminder) and it shows on Today. Each Jobber sync fills in the year's invoice # from the SCADA renewal invoices it finds.</div><div class="sp"></div>
     <select id="scShow" onchange="loadScada()"><option value="active">On SCADA</option><option value="all">All, incl. stopped</option></select>
     <button class="btn" onclick="scadaEdit(0)">＋ Add client</button></div>
   <div class="scroll"><table class="t" id="scadaTable"></table></div>
 </div>
 
-<!-- JOBBER -->
-<div class="panel hide" id="p-jobber">
+<!-- ACCOUNTS -->
+<div class="panel hide" id="p-accounts">
   <div class="toolbar">
-    <span id="syncInfo" class="note"></span><div class="sp"></div>
-    <select id="jCat" onchange="loadJobber()"><option value="">Pump, diver, filter &amp; SCADA</option><option value="pump">Pump</option><option value="diver">Diver</option><option value="filter">Filter</option><option value="scada">SCADA</option></select>
-    <select id="jKind" onchange="loadJobber()"><option value="">Requests, quotes, jobs, drafts</option><option value="request">Requests</option><option value="quote">Quotes</option><option value="job">Jobs</option><option value="invoice">Draft invoices</option></select>
-    <select id="jOpen" onchange="loadJobber()"><option value="1">Open only</option><option value="0">Everything</option></select>
-    <button class="btn" onclick="syncJobber()">↻ Sync Jobber</button>
+    <span id="acInfo" class="note"></span><div class="sp"></div>
+    <input type="text" id="acSearch" placeholder="Find an account…" oninput="drawAccounts()" style="width:180px">
+    <select id="acShow" onchange="drawAccounts()"><option value="active">Active</option><option value="due">Due this month</option><option value="pump">Pump (Wettech)</option><option value="lake">Lake / diver (Gulfshore)</option><option value="scada">On SCADA</option><option value="former">Former</option><option value="">All</option></select>
+    <button class="btn" onclick="maintEdit(0)">＋ Pump account</button>
+    <button class="btn" onclick="editDiveSite()">＋ Lake site</button>
   </div>
-  <div class="note" style="margin-bottom:10px">Open pump work in Jobber. <b>Track</b> makes it an item here so it is followed to the invoice; <b>Ignore</b> hides it (e.g. a client that only has "pump" in its name). Items with a PO number in the title link themselves.</div>
-  <div class="scroll"><table class="t"><thead><tr><th>Kind</th><th>Status</th><th>Title</th><th>Client</th><th>Property</th><th class="num">Total</th><th>Created</th><th>Item</th><th></th></tr></thead><tbody id="jobberBody"></tbody></table></div>
-  <h3 style="margin:18px 0 8px;font-size:14px">Recurring pump maintenance (service contracts)</h3>
-  <div class="scroll" style="max-height:40vh"><table class="t"><thead><tr><th>Client</th><th>Job</th><th>Property</th><th class="num">Per visit</th><th>Status</th></tr></thead><tbody id="contractBody"></tbody></table></div>
-  <h3 style="margin:18px 0 8px;font-size:14px">Site names</h3>
-  <div class="note" style="margin-bottom:8px">How an account's sites are named on Wettech's paperwork, so quotes go to the right Jobber client and property on their own - e.g. "Carlisle" is on the Greenscapes account and its "back station" is the Pump #1 exit. Typos are allowed. Add one from <b>Draft quote</b> (tick "Remember").</div>
+  <div class="note" style="margin-bottom:10px">One row per client: Wettech's pump maintenance (Tommy, tomm@wettec.biz), Gulfshore's lake and diver work (Jordan, Gulfshoreyachts@gmail.com) and SCADA. Recurring Jobber jobs bill the maintenance.</div>
+  <div class="scroll"><table class="t"><thead><tr><th>Account</th><th>Pump - Wettech</th><th>Lake - Gulfshore</th><th>SCADA</th><th>Where</th></tr></thead><tbody id="acBody"></tbody></table></div>
+  <h3 style="margin:22px 0 8px;font-size:14px">Monthly email to the diver</h3>
+  <div class="toolbar"><span id="diveInfo" class="note"></span><div class="sp"></div>
+    <button class="btn" onclick="diverTodo(diveMonth())">Email ready to copy</button>
+    <a class="btn" id="diveDocx" href="#">⬇ Word list</a>
+    <button class="btn" onclick="sendDiveEmail()" title="Send it from the PO mailbox">Send from PO@…</button></div>
+  <div class="fields" id="diveSettings"></div>
+  <div class="scroll" style="max-height:30vh;margin-top:10px"><table class="t"><thead><tr><th>Month</th><th>Sent</th><th>By</th><th>To</th><th class="num">Sites</th><th>Result</th></tr></thead><tbody id="diveSent"></tbody></table></div>
+  <h3 style="margin:22px 0 8px;font-size:14px">Site names</h3>
+  <div class="note" style="margin-bottom:8px">How a site is written on the vendors' paperwork, so quotes and reports go to the right Jobber client and job - e.g. "Carlisle" is on the Greenscapes account. Add one from <b>Draft quote</b> (tick "Remember").</div>
   <div class="scroll" style="max-height:40vh"><table class="t"><thead><tr><th>Written as</th><th>Area</th><th>Jobber client</th><th>Property</th><th>Note</th><th></th></tr></thead><tbody id="siteNamesBody"></tbody></table></div>
-</div>
-
-<!-- PIPELINE -->
-<div class="panel hide pl" id="p-pipeline">
-  <div id="plBody"><div class="empty">Loading…</div></div>
-  <div class="tip hide" id="plTip" role="tooltip"></div>
 </div>
 
 <!-- REPORTS -->
@@ -289,71 +274,6 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   <div class="note" style="margin-bottom:10px">Every service report from Wettech, rebranded (our letterhead, no Wettech details, no technician, not "Stahlman England" as the customer), by month. Each one goes on the site's pump job in Jobber as "&lt;Month&gt; Pump Maintenance" with the PDF.</div>
   <div id="repBody"></div>
 </div>
-
-<!-- MAINTENANCE -->
-<div class="panel hide" id="p-maint">
-  <div class="toolbar">
-    <span id="mtInfo" class="note"></span><div class="sp"></div>
-    <input type="text" id="mtSearch" placeholder="Find an account…" oninput="drawMaint()" style="width:180px">
-    <select id="mtShow" onchange="drawMaint()"><option value="active">Active</option><option value="due">Due this month</option><option value="former">Former</option><option value="">All</option></select>
-    <button class="btn" onclick="maintEdit(0)">＋ Account</button>
-  </div>
-  <div class="note" style="margin-bottom:10px">Wettech's pump maintenance accounts (Tommy, 941-915-4327, wettec@verizon.net) - pump reports come with Wettech's invoices. Lakes and filters are on the Divers tab.</div>
-  <div class="scroll"><table class="t"><thead><tr><th>Account</th><th>Type</th><th>Size &amp; make</th><th>Location</th><th>Schedule</th><th class="num">Wettech / visit</th><th class="num">Naples Electric</th><th>Our bill</th><th>Joined</th><th></th></tr></thead><tbody id="mtBody"></tbody></table></div>
-</div>
-
-<!-- DIVERS -->
-<div class="panel hide" id="p-divers">
-  <div class="toolbar">
-    <span id="diveInfo" class="note"></span><div class="sp"></div>
-    <select id="diveFilter" onchange="drawDiveSites()"><option value="dive">Need a diver</option><option value="month">On the next list</option><option value="nodive">No diving</option><option value="former">Former</option><option value="">All sites</option></select>
-    <button class="btn" onclick="editDiveSite()">＋ Site</button>
-    <button class="btn" onclick="diverTodo(diveMonth())">Email ready to copy</button>
-    <a class="btn" id="diveDocx" href="#">⬇ Word list</a>
-    <button class="btn" onclick="sendDiveEmail()" title="Send it from the PO mailbox">Send from PO@…</button>
-  </div>
-  <div class="note" style="margin-bottom:10px">Every site that needs the diver goes on the month's list. On the 1st, a to-do appears on Today - "Email Jordan the &lt;month&gt; diver list" - with the email written and the Word list ready to attach; tick it when it's sent. <b>Meet</b> adds "the HOA wants to meet you onsite"; <b>Hold</b> lists it as HOLD OFF; a <b>one-time note</b> goes on the next email only. Months left blank = every month.</div>
-  <div class="scroll"><table class="t"><thead><tr><th>Site</th><th>Lakes / filters / pumps</th><th>Address</th><th>Notes for the diver</th><th>Diver?</th><th>Schedule</th><th class="num">Gulfshore</th><th>Our bill</th><th>Status</th><th></th></tr></thead><tbody id="diveBody"></tbody></table></div>
-  <h3 style="margin:18px 0 8px;font-size:14px">Email to the diver</h3>
-  <div class="fields" id="diveSettings"></div>
-  <h3 style="margin:18px 0 8px;font-size:14px">Sent</h3>
-  <div class="scroll" style="max-height:30vh"><table class="t"><thead><tr><th>Month</th><th>Sent</th><th>By</th><th>To</th><th class="num">Sites</th><th>Result</th></tr></thead><tbody id="diveSent"></tbody></table></div>
-</div>
-
-<!-- HELP -->
-<div class="panel hide" id="p-help"><div class="howto">
-  <p>Pumps keeps every pump, diver, filter and SCADA need for a client in one place until it is invoiced, so nothing is lost between the request, Wettech, and the bill.</p>
-  <h3>The steps for each item</h3>
-  <ol>{% for s in steps %}<li>{{ s.label.replace('{vendor}', 'Wettech') }}</li>{% endfor %}</ol>
-  <p class="note">Steps that don't apply to a kind of work start crossed out (e.g. maintenance visits have no quote). Click a step's circle to mark it done today, or use its menu to set a date or mark it not needed.</p>
-  <h3>What the app does by itself</h3>
-  <ul>
-    <li>Reads the PO@ mailbox every 30 minutes for Wettech quotes, bills and Word pump reports, and files each against its item by PO number, Wettech W/O number or client name.</li>
-    <li>When a bill arrives it compares it with the quote. If they differ - or there is no quote - an <b>issue</b> is raised and stays at the top of Today until someone resolves it.</li>
-    <li>Rebrands Wettech's Word reports: our letterhead, our name, no technician names, "Stahlman-" taken off the customer name.</li>
-    <li>Pulls pump, diver, filter and SCADA requests, quotes and jobs from Jobber every 6 hours, and keeps the SCADA renewals from the office's SCADA sheet, and fills in each year's invoice # from the SCADA renewal invoices it finds in Jobber (Renewed... records one by hand).</li>
-    <li>Follows our Jobber quotes and invoices: once the office sends a drafted quote, "Quote sent to client" ticks itself, and "Client approved" when the client approves it in Jobber. Once the client <b>pays</b> our Jobber invoice, Wettech's bill goes on Today as <b>due to be paid</b> until someone marks it paid.</li>
-  </ul>
-  <h3>Service reports</h3>
-  <ul><li>Wettech's monthly service reports are rebranded on every page (our letterhead, no Wettech details, no technician, not "Stahlman England" as the customer), kept on the <b>Reports</b> tab by year and month, and put on the site's pump job in Jobber as a note - "October Pump Maintenance" with the PDF - when the job is clear (e.g. Spanish Wells = The Lake Club, job #1609). Otherwise it waits on Today under Reports to log.</li></ul>
-  <h3>To do and the diver</h3>
-  <ul><li><b>To do</b> on Today lists what the office has to do; tick each one when it's done, or add your own.</li>
-  <li>The <b>Divers</b> tab lists which sites need the diver (from the Lake Maintenance sheet: mostly quarterly, Jan/Apr/Jul/Oct). The <b>Maintenance</b> tab is Wettech's pump accounts. On the 1st of a month with sites due a to-do appears - "Email Jordan the &lt;month&gt; diver list" - with the email written the way Andrea writes it and the Word list ready to attach.</li></ul>
-  <h3>What only happens when someone clicks</h3>
-  <ul>
-    <li><b>Client quotes are drafted on their own.</b> When a Wettech quote is read and filed, the app drafts our quote in Jobber the way the office writes them: Wettech's price plus 30%, one "Service Proposal Amount" line with Wettech's description of the work (no Wettech name or sales tax line), titled "Proposal to …", on the right client and property - found by the item, a saved site name (e.g. "Carlisle back station" = Greenscapes, Pump #1 exit) or a Jobber search, typos allowed. Wettech's quote is saved as a note on it. It stays a <b>draft</b>: the app cannot send quotes. When the client or property is not clear, the quote waits on Today for <b>Draft quote</b>.</li>
-    <li><b>Mark Wettech paid</b>: records the date Wettech's bill was paid. The app does not pay anyone.</li>
-    <li><b>Draft invoice in Jobber</b> (from a bill): copies the bill's line items into a new Jobber invoice <b>as a draft</b>. It is never sent - the app cannot send invoices. Review it in Jobber and send it from there.</li>
-    <li><b>Log report in Jobber</b>: adds the report as a note on the pump's job (or the client).</li>
-    <li><b>Email Wettech to schedule</b>: opens an email in your mail program, ready to send yourself.</li>
-  </ul>
-  <h3>Setup</h3>
-  <ul>
-    <li>Jobber: create an app in Jobber's Developer Center with read access to clients, requests and jobs and <b>write access to quotes, invoices and notes</b>, set its callback URL to <code>{{ request.url_root.rstrip('/') }}/pumps/jobber/callback</code>, put its keys in Railway as <code>PUMPS_JOBBER_CLIENT_ID</code> and <code>PUMPS_JOBBER_CLIENT_SECRET</code>, then click Connect Jobber above.</li>
-    <li>OpenClaw: uses the same actions at <code>/api/pumps/…</code> with <code>OPENCLAW_API_KEY</code>. Its step-by-step instructions are in <code>PUMPS_OPENCLAW.md</code> in the repository.</li>
-    <li>Markup on drafted invoices: {{ markup }}% (<code>PUMPS_MARKUP_PCT</code>).</li>
-  </ul>
-</div></div>
 
 <div id="drawerWrap" class="hide"><div class="shade" onclick="closeDrawer()"></div><div class="drawer" id="drawer"></div></div>
 <div id="modalWrap" class="hide"><div class="shade2" onclick="closeModal()"></div><div class="modal" id="modal"></div></div>
@@ -387,9 +307,8 @@ function showTab(name){
   curTab = name;
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === name));
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('hide', p.id !== 'p-' + name));
-  if (name === 'today') loadToday(); else if (name === 'tracker') loadTracker(); else if (name === 'inbox') loadInbox();
-  else if (name === 'scada') loadScada(); else if (name === 'jobber') loadJobber(); else if (name === 'divers') loadDivers();
-  else if (name === 'reports') loadReports(); else if (name === 'pipeline') loadPipeline(); else if (name === 'maint') loadMaint();
+  if (name === 'today') loadToday(); else if (name === 'jobs') loadJobs(); else if (name === 'scada') loadScada();
+  else if (name === 'accounts') loadAccounts(); else if (name === 'reports') loadReports();
   history.replaceState(null, '', '#' + name);
 }
 
@@ -404,6 +323,8 @@ function caseRow(c, extra){
 function todoBox(todos){
   const row = t => `<div class="row"><div class="main"><div class="tt"><label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer"><input type="checkbox" onchange="todoDone(${t.id}, this.checked)" style="margin-top:3px"><span>${esc(t.title)}</span></label></div>
       ${t.detail ? `<div class="sub" style="margin-left:24px">${esc(t.detail)}</div>` : ''}
+      ${t.kind === 'approved_quote' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><a class="btn s p" href="/pumps/api/docs/${t.link.doc_id}/file?version=approved&download=1">⬇ Approved PDF</a><a class="btn s" href="mailto:${esc(t.link.to || '')}?subject=${encodeURIComponent(t.link.subject || 'Approved quote')}&body=${encodeURIComponent('Hi,\n\nThe attached quote is approved - please go ahead and schedule it.\n\nThank you,\nSimon Weardon')}">✉ Email ${esc(t.link.to || '')}</a>${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}</div>` : ''}
+      ${t.kind !== 'approved_quote' && (t.link.uri || t.link.case_id) ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${t.link.uri ? `<a class="btn s" href="${esc(t.link.uri)}" target="_blank" rel="noopener">Open in Jobber ↗</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}${t.link.scada_id ? `<button class="btn s" onclick="showTab('scada')">SCADA</button>` : ''}</div>` : ''}
       ${t.kind === 'diver_email' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="diverTodo('${esc(t.link.month || '')}')">Email ready - copy &amp; attach</button><a class="btn s" href="/pumps/api/dives/docx?month=${encodeURIComponent(t.link.month || '')}">⬇ Word list</a></div>` : ''}</div>
       ${t.kind === 'manual' ? `<button class="btn s" title="Remove" onclick="todoDelete(${t.id})">✕</button>` : ''}</div>`;
   return `<div class="box ${todos.length ? 'amber' : ''}"><h3>✅ To do<span class="c">${todos.length}</span></h3>
@@ -428,91 +349,6 @@ async function copyDiveEmail(){
   catch (e) { const r = document.createRange(); r.selectNodeContents(el); const s = getSelection(); s.removeAllRanges(); s.addRange(r); document.execCommand('copy'); s.removeAllRanges(); }
   toast('Email copied - paste it into Outlook');
 }
-// ── pipeline ──────────────────────────────────────────
-let PL = null, plStage = null;
-function plSampleWanted(){ try { return localStorage.getItem('pumpsPipelineLive') !== '1'; } catch (e) { return true; } }
-function plSetSample(on){ try { localStorage.setItem('pumpsPipelineLive', on ? '0' : '1'); } catch (e) {} loadPipeline(); }
-async function loadPipeline(){
-  const j = await api('/pipeline' + (plSampleWanted() ? '?sample=1' : ''));
-  if (!j.success) { document.getElementById('plBody').innerHTML = `<div class="empty">${esc(j.error)}</div>`; return; }
-  PL = j; drawPipeline();
-}
-const plMoney = v => v ? '$' + Math.round(v).toLocaleString('en-US') : '';
-const plDay = iso => new Date(iso + 'T12:00:00').toLocaleDateString('en-US', {month:'short', day:'numeric'});
-const KCOL = {maintenance:'var(--k1)', repair:'var(--k2)', scada:'var(--k3)', diver:'var(--k4)'};
-function drawPipeline(){
-  const j = PL, k = j.kpis;
-  const banner = j.sample
-    ? `<div class="sample">🧪 <b>Sample data</b> - a mock example to judge the layout, not real jobs. <span class="sp" style="flex:1"></span><button class="btn s" onclick="plSetSample(false)">Show live data</button></div>`
-    : `<div class="note" style="margin-bottom:10px">Live: items in Pumps and their Jobber records. <a href="#" onclick="event.preventDefault();plSetSample(true)">Show the sample</a></div>`;
-  const chevs = j.stages.map((s, i) => `<button class="chev ${i < 2 ? 'dk' : 'lt'} ${plStage === s.key ? 'on' : ''}" style="background:var(--st${i + 1})" onclick="plPick('${s.key}')" aria-pressed="${plStage === s.key}" aria-label="${esc(s.name)}: ${s.count} jobs" title="${esc(s.hint)}">
-      <span class="n">${i + 1}.</span><span class="nm">${esc(s.name)}</span><span class="ct">${s.count}</span>
-      <span class="ex">${s.stuck ? '⚠ ' + s.stuck + ' stuck' : (s.amount ? plMoney(s.amount) : '')}</span></button>`).join('');
-  const marks = j.stages.map(s => `<span class="${plStage === s.key ? 'on' : ''}"></span>`).join('');
-  const sel = j.stages.find(s => s.key === plStage);
-  const jobs = sel ? `<div class="jobs"><b>${esc(sel.name)}</b> <span class="note">- ${esc(sel.hint)} · ${sel.count} jobs, longest waiting first</span>
-      ${sel.jobs.map(x => `<div class="job" style="cursor:pointer" onclick="plOpenJob(${x.id}, '${esc(x.jobber_uri || '')}')" title="${x.jobber_uri ? 'Open in Jobber' : 'Not linked to Jobber yet'}"><div class="t"><b>${esc(x.title)}</b><div class="c">${esc(x.client)} · next: ${esc(x.next)}</div></div>
-        ${x.stuck ? '<span class="chip a">⚠ stuck</span>' : ''}<span class="d">${x.days}d in stage</span><span class="d">${plMoney(x.amount)}</span>
-        ${x.jobber_uri ? `<span class="chip b">Jobber ${esc(x.jobber_label || '')} ↗</span>` : '<span class="note" style="font-size:11.5px">no Jobber link yet</span>'}
-        ${x.id > 0 ? `<button class="btn s" onclick="event.stopPropagation();openCase(${x.id})">Pumps</button>` : ''}</div>`).join('') || '<div class="note" style="padding:8px 0">Nothing here.</div>'}</div>` : '<div class="note" style="margin-top:6px">Click a stage to see what\'s in it, then a job to open it in Jobber.</div>';
-  document.getElementById('plBody').innerHTML = banner +
-    `<div class="card"><h3>Where everything is</h3><div class="sub">${k.open} open pump jobs${k.stuck ? ` · ⚠ ${k.stuck} stuck 7+ days` : ''}. Work moves left to right.</div>
-      <div class="chevs">${chevs}</div><div class="marks">${marks}</div>${jobs}</div>
-    <div class="card"><h3>Coming up - next 8 weeks</h3><div class="sub">Jobs per week by kind. Hover a bar for the week; click a job below to open it in Jobber.</div>
-      <div class="legend">${j.kinds.map(x => `<span><i style="background:${KCOL[x.key]}"></i>${esc(x.name)}</span>`).join('')}</div>
-      <div id="plWeeks"></div><div id="plList" style="margin-top:10px"></div></div>`;
-  drawWeeks();
-}
-window.addEventListener('resize', () => { if (PL && curTab === 'pipeline') { clearTimeout(window._plr); window._plr = setTimeout(drawWeeks, 150); } });
-function plOpenJob(id, uri){
-  if (/^https:\/\/[\w.-]*getjobber\.com\//.test(uri)) { window.open(uri, '_blank', 'noopener'); return; }
-  if (id > 0) { toast('Not linked to a Jobber record yet - opening it in Pumps.'); openCase(id); }
-  else toast('Sample job - not linked to Jobber.');
-}
-function plPick(key){ plStage = plStage === key ? null : key; drawPipeline(); }
-function drawWeeks(){
-  const box = document.getElementById('plWeeks');
-  const j = PL, W = Math.max(320, box.clientWidth || 760), H = 230, padL = 28, padB = 30, padT = 24, n = j.weeks.length;
-  const tot = j.weeks.map(w => j.kinds.reduce((a, k) => a + w.counts[k.key], 0));
-  const top = Math.max(4, Math.ceil(Math.max(...tot) / 2) * 2);
-  const slot = (W - padL) / n, bw = Math.min(46, slot * 0.56), y = v => padT + (H - padT - padB) * (1 - v / top);
-  let g = '';
-  for (let t = 0; t <= top; t += top / 2) g += `<line x1="${padL}" x2="${W}" y1="${y(t)}" y2="${y(t)}" stroke="var(--grid)" stroke-width="1"/><text x="${padL - 6}" y="${y(t) + 4}" text-anchor="end" font-size="11" fill="var(--ink2)">${t}</text>`;
-  j.weeks.forEach((w, i) => {
-    const x = padL + slot * i + (slot - bw) / 2; let acc = 0;
-    const segs = j.kinds.filter(k => w.counts[k.key]);
-    segs.forEach((k, si) => {
-      const v = w.counts[k.key], y1 = y(acc + v), y0 = y(acc), last = si === segs.length - 1;
-      const h = Math.max(0, y0 - y1 - (si ? 2 : 0));
-      g += last ? `<path d="M${x},${y0 - (si ? 2 : 0)} V${y1 + 4} q0,-4 4,-4 H${x + bw - 4} q4,0 4,4 V${y0 - (si ? 2 : 0)} Z" fill="${KCOL[k.key]}"/>`
-                : `<rect x="${x}" y="${y1}" width="${bw}" height="${h}" fill="${KCOL[k.key]}"/>`;
-      acc += v;
-    });
-    if (tot[i]) g += `<text x="${x + bw / 2}" y="${y(tot[i]) - 5}" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text)">${tot[i]}</text>`;
-    g += `<text x="${x + bw / 2}" y="${H - padB + 17}" text-anchor="middle" font-size="11" fill="var(--ink2)">${i === 0 ? 'This week' : (W < 560 ? plDay(w.start).replace(/^(\w{3}) /, '$1\u00a0') : plDay(w.start))}</text>`;
-    g += `<rect x="${padL + slot * i}" y="${padT}" width="${slot}" height="${H - padT - padB + 20}" fill="transparent" tabindex="0" onpointermove="plTipWeek(event, ${i})" onpointerleave="plTipHide()" onfocus="plTipWeek(event, ${i})" onblur="plTipHide()" onclick="plShowWeek(${i})" style="cursor:pointer;outline:none"/>`;
-  });
-  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="display:block;max-width:100%" role="img" aria-label="Upcoming jobs per week for the next 8 weeks">${g}</svg>`;
-  plShowWeek(null);
-}
-function plShowWeek(i){
-  const ws = i === null ? PL.weeks.slice(0, 4) : [PL.weeks[i]];
-  document.getElementById('plList').innerHTML = (i === null ? '<div class="note" style="margin-bottom:4px">Next 4 weeks (click a bar for any week):</div>' : '') + ws.map(w => `<div class="wk"><div class="w">${plDay(w.start)} - ${plDay(w.end)}</div><div>${w.events.map(e => `<div class="ev"><span class="dt">${plDay(e.date)}</span><span class="ln" style="background:${KCOL[e.kind]}"></span><span>${e.jobber_uri ? `<a href="${esc(e.jobber_uri)}" target="_blank" rel="noopener">${esc(e.title)} ↗</a>` : esc(e.title)}${e.where ? ' <span class="note">· ' + esc(e.where) + '</span>' : ''}</span></div>`).join('') || '<span class="note">Nothing scheduled.</span>'}</div></div>`).join('');
-}
-function plTipAt(ev, rows){
-  const t = document.getElementById('plTip'); t.textContent = '';
-  rows.forEach(([v, l, col]) => { const d = document.createElement('div');
-    if (col) { const s = document.createElement('span'); s.className = 'ln'; s.style.background = col; d.appendChild(s); }
-    const b = document.createElement('span'); b.className = 'v'; b.textContent = v; d.appendChild(b);
-    if (l) { const m = document.createElement('span'); m.className = 'l'; m.textContent = ' ' + l; d.appendChild(m); }
-    t.appendChild(d); });
-  t.classList.remove('hide');
-  const r = ev.clientX !== undefined && ev.type !== 'focus' ? {x: ev.clientX, y: ev.clientY} : (() => { const b = ev.target.getBoundingClientRect(); return {x: b.left + b.width / 2, y: b.top}; })();
-  t.style.left = Math.min(window.innerWidth - 290, r.x + 14) + 'px'; t.style.top = (r.y + 14) + 'px';
-}
-function plTipWeek(ev, i){ const w = PL.weeks[i]; plTipAt(ev, [[plDay(w.start) + ' - ' + plDay(w.end), ''], ...PL.kinds.map(k => [String(w.counts[k.key]), k.name, KCOL[k.key]])]); }
-function plTipHide(){ document.getElementById('plTip').classList.add('hide'); }
-
 // ── reports ───────────────────────────────────────────
 async function loadReports(){
   const y = document.getElementById('repYear').value, q = document.getElementById('repSearch').value.trim();
@@ -540,21 +376,20 @@ async function loadToday(){
   if (!j.success) { document.getElementById('todayGrid').innerHTML = `<div class="empty">${esc(j.error)}</div>`; return; }
   const q = j.queue;
   setCount('n-today', q.todos.length + q.issues.length + q.vendor_bills_to_pay.length + q.needs_scheduling.length + q.quotes_to_draft.length + q.bills_to_draft.length + q.reports_to_log.length, q.issues.length > 0 || q.vendor_bills_to_pay.length > 0);
-  setCount('n-inbox', q.review_docs.length, false);
+  setCount('n-jobs', q.open_count, false);
   setCount('n-scada', q.scada_attention.length, q.scada_attention.some(s => s.state === 'overdue'));
-  setCount('n-jobber', q.new_jobber_requests.length, false);
   updateScanInfo(j.scan);
   const g = [];
   g.push(todoBox(q.todos));
   g.push(box('⚠️ Issues to resolve', q.issues, i => `<div class="row" onclick="openCase(${i.case_id})"><div class="main"><div class="tt">${esc(i.title || i.client_name || 'Item ' + i.case_id)}</div><div class="sub">${esc(i.message)}</div></div></div>`, q.issues.length ? 'red' : ''));
-  g.push(box('💸 Pay Wettech - the client has paid', q.vendor_bills_to_pay, c => `<div class="row" onclick="openCase(${c.id})"><div class="main"><div class="tt">${esc(c.title || c.client_name)}</div><div class="sub">${esc(c.vendor || 'Wettech')} bill ${c.vendor_bill_number ? '#' + esc(c.vendor_bill_number) + ' · ' : ''}${money(c.vendor_bill_total ?? c.vendor_bill_amount)} · our Jobber invoice ${c.sei_invoice_number ? '#' + esc(c.sei_invoice_number) + ' ' : ''}is paid</div></div><button class="btn s p" onclick="event.stopPropagation();markVendorPaid(${c.id})">Mark paid</button></div>`, q.vendor_bills_to_pay.length ? 'red' : '', 'Our client paid the Jobber invoice - Wettech\'s bill needs to be paid.'));
+  g.push(box('💸 Pay the vendor - the client has paid', q.vendor_bills_to_pay, c => `<div class="row" onclick="openCase(${c.id})"><div class="main"><div class="tt">${esc(c.title || c.client_name)}</div><div class="sub">${esc(c.vendor || 'Wettech')} bill ${c.vendor_bill_number ? '#' + esc(c.vendor_bill_number) + ' · ' : ''}${money(c.vendor_bill_total ?? c.vendor_bill_amount)} · our Jobber invoice ${c.sei_invoice_number ? '#' + esc(c.sei_invoice_number) + ' ' : ''}is paid</div></div><button class="btn s p" onclick="event.stopPropagation();markVendorPaid(${c.id})">Mark paid</button></div>`, q.vendor_bills_to_pay.length ? 'red' : '', 'Our client paid the Jobber invoice - the vendor\'s bill needs to be paid.'));
   g.push(box('📅 Needs scheduling with Wettech', q.needs_scheduling, c => caseRow(c, c.scheduled_for ? 'for ' + esc(c.scheduled_for) : ''), q.needs_scheduling.length ? 'amber' : '', 'Client approved - get it on Wettech\'s calendar.'));
   g.push(box('📝 Quotes to draft in Jobber', q.quotes_to_draft, d => `<div class="row" onclick="openCase(${d.case_id})"><div class="main"><div class="tt">${esc(d.client_name || d.file_name)}</div><div class="sub">${esc(d.vendor)} quote ${d.doc_number ? '#' + esc(d.doc_number) + ' ' : ''}· ${money(d.subtotal ?? d.total)}${((d.jobber || {}).quote_pending || {}).reason ? ' · <b class="warn">' + esc(d.jobber.quote_pending.reason) + '</b>' : ''}</div></div><button class="btn s p" onclick="event.stopPropagation();draftQuote(${d.id})">Draft quote</button></div>`, '', 'Drafted automatically when the client and property are clear - these need a person to choose.'));
   g.push(box('🧾 Bills to draft in Jobber', q.bills_to_draft, d => `<div class="row" onclick="openCase(${d.case_id})"><div class="main"><div class="tt">${esc(d.client_name || d.file_name)}</div><div class="sub">${esc(d.vendor)} bill #${esc(d.doc_number)} · ${money(d.total)}</div></div><button class="btn s p" onclick="event.stopPropagation();draftInvoice(${d.id})">Draft invoice</button></div>`));
   g.push(box('📄 Reports to log in Jobber', q.reports_to_log, d => `<div class="row" onclick="${d.case_id ? `openCase(${d.case_id})` : `openDoc(${d.id})`}"><div class="main"><div class="tt">${esc(d.client_name || d.file_name)}</div><div class="sub">${esc((d.report_fields||{}).title || 'Report')} · ${esc(d.doc_date)}</div></div><button class="btn s" onclick="event.stopPropagation();logReport(${d.id})">Log in Jobber</button></div>`));
-  g.push(box('📥 Inbox needs a look', q.review_docs, d => `<div class="row" onclick="openDoc(${d.id})"><div class="main"><div class="tt">${kindChip(d.kind)} ${esc(d.client_name || d.file_name)}</div><div class="sub">${esc(d.review_reason || 'Not filed yet')}</div></div></div>`));
+  g.push(box('📥 Documents that need a look', q.review_docs, d => `<div class="row" onclick="openDoc(${d.id})"><div class="main"><div class="tt">${kindChip(d.kind)} ${esc(d.client_name || d.file_name)}</div><div class="sub">${esc(d.review_reason || 'Not filed yet')}</div></div></div>`));
   g.push(box('🛰️ SCADA renewals due', q.scada_attention, s => `<div class="row" onclick="showTab('scada')"><div class="main"><div class="tt">${esc(s.client_name)}${s.site ? ' · ' + esc(s.site) : ''}</div><div class="sub">${s.state === 'overdue' ? `<b class="bad">Overdue</b> since ${esc(s.next_due_on)}` : 'Due ' + esc(s.next_due_on)}${s.state_note ? ' · ' + esc(s.state_note) : ''}</div></div></div>`, q.scada_attention.some(s => s.state === 'overdue') ? 'red' : ''));
-  g.push(box('🆕 New pump requests in Jobber', q.new_jobber_requests, it => `<div class="row" onclick="showTab('jobber')"><div class="main"><div class="tt">${esc(it.title)}</div><div class="sub">${esc(it.client_name)} · ${d10(it.created_at)}</div></div><button class="btn s" onclick="event.stopPropagation();jobberAct('${esc(it.jobber_id)}','track')">Track</button></div>`));
+  g.push(box('🆕 New pump requests in Jobber', q.new_jobber_requests, it => `<div class="row" onclick="showTab('jobs')"><div class="main"><div class="tt">${esc(it.title)}</div><div class="sub">${esc(it.client_name)} · ${d10(it.created_at)}</div></div><button class="btn s" onclick="event.stopPropagation();jobberAct('${esc(it.jobber_id)}','track')">Track</button></div>`));
   g.push(box('💬 Quote to send to client', q.to_quote_client, c => caseRow(c)));
   g.push(box('⏳ Waiting on client approval', q.waiting_approval, c => caseRow(c)));
   g.push(box('🔧 Waiting on Wettech quote', q.waiting_vendor_quote, c => caseRow(c)));
@@ -576,55 +411,6 @@ function searchCases(v){
     box.classList.remove('hide');
     box.innerHTML = `<h3>Search<span class="c">${(j.cases||[]).length}</span></h3>` + ((j.cases||[]).slice(0,30).map(c => caseRow(c, stageChip(c))).join('') || '<div class="empty">No items match.</div>');
   }, 250);
-}
-
-// ── tracker (sheet) ───────────────────────────────────
-const COLS = ['po_number','opened_on','vendor','client_name','description','approved_by','jobber_request_made','vendor_quote_amount','vendor_bill_amount','vendor_bill_number','sei_invoice_number','amount','notes'];
-const MONEY = new Set(['vendor_quote_amount','vendor_bill_amount','amount']);
-async function loadTracker(month){
-  const m = await api('/months');
-  curMonth = month || curMonth || m.current;
-  document.getElementById('months').innerHTML = (m.months || []).map(x => `<div class="month ${x === curMonth ? 'on' : ''}" onclick="loadTracker('${esc(x)}')">${esc(x)}</div>`).join('');
-  document.getElementById('exportBtn').href = '/pumps/api/export.xlsx?month=' + encodeURIComponent(curMonth);
-  const j = await api('/cases?status=all&month=' + encodeURIComponent(curMonth));
-  const body = document.getElementById('sheetBody');
-  body.innerHTML = '';
-  (j.cases || []).forEach(c => body.appendChild(sheetRow(c)));
-  footer();
-}
-function sheetRow(c){
-  const tr = document.createElement('tr');
-  if (c.id) tr.dataset.id = c.id;
-  const issue = c.open_issues && c.open_issues.length;
-  tr.innerHTML = `<td>${c.id ? `<a href="#" onclick="openCase(${c.id});return false" title="Open item">↗</a>` : ''}</td>` + COLS.map(k => {
-    const v = c[k] === null || c[k] === undefined ? '' : c[k];
-    const cls = (MONEY.has(k) ? 'num' : '') + (k === 'description' ? ' desc' : '') + (issue && (k === 'vendor_bill_amount' || k === 'vendor_quote_amount') ? ' issue' : '');
-    return `<td class="${cls}" data-col="${k}" contenteditable="true">${esc(MONEY.has(k) ? money(v) : v)}</td>`;
-  }).join('') + `<td>${c.id ? stageChip(c) : ''}</td>`;
-  tr.querySelectorAll('td[contenteditable]').forEach(td => {
-    td.addEventListener('input', () => td.classList.add('dirty'));
-    td.addEventListener('blur', () => { if (td.classList.contains('dirty')) saveSheetRow(tr); });
-  });
-  return tr;
-}
-async function saveSheetRow(tr){
-  const data = {month: curMonth};
-  if (tr.dataset.id) data.id = parseInt(tr.dataset.id);
-  tr.querySelectorAll('td[data-col]').forEach(td => data[td.dataset.col] = td.textContent.trim());
-  const j = await api('/sheet/save', {method:'POST', body:data});
-  if (j.success) { tr.dataset.id = j.id; tr.querySelectorAll('td.dirty').forEach(td => td.classList.remove('dirty')); if (!tr.firstChild.innerHTML) tr.firstChild.innerHTML = `<a href="#" onclick="openCase(${j.id});return false">↗</a>`; footer(); }
-  else toast(j.error || 'Not saved', true);
-}
-function addSheetRow(){ const c = {opened_on: new Date().toISOString().slice(0,10)}; const tr = sheetRow(c); document.getElementById('sheetBody').appendChild(tr); tr.querySelector('td[contenteditable]').focus(); }
-function footer(){
-  let n = 0, q = 0, b = 0, a = 0;
-  document.querySelectorAll('#sheetBody tr').forEach(tr => { n++;
-    const val = k => parseFloat((tr.querySelector(`td[data-col="${k}"]`).textContent || '').replace(/[$,]/g,'')) || 0;
-    q += val('vendor_quote_amount'); b += val('vendor_bill_amount'); a += val('amount'); });
-  document.getElementById('footCount').textContent = 'Rows: ' + n;
-  document.getElementById('footQuote').textContent = 'Quotes: ' + money(q);
-  document.getElementById('footBill').textContent = 'Vendor bills: ' + money(b);
-  document.getElementById('footAmt').textContent = 'Billed: ' + money(a);
 }
 
 // ── item drawer ───────────────────────────────────────
@@ -751,22 +537,6 @@ async function createCase(){
 }
 
 // ── inbox ─────────────────────────────────────────────
-async function loadInbox(){
-  const k = document.getElementById('docKind').value, s = document.getElementById('docStatus').value;
-  const j = await api('/docs?limit=300' + (k ? '&kind=' + k : '') + (s ? '&status=' + s : ''));
-  document.getElementById('docBody').innerHTML = (j.docs || []).map(d => `<tr class="click" onclick="openDoc(${d.id})">
-    <td>${esc(d10(d.created_at))}</td><td>${kindChip(d.kind)}</td>
-    <td><div>${esc(d.email_from || d.source)}</div><div class="note">${esc(d.file_name)}</div></td>
-    <td>${esc(d.client_name)}${d.site ? `<div class="note">${esc(d.site)}</div>` : ''}</td><td>${esc(d.doc_number)}</td>
-    <td class="num">${money(d.subtotal)}</td><td class="num">${money(d.total)}</td>
-    <td>${d.case_id ? `<a href="#" onclick="event.stopPropagation();openCase(${d.case_id});return false">item ${d.case_id}</a>` : '<span class="chip a">not filed</span>'}</td>
-    <td>${d.status === 'review' ? '<span class="chip r">review</span>' : `<span class="chip">${esc(d.status)}</span>`}${d.review_reason ? `<div class="note">${esc(d.review_reason)}</div>` : ''}</td>
-    <td><a class="btn s" href="/pumps/api/docs/${d.id}/file" target="_blank" onclick="event.stopPropagation()">Open</a></td></tr>`).join('') || '<tr><td colspan="10" class="empty">No documents yet.</td></tr>';
-}
-const drop = document.getElementById('drop');
-['dragenter','dragover'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add('over'); }));
-['dragleave','drop'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove('over'); }));
-drop.addEventListener('drop', ev => uploadFiles(ev.dataTransfer.files));
 async function uploadFiles(files, caseId){
   if (!files || !files.length) return;
   const fd = new FormData();
@@ -779,7 +549,7 @@ async function uploadFiles(files, caseId){
   if (!j.success) { toast(j.error || 'Upload failed', true); return; }
   const msgs = j.results.map(r => r.skipped ? `${r.file}: ${r.skipped}` : `${r.file}: ${r.kind}${r.review ? ' - ' + r.review : ''}`);
   toast(msgs.join(' | '));
-  if (caseId) openCase(caseId); else loadInbox();
+  if (caseId) openCase(caseId); else loadToday();
 }
 async function openDoc(id){
   const j = await api('/docs/' + id);
@@ -816,7 +586,7 @@ async function saveDoc(id, data){
   const j = await api('/docs/' + id, {method:'PATCH', body:data});
   if (!j.success) { toast(j.error, true); return; }
   closeModal(); toast('Saved');
-  if (j.case_id) openCase(j.case_id); else if (curTab === 'inbox') loadInbox(); else loadToday();
+  if (j.case_id) openCase(j.case_id); else loadToday();
 }
 async function rereadDoc(id){
   toast('Reading with Claude…');
@@ -1015,7 +785,7 @@ async function loadScada(){
   const cell = v => !v ? '' : (/^\d{4,6}$/.test(v) ? `<b>${esc(v)}</b>` : `<span class="note">${esc(v)}</span>`);
   document.getElementById('scadaTable').innerHTML = `<thead><tr><th>Status</th><th>Client</th><th>Renewal date</th><th>Product</th><th class="num">Amount</th><th>Our bill</th><th>Vendor</th>${yr.map(y => `<th>${y}</th>`).join('')}<th></th></tr></thead><tbody>` +
     (rows.map(s => `<tr>
-      <td><span class="chip ${lab[s.state][0]}">${lab[s.state][1]}</span>${s.days_left != null && s.state !== 'current' && s.state !== 'inactive' ? `<div class="note">${s.days_left < 0 ? -s.days_left + ' days late' : 'in ' + s.days_left + ' days'}</div>` : ''}</td>
+      <td><span class="chip ${lab[s.state][0]}">${lab[s.state][1]}</span>${s.complimentary ? ' <span class="chip">complimentary</span>' : ''}${s.days_left != null && s.state !== 'current' && s.state !== 'inactive' ? `<div class="note">${s.days_left < 0 ? -s.days_left + ' days late' : 'in ' + s.days_left + ' days'}</div>` : ''}</td>
       <td><b>${esc(s.client)}</b>${s.notes ? `<div class="note">${esc(s.notes)}</div>` : ''}</td>
       <td style="white-space:nowrap">${esc(s.next_due_on)}</td><td class="note">${esc(s.product)}</td>
       <td class="num">${money(s.vendor_cost)}</td><td>${esc(s.our_bill)}</td><td>${esc(s.vendor)}</td>
@@ -1043,13 +813,14 @@ function scadaEdit(id){
     <label class="w">Name in Jobber <span class="note">(client or site on the invoice; separate several with ;)</span><input type="text" id="sc_jn" value="${esc(s.jobber_names || '')}" placeholder="e.g. Cross Creek"></label>
     ${yr.map(y => `<label>${y}<input type="text" class="sc_y" data-y="${y}" value="${esc((s.years || {})[y] || '')}" placeholder="invoice # or note"></label>`).join('')}
     <label class="w">Notes<textarea id="sc_notes">${esc(s.notes)}</textarea></label>
-    <label><span><input type="checkbox" id="sc_active" ${s.active ? 'checked' : ''}> Still on SCADA</span></label></div>`,
+    <label><span><input type="checkbox" id="sc_active" ${s.active ? 'checked' : ''}> Still on SCADA</span></label>
+    <label><span><input type="checkbox" id="sc_comp" ${s.complimentary ? 'checked' : ''}> Complimentary (remind me, no client quote)</span></label></div>`,
     `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="scadaSave(${id})">Save</button>`);
 }
 async function scadaSave(id){
   const v = x => document.getElementById(x).value;
   const years = {}; document.querySelectorAll('.sc_y').forEach(el => years[el.dataset.y] = el.value);
-  const body = {client: v('sc_client'), renewal_date: v('sc_date'), product: v('sc_product'), vendor_cost: v('sc_cost'), our_bill: v('sc_bill'), vendor: v('sc_vendor'), notes: v('sc_notes'), jobber_names: v('sc_jn'), active: document.getElementById('sc_active').checked, years};
+  const body = {client: v('sc_client'), renewal_date: v('sc_date'), product: v('sc_product'), vendor_cost: v('sc_cost'), our_bill: v('sc_bill'), vendor: v('sc_vendor'), notes: v('sc_notes'), jobber_names: v('sc_jn'), active: document.getElementById('sc_active').checked, complimentary: document.getElementById('sc_comp').checked, years};
   const j = id ? await api('/scada/' + id, {method:'PATCH', body}) : await api('/scada', {method:'POST', body});
   if (!j.success) { toast(j.error, true); return; }
   if (!id) { const n = j.scada.find(x => x.client === body.client.trim()); if (n) await api('/scada/' + n.id, {method:'PATCH', body:{years, active: body.active, jobber_names: body.jobber_names}}); }
@@ -1061,6 +832,7 @@ const MSHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov
 function schedText(a){ if (a.monthly) return 'Monthly'; const m = (a.months || '').split(',').filter(Boolean).map(Number); return m.length === 12 ? 'Monthly' : m.map(x => MSHORT[x - 1]).join(', ') || '—'; }
 async function loadMaint(){ const j = await api('/maint'); if (!j.success) { toast(j.error, true); return; } MT = j; drawMaint(); }
 function drawMaint(){
+  if (!document.getElementById('mtBody')) { refreshAccounts(); return; }
   if (!MT) return;
   const show = document.getElementById('mtShow').value, q = document.getElementById('mtSearch').value.trim().toLowerCase();
   const rows = MT.accounts.filter(a => (show === 'active' ? a.active : show === 'former' ? !a.active : show === 'due' ? a.due_this_month : true) && (!q || (a.name + ' ' + a.address).toLowerCase().includes(q)));
@@ -1103,12 +875,46 @@ async function maintDelete(id){ if (!confirm('Remove this account? (Untick "Acti
 async function scadaAdd(){ const v = x => document.getElementById(x).value; const j = await api('/scada', {method:'POST', body:{client_name:v('sa_client'), site:v('sa_site'), last_renewed_on:v('sa_last'), annual_amount:v('sa_amt')}}); if (j.success) { closeModal(); loadScada(); } else toast(j.error, true); }
 
 // ── Jobber ────────────────────────────────────────────
+// ── accounts ──────────────────────────────────────
+let AC = null;
+async function loadAccounts(){ await refreshAccounts(); loadDivers(); loadSiteNames(); }
+async function refreshAccounts(){
+  const [a, m] = await Promise.all([api('/accounts'), api('/maint')]);
+  if (!a.success) { document.getElementById('acBody').innerHTML = `<tr><td colspan="5" class="empty">${esc(a.error)}</td></tr>`; return; }
+  AC = a; if (m.success) MT = m; drawAccounts();
+}
+function lakeSched(l){ return l.months ? (l.months === '1,4,7,10' ? 'Jan, Apr, Jul, Oct' : l.months.split(',').map(m => MSHORT[m - 1]).join(', ')) : 'Every month'; }
+function drawAccounts(){
+  if (!AC) return;
+  const show = document.getElementById('acShow').value, q = document.getElementById('acSearch').value.trim().toLowerCase();
+  const due = a => (a.pump && a.pump.due_this_month) || (a.lake && a.lake.due_this_month && a.lake.needs_dive);
+  const ok = a => !show ? true : show === 'active' ? a.active : show === 'former' ? !a.active : show === 'due' ? a.active && due(a) :
+    show === 'pump' ? a.pump && a.pump.active : show === 'lake' ? a.lake && a.lake.active !== 0 : show === 'scada' ? a.scada && a.scada.active : true;
+  const rows = AC.accounts.filter(a => ok(a) && (!q || JSON.stringify([a.name, a.pump && a.pump.address, a.lake && a.lake.address]).toLowerCase().includes(q)));
+  const act = AC.accounts.filter(a => a.active);
+  document.getElementById('acInfo').innerHTML = `${act.length} active accounts · ${act.filter(a => a.pump && a.pump.active).length} pump · ${act.filter(a => a.lake && a.lake.active !== 0).length} lake · <b>${act.filter(due).length} due in ${esc(AC.month)}</b>`;
+  const st = {overdue:'r', due_soon:'a', current:'g', inactive:'', unknown:''};
+  document.getElementById('acBody').innerHTML = rows.map(a => { const p = a.pump, l = a.lake, s = a.scada;
+    return `<tr><td><b>${esc(a.name)}</b>${!a.active ? ' <span class="chip">former</span>' : ''}</td>
+    <td>${p ? `${esc(p.equipment || p.kind)}<div class="note">${p.due_this_month ? '<b>' + esc(schedText(p)) + '</b> <span class="chip b">due</span>' : esc(schedText(p))} · Wettech ${esc(p.vendor_cost || '—')} · we bill ${esc(p.our_bill || '—')}${!p.active ? ' · former' : ''}</div><button class="btn s" onclick="maintEdit(${p.id})">Edit</button>` : '<span class="note">—</span>'}</td>
+    <td>${l ? `${esc(l.equipment || l.kind || '')} ${l.needs_dive ? '<span class="chip b">diver</span>' : '<span class="note">no diving</span>'}<div class="note">${l.due_this_month && l.needs_dive ? '<b>' + esc(lakeSched(l)) + '</b> <span class="chip b">due</span>' : esc(lakeSched(l))} · Gulfshore ${esc(l.diver_cost || '—')} · we bill ${esc(l.our_bill || '—')}${l.active === 0 ? ' · former' : ''}</div><button class="btn s" onclick="editDiveSite(${l.id})">Edit</button>` : '<span class="note">—</span>'}</td>
+    <td>${s ? `<span class="chip ${s.complimentary ? '' : (st[s.state] || '')}">${s.complimentary ? 'complimentary' : esc(s.state.replace('_', ' '))}</span><div class="note">${s.active ? 'next ' + esc(s.next_due_on) : 'off SCADA'}</div>` : ''}</td>
+    <td class="note">${esc((p && p.address) || (l && l.address) || '')}</td></tr>`; }).join('') || '<tr><td colspan="5" class="empty">None.</td></tr>';
+}
+async function previewDigest(){
+  const j = await api('/digest'); if (!j.success) { toast(j.error, true); return; }
+  const st = j.status || {};
+  openModal('Daily email - ' + esc(j.subject), `<div class="note">To <b>${esc(j.to)}</b> every weekday morning.${st.at ? ' Last: ' + esc(st.at) + (st.error ? ' - <b class="bad">' + esc(st.error) + '</b>' : ' - sent') : ''}</div><div style="border:1px solid var(--border);border-radius:8px;padding:12px;max-height:60vh;overflow:auto;background:#fff;color:#111">${j.html}</div>`,
+    `<button class="btn" onclick="closeModal()">Close</button><button class="btn p" onclick="sendDigestNow()">Send now</button>`);
+}
+async function sendDigestNow(){ const j = await api('/digest/send', {method:'POST', body:{}}); if (!j.success) { toast(j.error, true); return; } closeModal(); toast('Sent to ' + j.to); }
+
 // ── divers ────────────────────────────────────────────
 let DV = null;
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 async function loadDivers(){
   const j = await api('/dives');
-  if (!j.success) { document.getElementById('diveBody').innerHTML = `<tr><td colspan="8">${esc(j.error)}</td></tr>`; return; }
+  if (!j.success) { toast(j.error, true); return; }
   DV = j;
   const nm = new Date(j.next_month + 'T12:00:00').toLocaleString('en-US', {month:'long', year:'numeric'});
   const st = j.settings;
@@ -1126,6 +932,7 @@ async function loadDivers(){
   document.getElementById('diveSent').innerHTML = (j.sent || []).map(e => `<tr><td>${esc(e.month)}</td><td>${esc(e.sent_at)}</td><td>${esc(e.sent_by)}</td><td>${esc(e.to_addr)}${e.cc_addr ? '<div class="note">cc ' + esc(e.cc_addr) + '</div>' : ''}</td><td class="num">${e.sites}</td><td>${e.error ? '<b class="bad">' + esc(e.error) + '</b>' : '<span class="ok">sent</span>'}</td></tr>`).join('') || '<tr><td colspan="6" class="note">Nothing sent yet.</td></tr>';
 }
 function drawDiveSites(){
+  if (!document.getElementById('diveBody')) { if (AC) refreshAccounts(); return; }
   if (!DV) return;
   const f = document.getElementById('diveFilter').value;
   const nm = new Date(DV.next_month + 'T12:00:00').getMonth() + 1;
@@ -1192,25 +999,39 @@ async function loadSiteNames(){
   el.innerHTML = (j.site_names || []).map(n => `<tr><td><b>${esc(n.place)}</b></td><td>${esc(n.area) || '<span class="note">any</span>'}</td><td>${esc(n.client_name)}</td><td>${esc(n.property_label) || '<span class="note">choose each time</span>'}</td><td class="note">${esc(n.note)}</td><td><button class="btn s" onclick="deleteSiteName(${n.id})">Remove</button></td></tr>`).join('') || '<tr><td colspan="6" class="note">None yet.</td></tr>';
 }
 async function deleteSiteName(id){ if (!confirm('Remove this site name?')) return; const j = await api('/site-names/' + id + '/delete', {method:'POST', body:{}}); if (j.success) loadSiteNames(); else toast(j.error, true); }
-async function loadJobber(){
-  loadSiteNames();
-  const c = document.getElementById('jCat').value, k = document.getElementById('jKind').value, o = document.getElementById('jOpen').value;
-  const j = await api('/jobber/items?open=' + o + (c ? '&category=' + c : '') + (k ? '&kind=' + k : ''));
-  const s = j.sync || {};
-  document.getElementById('syncInfo').innerHTML = !JOBBER_OK ? '<b class="warn">Jobber is not connected.</b>' :
-    (s.state === 'running' ? 'Syncing Jobber…' : (s.finished_at ? `Last sync ${esc(s.finished_at)} · ${esc(s.items || 0)} pump records` : 'Not synced yet.')) + ((s.errors || []).length ? ` · <span class="bad" title="${esc(s.errors.join('\n'))}">${s.errors.length} errors</span>` : '');
-  document.getElementById('jobberBody').innerHTML = (j.items || []).map(it => `<tr>
-    <td>${kindChip(it.kind === 'invoice' ? 'bill' : it.kind)} ${it.kind === 'invoice' ? 'invoice' : ''}</td><td><span class="chip">${esc((it.status||'').replace(/_/g,' '))}</span></td>
-    <td><a href="${esc(it.web_uri)}" target="_blank" rel="noopener">${it.number ? '#' + esc(it.number) + ' ' : ''}${esc(it.title)}</a> ${catChip(it.category)}</td>
-    <td>${esc(it.client_name)}</td><td class="note">${esc(it.property_label)}</td><td class="num">${money(it.total)}</td><td>${esc(d10(it.created_at))}</td>
-    <td>${it.case_id ? `<a href="#" onclick="openCase(${it.case_id});return false">item ${it.case_id}</a>` : ''}</td>
-    <td style="white-space:nowrap">${it.case_id ? '' : `<button class="btn s p" onclick="jobberAct('${esc(it.jobber_id)}','track')">Track</button> <button class="btn s" onclick="jobberLink('${esc(it.jobber_id)}')">Link…</button> <button class="btn s" onclick="jobberAct('${esc(it.jobber_id)}','ignore')">Ignore</button>`}</td></tr>`).join('') || `<tr><td colspan="9" class="empty">${JOBBER_OK ? 'Nothing here - try "Everything" or Sync.' : 'Connect Jobber to see pump work from Jobber.'}</td></tr>`;
-  const cj = await api('/jobber/contracts');
-  document.getElementById('contractBody').innerHTML = (cj.contracts || []).map(it => `<tr><td>${esc(it.client_name)}</td><td><a href="${esc(it.web_uri)}" target="_blank">#${esc(it.number)} ${esc(it.title)}</a></td><td class="note">${esc(it.property_label)}</td><td class="num">${money(it.total)}</td><td>${esc(it.status)}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">None synced yet.</td></tr>';
+function jobberLinkHtml(c){
+  const j = c.jobber || {}, out = [];
+  for (const [k, label] of [['request','request'],['quote','quote'],['job','job'],['invoice','invoice']]) {
+    const r = j[k]; if (r && (r.uri || r.number)) out.push(r.uri ? `<a href="${esc(r.uri)}" target="_blank" rel="noopener">${label}${r.number ? ' #' + esc(r.number) : ''} ↗</a>` : `${label} #${esc(r.number)}`);
+  }
+  return out.join(' · ');
 }
-async function jobberAct(id, action){ const j = await api('/jobber/items/' + encodeURIComponent(id), {method:'POST', body:{action}}); if (!j.success) { toast(j.error, true); return; } if (action === 'track' && j.case_id) openCase(j.case_id); else if (curTab === 'jobber') loadJobber(); else loadToday(); }
-async function jobberLink(id){ const n = prompt('Link to item number:'); if (!n) return; const j = await api('/jobber/items/' + encodeURIComponent(id), {method:'POST', body:{action:'link', case_id: parseInt(n)}}); if (j.success) loadJobber(); else toast(j.error, true); }
-async function syncJobber(){ const j = await api('/jobber/sync', {method:'POST', body:{}}); if (!j.success) { toast(j.error, true); return; } toast('Jobber sync started - this takes a minute or two.'); setTimeout(loadJobber, 3000); }
+async function loadJobs(){
+  const st = document.getElementById('jbShow').value, q = document.getElementById('jbSearch').value.trim();
+  const [j, ji] = await Promise.all([api('/cases?status=' + st + (q ? '&q=' + encodeURIComponent(q) : '')), api('/jobber/items?open=1&kind=request')]);
+  if (!j.success) { document.getElementById('jobsBody').innerHTML = `<tr><td colspan="9" class="empty">${esc(j.error)}</td></tr>`; return; }
+  const ref = r => r ? (r.uri ? `<a href="${esc(r.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">#${esc(r.number || '')} ↗</a>` : (r.number ? '#' + esc(r.number) : '')) : '';
+  document.getElementById('jobsBody').innerHTML = (j.cases || []).map(c => { const jb = c.jobber || {}, vp = c.vendor_pay || {};
+    return `<tr class="click" onclick="openCase(${c.id})">
+    <td><b>${esc(c.title || c.client_name)}</b><div class="note">${esc([c.client_name, c.site].filter(Boolean).join(' · '))}${c.po_number ? ' · PO ' + esc(c.po_number) : ''}</div></td>
+    <td>${stageChip(c)}${c.idle_days >= 7 && c.status === 'open' ? ` <span class="chip a">${c.idle_days}d idle</span>` : ''}</td>
+    <td>${esc(c.vendor)}</td><td class="num">${money(c.vendor_quote_amount ?? c.vendor_quote_total)}</td>
+    <td>${ref(jb.quote)}${jb.quote && jb.quote.status ? ` <span class="note">${esc(jb.quote.status.replace(/_/g, ' '))}</span>` : ''}</td>
+    <td class="num">${money(c.vendor_bill_amount ?? c.vendor_bill_total)}</td>
+    <td>${ref(jb.invoice) || (c.sei_invoice_number ? '#' + esc(c.sei_invoice_number) : '')}${jb.invoice && jb.invoice.status ? ` <span class="note">${esc(jb.invoice.status.replace(/_/g, ' '))}</span>` : ''}</td>
+    <td>${vp.state === 'paid' ? '<span class="chip g">paid</span>' : vp.state === 'due' ? '<span class="chip r">pay now</span>' : vp.state === 'unpaid' ? '<span class="note">not yet</span>' : ''}</td>
+    <td style="white-space:nowrap">${jb.job && jb.job.uri ? `<a class="btn s" href="${esc(jb.job.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ↗</a>` : ''}</td></tr>`; }).join('') || '<tr><td colspan="9" class="empty">No jobs.</td></tr>';
+  const s = ji.sync || {};
+  document.getElementById('syncInfo').innerHTML = !JOBBER_OK ? '<b class="warn">Jobber is not connected.</b>' :
+    (s.state === 'running' ? 'Syncing Jobber…' : (s.finished_at ? `Last sync ${esc(s.finished_at)}` : 'Not synced yet.')) + ((s.errors || []).length ? ` · <span class="bad" title="${esc(s.errors.join('\n'))}">${s.errors.length} errors</span>` : '');
+  document.getElementById('jbNewBody').innerHTML = (ji.items || []).filter(it => !it.case_id).map(it => `<tr>
+    <td><a href="${esc(it.web_uri)}" target="_blank" rel="noopener">${it.number ? '#' + esc(it.number) + ' ' : ''}${esc(it.title)}</a> ${catChip(it.category)}</td>
+    <td>${esc(it.client_name)}<div class="note">${esc(it.property_label)}</div></td><td>${esc(d10(it.created_at))}</td>
+    <td style="white-space:nowrap"><button class="btn s p" onclick="jobberAct('${esc(it.jobber_id)}','track')">Track</button> <button class="btn s" onclick="jobberLink('${esc(it.jobber_id)}')">Add to job…</button> <button class="btn s" onclick="jobberAct('${esc(it.jobber_id)}','ignore')">Ignore</button></td></tr>`).join('') || `<tr><td colspan="4" class="empty">${JOBBER_OK ? 'Nothing new.' : 'Connect Jobber to see requests.'}</td></tr>`;
+}
+async function jobberAct(id, action){ const j = await api('/jobber/items/' + encodeURIComponent(id), {method:'POST', body:{action}}); if (!j.success) { toast(j.error, true); return; } if (action === 'track' && j.case_id) openCase(j.case_id); else if (curTab === 'jobs') loadJobs(); else loadToday(); }
+async function jobberLink(id){ const n = prompt('Job number in Pumps to add it to:'); if (!n) return; const j = await api('/jobber/items/' + encodeURIComponent(id), {method:'POST', body:{action:'link', case_id: parseInt(n)}}); if (j.success) loadJobs(); else toast(j.error, true); }
+async function syncJobber(){ const j = await api('/jobber/sync', {method:'POST', body:{}}); if (!j.success) { toast(j.error, true); return; } toast('Jobber sync started - this takes a minute or two.'); setTimeout(loadJobs, 3000); }
 
 // ── mailbox scan ─────────────────────────────────────
 function updateScanInfo(s){
@@ -1236,8 +1057,8 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (!docum
 (function(){
   const h = location.hash.slice(1);
   if (h.startsWith('item-')) { loadToday(); openCase(parseInt(h.slice(5))); }
-  else if (h.startsWith('doc-')) { showTab('inbox'); openDoc(parseInt(h.slice(4))); }
-  else if (['tracker','inbox','scada','jobber','help'].includes(h)) { loadToday(); showTab(h); }
+  else if (h.startsWith('doc-')) { loadToday(); openDoc(parseInt(h.slice(4))); }
+  else if (['jobs','scada','accounts','reports'].includes(h)) { loadToday(); showTab(h); }
   else loadToday();
   setInterval(() => { if (curTab === 'today' && document.getElementById('drawerWrap').classList.contains('hide') && document.getElementById('modalWrap').classList.contains('hide')) loadToday(); }, 60000);
 })();

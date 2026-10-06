@@ -152,10 +152,14 @@ class PumpsTest(unittest.TestCase):
             return real_extract(name, data)
         P.extract_text = fake_extract
         P._claude_extract = lambda text, sender='', subject='', filename='': cls.extracts.get(filename)
+        # OpenClaw is switched off for the office (PUMPS_OPENCLAW); these tests still cover what it could do.
+        cls._openclaw = P.OPENCLAW_ENABLED
+        P.OPENCLAW_ENABLED = True
 
     @classmethod
     def tearDownClass(cls):
         P.extract_text, P._claude_extract, P.jobber_gql = cls._orig
+        P.OPENCLAW_ENABLED = cls._openclaw
         # Removed when the whole run ends: other test files share the same app (and this folder).
         atexit.register(shutil.rmtree, TMP, True)
 
@@ -320,25 +324,23 @@ class PumpsTest(unittest.TestCase):
         self.assertTrue(steps['bill_checked'].get('at'))
         self.assertEqual([i for i in case['issues'] if not i['resolved_at']], [])
 
-    def test_bill_over_quote_raises_issue_until_resolved(self):
+    def test_bill_over_quote_is_a_todo_to_check_with_the_vendor(self):
+        """The client is invoiced what they approved; a bill that differs from
+        Wettech's quote is a to-do to check with Tommy, not a hold."""
         self.extracts['q-0400.pdf'] = extraction('quote', 'Q-80', po='PO400', client='Heron Bay', subtotal=2000)
         self.extracts['b-0400.pdf'] = extraction('bill', '29200', po='PO 400', client='Heron Bay', subtotal=2250)
         self.upload('q-0400.pdf')
         b = self.upload('b-0400.pdf')
         case = self.case(b['case_id'])
         self.assertEqual(case['compare']['state'], 'over')
-        open_issues = [i for i in case['issues'] if not i['resolved_at']]
-        self.assertEqual(len(open_issues), 1)
-        self.assertIn('$250.00 more than the quote', open_issues[0]['message'])
-        summary = self.c.get('/pumps/api/summary').get_json()
-        self.assertTrue(any(i['case_id'] == b['case_id'] for i in summary['queue']['issues']))
-        r = self.c.post(f"/pumps/api/issues/{open_issues[0]['id']}/resolve", json={'resolution': ''})
-        self.assertEqual(r.status_code, 400, 'a resolution has to say how')
-        self.c.post(f"/pumps/api/issues/{open_issues[0]['id']}/resolve",
-                    json={'resolution': 'Extra fittings approved by the manager'})
-        case = self.case(b['case_id'])
         self.assertEqual([i for i in case['issues'] if not i['resolved_at']], [])
         self.assertTrue({s['key']: s for s in case['step_list']}['bill_checked'].get('at'))
+        todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
+        t = [t for t in todos if t['link'].get('case_id') == b['case_id']]
+        self.assertEqual(len(t), 1)
+        self.assertIn('Check with Tommy', t[0]['title'])
+        self.assertIn('$250.00 more than their quote $2,000.00', t[0]['detail'])
+        self.assertIn('tomm@wettec.biz', t[0]['detail'])
 
     def test_sheet_bill_amount_is_checked(self):
         cid = self.c.post('/pumps/api/sheet/save', json={'month': 'October 2026', 'client_name': 'Egret Run',
@@ -346,7 +348,8 @@ class PumpsTest(unittest.TestCase):
                                                           'vendor_bill_amount': '760'}).get_json()['id']
         case = self.case(cid)
         self.assertEqual(case['compare']['state'], 'over')
-        self.assertTrue(any(i['kind'] == 'amount_mismatch' for i in case['issues']))
+        todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
+        self.assertTrue(any(t['link'].get('case_id') == cid and 'Check with' in t['title'] for t in todos))
 
     def test_bill_without_quote_raises_issue(self):
         self.extracts['b-noquote.pdf'] = extraction('bill', '29300', client='Coral Isles', subtotal=500)
@@ -891,12 +894,13 @@ class PumpsTest(unittest.TestCase):
             self.assertEqual(caymas['month_note'], '')
             self.assertEqual(P.send_dive_email(P.datetime(2027, 1, 1).date()), {'skipped': 'already sent this month'})
             self.assertEqual(len(sent), 1)
-            # Automatic sending is off for now: the 1st only adds the to-do.
+            # Switched off, the 1st only adds the to-do.
             P._now, real_now = (lambda: P.datetime(2027, 4, 1, 8, 5, tzinfo=P.TZ)), P._now
             try:
+                self.c.post('/pumps/api/dives/settings', json={'auto': False})
                 P._scheduled_dive_email()
                 self.assertEqual(len(sent), 1)
-                # Switched on, the hourly check sends the month once; mid-month it does nothing.
+                # Switched on (the default), the hourly check sends the month once; mid-month it does nothing.
                 self.c.post('/pumps/api/dives/settings', json={'auto': True})
                 P._scheduled_dive_email()
                 P._scheduled_dive_email()
@@ -1021,34 +1025,16 @@ class PumpsTest(unittest.TestCase):
         finally:
             A.app.config['WTF_CSRF_ENABLED'] = False
 
-    def test_openclaw_cannot_make_office_decisions(self):
+    def test_openclaw_is_off_unless_switched_on(self):
+        """The office uses Pumps on its own: the bot door answers only with PUMPS_OPENCLAW on."""
         bot = A.app.test_client()
         h = {'Authorization': 'Bearer test-openclaw-key'}
-        self.extracts['q-0700.pdf'] = extraction('quote', 'Q-97', po='PO700', client='Marsh Landing', subtotal=1000)
-        self.extracts['b-0700.pdf'] = extraction('bill', '29900', po='PO700', client='Marsh Landing', subtotal=1100)
-        self.upload('q-0700.pdf')
-        b = self.upload('b-0700.pdf')
-        cid = b['case_id']
-        issue = [i for i in self.case(cid)['issues'] if not i['resolved_at']][0]
-        fake = FakeJobber()
-        P.jobber_gql = fake
-        r = bot.post(f"/api/pumps/docs/{b['doc_id']}/invoice", json={'client_id': 'C1'}, headers=h)
-        self.assertEqual(r.status_code, 409, 'no draft while the bill is over the quote')
-        self.assertEqual(fake.calls, [])
-        self.assertEqual(bot.post(f"/api/pumps/issues/{issue['id']}/resolve", json={'resolution': 'fine'},
-                                  headers=h).status_code, 403)
-        self.assertEqual(bot.patch(f'/api/pumps/cases/{cid}', json={'steps': {'bill_checked': '2026-10-02'}},
-                                   headers=h).status_code, 403)
-        self.assertEqual(bot.patch(f'/api/pumps/cases/{cid}', json={'steps': {'closed': '2026-10-02'}},
-                                   headers=h).status_code, 403)
-        self.assertEqual(bot.post(f'/api/pumps/cases/{cid}/delete', json={}, headers=h).status_code, 403)
-        # Ordinary bookkeeping is fine.
-        self.assertEqual(bot.patch(f'/api/pumps/cases/{cid}', json={'note': 'Asked Wettech about the extra $100'},
-                                   headers=h).status_code, 200)
-        # Once the office resolves it, OpenClaw may draft.
-        self.c.post(f"/pumps/api/issues/{issue['id']}/resolve", json={'resolution': 'Extra part approved'})
-        r = bot.post(f"/api/pumps/docs/{b['doc_id']}/invoice", json={'client_id': 'C1'}, headers=h)
-        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(bot.get('/api/pumps/summary', headers=h).status_code, 200)
+        P.OPENCLAW_ENABLED = False
+        try:
+            self.assertEqual(bot.get('/api/pumps/summary', headers=h).status_code, 401)
+        finally:
+            P.OPENCLAW_ENABLED = True
 
     def test_dashboard_tile_is_live(self):
         html = self.c.get('/dashboard').get_data(as_text=True)
@@ -1103,7 +1089,10 @@ class PumpsTest(unittest.TestCase):
             self.assertEqual(rows['AUTUMN WOODS']['years']['2024'], 'SEI pays for SCADA')
             self.assertEqual(rows['Tuscany Point']['vendor_cost'], 855.99)
             states = [r['state'] for r in j['scada']]
-            self.assertEqual((states.count('overdue'), states.count('due_soon')), (4, 2))
+            # Old Collier and Camas Willows are off SCADA; Autumn Woods and Reserve are complimentary.
+            self.assertEqual((states.count('overdue'), states.count('due_soon'), states.count('inactive')), (2, 0, 2))
+            self.assertEqual((rows['AUTUMN WOODS']['complimentary'], rows['RESERVE AT ESTERO']['complimentary']), (1, 1))
+            self.assertEqual(rows['CORSA (formerly Estero Crossing)']['state'], 'current')  # 46 days out
             # Renewed: the invoice goes in the year it was due, and the date moves on a year.
             sid = rows['CORSA (formerly Estero Crossing)']['id']
             j = self.c.post(f'/pumps/api/scada/{sid}', json={'action': 'renewed', 'value': '36800'}).get_json()
@@ -1141,14 +1130,211 @@ class PumpsTest(unittest.TestCase):
             j = self.c.get('/pumps/api/scada').get_json()
             self.assertEqual([r for r in j['scada'] if r['client'] == 'CLUBCARE'][0]['state'], 'inactive')
             # A renewal item, one at a time.
-            oc = rows['OLD COLLIER']['id']
+            oc = rows['AUTUMN WOODS']['id']
             cid = self.c.post(f'/pumps/api/scada/{oc}', json={'action': 'renewal_item'}).get_json()['case_id']
             self.assertEqual(self.case(cid)['category'], 'scada')
             self.assertEqual(cid, self.c.post(f'/pumps/api/scada/{oc}', json={'action': 'renewal_item'}).get_json()['case_id'])
-            self.assertIn('OLD COLLIER', [s['client_name'] for s in self.c.get('/pumps/api/summary').get_json()['queue']['scada_attention']])
+            self.assertIn('AUTUMN WOODS', [s['client_name'] for s in self.c.get('/pumps/api/summary').get_json()['queue']['scada_attention']])
         finally:
             P._today = today
             P.jobber_gql = self._orig[2]
+
+    # ── the office's flow (Oct 2026) ────────────────────────────────────────
+    def _pdf(self):
+        from PyPDF2 import PdfWriter
+        w, out = PdfWriter(), io.BytesIO()
+        w.add_blank_page(width=612, height=792)
+        w.write(out)
+        return out.getvalue()
+
+    def test_approved_quote_is_stamped_sent_back_and_invoiced_at_the_quoted_price(self):
+        self.extracts['q-0950.pdf'] = extraction('quote', 'Q-950', po='PO951', client='Lakeside Pines', subtotal=1000)
+        self.extracts['b-0950.pdf'] = extraction('bill', '30950', po='PO951', client='Lakeside Pines', subtotal=1100)
+        fake = FakeJobber(quote_lines=[{'name': 'Service Proposal Amount', 'description': 'Replace check valve',
+                                        'quantity': 1, 'unitPrice': 1300, 'taxable': False}])
+        P.jobber_gql = fake
+        P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN
+        try:
+            q = self.upload('q-0950.pdf', data=self._pdf())
+            self.assertEqual(q['auto_quote']['quote_number'], '812')
+            cid = q['case_id']
+            # The client approves quote #812 in Jobber (the sync calls the same thing).
+            r = self.c.post(f'/pumps/api/cases/{cid}/approved', json={}).get_json()
+            self.assertTrue(r['approval']['stamped'], r)
+            doc = self.c.get(f"/pumps/api/docs/{q['doc_id']}").get_json()['doc']
+            self.assertEqual(doc['jobber']['approved_by'], 'Simon Weardon')
+            pdf = self.c.get(f"/pumps/api/docs/{q['doc_id']}/file?version=approved")
+            self.assertEqual(pdf.status_code, 200)
+            import pdfplumber
+            with pdfplumber.open(io.BytesIO(pdf.data)) as f:
+                text = f.pages[0].extract_text()
+            self.assertIn('APPROVED', text)
+            self.assertIn('Simon Weardon', text)
+            notes = [v for qq, v in fake.calls if 'quoteCreateNote' in qq]
+            self.assertTrue(any('APPROVED.pdf' in json.dumps(v) for v in notes), 'stamped copy on the Jobber quote')
+            todos = {t['kind']: t for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']
+                     if t['link'].get('case_id') == cid}
+            self.assertEqual(todos['approved_quote']['title'], 'Send the approved quote back to Tommy (tomm@wettec.biz)')
+            self.assertEqual(todos['approved_quote']['link']['to'], 'tomm@wettec.biz')
+            # This Jobber has no way to make a job from a quote: a to-do instead.
+            self.assertIn('Convert Jobber quote #812 to a job', [t['title'] for t in todos.values()])
+            # Wettech bills $1,100 against a $1,000 quote: the client is invoiced the quoted $1,300.
+            b = self.upload('b-0950.pdf')
+            self.assertEqual(b['case_id'], cid)
+            inv = [v for qq, v in fake.calls if 'invoiceCreate' in qq][0]['input']
+            self.assertEqual([(l['name'], l['unitPrice']) for l in inv['lineItems']], [('Service Proposal Amount', 1300)])
+            todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
+            self.assertTrue(any(t['link'].get('case_id') == cid and t['title'].startswith('Check with Tommy') for t in todos))
+        finally:
+            P.JOBBER_STATIC_TOKEN = saved
+
+    def test_job_from_quote_and_service_visit_when_jobber_has_them(self):
+        T = lambda name, kind='INPUT_OBJECT': {'kind': kind, 'name': name, 'ofType': None}
+        NN = lambda t: {'kind': 'NON_NULL', 'name': None, 'ofType': t}
+
+        class Fake(FakeJobber):
+            def __call__(self, query, variables=None):
+                if '__schema' in query:
+                    return {'__schema': {'mutationType': {'fields': [
+                        {'name': 'jobCreate', 'type': T('JobCreatePayload', 'OBJECT'),
+                         'args': [{'name': 'input', 'type': NN(T('JobCreateAttributes'))}]},
+                        {'name': 'visitCreate', 'type': T('VisitCreatePayload', 'OBJECT'),
+                         'args': [{'name': 'jobId', 'type': NN(T('EncodedId', 'SCALAR'))},
+                                  {'name': 'input', 'type': NN(T('VisitCreateAttributes'))}]}]}}}
+                if '__type' in query:
+                    n = variables['n']
+                    return {'__type': {
+                        'JobCreateAttributes': {'inputFields': [{'name': 'quoteId', 'type': NN(T('EncodedId', 'SCALAR'))},
+                                                                {'name': 'title', 'type': T('String', 'SCALAR')}]},
+                        'VisitCreateAttributes': {'inputFields': [{'name': 'title', 'type': NN(T('String', 'SCALAR'))},
+                                                                  {'name': 'instructions', 'type': T('String', 'SCALAR')}]},
+                        'JobCreatePayload': {'fields': [{'name': 'job'}, {'name': 'userErrors'}]},
+                        'VisitCreatePayload': {'fields': [{'name': 'visit'}, {'name': 'userErrors'}]},
+                        'EncodedId': {}}.get(n, {})}
+                if 'jobCreate(' in query:
+                    self.calls.append((query, variables))
+                    return {'jobCreate': {'job': {'id': 'J9', 'jobNumber': 14500, 'jobberWebUri': 'https://secure.getjobber.com/work_orders/9'},
+                                          'userErrors': []}}
+                if 'visitCreate(' in query:
+                    self.calls.append((query, variables))
+                    return {'visitCreate': {'visit': {'id': 'V1'}, 'userErrors': []}}
+                if 'client(id' in query:
+                    return {'client': {'id': variables['id'], 'name': 'Banyan Bay', 'properties': self.properties,
+                                       'jobs(first: 40)': {'nodes': [
+                                           {'id': 'JM', 'jobNumber': 13196, 'title': 'Quarterly Pump Maintenance',
+                                            'jobStatus': 'active', 'jobType': 'RECURRING', 'property': {'id': 'P1'}}]}}}
+                return super().__call__(query, variables)
+        P._SCHEMA_CACHE.clear()
+        fake = Fake()
+        P.jobber_gql = fake
+        P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN
+        try:
+            self.extracts['q-0910.pdf'] = extraction('quote', 'Q-910', po='PO910', client='Lakeside Pines', subtotal=500)
+            q = self.upload('q-0910.pdf', data=self._pdf())
+            self.c.post(f"/pumps/api/cases/{q['case_id']}/approved", json={})
+            self.assertEqual(self.case(q['case_id'])['jobber']['job']['number'], '14500')
+            made = [v for qq, v in fake.calls if 'jobCreate(' in qq][0]
+            self.assertEqual(made['input']['quoteId'], 'Q1')
+            # A plain email about a pump at one of our accounts: an item and a visit on its maintenance job.
+            fake.clients = [{'id': 'CB', 'name': 'Banyan Bay C/O SAK & Associated Mgmt, Inc', 'isLead': False,
+                             'isArchived': False}]
+            res = P.handle_service_call_email('m-1', 'manager@banyanbay.org', 'RE: Pump not running at Banyan Bay',
+                                              'The pump by the clubhouse tripped again this morning.')
+            self.assertEqual(res['account'], 'Banyan Bay')
+            self.assertTrue(res['visit'])
+            v = [v for qq, v in fake.calls if 'visitCreate(' in qq][0]
+            self.assertEqual((v['jobId'], v['input']['title']), ('JM', 'Service call - Pump not running at Banyan Bay'))
+            self.assertEqual(self.case(res['case_id'])['title'], 'Service call - Pump not running at Banyan Bay')
+            self.assertIsNone(P.handle_service_call_email('m-1', 'manager@banyanbay.org', 'RE: Pump not running at Banyan Bay', ''))
+        finally:
+            P.JOBBER_STATIC_TOKEN = saved
+            P._SCHEMA_CACHE.clear()
+
+    def test_service_call_emails(self):
+        # Not connected to Jobber: the visit becomes a to-do.
+        res = P.handle_service_call_email('m-2', 'board@caymas.com', 'Caymas lake fountain is off', 'Please send someone.')
+        self.assertEqual((res['account'], res['visit']), ('Caymas', False))
+        todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
+        self.assertIn("Add a \"Service call - Caymas lake fountain is off\" visit to Caymas's maintenance job",
+                      [t['title'] for t in todos])
+        self.assertEqual(self.case(res['case_id'])['vendor'], 'Gulfshore')
+        # Not ours to act on: a vendor, nothing about pumps, or no account named.
+        self.assertIsNone(P.handle_service_call_email('m-3', 'tomm@wettec.biz', 'Pump at Caymas', ''))
+        self.assertIsNone(P.handle_service_call_email('m-4', 'a@b.com', 'Caymas invoice question', 'When is it due?'))
+        self.assertIsNone(P.handle_service_call_email('m-5', 'a@b.com', 'Pump order for the shop', 'PO 5512'))
+
+    def test_scada_coming_due_is_quoted_at_their_price(self):
+        today = P._today
+        P._today = lambda: P.datetime(2026, 12, 20).date()
+        fake = FakeJobber(clients=[{'id': 'CL', 'name': 'LELY CDD', 'isLead': False, 'isArchived': False}])
+        P.jobber_gql = fake
+        P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN
+        try:
+            done = P.scada_due_actions()
+            self.assertIn('LELY', done)
+            q = [v for qq, v in fake.calls if 'quoteCreate(' in qq and v['attributes']['clientId'] == 'CL'][0]['attributes']
+            line = q['lineItems'][0]
+            self.assertEqual((line['name'], line['unitPrice'], line['taxable']), ('Service Proposal Amount', 600.0, False))
+            self.assertIn('for 2027-2028', line['description'])
+            n = len([1 for qq, _ in fake.calls if 'quoteCreate(' in qq])
+            P.scada_due_actions()
+            self.assertEqual(len([1 for qq, _ in fake.calls if 'quoteCreate(' in qq]), n, 'once per renewal')
+            todos = [t['title'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
+            self.assertIn('Send the SCADA renewal quote #812 - LELY', todos)
+            self.assertIn('SCADA renewal due - AUTUMN WOODS (complimentary)', todos)
+            self.assertFalse(any('Quote the SCADA renewal - AUTUMN' in t for t in todos))
+        finally:
+            P.JOBBER_STATIC_TOKEN = saved
+            P._today = today
+
+    def test_scada_vendor_quote_is_not_marked_up(self):
+        doc = {'description': 'Renewal of Annual Cellular and cloud subscription for SCADA system', 'client_name': 'Banyan Bay',
+               'line_items': [{'name': 'SCADA', 'description': 'Annual subscription - SCADA', 'unit_price': 428.0,
+                               'quantity': 1}]}
+        s = P.suggest_quote(doc)
+        self.assertEqual((s['line_items'][0]['unit_price'], s['markup_pct']), (600.0, 0))
+        doc['description'] = 'Replace pressure switch'
+        doc['line_items'][0].update(name='Pressure switch', description='Replace pressure switch')
+        self.assertEqual(P.suggest_quote(doc)['line_items'][0]['unit_price'], 556.4)
+
+    def test_daily_email(self):
+        sent = []
+
+        class Resp:
+            status_code, content = 202, b''
+        real_post = P.http_requests.post
+        P.http_requests.post = lambda url, **kw: (sent.append((url, kw['json'])), Resp())[1]
+        P.CFG['graph_token'], P.CFG['mail_from'] = (lambda: 'tok'), 'PO@stahlman-england.com'
+        try:
+            self.c.post('/pumps/api/todos', json={'title': 'Call the Caymas board'})
+            r = self.c.post('/pumps/api/digest/send', json={}).get_json()
+            self.assertTrue(r['sent'], r)
+            m = sent[-1][1]['message']
+            self.assertEqual(m['toRecipients'][0]['emailAddress']['address'], 'simon@stahlman-england.com')
+            self.assertIn('Call the Caymas board', m['body']['content'])
+            self.assertTrue(m['subject'].startswith('Pumps today'))
+            # The 8am send happens once a weekday.
+            P._now, real_now = (lambda: P.datetime(2026, 10, 6, 8, 2, tzinfo=P.TZ)), P._now
+            P._today, real_today = (lambda: P.datetime(2026, 10, 6).date()), P._today
+            try:
+                n = len(sent)
+                P._scheduled_hourly()
+                P._scheduled_hourly()
+                self.assertEqual(len([u for u, _ in sent[n:] if 'sendMail' in u and 'Pumps today' in str(_)]), 1)
+            finally:
+                P._now, P._today = real_now, real_today
+        finally:
+            P.http_requests.post = real_post
+            P.CFG['graph_token'] = None
+
+    def test_accounts_in_one_list(self):
+        rows = {a['name']: a for a in self.c.get('/pumps/api/accounts').get_json()['accounts']}
+        bb = rows['Banyan Bay']
+        self.assertTrue(bb['pump'] and bb['lake'] and bb['scada'])
+        self.assertEqual(bb['scada']['client'], 'BANYAN BAY')
+        car = rows['Carlisle (The Carlisle)']
+        self.assertTrue(car['pump'] and car['lake'])
+        self.assertFalse(any(r['pump'] is None and r['name'] == 'Carlisle (The Carlisle)' for r in rows.values()))
 
     def test_maintenance_accounts(self):
         today = P._today
