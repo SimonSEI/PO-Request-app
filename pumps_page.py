@@ -299,7 +299,7 @@ async function api(path, opts){
 }
 function toast(msg, bad){ const d = document.createElement('div'); d.textContent = msg; d.style.cssText = 'position:fixed;bottom:18px;left:50%;transform:translateX(-50%);padding:10px 16px;border-radius:10px;z-index:99;font-size:13px;font-weight:600;box-shadow:0 6px 20px rgba(0,0,0,.15);background:' + (bad ? '#FEE2E2;color:#B91C1C' : '#0F172A;color:#fff'); document.body.appendChild(d); setTimeout(() => d.remove(), bad ? 6000 : 3000); }
 function catChip(c){ const m = {scada:'v', diver:'b', filter:'b', maintenance:'g', install:'a'}; return `<span class="chip ${m[c]||''}">${esc(c)}</span>`; }
-function stageChip(c){ if (c.status === 'closed') return '<span class="chip g">closed</span>'; if (c.status === 'cancelled') return '<span class="chip">cancelled</span>'; return `<span class="chip ${c.open_issues && c.open_issues.length ? 'r' : 'b'}">${esc(stepLabel(c.stage, c.vendor))}</span>`; }
+function stageChip(c){ if (c.status === 'closed') return '<span class="chip g">closed</span>'; if (c.status === 'cancelled') return '<span class="chip">cancelled</span>'; const due = c.stage === 'assessment' && (c.steps || {}).assessment && c.steps.assessment.due ? ' · ' + c.steps.assessment.due : ''; return `<span class="chip ${c.open_issues && c.open_issues.length ? 'r' : 'b'}">${esc(stepLabel(c.stage, c.vendor) + due)}</span>`; }
 function kindChip(k){ const m = {quote:'b', bill:'a', report:'g', other:''}; return `<span class="chip ${m[k]||''}">${esc(k)}</span>`; }
 
 // ── tabs ───────────────────────────────────────────────
@@ -393,6 +393,7 @@ async function loadToday(){
   g.push(box('🆕 New pump work in Jobber', q.new_jobber_requests, it => `<div class="row" onclick="showTab('jobs')"><div class="main"><div class="tt">${esc(it.title)}</div><div class="sub">${esc(it.kind)}${it.number ? ' #' + esc(it.number) : ''} · ${esc(it.client_name)} · ${d10(it.created_at)}</div></div><button class="btn s" onclick="event.stopPropagation();jobberAct('${esc(it.jobber_id)}','track')">Track</button> <button class="btn s" onclick="event.stopPropagation();jobberAct('${esc(it.jobber_id)}','ignore')">Ignore</button></div>`, '', 'Requests, quotes and jobs made in Jobber that Pumps is not following yet.'));
   g.push(box('💬 Quote to send to client', q.to_quote_client, c => caseRow(c)));
   g.push(box('⏳ Waiting on client approval', q.waiting_approval, c => caseRow(c)));
+  g.push(box('🔍 Waiting on Wettech to go out and assess', q.waiting_assessment || [], c => caseRow(c, ((c.steps || {}).assessment || {}).due ? 'visit ' + esc(c.steps.assessment.due) : '')));
   g.push(box('🔧 Waiting on Wettech quote', q.waiting_vendor_quote, c => caseRow(c)));
   g.push(box('🛠️ Scheduled - waiting for the work', q.waiting_work, c => caseRow(c, c.scheduled_for ? esc(c.scheduled_for) : '')));
   g.push(box('💵 Waiting on Wettech\'s bill', q.waiting_bill, c => caseRow(c)));
@@ -436,7 +437,7 @@ function renderCase(){
     return `<div class="step ${done ? 'done' : ''} ${na ? 'na' : ''} ${cur ? 'cur' : ''}">
       <div class="dot" title="${done ? 'Mark not done' : 'Mark done today'}" onclick="setStep('${s.key}', ${done ? 'null' : "'today'"})">${done ? '✓' : ''}</div>
       <div class="lbl">${esc(s.label)}</div>
-      <div class="when">${done ? esc(s.at) + (s.by ? ' · ' + esc(s.by) : '') : (na ? 'not needed' : '')}</div>
+      <div class="when">${done ? esc(s.at) + (s.by ? ' · ' + esc(s.by) : '') : (na ? 'not needed' : (s.due ? 'visit ' + esc(s.due) : ''))}</div>
       <select class="s" onchange="stepMenu('${s.key}', this)" style="padding:2px 4px;font-size:11px"><option value="">⋯</option><option value="date">Done on a date…</option><option value="${na ? 'needed' : 'na'}">${na ? 'Needed after all' : 'Not needed'}</option>${done ? '<option value="undo">Not done</option>' : ''}</select>
     </div>`; }).join('');
   const docs = (c.docs || []).map(d => `<div class="d">${kindChip(d.kind)} <b>${esc(d.file_name)}</b>

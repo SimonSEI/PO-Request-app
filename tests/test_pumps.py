@@ -668,8 +668,22 @@ class PumpsTest(unittest.TestCase):
         cid = self.c.post('/pumps/api/jobber/items/J14542', json={'action': 'track'}).get_json()['case_id']
         case = self.case(cid)
         self.assertEqual(case['jobber']['job']['number'], '14542')
-        self.assertEqual(case['scheduled_for'], '2026-10-13')
-        self.assertTrue({s['key']: s for s in case['step_list']}['scheduled'].get('at'))
+        # It waits on Wettech's visit to assess (Oct 13), not on a quote or a schedule.
+        self.assertEqual(case['stage'], 'assessment')
+        steps = {s['key']: s for s in case['step_list']}
+        self.assertEqual(steps['assessment'].get('due'), '2026-10-13')
+        self.assertFalse(steps['scheduled'].get('at'))
+        self.assertFalse(steps['client_approved'].get('at'))
+        queue = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertIn(cid, [c['id'] for c in queue['waiting_assessment']])
+        # Wettech's quote coming in means the visit happened.
+        self.c.patch(f'/pumps/api/cases/{cid}', json={'steps': {'vendor_quote': '2026-10-14'}})
+        case = self.case(cid)
+        self.assertEqual(case['stage'], 'client_quote')
+        self.assertTrue({s['key']: s for s in case['step_list']}['assessment'].get('at'))
+        # Items that never had the visit step don't get it.
+        other = self.c.post('/pumps/api/cases', json={'title': 'Plain repair', 'client_name': 'X'}).get_json()
+        self.assertEqual(self.case(other.get('case_id') or other['case']['id'])['stage'], 'vendor_quote')
         queue = self.c.get('/pumps/api/summary').get_json()['queue']
         self.assertNotIn('J14542', [i['jobber_id'] for i in queue['new_jobber_requests']])
         # A quote Jobber makes later for the same client and property joins that item by itself.
