@@ -124,6 +124,25 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 .issue.done{background:var(--slate-bg);color:var(--muted);}
 .docs .d{display:flex;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);flex-wrap:wrap;}
 .ev{font-size:12px;color:var(--muted);padding:5px 0;border-bottom:1px dashed var(--border);}
+.track{display:flex;align-items:flex-start;margin:4px 0 14px;}
+.track .n{flex:1;min-width:0;text-align:center;position:relative;font-size:10.5px;color:var(--muted);line-height:1.25;padding:0 2px;}
+.track .n::before{content:'';position:absolute;top:9px;left:-50%;right:50%;height:3px;background:var(--border);z-index:0;}
+.track .n:first-child::before{display:none;}
+.track .n.done::before,.track .n.cur::before{background:var(--green);}
+.track .b{width:20px;height:20px;border-radius:50%;margin:0 auto 4px;background:#fff;border:2px solid var(--border);position:relative;z-index:1;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff;}
+.track .n.done .b{background:var(--green);border-color:var(--green);}
+.track .n.cur .b{border-color:var(--brand);box-shadow:0 0 0 4px #DBEAFE;}
+.track .n.cur{color:var(--brand);font-weight:700;}
+.track .n.done{color:var(--text);}
+.track .d{font-size:10px;color:var(--muted);font-weight:400;margin-top:1px;}
+.tl{position:relative;padding-left:4px;}
+.tl .day{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin:10px 0 4px 34px;}
+.tl .it{display:flex;gap:10px;position:relative;padding:4px 0;}
+.tl .it::before{content:'';position:absolute;left:13px;top:0;bottom:0;width:2px;background:var(--border);}
+.tl .ic{width:28px;height:28px;flex:none;border-radius:50%;background:var(--slate-bg);display:flex;align-items:center;justify-content:center;font-size:13px;position:relative;z-index:1;border:2px solid #fff;}
+.tl .ic.g{background:var(--green-bg);} .tl .ic.r{background:var(--red-bg);} .tl .ic.b{background:#DBEAFE;} .tl .ic.a{background:var(--amber-bg);}
+.tl .tx{font-size:13px;padding-top:4px;min-width:0;} .tl .tx .m{font-size:12px;color:var(--muted);margin-top:1px;overflow-wrap:anywhere;}
+@media (max-width:640px){.track .n{font-size:0;} .track .n.cur{font-size:10.5px;}}
 .ev b{color:var(--text);font-weight:600;}
 /* modal */
 .modal{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(820px,96vw);max-height:92vh;overflow:auto;background:#fff;border-radius:14px;z-index:71;box-shadow:0 20px 60px rgba(0,0,0,.25);}
@@ -464,6 +483,7 @@ async function openCase(id){
   history.replaceState(null, '', '#item-' + id);
 }
 function closeDrawer(){ document.getElementById('drawerWrap').classList.add('hide'); curCase = null; history.replaceState(null, '', '#' + curTab); loadToday(); showTab(curTab); }
+const MONEY = new Set(['vendor_quote_amount','vendor_quote_total','vendor_bill_amount','vendor_bill_total','amount']);
 function renderCase(){
   const c = curCase, v = c.vendor || 'Wettech';
   const J = c.jobber || {};
@@ -504,6 +524,7 @@ function renderCase(){
       <button class="btn" onclick="addNote()">✎ Add note</button>
       ${c.status === 'open' ? `<button class="btn p" onclick="caseDone(${c.id})">✓ Mark done</button><button class="btn danger" onclick="caseRemove(${c.id})">✕ Remove</button>` : `<button class="btn" onclick="caseReopen(${c.id})">↺ Reopen</button>`}
     </div></div>
+    <div class="sec"><h4>Journey</h4>${journeyHtml(c)}</div>
     <div class="sec"><h4>Checklist</h4><div class="steps">${steps}</div></div>
     <div class="sec"><h4>Quote vs bill</h4><div class="money">
       <div class="m"><div class="k">${esc(v)} quote ${c.vendor_quote_number ? '#' + esc(c.vendor_quote_number) : ''}</div><div class="v">${money(c.vendor_quote_amount ?? c.vendor_quote_total) || '—'}</div>${c.vendor_quote_total != null && c.vendor_quote_amount != null ? `<div class="note">${money(c.vendor_quote_total)} with tax</div>` : ''}</div>
@@ -524,8 +545,47 @@ function renderCase(){
       ${f('description','Description of work','area',1)}${f('notes','Notes','area',1)}
       <label class="w">Jobber ${jl || '<span class="note">nothing linked - Track it from the Jobber tab</span>'}</label>
     </div><div style="margin-top:10px"><button class="btn p" onclick="saveCaseFields()">Save details</button></div></div>
-    <div class="sec"><h4>History</h4>${(c.events || []).map(e => `<div class="ev">${esc(e.at)} · <b>${esc(e.actor)}</b> · ${esc(e.action)} ${e.detail ? '- ' + esc(e.detail) : ''}</div>`).join('') || '<div class="note">Nothing yet.</div>'}</div>
   </div>`;
+}
+// The job's journey: where it is on its steps, and everything that has
+// happened to it, oldest first.
+const JOURNEY_ICONS = [
+  [/^created|opened/, '🆕', 'b'], [/document received/, '📄', 'b'], [/draft quote created|scada quote drafted/, '💬', 'b'],
+  [/quote stamped approved|quote made a job/, '✅', 'g'], [/quote status/, '💬', ''], [/draft invoice created|invoiced on matching job/, '🧾', 'b'],
+  [/invoice status/, '💵', ''], [/pay vendor/, '💸', 'r'], [/emailed christian/, '✉️', 'g'], [/could not email|not drafted|not logged|not saved/, '⚠️', 'a'],
+  [/^issue resolved/, '✔️', 'g'], [/^issue/, '⚠️', 'r'], [/bill matches quote/, '✔️', 'g'], [/^note/, '✎', ''], [/linked/, '🔗', ''],
+  [/service visit|schedule/, '📅', 'b'], [/report/, '📋', 'b'], [/marked done|closed/, '🏁', 'g'], [/reopened/, '↺', 'a'], [/cancelled|removed/, '✕', 'r'],
+];
+function journeyIcon(action){ const a = (action || '').toLowerCase(); for (const [re, ic, cls] of JOURNEY_ICONS) if (re.test(a)) return [ic, cls]; return ['•', '']; }
+function journeyHtml(c){
+  const steps = c.step_list.filter(s => !s.na);
+  const curIdx = steps.findIndex(s => s.key === c.stage);
+  const track = `<div class="track">${steps.map((s, i) => { const st = s.at ? 'done' : (i === curIdx ? 'cur' : '');
+    return `<div class="n ${st}" title="${esc(s.label)}${s.at ? ' - ' + esc(s.at) : ''}"><div class="b">${s.at ? '✓' : ''}</div>${esc(s.label)}${s.at ? `<div class="d">${esc(s.at.slice(5))}</div>` : (s.due ? `<div class="d">${esc(s.due.slice(5))}</div>` : '')}</div>`; }).join('')}</div>`;
+  const items = [];
+  const KIND = {quote: ['Quote', '📝', 'b'], bill: ['Invoice', '🧾', 'a'], report: ['Service report', '📋', 'g']};
+  (c.docs || []).filter(d => d.status !== 'dismissed').forEach(d => { const [name, ic, cls] = KIND[d.kind] || ['Document', '📄', ''];
+    const J = d.jobber || {};
+    items.push({at: d.created_at || (d.doc_date ? d.doc_date + ' 12:00:00' : ''), ic, cls,
+      title: `${d.vendor || c.vendor || 'Vendor'} ${name.toLowerCase()}${d.doc_number ? ' #' + d.doc_number : ''}${d.total != null ? ' · ' + money(d.total) : ''}`,
+      sub: [d.doc_date ? 'dated ' + d.doc_date : '', d.file_name].filter(Boolean).join(' · '),
+      html: `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px"><a class="btn s" target="_blank" href="/pumps/api/docs/${d.id}/file">Open</a>`
+        + (d.has_branded ? `<a class="btn s" target="_blank" href="/pumps/api/docs/${d.id}/file?version=branded_pdf">Our report PDF</a>` : '')
+        + (J.quote_id ? `<a class="chip g" target="_blank" href="${esc(J.quote_uri || '#')}">our Jobber quote #${esc(J.quote_number)}</a>` : '')
+        + (J.invoice_id ? `<a class="chip g" target="_blank" href="${esc(J.invoice_uri || '#')}">our Jobber invoice #${esc(J.invoice_number)}</a>` : '')
+        + `<button class="btn s" onclick="openDoc(${d.id})">Details</button></div>`}); });
+  (c.events || []).forEach(e => { if (/^(updated|read again|document edited|document received)$/.test(e.action)) return;
+    const [ic, cls] = journeyIcon(e.action);
+    items.push({at: e.at || '', ic, cls, title: e.action.charAt(0).toUpperCase() + e.action.slice(1), sub: (e.detail ? e.detail + ' · ' : '') + e.actor}); });
+  c.step_list.filter(s => s.at && !String(s.by || '').includes('implied')).forEach(s => items.push({at: s.at + ' 23:59:59', ic: '✓', cls: 'g', title: s.label, sub: s.by || '', day: true}));
+  if (c.opened_on && !items.some(i => /^Created/.test(i.title))) items.push({at: c.opened_on + ' 00:00:00', ic: '🆕', cls: 'b', title: 'Opened', sub: '', day: true});
+  items.sort((a, b) => a.at < b.at ? -1 : a.at > b.at ? 1 : 0);
+  let lastDay = '';
+  const tl = items.map(i => { const d = i.at.slice(0, 10), t = i.day ? '' : i.at.slice(11, 16);
+    const head = d !== lastDay ? `<div class="day">${esc(d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric', year:'numeric'}) : 'No date')}</div>` : '';
+    lastDay = d;
+    return head + `<div class="it"><div class="ic ${i.cls}">${i.ic}</div><div class="tx"><b>${esc(i.title)}</b>${t ? ` <span class="note">${esc(t)}</span>` : ''}${i.sub ? `<div class="m">${esc(i.sub)}</div>` : ''}${i.html || ''}</div></div>`; }).join('');
+  return track + `<div class="tl">${tl || '<div class="note">Nothing yet.</div>'}</div>`;
 }
 function vendorPayHtml(c){
   const p = c.vendor_pay || {};
