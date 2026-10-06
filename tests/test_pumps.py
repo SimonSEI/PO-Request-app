@@ -1408,6 +1408,60 @@ class PumpsTest(unittest.TestCase):
         self.assertNotIn('saveToProductsAndServices', sent)
         self.assertEqual((sent['name'], sent['unitPrice'], sent['taxable']), ('Service Proposal Amount', 780.0, True))
 
+    def test_bill_is_invoiced_on_the_matching_jobber_job(self):
+        """Wettech bills "Lee Memorial"; Hodges' job #14511 "Replace broken drop pipe" needs invoicing."""
+        HODGES = 'Z2lkOi8vSm9iYmVyL0NsaWVudC8zODg2MDA3MQ=='
+
+        class Fake(FakeJobber):
+            def __call__(self, query, variables=None):
+                if 'job(id:' in query:
+                    self.calls.append((query, variables))
+                    jobs = {
+                        'J14511': {'id': 'J14511', 'jobNumber': 14511, 'title': 'Replace broken drop pipe',
+                                   'instructions': 'Lee Memorial Well 6\n\nAfter making repairs to get pump running, '
+                                                   'we found the pipe is broke below the well seal.',
+                                   'jobStatus': 'requires_invoicing', 'jobType': 'ONE_OFF', 'total': 3471.43,
+                                   'jobberWebUri': 'https://secure.getjobber.com/work_orders/158570173',
+                                   'property': {'id': 'P9', 'address': {'street1': '12777 Florida 82', 'city': 'Lehigh Acres'}},
+                                   'lineItems': {'nodes': [{'name': 'PROPOSAL AMOUNT SERVICE', 'description': 'Lee Memorial Well 6 ...',
+                                                            'quantity': 1, 'unitPrice': 3471.43, 'taxable': False}]}},
+                        'J200': {'id': 'J200', 'jobNumber': 14400, 'title': 'Install new zones at the mausoleum',
+                                 'instructions': 'Four new zones', 'jobStatus': 'active', 'jobType': 'ONE_OFF', 'total': 16795,
+                                 'lineItems': {'nodes': [{'name': 'Zones', 'description': 'Four zones', 'quantity': 1,
+                                                          'unitPrice': 16795, 'taxable': True}]}}}
+                    return {'job': jobs[variables['id']]}
+                if 'client(id' in query:
+                    return {'client': {'id': variables['id'], 'name': 'Hodges Funeral Home', 'properties': [],
+                                       'jobs(first: 40)': {'nodes': [
+                                           {'id': 'J14511', 'jobNumber': 14511, 'title': 'Replace broken drop pipe',
+                                            'jobStatus': 'requires_invoicing', 'jobType': 'ONE_OFF'},
+                                           {'id': 'J200', 'jobNumber': 14400, 'title': 'Install new zones at the mausoleum',
+                                            'jobStatus': 'active', 'jobType': 'ONE_OFF'},
+                                           {'id': 'JR', 'jobNumber': 2069, 'title': 'Quarterly 2500', 'jobStatus': 'upcoming',
+                                            'jobType': 'RECURRING'}]}}}
+                return super().__call__(query, variables)
+        fake = Fake(clients=[])
+        P.jobber_gql = fake
+        P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN
+        try:
+            items = [{'name': 'After making repairs to get pump running', 'description': 'Lee Memorial Well 6. After making '
+                      'repairs to get pump running, found pump stuck in well, customer will need to call well driller.',
+                      'quantity': 1, 'unit_price': 600, 'amount': 600, 'taxable': True, 'is_tax': False}]
+            self.extracts['b-leemem.pdf'] = extraction('bill', '31500', client='Lee Memorial', subtotal=600, items=items)
+            b = self.upload('b-leemem.pdf')
+            inv = b['auto_invoice']
+            self.assertEqual(inv['job']['number'], '14511', inv)
+            sent = [v for q, v in fake.calls if 'invoiceCreate' in q][-1]['input']
+            self.assertEqual((sent['clientId'], sent['jobId']), (HODGES, 'J14511'))
+            self.assertEqual([(l['name'], l['unitPrice']) for l in sent['lineItems']], [('PROPOSAL AMOUNT SERVICE', 3471.43)])
+            case = self.case(b['case_id'])
+            self.assertEqual(case['jobber']['job']['number'], '14511')
+            self.assertEqual([i for i in case['issues'] if not i['resolved_at']], [])
+            todos = [t['title'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
+            self.assertIn("Check with Tommy - Wettech bill doesn't line up with job #14511", todos)
+        finally:
+            P.JOBBER_STATIC_TOKEN = saved
+
     def test_maintenance_accounts(self):
         today = P._today
         P._today = lambda: P.datetime(2026, 10, 5).date()

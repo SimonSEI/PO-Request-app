@@ -305,6 +305,10 @@ SEED_SITE_ALIASES = [
      'property_label': '28432 Highgate Drive, Bonita Springs',
      'job_id': 'Z2lkOi8vSm9iYmVyL0pvYi80MTQyMDAxOA==', 'job_label': '#1609 Quarterly Pump- 850',
      'note': 'Spanish Wells reports go on The Lake Club account, job #1609 "Quarterly Pump- 850".'},
+    {'place': 'Lee Memorial', 'area': '', 'client_id': 'Z2lkOi8vSm9iYmVyL0NsaWVudC8zODg2MDA3MQ==',
+     'client_name': 'Hodges Funeral Home at Naples Memorial Gardens (David Luginbuel)',
+     'property_id': 'Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzU2Njc0MDU3', 'property_label': '12777 Florida 82, Lehigh Acres',
+     'note': 'Wettech still writes "Lee Memorial" (Well 6, Lehigh Acres) - it is the Hodges Funeral Home account.'},
 ]
 
 
@@ -476,6 +480,10 @@ def init_db():
         except sqlite3.OperationalError:
             pass
     for a in SEED_SITE_ALIASES:
+        # A seed fills in a name the office saved without its property.
+        c.execute("UPDATE pump_site_aliases SET property_id=?, property_label=? WHERE place=? AND area=? AND "
+                  "client_id=? AND COALESCE(property_id, '')='' AND ?!=''",
+                  (a['property_id'], a['property_label'], a['place'], a['area'], a['client_id'], a['property_id']))
         if a.get('job_id'):
             c.execute("UPDATE pump_site_aliases SET job_id=?, job_label=? WHERE place=? AND area=? AND "
                       "COALESCE(job_id, '')=''", (a['job_id'], a['job_label'], a['place'], a['area']))
@@ -2648,6 +2656,67 @@ def one_line_items(doc, markup_pct):
              'unit_price': round(base * (1 + (markup_pct or 0) / 100), 2), 'taxable': bool(taxable)}]
 
 
+JOB_DETAIL_SPEC = ['id', 'jobNumber', 'title', 'instructions', 'jobStatus', 'jobType', 'jobberWebUri', 'total',
+                   ('property', ['id', _ADDR]),
+                   ('lineItems', [('nodes', ['name', 'description', 'quantity', 'unitPrice', 'taxable'])])]
+_MATCH_STOP = {'with', 'will', 'need', 'needs', 'that', 'this', 'from', 'have', 'been', 'were', 'they', 'their',
+               'pump', 'pumps', 'service', 'services', 'field', 'proposal', 'amount', 'quote', 'pleased', 'following',
+               'customer', 'repair', 'repairs', 'call', 'labor', 'materials', 'work', 'completed', 'install', 'test'}
+
+
+def job_detail(job_id):
+    def make(fields):
+        return f'query($id: EncodedId!) {{ job(id: $id) {{ {fields} }} }}'
+    data, _ = _gql_tolerant(make, JOB_DETAIL_SPEC, {'id': job_id}, required=('id',))
+    j = data.get('job') or {}
+    lines = (j.get('lineItems') or {}).get('nodes') if isinstance(j.get('lineItems'), dict) else (j.get('lineItems') or [])
+    return {'id': j.get('id'), 'number': str(j.get('jobNumber') or ''), 'title': j.get('title') or '',
+            'instructions': j.get('instructions') or '', 'status': (j.get('jobStatus') or '').lower(),
+            'type': (j.get('jobType') or '').lower(), 'uri': j.get('jobberWebUri') or '', 'total': j.get('total'),
+            'property_label': _prop_label(j.get('property')),
+            'line_items': [{'name': li.get('name') or '', 'description': li.get('description') or '',
+                            'quantity': li.get('quantity') or 1, 'unit_price': li.get('unitPrice'),
+                            'taxable': bool(li.get('taxable'))} for li in lines or [] if li.get('unitPrice') is not None]}
+
+
+def _match_words(text):
+    return {w for w in re.findall(r'[a-z]{4,}', (text or '').lower()) if w not in _MATCH_STOP}
+
+
+def find_matching_job(doc, client_id):
+    """The client's Jobber job this vendor bill is for: a one-off job that
+    still needs invoicing (or is under way) whose title, instructions and
+    lines share the bill's words - "Lee Memorial Well 6 ... after making
+    repairs to get pump running" on both. None unless one job is clearly it."""
+    if not client_id:
+        return None
+    jobs = [j for j in client_jobs(client_id)['jobs'] if j.get('type') != 'recurring' and
+            j.get('status') in ('requires_invoicing', 'action_required', 'active', 'late', 'today', 'upcoming',
+                                'unscheduled')]
+    if not jobs:
+        return None
+    bill = ' '.join([doc.get('client_name') or '', doc.get('site') or '', doc.get('description') or ''] +
+                    [f"{li.get('name') or ''} {li.get('description') or ''}" for li in doc.get('line_items') or []])
+    want = _match_words(bill)
+    scored = []
+    for j in jobs[:12]:
+        try:
+            d = job_detail(j['id'])
+        except JobberError:
+            continue
+        have = _match_words(' '.join([d['title'], d['instructions'], d['property_label']] +
+                                     [f"{li['name']} {li['description']}" for li in d['line_items']]))
+        common = len(want & have)
+        score = common / max(4, min(len(want), 12)) + (0.25 if d['status'] == 'requires_invoicing' else 0)
+        scored.append((round(score, 3), common, d))
+    scored.sort(key=lambda x: -x[0])
+    if not scored or scored[0][1] < 2 or scored[0][0] < 0.45:
+        return None
+    if len(scored) > 1 and scored[0][0] - scored[1][0] < 0.15:
+        return None
+    return {**scored[0][2], 'score': scored[0][0]}
+
+
 def suggest_invoice(doc, case=None):
     """Our invoice for a vendor bill when there is no client quote to copy:
     one Service Proposal Amount line, the bill before tax plus the quote
@@ -2847,7 +2916,31 @@ def invoice_suggestion(doc, case=None):
             q = None
         if q and q['line_items']:
             sugg.update(line_items=q['line_items'], from_quote=q['number'] or True)
+            return sugg
+    if jobber_status()['connected'] and not (json.loads(case.get('jobber') or '{}').get('job') or {}).get('id'):
+        try:
+            client_id = invoice_client(doc, case)
+            job = find_matching_job(doc, client_id) if client_id else None
+        except JobberError:
+            job = None
+        if job and job['line_items']:
+            sugg.update(bill_lines=sugg['line_items'], line_items=job['line_items'], client_id=client_id,
+                        job={k: job[k] for k in ('id', 'number', 'title', 'uri', 'total', 'status')})
     return sugg
+
+
+def invoice_client(doc, case=None):
+    """Who a bill is invoiced to: the job's client, a remembered site name,
+    or the one clear Jobber match."""
+    case = case or {}
+    cid = (json.loads(case.get('jobber') or '{}').get('client') or {}).get('id') or case.get('jobber_client_id')
+    if cid:
+        return cid
+    a = match_site_alias(doc, case)
+    if a:
+        return a['client_id']
+    pick = pick_client(search_clients(case.get('client_name') or doc.get('client_name') or ''))
+    return pick['id'] if pick else None
 
 
 _LINE_FIELD_REFUSED = re.compile(r'lineItems\.\d+\.(\w+)[^.]*?(?:Field is not defined|is not defined|unknown|invalid)', re.I)
@@ -3805,10 +3898,43 @@ def h_doc_invoice(actor, doc_id):
     sugg = invoice_suggestion(doc, case)
     job_id = data.get('job_id')
     if job_id is None:
-        job_id = (json.loads(case.get('jobber') or '{}').get('job') or {}).get('id') or ''
+        job_id = (json.loads(case.get('jobber') or '{}').get('job') or {}).get('id') or \
+            ((sugg.get('job') or {}).get('id') if (sugg.get('client_id') in (None, client_id)) else '') or ''
     res = create_draft_invoice(doc_id, client_id, data.get('line_items') or sugg['line_items'],
                                data.get('subject') or sugg['subject'], job_id or '', actor)
+    if sugg.get('job') and job_id == sugg['job']['id']:
+        invoiced_on_job(doc, case, sugg['job'], actor)
     return {'invoice': res}
+
+
+def invoiced_on_job(doc, case, job, actor='system'):
+    """A bill invoiced on the Jobber job it matched: the job goes on the item,
+    the job stands in for the quote, and a bill that doesn't line up with the
+    job's price is a to-do to check with the vendor."""
+    if not case or not case.get('id'):
+        return
+    conn = _conn()
+    try:
+        jj = json.loads(conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (case['id'],)).fetchone()[0] or '{}')
+        jj['job'] = {'id': job['id'], 'number': job.get('number'), 'uri': job.get('uri')}
+        conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(jj), case['id']))
+        resolve_issues(conn, case['id'], 'no_quote', actor, f"Invoiced on Jobber job #{job.get('number')}")
+        _set_step(conn, case['id'], 'bill_checked', at=_today().isoformat(), by=actor)
+        _event(conn, actor, 'invoiced on matching job', f"Jobber job #{job.get('number')} {job.get('title')}",
+               case_id=case['id'], doc_id=doc.get('id'))
+        base = doc.get('subtotal') if doc.get('subtotal') is not None else doc.get('total')
+        if base is not None and job.get('total') is not None and \
+                abs(round(base * (1 + QUOTE_MARKUP_PCT / 100), 2) - float(job['total'])) > 1:
+            name, email = _vendor_contact(case.get('vendor') or doc.get('vendor'))
+            add_todo(conn, f"job-check:{case['id']}:{doc.get('doc_number') or doc.get('id')}",
+                     f"Check with {name} - {doc.get('vendor') or 'vendor'} bill doesn't line up with job #{job.get('number')}",
+                     f"Bill {('#' + doc['doc_number'] + ' ') if doc.get('doc_number') else ''}${base:,.2f} "
+                     f"(${base * (1 + QUOTE_MARKUP_PCT / 100):,.2f} with {QUOTE_MARKUP_PCT:g}%) vs job #{job.get('number')} "
+                     f"\"{job.get('title')}\" ${float(job['total']):,.2f}. The invoice is drafted at the job's price. {email}",
+                     {'case_id': case['id'], 'uri': job.get('uri') or ''})
+        conn.commit()
+    finally:
+        conn.close()
 
 
 @api('/docs/<int:doc_id>/reread', methods=('POST',))
@@ -5877,8 +6003,20 @@ def auto_draft_invoice(doc_id, actor='Pumps (automatic)'):
         return None
     j = json.loads(case.get('jobber') or '{}')
     q = j.get('quote') or {}
-    if not q.get('id') or (j.get('invoice') or {}).get('id'):
+    if (j.get('invoice') or {}).get('id'):
         return None
+    if not q.get('id'):
+        # No quote of ours on the item: invoice the client's Jobber job this bill matches, at the job's price.
+        try:
+            sugg = invoice_suggestion(doc, case)
+            if not sugg.get('job'):
+                return None
+            res = create_draft_invoice(doc_id, sugg['client_id'], sugg['line_items'], sugg['subject'],
+                                       sugg['job']['id'], actor)
+            invoiced_on_job(doc, case, sugg['job'], actor)
+            return {**res, 'job': sugg['job']}
+        except (JobberError, ValueError) as e:
+            return {'pending': str(e)}
     try:
         lines = fetch_quote_lines(q['id'])
         if not lines or not lines['line_items']:
