@@ -965,6 +965,28 @@ class PumpsTest(unittest.TestCase):
         self.assertIn('Please pay Wettech invoice #30100 for $', mail['body'])
         self.assertIn('Jobber invoice #5001', mail['body'])
         self.assertEqual(mail['bill_doc_id'], b['doc_id'])
+        # Clicking Send emails it from the PO mailbox with the bill attached - only when clicked.
+        sent, real_send = [], P.graph_send
+        P.graph_send = lambda to, subject, html, attachments=None, sender=None: sent.append((to, subject, html, attachments))
+        try:
+            self.assertEqual(sent, [], 'nothing goes out on its own')
+            r = self.c.post(f'/pumps/api/cases/{cid}/pay_email/send', json={'body': 'Hi Christian,\nPlease pay it.'})
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            self.assertEqual(len(sent), 1)
+            self.assertEqual(sent[0][0], 'christian@example.com')
+            self.assertIn('Please pay it.', sent[0][2])
+            self.assertEqual(len(sent[0][3]), 1)
+            q = self.c.get('/pumps/api/summary').get_json()['queue']['vendor_bills_to_pay']
+            self.assertTrue(next(c for c in q if c['id'] == cid)['pay_email']['sent'])
+
+            def refuse(*a, **k):
+                raise RuntimeError('Microsoft 365 said HTTP 403: Access is denied.')
+            P.graph_send = refuse
+            r = self.c.post(f'/pumps/api/cases/{cid}/pay_email/send', json={})
+            self.assertEqual(r.status_code, 502)
+            self.assertIn('Access is denied', r.get_json()['error'])
+        finally:
+            P.graph_send = real_send
         # OpenClaw may not say a vendor was paid.
         r = A.app.test_client().patch(f'/api/pumps/cases/{cid}', json={'vendor_paid_on': '2026-10-08'},
                                       headers={'Authorization': 'Bearer test-openclaw-key'})
