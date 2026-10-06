@@ -1068,7 +1068,7 @@ async function loadJobs(){
     (s.state === 'running' ? `Syncing Jobber… (started ${esc(s.started_at || '')})` : (s.state === 'failed' || s.state === 'interrupted' ? `<b class="bad">Last sync did not finish</b> - press Sync again · ` : '') + (s.finished_at ? `Last sync ${esc(s.finished_at)}` : 'Not synced yet.')) + ((s.errors || []).length ? ` · <span class="bad" title="${esc(s.errors.join('\n'))}">${s.errors.length} errors</span>` : '');
   clearTimeout(window._syncPoll);
   if (s.state === 'running') window._syncPoll = setTimeout(() => { if (curTab === 'jobs') loadJobs(); }, 5000);
-  document.getElementById('jbNewBody').innerHTML = (ji.items || []).filter(it => !it.case_id && !(it.kind === 'quote' && it.status === 'draft')).map(it => `<tr>
+  document.getElementById('jbNewBody').innerHTML = (ji.items || []).filter(it => !it.case_id && !(it.kind === 'quote' && it.status !== 'approved')).map(it => `<tr>
     <td><span class="note">${esc(it.kind)}</span> <a href="${esc(it.web_uri)}" target="_blank" rel="noopener">${it.number ? '#' + esc(it.number) + ' ' : ''}${esc(it.title)}</a> ${catChip(it.category)}</td>
     <td>${esc(it.client_name)}<div class="note">${esc(it.property_label)}</div></td><td>${esc(d10(it.created_at))}</td>
     <td style="white-space:nowrap"><button class="btn s p" onclick="jobberAct('${esc(it.jobber_id)}','track')">Track</button> <button class="btn s" onclick="jobberLink('${esc(it.jobber_id)}')">Add to job…</button> <button class="btn s" onclick="jobberAct('${esc(it.jobber_id)}','ignore')">Ignore</button></td></tr>`).join('') || `<tr><td colspan="4" class="empty">${JOBBER_OK ? 'Nothing new.' : 'Connect Jobber to see pump work.'}</td></tr>`;

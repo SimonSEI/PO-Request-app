@@ -2200,14 +2200,15 @@ def _sync_jobber(full=False, actor='system'):
 
 
 def untracked_jobber_items(conn):
-    """Open pump requests, quotes and one-off jobs made in Jobber that no item
-    here follows yet and nobody has ignored."""
+    """Open pump requests, approved quotes and one-off jobs made in Jobber that
+    no item here follows yet and nobody has ignored. A quote still out with the
+    client needs nothing from us until it is approved."""
     rows = [dict(r) for r in conn.execute(
         "SELECT * FROM pump_jobber_items WHERE kind IN ('request','quote','job') AND case_id IS NULL "
         "AND ignored=0 ORDER BY created_at DESC")]
     return [r for r in rows if r['status'] in OPEN_STATUSES[r['kind']]
             and not (r['kind'] == 'job' and r['job_type'] == 'recurring')
-            and not (r['kind'] == 'quote' and r['status'] == 'draft')]
+            and not (r['kind'] == 'quote' and r['status'] != 'approved')]
 
 
 def _link_jobber_items(conn):

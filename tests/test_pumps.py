@@ -698,6 +698,19 @@ class PumpsTest(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual(self.case(cid)['jobber']['quote']['number'], '14600')
+        # A quote sent from Jobber and still out with the client isn't listed; once approved it is.
+        conn = P._conn()
+        try:
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id, "
+                         "created_at, category, po_number) VALUES ('Q14700', 'quote', '14700', 'Pump repair', "
+                         "'awaiting_response', 'COTHER', '2026-10-07T12:00:00Z', 'pump', '')")
+            conn.commit()
+            self.assertNotIn('Q14700', [i['jobber_id'] for i in P.untracked_jobber_items(conn)])
+            conn.execute("UPDATE pump_jobber_items SET status='approved' WHERE jobber_id='Q14700'")
+            conn.commit()
+            self.assertIn('Q14700', [i['jobber_id'] for i in P.untracked_jobber_items(conn)])
+        finally:
+            conn.close()
 
     def test_draft_quote_asks_which_property(self):
         self.extracts['q-0810.pdf'] = extraction('quote', 'Q-121', po='PO810', client='Lakeside Pines', subtotal=300)
