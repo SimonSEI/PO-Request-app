@@ -3607,6 +3607,56 @@ def h_case(actor, case_id):
         conn.close()
 
 
+def _app_setting(conn, key, default=''):
+    try:
+        row = conn.execute('SELECT value FROM app_settings WHERE key=?', (key,)).fetchone()
+        return (row[0] if row else '') or default
+    except sqlite3.Error:
+        return default
+
+
+def vendor_pay_email(conn, case_id, signer=''):
+    """A ready-to-paste email asking Christian to pay the vendor's bill, once
+    the client has paid our Jobber invoice."""
+    row = conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+    if not row:
+        return None
+    c = _case_dict(row)
+    bill = conn.execute("SELECT id, doc_number, total, file_name FROM pump_docs WHERE case_id=? AND kind='bill' "
+                        "AND status != 'dismissed' ORDER BY id DESC", (case_id,)).fetchone()
+    vendor = c.get('vendor') or 'Wettech'
+    number = c.get('vendor_bill_number') or (bill['doc_number'] if bill else '') or ''
+    amount = next((v for v in (c.get('vendor_bill_total'), c.get('vendor_bill_amount'), bill['total'] if bill else None)
+                   if v is not None), None)
+    inv = (c.get('jobber') or {}).get('invoice') or {}
+    our_no = inv.get('number') or c.get('sei_invoice_number') or ''
+    title = short_name(c.get('title') or '', 90)
+    client = c.get('client_name') or ''
+    job = title if client and title.lower().startswith(client.lower()) else ' - '.join(x for x in [client, title] if x)
+    lines = [f'Hi Christian,', '',
+             f"Please pay {vendor} invoice{' #' + number if number else ''}"
+             f"{f' for ${amount:,.2f}' if amount is not None else ''}.", '',
+             f'Job: {job}' + (f" (PO {c['po_number']})" if c.get('po_number') else ''),
+             f"The client has paid our Jobber invoice{' #' + our_no if our_no else ''}.", '',
+             *([f'{vendor}\'s invoice is attached.', ''] if bill else []), 'Thank you,', signer]
+    body = '\n'.join(lines).rstrip()
+    return {'to': _app_setting(conn, 'christian_email', os.environ.get('CHRISTIAN_EMAIL', '')),
+            'subject': f"Please pay {vendor} invoice{' #' + number if number else ''}"
+                       + (f' - {c["client_name"]}' if c.get('client_name') else ''),
+            'body': body, 'bill_doc_id': bill['id'] if bill else None,
+            'bill_file': bill['file_name'] if bill else ''}
+
+
+@api('/cases/<int:case_id>/pay_email')
+def h_pay_email(actor, case_id):
+    conn = _conn()
+    try:
+        e = vendor_pay_email(conn, case_id, actor if actor != BOT else '')
+        return ({'success': False, 'error': 'Not found'}, 404) if not e else {'email': e}
+    finally:
+        conn.close()
+
+
 @api('/months')
 def h_months(actor):
     conn = _conn()

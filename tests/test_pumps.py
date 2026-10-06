@@ -951,6 +951,20 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(case['vendor_pay']['state'], 'due')
         self.assertIn(cid, to_pay())
         self.assertTrue(any(e['action'] == 'pay vendor' for e in case['events']))
+        # A ready-to-paste email asks Christian to pay it.
+        conn = P._conn()
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT)")
+            conn.execute("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('christian_email', 'christian@example.com')")
+            conn.commit()
+        finally:
+            conn.close()
+        mail = self.c.get(f'/pumps/api/cases/{cid}/pay_email').get_json()['email']
+        self.assertEqual(mail['to'], 'christian@example.com')
+        self.assertIn('Wettech invoice #30100', mail['subject'])
+        self.assertIn('Please pay Wettech invoice #30100 for $', mail['body'])
+        self.assertIn('Jobber invoice #5001', mail['body'])
+        self.assertEqual(mail['bill_doc_id'], b['doc_id'])
         # OpenClaw may not say a vendor was paid.
         r = A.app.test_client().patch(f'/api/pumps/cases/{cid}', json={'vendor_paid_on': '2026-10-08'},
                                       headers={'Authorization': 'Bearer test-openclaw-key'})
