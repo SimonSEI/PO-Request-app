@@ -617,13 +617,14 @@ async function draftInvoice(docId){
   const j = await api('/docs/' + docId);
   if (!j.success) { toast(j.error, true); return; }
   const d = j.doc, s = d.invoice_suggestion || {line_items:[], subject:''};
-  inv = {mode: 'invoice', doc: d, client_id: null, lines: s.line_items.map(x => Object.assign({}, x)), subject: s.subject};
+  inv = {mode: 'invoice', doc: d, client_id: null, lines: s.line_items.map(x => Object.assign({}, x)), subject: s.subject, job: s.job || null, bill_lines: s.bill_lines || null};
   if (s.from_quote) setTimeout(() => { const n = document.querySelector('#modal .note'); if (n) n.insertAdjacentHTML('afterbegin', `<b>Lines copied from our Jobber quote #${esc(String(s.from_quote))}</b> - the bill matches ${esc(d.vendor)}'s quote, so the client is invoiced what they were quoted. `); }, 0);
   openModal('Draft invoice in Jobber', `
     <div class="safe">This creates a DRAFT invoice in Jobber. Nothing is sent to the client - review it in Jobber and send it from there.</div>
     ${(d.case_issues || []).map(i => `<div class="issue">⚠️ ${esc(i.message)}</div>`).join('')}
     <div class="note">From ${esc(d.vendor)} bill #${esc(d.doc_number)} - ${money(d.subtotal)} before tax, ${money(d.total)} total. One Service Proposal Amount line: the bill before tax${s.markup_pct ? ' plus ' + s.markup_pct + '%' : ''}; Jobber adds the client's tax.</div>
     <div><b>Jobber client</b><div class="toolbar" style="margin:6px 0"><input type="text" id="cq" value="${esc(d.client_name)}" style="flex:1"><button class="btn" onclick="findClients()">Search</button></div><div id="cands"><div class="note">Searching…</div></div></div>
+    ${s.job ? `<div class="safe" id="jobMatch">Matches Jobber job <a href="${esc(s.job.uri)}" target="_blank" rel="noopener"><b>#${esc(s.job.number)} ${esc(s.job.title)}</b> ↗</a> (${esc((s.job.status || '').replace(/_/g, ' '))}, ${money(s.job.total)}) - the invoice goes on that job at its price. <button class="btn s" onclick="dropJobMatch()">Not this job - bill + 30%</button></div>` : ''}
     <div class="note">The client you pick is remembered for "${esc(d.client_name)}", so next time it's filled in by itself.</div>
     <label class="note">Invoice subject<input type="text" id="invSubject" value="${esc(inv.subject)}" style="width:100%"></label>
     <div><b>Line items</b> <span class="note">(edit before creating)</span><table class="t" style="margin-top:6px"><thead><tr><th>Name</th><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th>Tax</th><th></th></tr></thead><tbody id="invLines"></tbody></table>
@@ -632,6 +633,7 @@ async function draftInvoice(docId){
     `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" id="invGo" onclick="createInvoice()">Create draft in Jobber</button>`);
   drawLines(); findClients();
 }
+function dropJobMatch(){ inv.job = null; inv.dropped = true; if (inv.bill_lines) inv.lines = inv.bill_lines.map(x => Object.assign({}, x)); const el = document.getElementById('jobMatch'); if (el) el.remove(); drawLines(); }
 function drawLines(){
   document.getElementById('invLines').innerHTML = inv.lines.map((l, i) => `<tr>
     <td><input type="text" value="${esc(l.name)}" oninput="inv.lines[${i}].name=this.value" style="width:100%"></td>
@@ -661,7 +663,7 @@ function pickClient(el, id){ inv.client_id = id; document.querySelectorAll('#can
 async function createInvoice(){
   if (!inv.client_id) { toast('Choose the Jobber client first.', true); return; }
   const btn = document.getElementById('invGo'); btn.disabled = true; btn.textContent = 'Creating draft…';
-  const j = await api('/docs/' + inv.doc.id + '/invoice', {method:'POST', body:{client_id: inv.client_id, client_name: ((document.querySelector('#cands .cand.on b') || {}).textContent || ''), line_items: inv.lines, subject: document.getElementById('invSubject').value}});
+  const j = await api('/docs/' + inv.doc.id + '/invoice', {method:'POST', body:{client_id: inv.client_id, client_name: ((document.querySelector('#cands .cand.on b') || {}).textContent || ''), job_id: inv.job ? inv.job.id : (inv.dropped ? '' : null), line_items: inv.lines, subject: document.getElementById('invSubject').value}});
   btn.disabled = false; btn.textContent = 'Create draft in Jobber';
   if (!j.success) { toast(j.error, true); return; }
   closeModal();
