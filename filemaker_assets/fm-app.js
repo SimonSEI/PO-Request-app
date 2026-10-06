@@ -660,12 +660,21 @@
       else if (reload || d.layoutId !== w.layoutId) d.load();
       return d;
     }
+    // privilege check + layout lock, taken before the window changes mode or layout so a refusal leaves it
+    // untouched; the window holds at most one layout lock, so moving to another layout releases the old one
+    async lockLayout(w, id) {
+      id = id || w.layoutId;
+      if (w.lockedLayout === id) return true;
+      if (w.file.layoutAccess(id) !== 'modify') { await FM.alert('Your privileges do not allow modifying this layout.', { icon: 'stopsign' }); return false; }
+      const lk = await w.file.lockKey('layout:' + id);
+      if (!lk.ok) { await FM.alert('This layout is being modified by "' + (lk.holder || 'another user') + '". Try again later.', { icon: 'stopsign' }); return false; }
+      if (w.lockedLayout) w.file.unlock(['layout:' + w.lockedLayout]);
+      w.lockedLayout = id;
+      return true;
+    }
     async enterLayoutMode(w) {
       if (!w.layout) { await this.newLayoutFlow(w); return !!w.layout; }
-      if (w.file.layoutAccess(w.layoutId) !== 'modify') { await FM.alert('Your privileges do not allow modifying this layout.', { icon: 'stopsign' }); return false; }
-      const lk = await w.file.lockKey('layout:' + w.layoutId);
-      if (!lk.ok) { await FM.alert('This layout is being modified by "' + (lk.holder || 'another user') + '". Try again later.', { icon: 'stopsign' }); return false; }
-      w.lockedLayout = w.layoutId;
+      if (!(await this.lockLayout(w))) return false;
       this.designerFor(w, true);
       return true;
     }

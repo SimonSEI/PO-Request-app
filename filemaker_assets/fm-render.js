@@ -115,6 +115,11 @@
         if (!(await this.app.trigger(this, 'OnLayoutExit'))) return false;
         if (!(await this.commit({ silent: o.silent }))) return false;
       }
+      if (this.mode === 'layout' && this.layoutId !== id) {
+        const d = this.app.designers.get(this);
+        if (d && !(await d.leave())) return false;
+        if (!(await this.app.lockLayout(this, id))) { if (d) { d.load(); this.render(); } return false; }
+      }
       const prev = this.layoutId;
       this.layoutId = id;
       if (!o.keepView) this.view = (lay.view && (lay.views || {})[lay.view] !== false) ? lay.view : (lay.views && lay.views.form === false ? (lay.views.list !== false ? 'list' : 'table') : 'form');
@@ -163,6 +168,7 @@
       if (!(await this.app.trigger(this, 'OnModeExit'))) return false;
       if (this.mode === 'browse' || this.mode === 'preview') { if (!(await this.commit(o))) return false; }
       if (this.mode === 'layout' && !(await this.app.leaveLayoutMode(this))) return false;
+      if (mode === 'layout' && this.layout && !(await this.app.lockLayout(this))) return false;
       const was = this.mode;
       this.mode = mode;
       this.active = null; this.popovers = {};

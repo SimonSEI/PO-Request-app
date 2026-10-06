@@ -947,7 +947,7 @@
     }
     async lockKey(key) {
       try { const r = await this.api('POST', '/lock', { key }); return r.success ? { ok: true } : { ok: false, holder: r.holder, error: r.error }; }
-      catch (e) { return { ok: false, error: e.message }; }
+      catch (e) { return { ok: false, holder: e.data && e.data.holder, error: e.message }; }
     }
     async unlock(keys) { try { await this.api('POST', '/unlock', { keys }); } catch (e) { /* the host frees stale locks */ } }
     async saveSchema(ops, serials) {
