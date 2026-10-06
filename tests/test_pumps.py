@@ -623,6 +623,47 @@ class PumpsTest(unittest.TestCase):
         steps = {s['key']: s for s in self.case(cid)['step_list']}
         self.assertEqual(steps['client_approved'].get('at'), '2026-10-06')
 
+    def test_job_tracked_before_the_visit_step_waits_on_the_visit(self):
+        """Homewood Suites was tracked from Jobber before the visit step existed:
+        marked approved and scheduled, no vendor. Once, at start-up, it becomes
+        'waiting on Wettech to assess' with the Jobber visit date."""
+        conn = P._conn()
+        try:
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, job_type, created_at, "
+                         "start_at, category) VALUES ('J323', 'job', '14542', 'Homewood Suites - PO 323 Pump Service', "
+                         "'upcoming', 'one_off', '2026-10-05T12:00:00Z', '2026-10-13T08:00:00Z', 'pump')")
+            cid = P.create_case(conn, {'title': 'Homewood Suites - PO 323 Pump Service', 'client_name': 'Homewood Suites',
+                                       'scheduled_for': '2026-10-13'}, 'test', source='jobber')
+            conn.execute("UPDATE pump_cases SET jobber=? WHERE id=?", (json.dumps({'job': {'id': 'J323'}}), cid))
+            P._set_step(conn, cid, 'client_approved', at='2026-10-05')
+            P._set_step(conn, cid, 'scheduled', at='2026-10-05')
+            conn.execute("DELETE FROM pump_state WHERE key='visit_step_backfill'")
+            conn.commit()
+            P._backfill_visit_step(conn)
+        finally:
+            conn.close()
+        case = self.case(cid)
+        self.assertEqual(case['stage'], 'assessment')
+        self.assertEqual(case['vendor'], 'Wettech')
+        steps = {s['key']: s for s in case['step_list']}
+        self.assertEqual(steps['assessment'].get('due'), '2026-10-13')
+        self.assertFalse(steps['scheduled'].get('at'))
+        self.assertFalse(steps['client_approved'].get('at'))
+        # And by hand: "Wettech needs to visit first" on a job waiting on a quote.
+        other = P._conn()
+        try:
+            oid = P.create_case(other, {'title': 'Pump Service call - PO322', 'client_name': 'Greenscapes',
+                                        'vendor': 'Wettech'}, 'test')
+            other.commit()
+        finally:
+            other.close()
+        self.assertEqual(self.case(oid)['stage'], 'vendor_quote')
+        r = self.c.patch(f'/pumps/api/cases/{oid}', json={'steps': {'assessment': None}, 'assessment_due': '10/20/2026'})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        case = self.case(oid)
+        self.assertEqual(case['stage'], 'assessment')
+        self.assertEqual({s['key']: s for s in case['step_list']}['assessment'].get('due'), '2026-10-20')
+
     def test_sync_left_running_by_a_restart_reads_as_interrupted(self):
         P._state_set('jobber_sync', {'state': 'running', 'started_at': P._now_text(), 'errors': []})
         st = self.c.get('/pumps/api/jobber/items').get_json()['sync']

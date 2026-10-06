@@ -512,7 +512,42 @@ def init_db():
                   results TEXT)''')
     conn.commit()
     _migrate_old_sheet(conn)
+    _backfill_visit_step(conn)
     conn.close()
+
+
+def _backfill_visit_step(conn):
+    """Jobs tracked from a Jobber job before the 'vendor visit to assess' step
+    existed (Oct 2026) were marked approved and scheduled. If nothing from the
+    vendor has come in yet, they are really waiting on the vendor's visit:
+    switch that step on with the Jobber visit date, once."""
+    conn.row_factory = sqlite3.Row
+    if conn.execute("SELECT 1 FROM pump_state WHERE key='visit_step_backfill'").fetchone():
+        return
+    for c in conn.execute("SELECT * FROM pump_cases WHERE status='open' AND source='jobber'").fetchall():
+        steps = json.loads(c['steps'] or '{}')
+        job_id = ((json.loads(c['jobber'] or '{}').get('job')) or {}).get('id')
+        if not job_id or 'assessment' in steps or (steps.get('vendor_quote') or {}).get('at') \
+                or conn.execute("SELECT 1 FROM pump_docs WHERE case_id=? AND kind IN ('quote','bill') "
+                                "AND status != 'dismissed'", (c['id'],)).fetchone():
+            continue
+        job = conn.execute('SELECT * FROM pump_jobber_items WHERE jobber_id=?', (job_id,)).fetchone()
+        if not job or job['completed_at'] or job['status'] == 'requires_invoicing':
+            continue
+        due = (job['start_at'] or '')[:10]
+        steps['assessment'] = {'due': due} if due else {}
+        for k in ('client_approved', 'scheduled'):
+            if (steps.get(k) or {}).get('at'):
+                steps.pop(k)
+        conn.execute("UPDATE pump_cases SET steps=?, vendor=CASE WHEN COALESCE(vendor,'')='' THEN 'Wettech' ELSE vendor END, "
+                     "scheduled_for=CASE WHEN scheduled_for=? THEN '' ELSE scheduled_for END WHERE id=?",
+                     (json.dumps(steps), due, c['id']))
+        _event(conn, 'Pumps', 'waiting on the vendor visit',
+               'Made in Jobber before any quote: waiting on Wettech to go out and assess' + (f' ({due})' if due else ''),
+               case_id=c['id'])
+        _refresh_case(conn, c['id'])
+    conn.execute("INSERT OR REPLACE INTO pump_state (key, value) VALUES ('visit_step_backfill', '\"done\"')")
+    conn.commit()
 
 
 def _migrate_old_sheet(conn):
@@ -851,6 +886,9 @@ def update_case(conn, case_id, data, actor):
         else:
             _set_step(conn, case_id, k, at=_iso_date(v) or _today().isoformat(), by=actor)
         changed.append(f'step:{k}')
+    if 'assessment_due' in data:
+        _set_assessment(conn, case_id, _iso_date(data['assessment_due']) or '', by=actor)
+        changed.append('step:assessment')
     if 'category' in changed and not data.get('steps'):
         # Re-apply the default not-needed steps for the new kind of work,
         # leaving anything already done alone.
@@ -4400,7 +4438,8 @@ def h_jobber_item(actor, jobber_id):
                                      'client_name': it['client_name'], 'site': it['property_label'],
                                      'po_number': it['po_number'], 'jobber_client_id': it['client_id'],
                                      'jobber_property_id': it['property_id'],
-                                     'vendor': 'Wettech' if re.search(r'we?t+e?ch|\bwet\b', it['title'] or '', re.I) else '',
+                                     'vendor': 'Wettech' if cat in ('repair', 'maintenance')
+                                               or re.search(r'we?t+e?ch|\bwet\b', it['title'] or '', re.I) else '',
                                      'opened_on': (it['created_at'] or '')[:10],
                                      'jobber_request_made': _jobber_ref_text(it)},
                               actor, source='jobber')
