@@ -77,6 +77,8 @@ USE_CLAUDE = os.environ.get('PUMPS_USE_CLAUDE', 'false').lower() in ('1', 'true'
     and bool(ANTHROPIC_API_KEY)
 AUTO_SCAN = os.environ.get('PUMPS_AUTO_SCAN', 'true').lower() in ('1', 'true', 'yes', 'on')
 SCAN_EVERY_MIN = max(10, int(os.environ.get('PUMPS_SCAN_EVERY_MINUTES', '30') or 30))
+# How often Jobber is synced on its own, so nobody has to press Sync.
+JOBBER_SYNC_EVERY_MIN = max(5, int(os.environ.get('PUMPS_JOBBER_SYNC_MINUTES', '15') or 15))
 # The first scan only reads mail from this date on (default: 60 days back), so
 # turning the app on does not run years of old mail through it.
 SCAN_SINCE = os.environ.get('PUMPS_SCAN_SINCE', '')
@@ -4018,7 +4020,8 @@ def h_jobber_items(actor):
         for r in rows:
             if not r['case_id']:
                 r['on_sheet'] = on_account_sheets(conn, r, names)
-        return {'items': rows, 'sync': jobber_sync_state(), 'jobber': jobber_status()}
+        return {'items': rows, 'sync': {**jobber_sync_state(), 'every_min': JOBBER_SYNC_EVERY_MIN},
+                'jobber': jobber_status()}
     finally:
         conn.close()
 
@@ -7030,8 +7033,8 @@ def init_pumps(app, csrf, db_path, *, data_dir, secret_key, website_url, email_e
             if email_enabled:
                 sched.add_job(_safe(scan_mailbox), 'interval', minutes=SCAN_EVERY_MIN, id='pumps_mail_scan',
                               next_run_time=datetime.now() + timedelta(minutes=2))
-            sched.add_job(_safe(_scheduled_jobber_sync), 'interval', hours=6, id='pumps_jobber_sync',
-                          next_run_time=datetime.now() + timedelta(minutes=5))
+            sched.add_job(_safe(_scheduled_jobber_sync), 'interval', minutes=JOBBER_SYNC_EVERY_MIN,
+                          id='pumps_jobber_sync', next_run_time=datetime.now() + timedelta(minutes=2))
             sched.add_job(_safe(_scheduled_hourly), 'interval', hours=1, id='pumps_hourly',
                           next_run_time=datetime.now() + timedelta(minutes=3))
             sched.start()
