@@ -513,6 +513,7 @@ def init_db():
     conn.commit()
     _migrate_old_sheet(conn)
     _backfill_visit_step(conn)
+    _remove_own_email_service_calls(conn)
     conn.close()
 
 
@@ -971,8 +972,9 @@ def _check_bill(conn, case_id, actor='system'):
     elif cmp['state'] == 'no_quote' and not (steps.get('vendor_quote') or {}).get('na') \
             and not (steps.get('bill_checked') or {}).get('na'):
         open_issue(conn, case_id, 'no_quote',
-                   'Bill arrived but there is no quote on file to check it against. Attach the quote, '
-                   'or mark "Quote from vendor" as not needed if this was contract or time-and-materials work.')
+                   f"{case.get('vendor') or 'The vendor'}'s invoice came before their quote - the quote usually "
+                   'follows and is checked against the bill when it arrives. If no quote is coming (contract or '
+                   'time-and-materials work), bill it +30% or mark the quote not needed.')
     return cmp
 
 
@@ -6394,12 +6396,42 @@ def service_call_summary(subject, preview=''):
     return short_name(s or (preview or '').strip().split('\n')[0], 70) or 'Service call'
 
 
+# Subjects of the emails this app sends: the daily email, the diver list, the
+# pay-the-vendor email and approved quotes. Read back from the mailbox they are
+# never a service call.
+OWN_SUBJECTS = re.compile(r'^\s*((re|fw|fwd)\s*:\s*)*(pumps today\b|diver schedule\b|please pay \w+ invoice\b|'
+                          r'approved\s*-\s)', re.I)
+
+
+def from_this_app(sender, subject):
+    own = {a.lower() for a in (CFG.get('mail_from'), dive_settings().get('from')) if a}
+    addr = (re.search(r'[\w.+-]+@[\w.-]+', sender or '') or [None])[0]
+    return bool(OWN_SUBJECTS.search(subject or '')) or bool(addr and addr.lower() in own)
+
+
+def _remove_own_email_service_calls(conn):
+    """Undo service calls opened from the app's own daily email ("Pumps today -
+    N to do") before such emails were ignored. Once."""
+    conn.row_factory = sqlite3.Row
+    if conn.execute("SELECT 1 FROM pump_state WHERE key='own_email_calls_removed'").fetchone():
+        return
+    for c in conn.execute("SELECT id, title FROM pump_cases WHERE source='service_call' AND status='open'").fetchall():
+        if not OWN_SUBJECTS.search(re.sub(r'^Service call - ', '', c['title'] or '')):
+            continue
+        conn.execute("UPDATE pump_cases SET status='cancelled', updated_at=? WHERE id=?", (_now_text(), c['id']))
+        conn.execute("UPDATE pump_todos SET done_at=?, done_by='Pumps' WHERE key=? AND done_at IS NULL",
+                     (_now_text(), f"service-visit:{c['id']}"))
+        _event(conn, 'Pumps', 'cancelled', "Opened by mistake from the app's own daily email", case_id=c['id'])
+    conn.execute("INSERT OR REPLACE INTO pump_state (key, value) VALUES ('own_email_calls_removed', '\"done\"')")
+    conn.commit()
+
+
 def handle_service_call_email(uid, sender, subject, preview, actor='email scan'):
     """A plain email to PO@ about a pump, lake or SCADA at one of our accounts:
     open an item and put a "Service call" visit on the client's ongoing
     maintenance job (or a to-do to add it)."""
     text = f'{subject}\n{preview}'
-    if pump_reports.vendor_for(sender) or not SERVICE_WORDS.search(text):
+    if pump_reports.vendor_for(sender) or not SERVICE_WORDS.search(text) or from_this_app(sender, subject):
         return None
     conn = _conn()
     try:
