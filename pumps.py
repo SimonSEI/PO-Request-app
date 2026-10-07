@@ -988,8 +988,14 @@ def list_cases(conn, status='open', month=None, q=''):
         except ValueError:
             args.append(month[:7] + '%')
     if q:
-        sql += ' AND (title LIKE ? OR client_name LIKE ? OR po_number LIKE ? OR site LIKE ? OR description LIKE ?)'
-        args += [f'%{q}%'] * 5
+        # Names, PO, and every document number: the vendor's quote/bill/work
+        # order, our Jobber quote/invoice, and any filed document's number.
+        q = q.strip().lstrip('#')
+        sql += (' AND (title LIKE ? OR client_name LIKE ? OR po_number LIKE ? OR site LIKE ? OR description LIKE ?'
+                ' OR vendor_quote_number LIKE ? OR vendor_bill_number LIKE ? OR wo_number LIKE ?'
+                ' OR sei_invoice_number LIKE ? OR jobber LIKE ?'
+                ' OR id IN (SELECT case_id FROM pump_docs WHERE doc_number LIKE ? AND case_id IS NOT NULL))')
+        args += [f'%{q}%'] * 9 + [f'%"number": "{q}%', f'%{q}%']
     sql += ' ORDER BY opened_on, id'
     return [_case_dict(r, conn) for r in conn.execute(sql, args).fetchall()]
 
@@ -2265,7 +2271,8 @@ def _link_jobber_items(conn):
         c = hits[0]
         conn.execute('UPDATE pump_jobber_items SET case_id=? WHERE jobber_id=?', (c['id'], it['jobber_id']))
         j = json.loads(c['jobber'] or '{}')
-        j.setdefault(it['kind'], {'id': it['jobber_id'], 'number': it['number'], 'uri': it['web_uri']})
+        j.setdefault(it['kind'], {'id': it['jobber_id'], 'number': it['number'], 'uri': it['web_uri'],
+                                  'status': it['status'], 'total': it['total']})
         conn.execute("UPDATE pump_cases SET jobber=?, jobber_request_made=CASE WHEN COALESCE(jobber_request_made,'')='' "
                      "THEN ? ELSE jobber_request_made END WHERE id=?",
                      (json.dumps(j), _jobber_ref_text(it), c['id']))
@@ -2334,8 +2341,15 @@ def _follow_quotes(conn):
         q = j.get('quote') or {}
         if not q.get('id'):
             continue
-        it = conn.execute('SELECT status, updated_at FROM pump_jobber_items WHERE jobber_id=?', (q['id'],)).fetchone()
-        if not it or it['status'] == q.get('status'):
+        it = conn.execute('SELECT status, updated_at, total FROM pump_jobber_items WHERE jobber_id=?',
+                          (q['id'],)).fetchone()
+        if not it:
+            continue
+        if it['total'] is not None and it['total'] != q.get('total'):
+            q['total'] = it['total']
+            j['quote'] = q
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(j), c['id']))
+        if it['status'] == q.get('status'):
             continue
         q['status'] = it['status']
         j['quote'] = q
@@ -3126,7 +3140,8 @@ def create_draft_quote(doc_id, client_id, property_id, line_items, title='', mes
             cid = doc['case_id']
             case = conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (cid,)).fetchone()
             j = json.loads(case['jobber'] or '{}')
-            j['quote'] = {'id': q.get('id'), 'number': ref['quote_number'], 'uri': ref['quote_uri'], 'status': status}
+            j['quote'] = {'id': q.get('id'), 'number': ref['quote_number'], 'uri': ref['quote_uri'], 'status': status,
+                          'total': total}
             j.setdefault('client', {'id': client_id})
             conn.execute('UPDATE pump_cases SET jobber=?, jobber_client_id=?, jobber_property_id=?, updated_at=? '
                          'WHERE id=?', (json.dumps(j), client_id, property_id, _now_text(), cid))
@@ -4488,7 +4503,8 @@ def _link_item(conn, jobber_id, case_id, actor):
     conn.execute('UPDATE pump_jobber_items SET case_id=? WHERE jobber_id=?', (case_id, jobber_id))
     row = conn.execute('SELECT jobber, jobber_client_id FROM pump_cases WHERE id=?', (case_id,)).fetchone()
     j = json.loads(row['jobber'] or '{}')
-    j[it['kind']] = {'id': it['jobber_id'], 'number': it['number'], 'uri': it['web_uri'], 'status': it['status']}
+    j[it['kind']] = {'id': it['jobber_id'], 'number': it['number'], 'uri': it['web_uri'], 'status': it['status'],
+                     'total': it['total']}
     if it['client_id']:
         j.setdefault('client', {'id': it['client_id'], 'name': it['client_name']})
     conn.execute("UPDATE pump_cases SET jobber=?, jobber_client_id=COALESCE(NULLIF(jobber_client_id, ''), ?), "

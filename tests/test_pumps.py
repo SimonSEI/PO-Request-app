@@ -664,6 +664,26 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(case['stage'], 'assessment')
         self.assertEqual({s['key']: s for s in case['step_list']}['assessment'].get('due'), '2026-10-20')
 
+    def test_find_a_job_by_any_quote_or_invoice_number(self):
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': 'Lift station repair', 'client_name': 'Quail Run', 'vendor': 'Wettech',
+                                       'vendor_quote_number': 'Q-7731', 'vendor_bill_number': '30455',
+                                       'sei_invoice_number': '36999'}, 'test')
+            conn.execute("UPDATE pump_cases SET jobber=? WHERE id=?",
+                         (json.dumps({'quote': {'id': 'Z1', 'number': '9188', 'total': 1235.0}}), cid))
+            conn.execute("INSERT INTO pump_docs (kind, status, vendor, doc_number, case_id) "
+                         "VALUES ('report', 'filed', 'Wettech', 'WO-5512', ?)", (cid,))
+            conn.commit()
+        finally:
+            conn.close()
+        for q in ('Q-7731', '#30455', '36999', '9188', 'WO-5512'):
+            ids = [c['id'] for c in self.c.get('/pumps/api/cases?status=all&q=' + q.replace('#', '%23')).get_json()['cases']]
+            self.assertIn(cid, ids, q)
+        ids = [c['id'] for c in self.c.get('/pumps/api/cases?status=all&q=Z1').get_json()['cases']]
+        self.assertNotIn(cid, ids, "Jobber's internal ids don't match")
+        self.assertEqual(self.case(cid)['jobber']['quote']['total'], 1235.0)
+
     def test_sync_left_running_by_a_restart_reads_as_interrupted(self):
         P._state_set('jobber_sync', {'state': 'running', 'started_at': P._now_text(), 'errors': []})
         st = self.c.get('/pumps/api/jobber/items').get_json()['sync']
