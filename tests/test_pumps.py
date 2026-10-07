@@ -664,6 +664,31 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(case['stage'], 'assessment')
         self.assertEqual({s['key']: s for s in case['step_list']}['assessment'].get('due'), '2026-10-20')
 
+    def test_homeowners_pump_work_in_jobber_is_not_followed(self):
+        """Only our accounts (the sheets) and companies show as new Jobber work;
+        a homeowner (a person in Jobber, not on the sheets) doesn't."""
+        rows = [('H1', 'Pump not starting', 'John Smith', 0),            # homeowner
+                ('H2', 'Pump service call', 'Barrington Cove HOA', 0),   # on the sheets
+                ('H3', 'PO 323 Pump Service', 'Homewood Suites', 1),     # a company
+                ('H4', 'Pump check', 'Jane Doe', None)]                  # not known yet
+        conn = P._conn()
+        try:
+            for jid, title, client, company in rows:
+                conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, job_type, "
+                             "client_name, created_at, category, client_company) VALUES "
+                             "(?, 'job', ?, ?, 'upcoming', 'one_off', ?, '2026-10-07T12:00:00Z', 'pump', ?)",
+                             (jid, jid, title, client, company))
+            conn.commit()
+            shown = {r['jobber_id'] for r in P.untracked_jobber_items(conn)}
+            hidden = {r['jobber_id'] for r in P.untracked_jobber_items(conn, others=True)}
+        finally:
+            conn.close()
+        self.assertEqual(shown & {'H1', 'H2', 'H3', 'H4'}, {'H2', 'H3', 'H4'})
+        self.assertEqual(hidden & {'H1', 'H2', 'H3', 'H4'}, {'H1'})
+        items = {i['jobber_id']: i for i in self.c.get('/pumps/api/jobber/items?open=1&kind=job').get_json()['items']}
+        self.assertFalse(items['H1']['on_sheet'])
+        self.assertTrue(items['H2']['on_sheet'])
+
     def test_email_wettech_asks_for_what_the_job_is_waiting_on(self):
         conn = P._conn()
         try:
