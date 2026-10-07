@@ -664,6 +664,44 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(case['stage'], 'assessment')
         self.assertEqual({s['key']: s for s in case['step_list']}['assessment'].get('due'), '2026-10-20')
 
+    def test_linked_quote_status_is_fetched_by_id(self):
+        """Jobber's search can miss our own quote (it doesn't search titles), so
+        a quote sent to the client still read 'draft'. Linked records are now
+        fetched by id on each sync."""
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': 'Zephyr Pointe - Field service', 'client_name': 'Zephyr Pointe',
+                                       'vendor': 'Wettech'}, 'test')
+            P._set_step(conn, cid, 'vendor_quote', at='2026-10-01')
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(
+                {'quote': {'id': 'Q9146', 'number': '9146', 'status': 'draft', 'total': 1506.69}}), cid))
+            conn.commit()
+        finally:
+            conn.close()
+        calls = []
+
+        def jobber(query, variables=None):
+            calls.append(variables)
+            if 'quote(id' in query:
+                return {'quote': {'id': 'Q9146', 'quoteNumber': 9146, 'quoteStatus': 'awaiting_response',
+                                  'amounts': {'total': 1612.16}, 'updatedAt': '2026-10-06T15:00:00Z'}}
+            return {}
+        real = P.jobber_gql
+        P.jobber_gql = jobber
+        conn = P._conn()
+        try:
+            self.assertEqual(P._refresh_linked_records(conn), [])
+            P._follow_quotes(conn)
+            conn.commit()
+        finally:
+            conn.close()
+            P.jobber_gql = real
+        self.assertIn({'id': 'Q9146'}, calls)
+        case = self.case(cid)
+        self.assertEqual(case['jobber']['quote']['status'], 'awaiting_response')
+        self.assertEqual(case['jobber']['quote']['total'], 1612.16)
+        self.assertEqual(case['stage'], 'client_approved', 'sent to the client: now waiting on their approval')
+
     def test_homeowners_pump_work_in_jobber_is_not_followed(self):
         """Only our accounts (the sheets) and companies show as new Jobber work;
         a homeowner (a person in Jobber, not on the sheets) doesn't."""

@@ -2256,6 +2256,7 @@ def _sync_jobber(full=False, actor='system'):
                               it['approved_at'], it['web_uri'], it['category'], it['po_number'], now,
                               it['client_company']))
             linked = _link_jobber_items(conn)
+            status['errors'] += _refresh_linked_records(conn)
             _follow_invoices(conn)
             approved = _follow_quotes(conn)
             rebuild_scada(conn)
@@ -2291,6 +2292,55 @@ def on_account_sheets(conn, it, names=None):
         if len(core) >= 4 and fuzzy_has(core, text):
             return True
     return False
+
+
+# Fetched by id: the Jobber records our items are linked to. Jobber's search
+# doesn't look at quote titles, so a quote we drafted may never come up in
+# the term search; asking for it by id keeps its status (sent, approved) and
+# total current either way.
+_LINKED_QUERIES = {
+    'quote': ('quote', 'quoteNumber', 'quoteStatus', 'amounts { total }', {'approved', 'converted', 'archived'}),
+    'invoice': ('invoice', 'invoiceNumber', 'invoiceStatus', 'amounts { total }', {'paid', 'voided', 'bad_debt'}),
+    'job': ('job', 'jobNumber', 'jobStatus', 'total', {'archived'}),
+}
+
+
+def _refresh_linked_records(conn):
+    """Update pump_jobber_items for every quote, invoice and job an item is
+    linked to that isn't finished yet - open items, and closed ones still
+    waiting on the client to pay. Returns errors."""
+    errors, want = [], {}
+    for c in conn.execute("SELECT id, status, jobber FROM pump_cases WHERE status != 'cancelled' "
+                          "AND jobber LIKE '%\"id\"%'").fetchall():
+        j = json.loads(c['jobber'] or '{}')
+        for kind, (_, _, _, _, final) in _LINKED_QUERIES.items():
+            rec = j.get(kind) or {}
+            if not rec.get('id') or (rec.get('status') or '') in final:
+                continue
+            if c['status'] != 'open' and kind != 'invoice':
+                continue
+            want[rec['id']] = (kind, c['id'])
+    for jid, (kind, case_id) in want.items():
+        field, num, st, total, _ = _LINKED_QUERIES[kind]
+        try:
+            data = jobber_gql(f'query($id: EncodedId!) {{ {field}(id: $id) {{ id {num} {st} {total} '
+                              f'jobberWebUri updatedAt }} }}', {'id': jid})
+        except JobberError as e:
+            errors.append(f'{kind} {jid}: {e}')
+            continue
+        n = data.get(field)
+        if not n:
+            continue
+        amount = _money(n.get('total') if n.get('total') is not None else (n.get('amounts') or {}).get('total'))
+        conn.execute('''INSERT INTO pump_jobber_items (jobber_id, kind, number, status, total, updated_at, web_uri,
+                          case_id, synced_at) VALUES (?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(jobber_id) DO UPDATE SET status=excluded.status, total=excluded.total,
+                          updated_at=excluded.updated_at, number=excluded.number, synced_at=excluded.synced_at,
+                          case_id=COALESCE(pump_jobber_items.case_id, excluded.case_id)''',
+                     (jid, kind, str(n.get(num) or ''), (n.get(st) or '').lower(), amount, n.get('updatedAt') or '',
+                      n.get('jobberWebUri') or '', case_id, _now_text()))
+        time.sleep(0.1)
+    return errors
 
 
 def untracked_jobber_items(conn, others=False):
