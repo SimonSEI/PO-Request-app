@@ -539,7 +539,7 @@ function renderCase(){
     ${c.vendor_pay.state === 'due' ? `<div class="sec"><div class="issue">💸 Our client has paid the Jobber invoice - ${esc(v)}'s bill needs to be paid.<button class="btn s p" onclick="markVendorPaid(${c.id})">Mark ${esc(v)} paid</button></div></div>` : ''}
     ${issues ? `<div class="sec"><h4>Issues</h4><div style="display:flex;flex-direction:column;gap:8px">${issues}</div></div>` : ''}
     <div class="sec"><h4>Next</h4><div style="display:flex;gap:8px;flex-wrap:wrap">
-      ${c.stage === 'scheduled' ? `<a class="btn p" href="${esc(c.schedule_email)}">✉️ Email ${esc(v)} to schedule</a>` : `<a class="btn" href="${esc(c.schedule_email)}">✉️ Email ${esc(v)}</a>`}
+      <button class="btn ${['assessment','vendor_quote','scheduled','vendor_bill'].includes(c.stage) ? 'p' : ''}" onclick="vendorEmail(${c.id})">✉️ ${esc(({assessment: 'Ask ' + v + ' to assess', vendor_quote: 'Ask ' + v + ' for the quote', scheduled: 'Ask ' + v + ' to schedule', vendor_bill: 'Ask ' + v + ' for the invoice'})[c.stage] || 'Email ' + v)}</button>
       ${c.stage === 'vendor_quote' && !((c.steps || {}).assessment && !c.steps.assessment.na) ? `<button class="btn" onclick="needsVisit()">🔍 ${esc(v)} needs to visit first</button>` : ''}
       <button class="btn" onclick="uploadForCase()">⬆ Add document</button>
       <button class="btn" onclick="addNote()">✎ Add note</button>
@@ -614,6 +614,25 @@ function vendorPayHtml(c){
   if (p.state === 'due') return `<div class="v bad">Due now</div><div class="note">The client has paid us. <a href="#" onclick="event.preventDefault();markVendorPaid(${c.id})">Mark paid</a></div>`;
   if (p.state === 'unpaid') return `<div class="v">Not paid</div><div class="note">Due once the client pays our invoice. <a href="#" onclick="event.preventDefault();markVendorPaid(${c.id})">Mark paid</a></div>`;
   return '<div class="v">—</div><div class="note">No bill yet</div>';
+}
+async function vendorEmail(id){
+  const j = await api('/cases/' + id + '/vendor_email');
+  if (!j.success) { toast(j.error, true); return; }
+  const e = j.email;
+  openModal('Email ' + esc(e.vendor), `
+    <div class="note">Sent from the PO mailbox, so ${esc(e.vendor)}'s reply comes back to it. Edit anything first.</div>
+    <label class="note">To<input type="text" id="vmTo" value="${esc(e.to)}" style="width:100%"></label>
+    <label class="note">Subject<input type="text" id="vmSubject" value="${esc(e.subject)}" style="width:100%"></label>
+    <textarea id="vmBody" style="width:100%;min-height:240px;font:inherit">${esc(e.body)}</textarea>`,
+    `<button class="btn" onclick="closeModal()">Close</button><button class="btn" onclick="navigator.clipboard.writeText(document.getElementById('vmBody').value);toast('Email copied - paste it into Outlook')">Copy email</button><button class="btn p" id="vmSend" onclick="sendVendorEmail(${id})">✉ Send email</button>`);
+}
+async function sendVendorEmail(id){
+  const btn = document.getElementById('vmSend'); btn.disabled = true; btn.textContent = 'Sending…';
+  const j = await api('/cases/' + id + '/vendor_email/send', {method:'POST', body:{to: document.getElementById('vmTo').value, subject: document.getElementById('vmSubject').value, body: document.getElementById('vmBody').value}});
+  btn.disabled = false; btn.textContent = '✉ Send email';
+  if (!j.success) { toast(j.error, true); return; }
+  toast('Sent to ' + j.sent.to); closeModal();
+  if (curCase && curCase.id === id) openCase(id);
 }
 async function payEmail(id){
   const j = await api('/cases/' + id + '/pay_email');

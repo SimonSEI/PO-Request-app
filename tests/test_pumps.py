@@ -664,6 +664,46 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(case['stage'], 'assessment')
         self.assertEqual({s['key']: s for s in case['step_list']}['assessment'].get('due'), '2026-10-20')
 
+    def test_email_wettech_asks_for_what_the_job_is_waiting_on(self):
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': 'Homewood Suites - PO 323 Pump Service', 'client_name': 'Homewood Suites',
+                                       'po_number': '323', 'vendor': 'Wettech'}, 'test')
+            P._set_assessment(conn, cid, '2026-10-13')
+            conn.commit()
+        finally:
+            conn.close()
+
+        def mail():
+            return self.c.get(f'/pumps/api/cases/{cid}/vendor_email').get_json()['email']
+        e = mail()
+        self.assertEqual(e['to'], 'tomm@wettec.biz')
+        self.assertTrue(e['body'].startswith('Hi Tommy,'))
+        self.assertIn('assess', e['body'])
+        self.assertIn('Visit: 2026-10-13', e['body'])
+        self.c.patch(f'/pumps/api/cases/{cid}', json={'steps': {'assessment': '2026-10-13'}})
+        e = mail()
+        self.assertTrue(e['subject'].startswith('Please quote: Homewood Suites - PO 323'), e['subject'])
+        self.assertIn('send us your quote', e['body'])
+        self.c.patch(f'/pumps/api/cases/{cid}', json={'vendor_bill_amount': 410, 'vendor_bill_number': '30501'})
+        e = mail()
+        self.assertIn('the quote that goes with it', e['body'])
+        self.assertIn('Your invoice: #30501', e['body'])
+        # Sent only when Send is clicked, from the PO mailbox, as edited.
+        sent, real = [], P.graph_send
+        P.graph_send = lambda to, subject, html, attachments=None, sender=None: sent.append((to, subject, html))
+        try:
+            self.assertEqual(sent, [])
+            r = self.c.post(f'/pumps/api/cases/{cid}/vendor_email/send',
+                            json={'to': 'tomm@wettec.biz', 'subject': 'Quote please', 'body': 'Hi Tommy,\nQuote please.'})
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            self.assertEqual(sent[0][:2], ('tomm@wettec.biz', 'Quote please'))
+            self.assertIn('Quote please.', sent[0][2])
+            self.assertEqual(self.c.post(f'/pumps/api/cases/{cid}/vendor_email/send', json={'to': ''}).status_code, 400)
+        finally:
+            P.graph_send = real
+        self.assertTrue(any(ev['action'] == 'emailed the vendor' for ev in self.case(cid)['events']))
+
     def test_one_time_fixups_run_once_with_two_workers(self):
         conn = P._conn()
         try:
