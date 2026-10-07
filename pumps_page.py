@@ -264,7 +264,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   </div>
   <div class="scroll"><table class="t"><thead><tr><th>Job</th><th>Where it is</th><th>Vendor</th><th class="num">Vendor quote</th><th>Our quote</th><th class="num">Vendor bill</th><th>Our invoice</th><th>Vendor paid</th><th></th></tr></thead><tbody id="jobsBody"></tbody></table></div>
   <h3 style="margin:18px 0 8px;font-size:14px">New in Jobber - not tracked yet</h3>
-  <div class="note" style="margin-bottom:8px">Open pump, diver, filter and SCADA requests in Jobber. <b>Track</b> follows it here to the invoice; <b>Ignore</b> hides it.</div>
+  <div class="note" style="margin-bottom:8px">Open pump, diver, filter and SCADA work in Jobber for our accounts (the maintenance and lake sheets on the Accounts tab) and other companies - not homeowners. <b>Track</b> follows it here to the invoice; <b>Ignore</b> hides it.</div>
   <div class="scroll" style="max-height:40vh"><table class="t"><thead><tr><th>In Jobber</th><th>Client</th><th>Created</th><th></th></tr></thead><tbody id="jbNewBody"></tbody></table></div>
 </div>
 
@@ -1233,10 +1233,13 @@ async function loadJobs(){
     (s.state === 'running' ? `Syncing Jobber… (started ${esc(s.started_at || '')})` : (s.state === 'failed' || s.state === 'interrupted' ? `<b class="bad">Last sync did not finish</b> - press Sync again · ` : '') + (s.finished_at ? `Last sync ${esc(s.finished_at)}` : 'Not synced yet.')) + ((s.errors || []).length ? ` · <span class="bad" title="${esc(s.errors.join('\n'))}">${s.errors.length} errors</span>` : '');
   clearTimeout(window._syncPoll);
   if (s.state === 'running') window._syncPoll = setTimeout(() => { if (curTab === 'jobs') loadJobs(); }, 5000);
-  document.getElementById('jbNewBody').innerHTML = (ji.items || []).filter(it => !it.case_id && !(it.kind === 'quote' && it.status !== 'approved')).map(it => `<tr>
+  const fresh = (ji.items || []).filter(it => !it.case_id && !(it.kind === 'quote' && it.status !== 'approved'));
+  const others = fresh.filter(it => !it.on_sheet);
+  document.getElementById('jbNewBody').innerHTML = fresh.filter(it => it.on_sheet || window._showOthers).map(it => `<tr>
     <td><span class="note">${esc(it.kind)}</span> <a href="${esc(it.web_uri)}" target="_blank" rel="noopener">${it.number ? '#' + esc(it.number) + ' ' : ''}${esc(it.title)}</a> ${catChip(it.category)}</td>
     <td>${esc(it.client_name)}<div class="note">${esc(it.property_label)}</div></td><td>${esc(d10(it.created_at))}</td>
     <td style="white-space:nowrap"><button class="btn s p" onclick="jobberAct('${esc(it.jobber_id)}','track')">Track</button> <button class="btn s" onclick="jobberLink('${esc(it.jobber_id)}')">Add to job…</button> <button class="btn s" onclick="jobberAct('${esc(it.jobber_id)}','ignore')">Ignore</button></td></tr>`).join('') || `<tr><td colspan="4" class="empty">${JOBBER_OK ? 'Nothing new.' : 'Connect Jobber to see pump work.'}</td></tr>`;
+  if (others.length) document.getElementById('jbNewBody').insertAdjacentHTML('beforeend', `<tr><td colspan="4" class="note"><a href="#" onclick="event.preventDefault();window._showOthers=!window._showOthers;loadJobs()">${window._showOthers ? 'Hide' : 'Show'} ${others.length} homeowner jobs</a> - they're done in Jobber and not followed here unless you Track one.</td></tr>`);
 }
 async function jobberAct(id, action){ const j = await api('/jobber/items/' + encodeURIComponent(id), {method:'POST', body:{action}}); if (!j.success) { toast(j.error, true); return; } loadToday(); if (curTab === 'jobs') loadJobs(); if (action === 'track' && j.case_id) openCase(j.case_id); }
 async function jobberLink(id){ const n = prompt('Job number in Pumps to add it to:'); if (!n) return; const j = await api('/jobber/items/' + encodeURIComponent(id), {method:'POST', body:{action:'link', case_id: parseInt(n)}}); if (j.success) loadJobs(); else toast(j.error, true); }

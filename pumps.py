@@ -458,6 +458,11 @@ def init_db():
                   case_id INTEGER,
                   ignored INTEGER DEFAULT 0,
                   synced_at TEXT)''')
+    try:
+        # 1 = the Jobber client is a company, 0 = a person, NULL = not known yet.
+        c.execute('ALTER TABLE pump_jobber_items ADD COLUMN client_company INTEGER')
+    except sqlite3.OperationalError:
+        pass
     c.execute('''CREATE TABLE IF NOT EXISTS pump_state (key TEXT PRIMARY KEY, value TEXT)''')
     init_dive_tables(c)
     init_todo_table(c)
@@ -2114,11 +2119,11 @@ def _gql_tolerant(make_query, spec, variables, required=()):
 _ADDR = ('address', ['street1', 'street2', 'city'])
 SYNC_SPECS = {
     'requests': (['id', 'title', 'requestStatus', 'createdAt', 'updatedAt', 'jobberWebUri',
-                  ('client', ['id', 'name']), ('property', ['id', _ADDR])], 'requestStatus'),
+                  ('client', ['id', 'name', 'isCompany']), ('property', ['id', _ADDR])], 'requestStatus'),
     'quotes': (['id', 'quoteNumber', 'title', 'quoteStatus', 'createdAt', 'updatedAt', 'jobberWebUri',
-                ('amounts', ['total']), ('client', ['id', 'name']), ('property', ['id', _ADDR])], 'quoteStatus'),
+                ('amounts', ['total']), ('client', ['id', 'name', 'isCompany']), ('property', ['id', _ADDR])], 'quoteStatus'),
     'jobs': (['id', 'jobNumber', 'title', 'jobStatus', 'jobType', 'createdAt', 'updatedAt', 'startAt',
-              'completedAt', 'jobberWebUri', 'total', ('client', ['id', 'name']), ('property', ['id', _ADDR])],
+              'completedAt', 'jobberWebUri', 'total', ('client', ['id', 'name', 'isCompany']), ('property', ['id', _ADDR])],
              'jobStatus'),
     'invoices': (['id', 'invoiceNumber', 'subject', 'invoiceStatus', 'createdAt', 'updatedAt', 'issuedDate',
                   'jobberWebUri', ('amounts', ['total']), ('client', ['id', 'name'])], 'invoiceStatus'),
@@ -2209,6 +2214,8 @@ def _sync_jobber(full=False, actor='system'):
                             'job_type': (n.get('jobType') or '').lower(),
                             'client_id': (n.get('client') or {}).get('id', ''),
                             'client_name': (n.get('client') or {}).get('name', ''),
+                            'client_company': (None if 'isCompany' not in (n.get('client') or {})
+                                               else int(bool(n['client']['isCompany']))),
                             'property_id': (n.get('property') or {}).get('id', ''),
                             'property_label': plabel,
                             'total': _money(n.get('total') if n.get('total') is not None else (n.get('amounts') or {}).get('total')),
@@ -2230,8 +2237,9 @@ def _sync_jobber(full=False, actor='system'):
             for it in seen.values():
                 conn.execute('''INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, job_type,
                                   client_id, client_name, property_id, property_label, total, created_at, updated_at,
-                                  start_at, completed_at, approved_at, web_uri, category, po_number, synced_at)
-                                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                  start_at, completed_at, approved_at, web_uri, category, po_number, synced_at,
+                                  client_company)
+                                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                                 ON CONFLICT(jobber_id) DO UPDATE SET kind=excluded.kind, number=excluded.number,
                                   title=excluded.title, status=excluded.status, job_type=excluded.job_type,
                                   client_id=excluded.client_id, client_name=excluded.client_name,
@@ -2239,11 +2247,12 @@ def _sync_jobber(full=False, actor='system'):
                                   total=excluded.total, updated_at=excluded.updated_at, start_at=excluded.start_at,
                                   completed_at=excluded.completed_at, web_uri=excluded.web_uri,
                                   category=excluded.category, po_number=excluded.po_number,
-                                  synced_at=excluded.synced_at''',
+                                  synced_at=excluded.synced_at, client_company=excluded.client_company''',
                              (it['jobber_id'], it['kind'], it['number'], it['title'], it['status'], it['job_type'],
                               it['client_id'], it['client_name'], it['property_id'], it['property_label'],
                               it['total'], it['created_at'], it['updated_at'], it['start_at'], it['completed_at'],
-                              it['approved_at'], it['web_uri'], it['category'], it['po_number'], now))
+                              it['approved_at'], it['web_uri'], it['category'], it['po_number'], now,
+                              it['client_company']))
             linked = _link_jobber_items(conn)
             _follow_invoices(conn)
             approved = _follow_quotes(conn)
@@ -2266,16 +2275,35 @@ def _sync_jobber(full=False, actor='system'):
         return status
 
 
-def untracked_jobber_items(conn):
+def on_account_sheets(conn, it, names=None):
+    """Whether a Jobber record is work we follow: one of our accounts (the
+    maintenance and lake sheets, site names, SCADA accounts), or any client
+    Jobber has as a company (a hotel, an HOA not on the sheets yet). A
+    homeowner's pump work - a Jobber client who is a person and not on the
+    sheets - is done in Jobber but not followed here."""
+    if it.get('category') == 'scada' or it.get('client_company') != 0:
+        return True
+    text = ' '.join(x for x in (it.get('client_name'), it.get('title'), it.get('property_label')) if x)
+    for n in (names if names is not None else _account_names(conn)):
+        core = _core_name(n)
+        if len(core) >= 4 and fuzzy_has(core, text):
+            return True
+    return False
+
+
+def untracked_jobber_items(conn, others=False):
     """Open pump requests, approved quotes and one-off jobs made in Jobber that
-    no item here follows yet and nobody has ignored. A quote still out with the
+    no item here follows yet and nobody has ignored - for our accounts only
+    (others=True: just the ones that aren't). A quote still out with the
     client needs nothing from us until it is approved."""
     rows = [dict(r) for r in conn.execute(
         "SELECT * FROM pump_jobber_items WHERE kind IN ('request','quote','job') AND case_id IS NULL "
         "AND ignored=0 ORDER BY created_at DESC")]
-    return [r for r in rows if r['status'] in OPEN_STATUSES[r['kind']]
+    rows = [r for r in rows if r['status'] in OPEN_STATUSES[r['kind']]
             and not (r['kind'] == 'job' and r['job_type'] == 'recurring')
             and not (r['kind'] == 'quote' and r['status'] != 'approved')]
+    names = _account_names(conn)
+    return [r for r in rows if on_account_sheets(conn, r, names) != others]
 
 
 def _link_jobber_items(conn):
@@ -3985,7 +4013,12 @@ def h_jobber_items(actor):
                     and not (r['kind'] == 'job' and r['job_type'] == 'recurring')]
         if request.args.get('show_ignored') != '1':
             rows = [r for r in rows if not r['ignored']]
-        return {'items': rows[:1000], 'sync': jobber_sync_state(), 'jobber': jobber_status()}
+        rows = rows[:1000]
+        names = _account_names(conn)
+        for r in rows:
+            if not r['case_id']:
+                r['on_sheet'] = on_account_sheets(conn, r, names)
+        return {'items': rows, 'sync': jobber_sync_state(), 'jobber': jobber_status()}
     finally:
         conn.close()
 
