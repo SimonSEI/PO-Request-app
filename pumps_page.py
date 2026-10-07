@@ -341,7 +341,7 @@ function catChip(c){ const m = {scada:'v', diver:'b', filter:'b', maintenance:'g
 function stageText(c){
   const v = c.vendor || 'Wettech', st = c.steps || {};
   const hasBill = c.vendor_bill_amount != null || c.vendor_bill_total != null || !!(st.vendor_bill || {}).at;
-  if (c.stage === 'vendor_quote' && hasBill) return 'Bill came with no quote';
+  if (c.stage === 'vendor_quote' && hasBill) return `Bill in · waiting on ${v}'s quote`;
   return ({
     assessment: `Waiting on ${v} to assess` + ((st.assessment || {}).due ? ' · ' + st.assessment.due : ''),
     vendor_quote: `Waiting on quote from ${v}`,
@@ -357,7 +357,7 @@ function stageText(c){
     done: 'Done',
   })[c.stage] || stepLabel(c.stage, v);
 }
-function stageChip(c){ if (c.status === 'closed') return '<span class="chip g">closed</span>'; if (c.status === 'cancelled') return '<span class="chip">cancelled</span>'; const t = stageText(c), red = (c.open_issues && c.open_issues.length) || t === 'Bill came with no quote'; return `<span class="chip ${red ? 'r' : /^Waiting/.test(t) ? '' : 'b'}">${esc(t)}</span>`; }
+function stageChip(c){ if (c.status === 'closed') return '<span class="chip g">closed</span>'; if (c.status === 'cancelled') return '<span class="chip">cancelled</span>'; const t = stageText(c), red = (c.open_issues || []).some(i => i.kind !== 'no_quote'); return `<span class="chip ${red ? 'r' : /^Waiting/.test(t) ? '' : 'b'}">${esc(t)}</span>`; }
 function kindChip(k){ const m = {quote:'b', bill:'a', report:'g', other:''}; return `<span class="chip ${m[k]||''}">${esc(k)}</span>`; }
 
 // ── tabs ───────────────────────────────────────────────
@@ -433,7 +433,7 @@ function todoItem(tag, cls, title, sub, open, buttons){
   return `<div class="row" onclick="${open}"><div class="main"><div class="tt"><span class="chip ${cls}">${tag}</span> ${title}</div>${sub ? `<div class="sub">${sub}</div>` : ''}${buttons ? `<div class="act" onclick="event.stopPropagation()">${buttons}</div>` : ''}</div></div>`;
 }
 function caseTitle(c){ return esc(c.title || c.client_name || 'Item ' + c.id); }
-function caseSub(c, extra){ return esc([c.client_name, c.site].filter(Boolean).join(' · ')) + (c.po_number ? ' · PO ' + esc(c.po_number) : '') + (extra ? ' · ' + extra : '') + (c.idle_days >= 7 ? ` · <b class="warn">${c.idle_days}d idle</b>` : ''); }
+function caseSub(c, extra){ return esc([c.client_name, c.site].filter(Boolean).join(' · ')) + (c.po_number ? ' · PO ' + esc(c.po_number) : '') + jobberNo(c) + (extra ? ' · ' + extra : '') + (c.idle_days >= 7 ? ` · <b class="warn">${c.idle_days}d idle</b>` : ''); }
 async function loadToday(){
   const j = await api('/summary');
   const el = document.getElementById('todoList');
@@ -445,7 +445,7 @@ async function loadToday(){
   const open = c => `openCase(${c.id})`;
   const doDone = c => `<button class="btn s" onclick="caseDone(${c.id})">✓ Done</button>`;
   const urgent = [], todo = [], waiting = [];
-  q.issues.forEach(i => urgent.push(todoItem(i.kind === 'no_quote' ? 'No quote' : 'Fix', 'r', esc(i.title || i.client_name || 'Item ' + i.case_id), esc(i.message), `openCase(${i.case_id})`,
+  q.issues.forEach(i => (i.kind === 'no_quote' ? waiting : urgent).push(todoItem(i.kind === 'no_quote' ? 'Quote after bill' : 'Fix', i.kind === 'no_quote' ? '' : 'r', esc(i.title || i.client_name || 'Item ' + i.case_id), esc(i.message), `openCase(${i.case_id})`,
     (i.kind === 'no_quote' ? `<button class="btn s p" onclick="billAnyway(${i.id})">Bill it +30%</button>` : '') + `<button class="btn s" onclick="resolveIssue(${i.id})">Resolved</button>`)));
   q.vendor_bills_to_pay.forEach(c => urgent.push(todoItem('Pay ' + esc(c.vendor || 'Wettech'), 'r', caseTitle(c), `${esc(c.vendor || 'Wettech')} bill ${c.vendor_bill_number ? '#' + esc(c.vendor_bill_number) + ' · ' : ''}${money(c.vendor_bill_total ?? c.vendor_bill_amount)} · the client paid our invoice${c.sei_invoice_number ? ' #' + esc(c.sei_invoice_number) : ''}${(c.pay_email || {}).sent ? `<br><b class="ok">✓ Emailed Christian ${esc(c.pay_email.at.slice(0, 16))}</b>` : (c.pay_email || {}).error ? `<br><b class="bad">Email not sent: ${esc(c.pay_email.error)}</b>` : ''}`, open(c),
     `<button class="btn s p" onclick="sendPayEmail(${c.id}, this)">✉ ${(c.pay_email || {}).sent ? 'Send again' : 'Send email'}</button><button class="btn s" onclick="payEmail(${c.id})">Preview</button><button class="btn s" onclick="markVendorPaid(${c.id})">Mark paid</button>`)));
@@ -1189,6 +1189,9 @@ function jobberLinkHtml(c){
   }
   return out.join(' · ');
 }
+// The Jobber job (or, before there is one, the request) the item follows.
+function jobberNo(c){ const J = c.jobber || {}, r = (J.job && J.job.number) ? ['job', J.job] : (J.request && J.request.number) ? ['request', J.request] : null;
+  return r ? ` · <a href="${esc(r[1].uri || '#')}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ${r[0]} #${esc(r[1].number)} ↗</a>` : ''; }
 // A document's number with its amount, e.g. "#Q-5521 $950.00".
 function numAmt(num, amt){ const n = num ? `<span class="note">#${esc(String(num).replace(/^#/, ''))}</span>` : ''; const a = amt != null ? `<b>${money(amt)}</b>` : ''; return [n, a].filter(Boolean).join(' '); }
 async function loadJobs(){
@@ -1198,7 +1201,7 @@ async function loadJobs(){
   const ref = r => r ? (r.uri ? `<a href="${esc(r.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">#${esc(r.number || '')} ↗</a>` : (r.number ? '#' + esc(r.number) : '')) : '';
   document.getElementById('jobsBody').innerHTML = (j.cases || []).map(c => { const jb = c.jobber || {}, vp = c.vendor_pay || {};
     return `<tr class="click" onclick="openCase(${c.id})">
-    <td><b>${esc(c.title || c.client_name)}</b><div class="note">${esc([c.client_name, c.site].filter(Boolean).join(' · '))}${c.po_number ? ' · PO ' + esc(c.po_number) : ''}</div></td>
+    <td><b>${esc(c.title || c.client_name)}</b><div class="note">${esc([c.client_name, c.site].filter(Boolean).join(' · '))}${c.po_number ? ' · PO ' + esc(c.po_number) : ''}${jobberNo(c)}</div></td>
     <td>${stageChip(c)}${c.idle_days >= 7 && c.status === 'open' ? ` <span class="chip a">${c.idle_days}d idle</span>` : ''}</td>
     <td>${esc(c.vendor)}</td><td>${numAmt(c.vendor_quote_number, c.vendor_quote_amount ?? c.vendor_quote_total)}</td>
     <td>${ref(jb.quote)}${jb.quote && jb.quote.total != null ? ' <b>' + money(jb.quote.total) + '</b>' : ''}${jb.quote && jb.quote.status ? ` <span class="note">${esc(jb.quote.status.replace(/_/g, ' '))}</span>` : ''}</td>

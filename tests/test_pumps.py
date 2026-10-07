@@ -664,6 +664,37 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(case['stage'], 'assessment')
         self.assertEqual({s['key']: s for s in case['step_list']}['assessment'].get('due'), '2026-10-20')
 
+    def test_the_apps_own_emails_are_not_service_calls(self):
+        """The daily email ("Pumps today - 1 to do") names accounts and says
+        "pump"; read back from the PO mailbox it must not open a service call."""
+        for subject in ('Pumps today - 1 to do', 'FW: Pumps today - nothing urgent', 'Please pay Wettech invoice #29110',
+                        'Diver schedule - October 2026 - Stahlman-England'):
+            self.assertTrue(P.from_this_app('someone@example.com', subject), subject)
+        self.assertFalse(P.from_this_app('manager@example.com', 'Pump at the front lake is down'))
+        P.CFG['mail_from'], old = 'po@example.com', P.CFG.get('mail_from')
+        try:
+            self.assertTrue(P.from_this_app('PO <po@example.com>', 'anything'))
+            self.assertIsNone(P.handle_service_call_email('u-own-1', 'po@example.com', 'Pumps today - 2 to do',
+                                                          'Barrington Cove pump station - waiting on quote'))
+        finally:
+            P.CFG['mail_from'] = old
+        # Ones opened before this was fixed are cancelled once, with their to-do.
+        conn = P._conn()
+        try:
+            bad = P.create_case(conn, {'title': 'Service call - Pumps today - 1 to do', 'client_name': 'Barrington Cove'},
+                                'email scan', source='service_call')
+            real = P.create_case(conn, {'title': 'Service call - Front lake pump down', 'client_name': 'Barrington Cove'},
+                                 'email scan', source='service_call')
+            P.add_todo(conn, f'service-visit:{bad}', 'Add a "Service call - Pumps today - 1 to do" visit')
+            conn.execute("DELETE FROM pump_state WHERE key='own_email_calls_removed'")
+            conn.commit()
+            P._remove_own_email_service_calls(conn)
+            self.assertEqual(conn.execute('SELECT status FROM pump_cases WHERE id=?', (bad,)).fetchone()[0], 'cancelled')
+            self.assertEqual(conn.execute('SELECT status FROM pump_cases WHERE id=?', (real,)).fetchone()[0], 'open')
+            self.assertIsNotNone(conn.execute('SELECT done_at FROM pump_todos WHERE key=?', (f'service-visit:{bad}',)).fetchone()[0])
+        finally:
+            conn.close()
+
     def test_find_a_job_by_any_quote_or_invoice_number(self):
         conn = P._conn()
         try:
