@@ -260,7 +260,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
     <input type="text" id="jbSearch" placeholder="Find a job, client, PO, quote or invoice #…" oninput="clearTimeout(window._jq);window._jq=setTimeout(loadJobs,300)" style="width:240px">
     <select id="jbShow" onchange="loadJobs()"><option value="open">Open</option><option value="closed">Done</option><option value="all">All</option></select>
     <div class="sp"></div><span id="syncInfo" class="note"></span>
-    <button class="btn" onclick="syncJobber()">↻ Sync Jobber</button>
+    <button class="btn s" title="It syncs on its own - this just does it now" onclick="syncJobber()">↻ Sync now</button>
   </div>
   <div class="scroll"><table class="t"><thead><tr><th>Job</th><th>Where it is</th><th>Vendor</th><th class="num">Vendor quote</th><th>Our quote</th><th class="num">Vendor bill</th><th>Our invoice</th><th>Vendor paid</th><th></th></tr></thead><tbody id="jobsBody"></tbody></table></div>
   <h3 style="margin:18px 0 8px;font-size:14px">New in Jobber - not tracked yet</h3>
@@ -1230,7 +1230,7 @@ async function loadJobs(){
     <td style="white-space:nowrap">${jb.job && jb.job.uri ? `<a class="btn s" href="${esc(jb.job.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ↗</a> ` : ''}${c.status === 'open' ? `<button class="btn s" title="Mark done" onclick="event.stopPropagation();caseDone(${c.id})">✓ Done</button> <button class="btn s" title="Remove" onclick="event.stopPropagation();caseRemove(${c.id})">✕</button>` : `<button class="btn s" onclick="event.stopPropagation();caseReopen(${c.id})">↺ Reopen</button>`}</td></tr>`; }).join('') || '<tr><td colspan="9" class="empty">No jobs.</td></tr>';
   const s = ji.sync || {};
   document.getElementById('syncInfo').innerHTML = !JOBBER_OK ? '<b class="warn">Jobber is not connected.</b>' :
-    (s.state === 'running' ? `Syncing Jobber… (started ${esc(s.started_at || '')})` : (s.state === 'failed' || s.state === 'interrupted' ? `<b class="bad">Last sync did not finish</b> - press Sync again · ` : '') + (s.finished_at ? `Last sync ${esc(s.finished_at)}` : 'Not synced yet.')) + ((s.errors || []).length ? ` · <span class="bad" title="${esc(s.errors.join('\n'))}">${s.errors.length} errors</span>` : '');
+    (s.state === 'running' ? `Syncing Jobber… (started ${esc(s.started_at || '')})` : (s.state === 'failed' || s.state === 'interrupted' ? `<b class="bad">Last sync did not finish</b> - it runs again on its own · ` : '') + (s.finished_at ? `Synced with Jobber ${esc(s.finished_at.slice(11, 16))}` : 'Not synced yet.') + (s.every_min ? ` · syncs on its own every ${s.every_min} min` : '')) + ((s.errors || []).length ? ` · <span class="bad" title="${esc(s.errors.join('\n'))}">${s.errors.length} errors</span>` : '');
   clearTimeout(window._syncPoll);
   if (s.state === 'running') window._syncPoll = setTimeout(() => { if (curTab === 'jobs') loadJobs(); }, 5000);
   const fresh = (ji.items || []).filter(it => !it.case_id && !(it.kind === 'quote' && it.status !== 'approved'));
@@ -1272,7 +1272,7 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (!docum
   else if (h.startsWith('doc-')) { loadToday(); loadJobs(); openDoc(parseInt(h.slice(4))); }
   if (['jobs','scada','accounts','reports'].includes(h)) showTab(h); else if (!h.startsWith('item-') && !h.startsWith('doc-')) showTab('jobs');
   if (!h || ['jobs','scada','accounts','reports'].includes(h)) loadToday();
-  setInterval(() => { if (document.getElementById('drawerWrap').classList.contains('hide') && document.getElementById('modalWrap').classList.contains('hide')) loadToday(); }, 60000);
+  setInterval(() => { if (document.getElementById('drawerWrap').classList.contains('hide') && document.getElementById('modalWrap').classList.contains('hide')) { loadToday(); if (curTab === 'jobs') loadJobs(); } }, 60000);
 })();
 </script>
 </body>
