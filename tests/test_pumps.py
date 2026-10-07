@@ -664,6 +664,26 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(case['stage'], 'assessment')
         self.assertEqual({s['key']: s for s in case['step_list']}['assessment'].get('due'), '2026-10-20')
 
+    def test_one_time_fixups_run_once_with_two_workers(self):
+        conn = P._conn()
+        try:
+            conn.execute("DELETE FROM pump_state WHERE key='claim-test'")
+            conn.commit()
+            self.assertTrue(P._claim_once(conn, 'claim-test'))
+            self.assertFalse(P._claim_once(conn, 'claim-test'), 'the second worker must not run it again')
+            cid = P.create_case(conn, {'title': 'Twice noted', 'client_name': 'X'}, 'test')
+            for _ in range(2):
+                P._event(conn, 'Pumps', 'waiting on the vendor visit', 'Made in Jobber before any quote', case_id=cid)
+            P._event(conn, 'Pumps', 'waiting on the vendor visit', 'A different note', case_id=cid)
+            conn.execute("DELETE FROM pump_state WHERE key='startup_events_deduped'")
+            conn.commit()
+            P._dedupe_startup_events(conn)
+            rows = conn.execute("SELECT detail FROM pump_events WHERE case_id=? AND action='waiting on the vendor visit'",
+                                (cid,)).fetchall()
+            self.assertEqual(sorted(r[0] for r in rows), ['A different note', 'Made in Jobber before any quote'])
+        finally:
+            conn.close()
+
     def test_the_apps_own_emails_are_not_service_calls(self):
         """The daily email ("Pumps today - 1 to do") names accounts and says
         "pump"; read back from the PO mailbox it must not open a service call."""

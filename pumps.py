@@ -514,7 +514,29 @@ def init_db():
     _migrate_old_sheet(conn)
     _backfill_visit_step(conn)
     _remove_own_email_service_calls(conn)
+    _dedupe_startup_events(conn)
     conn.close()
+
+
+def _claim_once(conn, key):
+    """True for exactly one caller per key, ever. The app runs two workers that
+    start together; a one-time fix-up claims its key before doing anything, so
+    only one of them runs it."""
+    cur = conn.execute('INSERT OR IGNORE INTO pump_state (key, value) VALUES (?,?)', (key, json.dumps(_now_text())))
+    conn.commit()
+    return cur.rowcount == 1
+
+
+def _dedupe_startup_events(conn):
+    """Both workers ran the Oct 2026 fix-ups at once, so their history notes
+    were written twice. Keep the first of each. Once."""
+    if not _claim_once(conn, 'startup_events_deduped'):
+        return
+    conn.execute('''DELETE FROM pump_events WHERE actor='Pumps' AND action IN ('waiting on the vendor visit', 'cancelled')
+                    AND id NOT IN (SELECT MIN(id) FROM pump_events WHERE actor='Pumps'
+                                   AND action IN ('waiting on the vendor visit', 'cancelled')
+                                   GROUP BY case_id, action, detail)''')
+    conn.commit()
 
 
 def _backfill_visit_step(conn):
@@ -523,7 +545,7 @@ def _backfill_visit_step(conn):
     vendor has come in yet, they are really waiting on the vendor's visit:
     switch that step on with the Jobber visit date, once."""
     conn.row_factory = sqlite3.Row
-    if conn.execute("SELECT 1 FROM pump_state WHERE key='visit_step_backfill'").fetchone():
+    if not _claim_once(conn, 'visit_step_backfill'):
         return
     for c in conn.execute("SELECT * FROM pump_cases WHERE status='open' AND source='jobber'").fetchall():
         steps = json.loads(c['steps'] or '{}')
@@ -547,7 +569,6 @@ def _backfill_visit_step(conn):
                'Made in Jobber before any quote: waiting on Wettech to go out and assess' + (f' ({due})' if due else ''),
                case_id=c['id'])
         _refresh_case(conn, c['id'])
-    conn.execute("INSERT OR REPLACE INTO pump_state (key, value) VALUES ('visit_step_backfill', '\"done\"')")
     conn.commit()
 
 
@@ -6413,7 +6434,7 @@ def _remove_own_email_service_calls(conn):
     """Undo service calls opened from the app's own daily email ("Pumps today -
     N to do") before such emails were ignored. Once."""
     conn.row_factory = sqlite3.Row
-    if conn.execute("SELECT 1 FROM pump_state WHERE key='own_email_calls_removed'").fetchone():
+    if not _claim_once(conn, 'own_email_calls_removed'):
         return
     for c in conn.execute("SELECT id, title FROM pump_cases WHERE source='service_call' AND status='open'").fetchall():
         if not OWN_SUBJECTS.search(re.sub(r'^Service call - ', '', c['title'] or '')):
@@ -6422,7 +6443,6 @@ def _remove_own_email_service_calls(conn):
         conn.execute("UPDATE pump_todos SET done_at=?, done_by='Pumps' WHERE key=? AND done_at IS NULL",
                      (_now_text(), f"service-visit:{c['id']}"))
         _event(conn, 'Pumps', 'cancelled', "Opened by mistake from the app's own daily email", case_id=c['id'])
-    conn.execute("INSERT OR REPLACE INTO pump_state (key, value) VALUES ('own_email_calls_removed', '\"done\"')")
     conn.commit()
 
 
