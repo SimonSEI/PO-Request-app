@@ -3724,6 +3724,80 @@ def vendor_pay_email(conn, case_id, signer=''):
             'bill_file': bill['file_name'] if bill else ''}
 
 
+def vendor_email(conn, case_id, signer=''):
+    """An email to the vendor that asks for what the job is waiting on: the
+    visit, the quote, a date, or the invoice."""
+    row = conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+    if not row:
+        return None
+    c = _case_dict(row)
+    vendor = c.get('vendor') or 'Wettech'
+    name, email = _vendor_contact(vendor)
+    stage = c.get('stage') or _stage(c.get('steps') or {}, c.get('status'))
+    has_bill = c.get('vendor_bill_amount') is not None or c.get('vendor_bill_total') is not None
+    where = c.get('client_name') or c.get('title') or ''
+    asks = {
+        'assessment': ('Please assess', 'Please go out and assess the following and send us your quote for the work:'),
+        'vendor_quote': (('Quote for your invoice' if has_bill else 'Please quote'),
+                         ('We have your invoice for the job below. Please send us the quote that goes with it:'
+                          if has_bill else 'Please send us your quote for the following:')),
+        'scheduled': ('Please schedule', 'The client has approved this work. Please schedule it and let us know the date:'),
+        'work_done': ('Work status', 'Please let us know when this work will be (or was) done:'),
+        'vendor_bill': ('Please invoice', 'Please send us your invoice for the following work:'),
+    }
+    subj, ask = asks.get(stage, ('Re', 'About the following job:'))
+    job = ((c.get('jobber') or {}).get('job') or {}).get('number')
+    lines = [f'Hi {name},', '', ask, '',
+             f"Customer: {c.get('client_name') or ''}",
+             *([f"Location: {c['site']}"] if c.get('site') else []),
+             *([f"PO: {c['po_number']}"] if c.get('po_number') else []),
+             *([f"Your quote: #{c['vendor_quote_number']}"] if c.get('vendor_quote_number') else []),
+             *([f"Your invoice: #{c['vendor_bill_number']}"] if c.get('vendor_bill_number') else []),
+             *([f"Visit: {(c.get('steps') or {}).get('assessment', {}).get('due')}"]
+               if stage == 'assessment' and (c.get('steps') or {}).get('assessment', {}).get('due') else []),
+             f"Work: {c.get('description') or c.get('title') or ''}", '',
+             'Thank you,', signer or 'Stahlman-England Irrigation']
+    return {'to': email, 'vendor': vendor, 'stage': stage,
+            'subject': f"{subj}: {where}" + (f" - PO {c['po_number']}" if c.get('po_number') else '')
+                       + (f' (our job #{job})' if job else ''),
+            'body': '\n'.join(lines)}
+
+
+@api('/cases/<int:case_id>/vendor_email')
+def h_vendor_email(actor, case_id):
+    conn = _conn()
+    try:
+        e = vendor_email(conn, case_id, actor if actor != BOT else '')
+        return ({'success': False, 'error': 'Not found'}, 404) if not e else {'email': e}
+    finally:
+        conn.close()
+
+
+@api('/cases/<int:case_id>/vendor_email/send', methods=('POST',))
+def h_vendor_email_send(actor, case_id):
+    """Send it from the PO mailbox when someone clicks Send - so the vendor's
+    reply lands in the mailbox the app reads."""
+    import html as _html
+    if actor == BOT:
+        return {'success': False, 'error': 'Only the office can send this'}, 403
+    data = _json()
+    to, subject, body = (str(data.get(k) or '').strip() for k in ('to', 'subject', 'body'))
+    if not (to and subject and body):
+        return {'success': False, 'error': 'To, subject and message are all needed'}, 400
+    try:
+        graph_send(to, subject[:255], '<div style="font-family:Arial,sans-serif;font-size:14px">'
+                   + '<br>'.join(_html.escape(x) for x in body[:20000].split('\n')) + '</div>')
+    except Exception as e:
+        return {'success': False, 'error': f'Not sent - {e}'}, 502
+    conn = _conn()
+    try:
+        _event(conn, actor, f'emailed the vendor', f'To {to}: {subject}', case_id=case_id)
+        conn.commit()
+    finally:
+        conn.close()
+    return {'sent': {'to': to, 'subject': subject}}
+
+
 def send_vendor_pay_email(case_id, actor, body=None):
     """Send the pay-the-vendor email to Christian when someone in the office
     clicks Send, from the PO mailbox, with the vendor's bill attached."""
