@@ -237,7 +237,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 <aside class="side" id="side">
   <div class="hd">
     <h2>✅ To do <span class="chip" id="sideCount"></span><span class="sp" style="flex:1"></span><span class="note" id="sideOpen" style="font-weight:500"></span></h2>
-    <input type="text" id="caseSearch" placeholder="Find a job…" oninput="searchCases(this.value)">
+    <input type="text" id="caseSearch" placeholder="Find a job, PO, quote or invoice #…" oninput="searchCases(this.value)">
     <div style="display:flex;gap:6px">
       <select id="uploadKind" title="What the files are" style="flex:1;min-width:0"><option value="">Upload: let the app decide</option><option value="quote">Upload quotes</option><option value="bill">Upload bills</option><option value="report">Upload reports</option></select>
       <button class="btn" onclick="document.getElementById('fileIn').click()">⬆ Upload</button>
@@ -257,7 +257,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 <!-- JOBS -->
 <div class="panel" id="p-jobs">
   <div class="toolbar">
-    <input type="text" id="jbSearch" placeholder="Find a job, client or PO…" oninput="clearTimeout(window._jq);window._jq=setTimeout(loadJobs,300)" style="width:240px">
+    <input type="text" id="jbSearch" placeholder="Find a job, client, PO, quote or invoice #…" oninput="clearTimeout(window._jq);window._jq=setTimeout(loadJobs,300)" style="width:240px">
     <select id="jbShow" onchange="loadJobs()"><option value="open">Open</option><option value="closed">Done</option><option value="all">All</option></select>
     <div class="sp"></div><span id="syncInfo" class="note"></span>
     <button class="btn" onclick="syncJobber()">↻ Sync Jobber</button>
@@ -1189,6 +1189,8 @@ function jobberLinkHtml(c){
   }
   return out.join(' · ');
 }
+// A document's number with its amount, e.g. "#Q-5521 $950.00".
+function numAmt(num, amt){ const n = num ? `<span class="note">#${esc(String(num).replace(/^#/, ''))}</span>` : ''; const a = amt != null ? `<b>${money(amt)}</b>` : ''; return [n, a].filter(Boolean).join(' '); }
 async function loadJobs(){
   const st = document.getElementById('jbShow').value, q = document.getElementById('jbSearch').value.trim();
   const [j, ji] = await Promise.all([api('/cases?status=' + st + (q ? '&q=' + encodeURIComponent(q) : '')), api('/jobber/items?open=1&kind=request,quote,job')]);
@@ -1198,9 +1200,9 @@ async function loadJobs(){
     return `<tr class="click" onclick="openCase(${c.id})">
     <td><b>${esc(c.title || c.client_name)}</b><div class="note">${esc([c.client_name, c.site].filter(Boolean).join(' · '))}${c.po_number ? ' · PO ' + esc(c.po_number) : ''}</div></td>
     <td>${stageChip(c)}${c.idle_days >= 7 && c.status === 'open' ? ` <span class="chip a">${c.idle_days}d idle</span>` : ''}</td>
-    <td>${esc(c.vendor)}</td><td class="num">${money(c.vendor_quote_amount ?? c.vendor_quote_total)}</td>
-    <td>${ref(jb.quote)}${jb.quote && jb.quote.status ? ` <span class="note">${esc(jb.quote.status.replace(/_/g, ' '))}</span>` : ''}</td>
-    <td class="num">${money(c.vendor_bill_amount ?? c.vendor_bill_total)}</td>
+    <td>${esc(c.vendor)}</td><td>${numAmt(c.vendor_quote_number, c.vendor_quote_amount ?? c.vendor_quote_total)}</td>
+    <td>${ref(jb.quote)}${jb.quote && jb.quote.total != null ? ' <b>' + money(jb.quote.total) + '</b>' : ''}${jb.quote && jb.quote.status ? ` <span class="note">${esc(jb.quote.status.replace(/_/g, ' '))}</span>` : ''}</td>
+    <td>${numAmt(c.vendor_bill_number, c.vendor_bill_amount ?? c.vendor_bill_total)}</td>
     <td>${ref(jb.invoice) || (c.sei_invoice_number ? '#' + esc(c.sei_invoice_number) : '')}${(jb.invoice || c.sei_invoice_number) && ((jb.invoice || {}).total ?? c.amount) != null ? ' <b>' + money((jb.invoice || {}).total ?? c.amount) + '</b>' : ''}${jb.invoice && jb.invoice.status ? ` <span class="note">${esc(jb.invoice.status.replace(/_/g, ' '))}</span>` : ''}</td>
     <td>${vp.state === 'paid' ? '<span class="chip g">paid</span>' : vp.state === 'due' ? '<span class="chip r">pay now</span>' : vp.state === 'unpaid' ? '<span class="note">not yet</span>' : ''}</td>
     <td style="white-space:nowrap">${jb.job && jb.job.uri ? `<a class="btn s" href="${esc(jb.job.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ↗</a> ` : ''}${c.status === 'open' ? `<button class="btn s" title="Mark done" onclick="event.stopPropagation();caseDone(${c.id})">✓ Done</button> <button class="btn s" title="Remove" onclick="event.stopPropagation();caseRemove(${c.id})">✕</button>` : `<button class="btn s" onclick="event.stopPropagation();caseReopen(${c.id})">↺ Reopen</button>`}</td></tr>`; }).join('') || '<tr><td colspan="9" class="empty">No jobs.</td></tr>';
