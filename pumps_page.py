@@ -1035,14 +1035,14 @@ function drawMaint(){
   const act = MT.accounts.filter(a => a.active);
   document.getElementById('mtInfo').innerHTML = `${act.length} active accounts · <b>${act.filter(a => a.due_this_month).length} due in ${MSHORT[MT.month - 1]}</b> · ${MT.accounts.length - act.length} former`;
   document.getElementById('mtBody').innerHTML = rows.map(a => `<tr>
-    <td><b>${esc(a.name)}</b>${a.repairs_by ? ` <span class="chip v">repairs: ${esc(a.repairs_by)}</span>` : ''}${a.notes ? `<div class="note">${esc(a.notes)}</div>` : ''}${!a.active ? ' <span class="chip">former</span>' : ''}</td>
+    <td><b>${esc(a.name)}</b>${a.repairs_by ? ` <span class="chip v">repairs: ${esc(a.repairs_by)}</span>` : ''}${a.follow_up ? `<div class="note">🔔 Before each service: ${esc(a.follow_up)}</div>` : ''}${a.notes ? `<div class="note">${esc(a.notes)}</div>` : ''}${!a.active ? ' <span class="chip">former</span>' : ''}</td>
     <td>${esc(a.kind)}</td><td class="note">${esc(a.equipment)}</td><td class="note">${esc(a.address)}</td>
     <td style="white-space:nowrap">${a.due_this_month ? '<b>' + esc(schedText(a)) + '</b> <span class="chip b">due now</span>' : esc(schedText(a))}</td>
     <td class="num">${esc(a.vendor_cost)}</td><td class="num">${esc(a.naples_electric)}</td><td>${esc(a.our_bill)}</td><td class="note">${esc(a.joined)}</td>
     <td><button class="btn s" onclick="maintEdit(${a.id})">Edit</button></td></tr>`).join('') || '<tr><td colspan="10" class="empty">None.</td></tr>';
 }
 function maintEdit(id){
-  const a = id ? MT.accounts.find(x => x.id === id) : {name:'', kind:'Pump', joined:'', equipment:'', address:'', months:'1,4,7,10', monthly:0, vendor_cost:'', naples_electric:'', our_bill:'', notes:'', repairs_by:'', active:1};
+  const a = id ? MT.accounts.find(x => x.id === id) : {name:'', kind:'Pump', joined:'', equipment:'', address:'', months:'1,4,7,10', monthly:0, vendor_cost:'', naples_electric:'', our_bill:'', notes:'', repairs_by:'', follow_up:'', active:1};
   const months = (a.months || '').split(',').filter(Boolean).map(Number);
   openModal(id ? 'Account - ' + esc(a.name) : 'Add maintenance account', `<div class="fields">
     <label class="w">Account<input type="text" id="mt_name" value="${esc(a.name)}"></label>
@@ -1056,13 +1056,14 @@ function maintEdit(id){
     <label><span><input type="checkbox" id="mt_monthly" ${a.monthly ? 'checked' : ''}> Monthly</span></label>
     <div class="w"><b class="note">Months</b><div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px">${MSHORT.map((m, i) => `<label style="display:flex;gap:3px;align-items:center"><input type="checkbox" class="mt_m" value="${i + 1}" ${months.includes(i + 1) ? 'checked' : ''}>${m}</label>`).join('')}</div></div>
     <label class="w">Repairs by<select id="mt_repairs_by">${[['', 'Wettech (Tommy)'], ['SiteOne', 'SiteOne'], ['Naples Electric', 'Naples Electric'], ['Oscar (our technician)', 'Oscar (our technician) - no Wettech quote or bill']].map(([v, l]) => `<option value="${esc(v)}" ${v === (a.repairs_by || '') ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select><span class="note">New repair jobs for this account go to them.</span></label>
+    <label class="w">Before each service, follow up with…<textarea id="mt_follow_up" placeholder="e.g. Email Lauren to approve the visit">${esc(a.follow_up || '')}</textarea><span class="note">Shows in the to-do list about a week before each service month.</span></label>
     <label class="w">Notes<textarea id="mt_notes">${esc(a.notes)}</textarea></label>
     <label><span><input type="checkbox" id="mt_active" ${a.active ? 'checked' : ''}> Active account</span></label></div>`,
     `${id ? `<button class="btn danger" onclick="maintDelete(${id})">Remove</button>` : ''}<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="maintSave(${id})">Save</button>`);
 }
 async function maintSave(id){
   const v = k => document.getElementById('mt_' + k).value;
-  const body = {name: v('name'), kind: v('kind'), joined: v('joined'), equipment: v('equipment'), address: v('address'), vendor_cost: v('vendor_cost'), naples_electric: v('naples_electric'), our_bill: v('our_bill'), notes: v('notes'), repairs_by: v('repairs_by'), monthly: document.getElementById('mt_monthly').checked, active: document.getElementById('mt_active').checked, months: [...document.querySelectorAll('.mt_m:checked')].map(x => x.value).join(',')};
+  const body = {name: v('name'), kind: v('kind'), joined: v('joined'), equipment: v('equipment'), address: v('address'), vendor_cost: v('vendor_cost'), naples_electric: v('naples_electric'), our_bill: v('our_bill'), notes: v('notes'), repairs_by: v('repairs_by'), follow_up: v('follow_up'), monthly: document.getElementById('mt_monthly').checked, active: document.getElementById('mt_active').checked, months: [...document.querySelectorAll('.mt_m:checked')].map(x => x.value).join(',')};
   if (id) body.id = id;
   const j = await api('/maint', {method:'POST', body});
   if (!j.success) { toast(j.error, true); return; }
@@ -1158,6 +1159,7 @@ function editDiveSite(id){
     <label><span><input type="checkbox" id="ds_active" ${s.active === 0 ? '' : 'checked'}> Active account</span></label>
     <label class="w">Address / where the pumps are<textarea id="ds_address">${esc(s.address)}</textarea></label>
     <label class="w">Notes for the diver (every month - gate codes, what to check)<textarea id="ds_notes">${esc(s.diver_notes)}</textarea></label>
+    <label class="w">Before each dive, follow up with… <span class="note">(a to-do about a week ahead)</span><textarea id="ds_follow_up">${esc(s.follow_up || '')}</textarea></label>
     <label>Status<select id="ds_status">${[['active','Normal'],['meet','HOA wants to meet the diver'],['hold','Hold off']].map(([v,l]) => `<option value="${v}" ${s.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <label>Status note<input type="text" id="ds_status_note" value="${esc(s.status_note)}"></label>
     <label class="w">One-time note (next email only)<input type="text" id="ds_month_note" value="${esc(s.month_note)}"></label>
@@ -1166,7 +1168,7 @@ function editDiveSite(id){
 }
 async function saveDiveSite(id){
   const v = k => document.getElementById('ds_' + k).value;
-  const body = {name: v('name'), equipment: v('equipment'), address: v('address'), diver_notes: v('notes'), status: v('status'), status_note: v('status_note'), month_note: v('month_note'), needs_dive: document.getElementById('ds_needs').checked, active: document.getElementById('ds_active').checked, diver_cost: v('diver_cost'), our_bill: v('our_bill'), joined: v('joined'), months: [...document.querySelectorAll('.ds_m:checked')].map(x => x.value).join(',')};
+  const body = {name: v('name'), equipment: v('equipment'), address: v('address'), diver_notes: v('notes'), follow_up: v('follow_up'), status: v('status'), status_note: v('status_note'), month_note: v('month_note'), needs_dive: document.getElementById('ds_needs').checked, active: document.getElementById('ds_active').checked, diver_cost: v('diver_cost'), our_bill: v('our_bill'), joined: v('joined'), months: [...document.querySelectorAll('.ds_m:checked')].map(x => x.value).join(',')};
   if (id) body.id = id;
   const j = await api('/dives/sites', {method:'POST', body});
   if (!j.success) { toast(j.error, true); return; }

@@ -676,6 +676,26 @@ class PumpsTest(unittest.TestCase):
         # Other site names still don't match a name with words of its own.
         self.assertIsNone(P.match_site_alias({'client_name': 'Carlisle Golf Club', 'file_name': 'q.pdf'}))
 
+    def test_follow_up_before_a_service_comes_due(self):
+        def todos():
+            return {t['title']: t for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']}
+        # Mid-November: nothing of these four is due (quarterly Jan/Apr/Jul/Oct; Hodges Jan/May/Sep).
+        self.assertEqual(P.service_follow_ups(P.datetime(2026, 11, 10).date()), [])
+        # A week before January: Sopra, Hodges (SiteOne), Warm Springs (Naples Electric) and Kurt Biggs' dive.
+        added = P.service_follow_ups(P.datetime(2026, 12, 26).date())
+        self.assertEqual(len(added), 4, added)
+        t = todos()
+        self.assertIn('lmleczek@davisdevelopment.com', t["Follow up before Sopra Luxury Living's January service"]['detail'])
+        self.assertIn('PSochar@siteone.com', t["Follow up before Hodges Funeral Home's January service"]['detail'])
+        self.assertIn('Ramon', t["Follow up before Kurt Biggs's January dive"]['detail'])
+        # Once per service: the hourly run doesn't add it again, even once it's done.
+        self.assertEqual(P.service_follow_ups(P.datetime(2027, 1, 5).date()), [])
+        # Set on the Accounts tab: a new one follows the same rule.
+        aid = next(a['id'] for a in self.c.get('/pumps/api/maint').get_json()['accounts'] if a['name'] == 'Allura')
+        self.c.post('/pumps/api/maint', json={'id': aid, 'follow_up': 'Call the manager for gate access.'})
+        self.assertEqual(len(P.service_follow_ups(P.datetime(2027, 1, 5).date())), 1)
+        self.c.post('/pumps/api/maint', json={'id': aid, 'follow_up': ''})
+
     def test_huntington_6_two_prices_one_optional(self):
         """Wettech's Huntington #6 letter (Oct 8 2026): the control box, and a
         'Possibly needed' motor replacement - two prices, the second optional."""
