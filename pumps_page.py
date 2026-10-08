@@ -540,6 +540,7 @@ function renderCase(){
     ${issues ? `<div class="sec"><h4>Issues</h4><div style="display:flex;flex-direction:column;gap:8px">${issues}</div></div>` : ''}
     <div class="sec"><h4>Next</h4><div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn ${['assessment','vendor_quote','scheduled','vendor_bill'].includes(c.stage) ? 'p' : ''}" onclick="vendorEmail(${c.id})">✉️ ${esc(({assessment: 'Ask ' + v + ' to assess', vendor_quote: 'Ask ' + v + ' for the quote', scheduled: 'Ask ' + v + ' to schedule', vendor_bill: 'Ask ' + v + ' for the invoice'})[c.stage] || 'Email ' + v)}</button>
+      ${c.stage === 'client_quote' ? `<button class="btn" onclick="linkQuote(${c.id})">🔗 Quote's already in Jobber? Link it</button>` : ''}
       ${c.stage === 'vendor_quote' && !((c.steps || {}).assessment && !c.steps.assessment.na) ? `<button class="btn" onclick="needsVisit()">🔍 ${esc(v)} needs to visit first</button>` : ''}
       <button class="btn" onclick="uploadForCase()">⬆ Add document</button>
       <button class="btn" onclick="addNote()">✎ Add note</button>
@@ -564,7 +565,7 @@ function renderCase(){
       ${f('sei_invoice_number','Our (Jobber) invoice #')}${f('amount','Our invoice $','number')}
       ${f('jobber_request_made','Jobber request made')}${f('opened_on','Opened','date')}
       ${f('description','Description of work','area',1)}${f('notes','Notes','area',1)}
-      <label class="w">Jobber ${jl || '<span class="note">nothing linked - Track it from the Jobber tab</span>'}</label>
+      <label class="w">Jobber ${jl || '<span class="note">nothing linked - Track it from the Jobber tab</span>'} <a href="#" onclick="event.preventDefault();linkQuote(${c.id})">${J.quote ? 'Use a different Jobber quote…' : 'Link a Jobber quote…'}</a></label>
     </div><div style="margin-top:10px"><button class="btn p" onclick="saveCaseFields()">Save details</button></div></div>
   </div>`;
 }
@@ -664,6 +665,14 @@ async function markVendorPaid(id){
   if (curCase && curCase.id === id) { curCase = j.case; renderCase(); } else loadToday();
 }
 async function patchCase(data){ const j = await api('/cases/' + curCase.id, {method:'PATCH', body:data}); if (j.success) { curCase = j.case; renderCase(); } else toast(j.error || 'Not saved', true); return j; }
+async function linkQuote(id){
+  const n = prompt('Jobber quote number this job should follow (e.g. 9136):', '');
+  if (!n || !n.trim()) return;
+  const j = await api('/cases/' + id + '/jobber_quote', {method:'POST', body:{number: n.trim()}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast(`Now following Jobber quote #${j.quote.number} (${(j.quote.status || '').replace(/_/g, ' ') || 'status unknown'})`);
+  openCase(id); loadToday();
+}
 function needsVisit(){ const d = prompt('Date of the visit, if you know it (YYYY-MM-DD) - or leave blank:', ''); if (d === null) return; patchCase({steps: {assessment: null}, assessment_due: d.trim()}); }
 function setStep(k, v){ patchCase({steps: {[k]: v === 'today' ? new Date().toISOString().slice(0,10) : v}}); }
 function stepMenu(k, sel){
