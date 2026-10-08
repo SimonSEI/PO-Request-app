@@ -621,6 +621,17 @@ class SheetNoteRuleTests(unittest.TestCase):
         self.assertEqual(R.interpret_sheet_note('31-60: they can pay by EOM', as_of)['promised_date'], '2026-10-31')
 
 
+
+class ContactTests(unittest.TestCase):
+    def test_jobber_fallback_prefers_ap(self):
+        cust = {'emails': '', 'jobber_emails': 'vp@example.com, ap@condo-example.com, treasurer@example.com'}
+        self.assertEqual(R.contacts_for({}, None, cust), ['ap@condo-example.com'])
+        cust = {'emails': '', 'jobber_emails': 'owner@example.com, other@example.com'}
+        self.assertEqual(R.contacts_for({}, None, cust), ['owner@example.com'])
+        cust = {'emails': 'pm@example.com', 'jobber_emails': 'ap@condo-example.com'}
+        self.assertEqual(R.contacts_for({}, None, cust), ['pm@example.com'])
+        self.assertEqual(R.contacts_for({}, {'contact_emails': 'site@example.com'}, cust), ['site@example.com'])
+
 class JobberGuardTests(unittest.TestCase):
     def test_mutations_blocked(self):
         with self.assertRaises(RuntimeError):

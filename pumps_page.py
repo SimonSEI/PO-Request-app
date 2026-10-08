@@ -432,6 +432,12 @@ function box(title, items, render, cls, hint){
 function todoItem(tag, cls, title, sub, open, buttons){
   return `<div class="row" onclick="${open}"><div class="main"><div class="tt"><span class="chip ${cls}">${tag}</span> ${title}</div>${sub ? `<div class="sub">${sub}</div>` : ''}${buttons ? `<div class="act" onclick="event.stopPropagation()">${buttons}</div>` : ''}</div></div>`;
 }
+// Who to follow up with: the account's contact, else the client's AP/billing email in Jobber.
+function followUp(f){
+  if (!f) return '';
+  const who = [f.name ? '<b>' + esc(f.name) + '</b>' : '', f.email ? f.email.split(', ').map(e => `<a href="mailto:${esc(e)}" onclick="event.stopPropagation()">${esc(e)}</a>`).join(', ') + (f.email_from === 'jobber_ap' ? ' <span class="note">(AP in Jobber)</span>' : f.source === 'jobber' ? ' <span class="note">(Jobber)</span>' : '') : '', f.phone ? esc(f.phone) : ''].filter(Boolean).join(' · ');
+  return '<br>→ Follow up with ' + (who || '<b class="warn">no contact on file - add one on the Accounts tab or in Jobber</b>');
+}
 function caseTitle(c){ return esc(c.title || c.client_name || 'Item ' + c.id); }
 function caseSub(c, extra){ return esc([c.client_name, c.site].filter(Boolean).join(' · ')) + (c.po_number ? ' · PO ' + esc(c.po_number) : '') + jobberNo(c) + (extra ? ' · ' + extra : '') + (c.idle_days >= 7 ? ` · <b class="warn">${c.idle_days}d idle</b>` : ''); }
 async function loadToday(){
@@ -449,24 +455,24 @@ async function loadToday(){
     (i.kind === 'no_quote' ? `<button class="btn s p" onclick="billAnyway(${i.id})">Bill it +30%</button>` : '') + `<button class="btn s" onclick="resolveIssue(${i.id})">Resolved</button>`)));
   q.vendor_bills_to_pay.forEach(c => urgent.push(todoItem('Pay ' + esc(c.vendor || 'Wettech'), 'r', caseTitle(c), `${esc(c.vendor || 'Wettech')} bill ${c.vendor_bill_number ? '#' + esc(c.vendor_bill_number) + ' · ' : ''}${money(c.vendor_bill_total ?? c.vendor_bill_amount)} · the client paid our invoice${c.sei_invoice_number ? ' #' + esc(c.sei_invoice_number) : ''}${(c.pay_email || {}).sent ? `<br><b class="ok">✓ Emailed Christian ${esc(c.pay_email.at.slice(0, 16))}</b>` : (c.pay_email || {}).error ? `<br><b class="bad">Email not sent: ${esc(c.pay_email.error)}</b>` : ''}`, open(c),
     `<button class="btn s p" onclick="sendPayEmail(${c.id}, this)">✉ ${(c.pay_email || {}).sent ? 'Send again' : 'Send email'}</button><button class="btn s" onclick="payEmail(${c.id})">Preview</button><button class="btn s" onclick="markVendorPaid(${c.id})">Mark paid</button>`)));
-  q.scada_attention.filter(s => s.state === 'overdue').forEach(s => urgent.push(todoItem('SCADA overdue', 'r', esc(s.client_name) + (s.site ? ' · ' + esc(s.site) : ''), 'Renewal overdue since ' + esc(s.next_due_on) + (s.state_note ? ' · ' + esc(s.state_note) : ''), "showTab('scada')", '')));
+  q.scada_attention.filter(s => s.state === 'overdue').forEach(s => urgent.push(todoItem('SCADA overdue', 'r', esc(s.client_name) + (s.site ? ' · ' + esc(s.site) : ''), 'Renewal overdue since ' + esc(s.next_due_on) + (s.state_note ? ' · ' + esc(s.state_note) : '') + followUp(s.follow_up), "showTab('scada')", '')));
   q.bills_to_draft.forEach(d => todo.push(todoItem('Draft invoice', 'a', esc(d.client_name || d.file_name), `${esc(d.vendor)} bill #${esc(d.doc_number)} · ${money(d.total)}`, `openCase(${d.case_id})`,
     `<button class="btn s p" onclick="draftInvoice(${d.id})">Draft invoice</button>`)));
   q.quotes_to_draft.forEach(d => todo.push(todoItem('Draft quote', 'a', esc(d.client_name || d.file_name), `${esc(d.vendor)} quote ${d.doc_number ? '#' + esc(d.doc_number) + ' ' : ''}· ${money(d.subtotal ?? d.total)}${((d.jobber || {}).quote_pending || {}).reason ? ' · <b class="warn">' + esc(d.jobber.quote_pending.reason) + '</b>' : ''}`, `openCase(${d.case_id})`,
     `<button class="btn s p" onclick="draftQuote(${d.id})">Draft quote</button>`)));
-  q.to_quote_client.forEach(c => todo.push(todoItem('Send quote', 'a', caseTitle(c), caseSub(c, 'send our quote to the client in Jobber'), open(c), doDone(c))));
+  q.to_quote_client.forEach(c => todo.push(todoItem('Send quote', 'a', caseTitle(c), caseSub(c, 'send our quote to the client in Jobber') + followUp(c.follow_up), open(c), doDone(c))));
   q.needs_scheduling.forEach(c => todo.push(todoItem('Schedule', 'a', caseTitle(c), caseSub(c, 'client approved - get it on ' + esc(c.vendor || 'Wettech') + "'s calendar" + (c.scheduled_for ? ' · for ' + esc(c.scheduled_for) : '')), open(c), '')));
-  q.ready_to_close.forEach(c => todo.push(todoItem('Send invoice', 'a', caseTitle(c), caseSub(c, 'send the invoice from Jobber' + (c.sei_invoice_number ? ' · #' + esc(c.sei_invoice_number) : '')), open(c), doDone(c))));
+  q.ready_to_close.forEach(c => todo.push(todoItem('Send invoice', 'a', caseTitle(c), caseSub(c, 'send the invoice from Jobber' + (c.sei_invoice_number ? ' · #' + esc(c.sei_invoice_number) : '')) + followUp(c.follow_up), open(c), doDone(c))));
   q.reports_to_log.forEach(d => todo.push(todoItem('Log report', 'b', esc(d.client_name || d.file_name), `${esc((d.report_fields||{}).title || 'Report')} · ${esc(d.doc_date)}`, d.case_id ? `openCase(${d.case_id})` : `openDoc(${d.id})`,
     `<button class="btn s" onclick="logReport(${d.id})">Log in Jobber</button>`)));
   q.review_docs.forEach(d => todo.push(todoItem('Look at', 'b', esc(d.client_name || d.file_name), esc(d.review_reason || 'Not filed yet') + ' · ' + esc(d.kind || 'document'), `openDoc(${d.id})`, '')));
   q.new_jobber_requests.forEach(it => todo.push(todoItem('New in Jobber', 'v', esc(it.title), `${esc(it.kind)}${it.number ? ' #' + esc(it.number) : ''} · ${esc(it.client_name)} · ${d10(it.created_at)}`, `window.open('${esc(it.web_uri)}','_blank')`,
     `<button class="btn s p" onclick="jobberAct('${esc(it.jobber_id)}','track')">Track</button><button class="btn s" onclick="jobberAct('${esc(it.jobber_id)}','ignore')">Ignore</button>`)));
-  q.scada_attention.filter(s => s.state !== 'overdue').forEach(s => todo.push(todoItem('SCADA due', 'v', esc(s.client_name) + (s.site ? ' · ' + esc(s.site) : ''), 'Renewal due ' + esc(s.next_due_on) + (s.state_note ? ' · ' + esc(s.state_note) : ''), "showTab('scada')", '')));
+  q.scada_attention.filter(s => s.state !== 'overdue').forEach(s => todo.push(todoItem('SCADA due', 'v', esc(s.client_name) + (s.site ? ' · ' + esc(s.site) : ''), 'Renewal due ' + esc(s.next_due_on) + (s.state_note ? ' · ' + esc(s.state_note) : '') + followUp(s.follow_up), "showTab('scada')", '')));
   const v = c => esc(c.vendor || 'Wettech');
   (q.waiting_assessment || []).forEach(c => waiting.push(todoItem(v(c) + ' visit', '', caseTitle(c), caseSub(c, ((c.steps || {}).assessment || {}).due ? 'visit ' + esc(c.steps.assessment.due) : 'visit not booked'), open(c), '')));
   q.waiting_vendor_quote.forEach(c => waiting.push(todoItem(v(c) + ' quote', '', caseTitle(c), caseSub(c), open(c), '')));
-  q.waiting_approval.forEach(c => waiting.push(todoItem('Client approval', '', caseTitle(c), caseSub(c), open(c), '')));
+  q.waiting_approval.forEach(c => waiting.push(todoItem('Client approval', '', caseTitle(c), caseSub(c) + followUp(c.follow_up), open(c), '')));
   q.waiting_work.forEach(c => waiting.push(todoItem('Work', '', caseTitle(c), caseSub(c, c.scheduled_for ? 'scheduled ' + esc(c.scheduled_for) : ''), open(c), '')));
   q.waiting_bill.forEach(c => waiting.push(todoItem(v(c) + ' bill', '', caseTitle(c), caseSub(c), open(c), '')));
   const n = urgent.length + todo.length + q.todos.length;

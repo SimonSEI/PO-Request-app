@@ -447,6 +447,13 @@ def init_db():
                   case_id INTEGER,
                   updated_at TEXT,
                   UNIQUE(jobber_client_id, site))''')
+    # Each Jobber client's email addresses, refreshed by the Jobber sync, so the to-dos can say
+    # who to follow up with (the AP/billing address when there is one).
+    c.execute('''CREATE TABLE IF NOT EXISTS pump_client_contacts (
+                  client_id TEXT PRIMARY KEY,
+                  name TEXT DEFAULT '',
+                  emails TEXT DEFAULT '[]',
+                  fetched_at TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS pump_jobber_items (
                   jobber_id TEXT PRIMARY KEY,
                   kind TEXT,
@@ -2356,6 +2363,8 @@ def _sync_jobber(full=False, actor='system'):
             approved = _follow_quotes(conn)
             rebuild_scada(conn)
             conn.commit()
+            status['errors'] += refresh_client_contacts(conn)
+            conn.commit()
             try:
                 status['scada_invoices'] = scan_scada_invoices(conn)
                 conn.commit()
@@ -3811,6 +3820,10 @@ def work_queue(conn):
         "SELECT * FROM pump_docs WHERE kind='report' AND status != 'dismissed' "
         "AND (jobber IS NULL OR jobber NOT LIKE '%note_id%') ORDER BY id")]
     scada = [s for s in scada_rows(conn) if s['state'] in ('overdue', 'due_soon')]
+    for c in by_stage.get('client_quote', []) + by_stage.get('client_approved', []) + by_stage.get('closed', []):
+        c['follow_up'] = follow_up_for(conn, c)
+    for sc in scada:
+        sc['follow_up'] = follow_up_for(conn, sc)
     new_requests = untracked_jobber_items(conn)
     stale = [c for c in cases if c['idle_days'] >= STALE_DAYS]
     return {
@@ -3836,6 +3849,111 @@ def work_queue(conn):
         'stale': stale,
         'open_count': len(cases),
     }
+
+
+# ── Who to follow up with ────────────────────────────────────────────────────
+# The account's contact from the office's master list when it has one; for the
+# email, otherwise the client's AP/billing address in Jobber (Jobber labels every
+# email "Main", so it is picked by the address), else the client's primary email.
+
+_BILLING_EMAIL = re.compile(r'(?i)^(ap|a\.p|accountspayable|accounts[._-]?payable|payables?|invoices?|invoicing|'
+                            r'billing|bills|accounting|accounts|finance)([._-][^@]*)?@')
+_EMAIL_RE = re.compile(r'[\w.+-]+@[\w-]+(?:\.[\w-]+)+')
+_PHONE_RE = re.compile(r'\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}')
+
+
+def billing_emails(emails):
+    """The address(es) to follow up with from a Jobber client's emails ([{address, primary}]):
+    AP/billing ones first, else the primary, else the first."""
+    seen, uniq, primary = set(), [], []
+    for e in emails or []:
+        addr = ((e or {}).get('address') or '').strip()
+        if not addr or addr.lower() in seen:
+            continue
+        seen.add(addr.lower())
+        uniq.append(addr)
+        if e.get('primary'):
+            primary.append(addr)
+    ap = [a for a in uniq if _BILLING_EMAIL.match(a)]
+    return ap or primary[:1] or uniq[:1]
+
+
+def _client_id_for(conn, item):
+    cid = item.get('jobber_client_id') or ''
+    if cid:
+        return cid
+    want = _norm_name(item.get('jobber_name') or item.get('client_name') or item.get('client') or '')
+    if not want:
+        return ''
+    for r in conn.execute("SELECT client_id, client_name FROM pump_jobber_items WHERE client_id != '' "
+                          "ORDER BY updated_at DESC"):
+        have = _norm_name(r['client_name'])
+        if have and (have == want or (len(want) >= 6 and want in have)):
+            return r['client_id']
+    return ''
+
+
+def _norm_name(text):
+    return re.sub(r'[^a-z0-9]', '', (text or '').lower())
+
+
+def refresh_client_contacts(conn, max_age_days=3):
+    """Fetch the emails of the clients the to-dos are about (open jobs, SCADA coming due)
+    when not fetched in the last few days. Returns any errors."""
+    ids = {r[0] for r in conn.execute("SELECT DISTINCT jobber_client_id FROM pump_cases WHERE status='open' "
+                                      "AND jobber_client_id != ''")}
+    for sc in scada_rows(conn):
+        if sc['state'] in ('overdue', 'due_soon'):
+            cid = _client_id_for(conn, sc)
+            if cid:
+                ids.add(cid)
+    cutoff = (datetime.now(TZ) - timedelta(days=max_age_days)).strftime('%Y-%m-%d %H:%M:%S')
+    fresh = {r[0] for r in conn.execute("SELECT client_id FROM pump_client_contacts WHERE fetched_at >= ?", (cutoff,))}
+    errors = []
+    for cid in sorted(ids - fresh):
+        try:
+            data = jobber_gql('query($id: EncodedId!) { client(id: $id) { id name emails { address primary } } }',
+                              {'id': cid})
+        except JobberError as e:
+            errors.append(f'Client emails: {e}')
+            break
+        cl = data.get('client') or {}
+        conn.execute("INSERT OR REPLACE INTO pump_client_contacts (client_id, name, emails, fetched_at) VALUES (?,?,?,?)",
+                     (cid, cl.get('name') or '', json.dumps(cl.get('emails') or []), _now_text()))
+    return errors
+
+
+def follow_up_for(conn, item):
+    """{name, email, phone, source} of who to follow up with about a job or SCADA renewal."""
+    out = {'name': '', 'email': '', 'phone': '', 'source': ''}
+    acct = account_info(conn, item) if item.get('title') is not None or item.get('site') is not None else None
+    if not acct:
+        name = match_account(' '.join(x for x in (item.get('client_name'), item.get('client')) if x), conn)
+        if name:
+            notes = [r[0] for r in conn.execute("SELECT notes FROM pump_maint_accounts WHERE name=? AND notes != ''",
+                                                (name,))]
+            acct = {'name': name, 'notes': '\n'.join(notes)}
+    m = re.search(r'(?im)account contact:\s*([^\n]+)', (acct or {}).get('notes') or '')
+    if m:
+        seg = m.group(1)
+        first = seg.split(',')[0].strip().rstrip('.')
+        if first and not _EMAIL_RE.search(first) and not _PHONE_RE.search(first):
+            out['name'] = first
+        em = _EMAIL_RE.search(seg)
+        ph = _PHONE_RE.search(seg)
+        out['email'] = em.group(0).rstrip('.') if em else ''
+        out['phone'] = ph.group(0) if ph else ''
+        out['source'] = 'account'
+    if not out['email']:
+        cid = _client_id_for(conn, item)
+        row = conn.execute("SELECT emails FROM pump_client_contacts WHERE client_id=?", (cid,)).fetchone() if cid else None
+        if row:
+            picked = billing_emails(json.loads(row[0] or '[]'))
+            if picked:
+                out['email'] = ', '.join(picked)
+                out['source'] = out['source'] or 'jobber'
+                out['email_from'] = 'jobber_ap' if any(_BILLING_EMAIL.match(a) for a in picked) else 'jobber'
+    return out
 
 
 def _notify(event, payload):

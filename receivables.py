@@ -1358,7 +1358,8 @@ def _apply_jobber(inv, j):
     emails = [e.get('address') for e in (client.get('emails') or []) if e and e.get('address')]
     primary = [e.get('address') for e in (client.get('emails') or []) if e and e.get('primary') and e.get('address')]
     if emails:
-        ordered = primary + [e for e in emails if e not in primary]
+        seen = set()
+        ordered = [e for e in primary + emails if not (e.lower() in seen or seen.add(e.lower()))]
         conn.execute("UPDATE ar_customers SET jobber_emails=?, jobber_client_id=?, updated_at=? WHERE key=?",
                      (', '.join(ordered), client.get('id', ''), now, inv['customer_key']))
     paid = 0
@@ -1414,14 +1415,26 @@ def job_complete(job):
     return bool(job.get('jobber_completed_at')) or (job.get('jobber_status') or '') in ('archived', 'requires_invoicing')
 
 
+# Jobber labels every email "Main", so the AP/billing address is picked by the address itself.
+_BILLING_EMAIL = re.compile(r'(?i)^(ap|a\.p|accountspayable|accounts[._-]?payable|payables?|invoices?|invoicing|'
+                            r'billing|bills|accounting|accounts|finance)([._-][^@]*)?@')
+
+
+def billing_pick(addresses):
+    """From Jobber's emails (primary first): the AP/billing ones, else the primary."""
+    ap = [a for a in addresses if _BILLING_EMAIL.match(a)]
+    return ap or addresses[:1]
+
+
 def contacts_for(inv, job, cust):
-    """Who a follow-up goes to: the job's contact, else the customer's emails, else Jobber's."""
+    """Who a follow-up goes to: the job's contact, else the customer's emails, else Jobber's AP/billing address
+    (or the client's primary email when Jobber has no AP address)."""
     if job and _emails(job.get('contact_emails')):
         return _emails(job['contact_emails'])
     if cust and _emails(cust.get('emails')):
         return _emails(cust['emails'])
     if cust and _emails(cust.get('jobber_emails')):
-        return _emails(cust['jobber_emails'])[:2]
+        return billing_pick(_emails(cust['jobber_emails']))
     return []
 
 
