@@ -169,6 +169,10 @@ class PumpsTest(unittest.TestCase):
         with self.c.session_transaction() as s:
             s['username'], s['role'], s['full_name'] = 'office1', 'office', 'Office Tester'
 
+    def draft(self, doc_id, **body):
+        """The office clicks Draft quote."""
+        return self.c.post(f'/pumps/api/docs/{doc_id}/quote', json=body).get_json()
+
     def upload(self, name, data=b'%PDF-1.4 fake', kind=None, case_id=None):
         if not name.endswith('.docx'):
             data = data + name.encode()  # a distinct file per name
@@ -746,7 +750,9 @@ class PumpsTest(unittest.TestCase):
         try:
             self.extracts['q-0920.pdf'] = extraction('quote', 'Q-920', po='PO920', client='Lakeside Pines', subtotal=500)
             q = self.upload('q-0920.pdf', data=self._pdf())
-            self.assertEqual(self.case(q['case_id'])['jobber']['quote']['number'], '812', 'drafted on the way in')
+            self.assertNotIn('quote', self.case(q['case_id'])['jobber'], 'nothing drafted on its own')
+            self.draft(q['doc_id'])
+            self.assertEqual(self.case(q['case_id'])['jobber']['quote']['number'], '812')
             self.extracts['q-0920.pdf'] = extraction('quote', 'Q-920', po='PO920', client='Lakeside Pines', subtotal=800)
             r = self.c.post(f"/pumps/api/docs/{q['doc_id']}/read_again", json={}).get_json()
             self.assertTrue(r.get('updated'), r)
@@ -771,7 +777,7 @@ class PumpsTest(unittest.TestCase):
             self.assertFalse(r.get('updated'))
             self.assertIn('already awaiting response', r['note'])
             self.assertFalse([1 for qq, _ in fake.calls if 'LineItems(' in qq])
-            # Deleted in Jobber since: forgotten, and a new draft made in its place.
+            # Deleted in Jobber since: forgotten, and no new one made until Draft quote is clicked.
             orig = Fake.__call__
 
             def deleted(self_, query, variables=None):
@@ -779,10 +785,11 @@ class PumpsTest(unittest.TestCase):
                     raise P.JobberError("Couldn't find Quote with 'id'=Q1")
                 return orig(self_, query, variables)
             Fake.__call__ = deleted
+            fake.calls.clear()
             r = self.c.post(f"/pumps/api/docs/{q['doc_id']}/read_again", json={}).get_json()
-            self.assertIn('#812 was deleted in Jobber', r['note'])
-            self.assertTrue(r.get('quote_number'), r)
-            self.assertEqual(self.case(q['case_id'])['jobber']['quote']['number'], r['quote_number'])
+            self.assertIn('#812 was deleted in Jobber - click Draft quote', r['note'])
+            self.assertNotIn('quote', self.case(q['case_id'])['jobber'])
+            self.assertFalse([1 for qq, _ in fake.calls if 'quoteCreate(' in qq])
         finally:
             P.JOBBER_STATIC_TOKEN = saved
 
@@ -820,6 +827,9 @@ class PumpsTest(unittest.TestCase):
             self.assertEqual(d2['total'], 2239.07)
             self.assertIn('check valve', d2['description'])
             self.assertEqual(second['vendor_quote_total'], 2239.07)
+            self.assertFalse([1 for qq, _ in fake.calls if 'quoteCreate(' in qq], 'no quote until Draft quote')
+            self.draft(doc['doc_id'])
+            self.draft(pid)
             made = [v['attributes'] for qq, v in fake.calls if 'quoteCreate(' in qq]
             self.assertEqual(sorted(li['unitPrice'] for a in made for li in a['lineItems']),
                              [round(1704.46 * 1.3, 2), round(2239.07 * 1.3, 2)], 'a quote each')
@@ -1484,7 +1494,7 @@ class PumpsTest(unittest.TestCase):
         self.assertTrue(body['success'], body)
         self.assertTrue(any(i['kind'] == 'not_draft' and not i['resolved_at'] for i in self.case(q['case_id'])['issues']))
 
-    def test_quote_drafted_on_its_own_like_jobber_quote_9136(self):
+    def test_draft_quote_like_jobber_quote_9136(self):
         """Tom's Carlise quote (Oct 5 2026), as Simon then entered it by hand: Greenscapes, the Carlisle Pump #1
         exit ("back station"), "Proposal to inspect suction line", one Service Proposal Amount line of
         $1,506.69 (Wettech's $1,158.99 tax included, plus 30%), not taxable."""
@@ -1503,7 +1513,8 @@ class PumpsTest(unittest.TestCase):
         P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN
         try:
             res = self.upload(name, data=b'docx bytes')
-            self.assertEqual(res['auto_quote']['quote_number'], '812', res)
+            self.assertIsNone(res['auto_quote'], 'nothing drafted on its own')
+            self.assertEqual(self.draft(res['doc_id'])['quote']['quote_number'], '812')
             attrs = [v for q, v in fake.calls if 'quoteCreate(' in q][0]['attributes']
             self.assertEqual(attrs['clientId'], 'Z2lkOi8vSm9iYmVyL0NsaWVudC80OTAwNzI1OA==', '"Carlisle" is the Greenscapes account')
             self.assertEqual(attrs['propertyId'], 'Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzUyOTc4MjYw', '"back station" is the Pump #1 exit')
@@ -1553,11 +1564,11 @@ class PumpsTest(unittest.TestCase):
         try:
             form = {'file': (io.BytesIO(buf.getvalue()), 'Carslie Back Station .docx')}
             res = self.c.post('/pumps/api/docs', data=form, content_type='multipart/form-data').get_json()['results'][0]
+            self.assertEqual(res['review'], '', 'a Wettech quote read cleanly is trusted')
+            self.assertTrue(res['case_id'])
+            self.assertEqual(self.draft(res['doc_id'])['quote']['quote_number'], '812')
         finally:
             P.JOBBER_STATIC_TOKEN = saved
-        self.assertEqual(res['review'], '', 'a Wettech quote read cleanly is trusted')
-        self.assertTrue(res['case_id'])
-        self.assertEqual(res['auto_quote']['quote_number'], '812', res)
         attrs = [v for q, v in fake.calls if 'quoteCreate(' in q][0]['attributes']
         self.assertEqual((attrs['clientId'], attrs['propertyId']), ('Z2lkOi8vSm9iYmVyL0NsaWVudC80OTAwNzI1OA==', 'Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzUyOTc4MjYw'))
         self.assertEqual(attrs['title'], 'Proposal to pull and inspect suction line')
@@ -1611,20 +1622,55 @@ class PumpsTest(unittest.TestCase):
         t = P.resolve_quote_target({'client_name': 'Ospray Pointe', 'file_name': 'q.pdf'})
         self.assertEqual((t['client_id'], t['property_id']), ('LS1', None), 'two pumps, no hint: a person picks')
 
-    def test_auto_draft_waits_for_a_person_when_unsure(self):
-        self.extracts['q-unsure.pdf'] = extraction('quote', 'Q-140', client='Nowhere Isles', subtotal=700)
-        fake = FakeJobber(clients=[])
+    def test_huntington_6_letter_is_two_quotes(self):
+        """Wettech, Oct 8 2026: a control box at $1,780.11 and "Possibly
+        needed" a new motor at $4,836.90 - two jobs and, once the office
+        clicks Draft quote on each, two quotes."""
+        self.texts['huntington6.pdf'] = (
+            "October 8, 2026\nStahlman England\nAttn: Simon\nRE: Huntington #6\n"
+            "We are pleased to quote you on the following services\n"
+            "Field service to check out #6 pump station, found all of the capacitors and potential relay blown, "
+            "suggest starting with a control box replacement, and testing, if still and issue the motor will most "
+            "likely need to be pulled and replaced.\n\nFurnish and install new 10 HP deluxe control box, wire up "
+            "and test.\n\n                Your Cost ---------------- $ 1780.11\n"
+            "Possibly needed- Field service to pull and inspect pump and motor, replace motor with new 10 HP 230 "
+            "volt 1 PH motor reusing pump end, replace all wire from motor to control box, reinstall, wire up and "
+            "test\n                 Your Cost --------------- $ 4836.90\nPrices include Sales tax\n"
+            "Terms: Net 10 days\n")
+        self.extracts['huntington6.pdf'] = extraction('quote', '', client='Huntington #6', subtotal=6616.01)
+        fake = FakeJobber()
         P.jobber_gql = fake
         P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN
         try:
-            res = self.upload('q-unsure.pdf')
+            doc = self.upload('huntington6.pdf')
+            self.assertEqual(len(doc.get('parts') or []), 1, doc)
+            self.assertFalse([1 for qq, _ in fake.calls if 'quoteCreate(' in qq], 'no quote until Draft quote')
+            self.assertEqual(self.case(doc['case_id'])['vendor_quote_total'], 1780.11)
+            motor = doc['parts'][0]
+            self.draft(doc['doc_id'])
+            self.draft(motor)
         finally:
             P.JOBBER_STATIC_TOKEN = saved
-        self.assertIn('Choose the Jobber client', res['auto_quote']['pending'])
+        made = [v['attributes'] for qq, v in fake.calls if 'quoteCreate(' in qq]
+        self.assertEqual([[li['unitPrice'] for li in a['lineItems']] for a in made],
+                         [[round(1780.11 * 1.3, 2)], [round(4836.90 * 1.3, 2)]])
+
+    def test_quote_is_never_drafted_on_its_own(self):
+        """A vendor quote that reads cleanly waits in To do for the office to
+        click Draft quote - nothing is made in Jobber until then."""
+        self.extracts['q-0141.pdf'] = extraction('quote', 'Q-141', po='PO141', client='Lakeside Pines', subtotal=700)
+        fake = FakeJobber()
+        P.jobber_gql = fake
+        P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN
+        try:
+            res = self.upload('q-0141.pdf', data=self._pdf())
+            self.c.post(f"/pumps/api/docs/{res['doc_id']}/read_again", json={})
+        finally:
+            P.JOBBER_STATIC_TOKEN = saved
+        self.assertTrue(res['case_id'])
         self.assertEqual([q for q, _ in fake.calls if 'quoteCreate(' in q], [])
         queue = self.c.get('/pumps/api/summary').get_json()['queue']
-        d = [d for d in queue['quotes_to_draft'] if d['id'] == res['doc_id']][0]
-        self.assertIn('Choose the Jobber client', d['jobber']['quote_pending']['reason'])
+        self.assertIn(res['doc_id'], [d['id'] for d in queue['quotes_to_draft']])
 
     def test_miramar_is_miromar(self):
         a = P.match_site_alias({'client_name': 'Miramar Lakes', 'file_name': 'Inv_29100.pdf'})
@@ -2090,7 +2136,7 @@ class PumpsTest(unittest.TestCase):
         P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN
         try:
             q = self.upload('q-0950.pdf', data=self._pdf())
-            self.assertEqual(q['auto_quote']['quote_number'], '812')
+            self.assertEqual(self.draft(q['doc_id'])['quote']['quote_number'], '812')
             cid = q['case_id']
             # The client approves quote #812 in Jobber (the sync calls the same thing).
             r = self.c.post(f'/pumps/api/cases/{cid}/approved', json={}).get_json()
@@ -2165,6 +2211,7 @@ class PumpsTest(unittest.TestCase):
         try:
             self.extracts['q-0910.pdf'] = extraction('quote', 'Q-910', po='PO910', client='Lakeside Pines', subtotal=500)
             q = self.upload('q-0910.pdf', data=self._pdf())
+            self.draft(q['doc_id'])
             self.c.post(f"/pumps/api/cases/{q['case_id']}/approved", json={})
             self.assertEqual(self.case(q['case_id'])['jobber']['job']['number'], '14500')
             made = [v for qq, v in fake.calls if 'jobCreate(' in qq][0]
