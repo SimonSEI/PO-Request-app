@@ -1527,7 +1527,7 @@ def _letter_options(text, out):
                       r'(?:needed)?\s*[-–—:]+\s*', '', work, flags=re.I) if optional else work
         items.append({'name': short_name(work) or 'Pump service', 'description': work, 'quantity': 1.0,
                       'unit_price': amount, 'amount': amount, 'taxable': not out['tax_included'], 'is_tax': False,
-                      **({'optional': True} if optional else {})})
+                      'own_price': True, **({'optional': True} if optional else {})})
     if len(items) < 2:
         return False
     required = [i for i in items if not i.get('optional')] or items[:1]
@@ -1542,6 +1542,26 @@ def _letter_options(text, out):
             f"Optional (not in the total): {short_name(i['description'], 80)} - ${i['amount']:,.2f}." for i in opts)
         ).strip()
     return True
+
+
+def _letter_prices(text, x):
+    """After Claude (or anyone) read a vendor letter with several "Your Cost"
+    lines (Lely, Huntington #6): one line per priced piece of work, the
+    "possibly needed" ones optional - whatever the reader made of it."""
+    if x.get('kind') not in ('quote', 'other') or len(_COST_LINE.findall(text or '')) < 2:
+        return x
+    out = {'tax_included': bool(x.get('tax_included')) or bool(re.search(
+        r'\b(?:price|cost)s?\s+includes?\s+(?:the\s+)?sales\s+tax', text, re.I)), 'notes': ''}
+    if not _letter_options(text, out):
+        return x
+    x = dict(x, line_items=out['line_items'], total=out['total'], description=out['description'])
+    if out['tax_included']:
+        x.update(tax_included=True, subtotal=None, tax=None)
+    else:
+        x.update(subtotal=out['total'], tax=None, total=None)
+    notes = [n for n in re.split(r'(?<=\.)\s+', x.get('notes') or '') if not n.startswith('Optional (not in the total)')]
+    x['notes'] = ' '.join(notes + ([out['notes']] if out['notes'] else [])).strip()
+    return x
 
 
 def short_name(text, limit=60):
@@ -1822,7 +1842,7 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
                     review = 'Read without Claude - check the amounts and line items.'
                 elif not (x.get('client_name') or x.get('po_number') or x.get('wo_number')):
                     review = 'Could not find the client, PO or work order - enter it by hand.'
-            x = _clean_extraction(x)
+            x = _letter_prices(text, _clean_extraction(x))
             if kind_hint:
                 x['kind'] = kind_hint
             rec.update({k: v for k, v in x.items() if k in rec})
@@ -1927,7 +1947,7 @@ def reread_doc(doc_id, actor='system'):
         x = _claude_extract(text, doc['email_from'] or '', doc['email_subject'] or '', doc['file_name'])
         if not x:
             raise ValueError('Claude could not read it - check the Anthropic account has credits, then try again.')
-        x = _clean_extraction(x)
+        x = _letter_prices(text, _clean_extraction(x))
         known = _vendor_display(f"{doc['email_from'] or ''}\n{doc['email_subject'] or ''}\n{text[:3000]}")
         review = ''
         if x['kind'] in ('quote', 'bill') and x.get('total') is None and x.get('subtotal') is None:
@@ -1985,6 +2005,7 @@ def read_doc_again(doc_id, actor='system'):
         how = 'claude' if x else 'regex'
         x = _clean_extraction(x or _regex_extract(text, doc['email_from'] or '', doc['email_subject'] or ''))
         x['kind'] = doc['kind']
+        x = _letter_prices(text, x)
         if x.get('total') is None and x.get('subtotal') is None:
             raise ValueError('No amount found reading it again - enter it by hand.')
         desc = (x.get('description') or doc['description'] or '') + (f"\n{x['notes']}" if x.get('notes') else '')
@@ -3178,8 +3199,16 @@ def one_line_items(doc, markup_pct):
         base, taxable = doc['total'], False
     else:
         return []
-    out = [{'name': 'Service Proposal Amount', 'description': '\n'.join(descs)[:2000], 'quantity': 1,
-            'unit_price': round(base * (1 + (markup_pct or 0) / 100), 2), 'taxable': bool(taxable)}]
+    priced = [it for it in lines if it.get('own_price') and amt(it) is not None]
+    if len(priced) >= 2 and len(priced) == len(lines):
+        # A letter quoting several pieces of work, each at its own price
+        # (Lely, Oct 2026): a line each, so the client sees what each costs.
+        out = [{'name': 'Service Proposal Amount', 'description': _strip_vendor(it.get('description') or '')[:2000],
+                'quantity': 1, 'unit_price': round(amt(it) * (1 + (markup_pct or 0) / 100), 2),
+                'taxable': bool(it.get('taxable', taxable))} for it in priced]
+    else:
+        out = [{'name': 'Service Proposal Amount', 'description': '\n'.join(descs)[:2000], 'quantity': 1,
+                'unit_price': round(base * (1 + (markup_pct or 0) / 100), 2), 'taxable': bool(taxable)}]
     # Work the vendor quoted as "possibly needed": its own optional line,
     # marked up the same, not in the quote's total.
     for it in options:

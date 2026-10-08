@@ -765,6 +765,29 @@ class PumpsTest(unittest.TestCase):
         finally:
             P.JOBBER_STATIC_TOKEN = saved
 
+    def test_letter_with_two_prices_read_by_claude_as_one(self):
+        """Lely (Oct 2026): two pieces of work, each with its own "Your Cost".
+        Claude read it as one price; the app still makes a line for each."""
+        self.texts['lely.pdf'] = (
+            "October 8, 2026\nStahlman England\nRE: Lely\nWe are pleased to quote you on the following services\n"
+            "Furnish and install new panel cooling fan in first VFD control panel, wire up and test\n"
+            "\t\t\tYour Cost ---------------- $ 1704.46\n"
+            "Furnish and install new 10 inch wafer check valve on pump #4\n"
+            "                 Your Cost ---------------- $ 2239.07\nPrice includes Sales tax and in freight\n")
+        one = extraction('quote', '', client='Lely', subtotal=1704.46)
+        one.update(total=1704.46, subtotal=None, tax=None, tax_included=True, line_items=[
+            {'name': 'Panel cooling fan', 'description': 'Furnish and install new panel cooling fan', 'quantity': 1,
+             'unit_price': 1704.46, 'amount': 1704.46}])
+        self.extracts['lely.pdf'] = one
+        doc = self.upload('lely.pdf')
+        d = next(x for x in self.case(doc['case_id'])['docs'] if x['id'] == doc['doc_id'])
+        self.assertEqual([i['amount'] for i in d['line_items']], [1704.46, 2239.07])
+        self.assertEqual(d['total'], 3943.53)
+        lines = P.suggest_quote(d)['line_items']
+        self.assertEqual([l['unit_price'] for l in lines], [round(1704.46 * 1.3, 2), round(2239.07 * 1.3, 2)])
+        self.assertIn('check valve', lines[1]['description'])
+        self.assertFalse(any(l['taxable'] for l in lines), 'price already includes sales tax')
+
     def test_duplicates_are_caught(self):
         # 1. Wettech sends invoice #40123 again as a different file: same amount = duplicate, never used again.
         self.extracts['b-40123.pdf'] = extraction('bill', '40123', po='PO777', client='Quail Hollow', subtotal=812.5)
