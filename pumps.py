@@ -1641,6 +1641,7 @@ def split_letter(doc_id, actor='system', full=None):
                 if part_case:
                     conn.execute('UPDATE pump_cases SET vendor_quote_amount=?, vendor_quote_total=? WHERE id=?',
                                  (x['subtotal'], x['total'], part_case))
+                _unhide_doc(conn, have[0])
                 ids.append(have[0])
                 continue
             new = {c: row[c] for c in cols}
@@ -2129,6 +2130,15 @@ def reread_doc(doc_id, actor='system'):
     return out
 
 
+def _unhide_doc(conn, doc_id):
+    """A document sent or read again is wanted: its To do rows (and its
+    item's) come back if they were deleted from the list."""
+    row = conn.execute('SELECT case_id FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+    conn.execute('DELETE FROM pump_todo_hidden WHERE key=?', (f'doc:{doc_id}',))
+    if row and row[0]:
+        conn.execute('DELETE FROM pump_todo_hidden WHERE key LIKE ?', (f'case:{row[0]}:%',))
+
+
 def read_doc_again(doc_id, actor='system'):
     """Read a quote or bill again with today's reader - e.g. a letter with two
     prices read as one before the reader knew better - and update it and its
@@ -2142,6 +2152,7 @@ def read_doc_again(doc_id, actor='system'):
         doc = _doc_dict(row)
         if doc['kind'] not in ('quote', 'bill'):
             raise ValueError('Only quotes and bills are read again here.')
+        _unhide_doc(conn, doc_id)
         if doc['status'] == 'dismissed':
             raise ValueError('This document was dismissed.')
         try:
