@@ -1901,6 +1901,23 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
             pj = json.loads(prev['jobber'] or '{}')
             edited = conn.execute("SELECT 1 FROM pump_events WHERE doc_id=? AND action='document edited'",
                                   (dup['id'],)).fetchone()
+            gone = dup['case_id'] and conn.execute("SELECT 1 FROM pump_cases WHERE id=? AND status='cancelled'",
+                                                   (dup['case_id'],)).fetchone()
+            if gone and prev['kind'] in ('quote', 'bill') and prev['status'] != 'dismissed':
+                # Its item was cancelled: sent again, it starts over on an open
+                # item - without the cancelled item's Jobber quote/invoice.
+                pj = {k: v for k, v in pj.items() if not k.startswith(('quote_', 'invoice_'))}
+                conn.execute("UPDATE pump_docs SET case_id=NULL, status='new', jobber=?, updated_at=? WHERE id=?",
+                             (json.dumps(pj), _now_text(), dup['id']))
+                _event(conn, actor, 'sent again', 'Its item was cancelled - filed again', case_id=dup['case_id'],
+                       doc_id=dup['id'])
+                dup = {'id': dup['id'], 'case_id': None}
+                if edited:
+                    # Corrected by hand: filed as it is, not read again.
+                    dup['case_id'] = file_document(conn, dup['id'], actor)
+                    conn.commit()
+                    return {'doc_id': dup['id'], 'case_id': dup['case_id'], 'kind': prev['kind'], 'review': ''}
+                conn.commit()
             if prev['kind'] in ('quote', 'bill') and prev['status'] != 'dismissed' and not edited and \
                     not pj.get('invoice_id') and (prev['kind'] == 'quote' or not pj.get('quote_id')):
                 # Sent again: read it again with today's reader (it may have
