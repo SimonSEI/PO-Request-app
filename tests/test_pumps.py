@@ -1691,6 +1691,36 @@ class PumpsTest(unittest.TestCase):
         queue = self.c.get('/pumps/api/summary').get_json()['queue']
         self.assertIn(doc['doc_id'], [x['id'] for x in queue['quotes_to_draft']])
 
+    def test_delete_from_to_do_list(self):
+        """The ✕ on a To do row takes it off the list - the job is left as it
+        is, Undo brings the row back, and the job's next step shows again."""
+        self.extracts['q-0142.pdf'] = extraction('quote', 'Q-142', po='PO142', client='Lakeside Pines', subtotal=700)
+        res = self.upload('q-0142.pdf', data=self._pdf())
+        queue = lambda: self.c.get('/pumps/api/summary').get_json()['queue']
+        row = next(d for d in queue()['quotes_to_draft'] if d['id'] == res['doc_id'])
+        self.assertEqual(row['todo_key'], f"doc:{res['doc_id']}")
+        self.assertTrue(self.c.post('/pumps/api/todos/hide', json={'key': row['todo_key']}).get_json()['success'])
+        self.assertNotIn(res['doc_id'], [d['id'] for d in queue()['quotes_to_draft']])
+        self.assertEqual(self.case(res['case_id'])['status'], 'open', 'the job itself is left alone')
+        top = self.c.get('/pumps/api/undo').get_json()['actions'][0]
+        self.assertEqual(top['label'], 'Took a row off the To do list')
+        self.c.post(f"/pumps/api/undo/{top['id']}", json={})
+        self.assertIn(res['doc_id'], [d['id'] for d in queue()['quotes_to_draft']])
+        # An item's row: gone for this step only.
+        j = self.c.post('/pumps/api/cases', json={'title': 'Hide me', 'client_name': 'Quail Run'}).get_json()
+        cid = j.get('case_id') or j['case']['id']
+        rows = lambda: [c for k, v in queue().items() if isinstance(v, list) for c in v
+                        if isinstance(c, dict) and c.get('todo_key', '').startswith(f'case:{cid}:')]
+        key = rows()[0]['todo_key']
+        self.c.post('/pumps/api/todos/hide', json={'key': key})
+        self.assertEqual(rows(), [])
+        conn = P._conn()
+        conn.execute("UPDATE pump_cases SET stage='scheduled' WHERE id=?", (cid,))
+        conn.commit()
+        conn.close()
+        self.assertEqual([r['todo_key'] for r in rows()], [f'case:{cid}:scheduled'])
+        self.assertEqual(self.c.post('/pumps/api/todos/hide', json={'key': "x'; DROP"}).status_code, 400)
+
     def test_quote_is_never_drafted_on_its_own(self):
         """A vendor quote that reads cleanly waits in To do for the office to
         click Draft quote - nothing is made in Jobber until then."""
