@@ -301,6 +301,14 @@ def _vendor_email(vendor_name):
 
 # What the office told us (Oct 2026) about one account's names.
 SEED_SITE_ALIASES = [
+    # The office (Oct 2026): every Huntington quote - "Huntington #6", any
+    # phase or "Residence Assoc." - is for the Lakes Master Association.
+    # Its 41 properties are the pump locations, picked per quote as usual.
+    {'place': 'Huntington', 'area': '', 'client_id': 'Z2lkOi8vSm9iYmVyL0NsaWVudC83NTE2ODg4Nw==',
+     'client_name': 'HUNTINGTON LAKES MASTER ASSOCIATION C/O Moore PM Services', 'property_id': '',
+     'property_label': '', 'any_name': 1, 'not_with': 'Legends',
+     'note': 'All Huntington quotes ("Huntington #6", "Huntington Lakes Phase 3"...) go to the Master '
+             'Association, not the phases. Huntington I/II at the Legends are other clients.'},
     {'place': 'Carlisle', 'area': '', 'client_id': 'Z2lkOi8vSm9iYmVyL0NsaWVudC80OTAwNzI1OA==',
      'client_name': 'Greenscapes', 'property_id': '', 'property_label': '',
      'note': 'The Carlisle (Naples) is on the Greenscapes account.'},
@@ -496,6 +504,18 @@ def init_db():
             c.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass
+    # any_name 1 = the name matches whatever else the vendor adds ("Huntington
+    # #6", "Huntington Lakes Phase 3"), not just the name itself; not_with =
+    # words that mean another client ("Legends").
+    for col, decl in (('any_name', 'INTEGER DEFAULT 0'), ('not_with', "TEXT DEFAULT ''")):
+        try:
+            c.execute(f'ALTER TABLE pump_site_aliases ADD COLUMN {col} {decl}')
+        except sqlite3.OperationalError:
+            pass
+    for a in SEED_SITE_ALIASES:
+        if a.get('any_name'):
+            c.execute('UPDATE pump_site_aliases SET any_name=1, not_with=? WHERE place=? AND area=? AND client_id=?',
+                      (a.get('not_with', ''), a['place'], a['area'], a['client_id']))
     for a in SEED_SITE_ALIASES:
         # A seed fills in a name the office saved without its property.
         c.execute("UPDATE pump_site_aliases SET property_id=?, property_label=? WHERE place=? AND area=? AND "
@@ -1422,6 +1442,8 @@ def _letter_quote(text, out):
     out['tax_included'] = bool(re.search(r'\b(?:price|cost)s?\s+includes?\s+(?:the\s+)?sales\s+tax', text, re.I))
     if out['line_items'] or out['total'] is None:
         return
+    if _letter_options(text, out):
+        return
     m = re.search(r'following\s+(?:services|work|items?)[^\n]*\n(.+?)\n\s*(?:your|total)\s+(?:cost|price)', text,
                   re.I | re.S)
     work = re.sub(r'\s+', ' ', m.group(1)).strip() if m else ''
@@ -1430,6 +1452,50 @@ def _letter_quote(text, out):
     out['line_items'] = [{'name': short_name(work) or 'Pump service', 'description': work, 'quantity': 1.0,
                           'unit_price': out['total'], 'amount': out['total'],
                           'taxable': not out['tax_included'], 'is_tax': False}]
+
+
+_COST_LINE = re.compile(r'^.*?(?:your|total)\s+(?:cost|price)\b[\s\-–—_.:]*\$\s*([\d,]+\.\d{2}).*$', re.I | re.M)
+_OPTIONAL_WORK = re.compile(r'^\s*(?:possibly|if\s+(?:still\s+)?needed|if\s+required|optional|option\b|alternate|'
+                            r'alternative|additional(?:ly)?\s+if)', re.I)
+
+
+def _letter_options(text, out):
+    """A letter with several "Your Cost" lines (Huntington #6, Oct 2026): each
+    is its own piece of work. One starting "Possibly needed", "If needed",
+    "Option"... is optional - quoted, but not in the total. Returns True when
+    it found more than one."""
+    costs = list(_COST_LINE.finditer(text))
+    if len(costs) < 2:
+        return False
+    start = re.search(r'following\s+(?:services|work|items?)[^\n]*\n', text, re.I)
+    pos = start.end() if start else 0
+    items = []
+    for m in costs:
+        work = re.sub(r'\s+', ' ', text[pos:m.start()]).strip()
+        pos = m.end()
+        amount = _money(m.group(1))
+        if not work or amount is None:
+            continue
+        optional = bool(_OPTIONAL_WORK.match(work))
+        work = re.sub(r'^(?:possibly|if\s+(?:still\s+)?needed|if\s+required|optional(?:ly)?|option\s*\d*)\s*'
+                      r'(?:needed)?\s*[-–—:]+\s*', '', work, flags=re.I) if optional else work
+        items.append({'name': short_name(work) or 'Pump service', 'description': work, 'quantity': 1.0,
+                      'unit_price': amount, 'amount': amount, 'taxable': not out['tax_included'], 'is_tax': False,
+                      **({'optional': True} if optional else {})})
+    if len(items) < 2:
+        return False
+    required = [i for i in items if not i.get('optional')] or items[:1]
+    for i in required:
+        i.pop('optional', None)
+    out['line_items'] = items
+    out['total'] = round(sum(i['amount'] for i in required), 2)
+    out['description'] = required[0]['description'][:300]
+    opts = [i for i in items if i.get('optional')]
+    if opts:
+        out['notes'] = ((out.get('notes') or '') + ' ' + ' '.join(
+            f"Optional (not in the total): {short_name(i['description'], 80)} - ${i['amount']:,.2f}." for i in opts)
+        ).strip()
+    return True
 
 
 def short_name(text, limit=60):
@@ -1463,8 +1529,9 @@ def _clean_extraction(x):
         # and our client quote/invoice must not add tax on top of it.
         for it in items:
             it['taxable'] = False
-        if x['total'] is None and len(items) == 1 and items[0].get('amount') is not None:
-            x['total'] = items[0]['amount']
+        if x['total'] is None and len([i for i in items if not i.get('optional')]) == 1 and \
+                [i for i in items if not i.get('optional')][0].get('amount') is not None:
+            x['total'] = [i for i in items if not i.get('optional')][0]['amount']
         if x['subtotal'] is not None and x['tax'] is None and x['total'] is None:
             x['total'], x['subtotal'] = x['subtotal'], None
         if x['tax'] is None:
@@ -1472,7 +1539,7 @@ def _clean_extraction(x):
         if 'includes sales tax' not in (x.get('notes') or '').lower():
             x['notes'] = ((x.get('notes') or '') + ' Price includes sales tax.').strip()
     elif x['subtotal'] is None:
-        priced = [i['amount'] for i in items if not i['is_tax'] and i.get('amount') is not None]
+        priced = [i['amount'] for i in items if not i['is_tax'] and not i.get('optional') and i.get('amount') is not None]
         if priced:
             x['subtotal'] = round(sum(priced), 2)
         elif x['total'] is not None and x['tax'] is not None:
@@ -2694,7 +2761,9 @@ def match_site_alias(doc, case=None, conn=None):
         mine = [w for w in _words(f"{a['place']} {a['area']}")]
         extra = [w for w in _words(named) if w not in ('the', 'at', 'of', 'and', 'a', '-', '@')
                  and not any(_tok_match(w, m) for m in mine)]
-        if extra:
+        if extra and not a.get('any_name'):
+            continue
+        if a.get('not_with') and any(fuzzy_has(w.strip(), hay) for w in a['not_with'].split(',') if w.strip()):
             continue
         rank = (1 if a['area'] else 0, 1 if a['property_id'] else 0)
         if best is None or rank > best[0]:
@@ -2747,11 +2816,24 @@ def resolve_quote_target(doc, case=None):
             if site:
                 narrowed = [p for p in fits if fuzzy_has(site, p['label'])]
                 fits = narrowed or fits
+            by_pump = _pump_number_property(props, f"{_doc_hay(doc, case)} {doc.get('description') or ''}")
+            if by_pump and len(fits) != 1:
+                fits = [by_pump]
             if len(fits) == 1:
                 pick = fits[0]
         if pick:
             out.update(property_id=pick['id'], property_label=pick['label'])
     return out
+
+
+def _pump_number_property(props, text):
+    """The property labelled with the pump number the vendor names ("RE:
+    Huntington #6", "#6 pump station") - "... Lane Pump #6" in Jobber."""
+    nums = {m.group(1) or m.group(2) for m in re.finditer(
+        r'#\s*(\d{1,2})\b|\bpump\s*(?:station\s*)?(?:no\.?\s*|#\s*)?(\d{1,2})\b', text or '', re.I)}
+    hits = [p for p in props for n in nums
+            if re.search(rf'\bpump\s*(?:station\s*)?(?:no\.?\s*|#\s*)?{n}\b', p.get('label') or '', re.I)]
+    return hits[0] if len({p['id'] for p in hits}) == 1 else None
 
 
 def save_site_alias(place, area, client_id, client_name, property_id, property_label, note, actor,
@@ -2882,7 +2964,9 @@ def one_line_items(doc, markup_pct):
     the vendor's work described (without their name), priced at their total
     before tax plus the markup. A price that already includes the vendor's
     sales tax stays not taxable."""
-    lines = [it for it in (doc.get('line_items') or []) if not it.get('is_tax')]
+    every = [it for it in (doc.get('line_items') or []) if not it.get('is_tax')]
+    lines = [it for it in every if not it.get('optional')]
+    options = [it for it in every if it.get('optional')]
     descs = []
     for it in lines:
         d = _strip_vendor((it.get('description') or it.get('name') or '').strip())
@@ -2905,8 +2989,18 @@ def one_line_items(doc, markup_pct):
         base, taxable = doc['total'], False
     else:
         return []
-    return [{'name': 'Service Proposal Amount', 'description': '\n'.join(descs)[:2000], 'quantity': 1,
-             'unit_price': round(base * (1 + (markup_pct or 0) / 100), 2), 'taxable': bool(taxable)}]
+    out = [{'name': 'Service Proposal Amount', 'description': '\n'.join(descs)[:2000], 'quantity': 1,
+            'unit_price': round(base * (1 + (markup_pct or 0) / 100), 2), 'taxable': bool(taxable)}]
+    # Work the vendor quoted as "possibly needed": its own optional line,
+    # marked up the same, not in the quote's total.
+    for it in options:
+        a = amt(it)
+        if a is None:
+            continue
+        out.append({'name': 'Optional - if needed', 'description': _strip_vendor(it.get('description') or '')[:2000],
+                    'quantity': 1, 'unit_price': round(a * (1 + (markup_pct or 0) / 100), 2),
+                    'taxable': bool(it.get('taxable', taxable)), 'optional': True})
+    return out
 
 
 JOB_DETAIL_SPEC = ['id', 'jobNumber', 'title', 'instructions', 'jobStatus', 'jobType', 'jobberWebUri', 'total',
@@ -3005,7 +3099,7 @@ def _jobber_lines(line_items, what):
             continue
         items.append({'name': name[:255], 'description': (it.get('description') or '')[:2000],
                       'quantity': qty, 'unitPrice': price, 'taxable': bool(it.get('taxable', True)),
-                      'saveToProductsAndServices': False})
+                      'saveToProductsAndServices': False, **({'optional': True} if it.get('optional') else {})})
     if not items:
         raise ValueError(f'No line items to put on the {what}')
     return items
@@ -3286,13 +3380,22 @@ def gql_with_lines(query, variables, key):
             return jobber_gql(query, variables)
         except JobberError as e:
             m = _LINE_FIELD_REFUSED.search(str(e))
-            field = m.group(1) if m else next((f for f in ('saveToProductsAndServices', 'taxable')
+            field = m.group(1) if m else next((f for f in ('saveToProductsAndServices', 'taxable', 'optional')
                                                if f in str(e) and f not in dropped), None)
             if not field or field in dropped or field in ('name', 'quantity', 'unitPrice'):
                 raise
             dropped.append(field)
-            variables[key]['lineItems'] = [{k: v for k, v in li.items() if k != field}
-                                           for li in variables[key]['lineItems']]
+            lines = variables[key]['lineItems']
+            if field == 'optional':
+                # No optional lines in this Jobber: never let "possibly needed"
+                # work count in the total - it goes in the main line's text.
+                opts = [li for li in lines if li.get('optional')]
+                lines = [li for li in lines if not li.get('optional')]
+                if opts and lines:
+                    lines[0] = {**lines[0], 'description': (lines[0].get('description', '') + ''.join(
+                        f"\n\nOptional, if needed (not included): {o.get('description') or o['name']} - "
+                        f"${o['unitPrice'] * o.get('quantity', 1):,.2f}" for o in opts))[:2000]}
+            variables[key]['lineItems'] = [{k: v for k, v in li.items() if k != field} for li in lines]
     return jobber_gql(query, variables)
 
 
@@ -3342,7 +3445,7 @@ def create_draft_quote(doc_id, client_id, property_id, line_items, title='', mes
                'quote_drafted_by': actor, 'quote_drafted_at': _now_text()}
         conn.execute('UPDATE pump_docs SET jobber=?, updated_at=? WHERE id=?',
                      (json.dumps({**(doc.get('jobber') or {}), **ref}), _now_text(), doc_id))
-        total = round(sum(i['quantity'] * i['unitPrice'] for i in items), 2)
+        total = round(sum(i['quantity'] * i['unitPrice'] for i in items if not i.get('optional')), 2)
         if doc.get('case_id'):
             cid = doc['case_id']
             case = conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (cid,)).fetchone()
