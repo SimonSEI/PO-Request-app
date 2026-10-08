@@ -1786,6 +1786,26 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
             review = 'Not from a known pump vendor - confirm it belongs here.'
         if rec['kind'] == 'other' and not review:
             review = 'Could not tell whether this is a quote, bill or report.'
+        # The vendor sent this quote/bill before (a new scan, a forward, a
+        # resend): the same number and amount is a duplicate - kept on file but
+        # never used again; a different amount may be a revision - a person decides.
+        dup_of = revised_of = None
+        if rec['kind'] in ('quote', 'bill') and rec['doc_number'] and not case_id:
+            prev = same_vendor_doc(conn, rec['vendor'], rec['kind'], rec['doc_number'])
+            if prev:
+                a = rec['total'] if rec['total'] is not None else rec['subtotal']
+                b = prev['total'] if prev['total'] is not None else prev['subtotal']
+                if a is None or b is None or abs(a - b) <= 0.5:
+                    dup_of = prev
+                    review = (f"Duplicate - {rec['vendor'] or 'the vendor'}'s {rec['kind']} #{rec['doc_number']} is "
+                              f"already on file{' (job ' + str(prev['case_id']) + ')' if prev['case_id'] else ''}. "
+                              'Not used again.')
+                else:
+                    revised_of = prev
+                    word = 'quote' if rec['kind'] == 'quote' else 'invoice'
+                    review = (f"{rec['vendor'] or 'The vendor'} sent {word} #{rec['doc_number']} again with a "
+                              f"different amount (${b:,.2f} before, ${a:,.2f} now) - a revised {word}? Check which "
+                              'is right before using it.')
         now = _now_text()
         conn.execute('''INSERT INTO pump_docs (kind, status, vendor, doc_number, doc_date, po_number, wo_number,
                           quote_ref, ordered_by, client_name, site, category, description, line_items, subtotal,
@@ -1793,7 +1813,8 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
                           text_excerpt, source, email_uid, email_from, email_subject, email_date, case_id,
                           extracted_by, review_reason, created_at, updated_at)
                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-                     (rec['kind'], 'review' if review else 'new', rec['vendor'], rec['doc_number'] or '',
+                     (rec['kind'], 'dismissed' if dup_of else ('review' if review else 'new'), rec['vendor'],
+                      rec['doc_number'] or '',
                       rec['doc_date'] or '', rec['po_number'] or '', rec['wo_number'] or '', rec.get('quote_ref', ''),
                       rec['ordered_by'] or '', rec['client_name'] or '', rec['site'] or '', rec['category'] or '',
                       (rec['description'] or '') + (f"\n{rec['notes']}" if rec.get('notes') else ''),
@@ -1805,6 +1826,14 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
         if rec.get('proposal_title'):
             conn.execute('UPDATE pump_docs SET proposal_title=? WHERE id=?', (rec['proposal_title'][:200], doc_id))
         _event(conn, actor, 'document received', f'{rec["kind"]}: {filename} ({source})', doc_id=doc_id)
+        if dup_of:
+            conn.execute('UPDATE pump_docs SET case_id=? WHERE id=?', (dup_of['case_id'], doc_id))
+            if dup_of['case_id']:
+                _event(conn, actor, 'duplicate received', review, case_id=dup_of['case_id'], doc_id=doc_id)
+            conn.commit()
+            return {'skipped': review, 'doc_id': doc_id, 'case_id': dup_of['case_id'], 'duplicate_of': dup_of['id']}
+        if revised_of and revised_of['case_id']:
+            open_issue(conn, revised_of['case_id'], 'revised_doc', review, doc_id=doc_id)
         filed = None
         # Documents that need a person's eye wait in the inbox unfiled - except
         # reports and anything already pointed at an item.
@@ -2360,6 +2389,7 @@ def _sync_jobber(full=False, actor='system'):
             linked = _link_jobber_items(conn)
             status['errors'] += _refresh_linked_records(conn)
             _follow_invoices(conn)
+            duplicate_jobber_invoices(conn)
             approved = _follow_quotes(conn)
             rebuild_scada(conn)
             conn.commit()
@@ -3213,7 +3243,7 @@ def auto_draft_quote(doc_id, actor='Pumps (automatic)'):
             or (doc.get('jobber') or {}).get('quote_id') \
             or (json.loads(case.get('jobber') or '{}').get('quote') or {}).get('id'):
         return None
-    reason = ''
+    reason, dup = '', None
     try:
         t = resolve_quote_target(doc, case)
         if not t['client_id']:
@@ -3225,11 +3255,14 @@ def auto_draft_quote(doc_id, actor='Pumps (automatic)'):
             res = create_draft_quote(doc_id, t['client_id'], t['property_id'], sugg['line_items'], sugg['title'],
                                      '', actor)
             return {**res, 'how': t['how']}
+    except PossibleDuplicate as e:
+        reason, dup = str(e), e.rec
     except (JobberError, ValueError) as e:
         reason = f'Could not draft it automatically: {e}'
     conn = _conn()
     try:
-        j = {**(doc.get('jobber') or {}), 'quote_pending': {'reason': reason, 'at': _now_text()}}
+        j = {**(doc.get('jobber') or {}), 'quote_pending': {'reason': reason, 'at': _now_text(),
+                                                            **({'possible_duplicate': dup} if dup else {})}}
         conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(j), doc_id))
         _event(conn, actor, 'client quote not drafted', reason, case_id=case['id'], doc_id=doc_id)
         conn.commit()
@@ -3416,7 +3449,114 @@ QUOTE_CREATE = '''mutation PumpsDraftQuote($attributes: QuoteCreateAttributes!) 
 }'''
 
 
-def create_draft_quote(doc_id, client_id, property_id, line_items, title='', message='', actor='system'):
+# ── duplicates ───────────────────────────────────────────────────────────────
+
+DUPLICATE_DAYS = 60   # how far back a Jobber quote/invoice may be "this one"
+
+
+class PossibleDuplicate(ValueError):
+    """Jobber already has a quote/invoice for this client at this price."""
+    def __init__(self, kind, rec):
+        self.kind, self.rec = kind, rec
+        super().__init__(f"Jobber {kind} #{rec.get('number')} for this client ({money_text(rec.get('total'))}, "
+                         f"{(rec.get('status') or '').replace('_', ' ') or 'status unknown'}, {rec.get('created') or ''}) "
+                         f"looks like this one - link it instead, or draft anyway.")
+
+
+def money_text(v):
+    return f'${v:,.2f}' if isinstance(v, (int, float)) else '?'
+
+
+def client_records(client_id, kind):
+    """The client's recent Jobber quotes or invoices: {id, number, status,
+    total, created, uri}. Falls back to what the sync has seen."""
+    field, num, st = ('quotes', 'quoteNumber', 'quoteStatus') if kind == 'quote' else \
+        ('invoices', 'invoiceNumber', 'invoiceStatus')
+    spec = [('id'), (f'{field}(first: 30)', [('nodes', ['id', num, st, 'createdAt', 'jobberWebUri',
+                                                         ('amounts', ['total'])])])]
+
+    def make(fields):
+        return f'query($id: EncodedId!) {{ client(id: $id) {{ {fields} }} }}'
+    try:
+        data, _ = _gql_tolerant(make, spec, {'id': client_id}, required=('id', 'nodes', num))
+        c = data.get('client') or {}
+        nodes = (c.get(f'{field}(first: 30)') or c.get(field) or {}).get('nodes') or []
+        return [{'id': n['id'], 'number': str(n.get(num) or ''), 'status': (n.get(st) or '').lower(),
+                 'total': _money((n.get('amounts') or {}).get('total')), 'created': (n.get('createdAt') or '')[:10],
+                 'uri': n.get('jobberWebUri')} for n in nodes]
+    except JobberError:
+        conn = _conn()
+        try:
+            return [{'id': r['jobber_id'], 'number': r['number'], 'status': r['status'], 'total': r['total'],
+                     'created': (r['created_at'] or '')[:10], 'uri': r['web_uri']}
+                    for r in conn.execute('SELECT * FROM pump_jobber_items WHERE kind=? AND client_id=?',
+                                          (kind, client_id))]
+        finally:
+            conn.close()
+
+
+def existing_jobber_record(kind, client_id, line_items, ignore_ids=()):
+    """A recent Jobber quote/invoice for this client at the price we're about
+    to draft (our lines, or the same plus the client's sales tax) - made by
+    hand, or drafted before. None when there's none."""
+    ours = round(sum(i['quantity'] * i['unitPrice'] for i in line_items if not i.get('optional')), 2)
+    taxed = any(i.get('taxable') for i in line_items if not i.get('optional'))
+    since = (_today() - timedelta(days=DUPLICATE_DAYS)).isoformat()
+    for r in client_records(client_id, kind):
+        if r['id'] in ignore_ids or r['total'] is None or (r['created'] and r['created'] < since):
+            continue
+        if r['status'] in ('archived', 'voided', 'bad_debt', 'rejected'):
+            continue
+        if abs(r['total'] - ours) <= 1 or (taxed and ours < r['total'] <= ours * 1.08 + 1):
+            return r
+    return None
+
+
+def _vendor_doc_key(number):
+    return re.sub(r'[^A-Z0-9]', '', (number or '').upper()).lstrip('0')
+
+
+def same_vendor_doc(conn, vendor, kind, number):
+    """A quote/bill already on file with this vendor's number."""
+    key = _vendor_doc_key(number)
+    if not key:
+        return None
+    for r in conn.execute("SELECT * FROM pump_docs WHERE kind=? AND status != 'dismissed' AND doc_number != '' "
+                          "AND LOWER(vendor)=LOWER(?) ORDER BY id", (kind, vendor or '')):
+        if _vendor_doc_key(r['doc_number']) == key:
+            return dict(r)
+    return None
+
+
+def duplicate_jobber_invoices(conn, days=30):
+    """Two Jobber invoices for the same client at the same amount within
+    `days` of each other: a to-do each, once."""
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM pump_jobber_items WHERE kind='invoice' AND total IS NOT NULL AND client_id != '' "
+        "AND status NOT IN ('voided', 'bad_debt') ORDER BY client_id, created_at")]
+    found = []
+    for i, a in enumerate(rows):
+        for b in rows[i + 1:]:
+            if b['client_id'] != a['client_id'] or abs((a['total'] or 0) - (b['total'] or 0)) > 0.5:
+                continue
+            try:
+                gap = abs((datetime.strptime(b['created_at'][:10], '%Y-%m-%d') -
+                           datetime.strptime(a['created_at'][:10], '%Y-%m-%d')).days)
+            except (TypeError, ValueError):
+                continue
+            if gap > days:
+                continue
+            key = f"dup-invoice:{min(a['jobber_id'], b['jobber_id'])}:{max(a['jobber_id'], b['jobber_id'])}"
+            add_todo(conn, key, f"Possible duplicate invoices: #{a['number']} and #{b['number']} "
+                                f"({a['client_name'] or 'same client'}, {money_text(a['total'])})",
+                     f"Two Jobber invoices for the same client at the same amount, {gap} days apart "
+                     f"({a['created_at'][:10]} and {b['created_at'][:10]}). Check one isn't billed twice.",
+                     {'uri': a['web_uri'] or b['web_uri'] or ''})
+            found.append(key)
+    return found
+
+
+def create_draft_quote(doc_id, client_id, property_id, line_items, title='', message='', actor='system', force=False):
     """Create our quote to the client in Jobber as a DRAFT, from the vendor's
     quote. Nothing is sent: the only mutation used is quoteCreate, which makes
     a draft, and check_mutation_allowed() refuses any other. The office
@@ -3438,6 +3578,10 @@ def create_draft_quote(doc_id, client_id, property_id, line_items, title='', mes
         if not property_id:
             raise ValueError("Choose the client's property first")
         items = _jobber_lines(line_items, 'quote')
+        if not force:
+            dup = existing_jobber_record('quote', client_id, items)
+            if dup:
+                raise PossibleDuplicate('quote', dup)
         attrs = {'clientId': client_id, 'propertyId': property_id, 'title': (title or 'Pump service')[:255],
                  'lineItems': items}
         if message:
@@ -3540,7 +3684,7 @@ def _enum_values(name):
     return _SCHEMA_CACHE[key]
 
 
-def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', actor='system'):
+def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', actor='system', force=False):
     """Create the invoice in Jobber as a DRAFT. Nothing is sent: the only
     mutation used is invoiceCreate, and check_mutation_allowed() refuses any
     other. If Jobber ever hands back a status other than draft, an issue is
@@ -3558,6 +3702,10 @@ def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', a
         if not client_id:
             raise ValueError('Choose the Jobber client first')
         items = _jobber_lines(line_items, 'invoice')
+        if not force:
+            dup = existing_jobber_record('invoice', client_id, items)
+            if dup:
+                raise PossibleDuplicate('invoice', dup)
         due = invoice_due_details()
         inp = {'clientId': client_id, 'subject': (subject or 'Pump service')[:255], 'dueDetails': due,
                'tax': {'taxCalculationMethod': 'EXCLUSIVE'}, 'lineItems': items}
@@ -4714,8 +4862,12 @@ def h_doc_invoice(actor, doc_id):
     if job_id is None:
         job_id = (json.loads(case.get('jobber') or '{}').get('job') or {}).get('id') or \
             ((sugg.get('job') or {}).get('id') if (sugg.get('client_id') in (None, client_id)) else '') or ''
-    res = create_draft_invoice(doc_id, client_id, data.get('line_items') or sugg['line_items'],
-                               data.get('subject') or sugg['subject'], job_id or '', actor)
+    try:
+        res = create_draft_invoice(doc_id, client_id, data.get('line_items') or sugg['line_items'],
+                                   data.get('subject') or sugg['subject'], job_id or '', actor,
+                                   force=bool(data.get('force')))
+    except PossibleDuplicate as e:
+        return {'success': False, 'possible_duplicate': e.rec, 'error': str(e)}, 409
     if sugg.get('job') and job_id == sugg['job']['id']:
         invoiced_on_job(doc, case, sugg['job'], actor)
     return {'invoice': res}
@@ -4792,8 +4944,12 @@ def h_doc_quote(actor, doc_id):
                     'error': "Choose the client's property for the quote." if props else
                              'This client has no property in Jobber - add one in Jobber first.'}, 409
     sugg = suggest_quote(doc, case)
-    res = create_draft_quote(doc_id, client_id, property_id, data.get('line_items') or sugg['line_items'],
-                             data.get('title') or sugg['title'], data.get('message') or '', actor)
+    try:
+        res = create_draft_quote(doc_id, client_id, property_id, data.get('line_items') or sugg['line_items'],
+                                 data.get('title') or sugg['title'], data.get('message') or '', actor,
+                                 force=bool(data.get('force')))
+    except PossibleDuplicate as e:
+        return {'success': False, 'possible_duplicate': e.rec, 'error': str(e)}, 409
     rem = data.get('remember') or {}
     if rem.get('place'):
         save_site_alias(rem.get('place'), rem.get('area'), client_id, rem.get('client_name'), property_id,
@@ -7050,7 +7206,7 @@ def auto_draft_invoice(doc_id, actor='Pumps (automatic)'):
             invoiced_on_job(doc, case, sugg['job'], actor)
             return {**res, 'job': sugg['job']}
         except (JobberError, ValueError) as e:
-            return {'pending': str(e)}
+            return _invoice_pending(doc_id, e)
     try:
         lines = fetch_quote_lines(q['id'])
         if not lines or not lines['line_items']:
@@ -7061,7 +7217,25 @@ def auto_draft_invoice(doc_id, actor='Pumps (automatic)'):
         return create_draft_invoice(doc_id, client_id, lines['line_items'], subject,
                                     (j.get('job') or {}).get('id') or '', actor)
     except (JobberError, ValueError) as e:
-        return {'pending': str(e)}
+        return _invoice_pending(doc_id, e)
+
+
+def _invoice_pending(doc_id, err):
+    """Why the bill's invoice wasn't drafted by itself - shown on the to-do."""
+    out = {'pending': str(err)}
+    if isinstance(err, PossibleDuplicate):
+        conn = _conn()
+        try:
+            row = conn.execute('SELECT jobber, case_id FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+            j = {**json.loads(row['jobber'] or '{}'),
+                 'invoice_pending': {'reason': str(err), 'at': _now_text(), 'possible_duplicate': err.rec}}
+            conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(j), doc_id))
+            _event(conn, 'Pumps', 'invoice not drafted', str(err), case_id=row['case_id'], doc_id=doc_id)
+            conn.commit()
+        finally:
+            conn.close()
+        out['possible_duplicate'] = err.rec
+    return out
 
 
 # ── service-call emails: a visit on the client's maintenance job ─────────────

@@ -676,6 +676,57 @@ class PumpsTest(unittest.TestCase):
         # Other site names still don't match a name with words of its own.
         self.assertIsNone(P.match_site_alias({'client_name': 'Carlisle Golf Club', 'file_name': 'q.pdf'}))
 
+    def test_duplicates_are_caught(self):
+        # 1. Wettech sends invoice #40123 again as a different file: same amount = duplicate, never used again.
+        self.extracts['b-40123.pdf'] = extraction('bill', '40123', po='PO777', client='Quail Hollow', subtotal=812.5)
+        self.extracts['b-40123 resent.pdf'] = extraction('bill', '40123', po='PO777', client='Quail Hollow', subtotal=812.5)
+        first = self.upload('b-40123.pdf')
+        again = self.upload('b-40123 resent.pdf')
+        self.assertIn('Duplicate', again.get('skipped', ''), again)
+        self.assertEqual(again['case_id'], first['case_id'])
+        q = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertEqual([d['id'] for d in q['bills_to_draft'] if d['doc_number'] == '40123'], [first['doc_id']],
+                         'only one copy is offered for an invoice')
+        # A different amount on the same number: a revised invoice? - a person decides.
+        self.extracts['b-40123 v2.pdf'] = extraction('bill', '40123', po='PO777', client='Quail Hollow', subtotal=900)
+        rev = self.upload('b-40123 v2.pdf')
+        self.assertIn('different amount', rev['review'])
+        self.assertTrue(any(i['kind'] == 'revised_doc' for i in self.case(first['case_id'])['issues']))
+
+        # 2. Jobber already has a quote for this client at this price (made by hand): don't draft another.
+        self.extracts['q-0901.pdf'] = extraction('quote', 'Q-901', po='PO901', client='Lakeside Pines', subtotal=1000)
+        q1 = self.upload('q-0901.pdf')
+
+        class HasQuote(FakeJobber):
+            def __call__(self, query, variables=None):
+                if 'quotes(first: 30)' in query:
+                    return {'client': {'id': 'C1', 'quotes(first: 30)': {'nodes': [
+                        {'id': 'QH', 'quoteNumber': 9200, 'quoteStatus': 'awaiting_response',
+                         'createdAt': P._today().isoformat() + 'T10:00:00Z', 'amounts': {'total': 1300.0}}]}}}
+                return super().__call__(query, variables)
+        P.jobber_gql = HasQuote()
+        r = self.c.post(f"/pumps/api/docs/{q1['doc_id']}/quote", json={'client_id': 'C1', 'property_id': 'P1'})
+        self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
+        self.assertEqual(r.get_json()['possible_duplicate']['number'], '9200')
+        self.assertFalse(any('quoteCreate(' in qq for qq, _ in P.jobber_gql.calls), 'nothing drafted')
+        r = self.c.post(f"/pumps/api/docs/{q1['doc_id']}/quote", json={'client_id': 'C1', 'property_id': 'P1', 'force': True})
+        self.assertEqual(r.status_code, 200, 'drafted anyway when asked')
+
+        # 3. Two Jobber invoices for the same client and amount, close together: a to-do.
+        conn = P._conn()
+        try:
+            for jid, num, day in (('IA', '7001', '2026-09-02'), ('IB', '7002', '2026-09-10'), ('IC', '7003', '2026-12-30')):
+                conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, status, total, client_id, "
+                             "client_name, created_at) VALUES (?, 'invoice', ?, 'awaiting_payment', 450.0, 'CQ', "
+                             "'Quail Run', ?)", (jid, num, day + 'T12:00:00Z'))
+            found = P.duplicate_jobber_invoices(conn)
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(found, ['dup-invoice:IA:IB'])
+        titles = [t['title'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
+        self.assertTrue(any('#7001 and #7002' in t for t in titles), titles)
+
     def test_follow_up_before_a_service_comes_due(self):
         def todos():
             return {t['title']: t for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']}

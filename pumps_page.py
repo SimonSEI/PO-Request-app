@@ -456,10 +456,10 @@ async function loadToday(){
   q.vendor_bills_to_pay.forEach(c => urgent.push(todoItem('Pay ' + esc(c.vendor || 'Wettech'), 'r', caseTitle(c), `${esc(c.vendor || 'Wettech')} bill ${c.vendor_bill_number ? '#' + esc(c.vendor_bill_number) + ' · ' : ''}${money(c.vendor_bill_total ?? c.vendor_bill_amount)} · the client paid our invoice${c.sei_invoice_number ? ' #' + esc(c.sei_invoice_number) : ''}${(c.pay_email || {}).sent ? `<br><b class="ok">✓ Emailed Christian ${esc(c.pay_email.at.slice(0, 16))}</b>` : (c.pay_email || {}).error ? `<br><b class="bad">Email not sent: ${esc(c.pay_email.error)}</b>` : ''}`, open(c),
     `<button class="btn s p" onclick="sendPayEmail(${c.id}, this)">✉ ${(c.pay_email || {}).sent ? 'Send again' : 'Send email'}</button><button class="btn s" onclick="payEmail(${c.id})">Preview</button><button class="btn s" onclick="markVendorPaid(${c.id})">Mark paid</button>`)));
   q.scada_attention.filter(s => s.state === 'overdue').forEach(s => urgent.push(todoItem('SCADA overdue', 'r', esc(s.client_name) + (s.site ? ' · ' + esc(s.site) : ''), 'Renewal overdue since ' + esc(s.next_due_on) + (s.state_note ? ' · ' + esc(s.state_note) : '') + followUp(s.follow_up), "showTab('scada')", '')));
-  q.bills_to_draft.forEach(d => todo.push(todoItem('Draft invoice', 'a', esc(d.client_name || d.file_name), `${esc(d.vendor)} bill #${esc(d.doc_number)} · ${money(d.total)}`, `openCase(${d.case_id})`,
-    `<button class="btn s p" onclick="draftInvoice(${d.id})">Draft invoice</button>`)));
+  q.bills_to_draft.forEach(d => { const ip = (d.jobber || {}).invoice_pending || {}; todo.push(todoItem('Draft invoice', 'a', esc(d.client_name || d.file_name), `${esc(d.vendor)} bill #${esc(d.doc_number)} · ${money(d.total)}${ip.reason ? ' · <b class="warn">' + esc(ip.reason) + '</b>' : ''}`, `openCase(${d.case_id})`,
+    `<button class="btn s p" onclick="draftInvoice(${d.id})">Draft invoice</button>${(ip.possible_duplicate || {}).uri ? `<a class="btn s" target="_blank" rel="noopener" href="${esc(ip.possible_duplicate.uri)}">Open #${esc(ip.possible_duplicate.number)} ↗</a>` : ''}`)); });
   q.quotes_to_draft.forEach(d => todo.push(todoItem('Draft quote', 'a', esc(d.client_name || d.file_name), `${esc(d.vendor)} quote ${d.doc_number ? '#' + esc(d.doc_number) + ' ' : ''}· ${money(d.subtotal ?? d.total)}${((d.jobber || {}).quote_pending || {}).reason ? ' · <b class="warn">' + esc(d.jobber.quote_pending.reason) + '</b>' : ''}`, `openCase(${d.case_id})`,
-    `<button class="btn s p" onclick="draftQuote(${d.id})">Draft quote</button>`)));
+    `<button class="btn s p" onclick="draftQuote(${d.id})">Draft quote</button>${(((d.jobber || {}).quote_pending || {}).possible_duplicate || {}).number ? `<button class="btn s" onclick="linkQuoteNumber(${d.case_id}, '${esc(d.jobber.quote_pending.possible_duplicate.number)}')">Link #${esc(d.jobber.quote_pending.possible_duplicate.number)}</button>` : ''}`)));
   q.to_quote_client.forEach(c => todo.push(todoItem('Send quote', 'a', caseTitle(c), caseSub(c, 'send our quote to the client in Jobber') + followUp(c.follow_up), open(c), doDone(c))));
   q.needs_scheduling.forEach(c => todo.push(todoItem('Schedule', 'a', caseTitle(c), caseSub(c, 'client approved - get it on ' + esc(c.vendor || 'Wettech') + "'s calendar" + (c.scheduled_for ? ' · for ' + esc(c.scheduled_for) : '')), open(c), '')));
   q.ready_to_close.forEach(c => todo.push(todoItem('Send invoice', 'a', caseTitle(c), caseSub(c, 'send the invoice from Jobber' + (c.sei_invoice_number ? ' · #' + esc(c.sei_invoice_number) : '')) + followUp(c.follow_up), open(c), doDone(c))));
@@ -672,6 +672,11 @@ async function markVendorPaid(id){
   if (curCase && curCase.id === id) { curCase = j.case; renderCase(); } else loadToday();
 }
 async function patchCase(data){ const j = await api('/cases/' + curCase.id, {method:'PATCH', body:data}); if (j.success) { curCase = j.case; renderCase(); } else toast(j.error || 'Not saved', true); return j; }
+async function linkQuoteNumber(id, n){
+  const j = await api('/cases/' + id + '/jobber_quote', {method:'POST', body:{number: n}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast(`Now following Jobber quote #${j.quote.number}`); loadToday();
+}
 async function linkQuote(id){
   const n = prompt('Jobber quote number this job should follow (e.g. 9136):', '');
   if (!n || !n.trim()) return;
@@ -851,12 +856,19 @@ async function findClients(){
   if (inv.mode === 'quote') quoteProps();
 }
 function pickClient(el, id){ inv.client_id = id; document.querySelectorAll('#cands .cand').forEach(c => { c.classList.remove('on'); c.querySelector('input').checked = false; }); el.classList.add('on'); el.querySelector('input').checked = true; if (inv.mode === 'quote') quoteProps(); }
+// Jobber already has a quote/invoice for this client at this price.
+function confirmDuplicate(j){
+  const d = j.possible_duplicate || {};
+  return confirm(`Jobber already has ${j.error.includes('invoice #') ? 'invoice' : 'quote'} #${d.number} for this client at ${money(d.total)} (${(d.status || '').replace(/_/g, ' ')}, ${d.created || ''}).\n\nOK = draft a new one anyway.\nCancel = don't - open it in Jobber${j.error.includes('quote #') ? ', or link it to the job with "Use a different Jobber quote…"' : ''}.`);
+}
 async function createInvoice(){
   if (!inv.client_id) { toast('Choose the Jobber client first.', true); return; }
   const btn = document.getElementById('invGo'); btn.disabled = true; btn.textContent = 'Creating draft…';
-  const j = await api('/docs/' + inv.doc.id + '/invoice', {method:'POST', body:{client_id: inv.client_id, client_name: ((document.querySelector('#cands .cand.on b') || {}).textContent || ''), job_id: inv.job ? inv.job.id : (inv.dropped ? '' : null), line_items: inv.lines, subject: document.getElementById('invSubject').value}});
+  const ibody = {client_id: inv.client_id, client_name: ((document.querySelector('#cands .cand.on b') || {}).textContent || ''), job_id: inv.job ? inv.job.id : (inv.dropped ? '' : null), line_items: inv.lines, subject: document.getElementById('invSubject').value};
+  let j = await api('/docs/' + inv.doc.id + '/invoice', {method:'POST', body: ibody});
+  if (!j.success && j.possible_duplicate && confirmDuplicate(j)) j = await api('/docs/' + inv.doc.id + '/invoice', {method:'POST', body: {...ibody, force: true}});
   btn.disabled = false; btn.textContent = 'Create draft in Jobber';
-  if (!j.success) { toast(j.error, true); return; }
+  if (!j.success) { if (!j.possible_duplicate) toast(j.error, true); return; }
   closeModal();
   toast(`Draft invoice #${j.invoice.invoice_number} created in Jobber (${j.invoice.invoice_status || 'draft'}). Review and send it from Jobber.`);
   if (inv.doc.case_id) openCase(inv.doc.case_id); else loadToday();
@@ -918,9 +930,10 @@ async function createQuote(){
     const cand = document.querySelector('#cands .cand.on b'), prop = (inv.props || []).find(p => p.id === inv.property_id);
     body.remember = {place: document.getElementById('qPlace').value.trim(), area: document.getElementById('qArea').value.trim(), client_name: cand ? cand.textContent : '', property_label: prop ? prop.label : ''};
   }
-  const j = await api('/docs/' + inv.doc.id + '/quote', {method:'POST', body});
+  let j = await api('/docs/' + inv.doc.id + '/quote', {method:'POST', body});
+  if (!j.success && j.possible_duplicate && confirmDuplicate(j)) j = await api('/docs/' + inv.doc.id + '/quote', {method:'POST', body: {...body, force: true}});
   btn.disabled = false; btn.textContent = 'Create draft quote in Jobber';
-  if (!j.success) { toast(j.error, true); return; }
+  if (!j.success) { if (!j.possible_duplicate) toast(j.error, true); return; }
   closeModal();
   toast(`Draft quote #${j.quote.quote_number} created in Jobber (${j.quote.quote_status || 'draft'}). Review and send it from Jobber.`);
   if (inv.doc.case_id) openCase(inv.doc.case_id); else loadToday();
