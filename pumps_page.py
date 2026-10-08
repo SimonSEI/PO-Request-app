@@ -1300,7 +1300,15 @@ async function scanNow(){
   const j = await api('/scan', {method:'POST', body:{}});
   if (!j.success) { toast(j.error, true); b.disabled = false; return; }
   updateScanInfo({state:'running'});
-  const poll = setInterval(async () => { const s = await api('/scan'); if ((s.status || {}).state !== 'running') { clearInterval(poll); b.disabled = false; updateScanInfo(s.status); toast(`Scan done - ${(s.status||{}).documents_added || 0} new documents`); showTab(curTab); } }, 3000);
+  const poll = setInterval(async () => { const s = await api('/scan'); if ((s.status || {}).state !== 'running') { clearInterval(poll); b.disabled = false; scanDone(s.status || {}); } }, 3000);
+}
+function scanDone(s){
+  updateScanInfo(s); loadToday(); showTab(curTab);
+  const sk = (s.skipped_files || []).filter(f => f.why !== 'not pump related');
+  let msg = `Scan done - ${s.documents_added || 0} new document${s.documents_added === 1 ? '' : 's'}`;
+  if (s.read_again) msg += `, ${s.read_again} read again`;
+  if (!sk.length) { toast(msg + (s.documents_added ? ' - see the to-do list.' : '. Emails already scanned are not looked at again - use Upload or Read again for those.')); return; }
+  openModal('Scan done', `<p>${esc(msg)}.</p><p>Not added:</p><ul>${sk.map(f => `<li><b>${esc(f.file)}</b> - ${esc(f.why)}${f.case_id ? ` <a href="#" onclick="event.preventDefault();closeModal();openCase(${f.case_id})">open job #${f.case_id}</a>` : ''}</li>`).join('')}</ul>`);
 }
 
 // ── modal ─────────────────────────────────────────────
