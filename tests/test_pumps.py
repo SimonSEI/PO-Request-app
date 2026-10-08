@@ -1670,6 +1670,24 @@ class PumpsTest(unittest.TestCase):
         d = next(x for x in new['docs'] if x['id'] == doc['doc_id'])
         self.assertNotIn('quote_id', d['jobber'])
         self.assertEqual(again.get('parts'), [motor])
+        # Both items cancelled, the letter uploaded again: both pieces back in To do.
+        conn = P._conn()
+        motor_case = conn.execute('SELECT case_id FROM pump_docs WHERE id=?', (motor,)).fetchone()[0]
+        conn.close()
+        for cid in (again['case_id'], motor_case):
+            self.c.post(f"/pumps/api/cases/{cid}/delete", json={'reason': 'start over'})
+        P.JOBBER_STATIC_TOKEN = 'test-token'
+        try:
+            third = self.upload('huntington6.pdf')
+        finally:
+            P.JOBBER_STATIC_TOKEN = saved
+        conn = P._conn()
+        new_motor_case = conn.execute('SELECT case_id FROM pump_docs WHERE id=?', (motor,)).fetchone()[0]
+        conn.close()
+        self.assertNotEqual(new_motor_case, motor_case)
+        self.assertEqual(self.case(new_motor_case)['status'], 'open')
+        queue = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertTrue({third['doc_id'], motor} <= {x['id'] for x in queue['quotes_to_draft']})
         queue = self.c.get('/pumps/api/summary').get_json()['queue']
         self.assertIn(doc['doc_id'], [x['id'] for x in queue['quotes_to_draft']])
 
