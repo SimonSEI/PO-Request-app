@@ -1566,19 +1566,22 @@ def _letter_prices(text, x):
 
 
 def _letter_parts(items):
-    """The separately priced, not-optional pieces of work on a vendor letter."""
-    return [i for i in items or [] if i.get('own_price') and not i.get('optional') and not i.get('is_tax')]
+    """The separately priced pieces of work on a vendor letter - "possibly
+    needed" ones too: each is its own quote to the client (Oct 2026)."""
+    return [i for i in items or [] if i.get('own_price') and not i.get('is_tax')]
 
 
 def _letter_part(x, part):
     """One piece of work from a letter quoting several (Lely, Oct 2026): each
-    is its own job and its own quote to the client. Optional work stays with
-    the first. x unchanged when the letter has only one price."""
+    is its own job and its own quote to the client - "possibly needed" work
+    too (Huntington #6). x unchanged when the letter has only one price."""
     parts = _letter_parts(x.get('line_items'))
     if len(parts) < 2 or part >= len(parts):
         return x
-    it = parts[part]
-    items = [it] + ([i for i in x['line_items'] if i.get('optional')] if part == 0 else [])
+    it = {k: v for k, v in parts[part].items() if k != 'optional'}
+    if parts[part].get('optional'):
+        it['description'] = 'If needed: ' + (it.get('description') or '')
+    items = [it]
     tax_in = bool(x.get('tax_included')) or x.get('subtotal') is None
     return dict(x, line_items=items, description=(it.get('description') or '')[:300], tax=None,
                 subtotal=None if tax_in else it['amount'], total=it['amount'] if tax_in else None)
@@ -3663,6 +3666,12 @@ def fetch_quote_lines(quote_id):
     return None
 
 
+def _line_print(lines):
+    """What a quote's lines are, to tell later whether someone changed it in
+    Jobber: [[name, price], ...] sorted."""
+    return sorted([str(li.get('name') or '').strip(), round(float(li.get('unitPrice') or 0), 2)] for li in lines or [])
+
+
 QUOTE_ADD_LINES = ('quoteCreateLineItems',)
 QUOTE_REMOVE_LINES = ('quoteDeleteLineItems',)
 
@@ -3702,7 +3711,7 @@ def update_draft_quote(doc_id, actor='Pumps (automatic)'):
     left = f"Our Jobber quote #{num} was made from the old reading - fix it in Jobber."
     try:
         data = jobber_gql('query($id: EncodedId!) { quote(id: $id) { quoteNumber quoteStatus '
-                          'lineItems { nodes { id } } } }', {'id': qid})
+                          'lineItems { nodes { id name unitPrice } } } }', {'id': qid})
     except JobberError as e:
         return {'note': f'{left} (Jobber: {e})'}
     q = data.get('quote') or {}
@@ -3710,7 +3719,13 @@ def update_draft_quote(doc_id, actor='Pumps (automatic)'):
     if status != 'draft':
         return {'note': f"Our Jobber quote #{num} is already {status.replace('_', ' ') or 'gone'} - "
                         "fix it in Jobber if the new reading changes it."}
-    old_ids = [n['id'] for n in ((q.get('lineItems') or {}).get('nodes') or []) if n.get('id')]
+    nodes = (q.get('lineItems') or {}).get('nodes') or []
+    if not j.get('quote_lines') or _line_print(nodes) != j['quote_lines']:
+        # Made or changed by a person in Jobber (or before the app kept track):
+        # theirs - never overwritten.
+        return {'note': f"Our Jobber quote #{num} was set up or changed by hand in Jobber, so it was left as it is"
+                        " - change it there if the new reading should change it."}
+    old_ids = [n['id'] for n in nodes if n.get('id')]
     sugg = suggest_quote(doc, case)
     lines = _jobber_lines(sugg['line_items'], 'quote')
     try:
@@ -3724,6 +3739,9 @@ def update_draft_quote(doc_id, actor='Pumps (automatic)'):
     total = sum(li['unitPrice'] * li['quantity'] for li in lines if not li.get('optional'))
     conn = _conn()
     try:
+        dj = json.loads(conn.execute('SELECT jobber FROM pump_docs WHERE id=?', (doc_id,)).fetchone()[0] or '{}')
+        dj['quote_lines'] = _line_print(lines) if removed is not None else None
+        conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(dj), doc_id))
         cj = json.loads(case.get('jobber') or '{}') if case else {}
         if (cj.get('quote') or {}).get('id') == qid:
             cj['quote']['total'] = round(total, 2)
@@ -4045,7 +4063,8 @@ def create_draft_quote(doc_id, client_id, property_id, line_items, title='', mes
         status = (q.get('quoteStatus') or '').lower()
         ref = {'quote_id': q.get('id'), 'quote_number': str(q.get('quoteNumber') or ''), 'quote_status': status,
                'quote_uri': q.get('jobberWebUri'), 'client_id': client_id, 'property_id': property_id,
-               'quote_drafted_by': actor, 'quote_drafted_at': _now_text()}
+               'quote_drafted_by': actor, 'quote_drafted_at': _now_text(),
+               'quote_lines': _line_print(attrs.get('lineItems') or items)}
         conn.execute('UPDATE pump_docs SET jobber=?, updated_at=? WHERE id=?',
                      (json.dumps({**(doc.get('jobber') or {}), **ref}), _now_text(), doc_id))
         total = round(sum(i['quantity'] * i['unitPrice'] for i in items if not i.get('optional')), 2)

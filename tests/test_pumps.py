@@ -717,6 +717,7 @@ class PumpsTest(unittest.TestCase):
 
         class Fake(FakeJobber):
             status = 'draft'
+            lines = [{'name': 'Service Proposal Amount', 'unitPrice': 650.0}]   # as the app made it
 
             def __call__(self, query, variables=None):
                 if '__schema' in query:
@@ -736,7 +737,7 @@ class PumpsTest(unittest.TestCase):
                     return {name: {'quote': {'id': 'Q1'}, 'userErrors': []}}
                 if 'quoteStatus lineItems' in query:
                     return {'quote': {'quoteNumber': 812, 'quoteStatus': self.status,
-                                      'lineItems': {'nodes': [{'id': 'L-old'}]}}}
+                                      'lineItems': {'nodes': [dict(l, id='L-old') for l in self.lines]}}}
                 return super().__call__(query, variables)
         P._SCHEMA_CACHE.clear()
         fake = Fake()
@@ -755,7 +756,15 @@ class PumpsTest(unittest.TestCase):
             removed = [v for qq, v in fake.calls if 'quoteDeleteLineItems(' in qq][0]
             self.assertEqual(removed['lineItemIds'], ['L-old'])
             self.assertEqual(self.case(q['case_id'])['jobber']['quote']['total'], 1040.0)
+            # Changed by hand in Jobber since: left alone.
+            fake.lines = [{'name': 'Service Proposal Amount', 'unitPrice': 999.0}]
+            fake.calls.clear()
+            r = self.c.post(f"/pumps/api/docs/{q['doc_id']}/read_again", json={}).get_json()
+            self.assertFalse(r.get('updated'))
+            self.assertIn('by hand', r['note'])
+            self.assertFalse([1 for qq, _ in fake.calls if 'LineItems(' in qq])
             # Once it's sent, it is left alone.
+            fake.lines = [{'name': 'Service Proposal Amount', 'unitPrice': 1040.0}]
             fake.status = 'awaiting_response'
             fake.calls.clear()
             r = self.c.post(f"/pumps/api/docs/{q['doc_id']}/read_again", json={}).get_json()
@@ -994,9 +1003,15 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual([i.get('optional', False) for i in x['line_items']], [False, True])
         self.assertTrue(x['line_items'][1]['description'].startswith('Field service to pull and inspect'))
         self.assertIn('Optional (not in the total)', x['notes'])
-        lines = P.one_line_items(x, 30)
-        self.assertEqual([(l['name'], l['unit_price'], l.get('optional', False)) for l in lines],
-                         [('Service Proposal Amount', 2314.14, False), ('Optional - if needed', 6287.97, True)])
+        # Two quotes to the client, not one with an optional line: the motor
+        # job is its own quote, marked "If needed".
+        first, motor = P._letter_part(x, 0), P._letter_part(x, 1)
+        self.assertEqual([(l['name'], l['unit_price']) for l in P.one_line_items(first, 30)],
+                         [('Service Proposal Amount', 2314.14)])
+        lines = P.one_line_items(motor, 30)
+        self.assertEqual([(l['name'], l['unit_price']) for l in lines], [('Service Proposal Amount', 6287.97)])
+        self.assertTrue(lines[0]['description'].startswith('If needed: Field service to pull'))
+        self.assertEqual((first['total'], motor['total']), (1780.11, 4836.9))
         # The client: the Master Association, whatever Wettech calls it.
         master = 'Z2lkOi8vSm9iYmVyL0NsaWVudC83NTE2ODg4Nw=='
         for name in ('Huntington #6', 'Huntington Lakes Residence Assoc.', 'HUNTINGTON LAKES PHASE 5 C/O ABILITY'):
@@ -1024,7 +1039,9 @@ class PumpsTest(unittest.TestCase):
         real = P.jobber_gql
         P.jobber_gql = jobber
         try:
-            P.gql_with_lines(P.QUOTE_CREATE, {'attributes': {'lineItems': P._jobber_lines(lines, 'quote')}}, 'attributes')
+            # (an optional line still happens: a letter quoting one job and its options, read as one)
+            P.gql_with_lines(P.QUOTE_CREATE, {'attributes': {'lineItems': P._jobber_lines(P.one_line_items(x, 30),
+                                                                                         'quote')}}, 'attributes')
         finally:
             P.jobber_gql = real
         self.assertEqual(len(sent[0]), 1)
