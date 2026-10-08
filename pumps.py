@@ -221,7 +221,7 @@ def _conn():
 # scan, the Jobber sync and other background work are never recorded.
 UNDO_TABLES = ('pump_cases', 'pump_docs', 'pump_issues', 'pump_events', 'pump_scada', 'pump_client_contacts',
                'pump_jobber_items', 'pump_site_aliases', 'pump_todos', 'pump_dive_sites', 'pump_scada_accounts',
-               'pump_maint_accounts')
+               'pump_maint_accounts', 'pump_todo_hidden')
 _UNDO_ACTION = contextvars.ContextVar('pump_undo_action', default=0)
 
 
@@ -4486,6 +4486,28 @@ def work_queue(conn):
         sc['follow_up'] = follow_up_for(conn, sc)
     new_requests = untracked_jobber_items(conn)
     stale = [c for c in cases if c['idle_days'] >= STALE_DAYS]
+    todos = [_todo_dict(r) for r in conn.execute("SELECT * FROM pump_todos WHERE done_at IS NULL "
+                                                 "ORDER BY COALESCE(NULLIF(due_on, ''), created_at), id")]
+    # Each row's key for the ✕ (take it off the To do list); rows taken off are left out.
+    hidden = {r[0] for r in conn.execute('SELECT key FROM pump_todo_hidden')}
+
+    def keep(rows, key):
+        out = []
+        for r in rows:
+            k = key(r)
+            if k not in hidden:
+                out.append({**r, 'todo_key': k})
+        return out
+    stage_key = lambda c: f"case:{c['id']}:{c['stage']}"
+    doc_key = lambda d: f"doc:{d['id']}"
+    issues = keep(issues, lambda i: f"issue:{i['id']}")
+    by_stage = {st: keep(cs, stage_key) for st, cs in by_stage.items()}
+    bills_to_draft, quotes_to_draft = keep(bills_to_draft, doc_key), keep(quotes_to_draft, doc_key)
+    reports_to_log, review_docs = keep(reports_to_log, doc_key), keep(review_docs, doc_key)
+    vendor_bills_to_pay = keep(vendor_bills_to_pay, lambda c: f"pay:{c['id']}")
+    scada = keep(scada, lambda sc: f"scada:{sc['id']}:{sc.get('next_due_on') or ''}")
+    new_requests = keep(new_requests, lambda it: f"jobber:{it['jobber_id']}")
+    todos = keep(todos, lambda t: f"todo:{t['id']}")
     return {
         'issues': issues,
         'needs_scheduling': by_stage.get('scheduled', []),
@@ -4497,8 +4519,7 @@ def work_queue(conn):
         'waiting_bill': by_stage.get('vendor_bill', []),
         'bills_to_check': by_stage.get('bill_checked', []),
         'bills_to_draft': bills_to_draft,
-        'todos': [_todo_dict(r) for r in conn.execute("SELECT * FROM pump_todos WHERE done_at IS NULL "
-                                                      "ORDER BY COALESCE(NULLIF(due_on, ''), created_at), id")],
+        'todos': todos,
         'quotes_to_draft': quotes_to_draft,
         'vendor_bills_to_pay': vendor_bills_to_pay,
         'reports_to_log': reports_to_log,
@@ -4735,6 +4756,7 @@ UNDO_LABELS = (
     (r'/dives/send$', 'Sent the dive email'),
     (r'/dives/', 'Changed a dive site'),
     (r'/todos/(\d+)/done$', 'Ticked a to-do'),
+    (r'/todos/hide$', 'Took a row off the To do list'),
     (r'/todos', 'Changed a to-do'),
     (r'/scada', 'Changed SCADA'),
     (r'/maint', 'Changed a maintenance account'),
@@ -5956,6 +5978,13 @@ def init_todo_table(c):
                   done_by TEXT DEFAULT '',
                   created_by TEXT DEFAULT '',
                   created_at TEXT)''')
+    # Rows taken off the To do list by hand (the ✕): the item itself is left
+    # as it is. Keyed by what the row is about - an item's key includes its
+    # step, so it comes back when the item moves on.
+    c.execute('''CREATE TABLE IF NOT EXISTS pump_todo_hidden (
+                  key TEXT PRIMARY KEY,
+                  hidden_by TEXT DEFAULT '',
+                  hidden_at TEXT)''')
 
 
 def init_dive_tables(c):
@@ -6406,6 +6435,24 @@ def h_undo_list(actor):
 @api('/undo/<int:action_id>', methods=('POST',))
 def h_undo(actor, action_id):
     return undo_action(action_id, actor)
+
+
+@api('/todos/hide', methods=('POST',))
+def h_todo_hide(actor):
+    """Take a row off the To do list (the ✕ - the item itself is left as it
+    is). Body: {"key": the row's todo_key}. Undo brings it back."""
+    key = str(_json().get('key') or '').strip()
+    if not re.fullmatch(r'(?:case:\d+:[\w-]+|doc:\d+|issue:\d+|pay:\d+|scada:\d+:[\w-]*|jobber:[\w=+/-]+|todo:\d+)',
+                        key):
+        raise ValueError('Not a to-do row')
+    conn = _conn()
+    try:
+        conn.execute('INSERT OR REPLACE INTO pump_todo_hidden (key, hidden_by, hidden_at) VALUES (?,?,?)',
+                     (key, actor or '', _now_text()))
+        conn.commit()
+    finally:
+        conn.close()
+    return {}
 
 
 @api('/todos/<int:todo_id>/delete', methods=('POST',))
