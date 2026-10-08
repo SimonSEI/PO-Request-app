@@ -276,6 +276,19 @@ def init_db():
                   at TEXT,
                   by TEXT DEFAULT '',
                   info TEXT DEFAULT '{}')''')
+    # Added for the A/R Aging Summary upload (one row per customer, with the office's notes).
+    for table, cols in (
+            ('ar_invoices', (('source', "TEXT DEFAULT 'qb'"), ('snooze_reason', "TEXT DEFAULT ''"))),
+            ('ar_customers', (('qb_current', 'REAL'), ('qb_1_30', 'REAL'), ('qb_31_60', 'REAL'), ('qb_61_90', 'REAL'),
+                              ('qb_91_plus', 'REAL'), ('qb_total', 'REAL'), ('qb_as_of', "TEXT DEFAULT ''"),
+                              ('sheet_notes', "TEXT DEFAULT ''"), ('sheet_notes_hash', "TEXT DEFAULT ''"),
+                              ('sheet_pending', 'INTEGER DEFAULT 0'), ('sheet_summary', "TEXT DEFAULT ''"),
+                              ('retainage_hold', 'INTEGER DEFAULT 0'), ('jobber_note', "TEXT DEFAULT ''"),
+                              ('summary_synced_at', 'TEXT')))):
+        have = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+        for col, decl in cols:
+            if col not in have:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
     c.execute('''CREATE TABLE IF NOT EXISTS ar_activity (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   at TEXT,
@@ -682,6 +695,459 @@ def apply_upload(parsed, filename, by, confirm=False):
     return summary
 
 
+# ── 0b. The A/R Aging Summary with the office's notes ────────────────────────
+#
+# The office keeps its collection notes on QuickBooks' A/R Aging Summary: one row per
+# customer, amounts under CURRENT / 1 - 30 / 31 - 60 / 61 - 90 / 91 AND OVER, and the
+# notes typed into whatever cell is free after the amounts (sometimes over an amount,
+# with the amount added at the end: "releases signed for these so on its way 35120").
+# It has no invoice numbers, so the invoices come from Jobber by customer name.
+
+_SUMMARY_COLS = (
+    ('current', re.compile(r'^current$')),
+    ('d1_30', re.compile(r'^1\s*-\s*30\b')),
+    ('d31_60', re.compile(r'^31\s*-\s*60\b')),
+    ('d61_90', re.compile(r'^61\s*-\s*90\b')),
+    ('d91', re.compile(r'^(91\b.*|over\s*90.*|90\s*\+|> ?90)')),
+    ('total', re.compile(r'^total$')),
+    ('notes', re.compile(r'^(notes?|comments?|follow[\s-]*up.*)$')),
+)
+_BUCKET_LABELS = {'current': 'Current', 'd1_30': '1-30', 'd31_60': '31-60', 'd61_90': '61-90', 'd91': '91+',
+                  'total': 'Total', 'notes': 'Notes'}
+_XL_ERROR = re.compile(r'^#(REF|VALUE|DIV/0|N/A|NAME\?|NUM|NULL)!?', re.I)
+
+
+def is_aging_summary(rows):
+    return _summary_header(rows)[0] is not None
+
+
+def _summary_header(rows):
+    for i, row in enumerate(rows[:15]):
+        m = {}
+        for j, cell in enumerate(row):
+            text = _norm(cell)
+            for key, rx in _SUMMARY_COLS:
+                if key not in m and rx.match(text):
+                    m[key] = j
+                    break
+        if len({'current', 'd1_30', 'd31_60', 'd61_90', 'd91'} & m.keys()) >= 3 and 'num' not in _map_header(row):
+            return i, m
+    return None, {}
+
+
+def parse_aging_summary(rows):
+    """[{name, buckets, total, notes:[(label, text)]}], as_of (YYYY-MM-DD) from an A/R Aging Summary."""
+    hdr, m = _summary_header(rows)
+    if hdr is None:
+        raise ValueError('Not an A/R Aging Summary')
+    as_of = ''
+    for row in rows[:hdr]:
+        for cell in row:
+            mo = re.search(r'(?i)as of\s+(.+)$', str(cell or ''))
+            if mo:
+                as_of = _date_text(mo.group(1).strip()) or _date_text(re.sub(r'(\d)(st|nd|rd|th)', r'\1', mo.group(1).strip()))
+    used = set(m.values())
+    name_col = next((j for j in range(len(rows[hdr]) + 1) if j not in used), 0)
+    out = []
+    for row in rows[hdr + 1:]:
+        name = str(row[name_col] if name_col < len(row) and row[name_col] is not None else '').strip()
+        if not name or re.match(r'(?i)^total\b', name):
+            continue
+        buckets, notes = {}, []
+        for key, j in m.items():
+            v = row[j] if j < len(row) else None
+            if v is None or v == '':
+                continue
+            if isinstance(v, (int, float)):
+                if key not in ('total', 'notes'):
+                    buckets[key] = float(v)
+                continue
+            text = str(v).strip()
+            if not text or text.startswith('=') or _XL_ERROR.match(text):
+                continue
+            money = _money(text)
+            if money is not None and key not in ('notes',):
+                if key != 'total':
+                    buckets[key] = money
+                continue
+            notes.append((_BUCKET_LABELS[key], text))
+            # A note typed over an amount often ends with that amount: "...on its way 35120".
+            if key not in ('total', 'notes') and key not in buckets:
+                tail = re.search(r'\$?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d{2}|\d{3,}(?:\.\d+)?)\s*$', text)
+                if tail:
+                    buckets[key] = float(tail.group(1).replace(',', ''))
+        if not buckets and not notes:
+            continue
+        total = round(sum(buckets.values()), 2)
+        out.append({'name': name, 'buckets': buckets, 'total': total, 'notes': notes})
+    return out, as_of
+
+
+def apply_summary(customers, filename, by, as_of='', confirm=False):
+    """Store each customer's aging and notes. Customers no longer on the sheet (or at $0 or a credit)
+    have their open invoices closed as paid. New or changed notes are acted on once their invoices are in."""
+    import hashlib
+    as_of = as_of or _today().isoformat()
+    now = _stamp()
+    conn = _conn()
+    open_by_cust = {}
+    for r in conn.execute("SELECT customer_key, COUNT(*) n FROM ar_invoices WHERE status != 'paid' GROUP BY customer_key"):
+        open_by_cust[r['customer_key']] = r['n']
+    owing = {_ckey(c['name']) for c in customers if c['total'] > 0.004}
+    gone = [k for k in open_by_cust if k not in owing]
+    if not confirm and len(open_by_cust) >= 10 and len(gone) > len(open_by_cust) / 2:
+        conn.close()
+        return {'needs_confirm': True, 'missing': sum(open_by_cust[k] for k in gone), 'open': sum(open_by_cust.values())}
+    noted = changed = 0
+    for c in customers:
+        key = _ckey(c['name'])
+        b = c['buckets']
+        text = '\n'.join(f"{label}: {t}" for label, t in c['notes'])
+        h = hashlib.sha1(text.encode()).hexdigest() if text else ''
+        conn.execute("INSERT OR IGNORE INTO ar_customers (key, name, updated_at) VALUES (?,?,?)", (key, c['name'], now))
+        old = conn.execute("SELECT sheet_notes_hash FROM ar_customers WHERE key=?", (key,)).fetchone()
+        conn.execute('''UPDATE ar_customers SET name=?, qb_current=?, qb_1_30=?, qb_31_60=?, qb_61_90=?, qb_91_plus=?,
+                        qb_total=?, qb_as_of=?, updated_at=? WHERE key=?''',
+                     (c['name'], b.get('current'), b.get('d1_30'), b.get('d31_60'), b.get('d61_90'), b.get('d91'),
+                      c['total'], as_of, now, key))
+        if text:
+            noted += 1
+        if h != (old['sheet_notes_hash'] if old else ''):
+            if text:
+                changed += 1
+                conn.execute("UPDATE ar_customers SET sheet_notes=?, sheet_notes_hash=?, sheet_pending=1 WHERE key=?",
+                             (text, h, key))
+                _note(conn, f"A/R sheet notes (as of {_fmt_date(as_of)}):\n{text}", customer_key=key, kind='sheet', by=by)
+            else:
+                conn.execute("UPDATE ar_customers SET sheet_notes='', sheet_notes_hash='', sheet_pending=0, "
+                             "sheet_summary='', retainage_hold=0 WHERE key=?", (key,))
+    closed = 0
+    for key in gone:
+        for r in conn.execute("SELECT id FROM ar_invoices WHERE customer_key=? AND status != 'paid'", (key,)).fetchall():
+            conn.execute("UPDATE ar_invoices SET status='paid', closed_at=?, updated_at=? WHERE id=?", (now, now, r['id']))
+            _note(conn, f'Customer is no longer owing on the A/R sheet ({filename}, as of {_fmt_date(as_of)}): paid. '
+                        f'Follow-ups stopped.', r['id'], customer_key=key)
+            closed += 1
+    summary = {'kind': 'summary', 'customers': len(customers), 'owing': len(owing), 'with_notes': noted,
+               'notes_changed': changed, 'closed': closed, 'as_of': as_of,
+               'total': round(sum(c['total'] for c in customers if c['total'] > 0), 2)}
+    conn.execute("INSERT INTO ar_uploads (filename, at, by, info) VALUES (?,?,?,?)", (filename, now, by, json.dumps(summary)))
+    conn.commit()
+    conn.close()
+    _set_state('summary_uploaded_at', now)
+    _close_stale_drafts()
+    _log('upload', f"{filename} (A/R summary as of {_fmt_date(as_of)}): {len(owing)} customer(s) owing, {noted} with notes "
+                   f"({changed} new or changed), {closed} invoice(s) closed as paid.")
+    return summary
+
+
+_JOBBER_OPEN = ('awaiting_payment', 'past_due', 'sent_not_due', 'unpaid', 'partial')
+
+
+# Light on purpose: 50 invoices a page with line items and jobs could pass Jobber's query cost limit.
+# The full details come from the hourly per-invoice check (sync_jobber).
+_SEARCH_TIERS = [
+    'id invoiceNumber subject invoiceStatus issuedDate dueDate jobberWebUri amounts { total invoiceBalance } client { id name }',
+    'id invoiceNumber subject invoiceStatus issuedDate jobberWebUri amounts { total invoiceBalance } client { id name }',
+]
+
+
+def _jobber_invoice_page(name, after):
+    """One page of Jobber invoices matching a name."""
+    start = int(_cfg.get('search_tier') or 0)
+    last = None
+    for tier in range(start, len(_SEARCH_TIERS)):
+        q = (f'query($q: String!, $after: String) {{ invoices(searchTerm: $q, first: 50, after: $after) {{ '
+             f'nodes {{ {_SEARCH_TIERS[tier]} }} pageInfo {{ hasNextPage endCursor }} }} }}')
+        try:
+            data = _jobber(q, {'q': name, 'after': after})
+            _cfg['search_tier'] = tier
+            return data.get('invoices') or {}
+        except RuntimeError as e:
+            last = e
+            if not re.search(r"(?i)field|doesn't exist|undefined|argument", str(e)):
+                raise
+    raise last
+
+
+def fetch_customer_invoices(name, target_total, max_pages=12):
+    """The customer's open invoices in Jobber ({number: node}), and whether that is all of them."""
+    want = _squash(name)
+    found, after = {}, None
+    for _ in range(max_pages):
+        page = _jobber_invoice_page(name, after)
+        for n in page.get('nodes') or []:
+            if not n or _squash((n.get('client') or {}).get('name')) != want:
+                continue
+            bal = (n.get('amounts') or {}).get('invoiceBalance')
+            if (n.get('invoiceStatus') or '').lower() not in _JOBBER_OPEN or bal is None or bal <= 0.004:
+                continue
+            found[str(n.get('invoiceNumber'))] = n
+        got = sum((n.get('amounts') or {}).get('invoiceBalance') or 0 for n in found.values())
+        info = page.get('pageInfo') or {}
+        if abs(got - target_total) <= 0.5 or not info.get('hasNextPage'):
+            return found, True
+        after = info.get('endCursor')
+    return found, False
+
+
+def sync_summary_invoices():
+    """For each customer on the latest A/R summary whose open invoices here don't add up to the sheet, get them
+    from Jobber: add the missing ones and close the ones Jobber no longer shows open."""
+    uploaded = _state('summary_uploaded_at')
+    if not uploaded:
+        return
+    if not jobber_ready():
+        return _log('jobber', 'Skipped finding invoices for the A/R summary: Jobber is not connected (connect it in Pumps).')
+    conn = _conn()
+    custs = [dict(r) for r in conn.execute(
+        "SELECT * FROM ar_customers WHERE qb_total > 0.004 AND (summary_synced_at IS NULL OR summary_synced_at < ?)",
+        (uploaded,))]
+    open_sum = {r['customer_key']: r['t'] for r in conn.execute(
+        "SELECT customer_key, SUM(open_balance) t FROM ar_invoices WHERE status != 'paid' GROUP BY customer_key")}
+    conn.close()
+    added = closed = looked = 0
+    for c in custs:
+        if abs((open_sum.get(c['key']) or 0) - c['qb_total']) <= 0.5:
+            _set_customer(c['key'], summary_synced_at=_stamp(), jobber_note='')
+            continue
+        looked += 1
+        try:
+            found, complete = fetch_customer_invoices(c['name'], c['qb_total'])
+        except Exception as e:
+            _set_customer(c['key'], jobber_note=f'Jobber lookup failed: {e}'[:300])
+            _log('jobber', f"{c['name']}: Jobber lookup failed: {e}")
+            continue
+        now = _stamp()
+        conn = _conn()
+        existing = {r['number']: dict(r) for r in conn.execute("SELECT * FROM ar_invoices WHERE customer_key=?", (c['key'],))}
+        for num, n in found.items():
+            amounts = n.get('amounts') or {}
+            fields = {'customer': c['name'], 'customer_key': c['key'], 'txn_date': (n.get('issuedDate') or '')[:10],
+                      'due_date': (n.get('dueDate') or '')[:10], 'amount': amounts.get('total'),
+                      'open_balance': round(amounts.get('invoiceBalance') or 0, 2), 'jobber_id': n.get('id') or '',
+                      'jobber_uri': n.get('jobberWebUri') or '', 'jobber_subject': n.get('subject') or '',
+                      'jobber_status': (n.get('invoiceStatus') or '').lower(), 'jobber_total': amounts.get('total'),
+                      'jobber_balance': amounts.get('invoiceBalance'), 'jobber_checked_at': None, 'updated_at': now}
+            old = existing.get(num)
+            if old:
+                if old['status'] == 'paid':
+                    fields.update(status='open', closed_at=None)
+                    _note(conn, 'Open again in Jobber and on the A/R sheet.', old['id'], customer_key=c['key'])
+                conn.execute(f"UPDATE ar_invoices SET {', '.join(k + '=?' for k in fields)} WHERE id=?",
+                             list(fields.values()) + [old['id']])
+            else:
+                fields.update(number=num, source='jobber', status='open', first_seen_at=now)
+                cur = conn.execute(f"INSERT INTO ar_invoices ({', '.join(fields)}) VALUES ({','.join('?' * len(fields))})",
+                                   list(fields.values()))
+                _note(conn, f"Found in Jobber for {c['name']} (A/R summary): {_money_text(fields['open_balance'])} open.",
+                      cur.lastrowid, customer_key=c['key'])
+                added += 1
+        if complete:
+            for num, old in existing.items():
+                if num not in found and old['status'] != 'paid':
+                    conn.execute("UPDATE ar_invoices SET status='paid', closed_at=?, updated_at=? WHERE id=?",
+                                 (now, now, old['id']))
+                    _note(conn, 'No longer open in Jobber for this customer: paid. Follow-ups stopped.', old['id'],
+                          customer_key=c['key'])
+                    closed += 1
+        got = round(sum((n.get('amounts') or {}).get('invoiceBalance') or 0 for n in found.values()), 2)
+        note = '' if abs(got - c['qb_total']) <= 0.5 else (
+            f"Jobber shows {_money_text(got)} open on {len(found)} invoice(s); the A/R sheet says {_money_text(c['qb_total'])}"
+            + ('' if found else ' (no open invoices found under this name in Jobber)'))
+        conn.execute("UPDATE ar_customers SET summary_synced_at=?, jobber_note=? WHERE key=?", (now, note, c['key']))
+        conn.commit()
+        conn.close()
+    classify_all()
+    if looked:
+        _log('jobber', f'A/R summary: looked up {looked} customer(s) in Jobber; {added} invoice(s) added, {closed} closed.')
+
+
+def _set_customer(key, **fields):
+    conn = _conn()
+    conn.execute(f"UPDATE ar_customers SET {', '.join(k + '=?' for k in fields)} WHERE key=?", list(fields.values()) + [key])
+    conn.commit()
+    conn.close()
+
+
+_SHEET_SCHEMA = {
+    'type': 'object', 'additionalProperties': False,
+    'required': ['intent', 'followed_up', 'promised_date', 'follow_up_on', 'retainage', 'retainage_collectable', 'summary'],
+    'properties': {
+        'intent': {'type': 'string', 'enum': ['paid', 'promise', 'dispute', 'waiting', 'followed_up', 'retainage', 'other']},
+        'followed_up': {'type': 'boolean', 'description': 'the note says we already called, emailed, texted or followed up'},
+        'promised_date': {'type': 'string', 'description': 'YYYY-MM-DD the customer said payment will be made, else ""'},
+        'follow_up_on': {'type': 'string', 'description': 'YYYY-MM-DD the office plans to check again, else ""'},
+        'retainage': {'type': 'string', 'enum': ['none', 'some', 'all']},
+        'retainage_collectable': {'type': 'boolean', 'description': 'false if the note says retainage cannot be collected '
+                                                                    'yet (project ongoing, not billed yet)'},
+        'summary': {'type': 'string', 'description': 'one short line for the office'},
+    },
+}
+
+
+def _day_of_month(text, as_of):
+    m = re.search(r'(?i)\b(?:by|on|after|before|until|til)\s+the\s+(\d{1,2})(?:st|nd|rd|th)?\b', text)
+    if not m:
+        return None
+    day = int(m.group(1))
+    d = as_of
+    for _ in range(62):
+        if d.day == day and d >= as_of:
+            return d
+        d += timedelta(days=1)
+    return None
+
+
+def interpret_sheet_note(text, as_of):
+    """What the office's own collection note on a customer means (Claude, or plain rules without it)."""
+    try:
+        got = _claude_json(
+            "You read an irrigation company's own notes from its accounts receivable sheet, one customer at a time. "
+            'Each line starts with the aging column the note was typed in. intent: "paid" = we were paid or charged '
+            'their card; "promise" = they said a check/payment is coming, being prepared, mailed or will be paid; '
+            '"dispute" = they dispute the charge; "waiting" = waiting on something on their side (board approval, '
+            'funding, auditors, paperwork) with no promise; "followed_up" = we followed up and have no answer yet; '
+            '"retainage" = the note is only about retainage; "other" = anything else. followed_up: true if the note '
+            'says we called, emailed, texted or followed up. promised_date: when they said they will pay. '
+            'follow_up_on: when the note says the office will check again (e.g. "if not received by the 12th" or '
+            f'"wait one more week"). Dates as YYYY-MM-DD; the sheet is as of {as_of.isoformat()}. retainage: "all" if '
+            'the whole balance is retainage, "some" if part of it is, else "none".',
+            text[:4000], _SHEET_SCHEMA)
+    except Exception as e:
+        _log('notes', f'Claude could not read a sheet note: {e}')
+        got = None
+    if got:
+        return got
+    low = text.lower()
+    paid = re.search(r'paid today|all paid|paid and done|(card )?charged.*paid|chared card|charged card|card charged|'
+                     r'payment (was )?received|received (the |their )?(check|payment)', low)
+    dispute = re.search(r'disput', low)
+    promise = re.search(r'check (is )?(coming|on the way|in the mail)|preparing (a )?check|on (its|it\'s) way|should pay|'
+                        r'will pay|pay (by|on|soon|today)|should be (received|in the mail)|will (be )?release|'
+                        r'releases? signed|can pay|is being processed|should be paid', low)
+    waiting = re.search(r'waiting|awaiting|approval|funding|auditor|no timeline|insurance', low)
+    followed = bool(re.search(r'follow(ed)?[\s-]*up|called|emailed|texted|\bcall(ed)? and', low))
+    ret = re.search(r'retainage|retention', low)
+    if paid:
+        intent = 'paid'
+    elif dispute:
+        intent = 'dispute'
+    elif promise:
+        intent = 'promise'
+    elif waiting and not (ret and not re.search(r'funding|approval|auditor', low)):
+        intent = 'waiting'
+    elif followed:
+        intent = 'followed_up'
+    elif ret:
+        intent = 'retainage'
+    else:
+        intent = 'other'
+    when = _find_date(text, as_of) if intent == 'promise' else None
+    follow = _day_of_month(text, as_of)
+    if not follow and re.search(r'(one|1) more week|next week|another week', low):
+        follow = as_of + timedelta(days=7)
+    if not when and re.search(r'next week', low) and intent == 'promise':
+        when = as_of + timedelta(days=7)
+    first = re.sub(r'^[^:]{1,12}:\s*', '', next((ln for ln in text.splitlines() if ln.strip()), ''))
+    return {'intent': intent, 'followed_up': followed,
+            'promised_date': when.isoformat() if when else '', 'follow_up_on': follow.isoformat() if follow else '',
+            'retainage': ('all' if re.search(r'all retainage|all\s+(of it\s+)?is\s+retainage', low) else 'some') if ret else 'none',
+            'retainage_collectable': not (ret and re.search(r"can'?t collect|cant collect|cannot collect|ongoing|on going|"
+                                                            r"not (yet )?billed|hoping to bill|deadline", low)),
+            'summary': first[:200]}
+
+
+def apply_sheet_notes():
+    """Act on new or changed A/R sheet notes for customers whose invoices are here."""
+    s = settings()
+    today = _today()
+    conn = _conn()
+    custs = [dict(r) for r in conn.execute("SELECT * FROM ar_customers WHERE sheet_pending=1")]
+    conn.close()
+    done = 0
+    for c in custs:
+        conn = _conn()
+        invs = [dict(r) for r in conn.execute("SELECT * FROM ar_invoices WHERE customer_key=? AND status NOT IN ('paid','paused')",
+                                              (c['key'],))]
+        conn.close()
+        if not invs and jobber_ready() and (c['qb_total'] or 0) > 0.004 and not c.get('summary_synced_at'):
+            continue  # its invoices are still on their way from Jobber
+        as_of = _d(c.get('qb_as_of')) or today
+        try:
+            got = interpret_sheet_note(c['sheet_notes'], as_of)
+        except Exception as e:
+            _log('notes', f"{c['name']}: could not read the sheet note: {e}")
+            continue
+        # "All retainage" covers the whole account only when typed in the Total/Notes column; in an aging
+        # column it is about that column ("all retainage ongoing" in 61-90 next to a past-due 1-30 amount).
+        if got.get('retainage') == 'all' and not any(
+                re.match(r'(?i)(total|notes):.*\b(retainage|retention)\b', ln) for ln in c['sheet_notes'].splitlines()):
+            got['retainage'] = 'some'
+        conn = _conn()
+        retain_all = got.get('retainage') == 'all'
+        if retain_all:
+            for i in invs:
+                conn.execute("UPDATE ar_invoices SET retainage=1, retainage_locked=1 WHERE id=?", (i['id'],))
+                i['retainage'] = 1
+        hold = 1 if got.get('retainage') in ('some', 'all') and not got.get('retainage_collectable') else 0
+        conn.execute("UPDATE ar_customers SET retainage_hold=?, sheet_pending=0, sheet_summary=? WHERE key=?",
+                     (hold, f"{got.get('intent')}: {got.get('summary') or ''}"[:300], c['key']))
+        targets = [i for i in invs if not i['retainage'] and (_due(i) or today) < as_of] or \
+                  [i for i in invs if not i['retainage']]
+        intent = got.get('intent') or 'other'
+        pd = _d(got.get('promised_date'))
+        follow = _d(got.get('follow_up_on'))
+        stamp = f"{as_of.isoformat()} 12:00:00"
+        for i in targets:
+            fields, said = {}, []
+            if got.get('followed_up') or intent == 'followed_up':
+                if not i['last_followup_at'] or i['last_followup_at'] < stamp:
+                    fields['last_followup_at'] = stamp
+                said.append(f"counted as followed up on {_fmt_date(as_of)}")
+            if intent == 'paid':
+                snooze = today + timedelta(days=int(s['reported_paid_wait_days']))
+                fields.update(status='reported_paid', snooze_until=snooze.isoformat(), needs_reason='')
+                said.append(f"marked as paid per your note; waiting until {_fmt_date(snooze)} for it to clear")
+            elif intent == 'promise':
+                due = _due(i) or today
+                very = due + timedelta(days=_very_past_due_days(s))
+                if today < very:
+                    snooze = very
+                elif pd and pd + timedelta(days=int(s['promise_grace_days'])) > today:
+                    snooze = pd + timedelta(days=int(s['promise_grace_days']))
+                else:
+                    snooze = today + timedelta(days=14)
+                if follow and follow > today:
+                    snooze = min(snooze, follow)
+                fields.update(status='promised', promised_date=pd.isoformat() if pd else '', promised_on=as_of.isoformat(),
+                              snooze_until=snooze.isoformat(), needs_reason='')
+                said.append(f"payment promised{' for ' + _fmt_date(pd) if pd else ''}; next follow-up {_fmt_date(snooze)}")
+            elif intent == 'dispute':
+                fields.update(status='needs_person', needs_reason=f"Your A/R sheet note: {got.get('summary') or 'disputed'}"[:300])
+                said.append('disputed: follow-ups stopped until someone clears it')
+            elif intent == 'waiting' or follow:
+                snooze = follow if follow and follow > today else today + timedelta(days=14)
+                fields.update(snooze_until=snooze.isoformat(),
+                              snooze_reason=f"Waiting ({(got.get('summary') or 'per your A/R sheet note')[:80]})")
+                said.append(f"waiting on the customer; next follow-up {_fmt_date(snooze)}")
+            if fields:
+                fields['updated_at'] = _stamp()
+                conn.execute(f"UPDATE ar_invoices SET {', '.join(k + '=?' for k in fields)} WHERE id=?",
+                             list(fields.values()) + [i['id']])
+            if said:
+                _note(conn, f"From your A/R sheet note ({_fmt_date(as_of)}): " + '; '.join(said) + '.', i['id'],
+                      customer_key=c['key'], kind='sheet')
+        if hold:
+            _note(conn, "Retainage held: your A/R sheet note says it can't be collected yet.", customer_key=c['key'],
+                  kind='sheet')
+        conn.commit()
+        conn.close()
+        done += 1
+    if done:
+        _log('notes', f'Acted on A/R sheet notes for {done} customer(s).')
+
+
 # ── Classification: service or install, which job, retainage ─────────────────
 
 def _retainage_pct(amount, open_bal, pcts, tol):
@@ -832,7 +1298,7 @@ def _find_invoice(number, jobber_id=''):
     raise last
 
 
-def sync_jobber(limit=150, only_ids=None):
+def sync_jobber(limit=500, only_ids=None):
     if not jobber_ready():
         return _log('jobber', 'Skipped: Jobber is not connected (connect it in the Pumps app).')
     cutoff = (_now() - timedelta(hours=12)).strftime('%Y-%m-%d %H:%M:%S')
@@ -985,6 +1451,9 @@ def plan(inv, job, cust, s, today=None):
         return out
     last = _d(inv.get('last_followup_at'))
     if inv['retainage']:
+        if cust and cust.get('retainage_hold'):
+            out['reason'] = 'Retainage: your A/R sheet notes say the project is still going'
+            return out
         if not job_complete(job):
             out['reason'] = 'Retainage: held until the job is complete'
             return out
@@ -1006,7 +1475,8 @@ def plan(inv, job, cust, s, today=None):
         elif inv['status'] == 'reported_paid':
             out['reason'] = f"Customer says it's paid; waiting for it to show up until {_fmt_date(snooze)}"
         else:
-            out['reason'] = f'Snoozed until {_fmt_date(snooze)}'
+            why = inv.get('snooze_reason') or 'Snoozed'
+            out['reason'] = f'{why}; next follow-up {_fmt_date(snooze)}'
         return out
     if last and (today - last).days < every:
         nxt = last + timedelta(days=every)
@@ -1040,7 +1510,8 @@ def lien_info(job, invoices, s, today=None):
     deadline = last + timedelta(days=int(s.get('lien_days') or 90))
     days_left = (deadline - today).days
     past_due = any(_due(i) and _due(i) < today for i in open_inv)
-    nonp_due = bool(open_inv) and past_due and days_left <= int(s.get('nonp_lead_days') or 30) and \
+    # Only a real last day furnished (entered, or Jobber's completion) starts the Notice of Nonpayment.
+    nonp_due = bool(open_inv) and past_due and not estimated and days_left <= int(s.get('nonp_lead_days') or 30) and \
         not (job.get('nonp_status') or '')
     return {'applies': True, 'last_furnished': last.isoformat(), 'estimated': estimated, 'deadline': deadline.isoformat(),
             'days_left': days_left, 'nonp_due': nonp_due, 'open_balance': round(sum(i['open_balance'] or 0 for i in open_inv), 2)}
@@ -1094,7 +1565,7 @@ def _find_date(text, today):
             return d if d >= today - timedelta(days=30) else date(today.year + 1, d.month, d.day)
         except ValueError:
             pass
-    if re.search(r'end of (the )?month', low):
+    if re.search(r'end of (the )?month|\beom\b', low):
         nxt = (today.replace(day=28) + timedelta(days=4)).replace(day=1)
         return nxt - timedelta(days=1)
     if 'next week' in low:
@@ -1867,7 +2338,8 @@ def run_cycle(manual=False):
     with _FileLock() as got:
         if not got:
             return False
-        for step in (sync_jobber, scan_replies, _close_stale_drafts, plan_followups, check_liens):
+        for step in (sync_summary_invoices, sync_jobber, apply_sheet_notes, scan_replies, _close_stale_drafts,
+                     plan_followups, check_liens):
             try:
                 step()
             except Exception as e:
@@ -1936,7 +2408,7 @@ def api_data():
     out_cust = []
     for key, c in custs.items():
         mine = [i for i in invs if i['customer_key'] == key and i['status'] != 'paid']
-        if not mine:
+        if not mine and not (c.get('qb_total') or 0) > 0.004:
             continue
         c['open_count'] = len(mine)
         c['open_balance'] = round(sum(i['open_balance'] or 0 for i in mine), 2)
@@ -1974,7 +2446,8 @@ def api_invoice(inv_id):
     cust = conn.execute("SELECT * FROM ar_customers WHERE key=?", (inv['customer_key'],)).fetchone()
     cust = dict(cust) if cust else None
     notes = [dict(r) for r in conn.execute("SELECT * FROM ar_notes WHERE invoice_id=? OR (job_key != '' AND job_key=?) "
-                                           "ORDER BY id DESC", (inv_id, inv['job_key'] or '~'))]
+                                           "OR (invoice_id IS NULL AND job_key='' AND customer_key=?) ORDER BY id DESC",
+                                           (inv_id, inv['job_key'] or '~', inv['customer_key']))]
     emails = [dict(r) for r in conn.execute("SELECT * FROM ar_emails WHERE status != 'discarded' ORDER BY id DESC")
               if inv_id in json.loads(r['invoice_ids'] or '[]')]
     job_invs = [dict(r) for r in conn.execute("SELECT * FROM ar_invoices WHERE job_key=? AND job_key != '' ORDER BY txn_date",
@@ -2006,7 +2479,17 @@ def api_upload():
     if not f or not f.filename:
         return jsonify({'success': False, 'error': 'Choose the A/R Excel file from QuickBooks'}), 400
     try:
-        parsed, info = parse_ar_table(_read_table(f.stream, f.filename))
+        rows = _read_table(f.stream, f.filename)
+        if is_aging_summary(rows):
+            customers, as_of = parse_aging_summary(rows)
+            if not customers:
+                return jsonify({'success': False, 'error': 'No customers found in that A/R summary'}), 400
+            summary = apply_summary(customers, f.filename, _who(), as_of, confirm=request.form.get('confirm') == '1')
+            if summary.get('needs_confirm'):
+                return jsonify({'success': True, 'needs_confirm': True, **summary})
+            threading.Thread(target=run_cycle, kwargs={'manual': True}, daemon=True).start()
+            return jsonify({'success': True, 'summary': summary})
+        parsed, info = parse_ar_table(rows)
     except ValueError as e:
         return jsonify({'success': False, 'error': str(e)}), 400
     except Exception as e:
@@ -2058,7 +2541,7 @@ def api_invoice_update():
         fields.update(status='paused')
         notes.append('Follow-ups paused.')
     elif action == 'resume':
-        fields.update(status='open', needs_reason='', snooze_until='')
+        fields.update(status='open', needs_reason='', snooze_until='', snooze_reason='')
         notes.append('Follow-ups resumed.')
     elif action == 'promise':
         pd = _d(d.get('date'))
@@ -2074,7 +2557,7 @@ def api_invoice_update():
     elif action == 'snooze':
         sd = _d(d.get('date'))
         if sd:
-            fields.update(snooze_until=sd.isoformat())
+            fields.update(snooze_until=sd.isoformat(), snooze_reason='Snoozed by hand')
             notes.append(f"Snoozed until {_fmt_date(sd)}.")
     elif action == 'close':
         fields.update(status='paid', closed_at=_stamp())

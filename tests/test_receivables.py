@@ -436,6 +436,191 @@ class AccessTests(Base):
         self.assertNotIn(b'Open Receivables', self.client.get('/dashboard').data)
 
 
+def aging_summary_xlsx(as_of, rows):
+    """The office's A/R Aging Summary: one row per customer, notes typed into free cells."""
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.append(['EXAMPLE IRRIGATION INC.'])
+    ws.append(['A/R Aging Summary Report'])
+    ws.append([f"As of {as_of.strftime('%b %-d, %Y')}"])
+    ws.append([])
+    ws.append(['', 'CURRENT', '1 - 30', '31 - 60', '61 - 90', '91 AND OVER', 'Total'])
+    for n, r in enumerate(rows, start=6):
+        ws.append(list(r) + [None] * (6 - len(r)) + ([f'=B{n}+C{n}+D{n}+E{n}+F{n}'] if len(r) < 7 else []))
+    ws.append(['TOTAL'])
+    ws.append([' Tuesday, October 06, 2026 12:21 PM GMT-04:00'])
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+def jnode(num, client, total, balance, days_late, subject='Invoice'):
+    issued = TODAY - timedelta(days=days_late + 30)
+    due = TODAY - timedelta(days=days_late)
+    return {'id': f'J{num}', 'invoiceNumber': num, 'subject': subject, 'invoiceStatus': 'past_due' if days_late > 0 else 'awaiting_payment',
+            'issuedDate': issued.isoformat() + 'T12:00:00Z', 'dueDate': due.isoformat() + 'T04:00:00Z',
+            'jobberWebUri': f'https://jobber.example/{num}', 'clientHubUri': f'https://hub.example/{num}',
+            'amounts': {'total': total, 'invoiceBalance': balance, 'paymentsTotal': total - balance},
+            'client': {'id': 'C' + client[:3], 'name': client, 'emails': [{'address': f'{_slug(client)}@example.com', 'primary': True}]},
+            'lineItems': {'nodes': [{'name': 'Service', 'description': '', 'totalPrice': total}]}}
+
+
+def _slug(name):
+    return ''.join(ch for ch in name.lower() if ch.isalnum())[:12]
+
+
+class FakeJobber:
+    """Answers invoices(searchTerm) and invoice(id) like Jobber, from a list of invoice nodes."""
+
+    def __init__(self, nodes):
+        self.nodes = nodes
+        self.searches = []
+
+    def __call__(self, query, variables=None):
+        variables = variables or {}
+        if 'invoice(id:' in query:
+            return {'invoice': next((n for n in self.nodes if n['id'] == variables['id']), None)}
+        q = variables.get('q', '').lower()
+        self.searches.append(q)
+        words = [w for w in q.replace(',', ' ').split() if len(w) > 2]
+        hits = [n for n in self.nodes if any(w in n['client']['name'].lower() for w in words) or q == str(n['invoiceNumber'])]
+        return {'invoices': {'nodes': hits, 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}
+
+
+class SummaryTests(Base):
+    def setUp(self):
+        super().setUp()
+        self.as_of = TODAY - timedelta(days=2)
+        self.jobber = FakeJobber([
+            jnode(501, 'Pat Example', 300, 300, 20),
+            jnode(502, 'Lake Example HOA', 1200, 1200, 45),
+            jnode(503, 'Lake Example HOA', 800, 800, -10),
+            jnode(504, 'Board Example Condo', 900, 900, 40),
+            jnode(505, 'Sample Builders', 100000, 5000, 120, 'PAY APP 3 - EXAMPLE PARK'),
+            jnode(506, 'Sample Builders', 60000, 3000, 90, 'PAY APP 4 - EXAMPLE PARK'),
+            jnode(507, 'Gc Example Construction', 2200, 2200, 20),
+            jnode(508, 'Gc Example Construction', 40000, 4000, 70, 'PAY APP 1 - EXAMPLE PLAZA'),
+            jnode(509, 'Pat Example Jr', 999, 999, 20),   # another client the search also finds
+            jnode(510, 'Quiet Example', 400, 400, 10),
+        ])
+        R._jobber = self.jobber
+        R._cfg['jobber_connected'] = lambda: True
+        R._cfg['tier'] = 0
+
+    def upload_summary(self, rows, as_of=None):
+        rows_ = R._read_table(aging_summary_xlsx(as_of or self.as_of, rows), 'ar.xlsx')
+        self.assertTrue(R.is_aging_summary(rows_))
+        custs, as_of_text = R.parse_aging_summary(rows_)
+        out = R.apply_summary(custs, 'Summary.xlsx', 'test', as_of_text)
+        R.sync_summary_invoices()
+        R.apply_sheet_notes()
+        return out, custs
+
+    ROWS = [
+        ('Pat Example', None, 300, 'paid today'),
+        ('Lake Example HOA', 800, 1200, 'Followed up no response yet'),
+        ('Board Example Condo', None, None, 900, 'Board is disputing this. Working with Beatriz'),
+        ('Sample Builders', None, None, None, 3000, 5000, 'All retainage. Said they will release it next month'),
+        ('Gc Example Construction', None, 'followed up no response yet 2200', None, "all retainage ongoing can't collect", 4000),
+        ('Quiet Example', None, 400),
+        ('Credit Example', None, None, None, None, -105),
+    ]
+
+    def test_parse_notes_and_amounts(self):
+        rows_ = R._read_table(aging_summary_xlsx(self.as_of, self.ROWS), 'ar.xlsx')
+        custs, as_of = R.parse_aging_summary(rows_)
+        self.assertEqual(as_of, self.as_of.isoformat())
+        by = {c['name']: c for c in custs}
+        self.assertEqual(by['Gc Example Construction']['total'], 6200)  # 2200 recovered from the note
+        self.assertEqual(by['Gc Example Construction']['notes'][0], ('1-30', 'followed up no response yet 2200'))
+        self.assertEqual(by['Sample Builders']['notes'], [('Total', 'All retainage. Said they will release it next month')])
+        self.assertEqual(by['Credit Example']['total'], -105)
+        self.assertNotIn('TOTAL', by)
+
+    def test_upload_finds_invoices_and_acts_on_notes(self):
+        out, _ = self.upload_summary(self.ROWS)
+        self.assertEqual(out['owing'], 6)
+        self.assertEqual(out['with_notes'], 5)
+        self.assertIsNone(self.inv('509'))  # another client's invoice is not taken
+        self.assertEqual(self.inv('501')['status'], 'reported_paid')
+        lake = self.inv('502')
+        self.assertEqual(lake['last_followup_at'], f'{self.as_of.isoformat()} 12:00:00')
+        self.assertFalse(R.plan(lake, None, None, R.settings())['due_now'])
+        self.assertEqual(self.inv('503')['last_followup_at'], None)  # not due yet, the note was not about it
+        self.assertEqual(self.inv('504')['status'], 'needs_person')
+        self.assertIn('disputing', self.inv('504')['needs_reason'])
+        self.assertEqual((self.inv('505')['retainage'], self.inv('506')['retainage']), (1, 1))
+        # "all retainage" typed in the 61-90 column: only that is retainage; the 1-30 invoice is still chased
+        self.assertEqual(self.inv('507')['retainage'], 0)
+        self.assertEqual(self.inv('508')['retainage'], 1)
+        conn = R._conn()
+        gc = dict(conn.execute("SELECT * FROM ar_customers WHERE key='gcexampleconstruction'").fetchone())
+        conn.close()
+        self.assertEqual(gc['retainage_hold'], 1)
+        self.assertEqual(gc['qb_total'], 6200)
+        p = R.plan(self.inv('508'), None, gc, R.settings())
+        self.assertIn('still going', p['reason'])
+        self.assertEqual(self.inv('510')['status'], 'open')
+
+    def test_reupload_same_notes_is_quiet_and_dropped_customers_close(self):
+        self.upload_summary(self.ROWS)
+        conn = R._conn()
+        conn.execute("UPDATE ar_invoices SET status='open', snooze_until='' WHERE number='501'")
+        notes_before = conn.execute("SELECT COUNT(*) FROM ar_notes").fetchone()[0]
+        conn.commit()
+        conn.close()
+        rows = [r for r in self.ROWS if r[0] != 'Quiet Example']
+        self.upload_summary(rows)
+        self.assertEqual(self.inv('501')['status'], 'open')   # same note: not acted on again
+        self.assertEqual(self.inv('510')['status'], 'paid')   # no longer on the sheet
+        conn = R._conn()
+        added = conn.execute("SELECT COUNT(*) FROM ar_notes").fetchone()[0] - notes_before
+        conn.close()
+        self.assertEqual(added, 1)  # just the "paid" note on 510
+
+    def test_changed_note_is_acted_on(self):
+        self.upload_summary(self.ROWS)
+        rows = list(self.ROWS)
+        rows[2] = ('Board Example Condo', None, None, 900, 'Resolved with the board, check is in the mail')
+        conn = R._conn()
+        conn.execute("UPDATE ar_invoices SET status='open', needs_reason='' WHERE number='504'")
+        conn.commit()
+        conn.close()
+        self.upload_summary(rows)
+        self.assertEqual(self.inv('504')['status'], 'promised')
+
+    def test_jobber_mismatch_flagged(self):
+        self.upload_summary([('Quiet Example', None, 650, 'Followed up no response yet')])
+        conn = R._conn()
+        c = dict(conn.execute("SELECT * FROM ar_customers WHERE key='quietexample'").fetchone())
+        conn.close()
+        self.assertIn('Jobber shows $400.00', c['jobber_note'])
+
+    def test_upload_route_detects_summary(self):
+        self.login()
+        R.run_cycle = lambda manual=False: True
+        f = aging_summary_xlsx(self.as_of, self.ROWS)
+        j = self.client.post('/receivables/api/upload', data={'file': (f, 'October.xlsx')},
+                             content_type='multipart/form-data').get_json()
+        self.assertTrue(j['success'], j)
+        self.assertEqual(j['summary']['kind'], 'summary')
+
+
+class SheetNoteRuleTests(unittest.TestCase):
+    def test_rules(self):
+        as_of = date(2026, 10, 6)
+        r = R.interpret_sheet_note('1-30: Preparing a check. Will follow up again if not received by the 12th', as_of)
+        self.assertEqual((r['intent'], r['follow_up_on']), ('promise', '2026-10-12'))
+        r = R.interpret_sheet_note('31-60: still waiting on funding followed up again no response yet', as_of)
+        self.assertEqual((r['intent'], r['followed_up']), ('waiting', True))
+        r = R.interpret_sheet_note("Total: Retainage (still ongoing; can't collect)", as_of)
+        self.assertEqual((r['intent'], r['retainage'], r['retainage_collectable']), ('retainage', 'some', False))
+        self.assertEqual(R.interpret_sheet_note('31-60: charged card all paid now', as_of)['intent'], 'paid')
+        self.assertEqual(R.interpret_sheet_note('31-60: they can pay by EOM', as_of)['promised_date'], '2026-10-31')
+
+
 class JobberGuardTests(unittest.TestCase):
     def test_mutations_blocked(self):
         with self.assertRaises(RuntimeError):

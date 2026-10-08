@@ -13,6 +13,26 @@ The Receivables tile in The Office App chases open invoices from the QuickBooks 
    - Invoices that are no longer on the sheet are closed as paid and their follow-ups stop.
    - If a file would close more than half of what's open, the app asks first (in case it's not the full list).
    - Payments, credit memos and $0 lines are skipped.
+   **Or upload your A/R Aging Summary with your notes.** This is the sheet with one row per customer and CURRENT / 1 - 30 / 31 - 60 / 61 - 90 / 91 AND OVER columns, with notes typed into free cells. The app recognises it by itself.
+   - **Invoices:** the summary has no invoice numbers, so each customer's open invoices are found in Jobber by name. QuickBooks and Jobber names match because Jobber syncs them. The search stops once they add up to the customer's total on the sheet.
+   - **Amounts inside notes:** a note typed over an amount keeps that amount ("releases signed for these so on its way 35120").
+   - **Paid customers:** a customer who drops off the sheet, or shows $0 or a credit, is closed as paid.
+   - **When Jobber doesn't match:** a customer whose Jobber total differs from the sheet is listed under *Needs a person*.
+   - **Your notes are read (Claude, or simple rules without it) and acted on:**
+
+     | Your note says | What the app does |
+     |---|---|
+     | "paid today", "card charged" | Waits for it to clear |
+     | "check coming", "preparing a check", "will pay by EOM" | Payment promised: no follow-ups until very past due |
+     | "awaiting board approval", "waiting on funding" | Snoozes 14 days |
+     | "disputing" | *Needs a person* |
+     | "followed up no response" | Counts as a follow-up on the sheet's date, so nobody gets a second email right away |
+     | "follow up again if not received by the 12th", "wait one more week" | Snoozes until then |
+     | "retainage ongoing, can't collect" | Puts that customer's retainage on hold |
+     | "All retainage" in the Total column | Marks all of the customer's invoices as retainage. In an aging column it covers only that column. |
+
+   - **Where notes show:** on the customer (Customers tab), under the customer in the Invoices list, and in each invoice's breakdown.
+   - **Re-uploading:** only new or changed notes are acted on, so you can keep updating the same sheet and upload it each week.
 2. **Jobber (hourly).** Each open invoice is found in Jobber by its number. That gives the client's email addresses, the *client hub* link where the customer can view and pay, the line items, the Jobber job, whether the job is complete, and whether Jobber already shows it paid. Jobber is only read, never changed (`_jobber` refuses any mutation). It uses the Jobber app connected in Pumps.
 3. **Service call or install.** An invoice is an **install** when its subject, memo, line items or QuickBooks sub-customer mention any of the words on Settings (`pay app, install, installation, proposal, retainage, retention`), or when it is retainage. Otherwise it is a **service call**. Every invoice on a job with an install invoice is an install too. Invoices are grouped into jobs in this order:
    1. The Jobber job.
@@ -45,6 +65,7 @@ The Receivables tile in The Office App chases open invoices from the QuickBooks 
    - With *Email the Notice of Nonpayment automatically* on, the email is sent.
    - The job then walks through *sent → mailed certified → lien recorded*.
    - If the customer looks like a contractor (builder, construction, landscape...), the owner must be entered on the job first.
+   - A last day furnished that is only estimated from the last invoice date shows on the Jobs tab, but never raises an alert or prepares a notice. Enter the real date on the job once the work is finished.
 
 ### What the app does not do
 
