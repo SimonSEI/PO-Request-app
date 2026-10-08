@@ -3713,8 +3713,23 @@ def update_draft_quote(doc_id, actor='Pumps (automatic)'):
         data = jobber_gql('query($id: EncodedId!) { quote(id: $id) { quoteNumber quoteStatus '
                           'lineItems { nodes { id name unitPrice } } } }', {'id': qid})
     except JobberError as e:
-        return {'note': f'{left} (Jobber: {e})'}
+        if not _GONE.search(str(e)):
+            return {'note': f'{left} (Jobber: {e})'}
+        data = {}
     q = data.get('quote') or {}
+    if not q:
+        # Deleted in Jobber: forget it and draft a new one from today's reading.
+        conn = _conn()
+        try:
+            jobber_record_gone(conn, 'quote', qid)
+            conn.commit()
+        finally:
+            conn.close()
+        res = auto_draft_quote(doc_id, actor) or {}
+        gone = f"Our Jobber quote #{num} was deleted in Jobber"
+        if res.get('quote_number'):
+            return {**res, 'note': f"{gone} - drafted #{res['quote_number']} in its place."}
+        return {**res, 'note': f"{gone} - {res.get('pending') or 'draft a new one'}"}
     status = (q.get('quoteStatus') or '').lower()
     if status != 'draft':
         return {'note': f"Our Jobber quote #{num} is already {status.replace('_', ' ') or 'gone'} - "

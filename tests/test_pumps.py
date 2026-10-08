@@ -771,6 +771,18 @@ class PumpsTest(unittest.TestCase):
             self.assertFalse(r.get('updated'))
             self.assertIn('already awaiting response', r['note'])
             self.assertFalse([1 for qq, _ in fake.calls if 'LineItems(' in qq])
+            # Deleted in Jobber since: forgotten, and a new draft made in its place.
+            orig = Fake.__call__
+
+            def deleted(self_, query, variables=None):
+                if 'quoteStatus lineItems' in query:
+                    raise P.JobberError("Couldn't find Quote with 'id'=Q1")
+                return orig(self_, query, variables)
+            Fake.__call__ = deleted
+            r = self.c.post(f"/pumps/api/docs/{q['doc_id']}/read_again", json={}).get_json()
+            self.assertIn('#812 was deleted in Jobber', r['note'])
+            self.assertTrue(r.get('quote_number'), r)
+            self.assertEqual(self.case(q['case_id'])['jobber']['quote']['number'], r['quote_number'])
         finally:
             P.JOBBER_STATIC_TOKEN = saved
 
