@@ -762,6 +762,60 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual([u['uri'] for u in dup['link']['uris']], ['https://jobber/i/7001', 'https://jobber/i/7002'],
                          'both invoices can be opened from the to-do')
 
+    def test_quote_sent_in_jobber_clears_send_quote(self):
+        """A quote whose Jobber status was already noted as sent, but whose
+        "Quote sent" step never got ticked, is ticked by the next sync."""
+        j = self.c.post('/pumps/api/cases', json={'title': 'Sent already', 'client_name': 'Quail Run'}).get_json()
+        cid = j.get('case_id') or j['case']['id']
+        conn = P._conn()
+        try:
+            conn.execute("UPDATE pump_cases SET jobber=? WHERE id=?", (P.json.dumps(
+                {'quote': {'id': 'QS1', 'number': '9300', 'status': 'awaiting_response'}}), cid))
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, status, updated_at) "
+                         "VALUES ('QS1', 'quote', '9300', 'awaiting_response', '2026-10-01T12:00:00Z')")
+            P._follow_quotes(conn)
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertTrue(self.case(cid)['steps']['client_quote'].get('at'))
+        self.assertNotIn(cid, [c['id'] for c in self.c.get('/pumps/api/summary').get_json()['queue']['to_quote_client']])
+
+    def test_undo_a_recent_change(self):
+        j = self.c.post('/pumps/api/cases', json={'title': 'Undo me', 'client_name': 'Quail Run'}).get_json()
+        cid = j.get('case_id') or j['case']['id']
+        self.c.post(f'/pumps/api/cases/{cid}', json={'title': 'Renamed'})
+        self.assertEqual(self.case(cid)['title'], 'Renamed')
+        acts = self.c.get('/pumps/api/undo').get_json()['actions']
+        self.assertEqual([a['label'] for a in acts[:2]], [f'Changed job #{cid}', 'Added a job'])
+        # Undoing the add first is refused - the rename came after it.
+        r = self.c.post(f"/pumps/api/undo/{acts[1]['id']}", json={})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('undo that first', r.get_json()['error'])
+        self.assertTrue(self.c.post(f"/pumps/api/undo/{acts[0]['id']}", json={}).get_json()['success'])
+        self.assertEqual(self.case(cid)['title'], 'Undo me')
+        self.assertEqual(self.c.post(f"/pumps/api/undo/{acts[0]['id']}", json={}).status_code, 400, 'only once')
+        # Cancelling a job, undone: it's back, and so is everything about it.
+        self.c.post(f'/pumps/api/cases/{cid}/delete', json={})
+        self.assertEqual(self.case(cid)['status'], 'cancelled')
+        top = self.c.get('/pumps/api/undo').get_json()['actions'][0]
+        self.assertEqual(top['label'], f'Deleted job #{cid}')
+        self.c.post(f"/pumps/api/undo/{top['id']}", json={})
+        self.assertNotEqual(self.case(cid)['status'], 'cancelled')
+        # Undoing the add removes the job (and its history).
+        r = self.c.post(f"/pumps/api/undo/{acts[1]['id']}", json={}).get_json(); self.assertTrue(r['success'], r)
+        self.assertEqual(self.c.get(f'/pumps/api/cases/{cid}').status_code, 404)
+        # A to-do ticked by mistake comes back; Jobber drafts carry a warning.
+        todo = self.c.post('/pumps/api/todos', json={'title': 'Call Tommy'}).get_json()
+        tid = [t for t in todo['todos'] if t['title'] == 'Call Tommy'][0]['id']
+        self.c.post(f'/pumps/api/todos/{tid}/done', json={'done': True})
+        top = self.c.get('/pumps/api/undo').get_json()['actions'][0]
+        self.c.post(f"/pumps/api/undo/{top['id']}", json={})
+        open_titles = [t['title'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
+        self.assertIn('Call Tommy', open_titles)
+        self.assertIn('stays', P._undo_label('/pumps/api/docs/4/quote')[1])
+        # Background work (scan, sync) is never put on the undo list.
+        self.assertEqual(P._UNDO_ACTION.get(), 0)
+
     def test_follow_up_before_a_service_comes_due(self):
         def todos():
             return {t['title']: t for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']}

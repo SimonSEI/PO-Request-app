@@ -220,6 +220,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   <div class="r">
     <button class="btn p" onclick="newCase()">＋ New item</button>
     <span>{{ full_name }}</span>
+    <button class="btn" onclick="showUndo()" title="Undo a recent change">↶ Undo</button>
     <a class="btn" href="{{ url_for('dashboard') }}">← Dashboard</a>
   </div>
 </nav>
@@ -387,6 +388,18 @@ function todoRow(t){
       ${t.kind === 'diver_email' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="diverTodo('${esc(t.link.month || '')}')">Email ready - copy &amp; attach</button><a class="btn s" href="/pumps/api/dives/docx?month=${encodeURIComponent(t.link.month || '')}">⬇ Word list</a></div>` : ''}</div>
       ${t.kind === 'manual' ? `<button class="btn s" title="Remove" onclick="todoDelete(${t.id})">✕</button>` : ''}</div>`;
 }
+// ── undo ──────────────────────────────────────────────
+async function showUndo(){
+  const j = await api('/undo'); if (!j.success) { toast(j.error, true); return; }
+  const rows = j.actions.map(a => `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line,#ddd)"><div style="flex:1"><b>${esc(a.label)}</b><div class="note">${esc(a.created_at.slice(5,16))} · ${esc(a.actor || '')}${a.external ? ' · ' + esc(a.external) : ''}</div></div><button class="btn s" onclick="undoAction(${a.id})">Undo</button></div>`).join('');
+  openModal('Undo a recent change', rows ? `<p class="note">Changes from the last 24 hours, newest first. Undo puts the app back as it was before that click.</p>${rows}` : '<div class="empty">Nothing to undo from the last 24 hours.</div>');
+}
+async function undoAction(id){
+  const j = await api('/undo/' + id, {method:'POST', body:{}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast('Undone: ' + j.label + (j.outside ? ' - ' + j.outside : ''));
+  loadToday(); showTab(curTab); showUndo();
+}
 function openAll(uris){ const blocked = uris.filter(u => { const w = window.open(u, '_blank'); if (w) w.opener = null; return !w; }).length; if (blocked) toast('Your browser blocked a tab - allow pop-ups for this site, or use the buttons one at a time.', true); }
 async function todoDone(id, done){ const j = await api('/todos/' + id + '/done', {method:'POST', body:{done}}); if (!j.success) toast(j.error, true); else { toast(done ? 'Done' : 'Reopened'); loadToday(); } }
 async function todoAdd(){ const el = document.getElementById('todoNew'); const t = el.value.trim(); if (!t) return; const j = await api('/todos', {method:'POST', body:{title: t}}); if (!j.success) toast(j.error, true); else loadToday(); }
@@ -461,7 +474,7 @@ async function loadToday(){
     `<button class="btn s p" onclick="draftInvoice(${d.id})">Draft invoice</button>${(ip.possible_duplicate || {}).uri ? `<a class="btn s" target="_blank" rel="noopener" href="${esc(ip.possible_duplicate.uri)}">Open #${esc(ip.possible_duplicate.number)} ↗</a>` : ''}`)); });
   q.quotes_to_draft.forEach(d => todo.push(todoItem('Draft quote', 'a', esc(d.client_name || d.file_name), `${esc(d.vendor)} quote ${d.doc_number ? '#' + esc(d.doc_number) + ' ' : ''}· ${money(d.subtotal ?? d.total)}${((d.jobber || {}).quote_pending || {}).reason ? ' · <b class="warn">' + esc(d.jobber.quote_pending.reason) + '</b>' : ''}`, `openCase(${d.case_id})`,
     `<button class="btn s p" onclick="draftQuote(${d.id})">Draft quote</button>${(((d.jobber || {}).quote_pending || {}).possible_duplicate || {}).number ? `<button class="btn s" onclick="linkQuoteNumber(${d.case_id}, '${esc(d.jobber.quote_pending.possible_duplicate.number)}')">Link #${esc(d.jobber.quote_pending.possible_duplicate.number)}</button>` : ''}`)));
-  q.to_quote_client.forEach(c => todo.push(todoItem('Send quote', 'a', caseTitle(c), caseSub(c, 'send our quote to the client in Jobber') + followUp(c.follow_up), open(c), doDone(c))));
+  q.to_quote_client.forEach(c => todo.push(todoItem('Send quote', 'a', caseTitle(c), caseSub(c, 'send our quote to the client in Jobber - this goes away by itself once Jobber shows it sent') + followUp(c.follow_up), open(c), doDone(c))));
   q.needs_scheduling.forEach(c => todo.push(todoItem('Schedule', 'a', caseTitle(c), caseSub(c, 'client approved - get it on ' + esc(c.vendor || 'Wettech') + "'s calendar" + (c.scheduled_for ? ' · for ' + esc(c.scheduled_for) : '')), open(c), '')));
   q.ready_to_close.forEach(c => todo.push(todoItem('Send invoice', 'a', caseTitle(c), caseSub(c, 'send the invoice from Jobber' + (c.sei_invoice_number ? ' · #' + esc(c.sei_invoice_number) : '')) + followUp(c.follow_up), open(c), doDone(c))));
   q.reports_to_log.forEach(d => todo.push(todoItem('Log report', 'b', esc(d.client_name || d.file_name), `${esc((d.report_fields||{}).title || 'Report')} · ${esc(d.doc_date)}`, d.case_id ? `openCase(${d.case_id})` : `openDoc(${d.id})`,
