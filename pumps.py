@@ -2125,6 +2125,8 @@ def scan_mailbox(actor='system'):
                         summary['added'].append({'doc_id': res['doc_id'], 'kind': res.get('kind'), 'file': filename})
                     else:
                         summary['skipped'] += 1
+                        summary.setdefault('skipped_files', []).append(
+                            {'file': filename, 'why': res.get('skipped') or '', 'case_id': res.get('case_id')})
                 if not found and not any((f or '').lower().endswith(('.pdf', '.docx', '.doc')) for f, _ in attachments):
                     call = handle_service_call_email(str(uid), sender, subject, preview)
                     if call:
