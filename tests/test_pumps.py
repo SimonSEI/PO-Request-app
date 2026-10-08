@@ -813,6 +813,37 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(acct['name'], 'Barrington Cove')
         self.assertIn('Invoices only to Paramount', acct['notes'])
 
+    def test_who_to_follow_up_with(self):
+        """The account's contact from the master list; else the client's AP/billing email in Jobber."""
+        self.assertEqual(P.billing_emails([{'address': 'Board.VP@example.com', 'primary': True},
+                                           {'address': 'ap@mgmt-example.com', 'primary': False},
+                                           {'address': 'AP@mgmt-example.com', 'primary': False}]),
+                         ['ap@mgmt-example.com'])
+        self.assertEqual(P.billing_emails([{'address': 'x@example.com'}, {'address': 'owner@example.com', 'primary': True}]),
+                         ['owner@example.com'])
+        self.assertEqual(P.billing_emails([{'address': 'accountspayable@gc-example.com', 'primary': True},
+                                           {'address': 'pm@gc-example.com'}]), ['accountspayable@gc-example.com'])
+        conn = P._conn()
+        try:
+            full = P.create_case(conn, {'title': 'Pump repair', 'client_name': 'Cypress Legends'}, 'test')
+            part = P.create_case(conn, {'title': 'Pump repair', 'client_name': 'Huntington Lakes Residence Assoc.'}, 'test')
+            none = P.create_case(conn, {'title': 'Pump repair', 'client_name': 'Nowhere Example HOA'}, 'test')
+            conn.execute("UPDATE pump_cases SET jobber_client_id='CL-HL' WHERE id=?", (part,))
+            conn.execute("INSERT OR REPLACE INTO pump_client_contacts (client_id, name, emails, fetched_at) VALUES "
+                         "('CL-HL', 'Huntington', ?, ?)", (json.dumps([{'address': 'vp@example.com', 'primary': True},
+                                                                      {'address': 'ap@condo-example.com'}]), P._now_text()))
+            conn.commit()
+            rows = {r['id']: r for r in P.list_cases(conn, 'open')}
+            fu = P.follow_up_for(conn, rows[full])
+            self.assertEqual((fu['name'], fu['email'], fu['source']), ('Bridget Wooten', 'bwooten@northland.com', 'account'))
+            fu = P.follow_up_for(conn, rows[part])
+            self.assertEqual((fu['name'], fu['phone'], fu['email'], fu['email_from']),
+                             ('Michael', '973-615-1427', 'ap@condo-example.com', 'jobber_ap'))
+            fu = P.follow_up_for(conn, rows[none])
+            self.assertEqual((fu['name'], fu['email']), ('', ''))
+        finally:
+            conn.close()
+
     def test_follow_the_quote_already_in_jobber_instead_of_the_apps_draft(self):
         """The Carlise: the app drafted #9146 under 'The Carlise', but the real
         quote is #9136 under Greenscapes, already out with them."""
