@@ -5263,7 +5263,7 @@ def _scheduled_dive_email():
 
 
 DIVE_FIELDS = ('name', 'equipment', 'address', 'diver_notes', 'months', 'status_note', 'month_note',
-               'jobber_client_id', 'kind', 'joined', 'diver_cost', 'our_bill', 'naples_electric')
+               'jobber_client_id', 'kind', 'joined', 'diver_cost', 'our_bill', 'naples_electric', 'follow_up')
 
 
 @api('/dives')
@@ -6038,6 +6038,68 @@ def _apply_repairs_by(c, now):
         c.execute('UPDATE pump_maint_accounts SET notes=REPLACE(notes, ?, ?) WHERE name=?', (old, new, name))
 
 
+# Who to follow up with before an account's service, from the office's sheets
+# (Oct 2026). Editable per account on the Accounts tab.
+SEED_FOLLOW_UPS = [
+    ('maint', 'Sopra Luxury Living', 'Email Lauren (lmleczek@davisdevelopment.com) to approve the visit before '
+                                     'Wettech goes out.'),
+    ('maint', 'Hodges Funeral Home', 'SiteOne does this service - ask PSochar@siteone.com (backup '
+                                     'desposito@siteone.com) for their maintenance report.'),
+    ('maint', 'Warm Springs Comm. Assoc.', 'Naples Electric does this service - get the report from '
+                                           'jenna@nemwinc.com (Paul Jukins, paul@nemwinc.com).'),
+    ('dive', 'Kurt Biggs', 'Make sure Ramon is there with Jordan (the diver) - Jordan calls to coordinate.'),
+]
+FOLLOW_UP_DAYS_AHEAD = 7
+
+
+def _apply_follow_ups(c, now):
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('follow_ups_oct26', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    for table, name, text in SEED_FOLLOW_UPS:
+        tbl = 'pump_maint_accounts' if table == 'maint' else 'pump_dive_sites'
+        c.execute(f"UPDATE {tbl} SET follow_up=? WHERE name=? AND COALESCE(follow_up, '')=''", (text, name))
+
+
+def _service_month(months, monthly, today):
+    """The service month (year, month) an account is due in now, or within
+    FOLLOW_UP_DAYS_AHEAD days; None when it isn't. No months = every month."""
+    for d in (today, today + timedelta(days=FOLLOW_UP_DAYS_AHEAD)):
+        if monthly or not months or d.month in months:
+            return d.year, d.month
+    return None
+
+
+def service_follow_ups(today=None):
+    """A to-do, once per service, for each account with someone to follow up
+    with before it: about a week ahead of the service month."""
+    today = today or _today()
+    conn = _conn()
+    added = []
+    try:
+        rows = [('m', r['id'], r['name'], r['follow_up'], _month_list(r['months']), bool(r['monthly']))
+                for r in conn.execute("SELECT * FROM pump_maint_accounts WHERE active=1 AND COALESCE(follow_up, '')!=''")]
+        rows += [('d', r['id'], r['name'], r['follow_up'], _month_list(r['months']), False)
+                 for r in conn.execute("SELECT * FROM pump_dive_sites WHERE COALESCE(active, 1)=1 "
+                                       "AND COALESCE(needs_dive, 1)=1 AND COALESCE(follow_up, '')!=''")]
+        for kind, rid, name, text, months, monthly in rows:
+            when = _service_month(months, monthly, today)
+            if not when:
+                continue
+            label = datetime(when[0], when[1], 1).strftime('%B')
+            key = f'followup:{kind}:{rid}:{when[0]}-{when[1]:02d}'
+            what = 'dive' if kind == 'd' else 'service'
+            before = conn.total_changes
+            add_todo(conn, key, f"Follow up before {name}'s {label} {what}", text, {'account': name},
+                     due_on=f'{when[0]}-{when[1]:02d}-01')
+            if conn.total_changes > before:
+                added.append(key)
+        conn.commit()
+    finally:
+        conn.close()
+    return added
+
+
 def init_account_tables(c):
     c.execute('''CREATE TABLE IF NOT EXISTS pump_scada_accounts (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -6076,10 +6138,12 @@ def init_account_tables(c):
             c.execute(f'ALTER TABLE pump_dive_sites ADD COLUMN {col} {decl}')
         except sqlite3.OperationalError:
             pass
-    try:
-        c.execute("ALTER TABLE pump_maint_accounts ADD COLUMN repairs_by TEXT DEFAULT ''")
-    except sqlite3.OperationalError:
-        pass
+    for tbl, col in (('pump_maint_accounts', 'repairs_by'), ('pump_maint_accounts', 'follow_up'),
+                     ('pump_dive_sites', 'follow_up')):
+        try:
+            c.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
     for col, decl in (('jobber_names', "TEXT DEFAULT ''"), ('complimentary', 'INTEGER DEFAULT 0'),
                       ('quote', "TEXT DEFAULT '{}'")):
         try:
@@ -6125,6 +6189,7 @@ def init_account_tables(c):
     _scada_jobber_migrate(c)
     _apply_master_list(c, now)
     _apply_repairs_by(c, now)
+    _apply_follow_ups(c, now)
     if not seeded('office_answers_oct26'):
         # What the office said (Oct 2026): Old Collier and Camas Willows are off
         # SCADA; Autumn Woods (we pay) and Reserve at Estero (in their monthly)
@@ -6458,7 +6523,7 @@ def h_scada_update(actor, sid):
 
 
 MAINT_FIELDS = ('name', 'kind', 'joined', 'equipment', 'address', 'months', 'vendor_cost', 'naples_electric', 'our_bill',
-                'notes', 'repairs_by')
+                'notes', 'repairs_by', 'follow_up')
 
 
 def maint_accounts(conn):
@@ -7204,6 +7269,10 @@ def _scheduled_hourly():
     """Every hour: the month's diver to-do / email, SCADA renewals coming due,
     and the weekday 8am email."""
     _scheduled_dive_email()
+    try:
+        service_follow_ups()
+    except Exception as e:
+        print(f'  ⚠ Pumps: service follow-ups: {e}')
     try:
         scada_due_actions()
     except Exception as e:
