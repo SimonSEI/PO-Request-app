@@ -2743,16 +2743,26 @@ def _refresh_linked_records(conn):
             if c['status'] != 'open' and kind != 'invoice':
                 continue
             want[rec['id']] = (kind, c['id'])
+    # Approved quotes no item follows yet show in To do as new work: checked
+    # too, so one deleted in Jobber drops off.
+    since = (_today() - timedelta(days=90)).isoformat()
+    for r in conn.execute("SELECT jobber_id FROM pump_jobber_items WHERE kind='quote' AND case_id IS NULL "
+                          "AND status='approved' AND COALESCE(created_at, updated_at, '') >= ?", (since,)).fetchall():
+        want.setdefault(r[0], ('quote', None))
     for jid, (kind, case_id) in want.items():
         field, num, st, total, _ = _LINKED_QUERIES[kind]
         try:
             data = jobber_gql(f'query($id: EncodedId!) {{ {field}(id: $id) {{ id {num} {st} {total} '
                               f'jobberWebUri updatedAt }} }}', {'id': jid})
         except JobberError as e:
-            errors.append(f'{kind} {jid}: {e}')
+            if _GONE.search(str(e)):
+                jobber_record_gone(conn, kind, jid)
+            else:
+                errors.append(f'{kind} {jid}: {e}')
             continue
         n = data.get(field)
         if not n:
+            jobber_record_gone(conn, kind, jid)
             continue
         amount = _money(n.get('total') if n.get('total') is not None else (n.get('amounts') or {}).get('total'))
         conn.execute('''INSERT INTO pump_jobber_items (jobber_id, kind, number, status, total, updated_at, web_uri,
@@ -2764,6 +2774,35 @@ def _refresh_linked_records(conn):
                       n.get('jobberWebUri') or '', case_id, _now_text()))
         time.sleep(0.1)
     return errors
+
+
+_GONE = re.compile(r'not\s+found|could\s*n.?t\s+(?:be\s+)?f(?:i|ou)nd|does\s*n.?o?t\s+exist|no\s+longer\s+exists|'
+                   r'has\s+been\s+deleted', re.I)
+
+
+def jobber_record_gone(conn, kind, jid):
+    """A quote, invoice or job deleted in Jobber: forget it, and take it off
+    any item and document it was on - the item goes back to needing one."""
+    row = conn.execute('SELECT number FROM pump_jobber_items WHERE jobber_id=?', (jid,)).fetchone()
+    num = row[0] if row else ''
+    conn.execute('DELETE FROM pump_jobber_items WHERE jobber_id=?', (jid,))
+    for c in conn.execute('SELECT id, jobber FROM pump_cases WHERE jobber LIKE ?', (f'%{jid}%',)).fetchall():
+        j = json.loads(c['jobber'] or '{}')
+        rec = j.get(kind) or {}
+        if rec.get('id') != jid:
+            continue
+        num = num or rec.get('number') or ''
+        j.pop(kind)
+        conn.execute('UPDATE pump_cases SET jobber=?, updated_at=? WHERE id=?', (json.dumps(j), _now_text(), c['id']))
+        _event(conn, 'jobber sync', f'{kind} deleted',
+               f"Jobber {kind} #{num} was deleted in Jobber - taken off this job", case_id=c['id'])
+    for d in conn.execute('SELECT id, jobber FROM pump_docs WHERE jobber LIKE ?', (f'%{jid}%',)).fetchall():
+        j = json.loads(d['jobber'] or '{}')
+        if j.get(f'{kind}_id') != jid:
+            continue
+        j = {k: v for k, v in j.items() if not k.startswith(f'{kind}_')}
+        conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(j), d['id']))
+    return num
 
 
 def untracked_jobber_items(conn, others=False):
