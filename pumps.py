@@ -1042,7 +1042,21 @@ def case_detail(conn, case_id):
     d['jobber_items'] = [dict(r) for r in conn.execute(
         'SELECT * FROM pump_jobber_items WHERE case_id=? ORDER BY updated_at DESC', (case_id,))]
     d['schedule_email'] = _schedule_mailto(d)
+    d['account'] = account_info(conn, d)
     return d
+
+
+def account_info(conn, case):
+    """The account a job is for and its notes from the account sheets
+    (contacts, where invoices and quotes go), or None."""
+    text = ' '.join(x for x in (case.get('client_name'), case.get('title'), case.get('site')) if x)
+    name = match_account(text, conn)
+    if not name:
+        return None
+    notes = [r[0] for r in conn.execute("SELECT notes FROM pump_maint_accounts WHERE name=? AND notes != ''", (name,))]
+    notes += [r[0] for r in conn.execute("SELECT diver_notes FROM pump_dive_sites WHERE name=? AND diver_notes != ''",
+                                         (name,))]
+    return {'name': name, 'notes': '\n'.join(dict.fromkeys(n.strip() for n in notes if n.strip()))}
 
 
 def _schedule_mailto(case):
@@ -5807,6 +5821,88 @@ SEED_LAKES = [
 ]
 
 
+# Contacts and billing instructions from the office's master list (Oct 7
+# 2026), by the account's name here. Pump accounts' notes; the lake-only ones
+# go on the diver list.
+MASTER_LIST_NOTES = [
+    ('maint', 'Autumn Woods', 'After Wettech, the contact for any pump issues is Oscar.'),
+    ('maint', 'Banyan Bay', 'Account contact: Stephanie Kolenut, sakmgmt@gmail.com.'),
+    ('maint', 'Barrington Cove', 'Account contact: John Rodrigues, 239-354-7367. Invoices only to Paramount accounts '
+                                 'payable (accountspayable@paramount...); quotes only to John Rodriguez. Billing: pump '
+                                 '$600, recharge wells $325, fountains $650.'),
+    ('maint', 'Carlisle (The Carlisle)', 'Account contact: Christine Keller, ckeller@greenscapesfl.com (Greenscapes).'),
+    ('maint', 'Caymas', 'Account contact: Irene Blandon, (239) 529-9021. Add the pump report to the account; Beatriz '
+                        'bills it with the water meter reading. SCADA is included in the quarterly invoice.'),
+    ('maint', 'Charlotte County - Sunshine Lake Park', 'Account contact: Karen Bliss, 941-575-3642. Needs a new PO every '
+                                                       'year, added to the job before billing (set for Sept 2026-2027).'),
+    ('maint', 'Cypress Legends', 'Account contact: Bridget Wooten, 239-693-2700, bwooten@northland.com.'),
+    ('maint', 'Diplomat', 'Account contact: Tim, 239-458-2200. Owner: Beverly, 239-292-2163.'),
+    ('maint', 'Pine Air Lakes - Edgemont Office Park', 'Send all invoices to jpadilla@gmssf.com, jwasserman@gmscfl.com '
+                                                       'and agill@gmssf.com. Quotes to jpadilla@gmssf.com.'),
+    ('maint', 'Enclave @ Palmira', 'Account contact: brenna.mcdowell@fsresidential.com.'),
+    ('maint', 'Evergreen (Bradenton)', "Attach the report in Jobber but don't send the pump report - only report the "
+                                       'gallons used for the north and south pumps.'),
+    ('maint', 'Hodges Funeral Home', 'SiteOne does the pump maintenance 3 times a year; ask PSochar@siteone.com (backup '
+                                     'desposito@siteone.com) for the report.'),
+    ('maint', 'Honda Fort Myers', 'Account contact: Mike Naegele, mnaegele@hondaoffortmyers.com, 215-783-5304.'),
+    ('maint', 'Huntington Lakes Residence Assoc.', 'Account contact: Michael, 973-615-1427.'),
+    ('maint', 'Magnolia Falls at Falling Waters', 'Always cc Carol Connolly on invoices and quotes: '
+                                                  'carolconnolly48@gmail.com, 262-617-8255.'),
+    ('maint', 'Miromar Outlets', 'Account contact: Jeff Staner, 239-287-1050. Let them know before making pump repairs '
+                                 'over $500.'),
+    ('maint', 'Pebblebrook HOA', 'Account contact: Nancy Phillips, contractors@newellpropertymanagement.com.'),
+    ('maint', 'Rosewood HOA', 'Account contact: George Anderson, 708-514-2091, ganderson47@att.net.'),
+    ('maint', 'Sopra Luxury Living', 'Email Lauren (lmleczek@davisdevelopment.com) before each quarterly visit for '
+                                     'approval.'),
+    ('maint', 'The Reserve @ Estero', 'Contact besides Wettech: Oscar.'),
+    ('maint', 'Warm Springs Comm. Assoc.', 'Naples Electric: Paul Jukins, 777-0797, paul@nemwinc.com. Reports: '
+                                           'jenna@nemwinc.com.'),
+    ('dive', 'Kurt Biggs', 'Ramon to be there with the diver; Jordan calls to coordinate when he is going out.'),
+    ('dive', 'Clubside', 'Jordan dives once a year, in January only. Our technicians Jimmie/Ramon keep an eye on the '
+                         'pump.'),
+]
+# SCADA renewals on the master workbook (Oct 7 2026) that weren't on the first
+# sheet. The two FGCU stations are marked "?" there with no invoice since 2023,
+# so they come in switched off. (Its "Heritage Station - Charlotte County" is
+# the Heritage Stations account already found from Jobber's invoices; the
+# sheet only adds its 2023 and 2024 invoice numbers.)
+MASTER_LIST_SCADA = [
+    ('FGCU Intermural Pump Station', '2022-08-17', 'Annual Inspection - SCADA', 426.00, '$600.00', 'Wettech',
+     {'2023': '15286'}, 0, 'Marked "?" on the Oct 2026 sheet - no invoice since 2023.'),
+    ('FGCU Library - Broadcast - Athletics', '2022-05-02', 'Annual Inspection - SCADA', 428.00, '$500.00', 'Wettech',
+     {'2023': '14107'}, 0, 'Marked "?" on the Oct 2026 sheet - no invoice since 2023.'),
+]
+
+
+def _apply_master_list(c, now):
+    """Once: the master list's contacts onto the accounts, and its SCADA
+    renewals the app didn't have. Claimed first so only one worker runs it."""
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('master_list_oct7', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    for table, name, text in MASTER_LIST_NOTES:
+        tbl, col = ('pump_maint_accounts', 'notes') if table == 'maint' else ('pump_dive_sites', 'diver_notes')
+        row = c.execute(f'SELECT id, {col} FROM {tbl} WHERE name=?', (name,)).fetchone()
+        if not row or text in (row[1] or ''):
+            continue
+        c.execute(f'UPDATE {tbl} SET {col}=?, updated_by=?, updated_at=? WHERE id=?',
+                  (((row[1] or '').strip() + '\n' + text).strip(), 'Master list (Oct 7 2026)', now, row[0]))
+    row = c.execute("SELECT id, years FROM pump_scada_accounts WHERE client='Heritage Stations'").fetchone()
+    if row:
+        years = json.loads(row[1] or '{}')
+        for y, inv in (('2023', '18456'), ('2024', '23846')):
+            if not str(years.get(y) or '').strip():
+                years[y] = inv
+        c.execute('UPDATE pump_scada_accounts SET years=? WHERE id=?', (json.dumps(years), row[0]))
+    for client, due, product, cost, bill, vendor, years, active, notes in MASTER_LIST_SCADA:
+        if c.execute('SELECT 1 FROM pump_scada_accounts WHERE client=?', (client,)).fetchone():
+            continue
+        c.execute('''INSERT INTO pump_scada_accounts (client, renewal_date, product, vendor_cost, our_bill, vendor,
+                       years, active, notes, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+                  (client, due, product, cost, bill, vendor, json.dumps(years), active, notes,
+                   'Master list (Oct 7 2026)', now))
+
+
 def init_account_tables(c):
     c.execute('''CREATE TABLE IF NOT EXISTS pump_scada_accounts (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -5888,6 +5984,7 @@ def init_account_tables(c):
                            'Lake sheet (Oct 2026)', now))
         mark('lake_sheet_seeded')
     _scada_jobber_migrate(c)
+    _apply_master_list(c, now)
     if not seeded('office_answers_oct26'):
         # What the office said (Oct 2026): Old Collier and Camas Willows are off
         # SCADA; Autumn Woods (we pay) and Reserve at Estero (in their monthly)

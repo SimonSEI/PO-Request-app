@@ -664,6 +664,32 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(case['stage'], 'assessment')
         self.assertEqual({s['key']: s for s in case['step_list']}['assessment'].get('due'), '2026-10-20')
 
+    def test_master_list_contacts_show_on_the_job(self):
+        conn = P._conn()
+        try:
+            notes = conn.execute("SELECT notes FROM pump_maint_accounts WHERE name='Barrington Cove'").fetchone()[0]
+            self.assertIn('quotes only to John Rodriguez', notes)
+            self.assertIn('Ramon', conn.execute("SELECT diver_notes FROM pump_dive_sites WHERE name='Kurt Biggs'").fetchone()[0])
+            heritage = json.loads(conn.execute("SELECT years FROM pump_scada_accounts WHERE client='Heritage Stations'")
+                                  .fetchone()[0])
+            self.assertEqual((heritage['2023'], heritage['2024'], heritage['2025']), ('18456', '23846', '28165'))
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM pump_scada_accounts WHERE client LIKE '%HERITAGE%'")
+                             .fetchone()[0], 1, 'no duplicate Heritage')
+            fgcu = conn.execute("SELECT active FROM pump_scada_accounts WHERE client='FGCU Intermural Pump Station'").fetchone()
+            self.assertEqual(fgcu[0], 0, 'added switched off - no renewal quote drafted on its own')
+            # Run again (the other worker): nothing doubles.
+            P._apply_master_list(conn.cursor(), P._now_text())
+            conn.commit()
+            self.assertEqual(conn.execute("SELECT notes FROM pump_maint_accounts WHERE name='Barrington Cove'").fetchone()[0],
+                             notes)
+            cid = P.create_case(conn, {'title': 'Well at lake #4', 'client_name': 'Barrington Cove'}, 'test')
+            conn.commit()
+        finally:
+            conn.close()
+        acct = self.case(cid)['account']
+        self.assertEqual(acct['name'], 'Barrington Cove')
+        self.assertIn('Invoices only to Paramount', acct['notes'])
+
     def test_follow_the_quote_already_in_jobber_instead_of_the_apps_draft(self):
         """The Carlise: the app drafted #9146 under 'The Carlise', but the real
         quote is #9136 under Greenscapes, already out with them."""
@@ -1519,7 +1545,7 @@ class PumpsTest(unittest.TestCase):
         try:
             j = self.c.get('/pumps/api/scada').get_json()
             rows = {r['client']: r for r in j['scada']}
-            self.assertEqual(len(rows), 19)  # the sheet's 16 + 3 found in Jobber
+            self.assertEqual(len(rows), 21)  # the sheet's 16 + 3 found in Jobber + 2 FGCU from the master list
             self.assertEqual(j['years'], ['2023', '2024', '2025', '2026'])
             allure = rows['ALLURE']
             self.assertEqual((allure['vendor_cost'], allure['our_bill'], allure['years']['2025']), (428.0, '$482.00', '29448'))
@@ -1533,7 +1559,7 @@ class PumpsTest(unittest.TestCase):
             self.assertEqual(rows['Tuscany Point']['vendor_cost'], 855.99)
             states = [r['state'] for r in j['scada']]
             # Old Collier and Camas Willows are off SCADA; Autumn Woods and Reserve are complimentary.
-            self.assertEqual((states.count('overdue'), states.count('due_soon'), states.count('inactive')), (2, 0, 2))
+            self.assertEqual((states.count('overdue'), states.count('due_soon'), states.count('inactive')), (2, 0, 4))
             self.assertEqual((rows['AUTUMN WOODS']['complimentary'], rows['RESERVE AT ESTERO']['complimentary']), (1, 1))
             self.assertEqual(rows['CORSA (formerly Estero Crossing)']['state'], 'current')  # 46 days out
             # Renewed: the invoice goes in the year it was due, and the date moves on a year.
