@@ -2256,6 +2256,7 @@ def _sync_jobber(full=False, actor='system'):
                               it['approved_at'], it['web_uri'], it['category'], it['po_number'], now,
                               it['client_company']))
             linked = _link_jobber_items(conn)
+            status['errors'] += _refresh_linked_records(conn)
             _follow_invoices(conn)
             approved = _follow_quotes(conn)
             rebuild_scada(conn)
@@ -2291,6 +2292,55 @@ def on_account_sheets(conn, it, names=None):
         if len(core) >= 4 and fuzzy_has(core, text):
             return True
     return False
+
+
+# Fetched by id: the Jobber records our items are linked to. Jobber's search
+# doesn't look at quote titles, so a quote we drafted may never come up in
+# the term search; asking for it by id keeps its status (sent, approved) and
+# total current either way.
+_LINKED_QUERIES = {
+    'quote': ('quote', 'quoteNumber', 'quoteStatus', 'amounts { total }', {'approved', 'converted', 'archived'}),
+    'invoice': ('invoice', 'invoiceNumber', 'invoiceStatus', 'amounts { total }', {'paid', 'voided', 'bad_debt'}),
+    'job': ('job', 'jobNumber', 'jobStatus', 'total', {'archived'}),
+}
+
+
+def _refresh_linked_records(conn):
+    """Update pump_jobber_items for every quote, invoice and job an item is
+    linked to that isn't finished yet - open items, and closed ones still
+    waiting on the client to pay. Returns errors."""
+    errors, want = [], {}
+    for c in conn.execute("SELECT id, status, jobber FROM pump_cases WHERE status != 'cancelled' "
+                          "AND jobber LIKE '%\"id\"%'").fetchall():
+        j = json.loads(c['jobber'] or '{}')
+        for kind, (_, _, _, _, final) in _LINKED_QUERIES.items():
+            rec = j.get(kind) or {}
+            if not rec.get('id') or (rec.get('status') or '') in final:
+                continue
+            if c['status'] != 'open' and kind != 'invoice':
+                continue
+            want[rec['id']] = (kind, c['id'])
+    for jid, (kind, case_id) in want.items():
+        field, num, st, total, _ = _LINKED_QUERIES[kind]
+        try:
+            data = jobber_gql(f'query($id: EncodedId!) {{ {field}(id: $id) {{ id {num} {st} {total} '
+                              f'jobberWebUri updatedAt }} }}', {'id': jid})
+        except JobberError as e:
+            errors.append(f'{kind} {jid}: {e}')
+            continue
+        n = data.get(field)
+        if not n:
+            continue
+        amount = _money(n.get('total') if n.get('total') is not None else (n.get('amounts') or {}).get('total'))
+        conn.execute('''INSERT INTO pump_jobber_items (jobber_id, kind, number, status, total, updated_at, web_uri,
+                          case_id, synced_at) VALUES (?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(jobber_id) DO UPDATE SET status=excluded.status, total=excluded.total,
+                          updated_at=excluded.updated_at, number=excluded.number, synced_at=excluded.synced_at,
+                          case_id=COALESCE(pump_jobber_items.case_id, excluded.case_id)''',
+                     (jid, kind, str(n.get(num) or ''), (n.get(st) or '').lower(), amount, n.get('updatedAt') or '',
+                      n.get('jobberWebUri') or '', case_id, _now_text()))
+        time.sleep(0.1)
+    return errors
 
 
 def untracked_jobber_items(conn, others=False):
@@ -3077,6 +3127,82 @@ def fetch_quote_lines(quote_id):
     return None
 
 
+def find_quote_by_number(number):
+    """The Jobber quote with this number (e.g. 9136), or None."""
+    number = str(number or '').strip().lstrip('#')
+    if not number.isdigit():
+        raise ValueError('Type the Jobber quote number, e.g. 9136')
+    spec = ['id', 'quoteNumber', 'quoteStatus', 'title', 'jobberWebUri', ('amounts', ['total']),
+            ('client', ['id', 'name']), ('property', ['id', _ADDR])]
+
+    def make(fields):
+        return f'query($q: String!) {{ quotes(searchTerm: $q, first: 20) {{ nodes {{ {fields} }} }} }}'
+    data, _ = _gql_tolerant(make, spec, {'q': number}, required=('id', 'quoteNumber'))
+    return next((n for n in (data.get('quotes') or {}).get('nodes') or []
+                 if str(n.get('quoteNumber') or '') == number), None)
+
+
+def link_jobber_quote(case_id, number, actor='system'):
+    """Point an item at the Jobber quote that is really ours for it - e.g. one
+    the office made by hand - instead of the one the app drafted. The item's
+    Jobber client and property follow the quote. The draft it replaces can't
+    be deleted from here, so that becomes a to-do."""
+    q = find_quote_by_number(number)
+    if not q:
+        raise ValueError(f'No Jobber quote #{number} found')
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+        if not row:
+            raise ValueError('No such item')
+        j = json.loads(row['jobber'] or '{}')
+        old = j.get('quote') or {}
+        status = (q.get('quoteStatus') or '').lower()
+        client = q.get('client') or {}
+        prop = q.get('property') or {}
+        num = str(q.get('quoteNumber'))
+        j['quote'] = {'id': q['id'], 'number': num, 'uri': q.get('jobberWebUri'),
+                      'status': status, 'total': _money((q.get('amounts') or {}).get('total'))}
+        if client.get('id'):
+            j['client'] = {'id': client['id'], 'name': client.get('name', '')}
+        conn.execute("UPDATE pump_cases SET jobber=?, jobber_client_id=COALESCE(NULLIF(?, ''), jobber_client_id), "
+                     "jobber_property_id=COALESCE(NULLIF(?, ''), jobber_property_id), updated_at=? WHERE id=?",
+                     (json.dumps(j), client.get('id') or '', prop.get('id') or '', _now_text(), case_id))
+        # The vendor quote that was drafted into the old one now belongs to this one.
+        for d in conn.execute("SELECT id, jobber FROM pump_docs WHERE case_id=? AND kind='quote'", (case_id,)).fetchall():
+            dj = json.loads(d['jobber'] or '{}')
+            if not dj.get('quote_id') or dj.get('quote_id') == old.get('id'):
+                dj.update(quote_id=q['id'], quote_number=num, quote_uri=q.get('jobberWebUri'), quote_status=status,
+                          client_id=client.get('id') or dj.get('client_id'))
+                dj.pop('quote_pending', None)
+                conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(dj), d['id']))
+        conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id, client_name, "
+                     "total, web_uri, case_id, category, synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+                     "ON CONFLICT(jobber_id) DO UPDATE SET status=excluded.status, total=excluded.total, "
+                     "case_id=excluded.case_id",
+                     (q['id'], 'quote', num, q.get('title') or '', status, client.get('id') or '',
+                      client.get('name') or '', j['quote']['total'], q.get('jobberWebUri') or '', case_id, 'pump',
+                      _now_text()))
+        replaced = old.get('id') and old.get('id') != q['id']
+        if replaced:
+            conn.execute('UPDATE pump_jobber_items SET case_id=NULL, ignored=1 WHERE jobber_id=?', (old['id'],))
+            add_todo(conn, f"delete-quote:{old['id']}", f"Delete the duplicate draft quote #{old.get('number')} in Jobber",
+                     f"This job now follows quote #{num} ({client.get('name') or 'its client'}). "
+                     f"#{old.get('number')} was drafted by the app and isn't needed.",
+                     {'case_id': case_id, 'uri': old.get('uri') or ''})
+        _event(conn, actor, 'linked Jobber quote',
+               f"Quote #{num} ({client.get('name') or ''}, {status or 'status unknown'})"
+               + (f" instead of #{old.get('number')}" if replaced else ''), case_id=case_id)
+        if status in ('awaiting_response', 'changes_requested', 'approved', 'converted'):
+            _set_step(conn, case_id, 'client_quote', at=_today().isoformat(), by=actor)
+        if status in ('approved', 'converted'):
+            _set_step(conn, case_id, 'client_approved', at=_today().isoformat(), by=actor)
+        conn.commit()
+        return j['quote']
+    finally:
+        conn.close()
+
+
 def invoice_suggestion(doc, case=None):
     """The invoice for a bill: when the bill matches the vendor's quote and
     the item has our client quote in Jobber, the client is invoiced what they
@@ -3791,6 +3917,13 @@ def vendor_email(conn, case_id, signer=''):
             'subject': f"{subj}: {where}" + (f" - PO {c['po_number']}" if c.get('po_number') else '')
                        + (f' (our job #{job})' if job else ''),
             'body': '\n'.join(lines)}
+
+
+@api('/cases/<int:case_id>/jobber_quote', methods=('POST',))
+def h_link_jobber_quote(actor, case_id):
+    if not jobber_status()['connected']:
+        raise ValueError('Connect Jobber first')
+    return {'quote': link_jobber_quote(case_id, _json().get('number'), actor)}
 
 
 @api('/cases/<int:case_id>/vendor_email')

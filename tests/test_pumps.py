@@ -664,6 +664,90 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(case['stage'], 'assessment')
         self.assertEqual({s['key']: s for s in case['step_list']}['assessment'].get('due'), '2026-10-20')
 
+    def test_follow_the_quote_already_in_jobber_instead_of_the_apps_draft(self):
+        """The Carlise: the app drafted #9146 under 'The Carlise', but the real
+        quote is #9136 under Greenscapes, already out with them."""
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': 'Yarrow Bend - Field service', 'client_name': 'Yarrow Bend',
+                                       'vendor': 'Wettech'}, 'test')
+            P._set_step(conn, cid, 'vendor_quote', at='2026-10-05')
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(
+                {'quote': {'id': 'QD9146', 'number': '9146', 'status': 'draft', 'uri': 'https://j/q/9146'}}), cid))
+            conn.execute("INSERT INTO pump_docs (kind, status, vendor, doc_number, case_id, jobber) VALUES "
+                         "('quote', 'filed', 'Wettech', 'Q-1', ?, ?)",
+                         (cid, json.dumps({'quote_id': 'QD9146', 'quote_number': '9146'})))
+            conn.commit()
+        finally:
+            conn.close()
+        searched = []
+
+        def jobber(query, variables=None):
+            if 'quotes(searchTerm' in query:
+                searched.append(variables['q'])
+                return {'quotes': {'nodes': [
+                    {'id': 'QX91360', 'quoteNumber': 91360, 'quoteStatus': 'draft'},
+                    {'id': 'Q9136', 'quoteNumber': 9136, 'quoteStatus': 'awaiting_response', 'title': 'Proposal',
+                     'jobberWebUri': 'https://j/q/9136', 'amounts': {'total': 1506.69},
+                     'client': {'id': 'CGREEN', 'name': 'Greenscapes'}, 'property': {'id': 'PCARL'}}]}}
+            return {}
+        real, real_status = P.jobber_gql, P.jobber_status
+        P.jobber_gql, P.jobber_status = jobber, lambda: {'connected': True}
+        try:
+            r = self.c.post(f'/pumps/api/cases/{cid}/jobber_quote', json={'number': '#9136'})
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            self.assertEqual(self.c.post(f'/pumps/api/cases/{cid}/jobber_quote', json={'number': '7777'}).status_code, 400)
+        finally:
+            P.jobber_gql, P.jobber_status = real, real_status
+        self.assertEqual(searched[0], '9136')
+        case = self.case(cid)
+        self.assertEqual(case['jobber']['quote']['number'], '9136')
+        self.assertEqual(case['jobber']['client']['name'], 'Greenscapes')
+        self.assertEqual(case['jobber_client_id'], 'CGREEN')
+        self.assertEqual(case['stage'], 'client_approved', 'out with the client: waiting on their approval')
+        doc = next(d for d in case['docs'] if d['kind'] == 'quote')
+        self.assertEqual(doc['jobber']['quote_id'], 'Q9136')
+        todos = [t['title'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
+        self.assertIn('Delete the duplicate draft quote #9146 in Jobber', todos)
+
+    def test_linked_quote_status_is_fetched_by_id(self):
+        """Jobber's search can miss our own quote (it doesn't search titles), so
+        a quote sent to the client still read 'draft'. Linked records are now
+        fetched by id on each sync."""
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': 'Zephyr Pointe - Field service', 'client_name': 'Zephyr Pointe',
+                                       'vendor': 'Wettech'}, 'test')
+            P._set_step(conn, cid, 'vendor_quote', at='2026-10-01')
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(
+                {'quote': {'id': 'Q9146', 'number': '9146', 'status': 'draft', 'total': 1506.69}}), cid))
+            conn.commit()
+        finally:
+            conn.close()
+        calls = []
+
+        def jobber(query, variables=None):
+            calls.append(variables)
+            if 'quote(id' in query:
+                return {'quote': {'id': 'Q9146', 'quoteNumber': 9146, 'quoteStatus': 'awaiting_response',
+                                  'amounts': {'total': 1612.16}, 'updatedAt': '2026-10-06T15:00:00Z'}}
+            return {}
+        real = P.jobber_gql
+        P.jobber_gql = jobber
+        conn = P._conn()
+        try:
+            self.assertEqual(P._refresh_linked_records(conn), [])
+            P._follow_quotes(conn)
+            conn.commit()
+        finally:
+            conn.close()
+            P.jobber_gql = real
+        self.assertIn({'id': 'Q9146'}, calls)
+        case = self.case(cid)
+        self.assertEqual(case['jobber']['quote']['status'], 'awaiting_response')
+        self.assertEqual(case['jobber']['quote']['total'], 1612.16)
+        self.assertEqual(case['stage'], 'client_approved', 'sent to the client: now waiting on their approval')
+
     def test_homeowners_pump_work_in_jobber_is_not_followed(self):
         """Only our accounts (the sheets) and companies show as new Jobber work;
         a homeowner (a person in Jobber, not on the sheets) doesn't."""
