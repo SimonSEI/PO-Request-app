@@ -88,9 +88,9 @@ MARKUP_PCT = float(os.environ.get('PUMPS_MARKUP_PCT', '0') or 0)
 # Our quote to the client = the vendor's price plus this (Simon's Jobber quote
 # 9136: Wettech $1,158.99 tax included -> $1,506.69, i.e. 30%).
 QUOTE_MARKUP_PCT = float(os.environ.get('PUMPS_QUOTE_MARKUP_PCT', '30') or 0)
-# A vendor quote that is read cleanly and filed is drafted as our client
-# quote in Jobber straight away (a draft - the office still sends it).
-AUTO_DRAFT_QUOTES = os.environ.get('PUMPS_AUTO_DRAFT_QUOTES', 'true').lower() in ('1', 'true', 'yes', 'on')
+# Our client quote is drafted in Jobber only when someone clicks Draft quote -
+# never on its own when a vendor quote arrives or is read again.
+AUTO_DRAFT_QUOTES = False
 # A rebranded service report is put on the site's pump job in Jobber as a
 # note ("October Pump Maintenance" + the PDF) as soon as it arrives, when the
 # job is clear.
@@ -3718,18 +3718,14 @@ def update_draft_quote(doc_id, actor='Pumps (automatic)'):
         data = {}
     q = data.get('quote') or {}
     if not q:
-        # Deleted in Jobber: forget it and draft a new one from today's reading.
+        # Deleted in Jobber: forget it, so Draft quote can make a new one.
         conn = _conn()
         try:
             jobber_record_gone(conn, 'quote', qid)
             conn.commit()
         finally:
             conn.close()
-        res = auto_draft_quote(doc_id, actor) or {}
-        gone = f"Our Jobber quote #{num} was deleted in Jobber"
-        if res.get('quote_number'):
-            return {**res, 'note': f"{gone} - drafted #{res['quote_number']} in its place."}
-        return {**res, 'note': f"{gone} - {res.get('pending') or 'draft a new one'}"}
+        return {'note': f"Our Jobber quote #{num} was deleted in Jobber - click Draft quote to make a new one."}
     status = (q.get('quoteStatus') or '').lower()
     if status != 'draft':
         return {'note': f"Our Jobber quote #{num} is already {status.replace('_', ' ') or 'gone'} - "
