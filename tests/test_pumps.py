@@ -887,6 +887,41 @@ class PumpsTest(unittest.TestCase):
         self.assertTrue(self.case(cid)['steps']['client_quote'].get('at'))
         self.assertNotIn(cid, [c['id'] for c in self.c.get('/pumps/api/summary').get_json()['queue']['to_quote_client']])
 
+    def test_quote_deleted_in_jobber_is_forgotten(self):
+        j = self.c.post('/pumps/api/cases', json={'title': 'Deleted quote', 'client_name': 'Quail Run'}).get_json()
+        cid = j.get('case_id') or j['case']['id']
+        conn = P._conn()
+        try:
+            conn.execute("UPDATE pump_cases SET jobber=? WHERE id=?", (P.json.dumps(
+                {'quote': {'id': 'QDEL', 'number': '9149', 'status': 'draft'}}), cid))
+            conn.execute("INSERT INTO pump_docs (kind, file_name, case_id, status, jobber) VALUES "
+                         "('quote', 'q.pdf', ?, 'filed', ?)", (cid, P.json.dumps({'quote_id': 'QDEL', 'quote_number': '9149'})))
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, status, case_id) "
+                         "VALUES ('QDEL', 'quote', '9149', 'draft', ?)", (cid,))
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, status, created_at) "
+                         "VALUES ('QGONE2', 'quote', '9150', 'approved', ?)", (P._today().isoformat(),))
+            conn.commit()
+
+            class Gone(FakeJobber):
+                def __call__(self, query, variables=None):
+                    if variables and variables.get('id') == 'QDEL':
+                        return {'quote': None}
+                    if variables and variables.get('id') == 'QGONE2':
+                        raise P.JobberError("Couldn't find Quote with 'id'=QGONE2")
+                    return super().__call__(query, variables)
+            P.jobber_gql = Gone()
+            errors = P._refresh_linked_records(conn)
+            conn.commit()
+            self.assertEqual(errors, [])
+            self.assertIsNone(conn.execute("SELECT 1 FROM pump_jobber_items WHERE jobber_id IN ('QDEL', 'QGONE2')").fetchone())
+            doc_j = P.json.loads(conn.execute('SELECT jobber FROM pump_docs WHERE case_id=?', (cid,)).fetchone()[0])
+            self.assertNotIn('quote_id', doc_j)
+        finally:
+            conn.close()
+        case = self.case(cid)
+        self.assertNotIn('quote', case['jobber'])
+        self.assertTrue(any('#9149 was deleted' in (e.get('detail') or '') for e in case['events']))
+
     def test_undo_a_recent_change(self):
         j = self.c.post('/pumps/api/cases', json={'title': 'Undo me', 'client_name': 'Quail Run'}).get_json()
         cid = j.get('case_id') or j['case']['id']
