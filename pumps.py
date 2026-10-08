@@ -1564,6 +1564,106 @@ def _letter_prices(text, x):
     return x
 
 
+def _letter_parts(items):
+    """The separately priced, not-optional pieces of work on a vendor letter."""
+    return [i for i in items or [] if i.get('own_price') and not i.get('optional') and not i.get('is_tax')]
+
+
+def _letter_part(x, part):
+    """One piece of work from a letter quoting several (Lely, Oct 2026): each
+    is its own job and its own quote to the client. Optional work stays with
+    the first. x unchanged when the letter has only one price."""
+    parts = _letter_parts(x.get('line_items'))
+    if len(parts) < 2 or part >= len(parts):
+        return x
+    it = parts[part]
+    items = [it] + ([i for i in x['line_items'] if i.get('optional')] if part == 0 else [])
+    tax_in = bool(x.get('tax_included')) or x.get('subtotal') is None
+    return dict(x, line_items=items, description=(it.get('description') or '')[:300], tax=None,
+                subtotal=None if tax_in else it['amount'], total=it['amount'] if tax_in else None)
+
+
+def split_letter(doc_id, actor='system', full=None):
+    """A vendor quote letter with several separately priced pieces of work
+    becomes a job and a client quote for each: the document keeps the first,
+    and each other piece gets its own copy of the document on a new job.
+    Reading the letter again updates those copies instead of adding more.
+    Returns the copies' doc ids."""
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+        if not row:
+            return []
+        doc = _doc_dict(row)
+        j = doc.get('jobber') or {}
+        if doc['kind'] != 'quote' or not doc.get('case_id') or j.get('split_from') or doc['status'] == 'dismissed':
+            return []
+        full = full or {k: doc.get(k) for k in ('line_items', 'subtotal', 'tax', 'total', 'description')}
+        parts = _letter_parts(full.get('line_items'))
+        if len(parts) < 2:
+            return []
+        first = _letter_part(full, 0)
+        conn.execute('UPDATE pump_docs SET line_items=?, subtotal=?, tax=?, total=?, description=?, jobber=? WHERE id=?',
+                     (json.dumps(first['line_items']), first['subtotal'], first['tax'], first['total'],
+                      first['description'], json.dumps({**j, 'letter_parts': len(parts)}), doc_id))
+        conn.execute('UPDATE pump_cases SET vendor_quote_amount=?, vendor_quote_total=? WHERE id=?',
+                     (first['subtotal'], first['total'], doc['case_id']))
+        cols = [r[1] for r in conn.execute('PRAGMA table_info(pump_docs)') if r[1] != 'id']
+        ids = []
+        for n in range(1, len(parts)):
+            x = _letter_part(full, n)
+            have = conn.execute("SELECT id FROM pump_docs WHERE json_extract(jobber, '$.split_from')=? "
+                                "AND json_extract(jobber, '$.letter_part')=?", (doc_id, n)).fetchone()
+            if have:
+                conn.execute('UPDATE pump_docs SET line_items=?, subtotal=?, tax=?, total=?, description=?, '
+                             'updated_at=? WHERE id=?', (json.dumps(x['line_items']), x['subtotal'], x['tax'],
+                                                         x['total'], x['description'], _now_text(), have[0]))
+                part_case = conn.execute('SELECT case_id FROM pump_docs WHERE id=?', (have[0],)).fetchone()[0]
+                if part_case:
+                    conn.execute('UPDATE pump_cases SET vendor_quote_amount=?, vendor_quote_total=? WHERE id=?',
+                                 (x['subtotal'], x['total'], part_case))
+                ids.append(have[0])
+                continue
+            new = {c: row[c] for c in cols}
+            new.update(line_items=json.dumps(x['line_items']), subtotal=x['subtotal'], tax=x['tax'],
+                       total=x['total'], description=x['description'], case_id=None, status='new',
+                       file_sha=None, created_at=_now_text(), updated_at=_now_text(),
+                       jobber=json.dumps({'split_from': doc_id, 'letter_part': n}))
+            if new.get('doc_number'):
+                new['doc_number'] = f"{new['doc_number']}-{n + 1}"
+            new = {k: v for k, v in new.items() if k in cols}
+            cur = conn.execute(f"INSERT INTO pump_docs ({', '.join(new)}) VALUES ({', '.join('?' for _ in new)})",
+                               tuple(new.values()))
+            pid = cur.lastrowid
+            pdoc = dict(conn.execute('SELECT * FROM pump_docs WHERE id=?', (pid,)).fetchone())
+            cid = _new_case_for(conn, pdoc, actor)
+            conn.execute("UPDATE pump_docs SET case_id=?, status='filed' WHERE id=?", (cid, pid))
+            _file_on_case(conn, pdoc, cid, 'split from a letter', actor)
+            _event(conn, actor, 'split', f"Quote letter {doc['file_name']} prices {len(parts)} pieces of work "
+                                         f"separately - this one is its own job and quote", case_id=cid, doc_id=pid)
+            _event(conn, actor, 'split', f"{doc['file_name']} also quotes other work at its own price - "
+                                         f"made job #{cid} for it", case_id=doc['case_id'], doc_id=doc_id)
+            ids.append(pid)
+        conn.commit()
+        return ids
+    finally:
+        conn.close()
+
+
+def _quote_each_part(doc_ids, actor):
+    """Draft (or redo, while still a draft) the client quote for each copy."""
+    out = []
+    for pid in doc_ids:
+        conn = _conn()
+        try:
+            r = conn.execute('SELECT jobber FROM pump_docs WHERE id=?', (pid,)).fetchone()
+        finally:
+            conn.close()
+        j = json.loads((r and r[0]) or '{}')
+        out.append(update_draft_quote(pid, actor) if j.get('quote_id') else auto_draft_quote(pid))
+    return out
+
+
 def short_name(text, limit=60):
     """First clause of a line item, cut on a word boundary."""
     first = re.split(r'[,.;]\s', (text or '').strip() + ' ')[0].strip()
@@ -1680,28 +1780,39 @@ def file_document(conn, doc_id, actor='system'):
         return None
     case_id, how = (doc['case_id'], 'already linked') if doc['case_id'] else _find_case_for(conn, doc)
     if not case_id:
-        title = doc.get('description') or ''
-        if kind == 'report':
-            rf = json.loads(doc.get('report_fields') or '{}')
-            title = f"{(rf.get('title') or 'Pump report').title()} - {doc.get('client_name') or ''}".strip(' -')
-        if kind != 'report' and doc.get('client_name') and title:
-            title = f"{doc['client_name']} - {title.splitlines()[0]}"
-        fields = {
-            'title': (title or f"{doc.get('client_name') or 'Pump work'}")[:160],
-            'category': ('maintenance' if kind == 'report' else doc.get('category') or 'repair'),
-            'client_name': doc.get('client_name') or '',
-            'site': doc.get('site') or '',
-            'po_number': doc.get('po_number') or '',
-            'vendor': doc.get('vendor') or '',
-            'description': doc.get('description') or '',
-            'approved_by': doc.get('ordered_by') or '',
-            'wo_number': doc.get('wo_number') or '',
-            'opened_on': doc.get('doc_date') or _today().isoformat(),
-        }
-        case_id = create_case(conn, fields, actor, source=doc.get('source') or 'email')
+        case_id = _new_case_for(conn, doc, actor)
         how = 'new item'
     conn.execute("UPDATE pump_docs SET case_id=?, status=CASE WHEN status='new' THEN 'filed' ELSE status END, "
                  "updated_at=? WHERE id=?", (case_id, _now_text(), doc_id))
+    return _file_on_case(conn, doc, case_id, how, actor)
+
+
+def _new_case_for(conn, doc, actor):
+    """A new item for a document that belongs to none yet."""
+    kind = doc['kind']
+    title = doc.get('description') or ''
+    if kind == 'report':
+        rf = json.loads(doc.get('report_fields') or '{}')
+        title = f"{(rf.get('title') or 'Pump report').title()} - {doc.get('client_name') or ''}".strip(' -')
+    if kind != 'report' and doc.get('client_name') and title:
+        title = f"{doc['client_name']} - {title.splitlines()[0]}"
+    fields = {
+        'title': (title or f"{doc.get('client_name') or 'Pump work'}")[:160],
+        'category': ('maintenance' if kind == 'report' else doc.get('category') or 'repair'),
+        'client_name': doc.get('client_name') or '',
+        'site': doc.get('site') or '',
+        'po_number': doc.get('po_number') or '',
+        'vendor': doc.get('vendor') or '',
+        'description': doc.get('description') or '',
+        'approved_by': doc.get('ordered_by') or '',
+        'wo_number': doc.get('wo_number') or '',
+        'opened_on': doc.get('doc_date') or _today().isoformat(),
+    }
+    return create_case(conn, fields, actor, source=doc.get('source') or 'email')
+
+
+def _file_on_case(conn, doc, case_id, how, actor):
+    doc_id, kind = doc['id'], doc['kind']
     case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone())
     fill = {}
     for k_case, k_doc in (('client_name', 'client_name'), ('site', 'site'), ('vendor', 'vendor'),
@@ -1758,7 +1869,11 @@ def ingest_document(filename, data, source='upload', email=None, kind_hint=None,
     if res.get('read_again'):
         return res   # read_doc_again already drafted what was missing
     if res.get('kind') == 'quote' and res.get('case_id') and not res.get('review'):
+        parts = split_letter(res['doc_id'], actor)
         res['auto_quote'] = auto_draft_quote(res['doc_id'])
+        if parts:
+            res['parts'] = parts
+            _quote_each_part(parts, actor)
     if res.get('kind') == 'report' and res.get('doc_id') and not res.get('review'):
         res['auto_note'] = auto_log_report(res['doc_id'])
     if res.get('kind') == 'bill' and res.get('case_id') and not res.get('review'):
@@ -2005,7 +2120,8 @@ def read_doc_again(doc_id, actor='system'):
         how = 'claude' if x else 'regex'
         x = _clean_extraction(x or _regex_extract(text, doc['email_from'] or '', doc['email_subject'] or ''))
         x['kind'] = doc['kind']
-        x = _letter_prices(text, x)
+        full = x = _letter_prices(text, x)
+        x = _letter_part(x, (doc.get('jobber') or {}).get('letter_part') or 0)
         if x.get('total') is None and x.get('subtotal') is None:
             raise ValueError('No amount found reading it again - enter it by hand.')
         desc = (x.get('description') or doc['description'] or '') + (f"\n{x['notes']}" if x.get('notes') else '')
@@ -2033,6 +2149,10 @@ def read_doc_again(doc_id, actor='system'):
         conn.close()
     j = doc.get('jobber') or {}
     out = {'doc_id': doc_id, 'case_id': filed, 'kind': doc['kind'], 'summary': summary}
+    parts = split_letter(doc_id, actor, full) if doc['kind'] == 'quote' and filed else []
+    if parts:
+        out['parts'] = parts
+        out['part_quotes'] = _quote_each_part(parts, actor)
     if doc['kind'] == 'quote' and filed:
         if j.get('quote_id'):
             out.update(update_draft_quote(doc_id, actor))
