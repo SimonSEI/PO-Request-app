@@ -664,6 +664,43 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(case['stage'], 'assessment')
         self.assertEqual({s['key']: s for s in case['step_list']}['assessment'].get('due'), '2026-10-20')
 
+    def test_repairs_go_to_whoever_looks_after_the_account(self):
+        conn = P._conn()
+        try:
+            by = dict(conn.execute("SELECT name, repairs_by FROM pump_maint_accounts WHERE name IN "
+                                   "('Hodges Funeral Home', 'Warm Springs Comm. Assoc.', 'Autumn Woods', "
+                                   "'The Reserve @ Estero', 'Allura')").fetchall())
+            self.assertEqual(by, {'Hodges Funeral Home': 'SiteOne', 'Warm Springs Comm. Assoc.': 'Naples Electric',
+                                  'Autumn Woods': P.IN_HOUSE, 'The Reserve @ Estero': P.IN_HOUSE, 'Allura': ''})
+            self.assertIn('Oscar (our technician)', conn.execute(
+                "SELECT notes FROM pump_maint_accounts WHERE name='Autumn Woods'").fetchone()[0])
+            # A repair at Autumn Woods (tracked from Jobber, which says Wettech) is Oscar's: no Wettech quote or bill.
+            oscar = P.create_case(conn, {'title': 'Pump tripping', 'client_name': 'Autumn Woods', 'vendor': 'Wettech'},
+                                  'test', source='jobber')
+            site_one = P.create_case(conn, {'title': 'Pump repair', 'client_name': 'Hodges Funeral Home'}, 'test')
+            # Wettech's own document stays Wettech's; so does the maintenance.
+            wettech = P.create_case(conn, {'title': 'Repair', 'client_name': 'Autumn Woods', 'vendor': 'Wettech'},
+                                    'test', source='email')
+            maint = P.create_case(conn, {'title': 'Quarterly', 'client_name': 'Autumn Woods', 'category': 'maintenance'},
+                                  'test', source='jobber')
+            conn.commit()
+        finally:
+            conn.close()
+        c = self.case(oscar)
+        self.assertEqual(c['vendor'], P.IN_HOUSE)
+        self.assertEqual(c['stage'], 'client_quote', 'straight to our quote')
+        self.assertEqual(c['account']['repairs_by'], P.IN_HOUSE)
+        self.assertEqual(self.case(site_one)['vendor'], 'SiteOne')
+        self.assertEqual(self.c.get(f'/pumps/api/cases/{site_one}/vendor_email').get_json()['email']['to'],
+                         'PSochar@siteone.com')
+        self.assertEqual(self.case(wettech)['vendor'], 'Wettech')
+        self.assertNotEqual(self.case(maint)['vendor'], P.IN_HOUSE)
+        # Set on the Accounts tab.
+        aid = next(a['id'] for a in self.c.get('/pumps/api/maint').get_json()['accounts'] if a['name'] == 'Allura')
+        r = self.c.post('/pumps/api/maint', json={'id': aid, 'repairs_by': 'Naples Electric'})
+        self.assertEqual(next(a for a in r.get_json()['accounts'] if a['id'] == aid)['repairs_by'], 'Naples Electric')
+        self.c.post('/pumps/api/maint', json={'id': aid, 'repairs_by': ''})
+
     def test_master_list_contacts_show_on_the_job(self):
         conn = P._conn()
         try:
