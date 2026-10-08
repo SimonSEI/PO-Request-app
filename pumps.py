@@ -41,6 +41,7 @@ import os
 import re
 import sqlite3
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -2440,7 +2441,10 @@ def _access_token(force=False):
         raise JobberError('Jobber is not connected to Pumps yet')
     with _FileLock('jobber_token'):
         tok = _tokens()
-        if force or time.time() - float(tok.get('obtained_at') or 0) > 55 * 60:
+        age = time.time() - float(tok.get('obtained_at') or 0)
+        # force: Jobber said the token was refused - unless another thread
+        # (the sync runs several calls at once) refreshed it a moment ago.
+        if (force and age > 30) or age > 55 * 60:
             new = _token_request({'grant_type': 'refresh_token', 'refresh_token': tok['refresh_token']})
             tok.update(access_token=new['access_token'], obtained_at=time.time(),
                        refresh_token=new.get('refresh_token') or tok['refresh_token'])
@@ -2538,6 +2542,7 @@ def _gql_tolerant(make_query, spec, variables, required=()):
     raise JobberError('Too many unknown fields')
 
 
+JOBBER_PARALLEL = 4   # Jobber calls at once during a sync
 _ADDR = ('address', ['street1', 'street2', 'city'])
 SYNC_SPECS = {
     'requests': (['id', 'title', 'requestStatus', 'createdAt', 'updatedAt', 'jobberWebUri',
@@ -2597,6 +2602,55 @@ def jobber_sync_state():
     return st
 
 
+def _sync_search(conn_name, spec, status_field, term, full):
+    """One search term's pages of one kind of Jobber record:
+    (spec as Jobber took it, {id: item}, errors)."""
+    kind, seen, errors = conn_name[:-1], {}, []
+    cursor, pages = None, 0
+    while pages < (40 if full else 10):
+        def make(fields):
+            return (f'query($first: Int!, $after: String, $q: String) {{ {conn_name}(first: $first, '
+                    f'after: $after, searchTerm: $q) {{ nodes {{ {fields} }} '
+                    f'pageInfo {{ hasNextPage endCursor }} }} }}')
+        try:
+            data, spec = _gql_tolerant(make, spec, {'first': 50, 'after': cursor, 'q': term},
+                                       required=('id', 'title', 'subject', 'client'))
+        except JobberError as e:
+            errors.append(f'{conn_name} "{term}": {e}')
+            break
+        page = data.get(conn_name) or {}
+        for n in page.get('nodes') or []:
+            title = n.get('title') or n.get('subject') or ''
+            plabel = _prop_label(n.get('property'))
+            cat = _category(title, plabel)
+            if not cat:
+                continue
+            seen[n['id']] = {
+                'jobber_id': n['id'], 'kind': kind,
+                'number': str(n.get('quoteNumber') or n.get('jobNumber') or n.get('invoiceNumber') or ''),
+                'title': title, 'status': (n.get(status_field) or '').lower(),
+                'job_type': (n.get('jobType') or '').lower(),
+                'client_id': (n.get('client') or {}).get('id', ''),
+                'client_name': (n.get('client') or {}).get('name', ''),
+                'client_company': (None if 'isCompany' not in (n.get('client') or {})
+                                   else int(bool(n['client']['isCompany']))),
+                'property_id': (n.get('property') or {}).get('id', ''),
+                'property_label': plabel,
+                'total': _money(n.get('total') if n.get('total') is not None else (n.get('amounts') or {}).get('total')),
+                'created_at': n.get('createdAt') or '', 'updated_at': n.get('updatedAt') or '',
+                'start_at': n.get('startAt') or n.get('issuedDate') or '',
+                'completed_at': n.get('completedAt') or '', 'approved_at': '',
+                'web_uri': n.get('jobberWebUri') or '', 'category': cat,
+                'po_number': po_from_title(title)}
+        info = page.get('pageInfo') or {}
+        pages += 1
+        if not info.get('hasNextPage'):
+            break
+        cursor = info.get('endCursor')
+        time.sleep(0.2)
+    return spec, seen, errors
+
+
 def _sync_jobber(full=False, actor='system'):
     """Pull pump, diver, filter and SCADA requests, quotes, jobs and invoices
     from Jobber, then rebuild the SCADA list and link items by PO number."""
@@ -2604,55 +2658,27 @@ def _sync_jobber(full=False, actor='system'):
         if not got:
             return {'skipped': 'a Jobber sync is already running'}
         status = {'state': 'running', 'started_at': _now_text(), 'counts': {}, 'errors': []}
+        t0 = time.time()
         _state_set('jobber_sync', status)
         seen = {}
         terms = sorted({t for ts in JOBBER_TERMS.values() for t in ts})
+        # Every kind of record x every search term (40 searches) - several at
+        # a time. Each kind's first search runs alone first, so fields this
+        # Jobber doesn't have are dropped once, not by every search.
+        jobs, specs = [], {}
         for conn_name, (spec, status_field) in SYNC_SPECS.items():
-            kind = conn_name[:-1]
-            for term in terms:
-                cursor, pages = None, 0
-                while pages < (40 if full else 10):
-                    def make(fields):
-                        return (f'query($first: Int!, $after: String, $q: String) {{ {conn_name}(first: $first, '
-                                f'after: $after, searchTerm: $q) {{ nodes {{ {fields} }} '
-                                f'pageInfo {{ hasNextPage endCursor }} }} }}')
-                    try:
-                        data, spec = _gql_tolerant(make, spec, {'first': 50, 'after': cursor, 'q': term},
-                                                   required=('id', 'title', 'subject', 'client'))
-                    except JobberError as e:
-                        status['errors'].append(f'{conn_name} "{term}": {e}')
-                        break
-                    page = data.get(conn_name) or {}
-                    for n in page.get('nodes') or []:
-                        title = n.get('title') or n.get('subject') or ''
-                        plabel = _prop_label(n.get('property'))
-                        cat = _category(title, plabel)
-                        if not cat:
-                            continue
-                        seen[n['id']] = {
-                            'jobber_id': n['id'], 'kind': kind,
-                            'number': str(n.get('quoteNumber') or n.get('jobNumber') or n.get('invoiceNumber') or ''),
-                            'title': title, 'status': (n.get(status_field) or '').lower(),
-                            'job_type': (n.get('jobType') or '').lower(),
-                            'client_id': (n.get('client') or {}).get('id', ''),
-                            'client_name': (n.get('client') or {}).get('name', ''),
-                            'client_company': (None if 'isCompany' not in (n.get('client') or {})
-                                               else int(bool(n['client']['isCompany']))),
-                            'property_id': (n.get('property') or {}).get('id', ''),
-                            'property_label': plabel,
-                            'total': _money(n.get('total') if n.get('total') is not None else (n.get('amounts') or {}).get('total')),
-                            'created_at': n.get('createdAt') or '', 'updated_at': n.get('updatedAt') or '',
-                            'start_at': n.get('startAt') or n.get('issuedDate') or '',
-                            'completed_at': n.get('completedAt') or '', 'approved_at': '',
-                            'web_uri': n.get('jobberWebUri') or '', 'category': cat,
-                            'po_number': po_from_title(title)}
-                    info = page.get('pageInfo') or {}
-                    pages += 1
-                    if not info.get('hasNextPage'):
-                        break
-                    cursor = info.get('endCursor')
-                    time.sleep(0.2)
-            status['counts'][conn_name] = sum(1 for v in seen.values() if v['kind'] == kind)
+            spec, found, errs = _sync_search(conn_name, spec, status_field, terms[0], full)
+            specs[conn_name] = spec
+            seen.update(found)
+            status['errors'] += errs
+            jobs += [(conn_name, status_field, t) for t in terms[1:]]
+        with ThreadPoolExecutor(max_workers=JOBBER_PARALLEL) as pool:
+            results = list(pool.map(lambda a: _sync_search(a[0], specs[a[0]], a[1], a[2], full), jobs))
+        for _, found, errs in results:
+            seen.update(found)
+            status['errors'] += errs
+        for conn_name in SYNC_SPECS:
+            status['counts'][conn_name] = sum(1 for v in seen.values() if v['kind'] == conn_name[:-1])
         conn = _conn()
         try:
             now = _now_text()
@@ -2696,7 +2722,8 @@ def _sync_jobber(full=False, actor='system'):
                 on_quote_approved(cid)
             except Exception as e:
                 status['errors'].append(f'Approved quote (item {cid}): {e}')
-        status.update(state='done', finished_at=_now_text(), items=len(seen), linked=linked)
+        status.update(state='done', finished_at=_now_text(), items=len(seen), linked=linked,
+                      seconds=round(time.time() - t0))
         _state_set('jobber_sync', status)
         return status
 
@@ -2749,16 +2776,24 @@ def _refresh_linked_records(conn):
     for r in conn.execute("SELECT jobber_id FROM pump_jobber_items WHERE kind='quote' AND case_id IS NULL "
                           "AND status='approved' AND COALESCE(created_at, updated_at, '') >= ?", (since,)).fetchall():
         want.setdefault(r[0], ('quote', None))
-    for jid, (kind, case_id) in want.items():
+    def fetch(item):
+        jid, (kind, _) = item
         field, num, st, total, _ = _LINKED_QUERIES[kind]
         try:
-            data = jobber_gql(f'query($id: EncodedId!) {{ {field}(id: $id) {{ id {num} {st} {total} '
-                              f'jobberWebUri updatedAt }} }}', {'id': jid})
+            return jobber_gql(f'query($id: EncodedId!) {{ {field}(id: $id) {{ id {num} {st} {total} '
+                              f'jobberWebUri updatedAt }} }}', {'id': jid}), None
         except JobberError as e:
-            if _GONE.search(str(e)):
+            return None, e
+    # Fetched several at a time; the database is written here, one by one.
+    with ThreadPoolExecutor(max_workers=JOBBER_PARALLEL) as pool:
+        fetched = list(pool.map(fetch, want.items()))
+    for (jid, (kind, case_id)), (data, err) in zip(want.items(), fetched):
+        field, num, st, total, _ = _LINKED_QUERIES[kind]
+        if err is not None:
+            if _GONE.search(str(err)):
                 jobber_record_gone(conn, kind, jid)
             else:
-                errors.append(f'{kind} {jid}: {e}')
+                errors.append(f'{kind} {jid}: {err}')
             continue
         n = data.get(field)
         if not n:
@@ -2772,7 +2807,6 @@ def _refresh_linked_records(conn):
                           case_id=COALESCE(pump_jobber_items.case_id, excluded.case_id)''',
                      (jid, kind, str(n.get(num) or ''), (n.get(st) or '').lower(), amount, n.get('updatedAt') or '',
                       n.get('jobberWebUri') or '', case_id, _now_text()))
-        time.sleep(0.1)
     return errors
 
 
