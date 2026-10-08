@@ -664,6 +664,72 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(case['stage'], 'assessment')
         self.assertEqual({s['key']: s for s in case['step_list']}['assessment'].get('due'), '2026-10-20')
 
+    def test_every_huntington_lakes_quote_is_for_the_master_association(self):
+        master = 'Z2lkOi8vSm9iYmVyL0NsaWVudC83NTE2ODg4Nw=='
+        for name in ('Huntington Lakes', 'Huntington Lakes Residence Assoc.', 'Huntington Lakes Phase 3',
+                     'HUNTINGTON LAKES PHASE 5 C/O ABILITY MANAGEMENT'):
+            a = P.match_site_alias({'client_name': name, 'file_name': 'q.pdf'})
+            self.assertEqual((a or {}).get('client_id'), master, name)
+        for name in ('Huntington II HOA @ Legends', 'Huntington I at the Legends'):
+            a = P.match_site_alias({'client_name': name, 'file_name': 'q.pdf'})
+            self.assertNotEqual((a or {}).get('client_id'), master, name)
+        # Other site names still don't match a name with words of its own.
+        self.assertIsNone(P.match_site_alias({'client_name': 'Carlisle Golf Club', 'file_name': 'q.pdf'}))
+
+    def test_huntington_6_two_prices_one_optional(self):
+        """Wettech's Huntington #6 letter (Oct 8 2026): the control box, and a
+        'Possibly needed' motor replacement - two prices, the second optional."""
+        text = ('October 8, 2026\nStahlman England\nAttn: Simon\nRE: Huntington #6\n'
+                'We are pleased to quote you on the following services\n'
+                'Field service to check out #6 pump station, found all of the capacitors and potential relay blown, '
+                'suggest starting with a control box replacement.\nFurnish and install new 10 HP deluxe control box, '
+                'wire up and test.\n\t\t\t\t\t\tYour Cost ---------------- $ 1780.11\n'
+                'Possibly needed- Field service to pull and inspect pump and motor, replace motor with new 10 HP 230 '
+                'volt 1 PH motor reusing pump end, reinstall, wire up and test\n'
+                '        Your Cost --------------- $ 4836.90\nPrices include Sales tax\nTerms: Net 10 days\n')
+        x = P._clean_extraction(P._regex_extract(text, 'tomm@wettec.biz', 'Huntington #6'))
+        self.assertEqual(x['total'], 1780.11, 'the possibly-needed work is not in the total')
+        self.assertEqual([i.get('optional', False) for i in x['line_items']], [False, True])
+        self.assertTrue(x['line_items'][1]['description'].startswith('Field service to pull and inspect'))
+        self.assertIn('Optional (not in the total)', x['notes'])
+        lines = P.one_line_items(x, 30)
+        self.assertEqual([(l['name'], l['unit_price'], l.get('optional', False)) for l in lines],
+                         [('Service Proposal Amount', 2314.14, False), ('Optional - if needed', 6287.97, True)])
+        # The client: the Master Association, whatever Wettech calls it.
+        master = 'Z2lkOi8vSm9iYmVyL0NsaWVudC83NTE2ODg4Nw=='
+        for name in ('Huntington #6', 'Huntington Lakes Residence Assoc.', 'HUNTINGTON LAKES PHASE 5 C/O ABILITY'):
+            self.assertEqual((P.match_site_alias({'client_name': name, 'file_name': 'q.docx'}) or {}).get('client_id'),
+                             master, name)
+        for name in ('Huntington II HOA @ Legends', 'Huntington I at the Legends'):
+            self.assertNotEqual((P.match_site_alias({'client_name': name, 'file_name': 'q.docx'}) or {}).get('client_id'),
+                                master, name)
+        self.assertIsNone(P.match_site_alias({'client_name': 'Carlisle Golf Club', 'file_name': 'q.pdf'}),
+                          'other site names still need the name itself')
+        # The property: the one Jobber labels with that pump number.
+        props = [{'id': 'P4', 'label': '2437 Millcreek Lane Pump #4'}, {'id': 'P6', 'label': '2500 Oak Lane Pump #6'},
+                 {'id': 'PL6', 'label': '6585 Huntington Lakes Circle Pool #6'}, {'id': 'P10', 'label': 'Pump 10-Phase 4'}]
+        self.assertEqual(P._pump_number_property(props, 'RE: Huntington #6 check out #6 pump station')['id'], 'P6')
+        self.assertIsNone(P._pump_number_property(props, 'Huntington #8'))
+        # Jobber without optional lines: the option goes in the text, never the total.
+        sent = []
+
+        def jobber(query, variables=None):
+            items = variables['attributes']['lineItems']
+            if any('optional' in li for li in items):
+                raise P.JobberError('Variable $attributes: lineItems.1.optional is not defined')
+            sent.append(items)
+            return {'quoteCreate': {'quote': {'id': 'Q1'}, 'userErrors': []}}
+        real = P.jobber_gql
+        P.jobber_gql = jobber
+        try:
+            P.gql_with_lines(P.QUOTE_CREATE, {'attributes': {'lineItems': P._jobber_lines(lines, 'quote')}}, 'attributes')
+        finally:
+            P.jobber_gql = real
+        self.assertEqual(len(sent[0]), 1)
+        self.assertEqual(sent[0][0]['unitPrice'], 2314.14)
+        self.assertIn('Optional, if needed (not included)', sent[0][0]['description'])
+        self.assertIn('$6,287.97', sent[0][0]['description'])
+
     def test_repairs_go_to_whoever_looks_after_the_account(self):
         conn = P._conn()
         try:
