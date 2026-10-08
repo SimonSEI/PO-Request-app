@@ -119,7 +119,11 @@ JOBBER_TOKEN = 'https://api.getjobber.com/api/oauth/token'
 ALLOWED_MUTATIONS = frozenset({'quoteCreate', 'invoiceCreate', 'jobCreateNote', 'clientCreateNote',
                                'requestCreateNote', 'quoteCreateNote',
                                # An approved quote made a job, and a service-call visit on a job (Oct 2026).
-                               'jobCreate', 'visitCreate', 'jobAddVisit', 'jobCreateVisit', 'jobVisitCreate'})
+                               'jobCreate', 'visitCreate', 'jobAddVisit', 'jobCreateVisit', 'jobVisitCreate',
+                               # Redoing the lines of OUR OWN quote while it is still a draft, after the
+                               # vendor's quote is read again (Oct 2026). update_draft_quote() checks the
+                               # quote is a draft right before, and never touches a sent quote.
+                               'quoteCreateLineItems', 'quoteDeleteLineItems'})
 
 # What counts as pump work when searching Jobber, by category.
 JOBBER_TERMS = {
@@ -1759,9 +1763,10 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
             edited = conn.execute("SELECT 1 FROM pump_events WHERE doc_id=? AND action='document edited'",
                                   (dup['id'],)).fetchone()
             if prev['kind'] in ('quote', 'bill') and prev['status'] != 'dismissed' and not edited and \
-                    not pj.get('quote_id') and not pj.get('invoice_id'):
-                # Sent again before it went into Jobber: read it again with
-                # today's reader (it may have read it wrong the first time).
+                    not pj.get('invoice_id') and (prev['kind'] == 'quote' or not pj.get('quote_id')):
+                # Sent again: read it again with today's reader (it may have
+                # read it wrong the first time). Our Jobber quote is redone
+                # if it's still a draft; an invoice in Jobber is left alone.
                 try:
                     return {**read_doc_again(dup['id'], actor), 'read_again': True}
                 except ValueError as e:
@@ -2009,7 +2014,7 @@ def read_doc_again(doc_id, actor='system'):
     out = {'doc_id': doc_id, 'case_id': filed, 'kind': doc['kind'], 'summary': summary}
     if doc['kind'] == 'quote' and filed:
         if j.get('quote_id'):
-            out['note'] = f"Our Jobber quote #{j.get('quote_number')} was made from the old reading - fix it in Jobber."
+            out.update(update_draft_quote(doc_id, actor))
         else:
             out['auto_quote'] = auto_draft_quote(doc_id)
     if doc['kind'] == 'bill' and filed:
@@ -2129,6 +2134,7 @@ def scan_mailbox(actor='system'):
         if diag.get('error'):
             summary['errors'].append(diag['error'])
         source = fetched.get('source')
+        recent = []
         for uid, msg in fetched.get('emails', []):
             summary['emails_checked'] += 1
             sender = subject = when = preview = ''
@@ -2154,6 +2160,7 @@ def scan_mailbox(actor='system'):
                     except Exception as e:
                         summary['errors'].append(f'{filename}: {e}')
                         continue
+                    recent.append(_scan_result_line(filename, sender, res))
                     if res.get('doc_id') and not res.get('skipped'):
                         found += 1
                         summary['documents_added'] += 1
@@ -2183,8 +2190,31 @@ def scan_mailbox(actor='system'):
             summary['errors'].append(f'Reading again with Claude: {e}')
         summary['read_again'] = len(reread)
         summary['finished_at'] = _now_text()
+        if recent:
+            _state_set('scan_files', (recent[::-1] + (_state_get('scan_files') or []))[:60])
         _state_set('scan_status', {'state': 'done', **summary})
         return summary
+
+
+def _scan_result_line(filename, sender, res):
+    """What happened to one emailed file, for the "Recent files" list."""
+    res = res or {}
+    if res.get('skipped'):
+        what = 'Not added - ' + res['skipped']
+    elif res.get('read_again'):
+        what = 'Read again' + (f" ({res['summary']})" if res.get('summary') else '') + \
+               (f". {res['note']}" if res.get('note') else '')
+    elif res.get('review'):
+        what = f"Added as a {res.get('kind') or 'document'} - needs a look (To do: Look at)"
+    else:
+        what = f"Added as a {res.get('kind') or 'document'}"
+    aq = res.get('auto_quote') or {}
+    if aq.get('pending'):
+        what += f" - quote not drafted: {aq['pending']}"
+    elif aq.get('quote_number'):
+        what += f" - draft quote #{aq['quote_number']} made in Jobber (To do: Send quote)"
+    return {'at': _now_text(), 'file': filename, 'from': sender, 'what': what[:400],
+            'case_id': res.get('case_id'), 'doc_id': res.get('doc_id')}
 
 
 def start_scan(actor='system'):
@@ -3409,6 +3439,80 @@ def fetch_quote_lines(quote_id):
                   'taxable': bool(li.get('taxable'))} for li in raw if li.get('unitPrice') is not None]
         return {'number': str(q.get('quoteNumber') or ''), 'line_items': lines}
     return None
+
+
+QUOTE_ADD_LINES = ('quoteCreateLineItems',)
+QUOTE_REMOVE_LINES = ('quoteDeleteLineItems',)
+
+
+def _with_lines(candidates, values):
+    """try_mutation, dropping line fields Jobber says it doesn't take."""
+    for _ in range(4):
+        try:
+            return try_mutation(candidates, values, {'quote': 'id'})
+        except JobberError as e:
+            m = _LINE_FIELD_REFUSED.search(str(e))
+            field = m.group(1) if m else next((f for f in ('saveToProductsAndServices', 'taxable', 'optional')
+                                               if f in str(e)), None)
+            if not field or field in ('name', 'quantity', 'unitPrice') or \
+                    not any(field in li for li in values['lineItems']):
+                raise
+            values = {**values, 'lineItems': [{k: v for k, v in li.items() if k != field}
+                                               for li in values['lineItems']]}
+    return try_mutation(candidates, values, {'quote': 'id'})
+
+
+def update_draft_quote(doc_id, actor='Pumps (automatic)'):
+    """Our Jobber quote made from this vendor quote, redone from the vendor's
+    quote as it reads now - only while it is still a draft. New lines are
+    added before the old ones are taken off, so the quote is never empty.
+    Returns {'updated': True, ...} or {'note': why it was left alone}."""
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+        doc = _doc_dict(row)
+        case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (doc['case_id'],)).fetchone()) \
+            if doc.get('case_id') else None
+    finally:
+        conn.close()
+    j = doc.get('jobber') or {}
+    qid, num = j.get('quote_id'), j.get('quote_number')
+    left = f"Our Jobber quote #{num} was made from the old reading - fix it in Jobber."
+    try:
+        data = jobber_gql('query($id: EncodedId!) { quote(id: $id) { quoteNumber quoteStatus '
+                          'lineItems { nodes { id } } } }', {'id': qid})
+    except JobberError as e:
+        return {'note': f'{left} (Jobber: {e})'}
+    q = data.get('quote') or {}
+    status = (q.get('quoteStatus') or '').lower()
+    if status != 'draft':
+        return {'note': f"Our Jobber quote #{num} is already {status.replace('_', ' ') or 'gone'} - "
+                        "fix it in Jobber if the new reading changes it."}
+    old_ids = [n['id'] for n in ((q.get('lineItems') or {}).get('nodes') or []) if n.get('id')]
+    sugg = suggest_quote(doc, case)
+    lines = _jobber_lines(sugg['line_items'], 'quote')
+    try:
+        added = _with_lines(QUOTE_ADD_LINES, {'quoteId': qid, 'lineItems': lines})
+        if added is None:
+            return {'note': left}
+        removed = _with_lines(QUOTE_REMOVE_LINES, {'quoteId': qid, 'lineItemIds': old_ids, 'lineItems': []}) \
+            if old_ids else {}
+    except JobberError as e:
+        return {'note': f'{left} (Jobber: {e})'}
+    total = sum(li['unitPrice'] * li['quantity'] for li in lines if not li.get('optional'))
+    conn = _conn()
+    try:
+        cj = json.loads(case.get('jobber') or '{}') if case else {}
+        if (cj.get('quote') or {}).get('id') == qid:
+            cj['quote']['total'] = round(total, 2)
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(cj), case['id']))
+        msg = (f"Draft quote #{num} in Jobber redone from the new reading: {len(lines)} line(s), "
+               f"${total:,.2f}" + ('' if removed is not None else ' - take the old lines off in Jobber'))
+        _event(conn, actor, 'quote updated', msg, case_id=doc.get('case_id'), doc_id=doc_id)
+        conn.commit()
+    finally:
+        conn.close()
+    return {'updated': True, 'note': msg}
 
 
 def find_quote_by_number(number):
@@ -5357,7 +5461,7 @@ def h_scan(actor):
 
 @api('/scan')
 def h_scan_status(actor):
-    return {'status': _state_get('scan_status') or {}}
+    return {'status': _state_get('scan_status') or {}, 'recent_files': _state_get('scan_files') or []}
 
 
 @api('/jobber/sync', methods=('POST',))

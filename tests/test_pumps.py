@@ -708,6 +708,63 @@ class PumpsTest(unittest.TestCase):
         # Reports aren't read this way.
         self.assertEqual(self.c.post('/pumps/api/docs/999999/read_again', json={}).status_code, 400)
 
+    def test_quote_read_again_redoes_our_draft_in_jobber(self):
+        """Our quote is already drafted in Jobber when the vendor's quote is
+        read again: the draft's lines are redone - only while it's a draft."""
+        T = lambda name, kind='INPUT_OBJECT': {'kind': kind, 'name': name, 'ofType': None}
+        NN = lambda t: {'kind': 'NON_NULL', 'name': None, 'ofType': t}
+        LST = lambda t: {'kind': 'LIST', 'name': None, 'ofType': t}
+
+        class Fake(FakeJobber):
+            status = 'draft'
+
+            def __call__(self, query, variables=None):
+                if '__schema' in query:
+                    return {'__schema': {'mutationType': {'fields': [
+                        {'name': 'quoteCreateLineItems', 'type': T('QuoteCreateLineItemsPayload', 'OBJECT'),
+                         'args': [{'name': 'quoteId', 'type': NN(T('EncodedId', 'SCALAR'))},
+                                  {'name': 'lineItems', 'type': NN(LST(NN(T('QuoteCreateLineItemAttributes'))))}]},
+                        {'name': 'quoteDeleteLineItems', 'type': T('QuoteDeleteLineItemsPayload', 'OBJECT'),
+                         'args': [{'name': 'quoteId', 'type': NN(T('EncodedId', 'SCALAR'))},
+                                  {'name': 'lineItemIds', 'type': NN(LST(NN(T('EncodedId', 'SCALAR'))))}]}]}}}
+                if '__type' in query:
+                    return {'__type': {'fields': [{'name': 'quote'}, {'name': 'userErrors'}]}}
+                if 'quoteCreateLineItems(' in query or 'quoteDeleteLineItems(' in query:
+                    P.check_mutation_allowed(query)
+                    self.calls.append((query, variables))
+                    name = 'quoteCreateLineItems' if 'Create' in query.split('{')[1] else 'quoteDeleteLineItems'
+                    return {name: {'quote': {'id': 'Q1'}, 'userErrors': []}}
+                if 'quoteStatus lineItems' in query:
+                    return {'quote': {'quoteNumber': 812, 'quoteStatus': self.status,
+                                      'lineItems': {'nodes': [{'id': 'L-old'}]}}}
+                return super().__call__(query, variables)
+        P._SCHEMA_CACHE.clear()
+        fake = Fake()
+        P.jobber_gql = fake
+        P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN
+        try:
+            self.extracts['q-0920.pdf'] = extraction('quote', 'Q-920', po='PO920', client='Lakeside Pines', subtotal=500)
+            q = self.upload('q-0920.pdf', data=self._pdf())
+            self.assertEqual(self.case(q['case_id'])['jobber']['quote']['number'], '812', 'drafted on the way in')
+            self.extracts['q-0920.pdf'] = extraction('quote', 'Q-920', po='PO920', client='Lakeside Pines', subtotal=800)
+            r = self.c.post(f"/pumps/api/docs/{q['doc_id']}/read_again", json={}).get_json()
+            self.assertTrue(r.get('updated'), r)
+            added = [v for qq, v in fake.calls if 'quoteCreateLineItems(' in qq][0]
+            self.assertEqual(added['quoteId'], 'Q1')
+            self.assertEqual(sum(li['unitPrice'] for li in added['lineItems']), 1040.0, '800 + 30%')
+            removed = [v for qq, v in fake.calls if 'quoteDeleteLineItems(' in qq][0]
+            self.assertEqual(removed['lineItemIds'], ['L-old'])
+            self.assertEqual(self.case(q['case_id'])['jobber']['quote']['total'], 1040.0)
+            # Once it's sent, it is left alone.
+            fake.status = 'awaiting_response'
+            fake.calls.clear()
+            r = self.c.post(f"/pumps/api/docs/{q['doc_id']}/read_again", json={}).get_json()
+            self.assertFalse(r.get('updated'))
+            self.assertIn('already awaiting response', r['note'])
+            self.assertFalse([1 for qq, _ in fake.calls if 'LineItems(' in qq])
+        finally:
+            P.JOBBER_STATIC_TOKEN = saved
+
     def test_duplicates_are_caught(self):
         # 1. Wettech sends invoice #40123 again as a different file: same amount = duplicate, never used again.
         self.extracts['b-40123.pdf'] = extraction('bill', '40123', po='PO777', client='Quail Hollow', subtotal=812.5)
@@ -2330,6 +2387,11 @@ W/O No. 41105'''
         logged = {r[0] for r in conn.execute('SELECT email_uid FROM pump_email_scan_log')}
         conn.close()
         self.assertTrue({'m1', 'm2'} <= logged, 'every email is only looked at once')
+        # What happened to each file is kept for "Recent files", even after an automatic scan.
+        recent = self.c.get('/pumps/api/scan').get_json()['recent_files']
+        what = {f['file']: f['what'] for f in recent}
+        self.assertIn('Added as a bill', what['Inv_31000.pdf'])
+        self.assertIn('not pump related', what['menu.pdf'])
 
 
 if __name__ == '__main__':
