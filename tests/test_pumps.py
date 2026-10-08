@@ -1720,6 +1720,11 @@ class PumpsTest(unittest.TestCase):
         conn.close()
         self.assertEqual([r['todo_key'] for r in rows()], [f'case:{cid}:scheduled'])
         self.assertEqual(self.c.post('/pumps/api/todos/hide', json={'key': "x'; DROP"}).status_code, 400)
+        # Deleted from the list, then the same letter uploaded again: it's back.
+        self.c.post('/pumps/api/todos/hide', json={'key': row['todo_key']})
+        self.assertNotIn(res['doc_id'], [d['id'] for d in queue()['quotes_to_draft']])
+        self.upload('q-0142.pdf', data=self._pdf())
+        self.assertIn(res['doc_id'], [d['id'] for d in queue()['quotes_to_draft']])
 
     def test_quote_is_never_drafted_on_its_own(self):
         """A vendor quote that reads cleanly waits in To do for the office to
