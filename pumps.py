@@ -31,6 +31,7 @@ PUMPS_OPENCLAW.md.
 Hooked into app.py with init_pumps(app, csrf, DB_PATH, ...).
 """
 import base64
+import contextvars
 import difflib
 import hashlib
 import hmac
@@ -202,7 +203,34 @@ def _today():
 def _conn():
     conn = sqlite3.connect(CFG['db_path'], timeout=30)
     conn.row_factory = sqlite3.Row
+    action = _UNDO_ACTION.get()
+    if action:
+        _watch_for_undo(conn, action)
     return conn
+
+
+# ── undo ──────────────────────────────────────────────
+# While an office click is being handled, every row it adds, changes or
+# deletes in these tables is written down (pump_undo_rows) so the click can
+# be undone. Temporary triggers on that request's connections only - the
+# scan, the Jobber sync and other background work are never recorded.
+UNDO_TABLES = ('pump_cases', 'pump_docs', 'pump_issues', 'pump_events', 'pump_scada', 'pump_client_contacts',
+               'pump_jobber_items', 'pump_site_aliases', 'pump_todos', 'pump_dive_sites', 'pump_scada_accounts',
+               'pump_maint_accounts')
+_UNDO_ACTION = contextvars.ContextVar('pump_undo_action', default=0)
+
+
+def _watch_for_undo(conn, action):
+    for t in UNDO_TABLES:
+        cols = [r[1] for r in conn.execute(f'PRAGMA table_info({t})')]
+        if not cols:
+            continue
+        old = 'json_object(' + ', '.join(f"'{c}', OLD.{c}" for c in cols) + ')'
+        for op, when, rid, row in (('I', 'INSERT', 'NEW.rowid', 'NULL'), ('U', 'UPDATE', 'OLD.rowid', old),
+                                   ('D', 'DELETE', 'OLD.rowid', old)):
+            conn.execute(f'CREATE TEMP TRIGGER IF NOT EXISTS undo_{t}_{op} AFTER {when} ON main.{t} BEGIN '
+                         f'INSERT INTO pump_undo_rows (action_id, tbl, op, row_id, old) '
+                         f"VALUES ({int(action)}, '{t}', '{op}', {rid}, {row}); END")
 
 
 def _iso_date(value):
@@ -546,6 +574,13 @@ def init_db():
                   scanned_at TEXT,
                   invoices_found INTEGER DEFAULT 0,
                   results TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS pump_undo_actions (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT, path TEXT, label TEXT DEFAULT '',
+                  external TEXT DEFAULT '', created_at TEXT, undone_at TEXT, undone_by TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS pump_undo_rows (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER, tbl TEXT, op TEXT,
+                  row_id INTEGER, old TEXT)''')
+    c.execute('CREATE INDEX IF NOT EXISTS pump_undo_rows_action ON pump_undo_rows (action_id)')
     conn.commit()
     _migrate_old_sheet(conn)
     _backfill_visit_step(conn)
@@ -2669,13 +2704,15 @@ def _follow_quotes(conn):
             q['total'] = it['total']
             j['quote'] = q
             conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(j), c['id']))
-        if it['status'] == q.get('status'):
-            continue
-        q['status'] = it['status']
-        j['quote'] = q
-        conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(j), c['id']))
-        _event(conn, 'jobber sync', 'quote status', f"Jobber quote #{q.get('number')} is now {it['status']}",
-               case_id=c['id'])
+        if it['status'] != q.get('status'):
+            q['status'] = it['status']
+            j['quote'] = q
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(j), c['id']))
+            _event(conn, 'jobber sync', 'quote status', f"Jobber quote #{q.get('number')} is now {it['status']}",
+                   case_id=c['id'])
+        # Checked every sync, not just when the status changes: a quote whose
+        # status was noted earlier (linked, or before this check) still ticks
+        # "Quote sent" - nobody has to tick it by hand.
         steps = json.loads(c['steps'] or '{}')
         when = (it['updated_at'] or '')[:10] or _today().isoformat()
         if it['status'] in ('awaiting_response', 'changes_requested', 'approved', 'converted') and \
@@ -4259,12 +4296,18 @@ def _register_routes(app, csrf):
 
 
 def _call(fn, actor, kw):
+    action = _start_undo(actor) if request.method == 'POST' and not re.search(UNDO_SKIP, request.path) else 0
+    token = _UNDO_ACTION.set(action)
     try:
         out = fn(actor, **kw)
     except (ValueError, KeyError) as e:
         return jsonify({'success': False, 'error': str(e)}), 400
     except JobberError as e:
         return jsonify({'success': False, 'error': str(e)}), 502
+    finally:
+        _UNDO_ACTION.reset(token)
+        if action:
+            _finish_undo(action)
     if isinstance(out, tuple):
         body, code = out
         return jsonify(body), code
@@ -4275,6 +4318,141 @@ def _call(fn, actor, kw):
 
 def _json():
     return request.get_json(silent=True) or {}
+
+
+UNDO_SKIP = r'/(undo(/\d+)?|scan|jobber/sync)$'  # clicks not put on the undo list
+UNDO_HOURS = 24
+# What a click was, for the Undo list: (path pattern, label). {0} = the number in the path.
+UNDO_LABELS = (
+    (r'/cases/(\d+)/jobber_quote$', 'Linked a Jobber quote to job #{0}'),
+    (r'/cases/(\d+)/vendor_email/send$', 'Emailed the vendor about job #{0}'),
+    (r'/cases/(\d+)/pay_email/send$', 'Emailed Christian to pay for job #{0}'),
+    (r'/cases/(\d+)/done$', 'Marked a step on job #{0}'),
+    (r'/cases/(\d+)/delete$', 'Deleted job #{0}'),
+    (r'/cases/(\d+)/approved$', 'Marked job #{0} approved'),
+    (r'/cases/(\d+)$', 'Changed job #{0}'),
+    (r'/cases$', 'Added a job'),
+    (r'/sheet/save$', 'Saved the sheet'),
+    (r'/docs/(\d+)/invoice$', 'Drafted an invoice from document #{0}'),
+    (r'/docs/(\d+)/quote$', 'Drafted a quote from document #{0}'),
+    (r'/docs/(\d+)/(read_again|reread)$', 'Read document #{0} again'),
+    (r'/docs/(\d+)/rebrand$', 'Rebranded document #{0}'),
+    (r'/docs/(\d+)/report_note$', 'Added a report note to document #{0}'),
+    (r'/docs/(\d+)$', 'Changed document #{0}'),
+    (r'/docs$', 'Uploaded a document'),
+    (r'/site-names', 'Changed a site name'),
+    (r'/issues/(\d+)/bill-anyway$', 'Billed anyway'),
+    (r'/issues/(\d+)/resolve$', 'Resolved an issue'),
+    (r'/jobber/items/', 'Changed a Jobber item'),
+    (r'/dives/send$', 'Sent the dive email'),
+    (r'/dives/', 'Changed a dive site'),
+    (r'/todos/(\d+)/done$', 'Ticked a to-do'),
+    (r'/todos', 'Changed a to-do'),
+    (r'/scada', 'Changed SCADA'),
+    (r'/maint', 'Changed a maintenance account'),
+    (r'/digest/send$', 'Sent the digest'),
+)
+# What undo can't take back: things that already left the app.
+UNDO_OUTSIDE = (
+    (r'/docs/\d+/quote$', "The draft quote in Jobber stays - delete it there if you don't want it."),
+    (r'/docs/\d+/invoice$', "The draft invoice in Jobber stays - delete it there if you don't want it."),
+    (r'/docs/\d+/(read_again|reread)$', "If it drafted in Jobber, that draft stays - delete it there if you don't want it."),
+    (r'/(vendor_email|pay_email|dives|digest)/send$', 'The email was already sent.'),
+)
+
+
+def _start_undo(actor):
+    conn = sqlite3.connect(CFG['db_path'], timeout=30)
+    try:
+        cur = conn.execute('INSERT INTO pump_undo_actions (actor, path, created_at) VALUES (?,?,?)',
+                           (actor or '', request.path, _now_text()))
+        conn.commit()
+        return cur.lastrowid
+    except sqlite3.OperationalError:
+        return 0
+    finally:
+        conn.close()
+
+
+def _undo_label(path):
+    path = path.split('/api', 1)[-1].replace('/pumps', '', 1) if '/api' in path else path
+    label = next((lab.format(*m.groups()) for pat, lab in UNDO_LABELS for m in [re.search(pat, path)] if m), 'A change')
+    outside = next((note for pat, note in UNDO_OUTSIDE if re.search(pat, path)), '')
+    return label, outside
+
+
+def _finish_undo(action):
+    """Keep the record only if the click changed something; drop old ones."""
+    conn = sqlite3.connect(CFG['db_path'], timeout=30)
+    try:
+        if not conn.execute('SELECT 1 FROM pump_undo_rows WHERE action_id=? LIMIT 1', (action,)).fetchone():
+            conn.execute('DELETE FROM pump_undo_actions WHERE id=?', (action,))
+        else:
+            path = conn.execute('SELECT path FROM pump_undo_actions WHERE id=?', (action,)).fetchone()[0]
+            label, outside = _undo_label(path)
+            conn.execute('UPDATE pump_undo_actions SET label=?, external=? WHERE id=?', (label, outside, action))
+        cutoff = (_now() - timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
+        old = [r[0] for r in conn.execute('SELECT id FROM pump_undo_actions WHERE created_at < ?', (cutoff,))]
+        for i in old:
+            conn.execute('DELETE FROM pump_undo_rows WHERE action_id=?', (i,))
+            conn.execute('DELETE FROM pump_undo_actions WHERE id=?', (i,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def recent_actions(limit=15):
+    since = (_now() - timedelta(hours=UNDO_HOURS)).strftime('%Y-%m-%d %H:%M:%S')
+    conn = _conn()
+    try:
+        return [dict(r) for r in conn.execute(
+            'SELECT id, actor, label, external, created_at FROM pump_undo_actions WHERE undone_at IS NULL '
+            "AND label != '' AND created_at >= ? ORDER BY id DESC LIMIT ?", (since, limit))]
+    finally:
+        conn.close()
+
+
+def undo_action(action_id, actor):
+    """Put back every row the click added, changed or deleted, newest first.
+    Refused when a later click changed the same rows (undo that one first)."""
+    conn = _conn()
+    try:
+        a = conn.execute('SELECT * FROM pump_undo_actions WHERE id=?', (action_id,)).fetchone()
+        if not a or not a['label']:
+            raise ValueError('Nothing to undo there')
+        if a['undone_at']:
+            raise ValueError('Already undone')
+        since = (_now() - timedelta(hours=UNDO_HOURS)).strftime('%Y-%m-%d %H:%M:%S')
+        if a['created_at'] < since:
+            raise ValueError(f'Only the last {UNDO_HOURS} hours can be undone')
+        rows = conn.execute('SELECT * FROM pump_undo_rows WHERE action_id=? ORDER BY id DESC', (action_id,)).fetchall()
+        later = conn.execute(
+            'SELECT DISTINCT x.label FROM pump_undo_rows r JOIN pump_undo_actions x ON x.id = r.action_id '
+            'WHERE r.action_id > ? AND x.undone_at IS NULL AND EXISTS (SELECT 1 FROM pump_undo_rows o '
+            'WHERE o.action_id=? AND o.tbl=r.tbl AND o.row_id=r.row_id)', (action_id, action_id)).fetchall()
+        if later:
+            raise ValueError(f"\"{later[0][0]}\" changed the same thing afterwards - undo that first")
+        for r in rows:
+            t = r['tbl']
+            if t not in UNDO_TABLES:
+                continue
+            cols = {c[1] for c in conn.execute(f'PRAGMA table_info({t})')}
+            if r['op'] == 'I':
+                conn.execute(f'DELETE FROM {t} WHERE rowid=?', (r['row_id'],))
+                continue
+            old = {k: v for k, v in json.loads(r['old'] or '{}').items() if k in cols}
+            if r['op'] == 'U':
+                conn.execute(f"UPDATE {t} SET {', '.join(f'{k}=?' for k in old)} WHERE rowid=?",
+                             (*old.values(), r['row_id']))
+            else:
+                conn.execute(f"INSERT OR REPLACE INTO {t} (rowid, {', '.join(old)}) VALUES "
+                             f"(?, {', '.join('?' for _ in old)})", (r['row_id'], *old.values()))
+        conn.execute('UPDATE pump_undo_actions SET undone_at=?, undone_by=? WHERE id=?',
+                     (_now_text(), actor or '', action_id))
+        conn.commit()
+        return {'label': a['label'], 'outside': a['external'] or ''}
+    finally:
+        conn.close()
 
 
 BOT = 'OpenClaw'
@@ -5830,6 +6008,16 @@ def h_todo_done(actor, todo_id):
     finally:
         conn.close()
     return h_todos(actor)
+
+
+@api('/undo')
+def h_undo_list(actor):
+    return {'actions': recent_actions()}
+
+
+@api('/undo/<int:action_id>', methods=('POST',))
+def h_undo(actor, action_id):
+    return undo_action(action_id, actor)
 
 
 @api('/todos/<int:todo_id>/delete', methods=('POST',))
