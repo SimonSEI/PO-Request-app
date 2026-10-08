@@ -3376,7 +3376,6 @@ def dashboard():
                                  cashflow_ok=_cashflow_allowed(),
                                  timeoff_ok=timeoff_allowed(),
                                  pumps_ok=pumps_allowed(),
-                                 workorders_ok=workorders_allowed(),
                                  receivables_ok=receivables_allowed())
 
 @app.route('/office_admin')
@@ -9205,15 +9204,6 @@ DASHBOARD_MENU_TEMPLATE = '''
             <div class="card-title" data-i18n="po_title">PO Requests</div>
             <div class="card-desc" data-i18n="po_desc">Submit and manage purchase orders, track invoices, and monitor project costs in real time.</div>
             <button class="card-cta" data-i18n="po_cta">Open PO App →</button>
-        </a>
-        {% endif %}
-
-        {% if workorders_ok %}
-        <a class="app-card card-green" href="{{ url_for('workorders.page') }}">
-            <div class="card-icon-wrap">🛠️</div>
-            <div class="card-title">Work Orders</div>
-            <div class="card-desc">Community work orders from the inbox: forwarded to the techs, logged in Jobber, tech notes cleaned up, quotes started and the manager kept up to date.</div>
-            <button class="card-cta">Open Work Orders →</button>
         </a>
         {% endif %}
 
@@ -39362,21 +39352,9 @@ if not CASHFLOW_ENABLED:
             _cf_save_state(_k, {})
             print(f"✓ Cash flow is off: cleared stored {_k.split('_')[0]} sign-in")
 
-# Work Orders (community work orders: inbox -> techs -> Jobber -> manager email)
-# lives in workorders.py. Jobber goes through the Pumps app's Jobber connection
-# (the Cash Flow one is read-only).
-import pumps as _pumps
-from workorders import init_workorders, workorders_allowed
-init_workorders(app, DB_PATH, data_dir=DATA_DIR, get_setting=get_setting, set_setting=set_setting,
-                graph_token=_get_graph_access_token, graph_enabled=MS_GRAPH_ENABLED, default_inbox=PO_EMAIL_ADDRESS,
-                jobber_token=_pumps._access_token, jobber_version=_pumps.JOBBER_API_VERSION,
-                jobber_connected=lambda: _pumps.jobber_status()['connected'],
-                anthropic_client=(anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-                                  if ANTHROPIC_AVAILABLE and ANTHROPIC_API_KEY else None),
-                scheduler_cls=BackgroundScheduler if SCHEDULER_AVAILABLE else None)
-
 # Receivables (QuickBooks A/R follow-ups, retainage, lien deadlines) lives in receivables.py.
 # Mail goes through the Microsoft 365 app; Jobber is read through the Pumps app's connection.
+import pumps as _pumps
 from receivables import init_receivables, receivables_allowed
 init_receivables(app, DB_PATH, data_dir=DATA_DIR, get_setting=get_setting, set_setting=set_setting,
                  graph_token=_get_graph_access_token, graph_enabled=MS_GRAPH_ENABLED,
