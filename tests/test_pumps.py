@@ -1654,6 +1654,24 @@ class PumpsTest(unittest.TestCase):
         made = [v['attributes'] for qq, v in fake.calls if 'quoteCreate(' in qq]
         self.assertEqual([[li['unitPrice'] for li in a['lineItems']] for a in made],
                          [[round(1780.11 * 1.3, 2)], [round(4836.90 * 1.3, 2)]])
+        # Its item cancelled, the letter uploaded again: back on an open item,
+        # without the cancelled item's quote, and the motor job isn't made twice.
+        self.c.post(f"/pumps/api/cases/{doc['case_id']}/delete", json={'reason': 'start over'})
+        P.JOBBER_STATIC_TOKEN = 'test-token'
+        try:
+            again = self.upload('huntington6.pdf')
+        finally:
+            P.JOBBER_STATIC_TOKEN = saved
+        self.assertEqual(again['doc_id'], doc['doc_id'])
+        self.assertNotEqual(again['case_id'], doc['case_id'])
+        new = self.case(again['case_id'])
+        self.assertEqual(new['status'], 'open')
+        self.assertNotIn('quote', new['jobber'])
+        d = next(x for x in new['docs'] if x['id'] == doc['doc_id'])
+        self.assertNotIn('quote_id', d['jobber'])
+        self.assertEqual(again.get('parts'), [motor])
+        queue = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertIn(doc['doc_id'], [x['id'] for x in queue['quotes_to_draft']])
 
     def test_quote_is_never_drafted_on_its_own(self):
         """A vendor quote that reads cleanly waits in To do for the office to
