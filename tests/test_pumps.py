@@ -765,28 +765,55 @@ class PumpsTest(unittest.TestCase):
         finally:
             P.JOBBER_STATIC_TOKEN = saved
 
-    def test_letter_with_two_prices_read_by_claude_as_one(self):
-        """Lely (Oct 2026): two pieces of work, each with its own "Your Cost".
-        Claude read it as one price; the app still makes a line for each."""
+    def test_letter_with_two_prices_is_two_jobs_and_two_quotes(self):
+        """Lely (Oct 2026): two pieces of work, each with its own "Your Cost" -
+        two separate quotes to the client, so two jobs. Claude read it as one
+        price; the app still splits it. Reading it again adds no third."""
         self.texts['lely.pdf'] = (
             "October 8, 2026\nStahlman England\nRE: Lely\nWe are pleased to quote you on the following services\n"
             "Furnish and install new panel cooling fan in first VFD control panel, wire up and test\n"
             "\t\t\tYour Cost ---------------- $ 1704.46\n"
             "Furnish and install new 10 inch wafer check valve on pump #4\n"
             "                 Your Cost ---------------- $ 2239.07\nPrice includes Sales tax and in freight\n")
-        one = extraction('quote', '', client='Lely', subtotal=1704.46)
+        one = extraction('quote', '', client='Lakeside Pines', subtotal=1704.46)
         one.update(total=1704.46, subtotal=None, tax=None, tax_included=True, line_items=[
             {'name': 'Panel cooling fan', 'description': 'Furnish and install new panel cooling fan', 'quantity': 1,
              'unit_price': 1704.46, 'amount': 1704.46}])
         self.extracts['lely.pdf'] = one
-        doc = self.upload('lely.pdf')
-        d = next(x for x in self.case(doc['case_id'])['docs'] if x['id'] == doc['doc_id'])
-        self.assertEqual([i['amount'] for i in d['line_items']], [1704.46, 2239.07])
-        self.assertEqual(d['total'], 3943.53)
-        lines = P.suggest_quote(d)['line_items']
-        self.assertEqual([l['unit_price'] for l in lines], [round(1704.46 * 1.3, 2), round(2239.07 * 1.3, 2)])
-        self.assertIn('check valve', lines[1]['description'])
-        self.assertFalse(any(l['taxable'] for l in lines), 'price already includes sales tax')
+        fake = FakeJobber()
+        P.jobber_gql = fake
+        P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN
+        try:
+            doc = self.upload('lely.pdf')
+            self.assertEqual(len(doc.get('parts') or []), 1, doc)
+            first = self.case(doc['case_id'])
+            d1 = next(x for x in first['docs'] if x['id'] == doc['doc_id'])
+            self.assertEqual([i['amount'] for i in d1['line_items']], [1704.46])
+            self.assertEqual(d1['total'], 1704.46)
+            conn = P._conn()
+            pid, pcase = conn.execute('SELECT id, case_id FROM pump_docs WHERE id=?', (doc['parts'][0],)).fetchone()
+            conn.close()
+            self.assertNotEqual(pcase, doc['case_id'], 'its own job')
+            second = self.case(pcase)
+            d2 = next(x for x in second['docs'] if x['id'] == pid)
+            self.assertEqual(d2['total'], 2239.07)
+            self.assertIn('check valve', d2['description'])
+            self.assertEqual(second['vendor_quote_total'], 2239.07)
+            made = [v['attributes'] for qq, v in fake.calls if 'quoteCreate(' in qq]
+            self.assertEqual(sorted(li['unitPrice'] for a in made for li in a['lineItems']),
+                             [round(1704.46 * 1.3, 2), round(2239.07 * 1.3, 2)], 'a quote each')
+            self.assertEqual([len(a['lineItems']) for a in made], [1, 1])
+            # Read again (or sent again): the same two jobs, no third.
+            self.c.post(f"/pumps/api/docs/{doc['doc_id']}/read_again", json={})
+            self.c.post(f"/pumps/api/docs/{pid}/read_again", json={})
+            conn = P._conn()
+            n = conn.execute("SELECT COUNT(*) FROM pump_docs WHERE file_name='lely.pdf'").fetchone()[0]
+            conn.close()
+            self.assertEqual(n, 2)
+            d2 = next(x for x in self.case(pcase)['docs'] if x['id'] == pid)
+            self.assertEqual(d2['total'], 2239.07, 'the copy keeps its own piece when read again')
+        finally:
+            P.JOBBER_STATIC_TOKEN = saved
 
     def test_duplicates_are_caught(self):
         # 1. Wettech sends invoice #40123 again as a different file: same amount = duplicate, never used again.
