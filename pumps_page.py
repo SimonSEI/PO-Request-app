@@ -226,7 +226,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 </nav>
 <div class="strip">
   <div>PO@ mailbox: {% if email %}<b class="ok">connected</b> · <span id="scanInfo">…</span>
-    <button class="btn s" id="scanBtn" onclick="scanNow()">Scan now</button>{% else %}<b class="warn">not configured</b> (upload documents by hand){% endif %}</div>
+    <button class="btn s" id="scanBtn" onclick="scanNow()">Scan now</button> <button class="btn s" onclick="showRecentFiles()" title="What happened to each emailed file">Recent files</button>{% else %}<b class="warn">not configured</b> (upload documents by hand){% endif %}</div>
   <div>Jobber: <span id="jobberInfo">{% if jobber.connected %}<b class="ok">connected</b>{% elif jobber.can_connect %}<a class="btn s p" href="{{ url_for('pumps.jobber_connect') }}">Connect Jobber</a>{% else %}<b class="warn">not set up</b>{% endif %}</span></div>
   <div>Reading documents: {% if claude and claude_problem %}<b class="bad">Claude is not working</b> ({{ claude_problem }}) - new documents wait in the To do list and are read again automatically once it works{% elif claude %}<b class="ok">Claude</b>{% else %}<b class="ok">built-in reader</b> (Wettech and Gulfshore quotes, invoices and reports; anything it can't read waits in the To do list){% endif %}</div>
   <div>Daily email: <span id="digestInfo">to {{ digest_to }} at {{ digest_hour }}am on weekdays</span>
@@ -1316,13 +1316,16 @@ async function scanNow(){
   updateScanInfo({state:'running'});
   const poll = setInterval(async () => { const s = await api('/scan'); if ((s.status || {}).state !== 'running') { clearInterval(poll); b.disabled = false; scanDone(s.status || {}); } }, 3000);
 }
+async function showRecentFiles(){
+  const j = await api('/scan'); if (!j.success) { toast(j.error, true); return; }
+  const rows = (j.recent_files || []).map(f => `<div style="padding:6px 0;border-bottom:1px solid var(--line,#ddd)"><b>${esc(f.file)}</b> <span class="note">${esc((f.at || '').slice(5,16))} · ${esc(f.from || '')}</span><div>${esc(f.what)}${f.case_id ? ` · <a href="#" onclick="event.preventDefault();closeModal();openCase(${f.case_id})">open job #${f.case_id}</a>` : ''}</div></div>`).join('');
+  openModal('Recent emailed files', rows ? `<p class="note">Every file the mailbox scan picked up (the automatic scan runs every 30 minutes too), newest first.</p>${rows}` : '<div class="empty">No emailed files yet since this list started.</div>');
+}
 function scanDone(s){
   updateScanInfo(s); loadToday(); showTab(curTab);
-  const sk = (s.skipped_files || []).filter(f => f.why !== 'not pump related');
-  let msg = `Scan done - ${s.documents_added || 0} new document${s.documents_added === 1 ? '' : 's'}`;
-  if (s.read_again) msg += `, ${s.read_again} read again`;
-  if (!sk.length) { toast(msg + (s.documents_added ? ' - see the to-do list.' : '. Emails already scanned are not looked at again - use Upload or Read again for those.')); return; }
-  openModal('Scan done', `<p>${esc(msg)}.</p><p>Not added:</p><ul>${sk.map(f => `<li><b>${esc(f.file)}</b> - ${esc(f.why)}${f.case_id ? ` <a href="#" onclick="event.preventDefault();closeModal();openCase(${f.case_id})">open job #${f.case_id}</a>` : ''}</li>`).join('')}</ul>`);
+  const files = (s.added || []).length + (s.skipped_files || []).filter(f => f.why !== 'not pump related').length;
+  if (files) { showRecentFiles(); return; }
+  toast(`Scan done - nothing new. Emails are only read once: the automatic scan may already have picked them up - see Recent files.`);
 }
 
 // ── modal ─────────────────────────────────────────────
