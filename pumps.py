@@ -3630,11 +3630,15 @@ def duplicate_jobber_invoices(conn, days=30):
             if gap > days:
                 continue
             key = f"dup-invoice:{min(a['jobber_id'], b['jobber_id'])}:{max(a['jobber_id'], b['jobber_id'])}"
+            link = {'uri': a['web_uri'] or b['web_uri'] or '',
+                    'uris': [{'label': f"invoice #{r['number']}", 'uri': r['web_uri']} for r in (a, b) if r['web_uri']]}
             add_todo(conn, key, f"Possible duplicate invoices: #{a['number']} and #{b['number']} "
                                 f"({a['client_name'] or 'same client'}, {money_text(a['total'])})",
                      f"Two Jobber invoices for the same client at the same amount, {gap} days apart "
                      f"({a['created_at'][:10]} and {b['created_at'][:10]}). Check one isn't billed twice.",
-                     {'uri': a['web_uri'] or b['web_uri'] or ''})
+                     link)
+            # Older to-dos only had one link: give them both.
+            conn.execute('UPDATE pump_todos SET link=? WHERE key=?', (json.dumps(link), key))
             found.append(key)
     return found
 

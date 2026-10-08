@@ -749,8 +749,8 @@ class PumpsTest(unittest.TestCase):
         try:
             for jid, num, day in (('IA', '7001', '2026-09-02'), ('IB', '7002', '2026-09-10'), ('IC', '7003', '2026-12-30')):
                 conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, status, total, client_id, "
-                             "client_name, created_at) VALUES (?, 'invoice', ?, 'awaiting_payment', 450.0, 'CQ', "
-                             "'Quail Run', ?)", (jid, num, day + 'T12:00:00Z'))
+                             "client_name, created_at, web_uri) VALUES (?, 'invoice', ?, 'awaiting_payment', 450.0, 'CQ', "
+                             "'Quail Run', ?, ?)", (jid, num, day + 'T12:00:00Z', 'https://jobber/i/' + num))
             found = P.duplicate_jobber_invoices(conn)
             conn.commit()
         finally:
@@ -758,6 +758,9 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(found, ['dup-invoice:IA:IB'])
         titles = [t['title'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
         self.assertTrue(any('#7001 and #7002' in t for t in titles), titles)
+        dup = [t for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos'] if '#7001 and #7002' in t['title']][0]
+        self.assertEqual([u['uri'] for u in dup['link']['uris']], ['https://jobber/i/7001', 'https://jobber/i/7002'],
+                         'both invoices can be opened from the to-do')
 
     def test_follow_up_before_a_service_comes_due(self):
         def todos():
