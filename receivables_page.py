@@ -83,7 +83,7 @@ PAGE_TEMPLATE = r'''<!DOCTYPE html>
   <span class="brand">💵 Receivables</span>
   <span class="spacer"></span>
   <span class="muted small">{{ full_name }}</span>
-  <button onclick="document.getElementById('arfile').click()" class="primary">⬆ Upload QuickBooks A/R</button>
+  <button onclick="document.getElementById('arfile').click()" class="primary">⬆ Upload A/R sheet</button>
   <input type="file" id="arfile" accept=".xlsx,.xlsm,.csv" style="display:none" onchange="uploadAR(this)">
   <button onclick="runNow()">↻ Run now</button>
 </header>
@@ -177,7 +177,7 @@ function render(){
     '<span class="chip">From ' + esc(s.from_email) + '</span>' +
     '<span class="muted small">Last run ' + esc(st.last_run || 'never') + (D.uploads.length ? ' · Last upload ' + esc(D.uploads[0].at) + ' (' + esc(D.uploads[0].filename) + ')' : '') + '</span>';
   var banner = '';
-  if(!D.uploads.length) banner = '<div class="banner">Start by uploading the A/R sheet from QuickBooks: Reports → <b>A/R Aging Detail</b> (or Open Invoices) → Export to Excel, then <b>Upload QuickBooks A/R</b> above. Upload a fresh one whenever you like; invoices that drop off are treated as paid.</div>';
+  if(!D.uploads.length) banner = '<div class="banner">Start by uploading your A/R sheet: the QuickBooks <b>A/R Aging Summary</b> with your notes typed in (the app reads them and finds each customer\'s invoices in Jobber), or the <b>A/R Aging Detail</b>. Upload a fresh one whenever you like; customers and invoices that drop off are treated as paid.</div>';
   document.getElementById('banner').innerHTML = banner;
   var open = D.invoices.filter(function(i){ return i.status !== 'paid'; });
   var sum = function(a){ return a.reduce(function(t,i){ return t + (i.open_balance || 0); }, 0); };
@@ -190,6 +190,7 @@ function render(){
     kpi(open.filter(function(i){ return i.status === 'needs_person' || (i.plan.due_now && !i.contacts.length); }).length, 'need a person');
   renderToday(); renderInvoices(); renderJobs(); renderCustomers(); renderEmails(); renderDocs(); renderSettings(); renderActivity();
 }
+function custOf(k){ return (D.customers || []).filter(function(c){ return c.key === k; })[0] || {}; }
 function kpi(v, l){ return '<div class="kpi"><div class="v">' + esc(v) + '</div><div class="l">' + esc(l) + '</div></div>'; }
 
 // ── Today ──
@@ -197,9 +198,9 @@ function renderToday(){
   var drafts = D.emails.filter(function(e){ return e.status === 'draft'; });
   var people = D.invoices.filter(function(i){ return i.status === 'needs_person'; });
   var noContact = D.invoices.filter(function(i){ return i.status !== 'paid' && i.plan.due_now && !i.contacts.length; });
-  var liens = D.jobs.filter(function(j){ return j.lien && j.lien.applies && j.open_balance > 0 && j.lien.days_left != null && j.lien.days_left <= Number(D.settings.nonp_lead_days || 30) + 15 && j.nonp_status !== 'lien_recorded'; })
+  var liens = D.jobs.filter(function(j){ return j.lien && j.lien.applies && !j.lien.estimated && j.open_balance > 0 && j.lien.days_left != null && j.lien.days_left <= Number(D.settings.nonp_lead_days || 30) + 15 && j.nonp_status !== 'lien_recorded'; })
                     .sort(function(a,b){ return a.lien.days_left - b.lien.days_left; });
-  var failed = D.emails.filter(function(e){ return e.status === 'draft' && e.error; });
+  var unmatched = D.customers.filter(function(c){ return c.jobber_note; });
   var n = drafts.length + people.length + liens.length;
   var nt = document.getElementById('n-today'); nt.style.display = n ? '' : 'none'; nt.textContent = n;
   var h = '';
@@ -215,13 +216,16 @@ function renderToday(){
     });
   }
   h += '</div>';
-  h += '<div class="card"><h3>🙋 Needs a person (' + (people.length + noContact.length) + ')</h3>';
-  if(!people.length && !noContact.length) h += '<div class="empty">Nothing needs a person.</div>';
+  h += '<div class="card"><h3>🙋 Needs a person (' + (people.length + noContact.length + unmatched.length) + ')</h3>';
+  if(!people.length && !noContact.length && !unmatched.length) h += '<div class="empty">Nothing needs a person.</div>';
+  unmatched.forEach(function(c){ h += '<div class="item"><div class="row"><b>' + esc(c.nice_name) + '</b><span>' + money(c.qb_total) + ' on the A/R sheet</span></div><div class="small" style="color:var(--warn)">' + esc(c.jobber_note) + '</div></div>'; });
   people.forEach(function(i){ h += invItem(i, i.needs_reason); });
   noContact.forEach(function(i){ h += invItem(i, 'No email address to follow up with. Add one for ' + i.customer_name + ' on the Customers tab.'); });
   h += '</div>';
   h += '<div class="card"><h3>⚖️ Lien deadlines</h3>';
   if(!liens.length) h += '<div class="empty">No install job is near its lien deadline.</div>';
+  var est = D.jobs.filter(function(j){ return j.lien && j.lien.applies && j.lien.estimated && j.open_balance > 0; }).length;
+  if(est) h += '<div class="small muted">' + est + ' install job(s) have no last day furnished yet, so their lien deadlines are only estimated and not tracked here. Enter the date on the job (Jobs &amp; retainage tab) once the work is finished.</div>';
   liens.forEach(function(j){
     var l = j.lien, step = {'':'Not started', prepared:'Notice of Nonpayment ready to send', sent:'NONP emailed: mail it certified', mailed:'NONP mailed: record the lien', lien_recorded:'Lien recorded'}[j.nonp_status || ''];
     h += '<div class="item"><div class="row"><b>' + esc(j.name) + '</b><span class="muted">' + esc(j.customer_name) + '</span>' + badge(l.days_left < 0 ? 'b-late' : (l.days_left <= 15 ? 'b-late' : 'b-install'), l.days_left < 0 ? 'Deadline passed ' + md(l.deadline) : l.days_left + ' days left (' + md(l.deadline) + ')') + '</div>' +
@@ -237,7 +241,9 @@ function renderToday(){
   h += '</div>';
   if(D.uploads.length){
     var u = JSON.parse(D.uploads[0].info || '{}');
-    h += '<div class="card"><h3>⬆ Last QuickBooks upload</h3><div class="small">' + esc(D.uploads[0].filename) + ' by ' + esc(D.uploads[0].by) + ' on ' + esc(D.uploads[0].at) + ': ' + (u.open || 0) + ' open, ' + (u['new'] || 0) + ' new, ' + (u.closed || 0) + ' paid since the one before, ' + (u.paid_down || 0) + ' partly paid.</div></div>';
+    h += '<div class="card"><h3>⬆ Last A/R upload</h3><div class="small">' + esc(D.uploads[0].filename) + ' by ' + esc(D.uploads[0].by) + ' on ' + esc(D.uploads[0].at) + ': ' +
+      (u.kind === 'summary' ? 'A/R summary as of ' + md(u.as_of) + ', ' + u.owing + ' customers owing ' + money(u.total) + ', ' + u.with_notes + ' with notes (' + u.notes_changed + ' new or changed), ' + u.closed + ' invoice(s) closed as paid.'
+                            : (u.open || 0) + ' open, ' + (u['new'] || 0) + ' new, ' + (u.closed || 0) + ' paid since the one before, ' + (u.paid_down || 0) + ' partly paid.') + '</div></div>';
   }
   document.getElementById('p-today').innerHTML = h;
 }
@@ -266,7 +272,7 @@ function renderInvoices(){
   }).sort(function(x,y){ return y.plan.dpd - x.plan.dpd; });
   var h = '<thead><tr><th>Invoice</th><th>Customer</th><th>Job</th><th>Type</th><th>Date</th><th>Due</th><th>Age</th><th class="num">Amount</th><th class="num">Open</th><th>Status</th><th>Next</th></tr></thead><tbody>';
   rows.forEach(function(i){
-    h += '<tr class="click" onclick="openInvoice(' + i.id + ')"><td><b>#' + esc(i.number) + '</b></td><td>' + esc(i.customer_name) + '</td><td class="small">' + esc(i.job_name) + '</td><td>' + kindBadge(i.kind) + '</td><td>' + md(i.txn_date) + '</td><td>' + md(i.due_date) + '</td><td>' + ageText(i) + '</td><td class="num">' + (i.amount != null ? money(i.amount) : '') + '</td><td class="num"><b>' + money(i.open_balance) + '</b></td><td>' + statusBadge(i) + '</td><td class="small">' + (i.plan.due_now ? '<b style="color:var(--brand-dark)">Due now</b>' : esc(i.plan.reason)) + '</td></tr>';
+    h += '<tr class="click" onclick="openInvoice(' + i.id + ')"><td><b>#' + esc(i.number) + '</b></td><td>' + esc(i.customer_name) + (custOf(i.customer_key).sheet_notes ? '<div class="small muted" title="' + esc(custOf(i.customer_key).sheet_notes) + '">📝 ' + esc(custOf(i.customer_key).sheet_notes.split('\n')[0].replace(/^[^:]{1,12}:\s*/, '').slice(0, 70)) + '</div>' : '') + '</td><td class="small">' + esc(i.job_name) + '</td><td>' + kindBadge(i.kind) + '</td><td>' + md(i.txn_date) + '</td><td>' + md(i.due_date) + '</td><td>' + ageText(i) + '</td><td class="num">' + (i.amount != null ? money(i.amount) : '') + '</td><td class="num"><b>' + money(i.open_balance) + '</b></td><td>' + statusBadge(i) + '</td><td class="small">' + (i.plan.due_now ? '<b style="color:var(--brand-dark)">Due now</b>' : esc(i.plan.reason)) + '</td></tr>';
   });
   if(!rows.length) h += '<tr><td colspan="11" class="empty">No invoices match.</td></tr>';
   document.getElementById('t-inv').innerHTML = h + '</tbody>';
@@ -287,18 +293,21 @@ function renderJobs(){
 // ── Customers ──
 function renderCustomers(){
   var q = (document.getElementById('c-q').value || '').toLowerCase();
-  var rows = D.customers.filter(function(c){ return !q || c.nice_name.toLowerCase().indexOf(q) >= 0; }).sort(function(a,b){ return b.open_balance - a.open_balance; });
-  var h = '<thead><tr><th>Customer</th><th class="num">Open</th><th>Follow up with</th><th>From Jobber</th><th>Type</th><th>Do not contact</th><th></th></tr></thead><tbody>';
+  var rows = D.customers.filter(function(c){ return !q || (c.nice_name + ' ' + (c.sheet_notes || '')).toLowerCase().indexOf(q) >= 0; }).sort(function(a,b){ return Math.max(b.open_balance, b.qb_total || 0) - Math.max(a.open_balance, a.qb_total || 0); });
+  var h = '<thead><tr><th>Customer</th><th class="num">Open here</th><th>A/R sheet</th><th>Your notes</th><th>Follow up with</th><th>From Jobber</th><th>Type</th><th>Do not contact</th><th></th></tr></thead><tbody>';
   rows.forEach(function(c){
     var k = esc(c.key);
-    h += '<tr><td><b>' + esc(c.nice_name) + '</b><div class="muted small">' + c.open_count + ' open</div></td><td class="num">' + money(c.open_balance) + '</td>' +
+    var aging = [['Current', c.qb_current], ['1-30', c.qb_1_30], ['31-60', c.qb_31_60], ['61-90', c.qb_61_90], ['91+', c.qb_91_plus]].filter(function(x){ return x[1]; }).map(function(x){ return x[0] + ' ' + money(x[1]); }).join('<br>');
+    h += '<tr><td><b>' + esc(c.nice_name) + '</b><div class="muted small">' + c.open_count + ' open</div>' + (c.jobber_note ? '<div class="small" style="color:var(--warn)">' + esc(c.jobber_note) + '</div>' : '') + (c.retainage_hold ? '<div>' + badge('b-ret', 'Retainage on hold') + '</div>' : '') + '</td><td class="num">' + money(c.open_balance) + '</td>' +
+      '<td class="small num">' + (c.qb_total != null && c.qb_as_of ? '<b>' + money(c.qb_total) + '</b><br>' + aging + '<div class="muted">as of ' + md(c.qb_as_of) + '</div>' : '') + '</td>' +
+      '<td class="small" style="max-width:260px;white-space:pre-wrap">' + esc(c.sheet_notes || '') + (c.sheet_summary ? '<div class="muted">→ ' + esc(c.sheet_summary) + '</div>' : '') + '</td>' +
       '<td><input id="cn-' + k + '" placeholder="Contact name" value="' + esc(c.contact_name) + '" style="margin-bottom:4px"><input id="ce-' + k + '" placeholder="email(s), comma separated" value="' + esc(c.emails) + '"></td>' +
       '<td class="small muted">' + esc(c.jobber_emails || '') + '</td>' +
       '<td><select id="ck-' + k + '"><option value="">Auto</option><option value="service"' + (c.kind_default === 'service' ? ' selected' : '') + '>Service</option><option value="install"' + (c.kind_default === 'install' ? ' selected' : '') + '>Install</option></select></td>' +
       '<td><input type="checkbox" id="cd-' + k + '"' + (c.do_not_contact ? ' checked' : '') + ' style="width:auto"></td>' +
       '<td><button class="sm" onclick="saveCustomer(\'' + k + '\')">Save</button> <button class="sm" onclick="docUpload(\'customer\',\'' + k + '\')">+ Doc</button></td></tr>';
   });
-  if(!rows.length) h += '<tr><td colspan="7" class="empty">No customers with open invoices.</td></tr>';
+  if(!rows.length) h += '<tr><td colspan="9" class="empty">No customers with open invoices.</td></tr>';
   document.getElementById('t-cust').innerHTML = h + '</tbody>';
 }
 function saveCustomer(k){
@@ -442,6 +451,9 @@ function openInvoice(id){
       '<button class="sm" onclick="invPromise(' + id + ')">Payment promised…</button>' +
       '<button class="sm" onclick="invSnooze(' + id + ')">Snooze…</button>' +
       '<button class="sm danger" onclick="invAction(' + id + ',\'close\')">Close (paid / written off)</button></div></div>';
+    if(c.sheet_notes){
+      h += '<div class="card"><h3>📝 Your A/R sheet notes <span class="muted small">as of ' + md(c.qb_as_of) + '</span></h3><div style="white-space:pre-wrap">' + esc(c.sheet_notes) + '</div>' + (c.sheet_summary ? '<div class="small muted" style="margin-top:6px">Read as: ' + esc(c.sheet_summary) + '</div>' : '') + (c.qb_total != null ? '<div class="small muted">Customer total on the sheet: ' + money(c.qb_total) + '</div>' : '') + '</div>';
+    }
     // Retainage
     h += '<div class="card"><h3>Retainage</h3>';
     h += i.retainage ? '<div>' + badge('b-ret', 'Retainage') + ' ' + money(i.open_balance) + (i.retainage_pct ? ' held (' + i.retainage_pct + '% of ' + money(i.amount || i.jobber_total) + ')' : '') + '. ' + (job && job.complete_now ? 'The job is complete, so it is being asked for.' : 'Held until the job is complete.') + '</div>'
@@ -567,8 +579,9 @@ function uploadAR(inp, confirmed){
       inp.value = ''; return;
     }
     var s = j.summary; inp.value = '';
-    toast(s.open + ' open invoices: ' + s['new'] + ' new, ' + s.closed + ' paid since last time, ' + s.paid_down + ' partly paid. Checking Jobber…');
-    load(); setTimeout(load, 15000);
+    if(s.kind === 'summary') toast(s.owing + ' customers owing, ' + s.with_notes + ' with notes (' + s.notes_changed + ' new or changed). Finding their invoices in Jobber and reading your notes…');
+    else toast(s.open + ' open invoices: ' + s['new'] + ' new, ' + s.closed + ' paid since last time, ' + s.paid_down + ' partly paid. Checking Jobber…');
+    load(); setTimeout(load, 15000); setTimeout(load, 60000); setTimeout(load, 180000);
   });
 }
 function runNow(){ post('/receivables/api/run').then(function(){ toast('Running: Jobber, replies, follow-ups and lien deadlines…'); setTimeout(load, 8000); }); }
