@@ -1623,6 +1623,21 @@ def split_letter(doc_id, actor='system', full=None):
                              'updated_at=? WHERE id=?', (json.dumps(x['line_items']), x['subtotal'], x['tax'],
                                                          x['total'], x['description'], _now_text(), have[0]))
                 part_case = conn.execute('SELECT case_id FROM pump_docs WHERE id=?', (have[0],)).fetchone()[0]
+                if not part_case or conn.execute("SELECT 1 FROM pump_cases WHERE id=? AND status='cancelled'",
+                                                 (part_case,)).fetchone():
+                    # Its item was cancelled (or it has none): a new item for this
+                    # piece, without the cancelled item's Jobber quote.
+                    pj = json.loads(conn.execute('SELECT jobber FROM pump_docs WHERE id=?', (have[0],)).fetchone()[0]
+                                    or '{}')
+                    pj = {k: v for k, v in pj.items() if not k.startswith('quote_')}
+                    conn.execute("UPDATE pump_docs SET case_id=NULL, status='new', jobber=? WHERE id=?",
+                                 (json.dumps(pj), have[0]))
+                    pdoc = dict(conn.execute('SELECT * FROM pump_docs WHERE id=?', (have[0],)).fetchone())
+                    part_case = _new_case_for(conn, pdoc, actor)
+                    conn.execute("UPDATE pump_docs SET case_id=?, status='filed' WHERE id=?", (part_case, have[0]))
+                    _file_on_case(conn, pdoc, part_case, 'split from a letter', actor)
+                    _event(conn, actor, 'split', f"{doc['file_name']} also quotes other work at its own price - "
+                                                 f"made job #{part_case} for it", case_id=doc['case_id'], doc_id=doc_id)
                 if part_case:
                     conn.execute('UPDATE pump_cases SET vendor_quote_amount=?, vendor_quote_total=? WHERE id=?',
                                  (x['subtotal'], x['total'], part_case))
