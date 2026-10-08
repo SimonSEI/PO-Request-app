@@ -1696,6 +1696,8 @@ def ingest_document(filename, data, source='upload', email=None, kind_hint=None,
     """Read, store and file one document, then draft our client quote in
     Jobber when it is a vendor quote that read cleanly."""
     res = _ingest_document(filename, data, source, email, kind_hint, actor, case_id)
+    if res.get('read_again'):
+        return res   # read_doc_again already drafted what was missing
     if res.get('kind') == 'quote' and res.get('case_id') and not res.get('review'):
         res['auto_quote'] = auto_draft_quote(res['doc_id'])
     if res.get('kind') == 'report' and res.get('doc_id') and not res.get('review'):
@@ -1717,6 +1719,18 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
         sha = hashlib.sha256(data).hexdigest()
         dup = conn.execute('SELECT id, case_id FROM pump_docs WHERE file_sha=?', (sha,)).fetchone()
         if dup:
+            prev = dict(conn.execute('SELECT kind, status, jobber FROM pump_docs WHERE id=?', (dup['id'],)).fetchone())
+            pj = json.loads(prev['jobber'] or '{}')
+            edited = conn.execute("SELECT 1 FROM pump_events WHERE doc_id=? AND action='document edited'",
+                                  (dup['id'],)).fetchone()
+            if prev['kind'] in ('quote', 'bill') and prev['status'] != 'dismissed' and not edited and \
+                    not pj.get('quote_id') and not pj.get('invoice_id'):
+                # Sent again before it went into Jobber: read it again with
+                # today's reader (it may have read it wrong the first time).
+                try:
+                    return {**read_doc_again(dup['id'], actor), 'read_again': True}
+                except ValueError as e:
+                    return {'skipped': f'already have this file ({e})', 'doc_id': dup['id'], 'case_id': dup['case_id']}
             return {'skipped': 'already have this file', 'doc_id': dup['id'], 'case_id': dup['case_id']}
         text = extract_text(filename, data)
         sender, subject = email.get('from', ''), email.get('subject', '')
@@ -1901,6 +1915,73 @@ def reread_doc(doc_id, actor='system'):
     out = {'doc_id': doc_id, 'case_id': filed, 'kind': x['kind'], 'review': review}
     if x['kind'] == 'quote' and filed:
         out['auto_quote'] = auto_draft_quote(doc_id)
+    return out
+
+
+def read_doc_again(doc_id, actor='system'):
+    """Read a quote or bill again with today's reader - e.g. a letter with two
+    prices read as one before the reader knew better - and update it and its
+    job. Our Jobber quote/invoice is drafted if there isn't one yet; one that
+    exists is left alone (the office fixes it in Jobber)."""
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+        if not row:
+            raise ValueError('No such document')
+        doc = _doc_dict(row)
+        if doc['kind'] not in ('quote', 'bill'):
+            raise ValueError('Only quotes and bills are read again here.')
+        if doc['status'] == 'dismissed':
+            raise ValueError('This document was dismissed.')
+        try:
+            with open(row['file_path'], 'rb') as f:
+                data = f.read()
+        except (OSError, TypeError):
+            raise ValueError('The stored file is missing.')
+        text = extract_text(doc['file_name'], data)
+        if not text.strip():
+            raise ValueError('No text could be read (a scanned image?) - enter the details by hand.')
+        x = _claude_extract(text, doc['email_from'] or '', doc['email_subject'] or '', doc['file_name'])
+        how = 'claude' if x else 'regex'
+        x = _clean_extraction(x or _regex_extract(text, doc['email_from'] or '', doc['email_subject'] or ''))
+        x['kind'] = doc['kind']
+        if x.get('total') is None and x.get('subtotal') is None:
+            raise ValueError('No amount found reading it again - enter it by hand.')
+        desc = (x.get('description') or doc['description'] or '') + (f"\n{x['notes']}" if x.get('notes') else '')
+        conn.execute('''UPDATE pump_docs SET line_items=?, subtotal=?, tax=?, total=?, description=?,
+                          doc_number=CASE WHEN doc_number='' THEN ? ELSE doc_number END, extracted_by=?,
+                          updated_at=? WHERE id=?''',
+                     (json.dumps(x['line_items']), x.get('subtotal'), x.get('tax'), x.get('total'), desc,
+                      x.get('doc_number') or '', how, _now_text(), doc_id))
+        opts = [i for i in x['line_items'] if i.get('optional')]
+        summary = (f"{len(x['line_items'])} line(s), total ${x['total'] if x.get('total') is not None else x.get('subtotal'):,.2f}"
+                   + (f", {len(opts)} optional" if opts else ''))
+        if doc['case_id']:
+            fill = ({'vendor_quote_amount': x.get('subtotal'), 'vendor_quote_total': x.get('total')}
+                    if doc['kind'] == 'quote' else
+                    {'vendor_bill_amount': x.get('subtotal'), 'vendor_bill_total': x.get('total')})
+            conn.execute(f"UPDATE pump_cases SET {', '.join(k + '=?' for k in fill)}, updated_at=? WHERE id=?",
+                         (*fill.values(), _now_text(), doc['case_id']))
+            if doc['kind'] == 'bill':
+                _check_bill(conn, doc['case_id'], actor)
+            _event(conn, actor, 'read again', f"{doc['kind']} {doc['file_name']}: {summary}",
+                   case_id=doc['case_id'], doc_id=doc_id)
+        filed = doc['case_id'] or (file_document(conn, doc_id, actor) if doc['status'] != 'review' else None)
+        conn.commit()
+    finally:
+        conn.close()
+    j = doc.get('jobber') or {}
+    out = {'doc_id': doc_id, 'case_id': filed, 'kind': doc['kind'], 'summary': summary}
+    if doc['kind'] == 'quote' and filed:
+        if j.get('quote_id'):
+            out['note'] = f"Our Jobber quote #{j.get('quote_number')} was made from the old reading - fix it in Jobber."
+        else:
+            out['auto_quote'] = auto_draft_quote(doc_id)
+    if doc['kind'] == 'bill' and filed:
+        if j.get('invoice_id'):
+            out['note'] = f"Our Jobber invoice #{j.get('invoice_number')} was made from the old reading - fix it in Jobber."
+        else:
+            out['auto_invoice'] = auto_draft_invoice(doc_id)
     return out
 
 
@@ -4901,6 +4982,12 @@ def invoiced_on_job(doc, case, job, actor='system'):
         conn.commit()
     finally:
         conn.close()
+
+
+@api('/docs/<int:doc_id>/read_again', methods=('POST',))
+def h_doc_read_again(actor, doc_id):
+    """Read a quote or bill again with today's reader and update its job."""
+    return read_doc_again(doc_id, actor)
 
 
 @api('/docs/<int:doc_id>/reread', methods=('POST',))

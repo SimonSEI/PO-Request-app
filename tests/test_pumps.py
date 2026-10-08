@@ -440,7 +440,13 @@ class PumpsTest(unittest.TestCase):
 
     def test_same_file_twice_is_skipped(self):
         self.extracts['dup.pdf'] = extraction('quote', 'Q-91', client='Dup Lakes', subtotal=100)
-        self.upload('dup.pdf')
+        first = self.upload('dup.pdf')
+        # Not in Jobber yet: the same file again is read again, not filed twice.
+        again = self.upload('dup.pdf')
+        self.assertTrue(again.get('read_again'))
+        self.assertEqual(again['doc_id'], first['doc_id'])
+        # Once the office has corrected it by hand, a resend leaves it alone.
+        self.c.patch(f"/pumps/api/docs/{first['doc_id']}", json={'total': 107.5})
         self.assertIn('already have', self.upload('dup.pdf').get('skipped', ''))
 
     # ── Jobber: drafts only, never sent ──────────────────────────────────────
@@ -675,6 +681,32 @@ class PumpsTest(unittest.TestCase):
             self.assertNotEqual((a or {}).get('client_id'), master, name)
         # Other site names still don't match a name with words of its own.
         self.assertIsNone(P.match_site_alias({'client_name': 'Carlisle Golf Club', 'file_name': 'q.pdf'}))
+
+    def test_read_a_quote_again(self):
+        """A letter with two quotes was read as one; reading it again (the
+        button, or the same file sent again) picks up both."""
+        one = extraction('quote', 'Q-7701', po='PO7701', client='Zinnia Point', subtotal=1780.11)
+        two = dict(one, line_items=[
+            {'name': 'Control box', 'description': 'Furnish and install new control box', 'quantity': 1,
+             'unit_price': 1780.11, 'amount': 1780.11, 'taxable': True, 'is_tax': False},
+            {'name': 'Motor', 'description': 'Replace motor', 'quantity': 1, 'unit_price': 4836.9,
+             'amount': 4836.9, 'taxable': True, 'is_tax': False, 'optional': True}], subtotal=None, tax=None)
+        self.extracts['q-7701.pdf'] = one
+        first = self.upload('q-7701.pdf')
+        self.assertEqual(len(self.case(first['case_id'])['docs'][0]['line_items']), 2, 'one price + its tax line')
+        self.extracts['q-7701.pdf'] = two
+        r = self.c.post(f"/pumps/api/docs/{first['doc_id']}/read_again", json={})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertIn('1 optional', r.get_json()['summary'])
+        doc = next(d for d in self.case(first['case_id'])['docs'] if d['id'] == first['doc_id'])
+        self.assertEqual([bool(i.get('optional')) for i in doc['line_items']], [False, True])
+        self.assertTrue(any(e['action'] == 'read again' for e in self.case(first['case_id'])['events']))
+        # Sent again (same file): read again rather than ignored, while it isn't in Jobber.
+        again = self.upload('q-7701.pdf')
+        self.assertTrue(again.get('read_again'), again)
+        self.assertEqual(again['doc_id'], first['doc_id'])
+        # Reports aren't read this way.
+        self.assertEqual(self.c.post('/pumps/api/docs/999999/read_again', json={}).status_code, 400)
 
     def test_duplicates_are_caught(self):
         # 1. Wettech sends invoice #40123 again as a different file: same amount = duplicate, never used again.

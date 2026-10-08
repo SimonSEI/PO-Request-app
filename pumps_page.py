@@ -535,6 +535,7 @@ function renderCase(){
       ${d.kind === 'bill' && (d.jobber||{}).invoice_id ? `<a class="chip g" target="_blank" href="${esc(d.jobber.invoice_uri||'#')}">Jobber draft #${esc(d.jobber.invoice_number)}</a>` : ''}
       ${d.kind === 'report' && !(d.jobber||{}).note_id ? `<button class="btn s" onclick="logReport(${d.id})">Log in Jobber</button>` : ''}
       ${d.kind === 'report' && (d.jobber||{}).note_id ? '<span class="chip g">logged in Jobber</span>' : ''}
+      ${(d.kind === 'quote' || d.kind === 'bill') ? `<button class="btn s" title="Read the file again with today's reader" onclick="readAgain(${d.id})">↻ Read again</button>` : ''}
       <button class="btn s" onclick="openDoc(${d.id})">Details</button></div>`).join('') || '<div class="note">No documents yet.</div>';
   const issues = (c.issues || []).map(i => `<div class="issue ${i.resolved_at ? 'done' : ''}"><div>${esc(i.message)}${i.resolved_at ? `<div class="note">Resolved by ${esc(i.resolved_by)}: ${esc(i.resolution)}</div>` : ''}</div>${i.resolved_at ? '' : `${i.kind === 'no_quote' ? `<button class="btn s p" onclick="billAnyway(${i.id})">Bill it +30%</button> ` : ''}<button class="btn s" onclick="resolveIssue(${i.id})">Resolve…</button>`}</div>`).join('');
   const f = (k, label, type, w) => `<label class="${w ? 'w' : ''}">${label}${type === 'area' ? `<textarea data-f="${k}">${esc(c[k])}</textarea>` : `<input type="${type || 'text'}" data-f="${k}" value="${esc(MONEY.has(k) || k.endsWith('_amount') ? (c[k] ?? '') : c[k])}">`}</label>`;
@@ -777,6 +778,7 @@ async function openDoc(id){
      ${d.has_branded ? `<a class="btn" href="/pumps/api/docs/${d.id}/file?version=branded&download=1">⬇ SE report (.docx)</a><a class="btn" href="/pumps/api/docs/${d.id}/pdf" target="_blank">PDF</a>` : ''}
      ${d.kind === 'report' && d.file_name.toLowerCase().endsWith('.docx') ? `<button class="btn" onclick="rebrand(${d.id})">Rebrand again…</button>` : ''}
      ${!d.case_id && d.extracted_by === 'regex' && d.status !== 'dismissed' ? `<button class="btn" onclick="rereadDoc(${d.id})">Read again with Claude</button>` : ''}
+     ${(d.kind === 'quote' || d.kind === 'bill') && d.status !== 'dismissed' ? `<button class="btn" title="Read the file again with today's reader (e.g. two prices read as one)" onclick="readAgain(${d.id})">↻ Read again</button>` : ''}
      ${d.status !== 'dismissed' ? `<button class="btn danger" onclick="saveDoc(${d.id}, {status:'dismissed'})">Dismiss</button>` : ''}
      <button class="btn p" onclick="saveDocForm(${d.id})">Save &amp; file</button>`);
 }
@@ -790,6 +792,15 @@ async function saveDoc(id, data){
   if (!j.success) { toast(j.error, true); return; }
   closeModal(); toast('Saved');
   if (j.case_id) openCase(j.case_id); else loadToday();
+}
+async function readAgain(id){
+  toast('Reading it again…');
+  const j = await api('/docs/' + id + '/read_again', {method:'POST', body:{}});
+  if (!j.success) { toast(j.error, true); return; }
+  closeModal();
+  const q = j.auto_quote || j.auto_invoice || {};
+  toast(`Read again: ${j.summary}.` + (j.note ? ' ' + j.note : q.quote_number ? ` Draft quote #${q.quote_number} made in Jobber.` : q.invoice_number ? ` Draft invoice #${q.invoice_number} made in Jobber.` : q.pending ? ' ' + q.pending : ''));
+  if (j.case_id) openCase(j.case_id); else openDoc(id);
 }
 async function rereadDoc(id){
   toast('Reading with Claude…');
