@@ -3375,7 +3375,8 @@ def dashboard():
                                  user_lang=session.get('user_lang', 'en'),
                                  cashflow_ok=_cashflow_allowed(),
                                  timeoff_ok=timeoff_allowed(),
-                                 pumps_ok=pumps_allowed())
+                                 pumps_ok=pumps_allowed(),
+                                 receivables_ok=receivables_allowed())
 
 @app.route('/office_admin')
 def office_admin():
@@ -9203,6 +9204,15 @@ DASHBOARD_MENU_TEMPLATE = '''
             <div class="card-title" data-i18n="po_title">PO Requests</div>
             <div class="card-desc" data-i18n="po_desc">Submit and manage purchase orders, track invoices, and monitor project costs in real time.</div>
             <button class="card-cta" data-i18n="po_cta">Open PO App →</button>
+        </a>
+        {% endif %}
+
+        {% if receivables_ok %}
+        <a class="app-card card-blue" href="{{ url_for('receivables.page') }}">
+            <div class="card-icon-wrap">💵</div>
+            <div class="card-title">Receivables</div>
+            <div class="card-desc">Upload the QuickBooks A/R sheet: past-due follow-ups sent with invoices and install documents, replies read, retainage tracked by job, and lien deadlines with the Notice of Nonpayment.</div>
+            <button class="card-cta">Open Receivables →</button>
         </a>
         {% endif %}
 
@@ -39341,6 +39351,18 @@ if not CASHFLOW_ENABLED:
         if _cf_state(_k):
             _cf_save_state(_k, {})
             print(f"✓ Cash flow is off: cleared stored {_k.split('_')[0]} sign-in")
+
+# Receivables (QuickBooks A/R follow-ups, retainage, lien deadlines) lives in receivables.py.
+# Mail goes through the Microsoft 365 app; Jobber is read through the Pumps app's connection.
+import pumps as _pumps
+from receivables import init_receivables, receivables_allowed
+init_receivables(app, DB_PATH, data_dir=DATA_DIR, get_setting=get_setting, set_setting=set_setting,
+                 graph_token=_get_graph_access_token, graph_enabled=MS_GRAPH_ENABLED,
+                 jobber_token=_pumps._access_token, jobber_version=_pumps.JOBBER_API_VERSION,
+                 jobber_connected=lambda: _pumps.jobber_status()['connected'],
+                 anthropic_client=(anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+                                   if ANTHROPIC_AVAILABLE and ANTHROPIC_API_KEY else None),
+                 scheduler_cls=BackgroundScheduler if SCHEDULER_AVAILABLE else None)
 
 # Set up background scheduler for automatic email checking
 if SCHEDULER_AVAILABLE and PO_EMAIL_MONITORING_ENABLED:
