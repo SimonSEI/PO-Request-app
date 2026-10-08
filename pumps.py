@@ -289,6 +289,8 @@ def _vendor_profile(name):
 
 
 def _vendor_email(vendor_name):
+    if vendor_name in REPAIR_COMPANIES:
+        return REPAIR_COMPANIES[vendor_name][1]
     v = _vendor_profile(vendor_name)
     return v.get('contact_email') or os.environ.get('PUMPS_VENDOR_EMAIL', 'office@wettec.biz')
 
@@ -845,6 +847,16 @@ def create_case(conn, fields, actor='system', source='manual'):
     vals = {k: (fields.get(k) or '') for k in CASE_TEXT_FIELDS}
     vals.update({k: _money(fields.get(k)) for k in CASE_MONEY_FIELDS})
     vals.update(title=title[:160], category=category, opened_on=opened)
+    # Repairs at an account someone else looks after (SiteOne, Naples Electric,
+    # our own technician) go to them, unless the job came with its vendor - a
+    # Wettech document is Wettech's. Lake and SCADA work keep their vendor.
+    if category in ('repair', 'install', 'inspection', 'other') and \
+            (not vals['vendor'] or (vals['vendor'] == 'Wettech' and source in ('jobber', 'service_call'))):
+        by = account_repairs_by(conn, {**fields, 'title': title})
+        if by:
+            vals['vendor'] = by
+            if by == IN_HOUSE:
+                steps.update({k: {'na': True} for k in IN_HOUSE_NA})
     jobber = fields.get('jobber') if isinstance(fields.get('jobber'), dict) else {}
     cols = list(vals.keys()) + ['jobber', 'steps', 'source', 'created_by', 'created_at', 'updated_at',
                                 'last_activity_at']
@@ -1056,7 +1068,9 @@ def account_info(conn, case):
     notes = [r[0] for r in conn.execute("SELECT notes FROM pump_maint_accounts WHERE name=? AND notes != ''", (name,))]
     notes += [r[0] for r in conn.execute("SELECT diver_notes FROM pump_dive_sites WHERE name=? AND diver_notes != ''",
                                          (name,))]
-    return {'name': name, 'notes': '\n'.join(dict.fromkeys(n.strip() for n in notes if n.strip()))}
+    by = conn.execute("SELECT repairs_by FROM pump_maint_accounts WHERE name=?", (name,)).fetchone()
+    return {'name': name, 'notes': '\n'.join(dict.fromkeys(n.strip() for n in notes if n.strip())),
+            'repairs_by': (by[0] or '') if by else ''}
 
 
 def _schedule_mailto(case):
@@ -5903,6 +5917,24 @@ def _apply_master_list(c, now):
                    'Master list (Oct 7 2026)', now))
 
 
+def _apply_repairs_by(c, now):
+    """Once (Oct 2026): who does the pump repairs where it isn't Wettech, from
+    the office's sheets - SiteOne at Hodges, Naples Electric at Warm Springs,
+    Oscar (our technician) at Autumn Woods and The Reserve, where Wettech does
+    the maintenance. The office sets the rest on the Accounts tab."""
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('repairs_by_oct26', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    for name, by in (('Hodges Funeral Home', 'SiteOne'), ('Warm Springs Comm. Assoc.', 'Naples Electric'),
+                     ('Autumn Woods', IN_HOUSE), ('The Reserve @ Estero', IN_HOUSE)):
+        c.execute("UPDATE pump_maint_accounts SET repairs_by=? WHERE name=? AND COALESCE(repairs_by, '')=''", (by, name))
+    for name, old, new in (('Autumn Woods', 'the contact for any pump issues is Oscar.',
+                            'pump issues go to Oscar (our technician).'),
+                           ('The Reserve @ Estero', 'Contact besides Wettech: Oscar.',
+                            'Besides Wettech, pump issues go to Oscar (our technician).')):
+        c.execute('UPDATE pump_maint_accounts SET notes=REPLACE(notes, ?, ?) WHERE name=?', (old, new, name))
+
+
 def init_account_tables(c):
     c.execute('''CREATE TABLE IF NOT EXISTS pump_scada_accounts (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -5941,6 +5973,10 @@ def init_account_tables(c):
             c.execute(f'ALTER TABLE pump_dive_sites ADD COLUMN {col} {decl}')
         except sqlite3.OperationalError:
             pass
+    try:
+        c.execute("ALTER TABLE pump_maint_accounts ADD COLUMN repairs_by TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
     for col, decl in (('jobber_names', "TEXT DEFAULT ''"), ('complimentary', 'INTEGER DEFAULT 0'),
                       ('quote', "TEXT DEFAULT '{}'")):
         try:
@@ -5985,6 +6021,7 @@ def init_account_tables(c):
         mark('lake_sheet_seeded')
     _scada_jobber_migrate(c)
     _apply_master_list(c, now)
+    _apply_repairs_by(c, now)
     if not seeded('office_answers_oct26'):
         # What the office said (Oct 2026): Old Collier and Camas Willows are off
         # SCADA; Autumn Woods (we pay) and Reserve at Estero (in their monthly)
@@ -6318,7 +6355,7 @@ def h_scada_update(actor, sid):
 
 
 MAINT_FIELDS = ('name', 'kind', 'joined', 'equipment', 'address', 'months', 'vendor_cost', 'naples_electric', 'our_bill',
-                'notes')
+                'notes', 'repairs_by')
 
 
 def maint_accounts(conn):
@@ -6407,7 +6444,32 @@ def add_todo(conn, key, title, detail='', link=None, kind='auto', due_on=''):
                                               json.dumps(link or {}), 'Pumps', _now_text()))
 
 
+# Who does an account's pump repairs, when it isn't Wettech (set per account on
+# the Accounts tab). Contacts for emails; '' email = type it in.
+IN_HOUSE = 'Oscar (our technician)'
+REPAIR_COMPANIES = {
+    'SiteOne': ('SiteOne', 'PSochar@siteone.com'),
+    'Naples Electric': ('Paul', 'paul@nemwinc.com'),
+    IN_HOUSE: ('Oscar', ''),
+}
+# Steps a job skips when our own technician does the work: no vendor quote,
+# bill or bill check - we quote and invoice the client ourselves.
+IN_HOUSE_NA = ('vendor_quote', 'vendor_bill', 'bill_checked')
+
+
+def account_repairs_by(conn, fields):
+    """Who does pump repairs for the account a new job is for ('' = Wettech)."""
+    text = ' '.join(str(fields.get(k) or '') for k in ('client_name', 'title', 'site'))
+    name = match_account(text, conn)
+    if not name:
+        return ''
+    row = conn.execute("SELECT repairs_by FROM pump_maint_accounts WHERE name=? AND active=1", (name,)).fetchone()
+    return (row[0] or '') if row else ''
+
+
 def _vendor_contact(vendor):
+    if vendor in REPAIR_COMPANIES:
+        return REPAIR_COMPANIES[vendor]
     v = _vendor_profile(vendor or 'Wettech')
     return (v.get('contact_name') or v.get('display') or vendor or 'the vendor',
             v.get('contact_email') or _vendor_email(vendor))
