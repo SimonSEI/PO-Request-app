@@ -25,6 +25,8 @@ os.environ.pop('ANTHROPIC_API_KEY', None)
 import app as A  # noqa: E402
 import receivables as R  # noqa: E402
 
+REAL_JOBBER = R._jobber  # tests swap in fakes; the guard test needs the real one
+
 A.app.config['TESTING'] = True
 A.app.config['WTF_CSRF_ENABLED'] = False
 
@@ -171,8 +173,9 @@ class ClassifyTests(Base):
         R.classify_all()
         inv = self.inv('36006')
         self.assertEqual(inv['kind'], 'install')
-        self.assertEqual(inv['job_key'], 'proj:26106')
-        self.assertEqual(R._job('proj:26106')['name'], '26106 - TIDE CLEANERS')
+        # The job named in the subject wins, so every pay app of the job lands together.
+        self.assertEqual(inv['job_key'], 'name:samplebuilders:tidecleaners')
+        self.assertEqual(R._job(inv['job_key'])['name'], 'Tide Cleaners')
         conn = R._conn()
         cust = dict(conn.execute("SELECT * FROM ar_customers WHERE key=?", (inv['customer_key'],)).fetchone())
         conn.close()
@@ -608,6 +611,64 @@ class SummaryTests(Base):
         self.assertEqual(j['summary']['kind'], 'summary')
 
 
+class JobTests(SummaryTests):
+    """Invoices grouped into the client's jobs; a sheet note about a job goes on the job."""
+
+    def setUp(self):
+        super().setUp()
+        self.jobber.nodes += [
+            jnode(601, 'Gcx Builders', 58964, 2947.63, 160, 'PAY APP 12 - RIVERDALE HIGH SCHOOL #222058'),
+            jnode(602, 'Gcx Builders', 8725, 436.25, 400, 'PAY APP 10 - RIVERDALE HIGH SCHOOL #222058'),
+            jnode(603, 'Gcx Builders', 14700, 735, 500, 'PAY APP 6- RIVERDALE HIGH SCHOOL #222058'),
+            jnode(701, 'Two Jobs Example', 20000, 1000, 90, 'PAY APP 2 - VINTANA APARTMENTS'),
+            jnode(702, 'Two Jobs Example', 3000, 3000, 40, '"PAY APP 1" - HARBOR POINTE'),
+        ]
+
+    def test_subject_job_names(self):
+        f = R.job_name_from_subject
+        self.assertEqual(f('PAY APP 12 - RIVERDALE HIGH SCHOOL #222058'), 'RIVERDALE HIGH SCHOOL #222058')
+        self.assertEqual(f('PAY APP 6- RIVERDALE HIGH SCHOOL #222058'), 'RIVERDALE HIGH SCHOOL #222058')
+        self.assertEqual(f('PAY APP 11 REV. - BENTLEY VILLAGE PH 6 - 222110'), 'BENTLEY VILLAGE PH 6 - 222110')
+        self.assertEqual(f('"PAY APP 5" - LAKEWOOD RANCH PARK IRR. '), 'LAKEWOOD RANCH PARK IRR.')
+        self.assertEqual(f('PAY APP 1.1 - LAKEWOOD RANCH PARK IRR.'), 'LAKEWOOD RANCH PARK IRR.')
+        self.assertEqual(f('Invoice - PROPOSAL 67127: ESTERO ENTERTAINMENT '), 'ESTERO ENTERTAINMENT')
+        self.assertEqual(f('Invoice - PROPOSAL 67675'), 'Proposal 67675')
+        self.assertEqual(f('Stahlman-England Irrigation: Invoice'), '')
+
+    def test_one_job_note_goes_on_every_invoice_of_the_job(self):
+        self.upload_summary([('Gcx Builders', None, None, None,
+                              'last said they were waiting on the auditors. Followed up again no response', 4118.88)])
+        invs = [self.inv(n) for n in ('601', '602', '603')]
+        self.assertEqual(len({i['job_key'] for i in invs}), 1)
+        key = invs[0]['job_key']
+        job = R._job(key)
+        self.assertEqual(job['name'], 'Riverdale High School #222058')
+        self.assertIn('auditors', job['sheet_note'])
+        self.assertTrue(all(i['retainage'] for i in invs))
+        # The waiting note holds the retainage pay apps too, and shows on each invoice.
+        self.assertTrue(all(i['snooze_until'] for i in invs))
+        self.login()
+        for i in invs:
+            notes = self.client.get(f"/receivables/api/invoice/{i['id']}").get_json()['notes']
+            self.assertTrue(any('for this job' in n['text'] and 'auditors' in n['text'] for n in notes))
+        cust = next(c for c in self.client.get('/receivables/api/data').get_json()['customers'] if c['key'] == 'gcxbuilders')
+        self.assertEqual([(j['name'], j['count']) for j in cust['jobs']], [('Riverdale High School #222058', 3)])
+
+    def test_note_naming_one_of_two_jobs_acts_on_that_job_only(self):
+        self.upload_summary([('Two Jobs Example', None, None, 3000, 'retainage on vintana ongoing', 1000)])
+        vintana, harbor = self.inv('701'), self.inv('702')
+        self.assertNotEqual(vintana['job_key'], harbor['job_key'])
+        self.assertEqual(R._job(vintana['job_key'])['retainage_hold'], 1)
+        self.assertEqual(R._job(harbor['job_key'])['retainage_hold'], 0)
+        conn = R._conn()
+        cust = dict(conn.execute("SELECT * FROM ar_customers WHERE key='twojobsexample'").fetchone())
+        conn.close()
+        self.assertEqual(cust['retainage_hold'], 0)
+        p = R.plan(vintana, R._job(vintana['job_key']), cust, R.settings())
+        self.assertIn('still going', p['reason'])
+        self.assertEqual(R.plan(harbor, R._job(harbor['job_key']), cust, R.settings())['stage'], 'past_due')
+
+
 class SheetNoteRuleTests(unittest.TestCase):
     def test_rules(self):
         as_of = date(2026, 10, 6)
@@ -635,7 +696,7 @@ class ContactTests(unittest.TestCase):
 class JobberGuardTests(unittest.TestCase):
     def test_mutations_blocked(self):
         with self.assertRaises(RuntimeError):
-            R._jobber('mutation { invoiceCreate(input: {}) { invoice { id } } }')
+            REAL_JOBBER('mutation { invoiceCreate(input: {}) { invoice { id } } }')
 
 
 if __name__ == '__main__':

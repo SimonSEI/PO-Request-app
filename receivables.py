@@ -278,7 +278,9 @@ def init_db():
                   info TEXT DEFAULT '{}')''')
     # Added for the A/R Aging Summary upload (one row per customer, with the office's notes).
     for table, cols in (
-            ('ar_invoices', (('source', "TEXT DEFAULT 'qb'"), ('snooze_reason', "TEXT DEFAULT ''"))),
+            ('ar_invoices', (('source', "TEXT DEFAULT 'qb'"), ('snooze_reason', "TEXT DEFAULT ''"),
+                             ('jobber_job', "TEXT DEFAULT '{}'"))),
+            ('ar_jobs', (('retainage_hold', 'INTEGER DEFAULT 0'), ('sheet_note', "TEXT DEFAULT ''"))),
             ('ar_customers', (('qb_current', 'REAL'), ('qb_1_30', 'REAL'), ('qb_31_60', 'REAL'), ('qb_61_90', 'REAL'),
                               ('qb_91_plus', 'REAL'), ('qb_total', 'REAL'), ('qb_as_of', "TEXT DEFAULT ''"),
                               ('sheet_notes', "TEXT DEFAULT ''"), ('sheet_notes_hash', "TEXT DEFAULT ''"),
@@ -999,6 +1001,11 @@ def _day_of_month(text, as_of):
     return None
 
 
+def _note_acts_on_retainage_only_jobs(got):
+    return (got.get('intent') in ('waiting', 'promise', 'paid', 'dispute', 'followed_up') or bool(got.get('follow_up_on'))
+            or bool(got.get('followed_up')))
+
+
 def interpret_sheet_note(text, as_of):
     """What the office's own collection note on a customer means (Claude, or plain rules without it)."""
     try:
@@ -1058,8 +1065,27 @@ def interpret_sheet_note(text, as_of):
             'summary': first[:200]}
 
 
+_JOB_WORD_STOP = {'high', 'school', 'phase', 'park', 'village', 'irrigation', 'residence', 'plaza', 'center', 'centre',
+                  'the', 'and', 'with', 'invoice', 'proposal', 'project', 'building', 'community', 'club', 'golf',
+                  'retainage', 'north', 'south', 'east', 'west', 'road', 'drive', 'street', 'florida', 'naples'}
+
+
+def jobs_named(note, jobs):
+    """Keys of the jobs ({key: name}) a note mentions, by a distinctive word or the job number."""
+    low = (note or '').lower()
+    out = set()
+    for key, name in jobs.items():
+        words = [w for w in re.findall(r'[a-z0-9]+', (name or '').lower())
+                 if (len(w) >= 4 and w not in _JOB_WORD_STOP and not w.isdigit()) or (w.isdigit() and len(w) >= 5)]
+        if any(re.search(rf'\b{re.escape(w)}\b', low) for w in words):
+            out.add(key)
+    return out
+
+
 def apply_sheet_notes():
-    """Act on new or changed A/R sheet notes for customers whose invoices are here."""
+    """Act on new or changed A/R sheet notes for customers whose invoices are here. A note that names one of the
+    customer's jobs (or a customer with a single job) is about that job: it is kept on the job, so it shows on
+    every invoice of the job, and it acts on that job's invoices only."""
     s = settings()
     today = _today()
     conn = _conn()
@@ -1085,16 +1111,34 @@ def apply_sheet_notes():
                 re.match(r'(?i)(total|notes):.*\b(retainage|retention)\b', ln) for ln in c['sheet_notes'].splitlines()):
             got['retainage'] = 'some'
         conn = _conn()
+        jobs_here = {}
+        for i in invs:
+            if i['job_key'] and i['job_key'] not in jobs_here:
+                r = conn.execute("SELECT name FROM ar_jobs WHERE key=?", (i['job_key'],)).fetchone()
+                jobs_here[i['job_key']] = r['name'] if r else ''
+        scope = jobs_named(c['sheet_notes'], jobs_here)
+        if not scope and len(jobs_here) == 1 and all(i['job_key'] for i in invs):
+            scope = set(jobs_here)
+        scoped = [i for i in invs if not scope or i['job_key'] in scope]
         retain_all = got.get('retainage') == 'all'
         if retain_all:
-            for i in invs:
+            for i in scoped:
                 conn.execute("UPDATE ar_invoices SET retainage=1, retainage_locked=1 WHERE id=?", (i['id'],))
                 i['retainage'] = 1
         hold = 1 if got.get('retainage') in ('some', 'all') and not got.get('retainage_collectable') else 0
+        summary_text = f"{got.get('intent')}: {got.get('summary') or ''}"[:300]
         conn.execute("UPDATE ar_customers SET retainage_hold=?, sheet_pending=0, sheet_summary=? WHERE key=?",
-                     (hold, f"{got.get('intent')}: {got.get('summary') or ''}"[:300], c['key']))
-        targets = [i for i in invs if not i['retainage'] and (_due(i) or today) < as_of] or \
-                  [i for i in invs if not i['retainage']]
+                     (0 if scope else hold, summary_text, c['key']))
+        conn.execute("UPDATE ar_jobs SET retainage_hold=0, sheet_note='' WHERE customer_key=?", (c['key'],))
+        for key in scope:
+            conn.execute("UPDATE ar_jobs SET retainage_hold=?, sheet_note=? WHERE key=?", (hold, c['sheet_notes'], key))
+            _note(conn, f"Your A/R sheet note (as of {_fmt_date(as_of)}), for this job:\n{c['sheet_notes']}"
+                        + ("\nRetainage on this job is on hold: it can't be collected yet." if hold else ''),
+                  job_key=key, customer_key=c['key'], kind='sheet')
+        targets = [i for i in scoped if not i['retainage'] and (_due(i) or today) < as_of] or \
+                  [i for i in scoped if not i['retainage']]
+        if not targets and _note_acts_on_retainage_only_jobs(got):
+            targets = scoped  # e.g. a job that is all retainage and "waiting on the auditors"
         intent = got.get('intent') or 'other'
         pd = _d(got.get('promised_date'))
         follow = _d(got.get('follow_up_on'))
@@ -1138,7 +1182,7 @@ def apply_sheet_notes():
             if said:
                 _note(conn, f"From your A/R sheet note ({_fmt_date(as_of)}): " + '; '.join(said) + '.', i['id'],
                       customer_key=c['key'], kind='sheet')
-        if hold:
+        if hold and not scope:
             _note(conn, "Retainage held: your A/R sheet note says it can't be collected yet.", customer_key=c['key'],
                   kind='sheet')
         conn.commit()
@@ -1171,24 +1215,42 @@ def _pcts(s):
 
 
 _PROJECT = re.compile(r'^\s*(\d{4,6})\s*[-–]\s*(.+?)\s*$')
-_PAY_APP = re.compile(r'(?i)pay\s*app(?:lication)?\s*#?\s*\d*\s*[-–:]\s*(.+)$')
+# "PAY APP 12 - RIVERDALE HIGH SCHOOL #222058", "PAY APP 6- ...", "PAY APP 11 REV. - ...", '"PAY APP 5" - ...'
+_PAY_APP = re.compile(r'(?i)pay\s*app(?:lication)?\b[^-–:\n]*[-–:]\s*(.+)$')
+# "Invoice - PROPOSAL 67127: ESTERO ENTERTAINMENT", or just "Invoice - PROPOSAL 67675"
+_PROPOSAL = re.compile(r'(?i)\bproposal\s*#?\s*(\d+)\s*(?:[:\-–]\s*(.*))?$')
 
 
-def _job_for(inv, lines, jobber_jobs):
-    """(job_key, job_name) for an invoice, or ('', '') when it stands on its own."""
-    if jobber_jobs:
-        j = jobber_jobs[0]
-        title = (j.get('title') or '').strip()
-        return f"jobber:{j['id']}", f"#{j.get('jobNumber')} {title}".strip()
+def job_name_from_subject(text):
+    """The job an invoice subject names, or ''."""
+    text = (text or '').strip()
+    m = _PAY_APP.search(text)
+    if m:
+        name = m.group(1).strip().strip('"\'').strip()
+        if _squash(name):
+            return name
+    m = _PROPOSAL.search(text)
+    if m:
+        name = (m.group(2) or '').strip().strip('"\'').strip()
+        return name if _squash(name) else f"Proposal {m.group(1)}"
+    return ''
+
+
+def _job_for(inv, lines, jobber_job=None):
+    """(job_key, job_name) for an invoice, or ('', '') when it stands on its own. The job named in the subject
+    comes first, so every pay app of a job lands together whether or not Jobber links it to a job."""
+    for text in (inv.get('jobber_subject') or '', inv.get('memo') or ''):
+        name = job_name_from_subject(text)
+        if name:
+            return f"name:{inv['customer_key']}:{_squash(name)}", _nice_name(name)
+    if jobber_job and jobber_job.get('id'):
+        title = (jobber_job.get('title') or '').strip()
+        return f"jobber:{jobber_job['id']}", f"#{jobber_job.get('jobNumber')} {title}".strip()
     for ln in lines:
         first = (ln.get('description') or '').strip().split('\n')[0]
         m = _PROJECT.match(first)
         if m:
             return f"proj:{m.group(1)}", f"{m.group(1)} - {m.group(2).strip()}"
-    for text in (inv.get('jobber_subject') or '', inv.get('memo') or ''):
-        m = _PAY_APP.search(text)
-        if m and _squash(m.group(1)):
-            return f"name:{inv['customer_key']}:{_squash(m.group(1))}", _nice_name(m.group(1).strip())
     if inv.get('qb_job'):
         return f"qb:{inv['customer_key']}:{_squash(inv['qb_job'])}", inv['qb_job']
     return '', ''
@@ -1228,15 +1290,23 @@ def classify_all(only_ids=None):
             else:
                 fields['kind'] = 'service'
         kind = fields.get('kind', inv['kind'])
-        # Which job (the Jobber job is set by the Jobber sync; keep it)
-        if not inv['job_key'].startswith('jobber:') and not inv['job_key'].startswith('manual:'):
-            key, name = _job_for(inv, lines, [])
+        # Which job (unless someone put it on a job by hand)
+        jj = json.loads(inv.get('jobber_job') or '{}')
+        key = inv['job_key']
+        if not key.startswith('manual:'):
+            key, name = _job_for(inv, lines, jj)
             if not key and kind == 'install':
                 key, name = f"inv:{inv['number']}", f"Invoice {inv['number']}"
             fields['job_key'] = key
             if key:
                 conn.execute("INSERT OR IGNORE INTO ar_jobs (key, customer_key, name, kind, updated_at) VALUES (?,?,?,?,?)",
                              (key, inv['customer_key'], name, kind, now))
+        if key and jj.get('id'):
+            # What Jobber knows about the job (complete or not, the property) goes on it, whatever it is keyed by.
+            conn.execute('''UPDATE ar_jobs SET jobber_job_id=?, jobber_job_uri=?, jobber_status=?, jobber_completed_at=?,
+                            property_address=CASE WHEN property_address='' THEN ? ELSE property_address END WHERE key=?''',
+                         (jj['id'], jj.get('jobberWebUri') or '', (jj.get('jobStatus') or '').lower(),
+                          (jj.get('completedAt') or '')[:10], _addr_text((jj.get('property') or {}).get('address')), key))
         if fields:
             conn.execute(f"UPDATE ar_invoices SET {', '.join(k + '=?' for k in fields)} WHERE id=?",
                          list(fields.values()) + [inv['id']])
@@ -1344,17 +1414,7 @@ def _apply_jobber(inv, j):
     conn = _conn()
     now = _stamp()
     if jobs:
-        jb = jobs[0]
-        key = f"jobber:{jb['id']}"
-        name = f"#{jb.get('jobNumber')} {(jb.get('title') or '').strip()}".strip()
-        conn.execute("INSERT OR IGNORE INTO ar_jobs (key, customer_key, name, kind, updated_at) VALUES (?,?,?,?,?)",
-                     (key, inv['customer_key'], name, inv['kind'], now))
-        conn.execute('''UPDATE ar_jobs SET name=?, jobber_job_id=?, jobber_job_uri=?, jobber_status=?, jobber_completed_at=?,
-                        property_address=CASE WHEN property_address='' THEN ? ELSE property_address END, updated_at=? WHERE key=?''',
-                     (name, jb['id'], jb.get('jobberWebUri') or '', (jb.get('jobStatus') or '').lower(),
-                      (jb.get('completedAt') or '')[:10], _addr_text((jb.get('property') or {}).get('address')), now, key))
-        if not inv['job_key'].startswith('manual:'):
-            fields['job_key'] = key
+        fields['jobber_job'] = json.dumps(jobs[0])  # classify_all picks the job and copies this onto it
     emails = [e.get('address') for e in (client.get('emails') or []) if e and e.get('address')]
     primary = [e.get('address') for e in (client.get('emails') or []) if e and e.get('primary') and e.get('address')]
     if emails:
@@ -1464,7 +1524,7 @@ def plan(inv, job, cust, s, today=None):
         return out
     last = _d(inv.get('last_followup_at'))
     if inv['retainage']:
-        if cust and cust.get('retainage_hold'):
+        if (job and job.get('retainage_hold')) or (cust and cust.get('retainage_hold')):
             out['reason'] = 'Retainage: your A/R sheet notes say the project is still going'
             return out
         if not job_complete(job):
@@ -2425,6 +2485,15 @@ def api_data():
             continue
         c['open_count'] = len(mine)
         c['open_balance'] = round(sum(i['open_balance'] or 0 for i in mine), 2)
+        by_job = {}
+        for i in mine:
+            by_job.setdefault(i['job_key'] or '', []).append(i)
+        c['jobs'] = sorted(({'key': k, 'name': (jobs.get(k) or {}).get('name') or ('Service calls' if not k else k),
+                             'count': len(v), 'open': round(sum(i['open_balance'] or 0 for i in v), 2),
+                             'retainage': round(sum(i['open_balance'] or 0 for i in v if i['retainage']), 2),
+                             'note': (jobs.get(k) or {}).get('sheet_note') or '',
+                             'hold': bool((jobs.get(k) or {}).get('retainage_hold'))}
+                            for k, v in by_job.items()), key=lambda x: (x['key'] == '', -x['open']))
         c['nice_name'] = _nice_name(c['name'])
         out_cust.append(c)
     conn = _conn()
@@ -2613,6 +2682,8 @@ def api_job():
             fields[k] = _date_text(d[k]) if d[k] else ''
     if 'complete' in d:
         fields['complete'] = None if d['complete'] in (None, 'auto', '') else (1 if d['complete'] else 0)
+    if 'retainage_hold' in d:
+        fields['retainage_hold'] = 1 if d['retainage_hold'] else 0
     if d.get('nonp_status') in NONP_STEPS:
         fields['nonp_status'] = d['nonp_status']
     if fields:

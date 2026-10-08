@@ -281,12 +281,12 @@ function renderInvoices(){
 // ── Jobs ──
 function renderJobs(){
   var rows = D.jobs.slice().sort(function(a,b){ return (a.lien.days_left == null ? 9999 : a.lien.days_left) - (b.lien.days_left == null ? 9999 : b.lien.days_left); });
-  var h = '<thead><tr><th>Job</th><th>Customer</th><th class="num">Open invoices</th><th class="num">Open</th><th class="num">Retainage held</th><th>Complete</th><th>Last furnished</th><th>Lien deadline</th><th>NONP</th></tr></thead><tbody>';
+  var h = '<thead><tr><th>Job</th><th>Customer</th><th class="num">Open invoices</th><th class="num">Open</th><th class="num">Retainage held</th><th>Complete</th><th>Last furnished</th><th>Lien deadline</th><th>NONP</th><th>Your note</th></tr></thead><tbody>';
   rows.forEach(function(j){
     var l = j.lien || {};
-    h += '<tr class="click" onclick="openJob(\'' + esc(j.key) + '\')"><td><b>' + esc(j.name) + '</b> ' + kindBadge(j.kind) + '</td><td>' + esc(j.customer_name) + '</td><td class="num">' + j.open_count + '</td><td class="num">' + money(j.open_balance) + '</td><td class="num">' + (j.retainage_held ? badge('b-ret', money(j.retainage_held) + ' on ' + j.retainage_count) : '') + '</td><td>' + (j.complete_now ? '✅' : '—') + '</td><td>' + md(l.last_furnished) + (l.estimated && l.last_furnished ? ' <span class="muted small">(est.)</span>' : '') + '</td><td>' + (l.applies && l.deadline ? md(l.deadline) + ' ' + badge(l.days_left < 0 ? 'b-late' : (l.days_left <= 30 ? 'b-install' : 'b-service'), l.days_left < 0 ? 'passed' : l.days_left + 'd') : '<span class="muted small">n/a</span>') + '</td><td class="small">' + esc(j.nonp_status || '') + '</td></tr>';
+    h += '<tr class="click" onclick="openJob(\'' + esc(j.key) + '\')"><td><b>' + esc(j.name) + '</b> ' + kindBadge(j.kind) + '</td><td>' + esc(j.customer_name) + '</td><td class="num">' + j.open_count + '</td><td class="num">' + money(j.open_balance) + '</td><td class="num">' + (j.retainage_held ? badge('b-ret', money(j.retainage_held) + ' on ' + j.retainage_count) : '') + '</td><td>' + (j.complete_now ? '✅' : '—') + '</td><td>' + md(l.last_furnished) + (l.estimated && l.last_furnished ? ' <span class="muted small">(est.)</span>' : '') + '</td><td>' + (l.applies && l.deadline ? md(l.deadline) + ' ' + badge(l.days_left < 0 ? 'b-late' : (l.days_left <= 30 ? 'b-install' : 'b-service'), l.days_left < 0 ? 'passed' : l.days_left + 'd') : '<span class="muted small">n/a</span>') + '</td><td class="small">' + esc(j.nonp_status || '') + '</td><td class="small" style="max-width:260px">' + (j.retainage_hold ? badge('b-paused', 'retainage on hold') + ' ' : '') + esc((j.sheet_note || '').replace(/^[^:]{1,12}:\s*/gm, '').slice(0, 120)) + '</td></tr>';
   });
-  if(!rows.length) h += '<tr><td colspan="9" class="empty">No jobs with open invoices.</td></tr>';
+  if(!rows.length) h += '<tr><td colspan="10" class="empty">No jobs with open invoices.</td></tr>';
   document.getElementById('t-jobs').innerHTML = h + '</tbody>';
 }
 
@@ -294,12 +294,13 @@ function renderJobs(){
 function renderCustomers(){
   var q = (document.getElementById('c-q').value || '').toLowerCase();
   var rows = D.customers.filter(function(c){ return !q || (c.nice_name + ' ' + (c.sheet_notes || '')).toLowerCase().indexOf(q) >= 0; }).sort(function(a,b){ return Math.max(b.open_balance, b.qb_total || 0) - Math.max(a.open_balance, a.qb_total || 0); });
-  var h = '<thead><tr><th>Customer</th><th class="num">Open here</th><th>A/R sheet</th><th>Your notes</th><th>Follow up with</th><th>From Jobber</th><th>Type</th><th>Do not contact</th><th></th></tr></thead><tbody>';
+  var h = '<thead><tr><th>Customer</th><th class="num">Open here</th><th>A/R sheet</th><th>Jobs</th><th>Your notes</th><th>Follow up with</th><th>From Jobber</th><th>Type</th><th>Do not contact</th><th></th></tr></thead><tbody>';
   rows.forEach(function(c){
     var k = esc(c.key);
     var aging = [['Current', c.qb_current], ['1-30', c.qb_1_30], ['31-60', c.qb_31_60], ['61-90', c.qb_61_90], ['91+', c.qb_91_plus]].filter(function(x){ return x[1]; }).map(function(x){ return x[0] + ' ' + money(x[1]); }).join('<br>');
     h += '<tr><td><b>' + esc(c.nice_name) + '</b><div class="muted small">' + c.open_count + ' open</div>' + (c.jobber_note ? '<div class="small" style="color:var(--warn)">' + esc(c.jobber_note) + '</div>' : '') + (c.retainage_hold ? '<div>' + badge('b-ret', 'Retainage on hold') + '</div>' : '') + '</td><td class="num">' + money(c.open_balance) + '</td>' +
       '<td class="small num">' + (c.qb_total != null && c.qb_as_of ? '<b>' + money(c.qb_total) + '</b><br>' + aging + '<div class="muted">as of ' + md(c.qb_as_of) + '</div>' : '') + '</td>' +
+      '<td class="small" style="min-width:220px">' + jobList(c.jobs) + '</td>' +
       '<td class="small" style="max-width:260px;white-space:pre-wrap">' + esc(c.sheet_notes || '') + (c.sheet_summary ? '<div class="muted">→ ' + esc(c.sheet_summary) + '</div>' : '') + '</td>' +
       '<td><input id="cn-' + k + '" placeholder="Contact name" value="' + esc(c.contact_name) + '" style="margin-bottom:4px"><input id="ce-' + k + '" placeholder="email(s), comma separated" value="' + esc(c.emails) + '"></td>' +
       '<td class="small muted">' + esc(c.jobber_emails || '') + '</td>' +
@@ -307,8 +308,17 @@ function renderCustomers(){
       '<td><input type="checkbox" id="cd-' + k + '"' + (c.do_not_contact ? ' checked' : '') + ' style="width:auto"></td>' +
       '<td><button class="sm" onclick="saveCustomer(\'' + k + '\')">Save</button> <button class="sm" onclick="docUpload(\'customer\',\'' + k + '\')">+ Doc</button></td></tr>';
   });
-  if(!rows.length) h += '<tr><td colspan="9" class="empty">No customers with open invoices.</td></tr>';
+  if(!rows.length) h += '<tr><td colspan="10" class="empty">No customers with open invoices.</td></tr>';
   document.getElementById('t-cust').innerHTML = h + '</tbody>';
+}
+function jobList(jobs){
+  if(!jobs || !jobs.length) return '';
+  return jobs.map(function(j){
+    var name = j.key ? '<a href="#" onclick="openJob(\'' + esc(j.key) + '\');return false"><b>' + esc(j.name) + '</b></a>' : '<b>' + esc(j.name) + '</b>';
+    return '<div style="margin-bottom:6px">' + name + '<br>' + j.count + ' invoice' + (j.count === 1 ? '' : 's') + ' · ' + money(j.open) +
+      (j.retainage ? ' · ' + badge('b-ret', 'retainage ' + money(j.retainage)) : '') + (j.hold ? ' ' + badge('b-paused', 'on hold') : '') +
+      (j.note ? '<div class="muted" title="' + esc(j.note) + '">📝 ' + esc(j.note.split('\n')[0].replace(/^[^:]{1,12}:\s*/, '').slice(0, 60)) + '</div>' : '') + '</div>';
+  }).join('');
 }
 function saveCustomer(k){
   post('/receivables/api/customer', {key:k, contact_name:document.getElementById('cn-' + k).value, emails:document.getElementById('ce-' + k).value,
@@ -524,6 +534,7 @@ function openJob(key){
     var h = '<button class="close" onclick="closeDrawer()">✕</button><h2 style="margin-top:0">' + esc(j.name) + ' ' + kindBadge(j.kind) + '</h2>';
     h += '<div class="kpis">' + kpi(money(j.open_balance), j.open_count + ' open invoices') + kpi(money(j.retainage_held), 'retainage on ' + j.retainage_count) +
          (l.applies ? kpi(md(l.deadline) || '—', l.days_left == null ? 'lien deadline' : (l.days_left < 0 ? 'lien deadline passed' : l.days_left + ' days to lien deadline')) : '') + '</div>';
+    if(j.sheet_note) h += '<div class="card"><h3>📝 Your A/R sheet note for this job</h3><div style="white-space:pre-wrap">' + esc(j.sheet_note) + '</div>' + (j.retainage_hold ? '<div style="margin-top:6px">' + badge('b-paused', 'Retainage on hold') + ' <span class="small muted">not chased until the note changes or the hold is cleared</span></div>' : '') + '</div>';
     h += '<div class="card"><h3>Job details</h3><div class="grid2">' +
       jf('name', 'Job name', j.name) + jf('property_address', 'Property address', j.property_address) +
       jf('contact_name', 'Follow up with (name)', j.contact_name) + jf('contact_emails', 'Follow up with (emails; blank = the customer\'s)', j.contact_emails) +
@@ -531,6 +542,7 @@ function openJob(key){
       jf('owner_address', 'Owner mailing address', j.owner_address) + jf('first_furnished', 'First day furnished (MM/DD/YYYY)', md(j.first_furnished)) +
       jf('last_furnished', 'Last day furnished (MM/DD/YYYY)', md(j.last_furnished)) +
       '<div><label>Job complete (retainage due)</label><select id="j-complete"><option value="auto"' + (j.complete == null ? ' selected' : '') + '>Auto (from Jobber: ' + (j.jobber_completed_at ? 'complete' : 'not complete') + ')</option><option value="1"' + (j.complete === 1 ? ' selected' : '') + '>Complete</option><option value="0"' + (j.complete === 0 ? ' selected' : '') + '>Not complete</option></select></div>' +
+      '<div><label>Retainage on hold</label><select id="j-hold"><option value="0">No: ask for it once the job is complete</option><option value="1"' + (j.retainage_hold ? ' selected' : '') + '>Yes: the project is still going</option></select></div>' +
       '</div><label>Notes</label><textarea id="j-notes">' + esc(j.notes) + '</textarea><div class="row" style="margin-top:8px"><button class="primary" onclick="saveJob(\'' + esc(key) + '\')">Save job</button>' + (j.jobber_job_uri ? '<a target="_blank" href="' + esc(j.jobber_job_uri) + '">Job in Jobber ↗</a>' : '') + '</div></div>';
     if(l.applies){
       h += '<div class="card"><h3>Lien and Notice of Nonpayment</h3><div class="small">Last furnished ' + md(l.last_furnished) + (l.estimated ? ' (estimated from the last invoice date; enter the real date above)' : '') + ' → claim of lien by <b>' + md(l.deadline) + '</b>. The notice is prepared ' + D.settings.nonp_lead_days + ' days before that if money is still owed and past due.</div>' +
@@ -558,6 +570,7 @@ function saveJob(key){
   ['name','property_address','contact_name','contact_emails','owner_name','owner_email','owner_address','notes'].forEach(function(k){ d[k] = g(k); });
   d.first_furnished = toIso(g('first_furnished')); d.last_furnished = toIso(g('last_furnished'));
   var c = g('complete'); d.complete = c === 'auto' ? 'auto' : c === '1';
+  d.retainage_hold = g('hold') === '1';
   post('/receivables/api/job', d).then(function(){ toast('Saved'); load().then(function(){ openJob(key); }); });
 }
 function jobNote(key){ var t = document.getElementById('job-note').value.trim(); if(!t) return; post('/receivables/api/job', {key:key, note:t}).then(function(){ openJob(key); }); }
