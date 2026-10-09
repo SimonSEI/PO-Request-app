@@ -5084,7 +5084,7 @@ def _json():
     return request.get_json(silent=True) or {}
 
 
-UNDO_SKIP = r'/(undo(/\d+)?|scan|jobber/sync)$'  # clicks not put on the undo list
+UNDO_SKIP = r'/(undo(/\d+)?|scan|jobber/sync|todos/reword)$'  # clicks not put on the undo list
 UNDO_HOURS = 24
 # What a click was, for the Undo list: (path pattern, label). {0} = the number in the path.
 UNDO_LABELS = (
@@ -6790,6 +6790,99 @@ def h_todo_add(actor):
     finally:
         conn.close()
     return h_todos(actor)
+
+
+# ── A to-do written from what someone explains ───────────────────────────────
+# The office types what needs doing in their own words; Claude (or, without it,
+# a plain clean-up) turns it into a short to-do to check before it's saved.
+
+TODO_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'title': {'type': 'string'},
+        'detail': {'type': 'string'},
+        'due_on': {'type': 'string'},
+    },
+    'required': ['title', 'detail', 'due_on'],
+    'additionalProperties': False,
+}
+TODO_PROMPT = """You write to-do list items for the office of Stahlman-England Irrigation (pumps, lakes,
+divers and SCADA work; vendors Wettech - Tom/Tommy - and Gulfshore - Jordan; quotes and invoices in Jobber).
+Someone explains in their own words what they need to do. Write it as one to-do:
+- title: a short instruction starting with a verb, at most 80 characters, e.g. "Call Tom at Wettech
+  about Homewood Suites". Keep every name, place, job, PO and quote number they mention.
+- detail: one or two short lines with anything else worth remembering from what they said (who said
+  what, amounts, why). Empty when the title says it all. Never add facts they didn't give.
+- due_on: the date it must be done by as YYYY-MM-DD when they give one (work out "Friday" or "next
+  week" from today's date), else empty."""
+
+_TODO_FILLER = re.compile(r'^\s*(?:(?:i|we)\s+(?:need|have|want|should|must)\s+to|(?:i|we)\s+(?:gotta|got\s+to)|'
+                          r'(?:please\s+)?remind\s+me\s+to|remember\s+to|(?:can|could)\s+you|'
+                          r"(?:i|we)'?ll\s+need\s+to|need\s+to|have\s+to|please|so)\s+", re.I)
+
+
+def _plain_todo(text):
+    """Without Claude: the first sentence, without "I need to", made short."""
+    text = re.sub(r'\s+', ' ', text).strip()
+    parts = re.split(r'(?<=[.!?])\s+', text, 1)
+    first = parts[0].rstrip('.!? ')
+    while _TODO_FILLER.match(first):
+        first = _TODO_FILLER.sub('', first, 1)
+    cut = len(first) > 80
+    if cut:
+        first = first[:80].rsplit(' ', 1)[0].rstrip(',;:-') + '…'
+    title = first[:1].upper() + first[1:]
+    # Details only when the title leaves something out.
+    return {'title': title or text[:80], 'detail': text if cut else (parts[1] if len(parts) > 1 else ''), 'due_on': ''}
+
+
+def _claude_todo(text, today):
+    """{title, detail, due_on} from Claude, or None when it can't be reached."""
+    if not ANTHROPIC_API_KEY:
+        return None
+    try:
+        import anthropic
+    except ImportError:
+        return None
+    try:
+        resp = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=30.0).beta.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=2000,
+            betas=['server-side-fallback-2026-07-01'],
+            fallbacks='default',
+            system=TODO_PROMPT,
+            output_config={'effort': 'low', 'format': {'type': 'json_schema', 'schema': TODO_SCHEMA}},
+            messages=[{'role': 'user', 'content': f"Today is {today.strftime('%A %B %d, %Y')}.\n\n{text[:4000]}"}],
+        )
+    except (anthropic.APIStatusError, anthropic.APIConnectionError) as e:
+        print(f'  ⚠ Pumps: to-do not reworded by Claude: {e}')
+        return None
+    if resp.stop_reason in ('refusal', 'max_tokens'):
+        return None
+    try:
+        return json.loads(next((b.text for b in resp.content if b.type == 'text'), ''))
+    except ValueError:
+        return None
+
+
+def reword_todo(text, today=None):
+    """A short to-do from someone's explanation: {title, detail, due_on, by}."""
+    text = (text or '').strip()
+    if not text:
+        raise ValueError('Say what needs doing')
+    today = today or _today()
+    out = _claude_todo(text, today)
+    by = 'claude'
+    if not out or not (out.get('title') or '').strip():
+        out, by = _plain_todo(text), 'plain'
+    return {'title': out['title'].strip()[:300], 'detail': (out.get('detail') or '').strip()[:2000],
+            'due_on': _iso_date(out.get('due_on')) or '', 'by': by}
+
+
+@api('/todos/reword', methods=('POST',))
+def h_todo_reword(actor):
+    """{"text": what needs doing, in your own words} -> a to-do to check before saving."""
+    return {'todo': reword_todo(str(_json().get('text') or '')[:4000])}
 
 
 @api('/todos/<int:todo_id>/done', methods=('POST',))

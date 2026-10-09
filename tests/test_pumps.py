@@ -2841,5 +2841,36 @@ W/O No. 41105'''
         self.assertEqual((ch['state'], ch['who'], ch['check_on']), ('waiting', 'Tom', '2026-10-19'))
 
 
+    def test_write_a_to_do_from_an_explanation(self):
+        """Someone explains what they need to do; the app writes a short to-do to check first."""
+        from datetime import date
+        real = P._claude_todo
+        try:
+            P._claude_todo = lambda text, today: None   # Claude not reachable: a plain clean-up
+            r = self.c.post('/pumps/api/todos/reword', json={'text': 'I need to call Tom at Wettech about Homewood '
+                                                                     'Suites. He said later next week.'})
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            t = r.get_json()['todo']
+            self.assertEqual((t['title'], t['by']), ('Call Tom at Wettech about Homewood Suites', 'plain'))
+            self.assertEqual(t['detail'], 'He said later next week.')
+            self.assertEqual(self.c.post('/pumps/api/todos/reword', json={'text': ' '}).status_code, 400)
+            seen = {}
+
+            def fake(text, today):
+                seen.update(text=text, today=today)
+                return {'title': 'Send Allura the pump quote', 'detail': 'They asked on the phone.',
+                        'due_on': '2026-10-16'}
+            P._claude_todo = fake
+            t = P.reword_todo('so allura called and they want the quote for the pump by next friday',
+                              today=date(2026, 10, 9))
+            self.assertEqual((t['title'], t['due_on'], t['by']), ('Send Allura the pump quote', '2026-10-16', 'claude'))
+            self.assertEqual(seen['today'], date(2026, 10, 9))
+        finally:
+            P._claude_todo = real
+        r = self.c.post('/pumps/api/todos', json={'title': t['title'], 'detail': t['detail'], 'due_on': t['due_on']})
+        row = next(x for x in r.get_json()['todos'] if x['title'] == 'Send Allura the pump quote')
+        self.assertEqual((row['detail'], row['due_on'], row['kind']), ('They asked on the phone.', '2026-10-16', 'manual'))
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

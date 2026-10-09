@@ -391,7 +391,7 @@ function caseRow(c, extra){
 }
 function todoRow(t){
   return `<div class="row"><div class="main"><div class="tt"><label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer"><input type="checkbox" onchange="todoDone(${t.id}, this.checked)" style="margin-top:3px"><span>${esc(t.title)}</span></label></div>
-      ${t.detail ? `<div class="sub" style="margin-left:24px">${esc(t.detail)}</div>` : ''}
+      ${t.detail || (t.kind === 'manual' && t.due_on) ? `<div class="sub" style="margin-left:24px">${t.kind === 'manual' && t.due_on ? `<b class="${t.due_on < todayIso() ? 'bad' : 'warn'}">due ${esc(niceDay(t.due_on))}</b>${t.detail ? ' · ' : ''}` : ''}${esc(t.detail || '')}</div>` : ''}
       ${t.kind === 'approved_quote' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><a class="btn s p" href="/pumps/api/docs/${t.link.doc_id}/file?version=approved&download=1">⬇ Approved PDF</a><a class="btn s" href="mailto:${esc(t.link.to || '')}?subject=${encodeURIComponent(t.link.subject || 'Approved quote')}&body=${encodeURIComponent('Hi,\n\nThe attached quote is approved - please go ahead and schedule it.\n\nThank you,\nSimon Weardon')}">✉ Email ${esc(t.link.to || '')}</a>${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}</div>` : ''}
       ${t.kind !== 'approved_quote' && (t.link.uri || t.link.case_id) ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${(t.link.uris || []).length > 1 ? t.link.uris.map(u => `<a class="btn s" href="${esc(u.uri)}" target="_blank" rel="noopener">Open ${esc(u.label)} ↗</a>`).join('') + `<button class="btn s" onclick='openAll(${JSON.stringify(t.link.uris.map(u => u.uri)).replace(/'/g, "&#39;")})'>Open both ↗</button>` : t.link.uri ? `<a class="btn s" href="${esc(t.link.uri)}" target="_blank" rel="noopener">Open in Jobber ↗</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}${t.link.scada_id ? `<button class="btn s" onclick="showTab('scada')">SCADA</button>` : ''}</div>` : ''}
       ${t.kind === 'diver_email' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="diverTodo('${esc(t.link.month || '')}')">Email ready - copy &amp; attach</button><a class="btn s" href="/pumps/api/dives/docx?month=${encodeURIComponent(t.link.month || '')}">⬇ Word list</a></div>` : ''}</div>
@@ -411,7 +411,30 @@ async function undoAction(id){
 }
 function openAll(uris){ const blocked = uris.filter(u => { const w = window.open(u, '_blank'); if (w) w.opener = null; return !w; }).length; if (blocked) toast('Your browser blocked a tab - allow pop-ups for this site, or use the buttons one at a time.', true); }
 async function todoDone(id, done){ const j = await api('/todos/' + id + '/done', {method:'POST', body:{done}}); if (!j.success) toast(j.error, true); else { toast(done ? 'Done' : 'Reopened'); loadToday(); } }
-async function todoAdd(){ const el = document.getElementById('todoNew'); const t = el.value.trim(); if (!t) return; const j = await api('/todos', {method:'POST', body:{title: t}}); if (!j.success) toast(j.error, true); else loadToday(); }
+// Explain it in your own words; the app rewords it as a short to-do to check first.
+async function todoWrite(){
+  const el = document.getElementById('todoNew'), text = el.value.trim(); if (!text) return;
+  const btn = document.getElementById('todoWriteBtn'); btn.disabled = true; btn.textContent = 'Writing…';
+  const j = await api('/todos/reword', {method:'POST', body:{text}});
+  btn.disabled = false; btn.textContent = '✨ Write to-do';
+  if (!j.success) { toast(j.error, true); return; }
+  window._todoText = text;
+  const t = j.todo;
+  openModal('New to-do', `
+    <div class="note">${t.by === 'claude' ? 'Reworded from what you wrote' : 'Shortened from what you wrote (Claude could not be reached)'} - change anything before adding it.</div>
+    <label class="note">To-do<input type="text" id="tdTitle" value="${esc(t.title)}" style="width:100%"></label>
+    <label class="note">Details<textarea id="tdDetail" style="width:100%;min-height:70px;font:inherit">${esc(t.detail)}</textarea></label>
+    <label class="note">Due <span class="note">(optional)</span><input type="date" id="tdDue" value="${esc(t.due_on)}"></label>
+    <div class="note">You wrote: <i>${esc(text)}</i></div>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn" onclick="todoAdd(_todoText, '', '')">Use my words</button><button class="btn p" onclick="todoAdd(document.getElementById('tdTitle').value, document.getElementById('tdDetail').value, document.getElementById('tdDue').value)">Add to-do</button>`);
+  setTimeout(() => { const i = document.getElementById('tdTitle'); if (i) i.focus(); }, 50);
+}
+async function todoAdd(title, detail, due_on){
+  title = (title || '').trim(); if (!title) { toast('Say what needs doing', true); return; }
+  const j = await api('/todos', {method:'POST', body:{title, detail: (detail || '').trim(), due_on: due_on || ''}});
+  if (!j.success) { toast(j.error, true); return; }
+  closeModal(); toast('Added to your to do list'); loadToday();
+}
 async function todoDelete(id){ if (!confirm('Are you sure you want to delete this from your to do list?')) return; const j = await api('/todos/' + id + '/delete', {method:'POST', body:{}}); if (j.success) loadToday(); }
 async function diverTodo(month){
   const j = await api('/dives/preview?month=' + encodeURIComponent(month));
@@ -531,7 +554,7 @@ async function loadToday(){
   let wasOpen = false; try { wasOpen = localStorage.getItem('pumpsWaitingOpen') === '1'; } catch (e) {}
   el.innerHTML = (urgent.length ? '<div class="grp">Now</div>' + urgent.join('') : '')
     + '<div class="grp">To do</div>' + (todo.join('') + q.todos.map(todoRow).join('') || '<div class="empty">Nothing to do. 🎉</div>')
-    + `<div class="row" style="cursor:default"><input type="text" id="todoNew" placeholder="Add a to-do…" style="flex:1;min-width:0" onkeydown="if(event.key==='Enter')todoAdd()"><button class="btn s" onclick="todoAdd()">Add</button></div>`
+    + `<div class="row" style="cursor:default;align-items:flex-start"><textarea id="todoNew" rows="2" placeholder="Explain what you need to do, in your own words - the app writes the to-do for you…" style="flex:1;min-width:0;font:inherit;resize:vertical" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();todoWrite()}"></textarea><button class="btn s p" id="todoWriteBtn" onclick="todoWrite()">✨ Write to-do</button></div>`
     + `<details ${wasOpen ? 'open' : ''} ontoggle="try{localStorage.setItem('pumpsWaitingOpen', this.open ? '1' : '0')}catch(e){}"><summary class="grp"><span class="arr">▸</span> Waiting on others (${waiting.length})</summary>${waiting.join('') || '<div class="empty">Nothing waiting.</div>'}</details>`;
 }
 function setCount(id, n, hot){ const el = document.getElementById(id); el.textContent = n || ''; el.classList.toggle('hot', !!hot); el.style.display = n ? '' : 'none'; }
