@@ -1781,6 +1781,43 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(v, P.APP_VERSION)
         self.assertIn(f'const APP_VERSION = "{v}"', self.c.get('/pumps').get_data(as_text=True))
 
+    def test_pump_quote_goes_on_the_maintenance_jobs_property(self):
+        """Anna's Place (Oct 2026): two properties - the billing P.O. Box and
+        the one on the recurring "Quarterly 400" job. Our quote goes on the
+        job's; a pump the vendor names is said in the title."""
+        props = [{'id': 'PBILL', 'address': {'street1': 'C/O Advanced Property Management Services',
+                                             'street2': 'P.O. Box 37296', 'city': 'Charlotte'}},
+                 {'id': 'PJOB', 'address': {'street1': 'C/O Advanced Property Management Services',
+                                            'street2': '1035 Collier Center Way, Suite #7', 'city': 'Naples'}}]
+        jobs = [{'id': 'J475', 'jobNumber': 475, 'title': 'Quarterly 400', 'jobStatus': 'upcoming',
+                 'jobType': 'RECURRING', 'property': {'id': 'PJOB'}},
+                {'id': 'J7018', 'jobNumber': 7018, 'title': "Anna's Place- **WET**PO-0010", 'jobStatus': 'archived',
+                 'jobType': 'ONE_OFF', 'property': {'id': 'PJOB'}}]
+
+        class Fake(FakeJobber):
+            def __call__(self, query, variables=None):
+                if 'client(id' in query:
+                    return {'client': {'id': variables['id'], 'name': "INC ANA'S PLACE HOMEOWNER'S ASSOCIATION",
+                                       'properties': props, 'jobs(first: 40)': {'nodes': jobs}}}
+                return super().__call__(query, variables)
+        P.jobber_gql = Fake(clients=[{'id': 'CANA', 'name': "INC ANA'S PLACE HOMEOWNER'S ASSOCIATION",
+                                      'isLead': False, 'isArchived': False, 'properties': props}])
+        doc = {'client_name': "Anna's Place", 'file_name': 'Annas Place tank.docx',
+               'description': 'Furnish and install new bladder tank, set to correct air pressure and test.'}
+        t = P.resolve_quote_target(doc, {'jobber_client_id': 'CANA', 'jobber': '{}'})
+        self.assertEqual((t['client_id'], t['property_id']), ('CANA', 'PJOB'))
+        # The item remembers the billing address from an earlier quote: still the job's.
+        t = P.resolve_quote_target(doc, {'jobber_client_id': 'CANA', 'jobber_property_id': 'PBILL', 'jobber': '{}'})
+        self.assertEqual(t['property_id'], 'PJOB')
+        # Which pump goes in the title.
+        self.assertEqual(P.suggest_quote({**doc, 'description': 'Field service to replace check valve, pump #4 '
+                                                             'station', 'line_items': []})['title'],
+                         'Proposal to replace check valve - Pump #4')
+        self.assertEqual(P.suggest_quote({**doc, 'description': 'Furnish and install new check valve on pump #4',
+                                          'line_items': []})['title'],
+                         'Proposal - Furnish and install new check valve on pump #4', 'already says which pump')
+        self.assertNotIn('Pump #', P.suggest_quote({**doc, 'line_items': []})['title'])
+
     def test_quote_is_never_drafted_on_its_own(self):
         """A vendor quote that reads cleanly waits in To do for the office to
         click Draft quote - nothing is made in Jobber until then."""

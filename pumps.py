@@ -3253,6 +3253,18 @@ def resolve_quote_target(doc, case=None):
         out.update(client_id=item_client, how='the item')
         if case.get('jobber_property_id'):
             out.update(property_id=case['jobber_property_id'])
+            # Still the maintenance job's property when the client has one
+            # (an earlier quote may have gone on the billing address).
+            try:
+                cj = client_jobs(item_client)
+            except JobberError:
+                return out
+            maint = maintenance_properties(cj['jobs'], cj['properties'])
+            by_pump = _pump_number_property(maint, f"{_doc_hay(doc, case)} {doc.get('description') or ''}")
+            if maint and case['jobber_property_id'] not in {p['id'] for p in maint}:
+                pick = by_pump or maint[0]
+                out.update(property_id=pick['id'], property_label=pick['label'], properties=cj['properties'],
+                           how="the item; the maintenance job's property")
             return out
     alias = match_site_alias(doc, case)
     if alias and (not item_client or item_client == alias['client_id']):
@@ -3271,7 +3283,8 @@ def resolve_quote_target(doc, case=None):
             out.update(client_id=pick['id'], client_name=pick['name'], how=f'Jobber search for "{name}"')
             matching = pick.get('matching_properties') or []
     if out['client_id']:
-        props = client_jobs(out['client_id'])['properties']
+        cj = client_jobs(out['client_id'])
+        props = cj['properties']
         out['properties'] = props
         if not out['client_name']:
             out['client_name'] = next((c['name'] for c in out['candidates'] if c['id'] == out['client_id']), '')
@@ -3288,11 +3301,46 @@ def resolve_quote_target(doc, case=None):
             by_pump = _pump_number_property(props, f"{_doc_hay(doc, case)} {doc.get('description') or ''}")
             if by_pump and len(fits) != 1:
                 fits = [by_pump]
+            # The office's rule (Oct 2026, Anna's Place): a pump quote goes on
+            # the property of the client's recurring maintenance job ("Quarterly
+            # 400") - not the billing address or another of their properties.
+            # Several (Huntington: a job per pump) - the pump the vendor names,
+            # else the first; the quote says which pump.
+            maint = maintenance_properties(cj['jobs'], props)
+            if maint and not (by_pump and by_pump['id'] in {p['id'] for p in maint}):
+                fits = maint[:1]
+                out['how'] = (out['how'] + '; ' if out['how'] else '') + 'the maintenance job\'s property'
             if len(fits) == 1:
                 pick = fits[0]
         if pick:
             out.update(property_id=pick['id'], property_label=pick['label'])
     return out
+
+
+def maintenance_properties(jobs, props):
+    """The properties of a client's live recurring maintenance jobs, pump
+    ones ("Quarterly 400", "Quarterly Pump Maintenance") first."""
+    live = [j for j in jobs if j.get('type') == 'recurring' and j.get('status') != 'archived' and j.get('property_id')]
+    live.sort(key=lambda j: (not (TITLE_PATTERNS['pump'].search(j.get('title') or '') or
+                                  re.search(r'quarterly|maint', j.get('title') or '', re.I)),
+                             -(int(j.get('number') or 0))))
+    by_id = {p['id']: p for p in props}
+    out = []
+    for j in live:
+        p = by_id.get(j['property_id'])
+        if p and p not in out:
+            out.append(p)
+    return out
+
+
+def pump_named(doc):
+    """The one pump the vendor's quote is about ("check valve on pump #4",
+    "RE: Huntington #6"), or ''."""
+    text = ' '.join([doc.get('client_name') or '', doc.get('site') or '', doc.get('description') or '']
+                    + [f"{i.get('name') or ''} {i.get('description') or ''}" for i in doc.get('line_items') or []])
+    nums = {m.group(1) or m.group(2) for m in re.finditer(
+        r'(?<![\w/])#\s*(\d{1,2})\b|\bpump\s*(?:station\s*)?(?:no\.?\s*|#\s*)?(\d{1,2})\b', text, re.I)}
+    return next(iter(nums)) if len(nums) == 1 else ''
 
 
 def _pump_number_property(props, text):
@@ -3638,6 +3686,10 @@ def suggest_quote(doc, case=None):
             markup = 0
     title = (doc.get('proposal_title') or '').strip() or _proposal_title(
         items[0]['description'] if items else (doc.get('description') or ''))
+    pump = pump_named(doc)
+    if pump and not re.search(rf'#\s*{pump}\b|pump\s*{pump}\b', title, re.I):
+        # Which pump, on a property with several (the address alone doesn't say).
+        title = f'{title} - Pump #{pump}'
     lead = delivery_note(doc)
     if lead:
         items = [{**it, 'description': f"{it['description']}\n\n{lead}".strip()[:2000]} for it in items]
