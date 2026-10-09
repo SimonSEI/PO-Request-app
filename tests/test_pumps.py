@@ -1763,7 +1763,8 @@ class PumpsTest(unittest.TestCase):
                 if 'jobType: RECURRING' in query:
                     return {'client': {'id': variables['id'], 'jobs': {'nodes': [
                         {'id': 'J9659', 'jobNumber': 9659, 'title': 'Monthly 3605', 'jobStatus': 'upcoming',
-                         'jobType': 'RECURRING', 'property': {'id': 'P6721'}}]}}}
+                         'jobType': 'RECURRING', 'property': {'id': 'P6721', 'address': {
+                             'street1': 'AUTUMN WOODS COMMUNITY', 'street2': '6721 AUTUMN WOODS BLVD', 'city': 'Naples'}}}]}}}
                 if 'client(id' in query:
                     return {'client': {'id': variables['id'], 'name': 'AUTUMN WOODS HOA COMMUNITY',
                                        'properties': aw_props, 'jobs(first: 40)': {'nodes': old}}}
@@ -1772,6 +1773,21 @@ class PumpsTest(unittest.TestCase):
         t = P.resolve_quote_target({'client_name': 'Autumn Woods 1', 'file_name': 'aw.docx'},
                                    {'jobber_client_id': 'CAW', 'jobber': '{}'})
         self.assertEqual(t['property_id'], 'P6721')
+        # A home on Autumn Woods remembered for "Autumn Woods" from an earlier
+        # quote: still the monthly job's property.
+        conn = P._conn()
+        conn.execute("INSERT INTO pump_site_aliases (place, area, client_id, client_name, property_id, property_label) "
+                     "VALUES ('Autumn Woods', '', 'CAW', 'AUTUMN WOODS HOA COMMUNITY', 'P6416', '6416 Autumn Woods Boulevard')")
+        conn.commit()
+        conn.close()
+        t = P.resolve_quote_target({'client_name': 'Autumn Woods', 'file_name': 'aw.docx'})
+        self.assertEqual((t['client_id'], t['property_id']), ('CAW', 'P6721'))
+        # The job's property isn't in the client's property list: the job says what it is.
+        aw_props[1] = {'id': 'P6537', 'address': {'street1': '6537 Chestnut Circle', 'city': 'Naples'}}
+        t = P.resolve_quote_target({'client_name': 'Autumn Woods 1', 'file_name': 'aw.docx'},
+                                   {'jobber_client_id': 'CAW', 'jobber': '{}'})
+        self.assertEqual((t['property_id'], t['property_label']),
+                         ('P6721', 'AUTUMN WOODS COMMUNITY, 6721 AUTUMN WOODS BLVD, Naples'))
         P.jobber_gql = Fake()
         # Which pump goes in the title.
         self.assertEqual(P.suggest_quote({**doc, 'description': 'Field service to replace check valve, pump #4 '

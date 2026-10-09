@@ -942,7 +942,7 @@ async function draftQuote(docId){
   const t = await api('/docs/' + docId + '/quote_target');
   const tg = (t.success && t.target) || {};
   if (tg.client_id) {
-    inv.client_id = tg.client_id; inv.want_property = tg.property_id || null;
+    inv.client_id = tg.client_id; inv.want_property = tg.property_id || null; inv.want_label = tg.property_label || '';
     document.getElementById('cands').innerHTML = `<div class="cand on"><input type="radio" checked><div style="flex:1"><b>${esc(tg.client_name || 'Client from ' + tg.how)}</b><div class="note">found by ${esc(tg.how)} · <a href="#" onclick="event.preventDefault();findClients()">search for another client</a></div></div></div>`;
     document.getElementById('qHow').textContent = tg.property_id ? `Matched by ${tg.how}: ${tg.client_name || ''}${tg.property_label ? ' · ' + tg.property_label : ''}.` : '';
     quoteProps();
@@ -958,6 +958,8 @@ async function quoteProps(){
   if (inv.client_id !== id) return;
   if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
   const props = j.properties || [];
+  // The maintenance job's property may be missing from a big client's list.
+  if (inv.want_property && inv.want_label && !props.some(p => p.id === inv.want_property)) props.unshift({id: inv.want_property, label: inv.want_label});
   if (props.length === 1) inv.property_id = props[0].id;
   if (inv.want_property && props.some(p => p.id === inv.want_property)) { inv.property_id = inv.want_property; inv.want_property = null; }
   inv.props = props;
