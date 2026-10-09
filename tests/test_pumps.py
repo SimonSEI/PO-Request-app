@@ -802,7 +802,8 @@ class PumpsTest(unittest.TestCase):
             "Furnish and install new panel cooling fan in first VFD control panel, wire up and test\n"
             "\t\t\tYour Cost ---------------- $ 1704.46\n"
             "Furnish and install new 10 inch wafer check valve on pump #4\n"
-            "                 Your Cost ---------------- $ 2239.07\nPrice includes Sales tax and in freight\n")
+            "                 Your Cost ---------------- $ 2239.07\nPrice includes Sales tax and in freight\n"
+            "Terms: Net 10 days\nDelivery: 2-3 weeks after receipt of order\nPrices good for 30 days.\n")
         one = extraction('quote', '', client='Lakeside Pines', subtotal=1704.46)
         one.update(total=1704.46, subtotal=None, tax=None, tax_included=True, line_items=[
             {'name': 'Panel cooling fan', 'description': 'Furnish and install new panel cooling fan', 'quantity': 1,
@@ -834,6 +835,10 @@ class PumpsTest(unittest.TestCase):
             self.assertEqual(sorted(li['unitPrice'] for a in made for li in a['lineItems']),
                              [round(1704.46 * 1.3, 2), round(2239.07 * 1.3, 2)], 'a quote each')
             self.assertEqual([len(a['lineItems']) for a in made], [1, 1])
+            # Weeks away: the client is told on each quote.
+            for a in made:
+                self.assertTrue(a['lineItems'][0]['description'].endswith(
+                    '\n\nDelivery: 2-3 weeks after receipt of order'), a['lineItems'][0]['description'])
             # Read again (or sent again): the same two jobs, no third.
             self.c.post(f"/pumps/api/docs/{doc['doc_id']}/read_again", json={})
             self.c.post(f"/pumps/api/docs/{pid}/read_again", json={})
@@ -1636,7 +1641,7 @@ class PumpsTest(unittest.TestCase):
             "Possibly needed- Field service to pull and inspect pump and motor, replace motor with new 10 HP 230 "
             "volt 1 PH motor reusing pump end, replace all wire from motor to control box, reinstall, wire up and "
             "test\n                 Your Cost --------------- $ 4836.90\nPrices include Sales tax\n"
-            "Terms: Net 10 days\n")
+            "Terms: Net 10 days\nDelivery: 2-3 days after receipt of order\nPrices good for 30 days.\n")
         self.extracts['huntington6.pdf'] = extraction('quote', '', client='Huntington #6', subtotal=6616.01)
         fake = FakeJobber()
         P.jobber_gql = fake
@@ -1654,6 +1659,8 @@ class PumpsTest(unittest.TestCase):
         made = [v['attributes'] for qq, v in fake.calls if 'quoteCreate(' in qq]
         self.assertEqual([[li['unitPrice'] for li in a['lineItems']] for a in made],
                          [[round(1780.11 * 1.3, 2)], [round(4836.90 * 1.3, 2)]])
+        self.assertFalse(any('Delivery' in li['description'] for a in made for li in a['lineItems']),
+                         'a few days is not worth telling the client')
         # Its item cancelled, the letter uploaded again: back on an open item,
         # without the cancelled item's quote, and the motor job isn't made twice.
         self.c.post(f"/pumps/api/cases/{doc['case_id']}/delete", json={'reason': 'start over'})

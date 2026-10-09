@@ -3562,6 +3562,28 @@ def _jobber_lines(line_items, what):
     return items
 
 
+_LONG_LEAD = re.compile(r'\b(?:weeks?|wks?|months?)\b', re.I)
+_DELIVERY = re.compile(r'\b(?:deliver(?:y|ed)?|lead\s*time|ship(?:ping|ped)?|arrive|in\s+stock)\b', re.I)
+
+
+def delivery_note(doc):
+    """The vendor's delivery time when it is weeks or months away (Lely, Oct
+    2026: "Delivery: 2-3 weeks after receipt of order") - the client is told
+    on our quote. A few days isn't worth saying. '' when there is none."""
+    text = doc.get('text_excerpt') or ''
+    if not text and doc.get('file_path'):
+        try:
+            with open(doc['file_path'], 'rb') as f:
+                text = extract_text(doc.get('file_name') or '', f.read())[:4000]
+        except (OSError, TypeError, ValueError):
+            text = ''
+    for line in re.split(r'\n|(?<=\.)\s+', text):
+        line = re.sub(r'\s+', ' ', line).strip()
+        if _LONG_LEAD.search(line) and _DELIVERY.search(line) and len(line) <= 200:
+            return line if re.match(r'(?i)delivery\b', line) else f'Delivery: {line}'
+    return ''
+
+
 def suggest_quote(doc, case=None):
     """Our quote to the client, the way the office writes them (Jobber quote
     9136): the vendor's price plus QUOTE_MARKUP_PCT, no vendor name or sales
@@ -3588,7 +3610,10 @@ def suggest_quote(doc, case=None):
             markup = 0
     title = (doc.get('proposal_title') or '').strip() or _proposal_title(
         items[0]['description'] if items else (doc.get('description') or ''))
-    return {'title': title[:255], 'line_items': items, 'markup_pct': markup}
+    lead = delivery_note(doc)
+    if lead:
+        items = [{**it, 'description': f"{it['description']}\n\n{lead}".strip()[:2000]} for it in items]
+    return {'title': title[:255], 'line_items': items, 'markup_pct': markup, 'delivery': lead}
 
 
 def _proposal_title(work):
