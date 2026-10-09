@@ -831,6 +831,46 @@ class PumpsTest(unittest.TestCase):
         self.assertIn('surge arrestor', lines[1]['description'])
         self.assertFalse(any(l.get('optional') for l in lines))
 
+    def test_letter_split_before_oct_9_is_one_quote_again(self):
+        """Autumn Woods 2 came in while letters were split: the doc kept the
+        flow meter and a copy made a job for the surge arrestor. Read again,
+        it is one quote with both lines and the copy's job is cancelled."""
+        self.texts['autumn2b.pdf'] = (
+            "October 9, 2026\nStahlman England\nRE: Autumn Woods 2\n"
+            "We are pleased to quote on the following services and materials\n"
+            "Item #1 ... Field service to furnish and install new 4 inch flow meter\n"
+            "                Your Cost ---------------- $ 2757.32\n"
+            "Item #2 ... Field service to furnish and install new surge arrestor\n"
+            "                Your Cost ---------------- $ 1047.62\n"
+            "Price does include sales tax and freight\n")
+        P.SPLIT_LETTERS = True
+        try:
+            doc = self.upload('autumn2b.pdf')
+        finally:
+            P.SPLIT_LETTERS = False
+        self.assertEqual(len(doc.get('parts') or []), 1, 'split the old way')
+        copy = doc['parts'][0]
+        conn = P._conn()
+        copy_case_id = conn.execute('SELECT case_id FROM pump_docs WHERE id=?', (copy,)).fetchone()[0]
+        conn.close()
+        d = next(x for x in self.case(doc['case_id'])['docs'] if x['id'] == doc['doc_id'])
+        self.assertEqual([i['amount'] for i in d['line_items']], [2757.32])
+        again = self.c.post(f"/pumps/api/docs/{doc['doc_id']}/read_again", json={}).get_json()
+        self.assertTrue(again['success'], again)
+        self.assertIn('one quote again', again['summary'])
+        d = next(x for x in self.case(doc['case_id'])['docs'] if x['id'] == doc['doc_id'])
+        self.assertEqual([i['amount'] for i in d['line_items']], [2757.32, 1047.62])
+        self.assertNotIn('letter_parts', d.get('jobber') or {})
+        conn = P._conn()
+        self.assertEqual(conn.execute('SELECT status FROM pump_docs WHERE id=?', (copy,)).fetchone()[0], 'dismissed')
+        self.assertEqual(conn.execute('SELECT status FROM pump_cases WHERE id=?', (copy_case_id,)).fetchone()[0],
+                         'cancelled')
+        conn.close()
+        # Reading it again once more doesn't split it or touch anything else.
+        again = self.c.post(f"/pumps/api/docs/{doc['doc_id']}/read_again", json={}).get_json()
+        self.assertTrue(again['success'], again)
+        self.assertFalse(again.get('parts'))
+
     def test_duplicates_are_caught(self):
         # 1. Wettech sends invoice #40123 again as a different file: same amount = duplicate, never used again.
         self.extracts['b-40123.pdf'] = extraction('bill', '40123', po='PO777', client='Quail Hollow', subtotal=812.5)

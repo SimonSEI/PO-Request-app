@@ -1597,6 +1597,37 @@ def _letter_part(x, part):
                 subtotal=None if tax_in else it['amount'], total=it['amount'] if tax_in else None)
 
 
+def _merge_letter_copies(conn, doc, actor):
+    """The letter doc split before Oct 9 2026 goes back to the whole letter:
+    its "letter_parts" mark is dropped, and each copy made for another piece
+    is dismissed with its job cancelled - unless something was made in Jobber
+    from it, which the office sorts out. Returns a note for the summary."""
+    dj = {k: v for k, v in (doc.get('jobber') or {}).items() if k != 'letter_parts'}
+    conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(dj), doc['id']))
+    kept = []
+    for r in conn.execute("SELECT * FROM pump_docs WHERE json_extract(jobber, '$.split_from')=? AND status != 'dismissed'",
+                          (doc['id'],)).fetchall():
+        cj = json.loads(r['jobber'] or '{}')
+        case = conn.execute('SELECT * FROM pump_cases WHERE id=?', (r['case_id'],)).fetchone() if r['case_id'] else None
+        kj = json.loads(case['jobber'] or '{}') if case else {}
+        in_jobber = cj.get('quote_id') or any((kj.get(k) or {}).get('id') for k in ('job', 'quote', 'invoice'))
+        if in_jobber:
+            kept.append(f"job #{r['case_id']}" if r['case_id'] else f"document #{r['id']}")
+            continue
+        conn.execute("UPDATE pump_docs SET status='dismissed', updated_at=? WHERE id=?", (_now_text(), r['id']))
+        if case and case['status'] != 'cancelled':
+            conn.execute("UPDATE pump_cases SET status='cancelled', stage='cancelled', updated_at=? WHERE id=?",
+                         (_now_text(), case['id']))
+            conn.execute("UPDATE pump_issues SET resolved_at=?, resolved_by=?, resolution=? WHERE case_id=? AND "
+                         "resolved_at IS NULL", (_now_text(), actor, 'Back on one quote', case['id']))
+            _event(conn, actor, 'cancelled', f"{doc['file_name']} is one quote again - this work is a line on "
+                                             f"job #{doc['case_id']}", case_id=case['id'])
+    if kept:
+        return (f"; the other work is still on {', '.join(kept)} (made in Jobber) - "
+                f"cancel it there if this quote now covers it")
+    return '; one quote again with a line for each piece of work'
+
+
 # The office (Oct 9 2026): a letter quoting several pieces of work is ONE
 # quote with a line for each piece; "possibly needed" work is an optional
 # line on it (Autumn Woods 2: flow meter + surge arrestor, one quote).
@@ -2200,8 +2231,13 @@ def read_doc_again(doc_id, actor='system'):
         x['kind'] = doc['kind']
         full = x = _letter_prices(text, x)
         dj = doc.get('jobber') or {}
-        if 'split_from' in dj or 'letter_parts' in dj:
+        merged = ''
+        if 'split_from' in dj or ('letter_parts' in dj and SPLIT_LETTERS):
             x = _letter_part(x, dj.get('letter_part') or 0)   # a piece of a letter split before Oct 9 2026
+        elif 'letter_parts' in dj:
+            # A letter split before Oct 9 2026 (Autumn Woods 2) is whole again:
+            # one quote with a line for each piece of work.
+            merged = _merge_letter_copies(conn, doc, actor)
         if x.get('total') is None and x.get('subtotal') is None:
             raise ValueError('No amount found reading it again - enter it by hand.')
         desc = (x.get('description') or doc['description'] or '') + (f"\n{x['notes']}" if x.get('notes') else '')
@@ -2212,7 +2248,7 @@ def read_doc_again(doc_id, actor='system'):
                       x.get('doc_number') or '', how, _now_text(), doc_id))
         opts = [i for i in x['line_items'] if i.get('optional')]
         summary = (f"{len(x['line_items'])} line(s), total ${x['total'] if x.get('total') is not None else x.get('subtotal'):,.2f}"
-                   + (f", {len(opts)} optional" if opts else ''))
+                   + (f", {len(opts)} optional" if opts else '') + merged)
         if doc['case_id']:
             fill = ({'vendor_quote_amount': x.get('subtotal'), 'vendor_quote_total': x.get('total')}
                     if doc['kind'] == 'quote' else
