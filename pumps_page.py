@@ -498,8 +498,6 @@ async function loadToday(){
   q.reports_to_log.forEach(d => todo.push(todoItem('Log report', 'b', esc(d.client_name || d.file_name), `${esc((d.report_fields||{}).title || 'Report')} · ${esc(d.doc_date)}`, d.case_id ? `openCase(${d.case_id})` : `openDoc(${d.id})`,
     `<button class="btn s" onclick="logReport(${d.id})">Log in Jobber</button>`, d.todo_key)));
   q.review_docs.forEach(d => todo.push(todoItem('Look at', 'b', esc(d.client_name || d.file_name), esc(d.review_reason || 'Not filed yet') + ' · ' + esc(d.kind || 'document'), `openDoc(${d.id})`, '', d.todo_key)));
-  q.new_jobber_requests.forEach(it => todo.push(todoItem('New in Jobber', 'v', esc(it.title), `${esc(it.kind)}${it.number ? ' #' + esc(it.number) : ''} · ${esc(it.client_name)} · ${d10(it.created_at)}`, `window.open('${esc(it.web_uri)}','_blank')`,
-    `<button class="btn s p" onclick="jobberAct('${esc(it.jobber_id)}','track')">Track</button><button class="btn s" onclick="jobberAct('${esc(it.jobber_id)}','ignore')">Ignore</button>`, it.todo_key)));
   q.scada_attention.filter(s => s.state !== 'overdue').forEach(s => todo.push(todoItem('SCADA due', 'v', esc(s.client_name) + (s.site ? ' · ' + esc(s.site) : ''), 'Renewal due ' + esc(s.next_due_on) + (s.state_note ? ' · ' + esc(s.state_note) : '') + followUp(s.follow_up), "showTab('scada')", '', s.todo_key)));
   const v = c => esc(c.vendor || 'Wettech');
   (q.waiting_assessment || []).forEach(c => waiting.push(todoItem(v(c) + ' visit', '', caseTitle(c), caseSub(c, ((c.steps || {}).assessment || {}).due ? 'visit ' + esc(c.steps.assessment.due) : 'visit not booked'), open(c), '', c.todo_key)));
