@@ -1750,6 +1750,29 @@ class PumpsTest(unittest.TestCase):
         # The item remembers the billing address from an earlier quote: still the job's.
         t = P.resolve_quote_target(doc, {'jobber_client_id': 'CANA', 'jobber_property_id': 'PBILL', 'jobber': '{}'})
         self.assertEqual(t['property_id'], 'PJOB')
+        # A big client (Autumn Woods HOA): the monthly job isn't in the first 40
+        # jobs - it's asked for among the recurring ones.
+        aw_props = [{'id': 'P6416', 'address': {'street1': '6416 Autumn Woods Boulevard', 'city': 'Naples'}},
+                    {'id': 'P6721', 'address': {'street1': 'AUTUMN WOODS COMMUNITY', 'street2': '6721 AUTUMN WOODS BLVD',
+                                                'city': 'Naples'}}]
+        old = [{'id': f'JO{n}', 'jobNumber': n, 'title': 'Irrigation repair', 'jobStatus': 'archived',
+                'jobType': 'ONE_OFF', 'property': {'id': 'P6416'}} for n in range(40)]
+
+        class Big(FakeJobber):
+            def __call__(self, query, variables=None):
+                if 'jobType: RECURRING' in query:
+                    return {'client': {'id': variables['id'], 'jobs': {'nodes': [
+                        {'id': 'J9659', 'jobNumber': 9659, 'title': 'Monthly 3605', 'jobStatus': 'upcoming',
+                         'jobType': 'RECURRING', 'property': {'id': 'P6721'}}]}}}
+                if 'client(id' in query:
+                    return {'client': {'id': variables['id'], 'name': 'AUTUMN WOODS HOA COMMUNITY',
+                                       'properties': aw_props, 'jobs(first: 40)': {'nodes': old}}}
+                return super().__call__(query, variables)
+        P.jobber_gql = Big()
+        t = P.resolve_quote_target({'client_name': 'Autumn Woods 1', 'file_name': 'aw.docx'},
+                                   {'jobber_client_id': 'CAW', 'jobber': '{}'})
+        self.assertEqual(t['property_id'], 'P6721')
+        P.jobber_gql = Fake()
         # Which pump goes in the title.
         self.assertEqual(P.suggest_quote({**doc, 'description': 'Field service to replace check valve, pump #4 '
                                                              'station', 'line_items': []})['title'],
