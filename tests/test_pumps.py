@@ -838,7 +838,7 @@ class PumpsTest(unittest.TestCase):
             # Weeks away: the client is told on each quote.
             for a in made:
                 self.assertTrue(a['lineItems'][0]['description'].endswith(
-                    '\n\nDelivery: 2-3 weeks after receipt of order'), a['lineItems'][0]['description'])
+                    '\n\nIt will take 2-3 weeks to deliver after approval.'), a['lineItems'][0]['description'])
             # Read again (or sent again): the same two jobs, no third.
             self.c.post(f"/pumps/api/docs/{doc['doc_id']}/read_again", json={})
             self.c.post(f"/pumps/api/docs/{pid}/read_again", json={})

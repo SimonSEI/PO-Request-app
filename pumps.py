@@ -3575,13 +3575,13 @@ def _jobber_lines(line_items, what):
 
 
 _LONG_LEAD = re.compile(r'\b(?:weeks?|wks?|months?)\b', re.I)
-_DELIVERY = re.compile(r'\b(?:deliver(?:y|ed)?|lead\s*time|ship(?:ping|ped)?|arrive|in\s+stock)\b', re.I)
+_DELIVERY = re.compile(r'\b(?:deliver(?:y|ed)?|lead\s*time|ship(?:s|ping|ped)?|arrive|in\s+stock)\b', re.I)
 
 
 def delivery_note(doc):
     """The vendor's delivery time when it is weeks or months away (Lely, Oct
     2026: "Delivery: 2-3 weeks after receipt of order") - the client is told
-    on our quote. A few days isn't worth saying. '' when there is none."""
+    on our quote: "It will take 2-3 weeks to deliver after approval". A few days isn't worth saying. '' when there is none."""
     text = doc.get('text_excerpt') or ''
     if not text and doc.get('file_path'):
         try:
@@ -3592,6 +3592,14 @@ def delivery_note(doc):
     for line in re.split(r'\n|(?<=\.)\s+', text):
         line = re.sub(r'\s+', ' ', line).strip()
         if _LONG_LEAD.search(line) and _DELIVERY.search(line) and len(line) <= 200:
+            # Said the client's way: from their approval (our order to the vendor).
+            m = re.search(r'(\d+\s*(?:-|–|to)\s*\d+|\d+|a\s+few|several)\s*(weeks?|wks?|months?)', line, re.I)
+            if m:
+                unit = {'wk': 'weeks', 'wks': 'weeks'}.get(m.group(2).lower(), m.group(2).lower())
+                if m.group(1).strip() == '1' and unit.startswith(('week', 'month')):
+                    unit = unit.rstrip('s')
+                span = re.sub(r'\s*(?:-|–)\s*', '-', m.group(1).strip())
+                return f'It will take {span} {unit} to deliver after approval.'
             return line if re.match(r'(?i)delivery\b', line) else f'Delivery: {line}'
     return ''
 
