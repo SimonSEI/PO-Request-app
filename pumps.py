@@ -3272,7 +3272,7 @@ def resolve_quote_target(doc, case=None):
                 cj = client_jobs(item_client)
             except JobberError:
                 return out
-            maint = maintenance_properties(cj['jobs'], cj['properties'])
+            maint = maintenance_properties(cj['jobs'] + recurring_jobs(item_client), cj['properties'])
             by_pump = _pump_number_property(maint, f"{_doc_hay(doc, case)} {doc.get('description') or ''}")
             if maint and case['jobber_property_id'] not in {p['id'] for p in maint}:
                 pick = by_pump or maint[0]
@@ -3319,7 +3319,7 @@ def resolve_quote_target(doc, case=None):
             # 400") - not the billing address or another of their properties.
             # Several (Huntington: a job per pump) - the pump the vendor names,
             # else the first; the quote says which pump.
-            maint = maintenance_properties(cj['jobs'], props)
+            maint = maintenance_properties(cj['jobs'] + recurring_jobs(out['client_id']), props)
             if maint and not (by_pump and by_pump['id'] in {p['id'] for p in maint}):
                 fits = maint[:1]
                 out['how'] = (out['how'] + '; ' if out['how'] else '') + 'the maintenance job\'s property'
@@ -3328,6 +3328,26 @@ def resolve_quote_target(doc, case=None):
         if pick:
             out.update(property_id=pick['id'], property_label=pick['label'])
     return out
+
+
+def recurring_jobs(client_id):
+    """The client's recurring jobs, asked for as such: a big client (Autumn
+    Woods HOA) has far more jobs than the first 40 client_jobs() sees, and
+    their "Monthly 3605" may not be among them. [] when Jobber won't say."""
+    for args in ('first: 50, filter: {jobType: RECURRING}', 'first: 100'):
+        try:
+            data = jobber_gql(f'query($id: EncodedId!) {{ client(id: $id) {{ id jobs({args}) {{ nodes {{ '
+                              'id jobNumber title jobStatus jobType createdAt property { id } } } } }',
+                              {'id': client_id})
+        except JobberError:
+            continue
+        c = data.get('client') or {}
+        nodes = (next((v for k, v in c.items() if k.startswith('jobs')), None) or {}).get('nodes') or []
+        return [{'id': j['id'], 'number': j.get('jobNumber'), 'title': j.get('title') or '',
+                 'status': (j.get('jobStatus') or '').lower(), 'type': (j.get('jobType') or '').lower(),
+                 'property_id': (j.get('property') or {}).get('id'), 'created': (j.get('createdAt') or '')[:10]}
+                for j in nodes if (j.get('jobType') or '').lower() == 'recurring']
+    return []
 
 
 def maintenance_properties(jobs, props):
