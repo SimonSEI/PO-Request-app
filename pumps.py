@@ -3268,24 +3268,16 @@ def resolve_quote_target(doc, case=None):
             out.update(property_id=case['jobber_property_id'])
             # Still the maintenance job's property when the client has one
             # (an earlier quote may have gone on the billing address).
-            try:
-                cj = client_jobs(item_client)
-            except JobberError:
-                return out
-            maint = maintenance_properties(cj['jobs'] + recurring_jobs(item_client), cj['properties'])
-            by_pump = _pump_number_property(maint, f"{_doc_hay(doc, case)} {doc.get('description') or ''}")
-            if maint and case['jobber_property_id'] not in {p['id'] for p in maint}:
-                pick = by_pump or maint[0]
-                out.update(property_id=pick['id'], property_label=pick['label'], properties=cj['properties'],
-                           how="the item; the maintenance job's property")
-            return out
+            return _prefer_maintenance_property(out, doc, case)
     alias = match_site_alias(doc, case)
     if alias and (not item_client or item_client == alias['client_id']):
         out.update(client_id=alias['client_id'], client_name=alias['client_name'],
                    how=f'site name "{alias["place"]}{" " + alias["area"] if alias["area"] else ""}"')
         if alias['property_id']:
             out.update(property_id=alias['property_id'], property_label=alias['property_label'])
-            return out
+            # A remembered property that isn't the maintenance job's (Autumn
+            # Woods: a home picked by hand once) gives way to the job's.
+            return _prefer_maintenance_property(out, doc, case)
     name = doc.get('client_name') or case.get('client_name') or ''
     matching = []
     if not out['client_id'] and name:
@@ -3330,6 +3322,22 @@ def resolve_quote_target(doc, case=None):
     return out
 
 
+def _prefer_maintenance_property(out, doc, case):
+    """out with its property swapped for the client's recurring maintenance
+    job's property when it isn't one (the pump the vendor names, else the
+    first). out unchanged when the client has none or Jobber won't say."""
+    try:
+        cj = client_jobs(out['client_id'])
+    except JobberError:
+        return out
+    maint = maintenance_properties(cj['jobs'] + recurring_jobs(out['client_id']), cj['properties'])
+    if maint and out['property_id'] not in {p['id'] for p in maint}:
+        pick = _pump_number_property(maint, f"{_doc_hay(doc, case)} {doc.get('description') or ''}") or maint[0]
+        out.update(property_id=pick['id'], property_label=pick['label'], properties=cj['properties'],
+                   how=f"{out['how']}; the maintenance job's property")
+    return out
+
+
 def recurring_jobs(client_id):
     """The client's recurring jobs, asked for as such: a big client (Autumn
     Woods HOA) has far more jobs than the first 40 client_jobs() sees, and
@@ -3337,7 +3345,7 @@ def recurring_jobs(client_id):
     for args in ('first: 50, filter: {jobType: RECURRING}', 'first: 100'):
         try:
             data = jobber_gql(f'query($id: EncodedId!) {{ client(id: $id) {{ id jobs({args}) {{ nodes {{ '
-                              'id jobNumber title jobStatus jobType createdAt property { id } } } } }',
+                              'id jobNumber title jobStatus jobType createdAt property { id address { street1 street2 city } } } } } }',
                               {'id': client_id})
         except JobberError:
             continue
@@ -3345,7 +3353,8 @@ def recurring_jobs(client_id):
         nodes = (next((v for k, v in c.items() if k.startswith('jobs')), None) or {}).get('nodes') or []
         return [{'id': j['id'], 'number': j.get('jobNumber'), 'title': j.get('title') or '',
                  'status': (j.get('jobStatus') or '').lower(), 'type': (j.get('jobType') or '').lower(),
-                 'property_id': (j.get('property') or {}).get('id'), 'created': (j.get('createdAt') or '')[:10]}
+                 'property_id': (j.get('property') or {}).get('id'), 'created': (j.get('createdAt') or '')[:10],
+                 'property_label': _prop_label(j.get('property'))}
                 for j in nodes if (j.get('jobType') or '').lower() == 'recurring']
     return []
 
@@ -3360,7 +3369,10 @@ def maintenance_properties(jobs, props):
     by_id = {p['id']: p for p in props}
     out = []
     for j in live:
-        p = by_id.get(j['property_id'])
+        # A big client's property list may leave out the job's property: the
+        # job says what it is.
+        p = by_id.get(j['property_id']) or ({'id': j['property_id'], 'label': j['property_label']}
+                                             if j.get('property_label') else None)
         if p and p not in out:
             out.append(p)
     return out
