@@ -19242,6 +19242,17 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         .btn-delete-community:hover {
             background: #c82333;
         }
+        .btn-archive-community, .btn-restore-community {
+            padding: 8px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .btn-archive-community { background: #F1F5F9; color: #334155; border: 1.5px solid #CBD5E1; }
+        .btn-archive-community:hover { background: #475569; color: #fff; border-color: #475569; }
+        .btn-restore-community { background: #DCFCE7; color: #166534; border: 1.5px solid #BBF7D0; }
+        .btn-restore-community:hover { background: #16A34A; color: #fff; border-color: #16A34A; }
         input[type="text"] {
             width: 100%;
             padding: 10px;
@@ -19880,6 +19891,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             <button class="tab-button" onclick="switchTab('recent')">🕐 Recent Technician Activity</button>
             <button class="tab-button" onclick="switchTab('drafts')">📝 Active Drafts</button>
             <button class="tab-button" onclick="switchTab('trash')">🗑️ Deleted Entries</button>
+            <button class="tab-button" onclick="switchTab('archived')">📦 Archived Communities ({{ archived_communities|length }})</button>
         </div>
 
         <!-- Manage Communities Tab -->
@@ -20005,12 +20017,11 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 </div>
                                 {% if community.active %}
                                     <form method="POST" action="{{ url_for('community_billing_office') }}" style="display: inline;"
-                                          onsubmit="return confirm('Are you sure you want to deactivate this community?');">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                        <input type="hidden" name="action" value="delete">
+                                          onsubmit="return confirm('Archive this community? It will be hidden from technicians and moved to the Archived Communities tab. All of its data is kept and it can be restored at any time.');">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <input type="hidden" name="action" value="archive">
                                         <input type="hidden" name="community_id" value="{{ community.id }}">
-                                        <button type="submit" class="btn-delete-community">Deactivate</button>
+                                        <button type="submit" class="btn-archive-community">📦 Archive</button>
                                     </form>
                                 {% endif %}
                             </div>
@@ -20216,7 +20227,59 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 {% endfor %}
             {% else %}
                 <div class="no-results">
-                    <p>No communities yet. Create your first one above!</p>
+                    <p>No active communities. Create one above{% if archived_communities %} or restore one from the Archived Communities tab{% endif %}.</p>
+                </div>
+            {% endif %}
+        </div>
+
+        <!-- Archived Communities Tab -->
+        <div id="archived" class="tab-content">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="alert alert-{{ 'success' if category == 'success' else 'error' }}">
+                            {{ message }}
+                        </div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+            <p style="color:#666;font-size:13px;margin:0 0 15px;">Archived communities are hidden from technicians and from Review Submissions. Their clocks, addresses, pricing and past submissions are kept. Restore a community to make it active again.</p>
+            {% if archived_communities %}
+                <h3 style="color: #333; margin-bottom: 15px;">Archived Communities ({{ archived_communities|length }})</h3>
+                {% for community in archived_communities %}
+                    <div class="community-card">
+                        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; gap: 10px; flex-wrap: wrap;">
+                            <div class="community-info">
+                                <div class="community-name">{{ community.name }}</div>
+                                <div class="community-meta">
+                                    Created: {{ community.created_at|truncate(10) }}
+                                    <span style="color: #6c757d; font-weight: 600;">● Archived</span>
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                <form method="POST" action="{{ url_for('community_billing_office') }}" style="display: inline;">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <input type="hidden" name="action" value="unarchive">
+                                    <input type="hidden" name="return_tab" value="archived">
+                                    <input type="hidden" name="community_id" value="{{ community.id }}">
+                                    <button type="submit" class="btn-restore-community">↩ Restore</button>
+                                </form>
+                                <form method="POST" action="{{ url_for('community_billing_office') }}" style="display: inline;"
+                                      data-confirm="Permanently delete {{ community.name }}? This removes the community and ALL of its submissions, clocks, addresses and pricing. This CANNOT be undone."
+                                      onsubmit="return confirm(this.dataset.confirm);">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <input type="hidden" name="action" value="delete">
+                                    <input type="hidden" name="return_tab" value="archived">
+                                    <input type="hidden" name="community_id" value="{{ community.id }}">
+                                    <button type="submit" class="btn-delete-community">🗑 Delete Permanently</button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                {% endfor %}
+            {% else %}
+                <div class="no-results">
+                    <p>No archived communities.</p>
                 </div>
             {% endif %}
         </div>
@@ -20304,7 +20367,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
     </div>
 
     <script>
-        function switchTab(tabName) {
+        function switchTab(tabName, btn) {
             // Hide all tabs
             document.querySelectorAll('.tab-content').forEach(tab => {
                 tab.classList.remove('active');
@@ -20315,7 +20378,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
             // Show selected tab
             document.getElementById(tabName).classList.add('active');
-            event.target.classList.add('active');
+            (btn || event.target).classList.add('active');
 
             if (tabName === 'recent') loadRecentSubmissions();
             if (tabName === 'drafts') loadActiveDrafts();
@@ -23248,6 +23311,15 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
          This runs after both script blocks so all functions are already defined, and after
          the DOM so all #comm-clocks-{id} elements already exist. -->
     <script>
+        {% if initial_tab %}
+        (function() {
+            var tab = {{ initial_tab|tojson }};
+            var btn = Array.prototype.find.call(document.querySelectorAll('.tab-button'), function(b) {
+                return (b.getAttribute('onclick') || '').indexOf("switchTab('" + tab + "')") !== -1;
+            });
+            if (btn && document.getElementById(tab)) switchTab(tab, btn);
+        })();
+        {% endif %}
         {% for community in all_communities %}
         {% if community.active and community.name != 'Verona Walk HOA' and community.num_clocks > 0 %}
         loadCommunityClockAddresses({{ community.id }});
@@ -25230,6 +25302,24 @@ def community_billing_office():
             except Exception as e:
                 flash(f'Error deleting community: {str(e)}', 'error')
 
+        elif action in ('archive', 'unarchive'):
+            community_id = request.form.get('community_id')
+            c.execute("SELECT name FROM communities WHERE id = ?", (community_id,))
+            community = c.fetchone()
+            if not community:
+                flash('Community not found', 'error')
+            else:
+                archiving = action == 'archive'
+                c.execute("UPDATE communities SET active = ? WHERE id = ?", (0 if archiving else 1, community_id))
+                conn.commit()
+                if archiving:
+                    flash(f'Community "{community[0]}" archived. Find it under the Archived Communities tab.', 'success')
+                else:
+                    flash(f'Community "{community[0]}" restored to active communities', 'success')
+
+        conn.close()
+        return redirect(url_for('community_billing_office', tab=request.form.get('return_tab') or None))
+
     # Get list of active communities only (with pricing status)
     c.execute("""
         SELECT c.id, c.name, c.created_at,
@@ -25249,13 +25339,17 @@ def community_billing_office():
         ORDER BY c.name
     """)
     all_communities = [{'id': row[0], 'name': row[1], 'created_at': row[2], 'active': row[3], 'num_clocks': row[4], 'has_pricing': bool(row[5])} for row in c.fetchall()]
+    archived_communities = [comm for comm in all_communities if not comm['active']]
+    all_communities = [comm for comm in all_communities if comm['active']]
 
     conn.close()
 
     return render_template_string(COMMUNITY_BILLING_OFFICE_TEMPLATE,
                                  username=session.get('username'),
                                  communities=communities,
-                                 all_communities=all_communities)
+                                 all_communities=all_communities,
+                                 archived_communities=archived_communities,
+                                 initial_tab=request.args.get('tab', ''))
 
 @app.route('/community_billing_office_data', methods=['POST'])
 def community_billing_office_data():
