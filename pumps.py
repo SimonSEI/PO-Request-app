@@ -53,6 +53,14 @@ from flask import (Blueprint, Response, jsonify, redirect, render_template_strin
 import pump_reports
 from pumps_page import PUMPS_PAGE
 
+# This deployment's version - the same in every worker. An open Pumps page
+# compares it with the server's and reloads itself after a new deployment.
+try:
+    with open(__file__, 'rb') as _f:
+        APP_VERSION = hashlib.sha1(_f.read() + PUMPS_PAGE.encode()).hexdigest()[:12]
+except OSError:
+    APP_VERSION = hashlib.sha1(PUMPS_PAGE.encode()).hexdigest()[:12]
+
 TZ = ZoneInfo('America/New_York')
 bp = Blueprint('pumps', __name__)
 
@@ -4950,7 +4958,7 @@ def h_summary(actor):
         return {'queue': q, 'counts': {k: len(v) for k, v in q.items() if isinstance(v, list)},
                 'scan': _state_get('scan_status') or {}, 'jobber': {**jobber_status(),
                                                                      'sync': jobber_sync_state()},
-                'claude': USE_CLAUDE, 'email': bool(CFG.get('email_enabled'))}
+                'claude': USE_CLAUDE, 'email': bool(CFG.get('email_enabled')), 'version': APP_VERSION}
     finally:
         conn.close()
 
@@ -8530,7 +8538,7 @@ def page():
                                   openclaw=bool(OPENCLAW_API_KEY),
                                   markup=MARKUP_PCT,
                                   scada_days=SCADA_DUE_SOON_DAYS, digest_to=DIGEST_TO, digest_hour=DIGEST_HOUR,
-                                  flash_msg=request.args.get('msg', ''))
+                                  flash_msg=request.args.get('msg', ''), app_version=APP_VERSION)
 
 
 @bp.route('/pumps/f/<int:doc_id>/<version>/<int:exp>/<sig>')

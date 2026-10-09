@@ -320,6 +320,15 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 
 <script>
 const STEPS = {{ steps|tojson }};
+// A new deployment: the page reloads itself to pick it up - right away when
+// nothing is open, otherwise once the job or dialog is closed.
+const APP_VERSION = {{ app_version|tojson }};
+let newVersionSaid = false;
+function checkVersion(v){
+  if (!v || v === APP_VERSION) return;
+  if (document.getElementById('drawerWrap').classList.contains('hide') && document.getElementById('modalWrap').classList.contains('hide')) { location.reload(); return; }
+  if (!newVersionSaid) { newVersionSaid = true; toast('The app was updated - it reloads when you close this.'); }
+}
 const CATS = {{ categories|tojson }};
 const JOBBER_OK = {{ 'true' if jobber.connected else 'false' }};
 let curTab = 'jobs', curMonth = null, curCase = null;
@@ -464,6 +473,7 @@ function caseTitle(c){ return esc(c.title || c.client_name || 'Item ' + c.id); }
 function caseSub(c, extra){ return esc([c.client_name, c.site].filter(Boolean).join(' · ')) + (c.po_number ? ' · PO ' + esc(c.po_number) : '') + jobberNo(c) + (extra ? ' · ' + extra : '') + (c.idle_days >= 7 ? ` · <b class="warn">${c.idle_days}d idle</b>` : ''); }
 async function loadToday(){
   const j = await api('/summary');
+  checkVersion(j.version);
   const el = document.getElementById('todoList');
   if (!j.success) { el.innerHTML = `<div class="empty">${esc(j.error)}</div>`; return; }
   const q = j.queue;

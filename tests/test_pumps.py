@@ -1774,6 +1774,13 @@ class PumpsTest(unittest.TestCase):
         q = self.c.get('/pumps/api/summary').get_json()['queue']
         self.assertIn(res['doc_id'], [d['id'] for d in q['quotes_to_draft']])
 
+    def test_page_knows_its_version(self):
+        """An open page compares its version with the server's and reloads
+        itself after a new deployment."""
+        v = self.c.get('/pumps/api/summary').get_json()['version']
+        self.assertEqual(v, P.APP_VERSION)
+        self.assertIn(f'const APP_VERSION = "{v}"', self.c.get('/pumps').get_data(as_text=True))
+
     def test_quote_is_never_drafted_on_its_own(self):
         """A vendor quote that reads cleanly waits in To do for the office to
         click Draft quote - nothing is made in Jobber until then."""
