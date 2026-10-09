@@ -43,7 +43,7 @@ import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests as http_requests
@@ -573,7 +573,8 @@ def init_db():
             c.execute("UPDATE pump_site_aliases SET job_id=?, job_label=? WHERE place=? AND area=? AND "
                       "COALESCE(job_id, '')=''", (a['job_id'], a['job_label'], a['place'], a['area']))
     # When the vendor's bill was paid, and who said so (added after launch).
-    for col in ('vendor_paid_on', 'vendor_paid_by', 'closed_by_hand'):
+    # vendor_follow: the last time we chased the vendor and what they said (JSON).
+    for col in ('vendor_paid_on', 'vendor_paid_by', 'closed_by_hand', 'vendor_follow'):
         try:
             c.execute(f"ALTER TABLE pump_cases ADD COLUMN {col} TEXT DEFAULT ''")
         except sqlite3.OperationalError:
@@ -599,6 +600,7 @@ def init_db():
     _backfill_visit_step(conn)
     _remove_own_email_service_calls(conn)
     _dedupe_startup_events(conn)
+    _seed_homewood_follow_up(conn)
     conn.close()
 
 
@@ -795,7 +797,7 @@ def _stage(steps, status='open'):
 
 def _case_dict(row, conn=None):
     d = dict(row)
-    for k in ('jobber', 'steps'):
+    for k in ('jobber', 'steps', 'vendor_follow'):
         try:
             d[k] = json.loads(d.get(k) or '{}')
         except (TypeError, ValueError):
@@ -810,6 +812,7 @@ def _case_dict(row, conn=None):
         d['idle_days'] = (_now().replace(tzinfo=None) - datetime.strptime(last[:19], '%Y-%m-%d %H:%M:%S')).days
     except ValueError:
         d['idle_days'] = 0
+    d['chase'] = vendor_chase(d)
     if conn is not None:
         d['open_issues'] = [dict(r) for r in conn.execute(
             'SELECT * FROM pump_issues WHERE case_id=? AND resolved_at IS NULL ORDER BY id', (d['id'],))]
@@ -4651,14 +4654,160 @@ def log_report_to_jobber(doc_id, target_type, target_id, actor='system', message
 # what needs doing
 # ═════════════════════════════════════════════════════════════════════════════
 
+# ── Chasing the vendor ───────────────────────────────────────────────────────
+# A job waiting on the vendor is either a quote (their visit to look, or their
+# price) or a job (getting it on their calendar, then doing it). Each time the
+# office calls or emails them, what they said and when they'll be out is kept
+# on the job; the app then says whether someone still needs to follow up:
+#   - they gave a date and it hasn't passed -> wait, check back the weekday after
+#   - the date passed and it isn't done      -> follow up
+#   - no date, and nobody has asked them in VENDOR_FOLLOW_DAYS -> follow up
+
+CHASE_PHASES = {'assessment': 'quote', 'vendor_quote': 'quote', 'scheduled': 'job', 'work_done': 'job'}
+CHASE_SKIP_CATEGORIES = ('maintenance', 'scada')   # followed by the account sheets / SCADA tab
+VENDOR_FOLLOW_DAYS = max(1, int(os.environ.get('PUMPS_VENDOR_FOLLOW_DAYS', '3') or 3))
+FOLLOW_HOW = ('call', 'text', 'email', 'in person')
+
+
+def _weekday_from(d):
+    """d, or the Monday after when it falls on a weekend."""
+    while d.weekday() >= 5:
+        d += timedelta(days=1)
+    return d
+
+
+def _workdays_after(d, n):
+    for _ in range(n):
+        d = _weekday_from(d + timedelta(days=1))
+    return d
+
+
+def _phase_since(case):
+    """When the job started waiting on the vendor: its last step done, else when it was opened."""
+    days = [s.get('at')[:10] for s in (case.get('steps') or {}).values() if isinstance(s, dict) and s.get('at')]
+    days += [_iso_date(case.get('opened_on')) or (case.get('created_at') or '')[:10]]
+    days = [x for x in days if _iso_date(x)]
+    return date.fromisoformat(max(days)) if days else _today()
+
+
+def vendor_chase(case, today=None):
+    """Whether someone needs to follow up with the vendor on an open job, or None
+    when the job isn't waiting on the vendor."""
+    phase = CHASE_PHASES.get(case.get('stage'))
+    if case.get('status') != 'open' or not phase or case.get('category') in CHASE_SKIP_CATEGORIES:
+        return None
+    today = today or _today()
+    vendor = case.get('vendor') or 'Wettech'
+    f = case.get('vendor_follow') or {}
+    if f.get('phase') != phase:
+        f = {}   # what they said was about the quote; the job has moved on
+    expect = _iso_date(f.get('expect_by'))
+    if not expect and phase == 'job':
+        expect = _iso_date(case.get('scheduled_for'))
+    if not expect and case.get('stage') == 'assessment':
+        expect = _iso_date(((case.get('steps') or {}).get('assessment') or {}).get('due'))
+    last = _iso_date((f.get('at') or '')[:10])
+    since = date.fromisoformat(last) if last else _phase_since(case)
+    if _iso_date(f.get('check_on')):
+        check = date.fromisoformat(f['check_on'])
+    elif expect:
+        check = _workdays_after(date.fromisoformat(expect), 1)
+    elif case['stage'] == 'scheduled' and not last:
+        check = since   # approved: ask them for a date straight away
+    else:
+        check = _workdays_after(since, VENDOR_FOLLOW_DAYS)
+    contact = _vendor_contact(vendor)[0]
+    who = f.get('who') or contact
+    what = {'assessment': 'visit to look', 'vendor_quote': 'quote', 'scheduled': 'date', 'work_done': 'work'}[case['stage']]
+    if expect and date.fromisoformat(expect) < today:
+        reason = f"{who} said by {expect} - the {what} isn't in yet"
+    elif expect:
+        reason = f"{who} said by {expect}"
+    elif last:
+        reason = f"asked {who} {last}, no date given"
+    else:
+        reason = f"nobody has asked {vendor} yet"
+    return {'phase': phase, 'state': 'follow_up' if today >= check else 'waiting', 'check_on': check.isoformat(),
+            'expect_by': expect or '', 'last_at': last or '', 'said': f.get('said') or '', 'who': who,
+            'how': f.get('how') or '', 'by': f.get('by') or '', 'days': (today - since).days, 'reason': reason,
+            'contact': contact}
+
+
+def log_vendor_follow(conn, case_id, actor, who='', how='call', said='', expect_by='', check_on='', today=None):
+    """We chased the vendor: keep what they said and when they'll be out. A date
+    for a job not yet scheduled schedules it for that day."""
+    row = conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+    if not row:
+        return None
+    c = _case_dict(row)
+    phase = CHASE_PHASES.get(c['stage'])
+    if not phase:
+        raise ValueError('This job is not waiting on the vendor')
+    today = today or _today()
+    expect, check = _iso_date(expect_by) or '', _iso_date(check_on) or ''
+    if expect_by and not expect:
+        raise ValueError('The date they gave must be a date (YYYY-MM-DD)')
+    how = how if how in FOLLOW_HOW else 'call'
+    who = (who or '').strip()[:80] or _vendor_contact(c.get('vendor') or 'Wettech')[0]
+    said = (said or '').strip()[:500]
+    conn.execute('UPDATE pump_cases SET vendor_follow=?, last_activity_at=?, updated_at=? WHERE id=?',
+                 (json.dumps({'phase': phase, 'at': _now_text(), 'by': actor, 'who': who, 'how': how, 'said': said,
+                              'expect_by': expect, 'check_on': check}), _now_text(), _now_text(), case_id))
+    if expect and c['stage'] == 'assessment':
+        _set_assessment(conn, case_id, expect, by=actor)
+    if expect and c['stage'] == 'scheduled':
+        if not _iso_date(c.get('scheduled_for')):
+            conn.execute('UPDATE pump_cases SET scheduled_for=? WHERE id=?', (expect, case_id))
+        _set_step(conn, case_id, 'scheduled', at=today.isoformat(), by=actor)
+    elif expect and c['stage'] == 'work_done' and not _iso_date(c.get('scheduled_for')):
+        conn.execute('UPDATE pump_cases SET scheduled_for=? WHERE id=?', (expect, case_id))
+    _event(conn, actor, 'followed up with the vendor',
+           ' · '.join(x for x in (f'{how} with {who}', f'"{said}"' if said else '', f'by {expect}' if expect else '',
+                                  f'check back {check}' if check else '') if x), case_id=case_id)
+    return True
+
+
+# Oct 9 2026: Simon followed up with Tom at Wettech about Homewood Suites -
+# he'll be out later next week (by Fri Oct 16).
+HOMEWOOD_FOLLOW = {'who': 'Tom', 'how': 'call', 'said': 'He will be out there later next week.',
+                   'expect_by': '2026-10-16'}
+
+
+def _seed_homewood_follow_up(conn):
+    if not _claim_once(conn, 'homewood_follow_oct26'):
+        return
+    rows = [r for r in conn.execute("SELECT * FROM pump_cases WHERE status='open' AND (title LIKE '%homewood%' "
+                                    "OR client_name LIKE '%homewood%' OR site LIKE '%homewood%') ORDER BY id")]
+    rows = [r for r in rows if CHASE_PHASES.get(r['stage'])]
+    for r in rows:
+        log_vendor_follow(conn, r['id'], 'Simon', **HOMEWOOD_FOLLOW, today=date(2026, 10, 9))
+    if not rows:
+        add_todo(conn, 'homewood_follow_oct26', 'Homewood Suites: make sure Tom (Wettech) gets out there',
+                 'Tom said on Oct 9 he will be out later next week. Homewood Suites is not a job in Pumps yet - '
+                 'track it from the Jobber tab (or add it), then log the follow-up on it.', {'account': 'Homewood Suites'},
+                 due_on='2026-10-19')
+    conn.commit()
+
+
 def work_queue(conn):
     cases = list_cases(conn, 'open')
     issues = [dict(r) for r in conn.execute('''SELECT i.*, c.title, c.client_name FROM pump_issues i
                                                LEFT JOIN pump_cases c ON c.id = i.case_id
                                                WHERE i.resolved_at IS NULL ORDER BY i.id''')]
-    by_stage = {}
+    # Jobs where someone needs to chase the vendor come out of the waiting lists
+    # into their own (To do); the rest wait, with what the vendor said.
+    # (An approved job still to be scheduled stays a "Schedule" to-do until the
+    # vendor has been asked, then waits.)
+    by_stage, chase = {}, []
     for c in cases:
-        by_stage.setdefault(c['stage'], []).append(c)
+        state = (c.get('chase') or {}).get('state')
+        if state == 'follow_up' and c['stage'] != 'scheduled':
+            chase.append(c)
+        elif state == 'waiting' and c['stage'] == 'scheduled':
+            by_stage.setdefault('scheduling_asked', []).append(c)
+        else:
+            by_stage.setdefault(c['stage'], []).append(c)
+    chase.sort(key=lambda c: (c['chase']['check_on'], c['id']))
     review_docs = [_doc_dict(r) for r in conn.execute(
         "SELECT * FROM pump_docs WHERE status IN ('review','new') OR (case_id IS NULL AND status != 'dismissed') "
         "ORDER BY id DESC")]
@@ -4710,9 +4859,12 @@ def work_queue(conn):
     new_requests = keep(new_requests, lambda it: f"jobber:{it['jobber_id']}")
     todos = keep(todos, lambda t: f"todo:{t['id']}")
     visits = keep(visits, lambda t: f"todo:{t['id']}")
+    chase = keep(chase, lambda c: f"chase:{c['id']}:{c['chase']['check_on']}")
     return {
         'issues': issues,
+        'vendor_follow_ups': chase,
         'needs_scheduling': by_stage.get('scheduled', []),
+        'scheduling_asked': by_stage.get('scheduling_asked', []),
         'waiting_assessment': by_stage.get('assessment', []),
         'waiting_vendor_quote': by_stage.get('vendor_quote', []),
         'to_quote_client': by_stage.get('client_quote', []),
@@ -4940,6 +5092,7 @@ UNDO_LABELS = (
     (r'/cases/(\d+)/vendor_email/send$', 'Emailed the vendor about job #{0}'),
     (r'/cases/(\d+)/pay_email/send$', 'Emailed Christian to pay for job #{0}'),
     (r'/cases/(\d+)/done$', 'Marked a step on job #{0}'),
+    (r'/cases/(\d+)/vendor_follow$', 'Logged a follow-up with the vendor on job #{0}'),
     (r'/cases/(\d+)/delete$', 'Deleted job #{0}'),
     (r'/cases/(\d+)/approved$', 'Marked job #{0} approved'),
     (r'/cases/(\d+)$', 'Changed job #{0}'),
@@ -5231,6 +5384,17 @@ def h_vendor_email_send(actor, case_id):
     conn = _conn()
     try:
         _event(conn, actor, f'emailed the vendor', f'To {to}: {subject}', case_id=case_id)
+        row = conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+        if row and (vendor_chase(_case_dict(row)) or {}).get('state'):
+            # The email is the follow-up: check back in VENDOR_FOLLOW_DAYS if they don't answer.
+            f = json.loads(row['vendor_follow'] or '{}')
+            if f.get('phase') != CHASE_PHASES.get(row['stage']):
+                f = {'phase': CHASE_PHASES.get(row['stage'])}
+            f.update(at=_now_text(), by=actor, how='email', said='',
+                     check_on=_workdays_after(_today(), VENDOR_FOLLOW_DAYS).isoformat())
+            if f.get('expect_by') and f['expect_by'] >= _today().isoformat():
+                f['check_on'] = ''   # a date they gave still stands
+            conn.execute('UPDATE pump_cases SET vendor_follow=? WHERE id=?', (json.dumps(f), case_id))
         conn.commit()
     finally:
         conn.close()
@@ -5500,6 +5664,21 @@ def h_case_update(actor, case_id):
     conn = _conn()
     try:
         if not update_case(conn, case_id, data, actor):
+            return {'success': False, 'error': 'Not found'}, 404
+        conn.commit()
+        return {'case': case_detail(conn, case_id)}
+    finally:
+        conn.close()
+
+
+@api('/cases/<int:case_id>/vendor_follow', methods=('POST',))
+def h_vendor_follow(actor, case_id):
+    """We chased the vendor: {who, how, said, expect_by, check_on}."""
+    d = _json()
+    conn = _conn()
+    try:
+        if not log_vendor_follow(conn, case_id, actor, d.get('who'), d.get('how'), d.get('said'),
+                                 d.get('expect_by'), d.get('check_on')):
             return {'success': False, 'error': 'Not found'}, 404
         conn.commit()
         return {'case': case_detail(conn, case_id)}
@@ -8432,12 +8611,18 @@ def build_digest(conn=None):
     sec('Pay the vendor - the client has paid', [f"{e(c['title'] or c['client_name'])} - {e(c['vendor'])} bill "
                                                  f"#{e(c.get('vendor_bill_number'))}" for c in q['vendor_bills_to_pay']])
     sec('Problems', [f"{e(i.get('title') or i.get('client_name'))}: {e(i['message'])}" for i in q['issues']])
+    sec('Follow up with the vendor', [f"{e(c['title'] or c['client_name'])} - {e(c['chase']['phase'])}: "
+                                      f"{e(c['chase']['reason'])}" for c in q['needs_scheduling'] + q['vendor_follow_ups']
+                                      if c.get('chase')])
     sec('SCADA renewals', [f"{e(s['client_name'])} - {'overdue since' if s['state'] == 'overdue' else 'due'} "
                            f"{e(s['next_due_on'])}" for s in q['scada_attention']])
     sec('Quotes to send / waiting on the client', [e(c['title'] or c['client_name']) for c in
                                                    q['to_quote_client'] + q['waiting_approval']])
-    sec('Waiting on the vendor', [e(c['title'] or c['client_name']) for c in
-                                  q['waiting_vendor_quote'] + q['needs_scheduling'] + q['waiting_work'] + q['waiting_bill']])
+    sec('Waiting on the vendor', [e(c['title'] or c['client_name'])
+                                  + (f" <span style='color:#666'>- {e(c['chase']['reason'])}, check back "
+                                     f"{e(c['chase']['check_on'])}</span>" if c.get('chase') else '') for c in
+                                  q['waiting_assessment'] + q['waiting_vendor_quote'] + q['scheduling_asked']
+                                  + q['waiting_work'] + q['waiting_bill']])
     sec('Ready to invoice / close', [e(c['title'] or c['client_name']) for c in q['ready_to_close']])
     sec('Documents that need a look', [e(d.get('client_name') or d.get('file_name')) + f" - {e(d.get('review_reason'))}"
                                        for d in q['review_docs'][:15]])
@@ -8445,7 +8630,8 @@ def build_digest(conn=None):
     body = ''.join(sections) or '<p style="font:14px Arial">Nothing needs doing today.</p>'
     html = (f'<div style="font:14px Arial;color:#111"><p>Pumps - {e(day)}. {q["open_count"]} open jobs.'
             + (f' <a href="{link}">Open Pumps</a>' if link else '') + f'</p>{body}</div>')
-    n = len(q['todos']) + len(q['vendor_bills_to_pay']) + len(q['issues'])
+    n = len(q['todos']) + len(q['vendor_bills_to_pay']) + len(q['issues']) + len(q['vendor_follow_ups']) \
+        + len(q['needs_scheduling'])
     return {'subject': f'Pumps today - {n} to do' if n else 'Pumps today - nothing urgent', 'html': html}
 
 
