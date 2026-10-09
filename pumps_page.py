@@ -391,7 +391,7 @@ function caseRow(c, extra){
 }
 function todoRow(t){
   return `<div class="row"><div class="main"><div class="tt"><label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer"><input type="checkbox" onchange="todoDone(${t.id}, this.checked)" style="margin-top:3px"><span>${esc(t.title)}</span></label></div>
-      ${t.detail ? `<div class="sub" style="margin-left:24px">${esc(t.detail)}</div>` : ''}
+      ${t.detail || (t.kind === 'manual' && t.due_on) ? `<div class="sub" style="margin-left:24px">${t.kind === 'manual' && t.due_on ? `<b class="${t.due_on < todayIso() ? 'bad' : 'warn'}">due ${esc(niceDay(t.due_on))}</b>${t.detail ? ' · ' : ''}` : ''}${esc(t.detail || '')}</div>` : ''}
       ${t.kind === 'approved_quote' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><a class="btn s p" href="/pumps/api/docs/${t.link.doc_id}/file?version=approved&download=1">⬇ Approved PDF</a><a class="btn s" href="mailto:${esc(t.link.to || '')}?subject=${encodeURIComponent(t.link.subject || 'Approved quote')}&body=${encodeURIComponent('Hi,\n\nThe attached quote is approved - please go ahead and schedule it.\n\nThank you,\nSimon Weardon')}">✉ Email ${esc(t.link.to || '')}</a>${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}</div>` : ''}
       ${t.kind !== 'approved_quote' && (t.link.uri || t.link.case_id) ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${(t.link.uris || []).length > 1 ? t.link.uris.map(u => `<a class="btn s" href="${esc(u.uri)}" target="_blank" rel="noopener">Open ${esc(u.label)} ↗</a>`).join('') + `<button class="btn s" onclick='openAll(${JSON.stringify(t.link.uris.map(u => u.uri)).replace(/'/g, "&#39;")})'>Open both ↗</button>` : t.link.uri ? `<a class="btn s" href="${esc(t.link.uri)}" target="_blank" rel="noopener">Open in Jobber ↗</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}${t.link.scada_id ? `<button class="btn s" onclick="showTab('scada')">SCADA</button>` : ''}</div>` : ''}
       ${t.kind === 'diver_email' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="diverTodo('${esc(t.link.month || '')}')">Email ready - copy &amp; attach</button><a class="btn s" href="/pumps/api/dives/docx?month=${encodeURIComponent(t.link.month || '')}">⬇ Word list</a></div>` : ''}</div>
@@ -411,7 +411,30 @@ async function undoAction(id){
 }
 function openAll(uris){ const blocked = uris.filter(u => { const w = window.open(u, '_blank'); if (w) w.opener = null; return !w; }).length; if (blocked) toast('Your browser blocked a tab - allow pop-ups for this site, or use the buttons one at a time.', true); }
 async function todoDone(id, done){ const j = await api('/todos/' + id + '/done', {method:'POST', body:{done}}); if (!j.success) toast(j.error, true); else { toast(done ? 'Done' : 'Reopened'); loadToday(); } }
-async function todoAdd(){ const el = document.getElementById('todoNew'); const t = el.value.trim(); if (!t) return; const j = await api('/todos', {method:'POST', body:{title: t}}); if (!j.success) toast(j.error, true); else loadToday(); }
+// Explain it in your own words; the app rewords it as a short to-do to check first.
+async function todoWrite(){
+  const el = document.getElementById('todoNew'), text = el.value.trim(); if (!text) return;
+  const btn = document.getElementById('todoWriteBtn'); btn.disabled = true; btn.textContent = 'Writing…';
+  const j = await api('/todos/reword', {method:'POST', body:{text}});
+  btn.disabled = false; btn.textContent = '✨ Write to-do';
+  if (!j.success) { toast(j.error, true); return; }
+  window._todoText = text;
+  const t = j.todo;
+  openModal('New to-do', `
+    <div class="note">Shortened from what you wrote - change anything before adding it.</div>
+    <label class="note">To-do<input type="text" id="tdTitle" value="${esc(t.title)}" style="width:100%"></label>
+    <label class="note">Details<textarea id="tdDetail" style="width:100%;min-height:70px;font:inherit">${esc(t.detail)}</textarea></label>
+    <label class="note">Due <span class="note">(optional)</span><input type="date" id="tdDue" value="${esc(t.due_on)}"></label>
+    <div class="note">You wrote: <i>${esc(text)}</i></div>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn" onclick="todoAdd(_todoText, '', '')">Use my words</button><button class="btn p" onclick="todoAdd(document.getElementById('tdTitle').value, document.getElementById('tdDetail').value, document.getElementById('tdDue').value)">Add to-do</button>`);
+  setTimeout(() => { const i = document.getElementById('tdTitle'); if (i) i.focus(); }, 50);
+}
+async function todoAdd(title, detail, due_on){
+  title = (title || '').trim(); if (!title) { toast('Say what needs doing', true); return; }
+  const j = await api('/todos', {method:'POST', body:{title, detail: (detail || '').trim(), due_on: due_on || ''}});
+  if (!j.success) { toast(j.error, true); return; }
+  closeModal(); toast('Added to your to do list'); loadToday();
+}
 async function todoDelete(id){ if (!confirm('Are you sure you want to delete this from your to do list?')) return; const j = await api('/todos/' + id + '/delete', {method:'POST', body:{}}); if (j.success) loadToday(); }
 async function diverTodo(month){
   const j = await api('/dives/preview?month=' + encodeURIComponent(month));
@@ -469,6 +492,15 @@ function followUp(f){
   const who = [f.name ? '<b>' + esc(f.name) + '</b>' : '', f.email ? f.email.split(', ').map(e => `<a href="mailto:${esc(e)}" onclick="event.stopPropagation()">${esc(e)}</a>`).join(', ') + (f.email_from === 'jobber_ap' ? ' <span class="note">(AP in Jobber)</span>' : f.source === 'jobber' ? ' <span class="note">(Jobber)</span>' : '') : '', f.phone ? esc(f.phone) : ''].filter(Boolean).join(' · ');
   return '<br>→ Follow up with ' + (who || '<b class="warn">no contact on file - add one on the Accounts tab or in Jobber</b>');
 }
+// Where chasing the vendor stands: what they said, by when, and when to check back.
+function todayIso(){ const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); }
+function niceDay(iso){ return iso ? new Date(iso + 'T12:00:00').toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'}) : ''; }
+function chaseLine(c){
+  const ch = c.chase; if (!ch) return '';
+  const late = ch.expect_by && ch.expect_by < todayIso();
+  return `<br>📞 ${ch.state === 'follow_up' ? `<b class="${late ? 'bad' : 'warn'}">Follow up</b> - ` : ''}${esc(ch.reason.replace(/(\d{4}-\d{2}-\d{2})/g, d => niceDay(d)))}`
+    + (ch.said ? ` · <i>"${esc(ch.said)}"</i>` : '') + (ch.state === 'follow_up' ? '' : ` · <span class="ok">no follow-up needed until ${esc(niceDay(ch.check_on))}</span>`);
+}
 function caseTitle(c){ return esc(c.title || c.client_name || 'Item ' + c.id); }
 function caseSub(c, extra){ return esc([c.client_name, c.site].filter(Boolean).join(' · ')) + (c.po_number ? ' · PO ' + esc(c.po_number) : '') + jobberNo(c) + (extra ? ' · ' + extra : '') + (c.idle_days >= 7 ? ` · <b class="warn">${c.idle_days}d idle</b>` : ''); }
 async function loadToday(){
@@ -493,17 +525,24 @@ async function loadToday(){
   q.quotes_to_draft.forEach(d => todo.push(todoItem('Draft quote', 'a', esc(d.client_name || d.file_name), `${esc(d.vendor)} quote ${d.doc_number ? '#' + esc(d.doc_number) + ' ' : ''}· ${money(d.subtotal ?? d.total)}${((d.jobber || {}).quote_pending || {}).reason ? ' · <b class="warn">' + esc(d.jobber.quote_pending.reason) + '</b>' : ''}`, `openCase(${d.case_id})`,
     `<button class="btn s p" onclick="draftQuote(${d.id})">Draft quote</button>${(((d.jobber || {}).quote_pending || {}).possible_duplicate || {}).number ? `<button class="btn s" onclick="linkQuoteNumber(${d.case_id}, '${esc(d.jobber.quote_pending.possible_duplicate.number)}')">Link #${esc(d.jobber.quote_pending.possible_duplicate.number)}</button>` : ''}`, d.todo_key)));
   q.to_quote_client.forEach(c => todo.push(todoItem('Send quote', 'a', caseTitle(c), caseSub(c, 'send our quote to the client in Jobber - this goes away by itself once Jobber shows it sent') + followUp(c.follow_up), open(c), doDone(c), c.todo_key)));
-  q.needs_scheduling.forEach(c => todo.push(todoItem('Schedule', 'a', caseTitle(c), caseSub(c, 'client approved - get it on ' + esc(c.vendor || 'Wettech') + "'s calendar" + (c.scheduled_for ? ' · for ' + esc(c.scheduled_for) : '')), open(c), '', c.todo_key)));
+  q.needs_scheduling.forEach(c => todo.push(todoItem('Schedule', 'a', caseTitle(c), caseSub(c, 'client approved - get it on ' + esc(c.vendor || 'Wettech') + "'s calendar" + (c.scheduled_for ? ' · for ' + esc(c.scheduled_for) : '')) + chaseLine(c), open(c),
+    c.chase ? `<button class="btn s p" onclick="event.stopPropagation();logFollow(${c.id})">📞 Log follow-up</button>` : '', c.todo_key)));
+  // Chase the vendor: jobs to get scheduled / done, and quotes, where nobody has heard back.
+  (q.vendor_follow_ups || []).forEach(c => { const ch = c.chase, late = ch.expect_by && ch.expect_by < todayIso();
+    todo.push(todoItem('Follow up · ' + (ch.phase === 'job' ? 'job' : 'quote'), late ? 'r' : 'a', caseTitle(c), caseSub(c, esc(stageText(c))) + chaseLine(c),
+      open(c), `<button class="btn s p" onclick="event.stopPropagation();logFollow(${c.id})">📞 Log follow-up</button><button class="btn s" onclick="event.stopPropagation();vendorEmail(${c.id})">✉ Email</button>`, c.todo_key)); });
   q.ready_to_close.forEach(c => todo.push(todoItem('Send invoice', 'a', caseTitle(c), caseSub(c, 'send the invoice from Jobber' + (c.sei_invoice_number ? ' · #' + esc(c.sei_invoice_number) : '')) + followUp(c.follow_up), open(c), doDone(c), c.todo_key)));
   q.reports_to_log.forEach(d => todo.push(todoItem('Log report', 'b', esc(d.client_name || d.file_name), `${esc((d.report_fields||{}).title || 'Report')} · ${esc(d.doc_date)}`, d.case_id ? `openCase(${d.case_id})` : `openDoc(${d.id})`,
     `<button class="btn s" onclick="logReport(${d.id})">Log in Jobber</button>`, d.todo_key)));
   q.review_docs.forEach(d => todo.push(todoItem('Look at', 'b', esc(d.client_name || d.file_name), esc(d.review_reason || 'Not filed yet') + ' · ' + esc(d.kind || 'document'), `openDoc(${d.id})`, '', d.todo_key)));
   q.scada_attention.filter(s => s.state !== 'overdue').forEach(s => todo.push(todoItem('SCADA due', 'v', esc(s.client_name) + (s.site ? ' · ' + esc(s.site) : ''), 'Renewal due ' + esc(s.next_due_on) + (s.state_note ? ' · ' + esc(s.state_note) : '') + followUp(s.follow_up), "showTab('scada')", '', s.todo_key)));
   const v = c => esc(c.vendor || 'Wettech');
-  (q.waiting_assessment || []).forEach(c => waiting.push(todoItem(v(c) + ' visit', '', caseTitle(c), caseSub(c, ((c.steps || {}).assessment || {}).due ? 'visit ' + esc(c.steps.assessment.due) : 'visit not booked'), open(c), '', c.todo_key)));
-  q.waiting_vendor_quote.forEach(c => waiting.push(todoItem(v(c) + ' quote', '', caseTitle(c), caseSub(c), open(c), '', c.todo_key)));
+  const logBtn = c => c.chase ? `<button class="btn s" onclick="event.stopPropagation();logFollow(${c.id})">📞 Log</button>` : '';
+  (q.waiting_assessment || []).forEach(c => waiting.push(todoItem(v(c) + ' visit', '', caseTitle(c), caseSub(c, ((c.steps || {}).assessment || {}).due ? 'visit ' + esc(c.steps.assessment.due) : 'visit not booked') + chaseLine(c), open(c), logBtn(c), c.todo_key)));
+  q.waiting_vendor_quote.forEach(c => waiting.push(todoItem(v(c) + ' quote', '', caseTitle(c), caseSub(c) + chaseLine(c), open(c), logBtn(c), c.todo_key)));
+  (q.scheduling_asked || []).forEach(c => waiting.push(todoItem('Schedule', '', caseTitle(c), caseSub(c, 'client approved - asked ' + v(c) + ' for a date') + chaseLine(c), open(c), logBtn(c), c.todo_key)));
   q.waiting_approval.forEach(c => waiting.push(todoItem('Client approval', '', caseTitle(c), caseSub(c) + followUp(c.follow_up), open(c), '', c.todo_key)));
-  q.waiting_work.forEach(c => waiting.push(todoItem('Work', '', caseTitle(c), caseSub(c, c.scheduled_for ? 'scheduled ' + esc(c.scheduled_for) : ''), open(c), '', c.todo_key)));
+  q.waiting_work.forEach(c => waiting.push(todoItem('Work', '', caseTitle(c), caseSub(c, c.scheduled_for ? 'scheduled ' + esc(c.scheduled_for) : '') + chaseLine(c), open(c), logBtn(c), c.todo_key)));
   (q.waiting_visits || []).forEach(t => { const l = t.link || {}, left = (l.vendors || []).filter(x => !(l.reported || []).includes(x));
     waiting.push(todoItem('Maintenance visit', '', esc(l.account || t.title), `client approved ${esc(l.since || '')} · waiting on ${esc(left.join(' and '))}'s service report${left.length > 1 ? 's' : ''}${(l.reported || []).length ? ' · ✓ ' + esc(l.reported.join(', ')) : ''}`, "showTab('accounts')",
       `<button class="btn s" onclick="todoDone(${t.id}, true)">✓ Done</button>`, t.todo_key)); });
@@ -515,7 +554,7 @@ async function loadToday(){
   let wasOpen = false; try { wasOpen = localStorage.getItem('pumpsWaitingOpen') === '1'; } catch (e) {}
   el.innerHTML = (urgent.length ? '<div class="grp">Now</div>' + urgent.join('') : '')
     + '<div class="grp">To do</div>' + (todo.join('') + q.todos.map(todoRow).join('') || '<div class="empty">Nothing to do. 🎉</div>')
-    + `<div class="row" style="cursor:default"><input type="text" id="todoNew" placeholder="Add a to-do…" style="flex:1;min-width:0" onkeydown="if(event.key==='Enter')todoAdd()"><button class="btn s" onclick="todoAdd()">Add</button></div>`
+    + `<div class="row" style="cursor:default;align-items:flex-start"><textarea id="todoNew" rows="2" placeholder="Explain what you need to do, in your own words - the app writes the to-do for you…" style="flex:1;min-width:0;font:inherit;resize:vertical" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();todoWrite()}"></textarea><button class="btn s p" id="todoWriteBtn" onclick="todoWrite()">✨ Write to-do</button></div>`
     + `<details ${wasOpen ? 'open' : ''} ontoggle="try{localStorage.setItem('pumpsWaitingOpen', this.open ? '1' : '0')}catch(e){}"><summary class="grp"><span class="arr">▸</span> Waiting on others (${waiting.length})</summary>${waiting.join('') || '<div class="empty">Nothing waiting.</div>'}</details>`;
 }
 function setCount(id, n, hot){ const el = document.getElementById(id); el.textContent = n || ''; el.classList.toggle('hot', !!hot); el.style.display = n ? '' : 'none'; }
@@ -581,12 +620,14 @@ function renderCase(){
     ${issues ? `<div class="sec"><h4>Issues</h4><div style="display:flex;flex-direction:column;gap:8px">${issues}</div></div>` : ''}
     <div class="sec"><h4>Next</h4><div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn ${['assessment','vendor_quote','scheduled','vendor_bill'].includes(c.stage) ? 'p' : ''}" onclick="vendorEmail(${c.id})">✉️ ${esc(({assessment: 'Ask ' + v + ' to assess', vendor_quote: 'Ask ' + v + ' for the quote', scheduled: 'Ask ' + v + ' to schedule', vendor_bill: 'Ask ' + v + ' for the invoice'})[c.stage] || 'Email ' + v)}</button>
+      ${c.chase ? `<button class="btn ${c.chase.state === 'follow_up' ? 'p' : ''}" onclick="logFollow(${c.id})">📞 Log follow-up</button>` : ''}
       ${c.stage === 'client_quote' ? `<button class="btn" onclick="linkQuote(${c.id})">🔗 Quote's already in Jobber? Link it</button>` : ''}
       ${c.stage === 'vendor_quote' && !((c.steps || {}).assessment && !c.steps.assessment.na) ? `<button class="btn" onclick="needsVisit()">🔍 ${esc(v)} needs to visit first</button>` : ''}
       <button class="btn" onclick="uploadForCase()">⬆ Add document</button>
       <button class="btn" onclick="addNote()">✎ Add note</button>
       ${c.status === 'open' ? `<button class="btn p" onclick="caseDone(${c.id})">✓ Mark done</button><button class="btn danger" onclick="caseRemove(${c.id})">✕ Remove</button>` : `<button class="btn" onclick="caseReopen(${c.id})">↺ Reopen</button>`}
     </div></div>
+    ${c.chase ? `<div class="sec"><div class="note" style="padding:10px 12px;border-radius:10px;background:${c.chase.state === 'follow_up' ? 'var(--amber-bg)' : 'var(--violet-bg)'}"><b>${c.chase.phase === 'job' ? 'Job' : 'Quote'} - waiting on ${esc(v)}</b>${chaseLine(c)}${c.chase.last_at ? `<br><span class="note">Last asked ${esc(niceDay(c.chase.last_at))}${c.chase.how ? ' by ' + esc(c.chase.how) : ''}${c.chase.by ? ' · ' + esc(c.chase.by) : ''}</span>` : ''}</div></div>` : ''}
     <div class="sec"><h4>Journey</h4>${journeyHtml(c)}</div>
     <div class="sec"><h4>Checklist</h4><div class="steps">${steps}</div></div>
     <div class="sec"><h4>Quote vs bill</h4><div class="money">
@@ -617,7 +658,7 @@ const JOURNEY_ICONS = [
   [/quote stamped approved|quote made a job/, '✅', 'g'], [/quote status/, '💬', ''], [/draft invoice created|invoiced on matching job/, '🧾', 'b'],
   [/invoice status/, '💵', ''], [/pay vendor/, '💸', 'r'], [/emailed christian/, '✉️', 'g'], [/could not email|not drafted|not logged|not saved/, '⚠️', 'a'],
   [/^issue resolved/, '✔️', 'g'], [/^issue/, '⚠️', 'r'], [/bill matches quote/, '✔️', 'g'], [/^note/, '✎', ''], [/linked/, '🔗', ''],
-  [/service visit|schedule/, '📅', 'b'], [/report/, '📋', 'b'], [/marked done|closed/, '🏁', 'g'], [/reopened/, '↺', 'a'], [/cancelled|removed/, '✕', 'r'],
+  [/followed up/, '📞', 'b'], [/service visit|schedule/, '📅', 'b'], [/report/, '📋', 'b'], [/marked done|closed/, '🏁', 'g'], [/reopened/, '↺', 'a'], [/cancelled|removed/, '✕', 'r'],
 ];
 function journeyIcon(action){ const a = (action || '').toLowerCase(); for (const [re, ic, cls] of JOURNEY_ICONS) if (re.test(a)) return [ic, cls]; return ['•', '']; }
 function journeyHtml(c){
@@ -718,6 +759,35 @@ async function linkQuote(id){
   if (!j.success) { toast(j.error, true); return; }
   toast(`Now following Jobber quote #${j.quote.number} (${(j.quote.status || '').replace(/_/g, ' ') || 'status unknown'})`);
   openCase(id); loadToday();
+}
+// Log a call / text / email with the vendor: what they said and when they'll be out.
+function fridayOf(weeksAhead, dow){ const d = new Date(todayIso() + 'T12:00:00'); const mon = new Date(d); mon.setDate(d.getDate() - ((d.getDay() + 6) % 7) + 7 * weeksAhead); mon.setDate(mon.getDate() + dow); return mon.toISOString().slice(0, 10); }
+async function logFollow(id){
+  const j = await api('/cases/' + id);
+  if (!j.success) { toast(j.error, true); return; }
+  const c = j.case, ch = c.chase || {}, v = c.vendor || 'Wettech';
+  const picks = [['This week', fridayOf(0, 4)], ['Early next week', fridayOf(1, 1)], ['Later next week', fridayOf(1, 4)], ['In 2 weeks', fridayOf(2, 4)]];
+  openModal('Follow-up with ' + esc(v) + ' · ' + caseTitle(c), `
+    <div class="note">${ch.phase === 'job' ? 'Job' : 'Quote'} · ${esc(stageText(c))}${chaseLine(c)}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <label class="note" style="flex:1">Talked to<input type="text" id="fwWho" value="${esc(ch.contact || '')}" style="width:100%"></label>
+      <label class="note">How<select id="fwHow"><option>call</option><option>text</option><option>email</option><option>in person</option></select></label>
+    </div>
+    <label class="note">What they said<input type="text" id="fwSaid" placeholder="e.g. He'll be out there later next week" style="width:100%"></label>
+    <label class="note">They'll be out / have it by <span class="note">(leave blank if they gave no date)</span><input type="date" id="fwBy" value="${esc(ch.expect_by && ch.expect_by >= todayIso() ? ch.expect_by : '')}" style="width:100%"></label>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">${picks.map(([t, d]) => `<button class="btn s" onclick="document.getElementById('fwBy').value='${d}'">${t} · ${esc(niceDay(d))}</button>`).join('')}</div>
+    <label class="note">Check back on <span class="note">(blank = the weekday after their date, or in a few days if they gave none)</span><input type="date" id="fwCheck" style="width:100%"></label>
+    ${c.stage === 'scheduled' ? `<div class="note">A date marks the job scheduled with ${esc(v)}.</div>` : ''}`,
+    `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="saveFollow(${id})">Save follow-up</button>`);
+}
+async function saveFollow(id){
+  const g = k => document.getElementById(k).value.trim();
+  const j = await api('/cases/' + id + '/vendor_follow', {method:'POST', body:{who: g('fwWho'), how: g('fwHow'), said: g('fwSaid'), expect_by: g('fwBy'), check_on: g('fwCheck')}});
+  if (!j.success) { toast(j.error, true); return; }
+  closeModal();
+  const ch = j.case.chase;
+  toast(ch && ch.state === 'waiting' ? 'Saved - no follow-up needed until ' + niceDay(ch.check_on) : 'Saved');
+  if (curCase && curCase.id === id) { curCase = j.case; renderCase(); } else loadToday();
 }
 function needsVisit(){ const d = prompt('Date of the visit, if you know it (YYYY-MM-DD) - or leave blank:', ''); if (d === null) return; patchCase({steps: {assessment: null}, assessment_due: d.trim()}); }
 function setStep(k, v){ patchCase({steps: {[k]: v === 'today' ? new Date().toISOString().slice(0,10) : v}}); }

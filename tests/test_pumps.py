@@ -2738,5 +2738,141 @@ W/O No. 41105'''
         self.assertIn('not pump related', what['menu.pdf'])
 
 
+    # ── chasing the vendor ──────────────────────────────────────────────────
+    def _chase_case(self, **fields):
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'vendor': 'Wettech', 'opened_on': '2026-10-05', **fields}, 'test')
+            conn.commit()
+        finally:
+            conn.close()
+        return cid
+
+    def _chase(self, cid, today):
+        conn = P._conn()
+        try:
+            return P.vendor_chase(P._case_dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (cid,)).fetchone()),
+                                  today=today)
+        finally:
+            conn.close()
+
+    def test_follow_up_with_the_vendor_on_a_job(self):
+        """Approved job: follow up for a date straight away. Tom says "later next
+        week" on Fri Oct 9 -> scheduled for Fri Oct 16, nothing to do until Mon Oct 19,
+        then a follow-up if the work isn't in."""
+        from datetime import date
+        cid = self._chase_case(title='Chase Suites lift pump', client_name='Chase Suites')
+        self.c.patch(f'/pumps/api/cases/{cid}', json={'steps': {k: '2026-10-08' for k in
+                                                                 ('vendor_quote', 'client_quote', 'client_approved')}})
+        self.assertEqual(self.case(cid)['stage'], 'scheduled')
+        ch = self._chase(cid, date(2026, 10, 9))
+        self.assertEqual((ch['phase'], ch['state']), ('job', 'follow_up'))
+        self.assertIn('nobody has asked', ch['reason'])
+        conn = P._conn()
+        try:
+            P.log_vendor_follow(conn, cid, 'Simon', 'Tom', 'call', "He'll be out later next week", '2026-10-16',
+                                today=date(2026, 10, 9))
+            conn.commit()
+        finally:
+            conn.close()
+        case = self.case(cid)
+        self.assertEqual(case['stage'], 'work_done', 'a date from the vendor schedules it')
+        self.assertEqual(case['scheduled_for'], '2026-10-16')
+        ch = self._chase(cid, date(2026, 10, 12))
+        self.assertEqual((ch['state'], ch['check_on'], ch['said']), ('waiting', '2026-10-19', "He'll be out later next week"))
+        self.assertIn('Tom said by 2026-10-16', ch['reason'])
+        ch = self._chase(cid, date(2026, 10, 19))
+        self.assertEqual(ch['state'], 'follow_up')
+        self.assertIn("isn't in yet", ch['reason'])
+        # Once the work is in, there is nothing to chase.
+        self.c.patch(f'/pumps/api/cases/{cid}', json={'steps': {'work_done': '2026-10-15'}})
+        self.assertNotIn(self.case(cid)['stage'], P.CHASE_PHASES)
+        self.assertIsNone(self._chase(cid, date(2026, 10, 19)))
+        self.assertIn('followed up with the vendor', [e['action'] for e in self.case(cid)['events']])
+
+    def test_follow_up_with_the_vendor_on_a_quote(self):
+        """Waiting on Wettech's quote: follow up after 3 workdays with no word;
+        a call with no date waits another 3; the To do list shows it when due."""
+        from datetime import date
+        cid = self._chase_case(title='Chase Pointe pump quote', client_name='Chase Pointe', opened_on='2026-10-08')
+        self.assertEqual(self.case(cid)['stage'], 'vendor_quote')
+        self.assertEqual(self._chase(cid, date(2026, 10, 9))['state'], 'waiting')
+        ch = self._chase(cid, date(2026, 10, 13))
+        self.assertEqual((ch['phase'], ch['state'], ch['check_on']), ('quote', 'follow_up', '2026-10-13'))
+        real = P._today, P._now_text
+        P._today, P._now_text = (lambda: date(2026, 10, 13)), (lambda: '2026-10-13 10:00:00')
+        try:
+            q = self.c.get('/pumps/api/summary').get_json()['queue']
+            self.assertIn(cid, [c['id'] for c in q['vendor_follow_ups']])
+            self.assertNotIn(cid, [c['id'] for c in q['waiting_vendor_quote']])
+            r = self.c.post(f'/pumps/api/cases/{cid}/vendor_follow', json={'who': 'Tom', 'how': 'text',
+                                                                          'said': 'Working on it'})
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            ch = r.get_json()['case']['chase']
+            self.assertEqual((ch['state'], ch['check_on'], ch['how']), ('waiting', '2026-10-16', 'text'))
+            q = self.c.get('/pumps/api/summary').get_json()['queue']
+            self.assertNotIn(cid, [c['id'] for c in q['vendor_follow_ups']])
+            self.assertIn(cid, [c['id'] for c in q['waiting_vendor_quote']])
+            self.assertIn('Chase Pointe', P.build_digest()['html'])
+            bad = self.c.post(f'/pumps/api/cases/{cid}/vendor_follow', json={'expect_by': 'soon'})
+            self.assertEqual(bad.status_code, 400)
+        finally:
+            P._today, P._now_text = real
+
+    def test_homewood_follow_up_is_kept(self):
+        """Oct 9: Tom (Wettech) will be out to Homewood Suites later next week."""
+        from datetime import date
+        conn = P._conn()
+        try:
+            todo = conn.execute("SELECT title, due_on FROM pump_todos WHERE key='homewood_follow_oct26'").fetchone()
+            self.assertIsNotNone(todo, 'no Homewood job in a fresh database: a to-do instead')
+            self.assertEqual(todo['due_on'], '2026-10-19')
+            cid = P.create_case(conn, {'title': 'Homewood Suites pump repair', 'vendor': 'Wettech'}, 'test')
+            for k in ('vendor_quote', 'client_quote', 'client_approved'):
+                P._set_step(conn, cid, k, at='2026-10-07')
+            conn.execute("DELETE FROM pump_state WHERE key='homewood_follow_oct26'")
+            conn.commit()
+            P._seed_homewood_follow_up(conn)
+        finally:
+            conn.close()
+        case = self.case(cid)
+        self.assertEqual((case['stage'], case['scheduled_for']), ('work_done', '2026-10-16'))
+        ch = self._chase(cid, date(2026, 10, 12))
+        self.assertEqual((ch['state'], ch['who'], ch['check_on']), ('waiting', 'Tom', '2026-10-19'))
+
+
+    def test_write_a_to_do_from_an_explanation(self):
+        """Someone explains what they need to do; the app (no AI) shortens it to a to-do to check first."""
+        from datetime import date
+        fri = date(2026, 10, 9)
+        r = self.c.post('/pumps/api/todos/reword', json={'text': 'I need to call Tom at Wettech about Homewood '
+                                                                 'Suites. He said later next week.'})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        t = r.get_json()['todo']
+        self.assertEqual((t['title'], t['detail']), ('Call Tom at Wettech about Homewood Suites',
+                                                     'He said later next week.'))
+        self.assertEqual(self.c.post('/pumps/api/todos/reword', json={'text': ' '}).status_code, 400)
+        t = P.reword_todo('so remind me to send Allura the pump quote by Friday', today=fri)
+        self.assertEqual((t['title'], t['detail'], t['due_on']), ('Send Allura the pump quote by Friday', '', '2026-10-16'))
+        due = lambda text, today=fri: P.due_from_text(text, today)
+        self.assertEqual(due('tomorrow'), '2026-10-10')
+        self.assertEqual(due('get it done this week'), '2026-10-09')
+        self.assertEqual(due('next week'), '2026-10-16')
+        self.assertEqual(due('before the end of the month'), '2026-10-31')
+        self.assertEqual(due('due 10/20'), '2026-10-20')
+        self.assertEqual(due('by 1/5'), '2027-01-05')
+        self.assertEqual(due('order a 1/2 HP motor'), '', 'a fraction is not a date')
+        self.assertEqual(due('next friday', date(2026, 10, 12)), '2026-10-23')
+        self.assertEqual(due('call Quail Run'), '')
+        long = P.reword_todo('we need to get the SCADA quote out to Cross Creek before the end of the month, they renew '
+                             'in November and Medallion pays it', today=fri)
+        self.assertTrue(long['title'].startswith('Get the SCADA quote out to Cross Creek') and len(long['title']) <= 81)
+        self.assertIn('Medallion pays it', long['detail'])
+        self.assertEqual(long['due_on'], '2026-10-31')
+        r = self.c.post('/pumps/api/todos', json={'title': t['title'], 'detail': 'They asked on the phone.',
+                                                  'due_on': t['due_on']})
+        row = next(x for x in r.get_json()['todos'] if x['title'] == 'Send Allura the pump quote by Friday')
+        self.assertEqual((row['detail'], row['due_on'], row['kind']), ('They asked on the phone.', '2026-10-16', 'manual'))
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
