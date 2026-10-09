@@ -264,9 +264,9 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
     <button class="btn s" title="It syncs on its own - this just does it now" onclick="syncJobber()">↻ Sync now</button>
   </div>
   <div class="scroll"><table class="t"><thead><tr><th>Job</th><th>Where it is</th><th>Vendor</th><th class="num">Vendor quote</th><th>Our quote</th><th class="num">Vendor bill</th><th>Our invoice</th><th>Vendor paid</th><th></th></tr></thead><tbody id="jobsBody"></tbody></table></div>
-  <h3 style="margin:18px 0 8px;font-size:14px">New in Jobber - not tracked yet</h3>
-  <div class="note" style="margin-bottom:8px">Open pump, diver, filter and SCADA work in Jobber for our accounts (the maintenance and lake sheets on the Accounts tab) and other companies - not homeowners. <b>Track</b> follows it here to the invoice; <b>Ignore</b> hides it.</div>
-  <div class="scroll" style="max-height:40vh"><table class="t"><thead><tr><th>In Jobber</th><th>Client</th><th>Created</th><th></th></tr></thead><tbody id="jbNewBody"></tbody></table></div>
+  <h3 style="margin:18px 0 8px;font-size:14px">Quotes sent - waiting on the client <span class="chip" id="jbSentCount"></span></h3>
+  <div class="note" style="margin-bottom:8px">Our pump, diver, filter and SCADA quotes in Jobber that have gone to the client and aren't approved yet, longest waiting first. They drop off once the client approves (the next Jobber sync).</div>
+  <div class="scroll" style="max-height:40vh"><table class="t"><thead><tr><th>Quote</th><th>Client</th><th class="num">Total</th><th>Status</th><th>Waiting</th><th>Job here</th></tr></thead><tbody id="jbSentBody"></tbody></table></div>
 </div>
 
 <!-- SCADA -->
@@ -1306,7 +1306,7 @@ function jobberNo(c){ const J = c.jobber || {}, r = (J.job && J.job.number) ? ['
 function numAmt(num, amt){ const n = num ? `<span class="note">#${esc(String(num).replace(/^#/, ''))}</span>` : ''; const a = amt != null ? `<b>${money(amt)}</b>` : ''; return [n, a].filter(Boolean).join(' '); }
 async function loadJobs(){
   const st = document.getElementById('jbShow').value, q = document.getElementById('jbSearch').value.trim();
-  const [j, ji] = await Promise.all([api('/cases?status=' + st + (q ? '&q=' + encodeURIComponent(q) : '')), api('/jobber/items?open=1&kind=request,quote,job')]);
+  const [j, ji] = await Promise.all([api('/cases?status=' + st + (q ? '&q=' + encodeURIComponent(q) : '')), api('/jobber/items?open=1&kind=quote&show_ignored=1')]);
   if (!j.success) { document.getElementById('jobsBody').innerHTML = `<tr><td colspan="9" class="empty">${esc(j.error)}</td></tr>`; return; }
   const ref = r => r ? (r.uri ? `<a href="${esc(r.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">#${esc(r.number || '')} ↗</a>` : (r.number ? '#' + esc(r.number) : '')) : '';
   document.getElementById('jobsBody').innerHTML = (j.cases || []).map(c => { const jb = c.jobber || {}, vp = c.vendor_pay || {};
@@ -1324,13 +1324,18 @@ async function loadJobs(){
     (s.state === 'running' ? `Syncing Jobber… (started ${esc(s.started_at || '')})` : (s.state === 'failed' || s.state === 'interrupted' ? `<b class="bad">Last sync did not finish</b> - it runs again on its own · ` : '') + (s.finished_at ? `Synced with Jobber ${esc(s.finished_at.slice(11, 16))}` + (s.seconds != null && s.state === 'done' ? ` (took ${s.seconds < 90 ? s.seconds + ' sec' : Math.round(s.seconds / 60) + ' min'})` : '') : 'Not synced yet.') + (s.every_min ? ` · syncs on its own every ${s.every_min} min` : '')) + ((s.errors || []).length ? ` · <span class="bad" title="${esc(s.errors.join('\n'))}">${s.errors.length} errors</span>` : '');
   clearTimeout(window._syncPoll);
   if (s.state === 'running') window._syncPoll = setTimeout(() => { if (curTab === 'jobs') loadJobs(); }, 5000);
-  const fresh = (ji.items || []).filter(it => !it.case_id && !(it.kind === 'quote' && it.status !== 'approved'));
-  const others = fresh.filter(it => !it.on_sheet);
-  document.getElementById('jbNewBody').innerHTML = fresh.filter(it => it.on_sheet || window._showOthers).map(it => `<tr>
-    <td><span class="note">${esc(it.kind)}</span> <a href="${esc(it.web_uri)}" target="_blank" rel="noopener">${it.number ? '#' + esc(it.number) + ' ' : ''}${esc(it.title)}</a> ${catChip(it.category)}</td>
-    <td>${esc(it.client_name)}<div class="note">${esc(it.property_label)}</div></td><td>${esc(d10(it.created_at))}</td>
-    <td style="white-space:nowrap"><button class="btn s p" onclick="jobberAct('${esc(it.jobber_id)}','track')">Track</button> <button class="btn s" onclick="jobberLink('${esc(it.jobber_id)}')">Add to job…</button> <button class="btn s" onclick="jobberAct('${esc(it.jobber_id)}','ignore')">Ignore</button></td></tr>`).join('') || `<tr><td colspan="4" class="empty">${JOBBER_OK ? 'Nothing new.' : 'Connect Jobber to see pump work.'}</td></tr>`;
-  if (others.length) document.getElementById('jbNewBody').insertAdjacentHTML('beforeend', `<tr><td colspan="4" class="note"><a href="#" onclick="event.preventDefault();window._showOthers=!window._showOthers;loadJobs()">${window._showOthers ? 'Hide' : 'Show'} ${others.length} homeowner jobs</a> - they're done in Jobber and not followed here unless you Track one.</td></tr>`);
+  // Our quotes sent to the client, not approved yet - longest waiting first.
+  const sent = (ji.items || []).filter(it => it.kind === 'quote' && ['awaiting_response', 'changes_requested'].includes(it.status))
+    .sort((a, b) => (a.updated_at || a.created_at || '').localeCompare(b.updated_at || b.created_at || ''));
+  const days = d => d ? Math.max(0, Math.floor((Date.now() - new Date(d).getTime()) / 86400000)) : null;
+  document.getElementById('jbSentCount').textContent = sent.length;
+  document.getElementById('jbSentBody').innerHTML = sent.map(it => { const n = days(it.updated_at || it.created_at); return `<tr${it.case_id ? ` class="click" onclick="openCase(${it.case_id})"` : ''}>
+    <td><a href="${esc(it.web_uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${it.number ? '#' + esc(it.number) + ' ' : ''}${esc(it.title)} ↗</a> ${catChip(it.category)}</td>
+    <td>${esc(it.client_name)}<div class="note">${esc(it.property_label)}</div></td>
+    <td class="num">${it.total != null ? '<b>' + money(it.total) + '</b>' : ''}</td>
+    <td>${it.status === 'changes_requested' ? '<span class="chip a">changes requested</span>' : '<span class="note">sent</span>'}</td>
+    <td>${n == null ? '' : n >= 14 ? `<b class="warn">${n} days</b>` : n + (n === 1 ? ' day' : ' days')}</td>
+    <td>${it.case_id ? `<span class="note">job ${it.case_id}</span>` : ''}</td></tr>`; }).join('') || `<tr><td colspan="6" class="empty">${JOBBER_OK ? 'No quotes waiting on a client.' : 'Connect Jobber to see quotes.'}</td></tr>`;
 }
 async function jobberAct(id, action){ const j = await api('/jobber/items/' + encodeURIComponent(id), {method:'POST', body:{action}}); if (!j.success) { toast(j.error, true); return; } loadToday(); if (curTab === 'jobs') loadJobs(); if (action === 'track' && j.case_id) openCase(j.case_id); }
 async function jobberLink(id){ const n = prompt('Job number in Pumps to add it to:'); if (!n) return; const j = await api('/jobber/items/' + encodeURIComponent(id), {method:'POST', body:{action:'link', case_id: parseInt(n)}}); if (j.success) loadJobs(); else toast(j.error, true); }
