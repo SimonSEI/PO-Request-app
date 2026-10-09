@@ -229,7 +229,7 @@ def _conn():
 # scan, the Jobber sync and other background work are never recorded.
 UNDO_TABLES = ('pump_cases', 'pump_docs', 'pump_issues', 'pump_events', 'pump_scada', 'pump_client_contacts',
                'pump_jobber_items', 'pump_site_aliases', 'pump_todos', 'pump_dive_sites', 'pump_scada_accounts',
-               'pump_maint_accounts', 'pump_todo_hidden')
+               'pump_maint_accounts', 'pump_todo_hidden', 'pump_maint_notices')
 _UNDO_ACTION = contextvars.ContextVar('pump_undo_action', default=0)
 
 
@@ -7576,6 +7576,18 @@ def init_account_tables(c):
                   active INTEGER DEFAULT 1,
                   updated_by TEXT DEFAULT '',
                   updated_at TEXT)''')
+    # Whether the subcontractor (Wettech, Gulfshore) has been told about an
+    # account's maintenance in a month - one row per account, vendor and month.
+    c.execute('''CREATE TABLE IF NOT EXISTS pump_maint_notices (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  month TEXT NOT NULL,
+                  account TEXT NOT NULL,
+                  vendor TEXT NOT NULL,
+                  how TEXT DEFAULT '',
+                  note TEXT DEFAULT '',
+                  notified_by TEXT DEFAULT '',
+                  notified_at TEXT,
+                  UNIQUE(month, account, vendor))''')
     for col, decl in (('kind', "TEXT DEFAULT 'Lake'"), ('joined', "TEXT DEFAULT ''"), ('diver_cost', "TEXT DEFAULT ''"),
                       ('our_bill', "TEXT DEFAULT ''"), ('naples_electric', "TEXT DEFAULT ''"),
                       ('active', 'INTEGER DEFAULT 1')):
@@ -8906,6 +8918,225 @@ def h_accounts(actor):
                     x['due_this_month'] = bool(x.get('active', 1)) and (bool(x.get('monthly')) or
                                                                          (month in ms if ms else k == 'lake'))
         return {'accounts': rows, 'month': _today().strftime('%B')}
+    finally:
+        conn.close()
+
+
+# ── an account's history: every to-do and job the client has had ────────────
+
+def _account_aliases(a):
+    """Every name one row of the Accounts list goes by."""
+    names = {a['name']}
+    for k, f in (('pump', 'name'), ('lake', 'name'), ('scada', 'client')):
+        if a.get(k) and a[k].get(f):
+            names.add(a[k][f])
+    names |= {n.strip() for n in re.split(r'[;,\n]', (a.get('scada') or {}).get('jobber_names') or '') if n.strip()}
+    return names
+
+
+def _is_account(names, name):
+    return bool(name) and any(name == n or _same_account(name, n) for n in names)
+
+
+def account_history(conn, name):
+    """Every to-do (open and done, however old) and every job for an account,
+    newest first, plus the months its subcontractors were told of a visit."""
+    a = next((x for x in accounts(conn) if x['name'] == name), None)
+    if not a:
+        raise ValueError('No such account')
+    names = _account_aliases(a)
+    found = {}
+
+    def about(text):
+        if text not in found:
+            found[text] = _is_account(names, match_account(text, conn))
+        return found[text]
+
+    jobs = []
+    for r in conn.execute('SELECT * FROM pump_cases ORDER BY COALESCE(opened_on, created_at) DESC, id DESC'):
+        c = dict(r)
+        if about(' '.join(x for x in (c['client_name'], c['title'], c['site']) if x)):
+            jobs.append(c)
+    job_ids = {c['id'] for c in jobs}
+    events = {}
+    if job_ids:
+        for e in conn.execute(f"SELECT * FROM pump_events WHERE case_id IN ({','.join('?' * len(job_ids))}) "
+                              'ORDER BY id DESC', list(job_ids)):
+            events.setdefault(e['case_id'], []).append(dict(e))
+    scada_id = (a.get('scada') or {}).get('id')
+    todos = []
+    for r in conn.execute('SELECT * FROM pump_todos ORDER BY created_at DESC, id DESC'):
+        t = _todo_dict(r)
+        link = t['link'] if isinstance(t['link'], dict) else {}
+        if link.get('account'):
+            mine = _is_account(names, link['account'])
+        elif link.get('case_id'):
+            mine = link['case_id'] in job_ids
+        elif link.get('scada_id'):
+            mine = link['scada_id'] == scada_id
+        else:
+            mine = about(f"{t['title']} {t['detail']}")
+        if mine:
+            todos.append(t)
+    notices = [dict(r) for r in conn.execute('SELECT * FROM pump_maint_notices ORDER BY month DESC, vendor')
+               if _is_account(names, r['account'])]
+    return {
+        'name': a['name'],
+        'todos': todos,
+        'jobs': [{'id': c['id'], 'title': c['title'], 'client_name': c['client_name'], 'site': c['site'],
+                  'vendor': c['vendor'], 'category': c['category'], 'stage': c['stage'], 'status': c['status'],
+                  'opened_on': c['opened_on'], 'closed_at': c['closed_at'], 'po_number': c['po_number'],
+                  'events': events.get(c['id'], [])} for c in jobs],
+        'notices': notices,
+        'open_todos': sum(1 for t in todos if not t['done_at']),
+    }
+
+
+@api('/accounts/history')
+def h_account_history(actor):
+    """?name=<account> - every to-do and job the client has had."""
+    conn = _conn()
+    try:
+        return account_history(conn, (request.args.get('name') or '').strip())
+    finally:
+        conn.close()
+
+
+@api('/accounts/todo', methods=('POST',))
+def h_account_todo(actor):
+    """A to-do of your own about an account: {"name", "title", "detail", "due_on"}."""
+    d = _json()
+    name, title = str(d.get('name') or '').strip(), str(d.get('title') or '').strip()
+    if not title:
+        raise ValueError('Say what needs doing')
+    conn = _conn()
+    try:
+        if not any(a['name'] == name for a in accounts(conn)):
+            raise ValueError('No such account')
+        conn.execute('INSERT INTO pump_todos (kind, title, detail, due_on, link, created_by, created_at) '
+                     'VALUES (?,?,?,?,?,?,?)', ('manual', title[:300], str(d.get('detail') or '')[:2000],
+                                                _iso_date(d.get('due_on')), json.dumps({'account': name}), actor,
+                                                _now_text()))
+        conn.commit()
+        return account_history(conn, name)
+    finally:
+        conn.close()
+
+
+# ── the month's maintenance and whether each subcontractor has been told ────
+# Wettech does the pump maintenance, Gulfshore (the diver) the lakes. A lake on
+# the month's diver list counts as told once that list's email has gone; a
+# pump visit counts once someone marks it (or emails Tommy from the Jobs tab).
+
+def _month_arg(text, today=None):
+    """"2026-11" (or a date) -> date(2026, 11, 1); else this month."""
+    m = re.match(r'(\d{4})-(\d{2})', str(text or ''))
+    if m and 1 <= int(m.group(2)) <= 12:
+        return date(int(m.group(1)), int(m.group(2)), 1)
+    return (today or _today()).replace(day=1)
+
+
+def maint_schedule(conn, month_date):
+    """Every maintenance visit due in a month, one row per account and vendor."""
+    key = month_date.strftime('%Y-%m')
+    nxt = (month_date + timedelta(days=32)).replace(day=1)
+    notices = {(r['account'], r['vendor']): dict(r) for r in
+               conn.execute('SELECT * FROM pump_maint_notices WHERE month=?', (key,))}
+    dive_mail = conn.execute("SELECT sent_at, sent_by, to_addr FROM pump_dive_emails WHERE month=? AND "
+                             "COALESCE(error, '')='' ORDER BY id LIMIT 1", (key,)).fetchone()
+    visits = [json.loads(r['link'] or '{}') for r in conn.execute("SELECT link FROM pump_todos WHERE kind='visit'")]
+    reports = [dict(r) for r in conn.execute(
+        "SELECT vendor, client_name, site, file_name, created_at FROM pump_docs WHERE kind='report' "
+        "AND status != 'dismissed' AND created_at >= ? AND created_at < ?", (key, nxt.isoformat()))]
+    dive_ids = {s['id'] for s in sites_for_month(conn, month_date)}
+    rows = []
+    for a in accounts(conn):
+        due = []
+        p, l = a['pump'], a['lake']
+        if p and p.get('active') and (p.get('monthly') or month_date.month in _month_list(p.get('months'))):
+            due.append(('Wettech', p.get('equipment') or p.get('kind') or 'Pump', p.get('address') or '', ''))
+        if l and l['id'] in dive_ids:
+            due.append(('Gulfshore', l.get('equipment') or 'Lake', l.get('address') or '',
+                        'on hold - ' + (l.get('status_note') or 'waiting on the client') if l.get('status') == 'hold'
+                        else ''))
+        names = _account_aliases(a)
+        for vendor, what, where, hold in due:
+            n = notices.get((a['name'], vendor))
+            if not n and vendor == 'Gulfshore' and dive_mail:
+                n = {'notified_at': dive_mail['sent_at'], 'notified_by': dive_mail['sent_by'],
+                     'how': f"diver list emailed to {dive_mail['to_addr']}", 'note': '', 'auto': True}
+            approved = next((v.get('since') for v in visits if vendor in (v.get('vendors') or [])
+                             and key <= (v.get('since') or '') < nxt.isoformat()
+                             and _is_account(names, v.get('account'))), '')
+            report = next((r['created_at'][:10] for r in reports if r['vendor'] == vendor and (
+                _is_account(names, r['client_name']) or
+                fuzzy_has(_core_name(a['name']), f"{r['site']} {r['file_name']}"))), '')
+            rows.append({'account': a['name'], 'vendor': vendor, 'what': what, 'where': where, 'hold': hold,
+                         'notified': n, 'approved': approved, 'report': report})
+    rows.sort(key=lambda r: (bool(r['notified']), r['vendor'], r['account'].lower()))
+    return rows
+
+
+def _notify_mailto(month_date, rows):
+    """A ready email to Tommy listing the month's pump visits he hasn't been told of."""
+    from urllib.parse import quote
+    todo = [r for r in rows if r['vendor'] == 'Wettech' and not r['notified']]
+    if not todo:
+        return ''
+    label = month_date.strftime('%B %Y')
+    body = '\n'.join(['Hi Tommy,', '', f'These pump maintenance visits are due in {label}:', ''] +
+                     [f"- {r['account']} ({r['what']})" + (f" - {r['where']}" if r['where'] else '') for r in todo] +
+                     ['', 'Please put them on your schedule and send the service reports when done.', '', 'Thank you,',
+                      'Stahlman-England Irrigation'])
+    return f"mailto:{_vendor_email('Wettech')}?subject={quote(f'{label} pump maintenance')}&body={quote(body)}"
+
+
+def _schedule_payload(conn, month_date):
+    rows = maint_schedule(conn, month_date)
+    return {'month': month_date.strftime('%Y-%m'), 'label': month_date.strftime('%B %Y'), 'rows': rows,
+            'notified': sum(1 for r in rows if r['notified']), 'total': len(rows),
+            'wettech_mailto': _notify_mailto(month_date, rows)}
+
+
+@api('/maint/schedule')
+def h_maint_schedule(actor):
+    """?month=YYYY-MM (default this month): every maintenance visit due, and
+    whether Wettech / Gulfshore has been told."""
+    conn = _conn()
+    try:
+        return _schedule_payload(conn, _month_arg(request.args.get('month')))
+    finally:
+        conn.close()
+
+
+@api('/maint/notified', methods=('POST',))
+def h_maint_notified(actor):
+    """{"month": "YYYY-MM", "vendor", "accounts": [names] (or "account"),
+    "notified": true|false, "how": "email"/"phone"/..., "note"}."""
+    d = _json()
+    month_date = _month_arg(d.get('month'))
+    vendor = str(d.get('vendor') or '').strip()
+    if vendor not in ('Wettech', 'Gulfshore'):
+        raise ValueError('Which subcontractor?')
+    names = [str(n).strip() for n in (d.get('accounts') or [d.get('account')]) if str(n or '').strip()]
+    if not names:
+        raise ValueError('Which account?')
+    key, on = month_date.strftime('%Y-%m'), d.get('notified', True) not in (False, 0, '0', 'false')
+    conn = _conn()
+    try:
+        for n in names:
+            if on:
+                conn.execute('INSERT OR REPLACE INTO pump_maint_notices (month, account, vendor, how, note, '
+                             'notified_by, notified_at) VALUES (?,?,?,?,?,?,?)',
+                             (key, n, vendor, str(d.get('how') or '')[:100], str(d.get('note') or '')[:1000],
+                              actor or '', _now_text()))
+            else:
+                conn.execute('DELETE FROM pump_maint_notices WHERE month=? AND account=? AND vendor=?',
+                             (key, n, vendor))
+        _event(conn, actor, f"{vendor} {'told' if on else 'not told'} of {month_date.strftime('%B')} maintenance",
+               ', '.join(names))
+        conn.commit()
+        return _schedule_payload(conn, month_date)
     finally:
         conn.close()
 

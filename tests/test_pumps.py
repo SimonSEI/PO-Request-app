@@ -2663,6 +2663,53 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(self.c.post('/api/pumps/maint', json={'name': 'X'},
                                      headers={'Authorization': 'Bearer test-openclaw-key'}).status_code, 403)
 
+    def test_account_history_lists_every_todo_and_job(self):
+        name = 'Lake Club (Spanish Wells)'
+        r = self.c.post('/pumps/api/accounts/todo', json={'name': name, 'title': 'Ask about the fountain light',
+                                                          'due_on': '2026-10-20'}).get_json()
+        self.assertTrue(r['success'], r)
+        self.assertEqual(r['todos'][0]['title'], 'Ask about the fountain light')
+        # A to-do written on Today that names the client counts too, done or not.
+        self.c.post('/pumps/api/todos', json={'title': 'Call Spanish Wells Lake Club about the gate code'})
+        tid = [t for t in self.c.get('/pumps/api/todos').get_json()['todos'] if 'gate code' in t['title']][0]['id']
+        self.c.post(f'/pumps/api/todos/{tid}/done', json={'done': True})
+        self.c.post('/pumps/api/todos', json={'title': 'Order printer paper'})
+        h = self.c.get('/pumps/api/accounts/history?name=' + name).get_json()
+        titles = {t['title']: t for t in h['todos']}
+        self.assertIn('Ask about the fountain light', titles)
+        self.assertTrue(titles['Call Spanish Wells Lake Club about the gate code']['done_at'])
+        self.assertNotIn('Order printer paper', titles)
+        self.assertEqual(self.c.get('/pumps/api/accounts/history?name=Nobody').status_code, 400)
+
+    def test_month_maintenance_and_subcontractor_notified(self):
+        today = P._today
+        P._today = lambda: P.datetime(2026, 10, 5).date()
+        try:
+            j = self.c.get('/pumps/api/maint/schedule?month=2026-10').get_json()
+            rows = {(r['account'], r['vendor']): r for r in j['rows']}
+            lc = rows[('Lake Club (Spanish Wells)', 'Wettech')]
+            self.assertIsNone(lc['notified'])
+            self.assertIn('Lake%20Club', j['wettech_mailto'])
+            self.assertFalse(any(a == 'Forum c/o LandQwest Commercial Property' for a, _ in rows), 'January/July only')
+            r = self.c.post('/pumps/api/maint/notified', json={'month': '2026-10', 'vendor': 'Wettech',
+                                                               'accounts': ['Lake Club (Spanish Wells)'], 'how': 'phone'})
+            j = r.get_json()
+            lc = {(x['account'], x['vendor']): x for x in j['rows']}[('Lake Club (Spanish Wells)', 'Wettech')]
+            self.assertEqual(lc['notified']['how'], 'phone')
+            self.assertEqual(j['notified'], 1 + sum(1 for x in j['rows'] if x['vendor'] == 'Gulfshore' and x['notified']))
+            hist = self.c.get('/pumps/api/accounts/history?name=Lake Club (Spanish Wells)').get_json()
+            self.assertEqual([(n['month'], n['vendor']) for n in hist['notices']], [('2026-10', 'Wettech')])
+            # Next month is its own list; un-marking takes it back off.
+            self.assertNotIn(('Lake Club (Spanish Wells)', 'Wettech'),
+                             {(x['account'], x['vendor']) for x in
+                              self.c.get('/pumps/api/maint/schedule?month=2026-11').get_json()['rows']})
+            j = self.c.post('/pumps/api/maint/notified', json={'month': '2026-10', 'vendor': 'Wettech', 'notified': False,
+                                                               'account': 'Lake Club (Spanish Wells)'}).get_json()
+            self.assertIsNone({(x['account'], x['vendor']): x for x in j['rows']}[('Lake Club (Spanish Wells)', 'Wettech')]['notified'])
+            self.assertEqual(self.c.post('/pumps/api/maint/notified', json={'vendor': 'Acme', 'account': 'X'}).status_code, 400)
+        finally:
+            P._today = today
+
     def test_matching_helpers(self):
         self.assertGreater(P.similarity('Reserve at Estero - Lee County',
                                         'THE RESERVE AT ESTERO c/o ALLIANT PROPERTY MANAGEMENT, LLC.'), 0.95)
