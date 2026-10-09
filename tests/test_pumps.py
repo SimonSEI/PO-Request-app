@@ -1014,17 +1014,66 @@ class PumpsTest(unittest.TestCase):
         # Background work (scan, sync) is never put on the undo list.
         self.assertEqual(P._UNDO_ACTION.get(), 0)
 
+    def test_ask_the_other_company_when_maintenance_is_scheduled(self):
+        """SiteOne does Hodges' maintenance: on the 1st of a service month, a
+        to-do to ask Patrick when it's scheduled; the date he gives waits as a
+        visit, and after it getting his report is a to-do."""
+        today = P._today
+        try:
+            P._today = lambda: P.datetime(2027, 5, 1).date()
+            q = lambda: self.c.get('/pumps/api/summary').get_json()['queue']
+            todos = {t['title']: t for t in q()['todos']}
+            ask = todos["Ask Patrick (SiteOne) when Hodges Funeral Home's May maintenance is scheduled"]
+            self.assertEqual(ask['kind'], 'maint_schedule')
+            self.assertEqual(ask['link']['to'], 'PSochar@siteone.com')
+            self.assertEqual(ask['due_on'], '2027-05-01')
+            # Warm Springs (Naples Electric) is quarterly: not in May.
+            self.assertFalse([t for t in todos if 'Warm Springs' in t and 'May' in t])
+            # Wettech's own accounts aren't asked about here.
+            self.assertFalse([t for t in todos if 'Allura' in t])
+            # Once a month: looking again doesn't add another.
+            self.assertEqual(P.maint_schedule_todos(), [])
+            # Not a Hodges month (Jan, May, Sep): nothing.
+            self.assertNotIn(f"maintsched:{ask['link']['maint_id']}:2027-06",
+                             P.maint_schedule_todos(P.datetime(2027, 6, 1).date()))
+            # Patrick: "in the next couple of weeks".
+            self.assertEqual(self.c.post(f"/pumps/api/todos/{ask['id']}/scheduled", json={}).status_code, 400)
+            r = self.c.post(f"/pumps/api/todos/{ask['id']}/scheduled",
+                            json={'date': '2027-05-14', 'said': 'In the next couple of weeks'}).get_json()
+            self.assertEqual(r['scheduled_for'], '2027-05-14')
+            now = q()
+            self.assertNotIn(ask['title'], [t['title'] for t in now['todos']])
+            v = next(t for t in now['waiting_visits'] if t['link']['account'] == 'Hodges Funeral Home')
+            self.assertEqual((v['link']['scheduled_for'], v['link']['vendors'], v['link']['said']),
+                             ('2027-05-14', ['SiteOne'], 'In the next couple of weeks'))
+            self.assertFalse(now['visits_due'])
+            # The day after: get the report (who to ask, from the account's follow-up).
+            P._today = lambda: P.datetime(2027, 5, 15).date()
+            now = q()
+            due = next(t for t in now['visits_due'] if t['link']['account'] == 'Hodges Funeral Home')
+            self.assertIn('PSochar@siteone.com', due['detail'])
+            self.assertIn('Hodges Funeral Home', P.build_digest()['html'])
+            self.c.post(f"/pumps/api/todos/{due['id']}/done", json={'done': True})
+            self.assertFalse([t for t in q()['visits_due'] if t['link']['account'] == 'Hodges Funeral Home'])
+            # Set on the Accounts tab: Allura's maintenance by Oscar.
+            aid = next(a['id'] for a in self.c.get('/pumps/api/maint').get_json()['accounts'] if a['name'] == 'Allura')
+            self.c.post('/pumps/api/maint', json={'id': aid, 'serviced_by': 'Oscar (our technician)'})
+            self.assertIn(f'maintsched:{aid}:2027-07', P.maint_schedule_todos(P.datetime(2027, 7, 1).date()))
+            self.c.post('/pumps/api/maint', json={'id': aid, 'serviced_by': ''})
+        finally:
+            P._today = today
+
     def test_follow_up_before_a_service_comes_due(self):
         def todos():
             return {t['title']: t for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']}
         # Mid-November: nothing of these four is due (quarterly Jan/Apr/Jul/Oct; Hodges Jan/May/Sep).
         self.assertEqual(P.service_follow_ups(P.datetime(2026, 11, 10).date()), [])
-        # A week before January: Sopra, Hodges (SiteOne), Warm Springs (Naples Electric) and Kurt Biggs' dive.
+        # A week before January: Sopra and Kurt Biggs' dive. Hodges (SiteOne) and Warm Springs (Naples
+        # Electric) get "Ask … when it's scheduled" on the 1st instead.
         added = P.service_follow_ups(P.datetime(2026, 12, 26).date())
-        self.assertEqual(len(added), 4, added)
+        self.assertEqual(len(added), 2, added)
         t = todos()
         self.assertIn('lmleczek@davisdevelopment.com', t["Follow up before Sopra Luxury Living's January service"]['detail'])
-        self.assertIn('PSochar@siteone.com', t["Follow up before Hodges Funeral Home's January service"]['detail'])
         self.assertIn('Ramon', t["Follow up before Kurt Biggs's January dive"]['detail'])
         # Once per service: the hourly run doesn't add it again, even once it's done.
         self.assertEqual(P.service_follow_ups(P.datetime(2027, 1, 5).date()), [])

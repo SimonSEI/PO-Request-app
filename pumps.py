@@ -4838,6 +4838,11 @@ def work_queue(conn):
                                                  "ORDER BY COALESCE(NULLIF(due_on, ''), created_at), id")]
     visits = [_todo_dict(r) for r in conn.execute("SELECT * FROM pump_todos WHERE done_at IS NULL AND kind='visit' "
                                                   "ORDER BY created_at, id")]
+    # A visit the tech gave a date for waits until that day; after it, getting
+    # their service report is a to-do.
+    today = _today().isoformat()
+    visits_due = [v for v in visits if (v['link'].get('scheduled_for') or '9') < today]
+    visits = [v for v in visits if v not in visits_due]
     # Each row's key for the ✕ (take it off the To do list); rows taken off are left out.
     hidden = {r[0] for r in conn.execute('SELECT key FROM pump_todo_hidden')}
 
@@ -4859,6 +4864,7 @@ def work_queue(conn):
     new_requests = keep(new_requests, lambda it: f"jobber:{it['jobber_id']}")
     todos = keep(todos, lambda t: f"todo:{t['id']}")
     visits = keep(visits, lambda t: f"todo:{t['id']}")
+    visits_due = keep(visits_due, lambda t: f"todo:{t['id']}")
     chase = keep(chase, lambda c: f"chase:{c['id']}:{c['chase']['check_on']}")
     return {
         'issues': issues,
@@ -4875,6 +4881,7 @@ def work_queue(conn):
         'bills_to_draft': bills_to_draft,
         'todos': todos,
         'waiting_visits': visits,
+        'visits_due': visits_due,
         'quotes_to_draft': quotes_to_draft,
         'vendor_bills_to_pay': vendor_bills_to_pay,
         'reports_to_log': reports_to_log,
@@ -5112,6 +5119,7 @@ UNDO_LABELS = (
     (r'/dives/send$', 'Sent the dive email'),
     (r'/dives/', 'Changed a dive site'),
     (r'/todos/(\d+)/done$', 'Ticked a to-do'),
+    (r'/todos/(\d+)/scheduled$', 'Logged a maintenance date'),
     (r'/todos/hide$', 'Took a row off the To do list'),
     (r'/accounts/ready$', 'Client ready for maintenance'),
     (r'/todos', 'Changed a to-do'),
@@ -6751,6 +6759,7 @@ def ensure_monthly_todos(today=None):
             conn.commit()
     finally:
         conn.close()
+    maint_schedule_todos(today)
 
 
 def _todo_dict(r):
@@ -6880,6 +6889,19 @@ def h_todo_done(actor, todo_id):
     finally:
         conn.close()
     return h_todos(actor)
+
+
+@api('/todos/<int:todo_id>/scheduled', methods=('POST',))
+def h_todo_scheduled(actor, todo_id):
+    """The tech gave a date for a maintenance visit: {"date": "YYYY-MM-DD", "said": what they said}."""
+    d = _json()
+    conn = _conn()
+    try:
+        out = log_maint_visit(conn, todo_id, str(d.get('date') or ''), str(d.get('said') or ''), actor)
+        conn.commit()
+        return out
+    finally:
+        conn.close()
 
 
 @api('/undo')
@@ -7523,7 +7545,8 @@ def service_follow_ups(today=None):
     added = []
     try:
         rows = [('m', r['id'], r['name'], r['follow_up'], _month_list(r['months']), bool(r['monthly']))
-                for r in conn.execute("SELECT * FROM pump_maint_accounts WHERE active=1 AND COALESCE(follow_up, '')!=''")]
+                for r in conn.execute("SELECT * FROM pump_maint_accounts WHERE active=1 AND COALESCE(follow_up, '')!='' "
+                                      "AND COALESCE(serviced_by, '')=''")]
         rows += [('d', r['id'], r['name'], r['follow_up'], _month_list(r['months']), False)
                  for r in conn.execute("SELECT * FROM pump_dive_sites WHERE COALESCE(active, 1)=1 "
                                        "AND COALESCE(needs_dive, 1)=1 AND COALESCE(follow_up, '')!=''")]
@@ -7543,6 +7566,82 @@ def service_follow_ups(today=None):
     finally:
         conn.close()
     return added
+
+
+def _apply_serviced_by(c, now):
+    """Once (Oct 2026): who does the maintenance itself where it isn't Wettech -
+    SiteOne at Hodges, Naples Electric at Warm Springs. The office sets the
+    rest on the Accounts tab."""
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('serviced_by_oct26', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    for name, by in (('Hodges Funeral Home', 'SiteOne'), ('Warm Springs Comm. Assoc.', 'Naples Electric')):
+        c.execute("UPDATE pump_maint_accounts SET serviced_by=? WHERE name=? AND COALESCE(serviced_by, '')=''",
+                  (by, name))
+
+
+def maint_schedule_todos(today=None):
+    """On the 1st (or the first time the app looks that month): for each
+    account whose maintenance someone other than Wettech does (SiteOne at
+    Hodges, Naples Electric at Warm Springs), "Ask Patrick (SiteOne) when
+    Hodges Funeral Home's October maintenance is scheduled" - once a month,
+    with the email ready. The date they give is logged as an upcoming visit."""
+    today = today or _today()
+    month = today.replace(day=1)
+    conn = _conn()
+    added = []
+    try:
+        for r in conn.execute("SELECT * FROM pump_maint_accounts WHERE active=1 AND COALESCE(serviced_by, '')!=''"):
+            months = _month_list(r['months'])
+            if not (r['monthly'] or not months or month.month in months):
+                continue
+            key = f"maintsched:{r['id']}:{month.strftime('%Y-%m')}"
+            vendor = r['serviced_by']
+            contact, email = _vendor_contact(vendor)
+            who = contact if contact == vendor else f'{contact} ({vendor})'
+            label = month.strftime('%B')
+            detail = f"{vendor} does this maintenance - ask {email or contact} for the date, then log it."
+            before = conn.total_changes
+            add_todo(conn, key, f"Ask {who} when {r['name']}'s {label} maintenance is scheduled", detail,
+                     {'account': r['name'], 'maint_id': r['id'], 'month': month.isoformat(), 'vendor': vendor,
+                      'contact': contact, 'to': email}, kind='maint_schedule', due_on=month.isoformat())
+            if conn.total_changes > before:
+                added.append(key)
+        conn.commit()
+    finally:
+        conn.close()
+    return added
+
+
+def log_maint_visit(conn, todo_id, date, said='', actor=''):
+    """The tech gave a date: the "Ask … when it's scheduled" to-do is done and
+    the visit waits under "Waiting on others" until that day. After it, it is
+    back in To do to get their service report."""
+    row = conn.execute("SELECT * FROM pump_todos WHERE id=? AND kind='maint_schedule'", (todo_id,)).fetchone()
+    if not row:
+        raise ValueError('No such to-do')
+    date = _iso_date(date)
+    if not date:
+        raise ValueError('Pick the date they gave you')
+    link = json.loads(row['link'] or '{}')
+    name, vendor = link.get('account') or '', link.get('vendor') or ''
+    acct = conn.execute('SELECT follow_up FROM pump_maint_accounts WHERE id=?', (link.get('maint_id'),)).fetchone()
+    now = _now_text()
+    conn.execute('UPDATE pump_todos SET done_at=?, done_by=? WHERE id=?', (now, actor or '', todo_id))
+    month = (link.get('month') or date)[:7]
+    conn.execute("UPDATE pump_todos SET done_at=?, done_by=? WHERE kind='visit' AND done_at IS NULL "
+                 "AND json_extract(link, '$.account')=? AND json_extract(link, '$.month')=?",
+                 (now, actor or '', name, link.get('month') or ''))
+    conn.execute('INSERT OR REPLACE INTO pump_todos (kind, key, title, detail, due_on, link, created_by, created_at) '
+                 'VALUES (?,?,?,?,?,?,?,?)',
+                 ('visit', f'visit:{name}:{month}:scheduled', f'{name} - maintenance visit',
+                  (acct['follow_up'] if acct and acct['follow_up'] else
+                   f"Get {vendor}'s service report from {link.get('to') or link.get('contact') or vendor}."),
+                  date, json.dumps({**link, 'vendors': [vendor], 'since': _today().isoformat(), 'reported': [],
+                                    'scheduled_for': date, 'said': (said or '').strip()[:300]}),
+                  actor or '', now))
+    _event(conn, actor, 'maintenance scheduled', f"{name}: {vendor} {date}" + (f' - "{said.strip()}"' if said else ''))
+    return {'scheduled_for': date}
 
 
 def init_account_tables(c):
@@ -7584,7 +7683,7 @@ def init_account_tables(c):
         except sqlite3.OperationalError:
             pass
     for tbl, col in (('pump_maint_accounts', 'repairs_by'), ('pump_maint_accounts', 'follow_up'),
-                     ('pump_dive_sites', 'follow_up')):
+                     ('pump_maint_accounts', 'serviced_by'), ('pump_dive_sites', 'follow_up')):
         try:
             c.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} TEXT DEFAULT ''")
         except sqlite3.OperationalError:
@@ -7635,6 +7734,7 @@ def init_account_tables(c):
     _apply_master_list(c, now)
     _apply_repairs_by(c, now)
     _apply_follow_ups(c, now)
+    _apply_serviced_by(c, now)
     if not seeded('office_answers_oct26'):
         # What the office said (Oct 2026): Old Collier and Camas Willows are off
         # SCADA; Autumn Woods (we pay) and Reserve at Estero (in their monthly)
@@ -7968,7 +8068,7 @@ def h_scada_update(actor, sid):
 
 
 MAINT_FIELDS = ('name', 'kind', 'joined', 'equipment', 'address', 'months', 'vendor_cost', 'naples_electric', 'our_bill',
-                'notes', 'repairs_by', 'follow_up')
+                'notes', 'repairs_by', 'follow_up', 'serviced_by')
 
 
 def maint_accounts(conn):
@@ -8061,7 +8161,7 @@ def add_todo(conn, key, title, detail='', link=None, kind='auto', due_on=''):
 # the Accounts tab). Contacts for emails; '' email = type it in.
 IN_HOUSE = 'Oscar (our technician)'
 REPAIR_COMPANIES = {
-    'SiteOne': ('SiteOne', 'PSochar@siteone.com'),
+    'SiteOne': ('Patrick', 'PSochar@siteone.com'),
     'Naples Electric': ('Paul', 'paul@nemwinc.com'),
     IN_HOUSE: ('Oscar', ''),
 }
@@ -8679,7 +8779,9 @@ def build_digest(conn=None):
                             f'style="margin:0;padding-left:18px;font:14px Arial">' +
                             ''.join(f'<li style="margin:3px 0">{r}</li>' for r in rows) + '</ul>')
     sec('To do', [e(t['title']) + (f" <span style='color:#666'>- {e(t['detail'][:140])}</span>" if t['detail'] else '')
-                  for t in q['todos']])
+                  for t in q['todos']]
+        + [f"Get {e(', '.join(t['link'].get('vendors') or []))}'s service report for {e(t['link'].get('account'))} "
+           f"(out {e(t['link'].get('scheduled_for'))})" for t in q['visits_due']])
     sec('Pay the vendor - the client has paid', [f"{e(c['title'] or c['client_name'])} - {e(c['vendor'])} bill "
                                                  f"#{e(c.get('vendor_bill_number'))}" for c in q['vendor_bills_to_pay']])
     sec('Problems', [f"{e(i.get('title') or i.get('client_name'))}: {e(i['message'])}" for i in q['issues']])
@@ -8702,8 +8804,8 @@ def build_digest(conn=None):
     body = ''.join(sections) or '<p style="font:14px Arial">Nothing needs doing today.</p>'
     html = (f'<div style="font:14px Arial;color:#111"><p>Pumps - {e(day)}. {q["open_count"]} open jobs.'
             + (f' <a href="{link}">Open Pumps</a>' if link else '') + f'</p>{body}</div>')
-    n = len(q['todos']) + len(q['vendor_bills_to_pay']) + len(q['issues']) + len(q['vendor_follow_ups']) \
-        + len(q['needs_scheduling'])
+    n = len(q['todos']) + len(q['visits_due']) + len(q['vendor_bills_to_pay']) + len(q['issues']) \
+        + len(q['vendor_follow_ups']) + len(q['needs_scheduling'])
     return {'subject': f'Pumps today - {n} to do' if n else 'Pumps today - nothing urgent', 'html': html}
 
 
@@ -8827,7 +8929,7 @@ def account_ready(conn, name, actor='system'):
     today = _today().isoformat()
     vendors, p, l = [], a['pump'], a['lake']
     if p and p.get('active'):
-        vendors.append('Wettech')
+        vendors.append(p.get('serviced_by') or 'Wettech')
     if l and (l.get('active') if l.get('active') is not None else 1) and (l.get('needs_dive') if
                                                                           l.get('needs_dive') is not None else 1):
         vendors.append('Gulfshore')

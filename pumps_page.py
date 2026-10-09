@@ -394,8 +394,29 @@ function todoRow(t){
       ${t.detail || (t.kind === 'manual' && t.due_on) ? `<div class="sub" style="margin-left:24px">${t.kind === 'manual' && t.due_on ? `<b class="${t.due_on < todayIso() ? 'bad' : 'warn'}">due ${esc(niceDay(t.due_on))}</b>${t.detail ? ' · ' : ''}` : ''}${esc(t.detail || '')}</div>` : ''}
       ${t.kind === 'approved_quote' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><a class="btn s p" href="/pumps/api/docs/${t.link.doc_id}/file?version=approved&download=1">⬇ Approved PDF</a><a class="btn s" href="mailto:${esc(t.link.to || '')}?subject=${encodeURIComponent(t.link.subject || 'Approved quote')}&body=${encodeURIComponent('Hi,\n\nThe attached quote is approved - please go ahead and schedule it.\n\nThank you,\nSimon Weardon')}">✉ Email ${esc(t.link.to || '')}</a>${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}</div>` : ''}
       ${t.kind !== 'approved_quote' && (t.link.uri || t.link.case_id) ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${(t.link.uris || []).length > 1 ? t.link.uris.map(u => `<a class="btn s" href="${esc(u.uri)}" target="_blank" rel="noopener">Open ${esc(u.label)} ↗</a>`).join('') + `<button class="btn s" onclick='openAll(${JSON.stringify(t.link.uris.map(u => u.uri)).replace(/'/g, "&#39;")})'>Open both ↗</button>` : t.link.uri ? `<a class="btn s" href="${esc(t.link.uri)}" target="_blank" rel="noopener">Open in Jobber ↗</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}${t.link.scada_id ? `<button class="btn s" onclick="showTab('scada')">SCADA</button>` : ''}</div>` : ''}
+      ${t.kind === 'maint_schedule' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="logMaintDate(${t.id})">📅 Log the date</button>${t.link.to ? `<a class="btn s" href="${esc(maintAskMail(t))}">✉ Email ${esc(t.link.contact || t.link.to)}</a>` : ''}</div>` : ''}
       ${t.kind === 'diver_email' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="diverTodo('${esc(t.link.month || '')}')">Email ready - copy &amp; attach</button><a class="btn s" href="/pumps/api/dives/docx?month=${encodeURIComponent(t.link.month || '')}">⬇ Word list</a></div>` : ''}</div>
       ${t.kind === 'manual' ? `<button class="btn s" title="Delete from my to do list" onclick="todoDelete(${t.id})">✕</button>` : `<button class="btn s" title="Delete from my to do list" onclick="todoHide('${esc(t.todo_key)}')">✕</button>`}</div>`;
+}
+// Maintenance another company does (SiteOne at Hodges…): ask them when it's
+// scheduled, then log the date - the visit waits until that day.
+function maintAskMail(t){ const l = t.link || {}, mon = l.month ? new Date(l.month + 'T12:00:00').toLocaleString('en-US', {month: 'long'}) : 'this month';
+  return `mailto:${l.to}?subject=${encodeURIComponent(`${l.account} - ${mon} maintenance`)}&body=${encodeURIComponent(`Hi ${l.contact || ''},\n\n${l.account}'s maintenance is coming up in ${mon}. When is it scheduled?\n\nThank you,\nSimon Weardon`)}`; }
+function logMaintDate(id){
+  const picks = [['This week', fridayOf(0, 4)], ['Early next week', fridayOf(1, 1)], ['Later next week', fridayOf(1, 4)], ['In 2 weeks', fridayOf(2, 4)]];
+  openModal('When is it scheduled?', `
+    <label class="note">What they said<input type="text" id="mdSaid" placeholder="e.g. In the next couple of weeks" style="width:100%"></label>
+    <label class="note">They'll be out on<input type="date" id="mdDate" style="width:100%"></label>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">${picks.map(([t, d]) => `<button class="btn s" onclick="document.getElementById('mdDate').value='${d}'">${t} · ${esc(niceDay(d))}</button>`).join('')}</div>
+    <div class="note">The visit waits under "Waiting on others" until then. After that day it comes back here to get their service report.</div>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="saveMaintDate(${id})">Save</button>`);
+}
+async function saveMaintDate(id){
+  const date = document.getElementById('mdDate').value, said = document.getElementById('mdSaid').value.trim();
+  if (!date) { toast('Pick the date they gave you (or the closest one)', true); return; }
+  const j = await api('/todos/' + id + '/scheduled', {method:'POST', body:{date, said}});
+  if (!j.success) { toast(j.error, true); return; }
+  closeModal(); toast('Scheduled for ' + niceDay(j.scheduled_for)); loadToday();
 }
 // ── undo ──────────────────────────────────────────────
 async function showUndo(){
@@ -531,6 +552,9 @@ async function loadToday(){
   (q.vendor_follow_ups || []).forEach(c => { const ch = c.chase, late = ch.expect_by && ch.expect_by < todayIso();
     todo.push(todoItem('Follow up · ' + (ch.phase === 'job' ? 'job' : 'quote'), late ? 'r' : 'a', caseTitle(c), caseSub(c, esc(stageText(c))) + chaseLine(c),
       open(c), `<button class="btn s p" onclick="event.stopPropagation();logFollow(${c.id})">📞 Log follow-up</button><button class="btn s" onclick="event.stopPropagation();vendorEmail(${c.id})">✉ Email</button>`, c.todo_key)); });
+  (q.visits_due || []).forEach(t => { const l = t.link || {}, v = (l.vendors || []).join(' and ');
+    todo.push(todoItem('Get report', 'b', esc(l.account || t.title), `${esc(v)} was out ${esc(niceDay(l.scheduled_for))} - get their service report${t.detail ? ' · ' + esc(t.detail) : ''}`, "showTab('accounts')",
+      `${l.to ? `<a class="btn s" href="mailto:${esc(l.to)}?subject=${encodeURIComponent((l.account || '') + ' - service report')}">✉ Email ${esc(l.contact || l.to)}</a>` : ''}<button class="btn s p" onclick="todoDone(${t.id}, true)">✓ Got it</button>`, t.todo_key)); });
   q.ready_to_close.forEach(c => todo.push(todoItem('Send invoice', 'a', caseTitle(c), caseSub(c, 'send the invoice from Jobber' + (c.sei_invoice_number ? ' · #' + esc(c.sei_invoice_number) : '')) + followUp(c.follow_up), open(c), doDone(c), c.todo_key)));
   q.reports_to_log.forEach(d => todo.push(todoItem('Log report', 'b', esc(d.client_name || d.file_name), `${esc((d.report_fields||{}).title || 'Report')} · ${esc(d.doc_date)}`, d.case_id ? `openCase(${d.case_id})` : `openDoc(${d.id})`,
     `<button class="btn s" onclick="logReport(${d.id})">Log in Jobber</button>`, d.todo_key)));
@@ -544,7 +568,7 @@ async function loadToday(){
   q.waiting_approval.forEach(c => waiting.push(todoItem('Client approval', '', caseTitle(c), caseSub(c) + followUp(c.follow_up), open(c), '', c.todo_key)));
   q.waiting_work.forEach(c => waiting.push(todoItem('Work', '', caseTitle(c), caseSub(c, c.scheduled_for ? 'scheduled ' + esc(c.scheduled_for) : '') + chaseLine(c), open(c), logBtn(c), c.todo_key)));
   (q.waiting_visits || []).forEach(t => { const l = t.link || {}, left = (l.vendors || []).filter(x => !(l.reported || []).includes(x));
-    waiting.push(todoItem('Maintenance visit', '', esc(l.account || t.title), `client approved ${esc(l.since || '')} · waiting on ${esc(left.join(' and '))}'s service report${left.length > 1 ? 's' : ''}${(l.reported || []).length ? ' · ✓ ' + esc(l.reported.join(', ')) : ''}`, "showTab('accounts')",
+    waiting.push(todoItem('Maintenance visit', '', esc(l.account || t.title), (l.scheduled_for ? `${esc(left.join(' and '))} out ${esc(niceDay(l.scheduled_for))}${l.said ? ` · <i>"${esc(l.said)}"</i>` : ''}` : `client approved ${esc(l.since || '')} · waiting on ${esc(left.join(' and '))}'s service report${left.length > 1 ? 's' : ''}`) + ((l.reported || []).length ? ' · ✓ ' + esc(l.reported.join(', ')) : ''), "showTab('accounts')",
       `<button class="btn s" onclick="todoDone(${t.id}, true)">✓ Done</button>`, t.todo_key)); });
   q.waiting_bill.forEach(c => waiting.push(todoItem(v(c) + ' bill', '', caseTitle(c), caseSub(c), open(c), '', c.todo_key)));
   const n = urgent.length + todo.length + q.todos.length;
@@ -1177,7 +1201,7 @@ function drawMaint(){
     <td><button class="btn s" onclick="maintEdit(${a.id})">Edit</button></td></tr>`).join('') || '<tr><td colspan="10" class="empty">None.</td></tr>';
 }
 function maintEdit(id){
-  const a = id ? MT.accounts.find(x => x.id === id) : {name:'', kind:'Pump', joined:'', equipment:'', address:'', months:'1,4,7,10', monthly:0, vendor_cost:'', naples_electric:'', our_bill:'', notes:'', repairs_by:'', follow_up:'', active:1};
+  const a = id ? MT.accounts.find(x => x.id === id) : {name:'', kind:'Pump', joined:'', equipment:'', address:'', months:'1,4,7,10', monthly:0, vendor_cost:'', naples_electric:'', our_bill:'', notes:'', repairs_by:'', serviced_by:'', follow_up:'', active:1};
   const months = (a.months || '').split(',').filter(Boolean).map(Number);
   openModal(id ? 'Account - ' + esc(a.name) : 'Add maintenance account', `<div class="fields">
     <label class="w">Account<input type="text" id="mt_name" value="${esc(a.name)}"></label>
@@ -1190,15 +1214,16 @@ function maintEdit(id){
     <label>Our bill (Stahlman invoice)<input type="text" id="mt_our_bill" value="${esc(a.our_bill)}"></label>
     <label><span><input type="checkbox" id="mt_monthly" ${a.monthly ? 'checked' : ''}> Monthly</span></label>
     <div class="w"><b class="note">Months</b><div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px">${MSHORT.map((m, i) => `<label style="display:flex;gap:3px;align-items:center"><input type="checkbox" class="mt_m" value="${i + 1}" ${months.includes(i + 1) ? 'checked' : ''}>${m}</label>`).join('')}</div></div>
+    <label class="w">Maintenance by<select id="mt_serviced_by">${[['', 'Wettech (Tommy)'], ['SiteOne', 'SiteOne'], ['Naples Electric', 'Naples Electric'], ['Oscar (our technician)', 'Oscar (our technician)']].map(([v, l]) => `<option value="${esc(v)}" ${v === (a.serviced_by || '') ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select><span class="note">Not Wettech: on the 1st of each service month, a to-do to ask them when it's scheduled.</span></label>
     <label class="w">Repairs by<select id="mt_repairs_by">${[['', 'Wettech (Tommy)'], ['SiteOne', 'SiteOne'], ['Naples Electric', 'Naples Electric'], ['Oscar (our technician)', 'Oscar (our technician) - no Wettech quote or bill']].map(([v, l]) => `<option value="${esc(v)}" ${v === (a.repairs_by || '') ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select><span class="note">New repair jobs for this account go to them.</span></label>
-    <label class="w">Before each service, follow up with…<textarea id="mt_follow_up" placeholder="e.g. Email Lauren to approve the visit">${esc(a.follow_up || '')}</textarea><span class="note">Shows in the to-do list about a week before each service month.</span></label>
+    <label class="w">Before each service, follow up with…<textarea id="mt_follow_up" placeholder="e.g. Email Lauren to approve the visit">${esc(a.follow_up || '')}</textarea><span class="note">Shows in the to-do list about a week before each service month. When someone other than Wettech does the maintenance, it shows when it's time to get their report instead.</span></label>
     <label class="w">Notes<textarea id="mt_notes">${esc(a.notes)}</textarea></label>
     <label><span><input type="checkbox" id="mt_active" ${a.active ? 'checked' : ''}> Active account</span></label></div>`,
     `${id ? `<button class="btn danger" onclick="maintDelete(${id})">Remove</button>` : ''}<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="maintSave(${id})">Save</button>`);
 }
 async function maintSave(id){
   const v = k => document.getElementById('mt_' + k).value;
-  const body = {name: v('name'), kind: v('kind'), joined: v('joined'), equipment: v('equipment'), address: v('address'), vendor_cost: v('vendor_cost'), naples_electric: v('naples_electric'), our_bill: v('our_bill'), notes: v('notes'), repairs_by: v('repairs_by'), follow_up: v('follow_up'), monthly: document.getElementById('mt_monthly').checked, active: document.getElementById('mt_active').checked, months: [...document.querySelectorAll('.mt_m:checked')].map(x => x.value).join(',')};
+  const body = {name: v('name'), kind: v('kind'), joined: v('joined'), equipment: v('equipment'), address: v('address'), vendor_cost: v('vendor_cost'), naples_electric: v('naples_electric'), our_bill: v('our_bill'), notes: v('notes'), repairs_by: v('repairs_by'), serviced_by: v('serviced_by'), follow_up: v('follow_up'), monthly: document.getElementById('mt_monthly').checked, active: document.getElementById('mt_active').checked, months: [...document.querySelectorAll('.mt_m:checked')].map(x => x.value).join(',')};
   if (id) body.id = id;
   const j = await api('/maint', {method:'POST', body});
   if (!j.success) { toast(j.error, true); return; }
