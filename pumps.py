@@ -6793,37 +6793,58 @@ def h_todo_add(actor):
 
 
 # ── A to-do written from what someone explains ───────────────────────────────
-# The office types what needs doing in their own words; Claude (or, without it,
-# a plain clean-up) turns it into a short to-do to check before it's saved.
+# The office types what needs doing in their own words; the app shortens it to
+# a to-do to check before it's saved: the first sentence, without "I need to",
+# and a due date when one is said ("by Friday", "tomorrow", "10/16"). No AI.
 
-TODO_SCHEMA = {
-    'type': 'object',
-    'properties': {
-        'title': {'type': 'string'},
-        'detail': {'type': 'string'},
-        'due_on': {'type': 'string'},
-    },
-    'required': ['title', 'detail', 'due_on'],
-    'additionalProperties': False,
-}
-TODO_PROMPT = """You write to-do list items for the office of Stahlman-England Irrigation (pumps, lakes,
-divers and SCADA work; vendors Wettech - Tom/Tommy - and Gulfshore - Jordan; quotes and invoices in Jobber).
-Someone explains in their own words what they need to do. Write it as one to-do:
-- title: a short instruction starting with a verb, at most 80 characters, e.g. "Call Tom at Wettech
-  about Homewood Suites". Keep every name, place, job, PO and quote number they mention.
-- detail: one or two short lines with anything else worth remembering from what they said (who said
-  what, amounts, why). Empty when the title says it all. Never add facts they didn't give.
-- due_on: the date it must be done by as YYYY-MM-DD when they give one (work out "Friday" or "next
-  week" from today's date), else empty."""
-
-_TODO_FILLER = re.compile(r'^\s*(?:(?:i|we)\s+(?:need|have|want|should|must)\s+to|(?:i|we)\s+(?:gotta|got\s+to)|'
-                          r'(?:please\s+)?remind\s+me\s+to|remember\s+to|(?:can|could)\s+you|'
-                          r"(?:i|we)'?ll\s+need\s+to|need\s+to|have\s+to|please|so)\s+", re.I)
+_TODO_FILLER = re.compile(r'^\s*(?:(?:so|ok|okay|also|and|then)\b,?|(?:i|we)\s+(?:need|have|want|should|must)\s+to|'
+                          r'(?:i|we)\s+(?:gotta|got\s+to)|(?:please\s+)?remind\s+me\s+to|remember\s+to|'
+                          r'(?:can|could)\s+you|(?:i|we)\s*(?:\'ll|will)\s+need\s+to|need\s+to|have\s+to|please|'
+                          r'(?:i|we)\s+(?:should|must|will|\'ll))\s+', re.I)
+_WEEKDAYS = ('monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday')
+_DUE = re.compile(r'\b(?:(by|before|on|due|for|until)\s+)?(?:(today|tonight|tomorrow)|(this|next)\s+week|'
+                  r'end\s+of\s+(?:the\s+)?(week|month)|(?:(this|next)\s+)?(' + '|'.join(_WEEKDAYS) +
+                  r')|(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?)\b', re.I)
 
 
-def _plain_todo(text):
-    """Without Claude: the first sentence, without "I need to", made short."""
-    text = re.sub(r'\s+', ' ', text).strip()
+def due_from_text(text, today):
+    """The date a to-do is due by when the text says one, else ''."""
+    # A number date only after "by", "on", "due"...: "1/2 HP" is not January 2nd.
+    m = next((m for m in _DUE.finditer(text or '') if not m.group(7) or m.group(1)), None)
+    if not m:
+        return ''
+    day, week, end, which, wd, mo, dd, yy = m.groups()[1:]
+    if day:
+        return (today + timedelta(days=0 if day.lower() in ('today', 'tonight') else 1)).isoformat()
+    friday = today + timedelta(days=(4 - today.weekday()) % 7)
+    if week:
+        return (friday + timedelta(days=7 if week.lower() == 'next' else 0)).isoformat()
+    if end:
+        if end.lower() == 'week':
+            return friday.isoformat()
+        nxt = (today.replace(day=28) + timedelta(days=4)).replace(day=1)
+        return (nxt - timedelta(days=1)).isoformat()
+    if wd:
+        d = today + timedelta(days=(_WEEKDAYS.index(wd.lower()) - today.weekday()) % 7 or 7)
+        if (which or '').lower() == 'next' and (d - today).days < 7 and today.weekday() < _WEEKDAYS.index(wd.lower()):
+            d += timedelta(days=7)   # "next Friday" on a Monday = the Friday after this one
+        return d.isoformat()
+    try:
+        y = int(yy) + (2000 if yy and len(yy) == 2 else 0) if yy else today.year
+        d = date(y, int(mo), int(dd))
+        if not yy and d < today - timedelta(days=60):
+            d = d.replace(year=y + 1)   # "1/5" in October is next January
+        return d.isoformat()
+    except ValueError:
+        return ''
+
+
+def reword_todo(text, today=None):
+    """A short to-do from someone's explanation: {title, detail, due_on}."""
+    text = re.sub(r'\s+', ' ', text or '').strip()
+    if not text:
+        raise ValueError('Say what needs doing')
+    today = today or _today()
     parts = re.split(r'(?<=[.!?])\s+', text, 1)
     first = parts[0].rstrip('.!? ')
     while _TODO_FILLER.match(first):
@@ -6831,52 +6852,10 @@ def _plain_todo(text):
     cut = len(first) > 80
     if cut:
         first = first[:80].rsplit(' ', 1)[0].rstrip(',;:-') + '…'
-    title = first[:1].upper() + first[1:]
+    title = (first[:1].upper() + first[1:]) or text[:80]
     # Details only when the title leaves something out.
-    return {'title': title or text[:80], 'detail': text if cut else (parts[1] if len(parts) > 1 else ''), 'due_on': ''}
-
-
-def _claude_todo(text, today):
-    """{title, detail, due_on} from Claude, or None when it can't be reached."""
-    if not ANTHROPIC_API_KEY:
-        return None
-    try:
-        import anthropic
-    except ImportError:
-        return None
-    try:
-        resp = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=30.0).beta.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=2000,
-            betas=['server-side-fallback-2026-07-01'],
-            fallbacks='default',
-            system=TODO_PROMPT,
-            output_config={'effort': 'low', 'format': {'type': 'json_schema', 'schema': TODO_SCHEMA}},
-            messages=[{'role': 'user', 'content': f"Today is {today.strftime('%A %B %d, %Y')}.\n\n{text[:4000]}"}],
-        )
-    except (anthropic.APIStatusError, anthropic.APIConnectionError) as e:
-        print(f'  ⚠ Pumps: to-do not reworded by Claude: {e}')
-        return None
-    if resp.stop_reason in ('refusal', 'max_tokens'):
-        return None
-    try:
-        return json.loads(next((b.text for b in resp.content if b.type == 'text'), ''))
-    except ValueError:
-        return None
-
-
-def reword_todo(text, today=None):
-    """A short to-do from someone's explanation: {title, detail, due_on, by}."""
-    text = (text or '').strip()
-    if not text:
-        raise ValueError('Say what needs doing')
-    today = today or _today()
-    out = _claude_todo(text, today)
-    by = 'claude'
-    if not out or not (out.get('title') or '').strip():
-        out, by = _plain_todo(text), 'plain'
-    return {'title': out['title'].strip()[:300], 'detail': (out.get('detail') or '').strip()[:2000],
-            'due_on': _iso_date(out.get('due_on')) or '', 'by': by}
+    return {'title': title[:300], 'detail': (text if cut else (parts[1] if len(parts) > 1 else ''))[:2000],
+            'due_on': due_from_text(text, today)}
 
 
 @api('/todos/reword', methods=('POST',))

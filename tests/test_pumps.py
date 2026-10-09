@@ -2842,35 +2842,37 @@ W/O No. 41105'''
 
 
     def test_write_a_to_do_from_an_explanation(self):
-        """Someone explains what they need to do; the app writes a short to-do to check first."""
+        """Someone explains what they need to do; the app (no AI) shortens it to a to-do to check first."""
         from datetime import date
-        real = P._claude_todo
-        try:
-            P._claude_todo = lambda text, today: None   # Claude not reachable: a plain clean-up
-            r = self.c.post('/pumps/api/todos/reword', json={'text': 'I need to call Tom at Wettech about Homewood '
-                                                                     'Suites. He said later next week.'})
-            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-            t = r.get_json()['todo']
-            self.assertEqual((t['title'], t['by']), ('Call Tom at Wettech about Homewood Suites', 'plain'))
-            self.assertEqual(t['detail'], 'He said later next week.')
-            self.assertEqual(self.c.post('/pumps/api/todos/reword', json={'text': ' '}).status_code, 400)
-            seen = {}
-
-            def fake(text, today):
-                seen.update(text=text, today=today)
-                return {'title': 'Send Allura the pump quote', 'detail': 'They asked on the phone.',
-                        'due_on': '2026-10-16'}
-            P._claude_todo = fake
-            t = P.reword_todo('so allura called and they want the quote for the pump by next friday',
-                              today=date(2026, 10, 9))
-            self.assertEqual((t['title'], t['due_on'], t['by']), ('Send Allura the pump quote', '2026-10-16', 'claude'))
-            self.assertEqual(seen['today'], date(2026, 10, 9))
-        finally:
-            P._claude_todo = real
-        r = self.c.post('/pumps/api/todos', json={'title': t['title'], 'detail': t['detail'], 'due_on': t['due_on']})
-        row = next(x for x in r.get_json()['todos'] if x['title'] == 'Send Allura the pump quote')
+        fri = date(2026, 10, 9)
+        r = self.c.post('/pumps/api/todos/reword', json={'text': 'I need to call Tom at Wettech about Homewood '
+                                                                 'Suites. He said later next week.'})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        t = r.get_json()['todo']
+        self.assertEqual((t['title'], t['detail']), ('Call Tom at Wettech about Homewood Suites',
+                                                     'He said later next week.'))
+        self.assertEqual(self.c.post('/pumps/api/todos/reword', json={'text': ' '}).status_code, 400)
+        t = P.reword_todo('so remind me to send Allura the pump quote by Friday', today=fri)
+        self.assertEqual((t['title'], t['detail'], t['due_on']), ('Send Allura the pump quote by Friday', '', '2026-10-16'))
+        due = lambda text, today=fri: P.due_from_text(text, today)
+        self.assertEqual(due('tomorrow'), '2026-10-10')
+        self.assertEqual(due('get it done this week'), '2026-10-09')
+        self.assertEqual(due('next week'), '2026-10-16')
+        self.assertEqual(due('before the end of the month'), '2026-10-31')
+        self.assertEqual(due('due 10/20'), '2026-10-20')
+        self.assertEqual(due('by 1/5'), '2027-01-05')
+        self.assertEqual(due('order a 1/2 HP motor'), '', 'a fraction is not a date')
+        self.assertEqual(due('next friday', date(2026, 10, 12)), '2026-10-23')
+        self.assertEqual(due('call Quail Run'), '')
+        long = P.reword_todo('we need to get the SCADA quote out to Cross Creek before the end of the month, they renew '
+                             'in November and Medallion pays it', today=fri)
+        self.assertTrue(long['title'].startswith('Get the SCADA quote out to Cross Creek') and len(long['title']) <= 81)
+        self.assertIn('Medallion pays it', long['detail'])
+        self.assertEqual(long['due_on'], '2026-10-31')
+        r = self.c.post('/pumps/api/todos', json={'title': t['title'], 'detail': 'They asked on the phone.',
+                                                  'due_on': t['due_on']})
+        row = next(x for x in r.get_json()['todos'] if x['title'] == 'Send Allura the pump quote by Friday')
         self.assertEqual((row['detail'], row['due_on'], row['kind']), ('They asked on the phone.', '2026-10-16', 'manual'))
-
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -421,7 +421,7 @@ async function todoWrite(){
   window._todoText = text;
   const t = j.todo;
   openModal('New to-do', `
-    <div class="note">${t.by === 'claude' ? 'Reworded from what you wrote' : 'Shortened from what you wrote (Claude could not be reached)'} - change anything before adding it.</div>
+    <div class="note">Shortened from what you wrote - change anything before adding it.</div>
     <label class="note">To-do<input type="text" id="tdTitle" value="${esc(t.title)}" style="width:100%"></label>
     <label class="note">Details<textarea id="tdDetail" style="width:100%;min-height:70px;font:inherit">${esc(t.detail)}</textarea></label>
     <label class="note">Due <span class="note">(optional)</span><input type="date" id="tdDue" value="${esc(t.due_on)}"></label>
