@@ -1733,6 +1733,47 @@ class PumpsTest(unittest.TestCase):
         self.upload('q-0142.pdf', data=self._pdf())
         self.assertIn(res['doc_id'], [d['id'] for d in queue()['quotes_to_draft']])
 
+    def test_ready_client_approved(self):
+        """Sopra called: ready for their maintenance. Off hold for the diver,
+        followed under Waiting on others until both service reports are in."""
+        acc = lambda: next(x for x in self.c.get('/pumps/api/accounts').get_json()['accounts']
+                           if x['name'] == 'Sopra Luxury Living')
+        self.assertEqual(acc()['lake']['status'], 'hold')
+        r = self.c.post('/pumps/api/accounts/ready', json={'name': 'Sopra Luxury Living'}).get_json()
+        self.assertEqual((r['vendors'], r['unheld']), (['Wettech', 'Gulfshore'], True))
+        self.assertEqual(acc()['lake']['status'], 'active')
+        self.assertEqual(acc()['visit']['link']['vendors'], ['Wettech', 'Gulfshore'])
+        q = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertEqual([v['link']['account'] for v in q['waiting_visits']], ['Sopra Luxury Living'])
+        self.assertNotIn('visit', [t['kind'] for t in q['todos']])
+        self.assertEqual(self.c.get('/pumps/api/undo').get_json()['actions'][0]['label'], 'Client ready for maintenance')
+
+        def report(vendor):
+            conn = P._conn()
+            conn.execute("INSERT INTO pump_docs (kind, status, vendor, client_name, file_name, created_at) "
+                         "VALUES ('report', 'filed', ?, 'Sopra Luxury Living', 'r.docx', ?)", (vendor, P._now_text()))
+            conn.commit()
+            conn.close()
+        report('Wettech')
+        q = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertEqual(q['waiting_visits'][0]['link']['reported'], ['Wettech'])
+        report('Gulfshore')
+        self.assertEqual(self.c.get('/pumps/api/summary').get_json()['queue']['waiting_visits'], [])
+        self.assertIsNone(acc()['visit'])
+        self.assertEqual(self.c.post('/pumps/api/accounts/ready', json={'name': 'Nobody'}).status_code, 400)
+
+    def test_dismissed_quote_sent_again_is_read_again(self):
+        self.extracts['q-0143.pdf'] = extraction('quote', 'Q-143', po='PO143', client='Lakeside Pines', subtotal=700)
+        res = self.upload('q-0143.pdf', data=self._pdf())
+        self.c.post(f"/pumps/api/docs/{res['doc_id']}", json={'status': 'dismissed'})
+        self.extracts['q-0143.pdf'] = extraction('quote', 'Q-143', po='PO143', client='Lakeside Pines', subtotal=750)
+        again = self.upload('q-0143.pdf', data=self._pdf())
+        self.assertTrue(again.get('read_again'), again)
+        doc = self.c.get(f"/pumps/api/docs/{res['doc_id']}").get_json()['doc']
+        self.assertEqual((doc['status'], doc['subtotal']), ('filed', 750))
+        q = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertIn(res['doc_id'], [d['id'] for d in q['quotes_to_draft']])
+
     def test_quote_is_never_drafted_on_its_own(self):
         """A vendor quote that reads cleanly waits in To do for the office to
         click Draft quote - nothing is made in Jobber until then."""

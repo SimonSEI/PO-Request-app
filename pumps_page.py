@@ -496,6 +496,9 @@ async function loadToday(){
   q.waiting_vendor_quote.forEach(c => waiting.push(todoItem(v(c) + ' quote', '', caseTitle(c), caseSub(c), open(c), '', c.todo_key)));
   q.waiting_approval.forEach(c => waiting.push(todoItem('Client approval', '', caseTitle(c), caseSub(c) + followUp(c.follow_up), open(c), '', c.todo_key)));
   q.waiting_work.forEach(c => waiting.push(todoItem('Work', '', caseTitle(c), caseSub(c, c.scheduled_for ? 'scheduled ' + esc(c.scheduled_for) : ''), open(c), '', c.todo_key)));
+  (q.waiting_visits || []).forEach(t => { const l = t.link || {}, left = (l.vendors || []).filter(x => !(l.reported || []).includes(x));
+    waiting.push(todoItem('Maintenance visit', '', esc(l.account || t.title), `client approved ${esc(l.since || '')} · waiting on ${esc(left.join(' and '))}'s service report${left.length > 1 ? 's' : ''}${(l.reported || []).length ? ' · ✓ ' + esc(l.reported.join(', ')) : ''}`, "showTab('accounts')",
+      `<button class="btn s" onclick="todoDone(${t.id}, true)">✓ Done</button>`, t.todo_key)); });
   q.waiting_bill.forEach(c => waiting.push(todoItem(v(c) + ' bill', '', caseTitle(c), caseSub(c), open(c), '', c.todo_key)));
   const n = urgent.length + todo.length + q.todos.length;
   document.getElementById('sideCount').textContent = n;
@@ -1145,11 +1148,24 @@ function drawAccounts(){
   document.getElementById('acInfo').innerHTML = `${act.length} active accounts · ${act.filter(a => a.pump && a.pump.active).length} pump · ${act.filter(a => a.lake && a.lake.active !== 0).length} lake · <b>${act.filter(due).length} due in ${esc(AC.month)}</b>`;
   const st = {overdue:'r', due_soon:'a', current:'g', inactive:'', unknown:''};
   document.getElementById('acBody').innerHTML = rows.map(a => { const p = a.pump, l = a.lake, s = a.scada;
-    return `<tr><td><b>${esc(a.name)}</b>${!a.active ? ' <span class="chip">former</span>' : ''}</td>
+    const vis = a.visit;
+    return `<tr><td><b>${esc(a.name)}</b>${!a.active ? ' <span class="chip">former</span>' : ''}${a.active ? (vis
+      ? `<div class="note">✓ Client approved ${esc((vis.link || {}).since || '')} · waiting on ${esc(((vis.link || {}).vendors || []).filter(x => !((vis.link || {}).reported || []).includes(x)).join(' and '))}</div>`
+      : '') + `<div><button class="btn s ${vis ? '' : 'p'}" onclick="accountReady(${JSON.stringify(a.name).replace(/"/g, '&quot;')})">✓ Ready - client approved</button></div>` : ''}</td>
     <td>${p ? `${esc(p.equipment || p.kind)}<div class="note">${p.due_this_month ? '<b>' + esc(schedText(p)) + '</b> <span class="chip b">due</span>' : esc(schedText(p))} · Wettech ${esc(p.vendor_cost || '—')} · we bill ${esc(p.our_bill || '—')}${!p.active ? ' · former' : ''}</div><button class="btn s" onclick="maintEdit(${p.id})">Edit</button>` : '<span class="note">—</span>'}</td>
     <td>${l ? `${esc(l.equipment || l.kind || '')} ${l.needs_dive ? '<span class="chip b">diver</span>' : '<span class="note">no diving</span>'}<div class="note">${l.due_this_month && l.needs_dive ? '<b>' + esc(lakeSched(l)) + '</b> <span class="chip b">due</span>' : esc(lakeSched(l))} · Gulfshore ${esc(l.diver_cost || '—')} · we bill ${esc(l.our_bill || '—')}${l.active === 0 ? ' · former' : ''}</div><button class="btn s" onclick="editDiveSite(${l.id})">Edit</button>` : '<span class="note">—</span>'}</td>
     <td>${s ? `<span class="chip ${s.complimentary ? '' : (st[s.state] || '')}">${s.complimentary ? 'complimentary' : esc(s.state.replace('_', ' '))}</span><div class="note">${s.active ? 'next ' + esc(s.next_due_on) : 'off SCADA'}</div>` : ''}</td>
     <td class="note">${esc((p && p.address) || (l && l.address) || '')}</td></tr>`; }).join('') || '<tr><td colspan="5" class="empty">None.</td></tr>';
+}
+// The client called: ready for their maintenance. The lake comes off hold for
+// the diver list and the visit waits under "Waiting on others" until the
+// vendors' service reports come in.
+async function accountReady(name){
+  if (!confirm(`${name} is ready for their maintenance (client approved)?\n\nTheir lake comes off hold for the diver list, and the visit is followed under "Waiting on others" until Wettech's / Gulfshore's service reports come in.`)) return;
+  const j = await api('/accounts/ready', {method:'POST', body:{name}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast(`${name}: ${j.vendors.join(' and ')} going out` + (j.unheld ? ' - off hold on the diver list' : '') + '. Let them know to put it on their schedule.');
+  loadAccounts(); loadToday();
 }
 async function previewDigest(){
   const j = await api('/digest'); if (!j.success) { toast(j.error, true); return; }

@@ -1913,10 +1913,22 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
         sha = hashlib.sha256(data).hexdigest()
         dup = conn.execute('SELECT id, case_id FROM pump_docs WHERE file_sha=?', (sha,)).fetchone()
         if dup:
-            prev = dict(conn.execute('SELECT kind, status, jobber FROM pump_docs WHERE id=?', (dup['id'],)).fetchone())
+            prev = dict(conn.execute('SELECT kind, status, jobber, review_reason FROM pump_docs WHERE id=?',
+                                     (dup['id'],)).fetchone())
             pj = json.loads(prev['jobber'] or '{}')
-            edited = conn.execute("SELECT 1 FROM pump_events WHERE doc_id=? AND action='document edited'",
-                                  (dup['id'],)).fetchone()
+            if prev['status'] == 'dismissed' and prev['kind'] in ('quote', 'bill') and \
+                    not (prev['review_reason'] or '').startswith('Duplicate'):
+                # Dismissed by hand, then sent again: wanted after all - back on
+                # its item (or filed again) and read with today's reader.
+                prev['status'] = 'filed' if dup['case_id'] else 'new'
+                conn.execute('UPDATE pump_docs SET status=?, updated_at=? WHERE id=?',
+                             (prev['status'], _now_text(), dup['id']))
+                _event(conn, actor, 'sent again', 'It was dismissed - back in use', case_id=dup['case_id'],
+                       doc_id=dup['id'])
+                conn.commit()
+            # Edited by hand (a dismissal alone doesn't count): not read again over it.
+            edited = conn.execute("SELECT 1 FROM pump_events WHERE doc_id=? AND action='document edited' "
+                                  "AND COALESCE(detail, '') != 'status'", (dup['id'],)).fetchone()
             gone = dup['case_id'] and conn.execute("SELECT 1 FROM pump_cases WHERE id=? AND status='cancelled'",
                                                    (dup['case_id'],)).fetchone()
             if gone and prev['kind'] in ('quote', 'bill') and prev['status'] != 'dismissed':
@@ -4522,8 +4534,12 @@ def work_queue(conn):
         sc['follow_up'] = follow_up_for(conn, sc)
     new_requests = untracked_jobber_items(conn)
     stale = [c for c in cases if c['idle_days'] >= STALE_DAYS]
-    todos = [_todo_dict(r) for r in conn.execute("SELECT * FROM pump_todos WHERE done_at IS NULL "
+    follow_visits(conn)
+    conn.commit()
+    todos = [_todo_dict(r) for r in conn.execute("SELECT * FROM pump_todos WHERE done_at IS NULL AND kind != 'visit' "
                                                  "ORDER BY COALESCE(NULLIF(due_on, ''), created_at), id")]
+    visits = [_todo_dict(r) for r in conn.execute("SELECT * FROM pump_todos WHERE done_at IS NULL AND kind='visit' "
+                                                  "ORDER BY created_at, id")]
     # Each row's key for the ✕ (take it off the To do list); rows taken off are left out.
     hidden = {r[0] for r in conn.execute('SELECT key FROM pump_todo_hidden')}
 
@@ -4544,6 +4560,7 @@ def work_queue(conn):
     scada = keep(scada, lambda sc: f"scada:{sc['id']}:{sc.get('next_due_on') or ''}")
     new_requests = keep(new_requests, lambda it: f"jobber:{it['jobber_id']}")
     todos = keep(todos, lambda t: f"todo:{t['id']}")
+    visits = keep(visits, lambda t: f"todo:{t['id']}")
     return {
         'issues': issues,
         'needs_scheduling': by_stage.get('scheduled', []),
@@ -4556,6 +4573,7 @@ def work_queue(conn):
         'bills_to_check': by_stage.get('bill_checked', []),
         'bills_to_draft': bills_to_draft,
         'todos': todos,
+        'waiting_visits': visits,
         'quotes_to_draft': quotes_to_draft,
         'vendor_bills_to_pay': vendor_bills_to_pay,
         'reports_to_log': reports_to_log,
@@ -4793,6 +4811,7 @@ UNDO_LABELS = (
     (r'/dives/', 'Changed a dive site'),
     (r'/todos/(\d+)/done$', 'Ticked a to-do'),
     (r'/todos/hide$', 'Took a row off the To do list'),
+    (r'/accounts/ready$', 'Client ready for maintenance'),
     (r'/todos', 'Changed a to-do'),
     (r'/scada', 'Changed SCADA'),
     (r'/maint', 'Changed a maintenance account'),
@@ -8391,13 +8410,88 @@ def accounts(conn):
     return out
 
 
+def account_ready(conn, name, actor='system'):
+    """The client called: ready for their maintenance (Sopra, Oct 2026). The
+    lake comes off hold for the diver list, and a visit is followed under
+    Waiting on others until each vendor's service report comes in."""
+    a = next((x for x in accounts(conn) if x['name'] == name), None)
+    if not a:
+        raise ValueError('No such account')
+    today = _today().isoformat()
+    vendors, p, l = [], a['pump'], a['lake']
+    if p and p.get('active'):
+        vendors.append('Wettech')
+    if l and (l.get('active') if l.get('active') is not None else 1) and (l.get('needs_dive') if
+                                                                          l.get('needs_dive') is not None else 1):
+        vendors.append('Gulfshore')
+        if l.get('status') == 'hold':
+            conn.execute("UPDATE pump_dive_sites SET status='active', status_note=? WHERE id=?",
+                         (f"Client approved {today}", l['id']))
+    if not vendors:
+        raise ValueError(f'{name} has no active pump or diver service.')
+    who = ' and '.join(vendors)
+    conn.execute("UPDATE pump_todos SET done_at=?, done_by=? WHERE kind='visit' AND done_at IS NULL "
+                 "AND json_extract(link, '$.account')=?", (_now_text(), actor or '', name))
+    conn.execute('INSERT OR REPLACE INTO pump_todos (kind, key, title, detail, due_on, link, created_by, created_at) '
+                 'VALUES (?,?,?,?,?,?,?,?)',
+                 ('visit', f'visit:{name}:{today}', f'{name} - maintenance visit',
+                  f'Client approved {today} - {who} going out. Clears itself when their service '
+                  f"report{'s come' if len(vendors) > 1 else ' comes'} in.", '',
+                  json.dumps({'account': name, 'vendors': vendors, 'since': today, 'reported': []}),
+                  actor or '', _now_text()))
+    return {'vendors': vendors, 'unheld': bool(l and l.get('status') == 'hold' and 'Gulfshore' in vendors)}
+
+
+def follow_visits(conn):
+    """A maintenance visit is done once each vendor's service report for the
+    account has come in since the client approved it."""
+    visits = [dict(r) for r in conn.execute("SELECT * FROM pump_todos WHERE kind='visit' AND done_at IS NULL")]
+    if not visits:
+        return
+    reports = [dict(r) for r in conn.execute(
+        "SELECT vendor, client_name, site, file_name, created_at FROM pump_docs WHERE kind='report' "
+        "AND status != 'dismissed'")]
+    for v in visits:
+        link = json.loads(v['link'] or '{}')
+        got = set(link.get('reported') or [])
+        for r in reports:
+            if (r['created_at'] or '')[:10] < link.get('since', '') or r['vendor'] not in link.get('vendors', []):
+                continue
+            if _same_account(link.get('account', ''), r['client_name'] or '') or \
+                    fuzzy_has(_core_name(link.get('account', '')), f"{r['site']} {r['file_name']}"):
+                got.add(r['vendor'])
+        if got == set(link.get('reported') or []):
+            continue
+        link['reported'] = sorted(got)
+        done = set(link.get('vendors') or []) <= got
+        conn.execute('UPDATE pump_todos SET link=?, done_at=?, done_by=? WHERE id=?',
+                     (json.dumps(link), _now_text() if done else None, 'service report' if done else '', v['id']))
+
+
+@api('/accounts/ready', methods=('POST',))
+def h_account_ready(actor):
+    """Ready - client approved: {"name": the account's name}."""
+    conn = _conn()
+    try:
+        out = account_ready(conn, str(_json().get('name') or ''), actor)
+        conn.commit()
+        return out
+    finally:
+        conn.close()
+
+
 @api('/accounts')
 def h_accounts(actor):
     conn = _conn()
     try:
         rows = accounts(conn)
         month = _today().month
+        follow_visits(conn)
+        conn.commit()
+        visits = {json.loads(r['link'] or '{}').get('account'): _todo_dict(r) for r in conn.execute(
+            "SELECT * FROM pump_todos WHERE kind='visit' AND done_at IS NULL")}
         for a in rows:
+            a['visit'] = visits.get(a['name'])
             for k in ('pump', 'lake'):
                 x = a[k]
                 if x:
