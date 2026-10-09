@@ -280,7 +280,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 <nav class="top">
   <div class="t"><span class="logo"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.7c3.6 4.3 6 7.7 6 10.8a6 6 0 0 1-12 0c0-3.1 2.4-6.5 6-10.8z"/><path d="M9.2 14.2a2.9 2.9 0 0 0 2.8 2.6"/></svg></span><div>Pumps<small>Pumps, lakes &amp; SCADA</small></div></div>
   <div class="r">
-    <button class="btn p" onclick="newCase()">＋ New item</button>
+    <button class="btn p" onclick="newCase()">＋ New job</button>
     <span class="who" data-i="{{ (full_name or '?')[:1]|upper }}">{{ full_name }}</span>
     <button class="btn" onclick="showUndo()" title="Undo a recent change">↶ Undo</button>
     <a class="btn" href="{{ url_for('dashboard') }}">← Dashboard</a>
@@ -889,7 +889,7 @@ async function resolveIssue(id){ const r = prompt('How was it resolved? (e.g. "W
 function uploadForCase(){ const i = document.createElement('input'); i.type = 'file'; i.multiple = true; i.accept = '.pdf,.docx,.doc'; i.onchange = () => uploadFiles(i.files, curCase.id); i.click(); }
 
 function newCase(){
-  openModal('New item', `<div class="fields">
+  openModal('New job', `<div class="fields">
     <label class="w">What is needed<input type="text" id="nc_title" placeholder="e.g. Pump #2 not building pressure"></label>
     <label>Client<input type="text" id="nc_client"></label><label>Pump / location<input type="text" id="nc_site"></label>
     <label>Kind of work<select id="nc_cat">${CATS.map(x => `<option>${x}</option>`).join('')}</select></label>

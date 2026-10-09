@@ -5641,7 +5641,7 @@ def h_jobber_client_jobs(actor, client_id):
 def h_case_create(actor):
     data = _json()
     if not (data.get('title') or data.get('client_name') or data.get('description')):
-        raise ValueError('Give the item a title, client or description')
+        raise ValueError('Give the job a title, client or description')
     conn = _conn()
     try:
         cid = create_case(conn, data, actor, source='openclaw' if actor == BOT else 'manual')

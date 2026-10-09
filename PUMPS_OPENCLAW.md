@@ -162,7 +162,7 @@ Send a short summary to the office:
 |---|---|
 | `GET /api/pumps/cases?status=open\|closed\|all&q=&month=October 2026` | Items (search by client, PO, title) |
 | `GET /api/pumps/cases/{id}` | One item: checklist, documents, issues, history, Jobber links |
-| `POST /api/pumps/cases` | New item: `{"title", "client_name", "site", "category", "po_number", "vendor", "description"}`. `category` is one of repair, maintenance, install, diver, filter, scada, inspection, other. |
+| `POST /api/pumps/cases` | New job: `{"title", "client_name", "site", "category", "po_number", "vendor", "description"}`. `category` is one of repair, maintenance, install, diver, filter, scada, inspection, other. |
 | `PATCH /api/pumps/cases/{id}` | Change fields, set steps (`{"steps": {"client_approved": "2026-10-02"}}`, `"na"` = not needed, `null` = not done), or add `{"note": "..."}` |
 | `GET /api/pumps/docs?kind=&status=&case_id=` | Documents |
 | `GET /api/pumps/jobber/items?category=pump\|diver\|filter\|scada&kind=request\|quote\|job\|invoice&open=1` | Pump work in Jobber |
