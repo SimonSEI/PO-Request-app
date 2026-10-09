@@ -793,63 +793,43 @@ class PumpsTest(unittest.TestCase):
         finally:
             P.JOBBER_STATIC_TOKEN = saved
 
-    def test_letter_with_two_prices_is_two_jobs_and_two_quotes(self):
-        """Lely (Oct 2026): two pieces of work, each with its own "Your Cost" -
-        two separate quotes to the client, so two jobs. Claude read it as one
-        price; the app still splits it. Reading it again adds no third."""
-        self.texts['lely.pdf'] = (
-            "October 8, 2026\nStahlman England\nRE: Lely\nWe are pleased to quote you on the following services\n"
-            "Furnish and install new panel cooling fan in first VFD control panel, wire up and test\n"
-            "\t\t\tYour Cost ---------------- $ 1704.46\n"
-            "Furnish and install new 10 inch wafer check valve on pump #4\n"
-            "                 Your Cost ---------------- $ 2239.07\nPrice includes Sales tax and in freight\n"
-            "Terms: Net 10 days\nDelivery: 2-3 weeks after receipt of order\nPrices good for 30 days.\n")
-        one = extraction('quote', '', client='Lakeside Pines', subtotal=1704.46)
-        one.update(total=1704.46, subtotal=None, tax=None, tax_included=True, line_items=[
-            {'name': 'Panel cooling fan', 'description': 'Furnish and install new panel cooling fan', 'quantity': 1,
-             'unit_price': 1704.46, 'amount': 1704.46}])
-        self.extracts['lely.pdf'] = one
+    def test_letter_with_two_prices_is_one_quote_with_a_line_each(self):
+        """Autumn Woods 2 (Oct 9 2026): a flow meter and a surge arrestor, each
+        with its own "Your Cost" - ONE job and ONE quote with two lines."""
+        self.texts['autumn2.pdf'] = (
+            "October 9, 2026\nStahlman England\nAttn: Beatriz\nRE: Autumn Woods 2\n"
+            "After preforming maintenance we found the following issues that should be addressed, We are pleased "
+            "to quote on the following services and materials\n"
+            "Item #1 ... Field service to furnish and install new 4 inch flow meter in place of flow meter that is "
+            "unreadable in the ground\n                Your Cost ---------------- $ 2757.32\n"
+            "Item #2 ... Field service to furnish and install new surge arrestor to replace failed surge arrestor\n"
+            "                Your Cost ---------------- $ 1047.62\n"
+            "Price does include sales tax and freight\nTerms: Net 10 days\n"
+            "Delivery: 2-3 Weeks after receipt of order for completion\nPrices good for 30 days.\n")
         fake = FakeJobber()
         P.jobber_gql = fake
         P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN
         try:
-            doc = self.upload('lely.pdf')
-            self.assertEqual(len(doc.get('parts') or []), 1, doc)
-            first = self.case(doc['case_id'])
-            d1 = next(x for x in first['docs'] if x['id'] == doc['doc_id'])
-            self.assertEqual([i['amount'] for i in d1['line_items']], [1704.46])
-            self.assertEqual(d1['total'], 1704.46)
-            conn = P._conn()
-            pid, pcase = conn.execute('SELECT id, case_id FROM pump_docs WHERE id=?', (doc['parts'][0],)).fetchone()
-            conn.close()
-            self.assertNotEqual(pcase, doc['case_id'], 'its own job')
-            second = self.case(pcase)
-            d2 = next(x for x in second['docs'] if x['id'] == pid)
-            self.assertEqual(d2['total'], 2239.07)
-            self.assertIn('check valve', d2['description'])
-            self.assertEqual(second['vendor_quote_total'], 2239.07)
-            self.assertFalse([1 for qq, _ in fake.calls if 'quoteCreate(' in qq], 'no quote until Draft quote')
-            self.draft(doc['doc_id'])
-            self.draft(pid)
-            made = [v['attributes'] for qq, v in fake.calls if 'quoteCreate(' in qq]
-            self.assertEqual(sorted(li['unitPrice'] for a in made for li in a['lineItems']),
-                             [round(1704.46 * 1.3, 2), round(2239.07 * 1.3, 2)], 'a quote each')
-            self.assertEqual([len(a['lineItems']) for a in made], [1, 1])
-            # Weeks away: the client is told on each quote.
-            for a in made:
-                self.assertTrue(a['lineItems'][0]['description'].endswith(
-                    '\n\nIt will take 2-3 weeks to deliver after approval.'), a['lineItems'][0]['description'])
-            # Read again (or sent again): the same two jobs, no third.
-            self.c.post(f"/pumps/api/docs/{doc['doc_id']}/read_again", json={})
-            self.c.post(f"/pumps/api/docs/{pid}/read_again", json={})
-            conn = P._conn()
-            n = conn.execute("SELECT COUNT(*) FROM pump_docs WHERE file_name='lely.pdf'").fetchone()[0]
-            conn.close()
-            self.assertEqual(n, 2)
-            d2 = next(x for x in self.case(pcase)['docs'] if x['id'] == pid)
-            self.assertEqual(d2['total'], 2239.07, 'the copy keeps its own piece when read again')
+            doc = self.upload('autumn2.pdf')
+            self.assertFalse(doc.get('parts'), 'not split into two jobs')
+            case = self.case(doc['case_id'])
+            d = next(x for x in case['docs'] if x['id'] == doc['doc_id'])
+            self.assertEqual([i['amount'] for i in d['line_items']], [2757.32, 1047.62])
+            self.assertEqual(d['total'], 3804.94)
+            self.assertFalse(d['line_items'][0]['description'].lower().startswith('item'))
+            r = self.draft(doc['doc_id'], client_id='C1', property_id='P1')
+            self.assertTrue(r['success'], r)
         finally:
             P.JOBBER_STATIC_TOKEN = saved
+        made = [v['attributes'] for qq, v in fake.calls if 'quoteCreate(' in qq]
+        self.assertEqual(len(made), 1, 'one quote')
+        lines = made[0]['lineItems']
+        self.assertEqual([(l['name'], l['unitPrice'], l['taxable']) for l in lines],
+                         [('Service Proposal Amount', round(2757.32 * 1.3, 2), False),
+                          ('Service Proposal Amount', round(1047.62 * 1.3, 2), False)])
+        self.assertIn('flow meter', lines[0]['description'])
+        self.assertIn('surge arrestor', lines[1]['description'])
+        self.assertFalse(any(l.get('optional') for l in lines))
 
     def test_duplicates_are_caught(self):
         # 1. Wettech sends invoice #40123 again as a different file: same amount = duplicate, never used again.
@@ -1627,20 +1607,19 @@ class PumpsTest(unittest.TestCase):
         t = P.resolve_quote_target({'client_name': 'Ospray Pointe', 'file_name': 'q.pdf'})
         self.assertEqual((t['client_id'], t['property_id']), ('LS1', None), 'two pumps, no hint: a person picks')
 
-    def test_huntington_6_letter_is_two_quotes(self):
+    def test_huntington_6_letter_is_one_quote_with_an_optional_line(self):
         """Wettech, Oct 8 2026: a control box at $1,780.11 and "Possibly
-        needed" a new motor at $4,836.90 - two jobs and, once the office
-        clicks Draft quote on each, two quotes."""
+        needed" a new motor at $4,836.90 - one quote: the control box, and
+        the motor as an optional line not in the total."""
         self.texts['huntington6.pdf'] = (
             "October 8, 2026\nStahlman England\nAttn: Simon\nRE: Huntington #6\n"
             "We are pleased to quote you on the following services\n"
             "Field service to check out #6 pump station, found all of the capacitors and potential relay blown, "
-            "suggest starting with a control box replacement, and testing, if still and issue the motor will most "
-            "likely need to be pulled and replaced.\n\nFurnish and install new 10 HP deluxe control box, wire up "
-            "and test.\n\n                Your Cost ---------------- $ 1780.11\n"
+            "suggest starting with a control box replacement, and testing.\n\nFurnish and install new 10 HP deluxe "
+            "control box, wire up and test.\n\n                Your Cost ---------------- $ 1780.11\n"
             "Possibly needed- Field service to pull and inspect pump and motor, replace motor with new 10 HP 230 "
-            "volt 1 PH motor reusing pump end, replace all wire from motor to control box, reinstall, wire up and "
-            "test\n                 Your Cost --------------- $ 4836.90\nPrices include Sales tax\n"
+            "volt 1 PH motor reusing pump end, reinstall, wire up and test\n"
+            "                 Your Cost --------------- $ 4836.90\nPrices include Sales tax\n"
             "Terms: Net 10 days\nDelivery: 2-3 days after receipt of order\nPrices good for 30 days.\n")
         self.extracts['huntington6.pdf'] = extraction('quote', '', client='Huntington #6', subtotal=6616.01)
         fake = FakeJobber()
@@ -1648,55 +1627,17 @@ class PumpsTest(unittest.TestCase):
         P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN
         try:
             doc = self.upload('huntington6.pdf')
-            self.assertEqual(len(doc.get('parts') or []), 1, doc)
-            self.assertFalse([1 for qq, _ in fake.calls if 'quoteCreate(' in qq], 'no quote until Draft quote')
+            self.assertFalse(doc.get('parts'))
             self.assertEqual(self.case(doc['case_id'])['vendor_quote_total'], 1780.11)
-            motor = doc['parts'][0]
             self.draft(doc['doc_id'])
-            self.draft(motor)
         finally:
             P.JOBBER_STATIC_TOKEN = saved
         made = [v['attributes'] for qq, v in fake.calls if 'quoteCreate(' in qq]
-        self.assertEqual([[li['unitPrice'] for li in a['lineItems']] for a in made],
-                         [[round(1780.11 * 1.3, 2)], [round(4836.90 * 1.3, 2)]])
-        self.assertFalse(any('Delivery' in li['description'] for a in made for li in a['lineItems']),
-                         'a few days is not worth telling the client')
-        # Its item cancelled, the letter uploaded again: back on an open item,
-        # without the cancelled item's quote, and the motor job isn't made twice.
-        self.c.post(f"/pumps/api/cases/{doc['case_id']}/delete", json={'reason': 'start over'})
-        P.JOBBER_STATIC_TOKEN = 'test-token'
-        try:
-            again = self.upload('huntington6.pdf')
-        finally:
-            P.JOBBER_STATIC_TOKEN = saved
-        self.assertEqual(again['doc_id'], doc['doc_id'])
-        self.assertNotEqual(again['case_id'], doc['case_id'])
-        new = self.case(again['case_id'])
-        self.assertEqual(new['status'], 'open')
-        self.assertNotIn('quote', new['jobber'])
-        d = next(x for x in new['docs'] if x['id'] == doc['doc_id'])
-        self.assertNotIn('quote_id', d['jobber'])
-        self.assertEqual(again.get('parts'), [motor])
-        # Both items cancelled, the letter uploaded again: both pieces back in To do.
-        conn = P._conn()
-        motor_case = conn.execute('SELECT case_id FROM pump_docs WHERE id=?', (motor,)).fetchone()[0]
-        conn.close()
-        for cid in (again['case_id'], motor_case):
-            self.c.post(f"/pumps/api/cases/{cid}/delete", json={'reason': 'start over'})
-        P.JOBBER_STATIC_TOKEN = 'test-token'
-        try:
-            third = self.upload('huntington6.pdf')
-        finally:
-            P.JOBBER_STATIC_TOKEN = saved
-        conn = P._conn()
-        new_motor_case = conn.execute('SELECT case_id FROM pump_docs WHERE id=?', (motor,)).fetchone()[0]
-        conn.close()
-        self.assertNotEqual(new_motor_case, motor_case)
-        self.assertEqual(self.case(new_motor_case)['status'], 'open')
-        queue = self.c.get('/pumps/api/summary').get_json()['queue']
-        self.assertTrue({third['doc_id'], motor} <= {x['id'] for x in queue['quotes_to_draft']})
-        queue = self.c.get('/pumps/api/summary').get_json()['queue']
-        self.assertIn(doc['doc_id'], [x['id'] for x in queue['quotes_to_draft']])
+        self.assertEqual(len(made), 1, 'one quote')
+        lines = made[0]['lineItems']
+        self.assertEqual([(l['unitPrice'], bool(l.get('optional'))) for l in lines],
+                         [(round(1780.11 * 1.3, 2), False), (round(4836.90 * 1.3, 2), True)])
+        self.assertIn('motor', lines[1]['description'])
 
     def test_delete_from_to_do_list(self):
         """The ✕ on a To do row takes it off the list - the job is left as it

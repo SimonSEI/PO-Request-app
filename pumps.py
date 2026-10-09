@@ -1494,7 +1494,7 @@ def _letter_quote(text, out):
     m = re.search(r'^\s*RE\s*:\s*(.+?)\s*$', text, re.I | re.M)
     if m:
         out['client_name'] = m.group(1)[:120]
-    out['tax_included'] = bool(re.search(r'\b(?:price|cost)s?\s+includes?\s+(?:the\s+)?sales\s+tax', text, re.I))
+    out['tax_included'] = bool(re.search(r'\b(?:price|cost)s?\s+(?:does\s+|do\s+)?includes?\s+(?:the\s+)?sales\s+tax', text, re.I))
     if out['line_items'] or out['total'] is None:
         return
     if _letter_options(text, out):
@@ -1527,6 +1527,8 @@ def _letter_options(text, out):
     items = []
     for m in costs:
         work = re.sub(r'\s+', ' ', text[pos:m.start()]).strip()
+        # "Item #1 ... Field service to ..." (Autumn Woods 2): the numbering is not the work.
+        work = re.sub(r'^item\s*#?\s*\d+\s*[.…:\-–—]*\s*', '', work, flags=re.I)
         pos = m.end()
         amount = _money(m.group(1))
         if not work or amount is None:
@@ -1560,7 +1562,7 @@ def _letter_prices(text, x):
     if x.get('kind') not in ('quote', 'other') or len(_COST_LINE.findall(text or '')) < 2:
         return x
     out = {'tax_included': bool(x.get('tax_included')) or bool(re.search(
-        r'\b(?:price|cost)s?\s+includes?\s+(?:the\s+)?sales\s+tax', text, re.I)), 'notes': ''}
+        r'\b(?:price|cost)s?\s+(?:does\s+|do\s+)?includes?\s+(?:the\s+)?sales\s+tax', text, re.I)), 'notes': ''}
     if not _letter_options(text, out):
         return x
     x = dict(x, line_items=out['line_items'], total=out['total'], description=out['description'])
@@ -1595,12 +1597,21 @@ def _letter_part(x, part):
                 subtotal=None if tax_in else it['amount'], total=it['amount'] if tax_in else None)
 
 
+# The office (Oct 9 2026): a letter quoting several pieces of work is ONE
+# quote with a line for each piece; "possibly needed" work is an optional
+# line on it (Autumn Woods 2: flow meter + surge arrestor, one quote).
+# Splitting it into a job and quote per piece is off.
+SPLIT_LETTERS = os.environ.get('PUMPS_SPLIT_LETTERS', 'false').lower() in ('1', 'true', 'yes', 'on')
+
+
 def split_letter(doc_id, actor='system', full=None):
     """A vendor quote letter with several separately priced pieces of work
     becomes a job and a client quote for each: the document keeps the first,
     and each other piece gets its own copy of the document on a new job.
     Reading the letter again updates those copies instead of adding more.
-    Returns the copies' doc ids."""
+    Returns the copies' doc ids. Off unless PUMPS_SPLIT_LETTERS is on."""
+    if not SPLIT_LETTERS:
+        return []
     conn = _conn()
     try:
         row = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
@@ -2188,7 +2199,9 @@ def read_doc_again(doc_id, actor='system'):
         x = _clean_extraction(x or _regex_extract(text, doc['email_from'] or '', doc['email_subject'] or ''))
         x['kind'] = doc['kind']
         full = x = _letter_prices(text, x)
-        x = _letter_part(x, (doc.get('jobber') or {}).get('letter_part') or 0)
+        dj = doc.get('jobber') or {}
+        if 'split_from' in dj or 'letter_parts' in dj:
+            x = _letter_part(x, dj.get('letter_part') or 0)   # a piece of a letter split before Oct 9 2026
         if x.get('total') is None and x.get('subtotal') is None:
             raise ValueError('No amount found reading it again - enter it by hand.')
         desc = (x.get('description') or doc['description'] or '') + (f"\n{x['notes']}" if x.get('notes') else '')
