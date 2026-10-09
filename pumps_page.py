@@ -721,7 +721,7 @@ function stepMenu(k, sel){
 function saveCaseFields(){
   const data = {};
   document.querySelectorAll('#drawer [data-f]').forEach(el => data[el.dataset.f] = el.value);
-  patchCase(data).then(j => j.success && toast('Saved'));
+  patchCase(data).then(j => { if (j.success) { toast('Saved'); closeDrawer(); } });
 }
 function addNote(){ const t = prompt('Note for this item:'); if (t) patchCase({note: t}); }
 async function caseDone(id){
