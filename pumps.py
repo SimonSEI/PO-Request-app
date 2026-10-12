@@ -9026,7 +9026,7 @@ def h_account_todo(actor):
 # ── the month's maintenance and whether each subcontractor has been told ────
 # Wettech does the pump maintenance, Gulfshore (the diver) the lakes. A lake on
 # the month's diver list counts as told once that list's email has gone; a
-# pump visit counts once someone marks it (or emails Tommy from the Jobs tab).
+# pump visit counts once someone marks it (or emails Tommy from the Home tab).
 
 def _month_arg(text, today=None):
     """"2026-11" (or a date) -> date(2026, 11, 1); else this month."""

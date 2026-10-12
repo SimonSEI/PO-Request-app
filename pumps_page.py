@@ -311,7 +311,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 </aside>
 <div class="mainc">
 <div class="tabs" id="tabs">
-  <div class="tab on" data-tab="jobs">Jobs <span class="n" id="n-jobs"></span></div>
+  <div class="tab on" data-tab="jobs">Home <span class="n" id="n-jobs"></span></div>
   <div class="tab" data-tab="scada">SCADA <span class="n" id="n-scada"></span></div>
   <div class="tab" data-tab="accounts">Accounts</div>
   <div class="tab" data-tab="reports">Reports</div>
@@ -319,15 +319,6 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 
 <!-- JOBS -->
 <div class="panel" id="p-jobs">
-  <h3 style="margin:0 0 8px;font-size:14px">Maintenance this month <span class="chip" id="msCount"></span></h3>
-  <div class="toolbar">
-    <select id="msMonth" onchange="loadMaintSchedule()"></select>
-    <select id="msShow" onchange="drawMaintSchedule()"><option value="">All visits</option><option value="todo">Not notified yet</option><option value="Wettech">Wettech (pumps)</option><option value="Gulfshore">Gulfshore (lakes)</option></select>
-    <div class="sp"></div><span id="msInfo" class="note"></span>
-    <button class="btn" id="msEmail" onclick="emailWettechList()">✉️ Email Tommy the pump list</button>
-  </div>
-  <div class="note" style="margin-bottom:8px">Every pump (Wettech) and lake (Gulfshore) maintenance visit due in the month from the Accounts tab, and whether the subcontractor has been told. Lakes count as told once the month's diver list is emailed.</div>
-  <div class="scroll" style="max-height:45vh;margin-bottom:18px"><table class="t"><thead><tr><th>Account</th><th>Subcontractor</th><th>Client approved</th><th>Subcontractor notified</th><th>Report in</th></tr></thead><tbody id="msBody"></tbody></table></div>
   <h3 style="margin:0 0 8px;font-size:14px">Jobs</h3>
   <div class="toolbar">
     <input type="text" id="jbSearch" placeholder="Find a job, client, PO, quote or invoice #…" oninput="clearTimeout(window._jq);window._jq=setTimeout(loadJobs,300)" style="width:240px">
@@ -335,9 +326,19 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
     <div class="sp"></div><span id="syncInfo" class="note"></span>
     <button class="btn s" title="It syncs on its own - this just does it now" onclick="syncJobber()">↻ Sync now</button>
   </div>
-  <div class="scroll"><table class="t"><thead><tr><th>Job</th><th>Where it is</th><th>Vendor</th><th class="num">Vendor quote</th><th>Our quote</th><th class="num">Vendor bill</th><th>Our invoice</th><th>Vendor paid</th><th></th></tr></thead><tbody id="jobsBody"></tbody></table></div>
+  <div class="scroll" style="max-height:45vh"><table class="t"><thead><tr><th>Job</th><th>Where it is</th><th>Vendor</th><th class="num">Vendor quote</th><th>Our quote</th><th class="num">Vendor bill</th><th>Our invoice</th><th>Vendor paid</th><th></th></tr></thead><tbody id="jobsBody"></tbody></table></div>
+  <h3 style="margin:18px 0 8px;font-size:14px">Maintenance this month <span class="chip" id="msCount"></span></h3>
+  <div class="toolbar">
+    <select id="msMonth" onchange="loadMaintSchedule()"></select>
+    <select id="msShow" onchange="drawMaintSchedule()"><option value="">All visits</option><option value="todo">Not notified yet</option><option value="Wettech">Wettech (pumps)</option><option value="Gulfshore">Gulfshore (lakes)</option></select>
+    <div class="sp"></div><span id="msInfo" class="note"></span>
+    <button class="btn" id="msEmail" onclick="emailWettechList()">✉️ Email Tommy the pump list</button>
+  </div>
+  <div class="note" style="margin-bottom:8px">Every pump (Wettech) and lake (Gulfshore) maintenance visit due in the month from the Accounts tab, and whether the subcontractor has been told. Lakes count as told once the month's diver list is emailed.</div>
+  <div class="scroll" style="max-height:45vh"><table class="t"><thead><tr><th>Account</th><th>Subcontractor</th><th>Client approved</th><th>Subcontractor notified</th><th>Report in</th></tr></thead><tbody id="msBody"></tbody></table></div>
   <h3 style="margin:18px 0 8px;font-size:14px">Quotes sent - waiting on the client <span class="chip" id="jbSentCount"></span></h3>
-  <div class="note" style="margin-bottom:8px">Our pump, diver, filter and SCADA quotes in Jobber that have gone to the client and aren't approved yet, longest waiting first. They drop off once the client approves (the next Jobber sync).</div>
+  <div class="toolbar"><input type="text" id="jbSentSearch" placeholder="Find a quote #, client, address or title…" oninput="drawSent()" style="width:280px"></div>
+  <div class="note" style="margin-bottom:8px">Our pump, diver, filter and SCADA quotes in Jobber that have gone to the client and aren't approved yet, newest quote first. They drop off once the client approves (the next Jobber sync).</div>
   <div class="scroll" style="max-height:40vh"><table class="t"><thead><tr><th>Quote</th><th>Client</th><th class="num">Total</th><th>Status</th><th>Waiting</th><th>Job here</th></tr></thead><tbody id="jbSentBody"></tbody></table></div>
 </div>
 
@@ -1467,24 +1468,29 @@ async function loadJobs(){
     (s.state === 'running' ? `Syncing Jobber… (started ${esc(s.started_at || '')})` : (s.state === 'failed' || s.state === 'interrupted' ? `<b class="bad">Last sync did not finish</b> - it runs again on its own · ` : '') + (s.finished_at ? `Synced with Jobber ${esc(s.finished_at.slice(11, 16))}` + (s.seconds != null && s.state === 'done' ? ` (took ${s.seconds < 90 ? s.seconds + ' sec' : Math.round(s.seconds / 60) + ' min'})` : '') : 'Not synced yet.') + (s.every_min ? ` · syncs on its own every ${s.every_min} min` : '')) + ((s.errors || []).length ? ` · <span class="bad" title="${esc(s.errors.join('\n'))}">${s.errors.length} errors</span>` : '');
   clearTimeout(window._syncPoll);
   if (s.state === 'running') window._syncPoll = setTimeout(() => { if (curTab === 'jobs') loadJobs(); }, 5000);
-  // Our quotes sent to the client, not approved yet - longest waiting first.
-  const sent = (ji.items || []).filter(it => it.kind === 'quote' && ['awaiting_response', 'changes_requested'].includes(it.status))
-    .sort((a, b) => (a.updated_at || a.created_at || '').localeCompare(b.updated_at || b.created_at || ''));
+  // Our quotes sent to the client, not approved yet - newest quote first.
+  window._sent = (ji.items || []).filter(it => it.kind === 'quote' && ['awaiting_response', 'changes_requested'].includes(it.status))
+    .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '') || (parseInt(b.number) || 0) - (parseInt(a.number) || 0));
+  drawSent();
+}
+function drawSent(){
+  const all = window._sent || [], q = (document.getElementById('jbSentSearch').value || '').trim().toLowerCase().replace(/^#/, '');
+  const sent = q ? all.filter(it => [it.number, it.title, it.client_name, it.property_label, it.category].join(' ').toLowerCase().includes(q)) : all;
   const days = d => d ? Math.max(0, Math.floor((Date.now() - new Date(d).getTime()) / 86400000)) : null;
-  document.getElementById('jbSentCount').textContent = sent.length;
+  document.getElementById('jbSentCount').textContent = q ? sent.length + ' of ' + all.length : all.length;
   document.getElementById('jbSentBody').innerHTML = sent.map(it => { const n = days(it.updated_at || it.created_at); return `<tr${it.case_id ? ` class="click" onclick="openCase(${it.case_id})"` : ''}>
     <td><a href="${esc(it.web_uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${it.number ? '#' + esc(it.number) + ' ' : ''}${esc(it.title)} ↗</a> ${catChip(it.category)}</td>
     <td>${esc(it.client_name)}<div class="note">${esc(it.property_label)}</div></td>
     <td class="num">${it.total != null ? '<b>' + money(it.total) + '</b>' : ''}</td>
     <td>${it.status === 'changes_requested' ? '<span class="chip a">changes requested</span>' : '<span class="note">sent</span>'}</td>
     <td>${n == null ? '' : n >= 14 ? `<b class="warn">${n} days</b>` : n + (n === 1 ? ' day' : ' days')}</td>
-    <td>${it.case_id ? `<span class="note">job ${it.case_id}</span>` : ''}</td></tr>`; }).join('') || `<tr><td colspan="6" class="empty">${JOBBER_OK ? 'No quotes waiting on a client.' : 'Connect Jobber to see quotes.'}</td></tr>`;
+    <td>${it.case_id ? `<span class="note">job ${it.case_id}</span>` : ''}</td></tr>`; }).join('') || `<tr><td colspan="6" class="empty">${!JOBBER_OK ? 'Connect Jobber to see quotes.' : q ? 'No quote matches.' : 'No quotes waiting on a client.'}</td></tr>`;
 }
 async function jobberAct(id, action){ const j = await api('/jobber/items/' + encodeURIComponent(id), {method:'POST', body:{action}}); if (!j.success) { toast(j.error, true); return; } loadToday(); if (curTab === 'jobs') loadJobs(); if (action === 'track' && j.case_id) openCase(j.case_id); }
 async function jobberLink(id){ const n = prompt('Job number in Pumps to add it to:'); if (!n) return; const j = await api('/jobber/items/' + encodeURIComponent(id), {method:'POST', body:{action:'link', case_id: parseInt(n)}}); if (j.success) loadJobs(); else toast(j.error, true); }
 async function syncJobber(){ const j = await api('/jobber/sync', {method:'POST', body:{}}); if (!j.success) { toast(j.error, true); return; } toast(j.started ? 'Jobber sync started - this takes a minute or two.' : 'A Jobber sync is already running - the list updates when it finishes.'); setTimeout(loadJobs, 2000); }
 
-// ── the month's maintenance (Jobs tab) ────────────────
+// ── the month's maintenance (Home tab) ────────────────
 let MS = null;
 function msMonths(){
   const sel = document.getElementById('msMonth'); if (sel.options.length) return;
