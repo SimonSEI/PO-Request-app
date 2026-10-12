@@ -776,8 +776,8 @@
       if (!d || !d.fmWebViewer) return;
       // only custom HTML from a data: web viewer (sandboxed, so its origin is "null") may perform scripts;
       // an https page, or a site a viewer navigates to, may not
-      if (e.origin !== 'null') return;
-      const w = this.windows.find(x => x.el && [...x.el.querySelectorAll('iframe[data-fm-bridge]')].some(fr => fr.contentWindow === e.source));
+      if (e.origin !== 'null' || typeof d.token !== 'string' || !d.token) return;
+      const w = this.windows.find(x => x.el && [...x.el.querySelectorAll('iframe[data-fm-bridge]')].some(fr => fr.contentWindow === e.source && fr.dataset.fmBridge === d.token));
       if (!w) return;
       const s = w.file.scriptByName(String(d.script || ''));
       if (!s) { FM.toast('Web viewer asked for a script that does not exist: ' + d.script, 'warn'); return; }

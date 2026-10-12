@@ -164,8 +164,9 @@
     else lay = file.schema.layouts.find(l => l.to === toId) || file.schema.layouts.find(l => file.to(l.to).table === file.to(toId).table);
     if (!lay) throw new FMError(105);
     let target = w;
+    if (!p.newWindow && w.mode === 'layout' && !(await w.setMode('browse', { rt }))) throw new FMError(3);
     if (p.newWindow) { target = await rt.app.newWindow(file, { name: p.winName ? rt.text(p.winName) : file.name + ' - ' + lay.name, layoutId: lay.id, style: p.winStyle || 'document' }); rt.win = target; }
-    else await w.setLayout(lay.id, { silent: true });
+    else if (!(await w.setLayout(lay.id, { silent: true }))) throw new FMError(301);
     const set = target.set_();
     if (p.onlyRelated !== false) { set.ids = recs.map(r => r.id); set.index = 0; }
     else { const all = target.foundRecords(); const i = all.findIndex(r => r.id === recs[0].id); if (i < 0) { set.ids = file.records(target.table.id).map(r => r.id); } set.index = Math.max(0, set.ids.indexOf(recs[0].id)); }
@@ -354,7 +355,7 @@
     const key = p.field || (rt.win.active && rt.win.active.key); if (!key) throw new FMError(102);
     const tg = rt.target(key); const f = rt.file.fieldByKey(key);
     const raw = rt.file.raw(tg.rec, f, 1);
-    if (raw && typeof raw === 'object' && Number.isInteger(raw.c) && raw.c > 0) { const a = h('a', { href: '/filemaker/api/files/' + rt.file.id + '/containers/' + raw.c + '?download=1', download: raw.name }); document.body.appendChild(a); a.click(); a.remove(); return; }
+    if (raw && typeof raw === 'object' && Number.isInteger(raw.c) && raw.c > 0) { const a = h('a', { href: '/filemaker/api/files/' + rt.file.id + '/containers/' + raw.c + '?download=1', download: typeof raw.name === 'string' ? raw.name : '' }); document.body.appendChild(a); a.click(); a.remove(); return; }
     FM.download(p.name ? rt.text(p.name) : (f.name + '.txt'), rt.file.display(tg.rec, key, 1, rt.ctx()));
   });
   planned('Insert From Index', 'Fields');
@@ -647,7 +648,7 @@
     if (!o) throw new FMError(112);
     const fr = w.el.querySelector('[data-obj-name="' + CSS.escape(o.name) + '"] iframe');
     // Go to URL holds the address for this window until Reset; renderWebViewer builds the right frame for it
-    if (p.action === 'url') { w.wvOverride = Object.assign({}, w.wvOverride, { [o.id]: rt.text(p.url) }); w.render(); return; }
+    if (p.action === 'url') { w.wvOverride = Object.assign({}, w.wvOverride, { [o.id]: { url: rt.text(p.url), base: V.text(rt.file.evaluate(o.url || '', rt.ctx())).trim() } }); w.render(); return; }
     if (p.action === 'reset') { if (w.wvOverride) delete w.wvOverride[o.id]; w.render(); return; }
     if (!fr) return;
     try { if (p.action === 'back') fr.contentWindow.history.back(); else if (p.action === 'forward') fr.contentWindow.history.forward(); else w.render(); } catch (e) { w.render(); }
@@ -823,7 +824,7 @@
     resume(how) { if (this.paused) this.paused.resolve(how || 'continue'); }
     async call(script, param, o) {
       if (this.stack.length > 200) throw new FMError(3, 'Too many nested Perform Script calls.');
-      const frame = { script, steps: script.steps || [], pc: 0, iterations: 0, vars: new Map(), param: param == null ? '' : param, rt: this, result: '', j: jumps(script.steps || []), originalLayout: this.win ? this.win.layoutId : null, full: !!script.fullAccess };
+      const frame = { script, steps: script.steps || [], pc: 0, iter: {}, vars: new Map(), param: param == null ? '' : param, rt: this, result: '', j: jumps(script.steps || []), originalLayout: this.win ? this.win.layoutId : null, full: !!script.fullAccess };
       this.stack.push(frame);
       try { await this.exec(frame); }
       finally { this.stack.pop(); }
@@ -865,8 +866,8 @@
             }
             case 'else': { fr.pc = jt ? jt.end + 1 : i + 1; continue; }
             case 'endif': { if (fr.inBranch) Object.keys(fr.inBranch).forEach(k => { if (+k < i) delete fr.inBranch[k]; }); fr.pc = i + 1; continue; }
-            case 'loop': { fr.pc = i + 1; continue; }
-            case 'endloop': { fr.pc = jt ? jt.loop + 1 : i + 1; if (++fr.iterations > 5e6) throw new FMError(3, 'The loop ran too many times.'); await this.yieldMaybe(); continue; }
+            case 'loop': { (fr.iter || (fr.iter = {}))[i] = 0; fr.pc = i + 1; continue; }
+            case 'endloop': { const L = jt ? jt.loop : i; fr.iter = fr.iter || {}; if ((fr.iter[L] = (fr.iter[L] || 0) + 1) > 5e6) { fr.pc = i + 1; throw new FMError(3, 'The loop ran too many times.'); } fr.pc = L + 1; await this.yieldMaybe(); continue; }
             case 'exitloopif': { if (this.bool(p.calc || '')) fr.pc = jt ? jt.end + 1 : i + 1; else fr.pc = i + 1; this.lastError = 0; continue; }
           }
           fr.exitLoop = false;

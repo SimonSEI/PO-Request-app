@@ -1027,15 +1027,16 @@
       const tpl = FM.select([{ value: '', label: 'Choose a website…' }, { value: 'map', label: 'Google Maps (address)' }, { value: 'search', label: 'Web search' }, { value: 'html', label: 'Custom HTML (data:text/html)' }, { value: 'wiki', label: 'Wikipedia' }], '');
       tpl.onchange = () => {
         const t = { map: '"https://www.google.com/maps?output=embed&q=" & GetAsURLEncoded ( "Address" )', search: '"https://duckduckgo.com/?q=" & GetAsURLEncoded ( "search text" )', html: '"data:text/html," & "<html><body style=\'font-family:sans-serif\'><h3>Hello</h3><button onclick=\\"FileMaker.PerformScript ( \'Script Name\' ; \'param\' )\\">Run script</button></body></html>"', wiki: '"https://en.m.wikipedia.org/wiki/" & GetAsURLEncoded ( "FileMaker" )' }[tpl.value];
-        if (t) url.value = t; tpl.value = '';
+        if (t) url.value = t; if (tpl.value === 'html') allowJS.input.checked = true; tpl.value = '';
       };
       const interact = FM.check('Allow interaction with web viewer content', o.interact !== false);
-      const body = h('div', { class: 'fm-form' }, tpl, h('div', { class: 'fm-muted small', text: 'Web address (calculation):' }), url, h('button', { class: 'fm-btn small', text: 'Specify…', onclick: async () => { const r = await FM.dlg.calc(file, { formula: url.value, to: this.lay.to, title: 'Web Address' }); if (r) url.value = r.formula; } }), interact,
-        h('div', { class: 'fm-muted small', text: 'Pages are shown in a sandbox. Some sites refuse to be framed. In custom HTML, FileMaker.PerformScript(name, parameter) runs a script in this file.' }));
+      const allowJS = FM.check('Allow JavaScript to perform FileMaker scripts', !!o.allowJS);
+      const body = h('div', { class: 'fm-form' }, tpl, h('div', { class: 'fm-muted small', text: 'Web address (calculation):' }), url, h('button', { class: 'fm-btn small', text: 'Specify…', onclick: async () => { const r = await FM.dlg.calc(file, { formula: url.value, to: this.lay.to, title: 'Web Address' }); if (r) url.value = r.formula; } }), interact, allowJS,
+        h('div', { class: 'fm-muted small', text: 'Pages are shown in a sandbox. Some sites refuse to be framed. With "Allow JavaScript to perform FileMaker scripts" on, FileMaker.PerformScript(name, parameter) in custom HTML runs a script in this file.' }));
       const ok = await FM.modal({ title: 'Web Viewer Setup', body, width: 600, buttons: [{ label: 'Cancel', value: false, cancel: true }, { label: 'OK', value: true, primary: true }] });
       if (!ok) return;
       try { if (url.value.trim()) file.check(url.value, this.lay.to); } catch (e) { await FM.alert('The web address calculation is not valid: ' + e.message, { icon: 'warn' }); return; }
-      this.snapshot(); o.url = url.value; o.interact = interact.input.checked;
+      this.snapshot(); o.url = url.value; o.interact = interact.input.checked; o.allowJS = allowJS.input.checked;
     }
     async condFormat(o) {
       const file = this.file;

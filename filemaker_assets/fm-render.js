@@ -839,9 +839,12 @@
     renderWebViewer(o, ctx) {
       const el = h('div', { class: 'fm-webviewer' });
       if (this.mode === 'find') { el.appendChild(h('div', { class: 'fm-wv-ph', text: 'Web Viewer' })); return el; }
-      // Set Web Viewer [Go to URL] holds an address for this window until Reset
+      // Set Web Viewer [Go to URL] holds an address until Reset or until the viewer's own address changes
+      // (on another record, say), as FileMaker reloads a viewer whose calculation result changes
+      const calcUrl = V.text(this.file.evaluate(o.url || '', ctx)).trim();
       const over = this.wvOverride && this.wvOverride[o.id];
-      const url = V.text(over != null ? over : this.file.evaluate(o.url || '', ctx)).trim();
+      if (over && over.base !== calcUrl) delete this.wvOverride[o.id];
+      const url = this.wvOverride && this.wvOverride[o.id] ? this.wvOverride[o.id].url.trim() : calcUrl;
       if (!url) return el;
       const frame = h('iframe', { class: 'fm-wv-frame', referrerpolicy: 'no-referrer', title: o.name || 'Web viewer' });
       frame.dataset.objId = o.id;
@@ -849,8 +852,14 @@
         let html = url.replace(/^data:text\/html[^,]*,/i, '');
         if (/;base64,/i.test(url.slice(0, 40))) { try { html = new TextDecoder().decode(Uint8Array.from(atob(html), c => c.charCodeAt(0))); } catch (e) { html = ''; } } else { try { html = decodeURIComponent(html); } catch (e) { /* plain text */ } }
         frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals');
-        frame.dataset.fmBridge = '1'; // only this custom HTML may perform scripts (App.onFrameMessage)
-        frame.srcdoc = WV_BRIDGE + html;
+        // "Allow JavaScript to perform FileMaker scripts": the custom HTML gets a secret token that
+        // App.onFrameMessage requires, so a page this frame navigates to (which cannot read it) is refused
+        if (o.allowJS) {
+          const tok = [...crypto.getRandomValues(new Uint32Array(4))].map(x => x.toString(36)).join('');
+          frame.dataset.fmBridge = tok;
+          html = wvBridge(tok) + html;
+        }
+        frame.srcdoc = html;
       } else if (/^https?:\/\//i.test(url)) {
         frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups');
         frame.src = url;
@@ -1113,15 +1122,16 @@
       const box = h('div', { class: 'fm-container' + (raw ? '' : ' empty'), tabIndex: 0, dataset: { fmKey: o.field, fmRec: rec ? String(rec.id) : '', fmRep: String(rep), fmObj: o.id } });
       // only a stored container id (a positive integer) names a file on the host; any other object shows its name
       const cid = raw && typeof raw === 'object' && Number.isInteger(raw.c) && raw.c > 0 ? raw.c : 0;
+      const nm = raw && typeof raw.name === 'string' ? raw.name : '', sz = raw && typeof raw.size === 'number' ? raw.size : 0;
       if (cid) {
         const url = '/filemaker/api/files/' + this.file.id + '/containers/' + cid;
         const mime = typeof raw.mime === 'string' ? raw.mime : '';
-        if (mime.startsWith('image/') && mime !== 'image/svg+xml') box.appendChild(h('img', { src: url, alt: raw.name, style: { objectFit: o.fit || 'contain' } }));
+        if (mime.startsWith('image/') && mime !== 'image/svg+xml') box.appendChild(h('img', { src: url, alt: nm, style: { objectFit: o.fit || 'contain' } }));
         else if (mime.startsWith('audio/')) box.appendChild(h('audio', { src: url, controls: true }));
         else if (mime.startsWith('video/')) box.appendChild(h('video', { src: url, controls: true }));
         else if (mime === 'application/pdf' && o.pdfInteractive) box.appendChild(h('iframe', { src: url, class: 'fm-pdf' }));
-        else box.appendChild(h('a', { class: 'fm-file', href: url + '?download=1', target: '_blank', rel: 'noopener' }, h('span', { html: FM.icon('file', 28) }), h('span', { text: raw.name }), h('small', { text: Math.max(1, Math.round((raw.size || 0) / 1024)) + ' KB' })));
-      } else if (raw && typeof raw === 'object') box.appendChild(h('div', { class: 'fm-fv', text: typeof raw.name === 'string' ? raw.name : '' }));
+        else box.appendChild(h('a', { class: 'fm-file', href: url + '?download=1', target: '_blank', rel: 'noopener' }, h('span', { html: FM.icon('file', 28) }), h('span', { text: nm }), h('small', { text: Math.max(1, Math.round(sz / 1024)) + ' KB' })));
+      } else if (raw && typeof raw === 'object') box.appendChild(h('div', { class: 'fm-fv', text: nm }));
       else if (raw) box.appendChild(h('div', { class: 'fm-fv', text: String(raw) }));
       else if (!readOnly && this.mode === 'browse') box.appendChild(h('div', { class: 'fm-cont-hint', text: 'Drop a file, or double-click' }));
       const insert = file => this.app.act(this, async () => {
@@ -1146,7 +1156,7 @@
           { label: 'Insert File…', disabled: readOnly, action: async () => { const file = await FM.pickFile(); if (file) insert(file); } },
           { label: 'Insert Picture…', disabled: readOnly, action: async () => { const file = await FM.pickFile('image/*'); if (file) insert(file); } },
           '-',
-          { label: 'Export Field Contents…', disabled: !cid, action: () => { const a = h('a', { href: '/filemaker/api/files/' + this.file.id + '/containers/' + cid + '?download=1', download: raw.name }); document.body.appendChild(a); a.click(); a.remove(); } },
+          { label: 'Export Field Contents…', disabled: !cid, action: () => { const a = h('a', { href: '/filemaker/api/files/' + this.file.id + '/containers/' + cid + '?download=1', download: nm }); document.body.appendChild(a); a.click(); a.remove(); } },
           { label: 'Clear', disabled: readOnly || !raw, action: () => this.app.act(this, async () => { await this.setFieldValue(this.fieldTarget(o, ctx).rec, o.field, '', rep); await this.commit(); }) }
         ], e.clientX, e.clientY);
       });
@@ -1399,7 +1409,7 @@
     }
   }
 
-  const WV_BRIDGE = '<script>window.FileMaker={PerformScript:function(n,p){parent.postMessage({fmWebViewer:1,script:String(n),param:p==null?"":String(p)},"*")},PerformScriptWithOption:function(n,p){this.PerformScript(n,p)}};window.addEventListener("message",function(e){if(e.data&&e.data.fmCall){try{var f=window[e.data.fmCall];if(typeof f==="function")f.apply(window,e.data.args||[])}catch(x){}}});<\/script>';
+  const wvBridge = tok => '<script>window.FileMaker={PerformScript:function(n,p){parent.postMessage({fmWebViewer:1,token:"' + tok + '",script:String(n),param:p==null?"":String(p)},"*")},PerformScriptWithOption:function(n,p){this.PerformScript(n,p)}};window.addEventListener("message",function(e){if(e.data&&e.data.fmCall){try{var f=window[e.data.fmCall];if(typeof f==="function")f.apply(window,e.data.args||[])}catch(x){}}});<\/script>';
 
   function renderLine(o) {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
