@@ -478,10 +478,17 @@ def _claude_json(system, prompt, schema):
     client = _cfg.get('anthropic_client')
     if client is None:
         return None
-    resp = client.messages.create(
-        model=CLAUDE_MODEL, max_tokens=2000, system=system,
-        messages=[{'role': 'user', 'content': prompt}],
-        extra_body={'output_config': {'effort': 'low', 'format': {'type': 'json_schema', 'schema': schema}}})
+    try:
+        resp = client.messages.create(
+            model=CLAUDE_MODEL, max_tokens=2000, system=system,
+            messages=[{'role': 'user', 'content': prompt}],
+            extra_body={'output_config': {'effort': 'low', 'format': {'type': 'json_schema', 'schema': schema}}})
+    except Exception as e:
+        msg = str(e)
+        _set_state('claude_error', 'out of API credit' if 'credit balance' in msg else msg[:200])
+        raise
+    if _state('claude_error'):
+        _set_state('claude_error', '')
     if resp.stop_reason == 'refusal':
         return None
     text = ''.join(b.text for b in resp.content if b.type == 'text')
@@ -823,6 +830,11 @@ def apply_summary(customers, filename, by, as_of='', confirm=False):
             else:
                 conn.execute("UPDATE ar_customers SET sheet_notes='', sheet_notes_hash='', sheet_pending=0, "
                              "sheet_summary='', retainage_hold=0 WHERE key=?", (key,))
+    # Customers missing from this sheet owe nothing now; forget their old totals so they aren't looked up again.
+    on_sheet = [_ckey(c['name']) for c in customers]
+    conn.execute(f"UPDATE ar_customers SET qb_total=0, qb_current=NULL, qb_1_30=NULL, qb_31_60=NULL, qb_61_90=NULL, "
+                 f"qb_91_plus=NULL, qb_as_of=? WHERE qb_total > 0 AND key NOT IN ({','.join('?' * len(on_sheet))})",
+                 [as_of] + on_sheet)
     closed = 0
     for key in gone:
         for r in conn.execute("SELECT id FROM ar_invoices WHERE customer_key=? AND status != 'paid'", (key,)).fetchall():
@@ -1503,7 +1515,8 @@ def plan(inv, job, cust, s, today=None):
     today = today or _today()
     due = _due(inv)
     dpd = (today - due).days if due else 0
-    out = {'due_now': False, 'reason': '', 'next': '', 'stage': '', 'stage_name': '', 'dpd': dpd}
+    out = {'due_now': False, 'reason': '', 'next': '', 'stage': '', 'stage_name': '', 'dpd': dpd,
+           'waiting': waiting_on(inv)}
     st = _stage_for(dpd, s)
     if st:
         out['stage'], out['stage_name'] = st['key'], st['name']
@@ -1560,6 +1573,20 @@ def plan(inv, job, cust, s, today=None):
     out['next'] = today.isoformat()
     out['reason'] = f"Due for a {out['stage_name'].lower() or 'follow-up'}"
     return out
+
+
+def waiting_on(inv):
+    """Who the invoice is waiting on, from the last email each way."""
+    out, back = inv.get('last_followup_at') or '', inv.get('last_reply_at') or ''
+    if inv.get('status') == 'paid':
+        return ''
+    if inv.get('status') == 'needs_person' and back and back >= out:
+        return f"They replied {_fmt_date(back)} - needs an answer from us"
+    if out and (not back or back < out):
+        return f"Waiting on their reply since {_fmt_date(out)}"
+    if back:
+        return f"They replied {_fmt_date(back)}"
+    return 'Not contacted yet'
 
 
 def lien_info(job, invoices, s, today=None):
@@ -1759,31 +1786,39 @@ def scan_replies():
     convs = {}
     for r in conn.execute("SELECT conversation_id, invoice_ids, customer_key FROM ar_emails WHERE conversation_id != ''"):
         convs.setdefault(r['conversation_id'], set()).update(json.loads(r['invoice_ids'] or '[]'))
-    open_invs = [dict(r) for r in conn.execute("SELECT * FROM ar_invoices WHERE status != 'paid'")]
-    by_id = {i['id']: i for i in open_invs}
-    by_cust = {}
-    for i in open_invs:
-        by_cust.setdefault(i['customer_key'], []).append(i)
-    addr = {}
-    for r in conn.execute("SELECT key, emails, jobber_emails FROM ar_customers"):
-        for e in _emails(r['emails']) + _emails(r['jobber_emails']):
-            addr.setdefault(e.lower(), set()).add(r['key'])
-    for r in conn.execute("SELECT customer_key, contact_emails, owner_email FROM ar_jobs"):
-        for e in _emails(r['contact_emails']) + _emails(r['owner_email']):
-            addr.setdefault(e.lower(), set()).add(r['customer_key'])
+    open_invs, by_id, by_cust, addr = _address_book(conn)
     conn.close()
 
     today = _today()
     handled = 0
+    recheck = set()
+    own = _own_domain(mailbox)
     for m in messages:
         if m['id'] in seen:
             continue
         sender = ((m.get('from') or {}).get('emailAddress') or {}).get('address', '').lower()
-        if not sender or sender == mailbox.lower():
-            continue
+        if not sender or sender == mailbox.lower() or (own and sender.endswith('@' + own)):
+            continue  # our own staff, not a customer
         subject = m.get('subject') or ''
         body = m.get('uniqueBody') or m.get('body') or {}
         text = _html_to_text(body.get('content', '')) if body.get('contentType') == 'html' else (body.get('content') or '')
+        if _JOBBER_SENDER.search(sender):
+            # Jobber's own notices ("payment received", "invoice viewed"): check those invoices in Jobber now.
+            nums = set(re.findall(r'\b(\d{4,6})\b', subject + ' ' + text))
+            hit = [i for i in open_invs if i['number'] in nums]
+            conn = _conn()
+            conn.execute("INSERT OR IGNORE INTO ar_replies (graph_id, from_email, subject, received_at, intent, summary, "
+                         "customer_key, invoice_ids, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                         (m['id'], sender, subject, m.get('receivedDateTime', ''), 'jobber_notice', subject[:200],
+                          hit[0]['customer_key'] if hit else '', json.dumps([i['id'] for i in hit]), _stamp()))
+            for i in hit:
+                conn.execute("UPDATE ar_invoices SET jobber_checked_at=NULL WHERE id=?", (i['id'],))
+                _note(conn, f'Jobber emailed: "{subject[:150]}". Checking the invoice in Jobber.', i['id'],
+                      customer_key=i['customer_key'])
+                recheck.add(i['id'])
+            conn.commit()
+            conn.close()
+            continue
         invs = [by_id[i] for i in convs.get(m.get('conversationId') or '', ()) if i in by_id]
         if not invs and sender in addr:
             for ck in addr[sender]:
@@ -1834,6 +1869,132 @@ def scan_replies():
     _set_state('last_reply_scan', started)
     if handled:
         _log('replies', f'{handled} repl(ies) read from {mailbox}.')
+    if recheck and jobber_ready():
+        sync_jobber(only_ids=sorted(recheck))
+
+
+_JOBBER_SENDER = re.compile(r'(?i)@([\w.-]+\.)?getjobber\.com$')
+
+
+def _own_domain(mailbox):
+    return (mailbox or '').split('@')[-1].lower().strip() if '@' in (mailbox or '') else ''
+
+
+def _address_book(conn):
+    """(open invoices, by id, by customer, {email: {customer keys}}) for matching mail to customers."""
+    open_invs = [dict(r) for r in conn.execute("SELECT * FROM ar_invoices WHERE status != 'paid'")]
+    by_id = {i['id']: i for i in open_invs}
+    by_cust = {}
+    for i in open_invs:
+        by_cust.setdefault(i['customer_key'], []).append(i)
+    addr = {}
+    for r in conn.execute("SELECT key, emails, jobber_emails FROM ar_customers"):
+        for e in _emails(r['emails']) + _emails(r['jobber_emails']):
+            addr.setdefault(e.lower(), set()).add(r['key'])
+    for r in conn.execute("SELECT customer_key, contact_emails, owner_email FROM ar_jobs"):
+        for e in _emails(r['contact_emails']) + _emails(r['owner_email']):
+            addr.setdefault(e.lower(), set()).add(r['customer_key'])
+    return open_invs, by_id, by_cust, addr
+
+
+def _utc_to_stamp(value):
+    try:
+        return datetime.fromisoformat(str(value).replace('Z', '+00:00')).astimezone(TZ).strftime('%Y-%m-%d %H:%M:%S')
+    except ValueError:
+        return _stamp()
+
+
+def scan_sent():
+    """Emails sent to customers from the mailbox itself (Outlook), about their invoices, count as follow-ups:
+    the invoices show "waiting on their reply", the schedule counts from them, and replies in those threads are read."""
+    s = settings()
+    if not s.get('read_replies') or not graph_ready():
+        return
+    mailbox = s['from_email'].strip()
+    since = _state('last_sent_scan') or (datetime.now(timezone.utc) - timedelta(days=14)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    started = (datetime.now(timezone.utc) - timedelta(minutes=15)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    params = {'$filter': f'sentDateTime ge {since}', '$orderby': 'sentDateTime asc', '$top': 50,
+              '$select': 'id,subject,toRecipients,ccRecipients,sentDateTime,conversationId,bodyPreview'}
+    data = _graph('GET', f'/users/{mailbox}/mailFolders/sentitems/messages', params=params)
+    messages = list(data.get('value', []))
+    while data.get('@odata.nextLink') and len(messages) < 1000:
+        data = _graph('GET', data['@odata.nextLink'])
+        messages.extend(data.get('value', []))
+    conn = _conn()
+    seen = {r[0] for r in conn.execute("SELECT graph_id FROM ar_emails WHERE graph_id != ''")}
+    app_sent = [(r['conversation_id'], r['sent_at']) for r in conn.execute(
+        "SELECT conversation_id, sent_at FROM ar_emails WHERE kind != 'manual' AND status='sent' AND conversation_id != ''")]
+    open_invs, by_id, by_cust, addr = _address_book(conn)
+    conn.close()
+    today = _today()
+    found = 0
+    for m in messages:
+        if m['id'] in seen:
+            continue
+        when = _utc_to_stamp(m.get('sentDateTime'))
+        conv = m.get('conversationId') or ''
+        if any(c == conv and abs((datetime.fromisoformat(when) - datetime.fromisoformat(t)).total_seconds()) < 600
+               for c, t in app_sent if t):
+            continue  # the app's own follow-up
+        rcpt = [((x.get('emailAddress') or {}).get('address') or '').lower()
+                for x in (m.get('toRecipients') or []) + (m.get('ccRecipients') or [])]
+        custs = {k for a in rcpt for k in addr.get(a, ())}
+        if not custs:
+            continue  # not to a customer: not stored
+        subject, preview = m.get('subject') or '', m.get('bodyPreview') or ''
+        invs = [i for k in custs for i in by_cust.get(k, [])]
+        named = [i for i in invs if re.search(rf"\b{re.escape(i['number'])}\b", subject + ' ' + preview)]
+        if named:
+            invs = named
+        elif re.search(r'(?i)invoice|payment|balance|statement|past due|retainage|outstanding', subject + ' ' + preview):
+            invs = [i for i in invs if (_due(i) and _due(i) < today) or i['retainage']]
+        else:
+            continue
+        if not invs:
+            continue
+        to = ', '.join(a for a in rcpt if a in addr)
+        conn = _conn()
+        conn.execute('''INSERT INTO ar_emails (kind, group_key, customer_key, job_key, invoice_ids, stage, to_email, subject,
+                        body, status, graph_id, conversation_id, created_at, sent_at, sent_by)
+                        VALUES ('manual', '', ?, '', ?, 'manual', ?, ?, ?, 'sent', ?, ?, ?, ?, 'Outlook')''',
+                     (invs[0]['customer_key'], json.dumps(sorted(i['id'] for i in invs)), to, subject[:300], preview[:2000],
+                      m['id'], conv, when, when))
+        for i in invs:
+            conn.execute("UPDATE ar_invoices SET last_followup_at=? WHERE id=? AND (last_followup_at IS NULL OR last_followup_at < ?)",
+                         (when, i['id'], when))
+            _note(conn, f'You emailed {to} from Outlook: "{subject[:150]}"', i['id'], customer_key=i['customer_key'],
+                  kind='email', by='Outlook')
+        conn.commit()
+        conn.close()
+        found += 1
+    _set_state('last_sent_scan', started)
+    if found:
+        _log('sent', f'{found} email(s) you sent customers from {mailbox} counted as follow-ups.')
+
+
+def _fix_misread_mail():
+    """Once: undo what the first days' reply reading got wrong - our own staff's emails read as customer
+    replies, and Jobber's "payment received" notices read as the customer saying they paid."""
+    if _state('fix_misread_mail_oct12'):
+        return
+    _set_state('fix_misread_mail_oct12', _stamp())
+    own = _own_domain(settings()['from_email'])
+    conn = _conn()
+    for r in conn.execute("SELECT * FROM ar_replies").fetchall():
+        sender = (r['from_email'] or '').lower()
+        ids = json.loads(r['invoice_ids'] or '[]')
+        if own and sender.endswith('@' + own):
+            for i in ids:
+                conn.execute("UPDATE ar_invoices SET status='open', needs_reason='', last_reply_summary='' "
+                             "WHERE id=? AND status='needs_person' AND needs_reason LIKE 'Customer replied%'", (i,))
+                _note(conn, f"An email from {sender} (our own staff) was read as a customer reply; that is undone.", i)
+            conn.execute("DELETE FROM ar_replies WHERE id=?", (r['id'],))
+        elif _JOBBER_SENDER.search(sender):
+            for i in ids:
+                conn.execute("UPDATE ar_invoices SET jobber_checked_at=NULL WHERE id=?", (i,))
+            conn.execute("UPDATE ar_replies SET intent='jobber_notice' WHERE id=?", (r['id'],))
+    conn.commit()
+    conn.close()
 
 
 # ── 3. Follow-up emails ──────────────────────────────────────────────────────
@@ -2411,7 +2572,11 @@ def run_cycle(manual=False):
     with _FileLock() as got:
         if not got:
             return False
-        for step in (sync_summary_invoices, sync_jobber, apply_sheet_notes, scan_replies, _close_stale_drafts,
+        if not manual:
+            last = _state('last_run')
+            if last and (_now().replace(tzinfo=None) - datetime.strptime(last, '%Y-%m-%d %H:%M:%S')) < timedelta(minutes=45):
+                return False  # the other web worker already ran it this hour
+        for step in (sync_summary_invoices, sync_jobber, apply_sheet_notes, scan_sent, scan_replies, _close_stale_drafts,
                      plan_followups, check_liens):
             try:
                 step()
@@ -2509,6 +2674,7 @@ def api_data():
                     'replies': replies, 'uploads': uploads, 'docs': docs, 'activity': activity, 'settings': s,
                     'statuses': STATUSES, 'today': today.isoformat(),
                     'status': {'graph': graph_ready(), 'jobber': jobber_ready(), 'claude': claude_ready(),
+                               'claude_error': _state('claude_error'),
                                'last_run': _state('last_run'), 'last_reply_scan': _state('last_reply_scan')}})
 
 
@@ -2967,6 +3133,10 @@ def init_receivables(app, db_path, *, data_dir, get_setting, set_setting, graph_
                 graph_token=graph_token, graph_enabled=graph_enabled, jobber_token=jobber_token,
                 jobber_connected=jobber_connected, jobber_version=jobber_version, anthropic_client=anthropic_client)
     init_db()
+    try:
+        _fix_misread_mail()
+    except Exception as e:
+        print(f"⚠ Receivables: could not tidy misread mail: {e}")
     app.register_blueprint(bp)
     if scheduler_cls and os.environ.get('AR_AUTO_RUN', 'true').lower() not in ('0', 'false', 'no', 'off'):
         try:
