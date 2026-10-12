@@ -1115,13 +1115,13 @@
       const cid = raw && typeof raw === 'object' && Number.isInteger(raw.c) && raw.c > 0 ? raw.c : 0;
       if (cid) {
         const url = '/filemaker/api/files/' + this.file.id + '/containers/' + cid;
-        const mime = String(raw.mime || '');
+        const mime = typeof raw.mime === 'string' ? raw.mime : '';
         if (mime.startsWith('image/') && mime !== 'image/svg+xml') box.appendChild(h('img', { src: url, alt: raw.name, style: { objectFit: o.fit || 'contain' } }));
         else if (mime.startsWith('audio/')) box.appendChild(h('audio', { src: url, controls: true }));
         else if (mime.startsWith('video/')) box.appendChild(h('video', { src: url, controls: true }));
         else if (mime === 'application/pdf' && o.pdfInteractive) box.appendChild(h('iframe', { src: url, class: 'fm-pdf' }));
         else box.appendChild(h('a', { class: 'fm-file', href: url + '?download=1', target: '_blank', rel: 'noopener' }, h('span', { html: FM.icon('file', 28) }), h('span', { text: raw.name }), h('small', { text: Math.max(1, Math.round((raw.size || 0) / 1024)) + ' KB' })));
-      } else if (raw && typeof raw === 'object') box.appendChild(h('div', { class: 'fm-fv', text: String(raw.name || '') }));
+      } else if (raw && typeof raw === 'object') box.appendChild(h('div', { class: 'fm-fv', text: typeof raw.name === 'string' ? raw.name : '' }));
       else if (raw) box.appendChild(h('div', { class: 'fm-fv', text: String(raw) }));
       else if (!readOnly && this.mode === 'browse') box.appendChild(h('div', { class: 'fm-cont-hint', text: 'Drop a file, or double-click' }));
       const insert = file => this.app.act(this, async () => {
