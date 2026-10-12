@@ -41,6 +41,7 @@ import os
 import re
 import sqlite3
 import threading
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 import time
 from datetime import date, datetime, timedelta
@@ -136,7 +137,7 @@ ALLOWED_MUTATIONS = frozenset({'quoteCreate', 'invoiceCreate', 'jobCreateNote', 
 
 # What counts as pump work when searching Jobber, by category.
 JOBBER_TERMS = {
-    'pump': ['pump', 'fountain', 'wettech', 'wttech', 'wetech', 'lift station', 'vfd'],
+    'pump': ['pump', 'fountain', 'wettech', 'wttech', 'wetech', 'lift station', 'vfd', 'well'],
     'diver': ['diver'],
     'filter': ['filter'],
     'scada': ['scada'],
@@ -145,7 +146,7 @@ TITLE_PATTERNS = {
     'scada': re.compile(r'\bscada\b', re.I),
     'diver': re.compile(r'\bdivers?\b', re.I),
     'filter': re.compile(r'\bfilters?\b', re.I),
-    'pump': re.compile(r'\bpumps?\b|\bfountains?\b|\bwe?t+e?ch\b|\bwet\*|\blift\s+station\b|\bvfd\b|\bwell\s+pump\b', re.I),
+    'pump': re.compile(r'\bpumps?\b|\bfountains?\b|\bwe?t+e?ch\b|\bwet\*|\blift\s+station\b|\bvfd\b|\bwell\b', re.I),
 }
 # Strong words for mail from someone who is not a known pump vendor.
 STRONG_TERMS = re.compile(r'pump\s+station|pump\s+report|pump\s+maintenance|pump\s+service|\bscada\b|\bdivers?\b|'
@@ -2429,7 +2430,10 @@ def scan_mailbox(actor='system'):
                         summary['skipped'] += 1
                         summary.setdefault('skipped_files', []).append(
                             {'file': filename, 'why': res.get('skipped') or '', 'case_id': res.get('case_id')})
-                if not found and not any((f or '').lower().endswith(('.pdf', '.docx', '.doc')) for f, _ in attachments):
+                reply = handle_signed_quote_reply(str(uid), sender, subject, preview)
+                if reply:
+                    summary.setdefault('signed_quote_replies', []).append(reply)
+                elif not found and not any((f or '').lower().endswith(('.pdf', '.docx', '.doc')) for f, _ in attachments):
                     call = handle_service_call_email(str(uid), sender, subject, preview)
                     if call:
                         summary.setdefault('service_calls', []).append(call)
@@ -2824,6 +2828,7 @@ def _sync_jobber(full=False, actor='system'):
             _follow_invoices(conn)
             duplicate_jobber_invoices(conn)
             approved = _follow_quotes(conn)
+            approved += auto_track_approved(conn)
             rebuild_scada(conn)
             conn.commit()
             status['errors'] += refresh_client_contacts(conn)
@@ -5538,11 +5543,14 @@ def _send_doc_file(doc_id, version):
         return send_file(path, mimetype='application/pdf', as_attachment=request.args.get('download') == '1',
                          download_name=_pdf_name(row['file_name']))
     if version == 'approved':
-        path = (json.loads(row['jobber'] or '{}')).get('approved_path')
+        dj = json.loads(row['jobber'] or '{}')
+        path = dj.get('approved_path')
         if not path or not os.path.exists(path):
-            return {'success': False, 'error': 'No approved copy of this quote yet'}, 404
-        return send_file(path, mimetype='application/pdf', as_attachment=request.args.get('download') == '1',
-                         download_name=_approved_name(row['file_name']))
+            return {'success': False, 'error': 'This quote is not signed yet'}, 404
+        name = dj.get('approved_name') or _approved_name(row['file_name'])
+        return send_file(path, mimetype='application/pdf' if name.lower().endswith('.pdf') else
+                         'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                         as_attachment=request.args.get('download') == '1', download_name=name)
     path = row['branded_path'] if version == 'branded' else row['file_path']
     if not path or not os.path.exists(path):
         return {'success': False, 'error': 'File not available'}, 404
@@ -6160,6 +6168,39 @@ def h_jobber_sync(actor):
     return {'started': start_jobber_sync(bool(_json().get('full')), actor), 'status': jobber_sync_state()}
 
 
+def track_jobber_item(conn, it, actor):
+    """Make an item here from a Jobber record and link the record to it."""
+    cat = {'scada': 'scada', 'diver': 'diver', 'filter': 'filter'}.get(it['category'], 'repair')
+    if it['kind'] == 'job' and re.search(r'maint|quarter|monthly|annual', it['title'] or '', re.I):
+        cat = 'maintenance'
+    cid = create_case(conn, {'title': it['title'] or it['client_name'], 'category': cat,
+                             'client_name': it['client_name'], 'site': it['property_label'],
+                             'po_number': it['po_number'], 'jobber_client_id': it['client_id'],
+                             'jobber_property_id': it['property_id'],
+                             'vendor': 'Wettech' if cat in ('repair', 'maintenance')
+                                       or re.search(r'we?t+e?ch|\bwet\b', it['title'] or '', re.I) else '',
+                             'opened_on': (it['created_at'] or '')[:10],
+                             'jobber_request_made': _jobber_ref_text(it)},
+                      actor, source='jobber')
+    _link_item(conn, it['jobber_id'], cid, actor)
+    if it['kind'] == 'quote' and it['status'] in ('awaiting_response', 'changes_requested'):
+        _set_step(conn, cid, 'client_quote', at=(it['created_at'] or '')[:10] or None, by=actor)
+    if it['kind'] == 'quote' and it['status'] == 'approved':
+        _set_step(conn, cid, 'client_quote', at=(it['created_at'] or '')[:10] or None, by=actor)
+        _set_step(conn, cid, 'client_approved', at=(it['updated_at'] or '')[:10] or None, by=actor)
+    if it['kind'] == 'job' and (it['completed_at'] or it['status'] == 'requires_invoicing'):
+        _set_step(conn, cid, 'client_approved', at=(it['created_at'] or '')[:10] or None, by=actor)
+        _set_step(conn, cid, 'work_done', at=(it['completed_at'] or it['updated_at'] or '')[:10] or None,
+                  by=actor)
+    elif it['kind'] == 'job' and cat == 'maintenance':
+        _set_step(conn, cid, 'client_approved', at=(it['created_at'] or '')[:10] or None, by=actor)
+    elif it['kind'] in ('job', 'request'):
+        # Made in Jobber before any quote: the vendor goes out to look first.
+        _set_assessment(conn, cid, (it['start_at'] or '')[:10],
+                        done=it['kind'] == 'request' and it['status'] == 'assessment_completed', by=actor)
+    return cid
+
+
 @api('/jobber/items/<path:jobber_id>', methods=('POST',))
 def h_jobber_item(actor, jobber_id):
     """{"action": "track"} makes an item from a Jobber record, {"action":
@@ -6181,40 +6222,15 @@ def h_jobber_item(actor, jobber_id):
             cid = int(data['case_id'])
             _link_item(conn, jobber_id, cid, actor)
         elif action == 'track':
-            cat = {'scada': 'scada', 'diver': 'diver', 'filter': 'filter'}.get(it['category'], 'repair')
-            if it['kind'] == 'job' and re.search(r'maint|quarter|monthly|annual', it['title'] or '', re.I):
-                cat = 'maintenance'
-            cid = create_case(conn, {'title': it['title'] or it['client_name'], 'category': cat,
-                                     'client_name': it['client_name'], 'site': it['property_label'],
-                                     'po_number': it['po_number'], 'jobber_client_id': it['client_id'],
-                                     'jobber_property_id': it['property_id'],
-                                     'vendor': 'Wettech' if cat in ('repair', 'maintenance')
-                                               or re.search(r'we?t+e?ch|\bwet\b', it['title'] or '', re.I) else '',
-                                     'opened_on': (it['created_at'] or '')[:10],
-                                     'jobber_request_made': _jobber_ref_text(it)},
-                              actor, source='jobber')
-            _link_item(conn, jobber_id, cid, actor)
-            if it['kind'] == 'quote' and it['status'] in ('awaiting_response', 'changes_requested'):
-                _set_step(conn, cid, 'client_quote', at=(it['created_at'] or '')[:10] or None, by=actor)
-            if it['kind'] == 'quote' and it['status'] == 'approved':
-                _set_step(conn, cid, 'client_quote', at=(it['created_at'] or '')[:10] or None, by=actor)
-                _set_step(conn, cid, 'client_approved', at=(it['updated_at'] or '')[:10] or None, by=actor)
-            if it['kind'] == 'job' and (it['completed_at'] or it['status'] == 'requires_invoicing'):
-                _set_step(conn, cid, 'client_approved', at=(it['created_at'] or '')[:10] or None, by=actor)
-                _set_step(conn, cid, 'work_done', at=(it['completed_at'] or it['updated_at'] or '')[:10] or None,
-                          by=actor)
-            elif it['kind'] == 'job' and cat == 'maintenance':
-                _set_step(conn, cid, 'client_approved', at=(it['created_at'] or '')[:10] or None, by=actor)
-            elif it['kind'] in ('job', 'request'):
-                # Made in Jobber before any quote: the vendor goes out to look first.
-                _set_assessment(conn, cid, (it['start_at'] or '')[:10],
-                                done=it['kind'] == 'request' and it['status'] == 'assessment_completed', by=actor)
+            cid = track_jobber_item(conn, it, actor)
         else:
             raise ValueError('action must be track, link, ignore or unignore')
         conn.commit()
-        return {'case_id': cid}
     finally:
         conn.close()
+    if action == 'track' and it['kind'] == 'quote' and it['status'] == 'approved':
+        on_quote_approved(cid, actor)
+    return {'case_id': cid}
 
 
 def _set_assessment(conn, case_id, due='', done=False, by='system'):
@@ -8236,87 +8252,362 @@ def _approved_name(file_name):
     return os.path.splitext(file_name or 'quote')[0] + ' - APPROVED.pdf'
 
 
-def make_approved_pdf(doc, when=None):
-    """Stamp the vendor's quote file (a Word quote is turned into a PDF first)."""
-    with open(doc['file_path'], 'rb') as f:
-        data = f.read()
-    if not (doc.get('file_name') or '').lower().endswith('.pdf'):
-        data = pump_reports.docx_to_pdf(data)
-        if not data:
-            raise ValueError('The quote is a Word file and PDF conversion is not available on this server')
-    when = when or _today()
-    stamped = stamp_approved(data, f'{APPROVER}', when.strftime('%B %d, %Y').replace(' 0', ' '))
-    path, _ = _store_file(stamped, _approved_name(doc.get('file_name')))
-    return path
-
-
 def on_quote_approved(case_id, actor='Jobber sync'):
-    """The client approved our Jobber quote: stamp the vendor's quote APPROVED
-    by Simon Weardon, keep it on the item and on the Jobber quote, make the
-    quote a job, and add the to-do to send it back to the vendor."""
+    """The client approved our Jobber quote: make the quote a job and put
+    "Sign the quote and send it to Tom" on To do. Clicking Sign quote there
+    (sign_and_send_quote) signs the vendor's Word quote, saves it here and on
+    the Jobber quote, and emails it to the vendor asking when it'll be done."""
     conn = _conn()
     try:
         case = conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone()
         if not case:
             return None
         case = dict(case)
-        row = conn.execute("SELECT * FROM pump_docs WHERE case_id=? AND kind='quote' AND status != 'dismissed' "
-                           "ORDER BY id DESC", (case_id,)).fetchone()
-        doc = {**_doc_dict(row), 'file_path': row['file_path']} if row else None
-    finally:
-        conn.close()
-    j = json.loads(case.get('jobber') or '{}')
-    q = j.get('quote') or {}
-    out = {'case_id': case_id}
-    name, email = _vendor_contact(case.get('vendor'))
-    who = case.get('client_name') or case.get('title') or f'item {case_id}'
-    if doc and not (doc.get('jobber') or {}).get('approved_path'):
-        try:
-            path = make_approved_pdf(doc)
-            conn = _conn()
-            try:
-                dj = {**(doc.get('jobber') or {}), 'approved_path': path, 'approved_at': _now_text(),
-                      'approved_by': APPROVER}
-                conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(dj), doc['id']))
-                _event(conn, actor, 'quote stamped approved', f'{APPROVER} - {_approved_name(doc["file_name"])}',
-                       case_id=case_id, doc_id=doc['id'])
-                conn.commit()
-            finally:
-                conn.close()
-            doc['jobber'] = dj
-            out['stamped'] = True
-        except Exception as e:
-            out['stamp_error'] = str(e)
-    if doc and (doc.get('jobber') or {}).get('approved_path') and q.get('id') and jobber_status()['connected'] \
-            and not (doc.get('jobber') or {}).get('approved_note_id'):
-        try:
-            note = note_vendor_file(doc, 'quote', q['id'], f"Approved - {doc.get('vendor') or 'vendor'} quote "
-                                    f"{('#' + doc['doc_number']) if doc.get('doc_number') else ''} signed by "
-                                    f"{APPROVER} on {_today().strftime('%m/%d/%Y')}.", version='approved',
-                                    file_name=_approved_name(doc['file_name']), content_type='application/pdf')
-            conn = _conn()
-            try:
-                dj = {**(doc.get('jobber') or {}), 'approved_note_id': note['note_id']}
-                conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(dj), doc['id']))
-                conn.commit()
-            finally:
-                conn.close()
-        except JobberError as e:
-            out['note_error'] = str(e)
-    conn = _conn()
-    try:
-        if doc:
-            add_todo(conn, f"approved-quote:{doc['id']}", f'Send the approved quote back to {name} ({email})',
-                     f"{who} - {doc.get('vendor') or 'vendor'} quote {('#' + doc['doc_number']) if doc.get('doc_number') else ''}"
-                     f" is stamped APPROVED by {APPROVER}. Download it, reply to {name} with it attached, then tick this.",
-                     {'case_id': case_id, 'doc_id': doc['id'], 'to': email,
-                      'subject': f"Approved - {who} {('quote #' + doc['doc_number']) if doc.get('doc_number') else ''}".strip()},
-                     kind='approved_quote')
+        doc = _approved_quote_doc(conn, case_id)
+        j = json.loads(case.get('jobber') or '{}')
+        q = j.get('quote') or {}
+        out = {'case_id': case_id}
+        if not (doc and (doc.get('jobber') or {}).get('signed_sent_at')):
+            add_sign_todo(conn, case, doc)
+            out['todo'] = True
         conn.commit()
     finally:
         conn.close()
     if q.get('id') and not (j.get('job') or {}).get('id'):
         out['job'] = make_job_from_quote(case_id)
+    return out
+
+
+def _approved_quote_doc(conn, case_id):
+    row = conn.execute("SELECT * FROM pump_docs WHERE case_id=? AND kind='quote' AND status != 'dismissed' "
+                       "ORDER BY id DESC", (case_id,)).fetchone()
+    return {**_doc_dict(row), 'file_path': row['file_path']} if row else None
+
+
+def add_sign_todo(conn, case, doc=None):
+    """The to-do to sign an approved quote and send it to the vendor - once per item."""
+    name, email = _vendor_contact(case.get('vendor'))
+    who = case.get('client_name') or case.get('title') or f"item {case['id']}"
+    num = (doc or {}).get('doc_number') or ''
+    jq = (json.loads(case.get('jobber') or '{}').get('quote') or {})
+    detail = (f"{who} approved our Jobber quote{(' #' + str(jq['number'])) if jq.get('number') else ''}. "
+              + (f"Sign quote types \"{APPROVER} {_today().strftime('%m/%d/%Y')}\" on "
+                 f"{(doc or {}).get('vendor') or 'the vendor'}'s quote{(' #' + num) if num else ''}, saves it here and "
+                 f"on the Jobber quote, and emails it to {name} asking when it'll be done."
+                 if doc else f"{case.get('vendor') or 'The vendor'}'s quote isn't saved on this job yet - upload it "
+                 f"(or it comes in by email), then click Sign quote."))
+    add_todo(conn, f"sign-quote:{case['id']}", f'Sign the approved quote and send it to {name} - {who}', detail,
+             {'case_id': case['id'], 'doc_id': (doc or {}).get('id'), 'to': email}, kind='approved_quote')
+
+
+_THANKS_P = re.compile(r'<w:p[ >](?:(?!</w:p>).)*?Thank\s*You(?:(?!</w:p>).)*?</w:p>', re.S | re.I)
+_PARA = re.compile(r'<w:p[ >].*?</w:p>|<w:p/>', re.S)
+
+
+def sign_docx(data, text):
+    """Type the signature line on a vendor's Word quote the way the office does
+    by hand: "Simon Weardon 10/12/2026" at the start of the line under "Thank
+    You" (the line with the vendor's own signature further along it)."""
+    zin = zipfile.ZipFile(io.BytesIO(data))
+    xml = zin.read('word/document.xml').decode('utf-8')
+    esc = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    m = _THANKS_P.search(xml)
+    nxt = _PARA.search(xml, m.end()) if m else None
+    if nxt:
+        p = nxt.group(0)
+        rpr = re.search(r'<w:r[ >](?:(?!</w:r>).)*?(<w:rPr>.*?</w:rPr>)', p, re.S)
+        run = f'<w:r>{rpr.group(1) if rpr else ""}<w:t xml:space="preserve">{esc}</w:t></w:r>'
+        if p == '<w:p/>':
+            p2 = f'<w:p>{run}</w:p>'
+        else:
+            ppr = re.search(r'</w:pPr>', p)
+            at = ppr.end() if ppr else p.index('>') + 1
+            p2 = p[:at] + run + p[at:]
+        xml = xml[:nxt.start()] + p2 + xml[nxt.end():]
+    else:
+        # No "Thank You": a line of its own before the "By signing..." terms, or at the end.
+        new = f'<w:p><w:r><w:t xml:space="preserve">{esc}</w:t></w:r></w:p>'
+        by = re.search(r'<w:p[ >](?:(?!</w:p>).)*?By\s+signing', xml, re.S)
+        at = by.start() if by else xml.rindex('<w:sectPr') if '<w:sectPr' in xml else xml.rindex('</w:body>')
+        xml = xml[:at] + new + xml[at:]
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            zout.writestr(item, xml.encode('utf-8') if item.filename == 'word/document.xml' else zin.read(item.filename))
+    return out.getvalue()
+
+
+def _signed_name(file_name):
+    base, ext = os.path.splitext(file_name or 'quote.docx')
+    return f"{base} - SIGNED{ext if ext.lower() in ('.docx', '.pdf') else '.pdf'}"
+
+
+def make_signed_copy(doc, when=None):
+    """The vendor's quote signed: a Word quote gets the signature line typed
+    on it, a PDF is stamped. Returns (path, file name)."""
+    when = when or _today()
+    with open(doc['file_path'], 'rb') as f:
+        data = f.read()
+    name = doc.get('file_name') or 'quote'
+    if name.lower().endswith('.docx'):
+        signed = sign_docx(data, f"{APPROVER} {when.strftime('%m/%d/%Y')}")
+    else:
+        if not name.lower().endswith('.pdf'):
+            data = pump_reports.docx_to_pdf(data)
+            if not data:
+                raise ValueError('The quote is an old Word file and PDF conversion is not available on this server')
+            name = os.path.splitext(name)[0] + '.pdf'
+        signed = stamp_approved(data, f'{APPROVER}', when.strftime('%B %d, %Y').replace(' 0', ' '))
+    file_name = _signed_name(name)
+    path, _ = _store_file(signed, file_name)
+    return path, file_name
+
+
+SIGNED_TAG = re.compile(r'\[P(\d+)\]')
+
+
+def signed_quote_email(case, doc):
+    name, email = _vendor_contact(case.get('vendor'))
+    who = case.get('client_name') or case.get('title') or f"item {case['id']}"
+    num = doc.get('doc_number') or ''
+    subject = f"Signed quote - {who}{(' #' + num) if num else ''} [P{case['id']}]"
+    first = (name or '').split()[0] if name else ''
+    body = (f"Hi {first or 'there'},\n\nAttached is your quote{(' #' + num) if num else ''} for {who}, signed - "
+            f"the client approved it. Please go ahead.\n\nWhen can we expect it to be done?\n\n"
+            f"Thank you,\n{APPROVER}\nStahlman-England Irrigation")
+    return {'to': email, 'name': name, 'subject': subject, 'body': body}
+
+
+def sign_and_send_quote(case_id, actor, body=None, send=True):
+    """Sign the approved vendor quote, keep the signed copy on the item and on
+    the Jobber quote, and email it to the vendor asking when it'll be done.
+    The vendor's reply is read by the mailbox scan (handle_signed_quote_reply)."""
+    import html as _html
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+        if not row:
+            raise ValueError('No such job')
+        case = dict(row)
+        doc = _approved_quote_doc(conn, case_id)
+    finally:
+        conn.close()
+    if not doc:
+        raise ValueError(f"{case.get('vendor') or 'The vendor'}'s quote isn't saved on this job yet - upload it first")
+    if not doc.get('file_path') or not os.path.exists(doc['file_path']):
+        raise ValueError("The vendor's quote file is not on this server any more - upload it again")
+    out = {'case_id': case_id, 'doc_id': doc['id']}
+    dj = doc.get('jobber') or {}
+    path, file_name = make_signed_copy(doc)
+    dj = {**dj, 'approved_path': path, 'approved_name': file_name, 'approved_at': _now_text(), 'approved_by': APPROVER}
+    dj.pop('approved_note_id', None)
+    conn = _conn()
+    try:
+        conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(dj), doc['id']))
+        _event(conn, actor, 'quote signed', f'{APPROVER} - {file_name}', case_id=case_id, doc_id=doc['id'])
+        conn.commit()
+    finally:
+        conn.close()
+    doc['jobber'] = dj
+    out['signed'] = file_name
+    # The signed quote on our Jobber quote, so Jobber shows what was approved.
+    q = (json.loads(case.get('jobber') or '{}').get('quote') or {})
+    ctype = 'application/pdf' if file_name.lower().endswith('.pdf') else \
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    if q.get('id') and jobber_status()['connected']:
+        try:
+            note = note_vendor_file(doc, 'quote', q['id'], f"Approved - {doc.get('vendor') or 'vendor'} quote "
+                                    f"{('#' + doc['doc_number']) if doc.get('doc_number') else ''} signed by "
+                                    f"{APPROVER} on {_today().strftime('%m/%d/%Y')}.", version='approved',
+                                    file_name=file_name, content_type=ctype)
+            dj['approved_note_id'] = note['note_id']
+            out['jobber_note'] = True
+        except JobberError as e:
+            out['note_error'] = str(e)
+    if not send:
+        _save_doc_jobber(doc['id'], dj)
+        return out
+    mail = signed_quote_email(case, doc)
+    if not mail['to']:
+        _save_doc_jobber(doc['id'], dj)
+        raise ValueError(f"No email address is saved for {mail['name']} - the quote is signed; download it and send it yourself")
+    html = ('<div style="font-family:Arial,sans-serif;font-size:14px">'
+            + '<br>'.join(_html.escape(line) for line in ((body or '').strip() or mail['body']).split('\n')) + '</div>')
+    with open(path, 'rb') as f:
+        att = {'@odata.type': '#microsoft.graph.fileAttachment', 'name': file_name, 'contentType': ctype,
+               'contentBytes': base64.b64encode(f.read()).decode()}
+    try:
+        graph_send(mail['to'], mail['subject'], html, [att])
+    except Exception as e:
+        _save_doc_jobber(doc['id'], dj)
+        raise RuntimeError(f'Signed, but the email to {mail["to"]} did not go: {e} - download the signed quote and send it yourself')
+    dj.update(signed_sent_at=_now_text(), signed_sent_to=mail['to'], signed_sent_by=actor)
+    _save_doc_jobber(doc['id'], dj)
+    conn = _conn()
+    try:
+        _event(conn, actor, 'signed quote emailed', f"to {mail['name']} ({mail['to']}) - asked when it'll be done",
+               case_id=case_id, doc_id=doc['id'])
+        for key in (f'sign-quote:{case_id}', f"approved-quote:{doc['id']}"):
+            conn.execute("UPDATE pump_todos SET done_at=?, done_by=? WHERE key=? AND done_at IS NULL",
+                         (_now_text(), actor, key))
+        try:
+            log_vendor_follow(conn, case_id, actor, who=mail['name'], how='email',
+                              said='Sent the signed quote - asked when it will be done',
+                              check_on=_workdays_after(_today(), 2).isoformat())
+        except ValueError:
+            pass   # not waiting on the vendor (already scheduled or done)
+        conn.commit()
+    finally:
+        conn.close()
+    out['emailed'] = mail['to']
+    return out
+
+
+def _save_doc_jobber(doc_id, dj):
+    conn = _conn()
+    try:
+        conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(dj), doc_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+_MONTHS = ('jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec')
+_MONTH_DAY = re.compile(r'\b(' + '|'.join(_MONTHS) + r')[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b', re.I)
+_NUM_DATE = re.compile(r'\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b')
+
+
+def expected_date(text, today=None):
+    """The date a vendor's reply says the work will be done by ("Oct 20th",
+    "10/20", "next week", "Friday"), else ''."""
+    today = today or _today()
+    text = text or ''
+    m = _MONTH_DAY.search(text)
+    if m:
+        mo, dd = _MONTHS.index(m.group(1).lower()[:3]) + 1, int(m.group(2))
+        try:
+            d = date(today.year, mo, dd)
+            if (today - d).days > 60:
+                d = date(today.year + 1, mo, dd)
+            return d.isoformat()
+        except ValueError:
+            pass
+    m = _NUM_DATE.search(text)
+    if m:
+        mo, dd, yy = int(m.group(1)), int(m.group(2)), m.group(3)
+        try:
+            y = (2000 + int(yy) if len(yy) == 2 else int(yy)) if yy else today.year
+            d = date(y, mo, dd)
+            if not yy and (today - d).days > 60:
+                d = date(y + 1, mo, dd)
+            return d.isoformat()
+        except ValueError:
+            pass
+    return due_from_text(text, today)
+
+
+def _reply_text(preview):
+    """The vendor's own words, not the quoted email under them."""
+    return re.split(r'\n\s*(?:-{2,}|_{4,}|From:|On .{0,80}wrote:|Sent from my)', preview or '', maxsplit=1)[0].strip()
+
+
+def handle_signed_quote_reply(uid, sender, subject, preview, actor='email scan'):
+    """The vendor answered our signed-quote email ("[P123]" in the subject):
+    keep the date they gave on the item, put it in Jobber, and follow the job.
+    No date in it: a to-do to read the reply."""
+    m = SIGNED_TAG.search(subject or '')
+    if not m or not re.match(r'^\s*(re|fw|fwd)\s*:', subject or '', re.I):
+        return None
+    own = {a.lower() for a in (CFG.get('mail_from'), dive_settings().get('from')) if a}
+    addr = ((re.search(r'[\w.+-]+@[\w.-]+', sender or '') or [''])[0] or '').lower()
+    if addr and addr in own:
+        return None
+    case_id = int(m.group(1))
+    said = _reply_text(preview)[:500]
+    when = expected_date(said)
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+        if not row:
+            return None
+        case = _case_dict(row)
+        if conn.execute("SELECT 1 FROM pump_events WHERE case_id=? AND action='vendor replied' AND detail LIKE ?",
+                        (case_id, f'%[{uid}]%')).fetchone():
+            return None
+        who = _vendor_contact(case.get('vendor'))[0]
+        _event(conn, actor, 'vendor replied', f'{who}: "{said[:300]}"' + (f' - done by {when}' if when else '')
+               + f' [{uid}]', case_id=case_id)
+        if when:
+            try:
+                log_vendor_follow(conn, case_id, actor, who=who, how='email', said=said, expect_by=when)
+            except ValueError:
+                pass
+            if not _iso_date(case.get('scheduled_for')) or case.get('scheduled_for') != when:
+                conn.execute('UPDATE pump_cases SET scheduled_for=? WHERE id=?', (when, case_id))
+        else:
+            add_todo(conn, f'signed-reply:{case_id}:{uid}', f'{who} replied about {case.get("client_name") or case.get("title")} - when will it be done?',
+                     f'"{said[:300]}" - no date in it. Open the job and log the date (Follow up), or ask again.',
+                     {'case_id': case_id})
+        conn.commit()
+    finally:
+        conn.close()
+    out = {'case_id': case_id, 'expect_by': when}
+    if when:
+        out['jobber'] = note_expected_date(case_id, who, when, said)
+    return out
+
+
+def note_expected_date(case_id, who, when, said=''):
+    """Put the vendor's date on the Jobber job (or the quote, before there is a job)."""
+    conn = _conn()
+    try:
+        c = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone())
+    finally:
+        conn.close()
+    j = json.loads(c.get('jobber') or '{}')
+    target = ('job', (j.get('job') or {}).get('id')) if (j.get('job') or {}).get('id') else \
+        ('quote', (j.get('quote') or {}).get('id'))
+    text = (f"{c.get('vendor') or 'Vendor'} ({who}) expects it done by "
+            f"{date.fromisoformat(when).strftime('%m/%d/%Y')}." + (f' They said: "{said[:300]}"' if said else ''))
+    err = ''
+    if target[1] and jobber_status()['connected']:
+        mutation, id_arg, input_type, field = NOTE_MUTATION[target[0]]
+        try:
+            data = jobber_gql(f'mutation PumpsDateNote($id: EncodedId!, $input: {input_type}!) {{ {mutation}('
+                              f'{id_arg}: $id, input: $input) {{ {field} {{ id }} userErrors {{ message }} }} }}',
+                              {'id': target[1], 'input': {'message': text}})
+            errs = (data.get(mutation) or {}).get('userErrors') or []
+            if not errs:
+                conn = _conn()
+                try:
+                    _event(conn, 'email scan', 'date noted in Jobber', f'{target[0]} - {text}', case_id=case_id)
+                    conn.commit()
+                finally:
+                    conn.close()
+                return True
+            err = '; '.join(e.get('message', '?') for e in errs)
+        except JobberError as e:
+            err = str(e)
+    conn = _conn()
+    try:
+        add_todo(conn, f'date-to-jobber:{case_id}:{when}', f"Put {who}'s date in Jobber - {c.get('client_name') or c.get('title')}",
+                 text + (f' (Jobber: {err})' if err else " The app couldn't add it in Jobber itself."),
+                 {'case_id': case_id, 'uri': (j.get('job') or j.get('quote') or {}).get('uri') or ''})
+        conn.commit()
+    finally:
+        conn.close()
+    return False
+
+
+def auto_track_approved(conn, actor='Jobber sync'):
+    """Approved pump / well quotes in Jobber that no item follows yet: follow
+    them (so they get "Sign the quote and send it to Tom"). Returns the new items."""
+    since = (_today() - timedelta(days=30)).isoformat()
+    out = []
+    for it in untracked_jobber_items(conn):
+        if it['kind'] == 'quote' and it['status'] == 'approved' and it.get('category') == 'pump' \
+                and (it.get('updated_at') or it.get('created_at') or '') >= since:
+            out.append(track_jobber_item(conn, it, actor))
     return out
 
 
@@ -8466,7 +8757,7 @@ def service_call_summary(subject, preview=''):
 # pay-the-vendor email and approved quotes. Read back from the mailbox they are
 # never a service call.
 OWN_SUBJECTS = re.compile(r'^\s*((re|fw|fwd)\s*:\s*)*(pumps today\b|diver schedule\b|please pay \w+ invoice\b|'
-                          r'approved\s*-\s)', re.I)
+                          r'approved\s*-\s|signed\s+quote\s*-\s)', re.I)
 
 
 def from_this_app(sender, subject):
@@ -8796,6 +9087,38 @@ def h_case_approved(actor, case_id):
     return {'approval': on_quote_approved(case_id, actor)}
 
 
+@api('/cases/<int:case_id>/sign_quote', methods=('POST',))
+def h_case_sign_quote(actor, case_id):
+    """Sign quote: sign the vendor's approved quote, save it here and on the
+    Jobber quote, and email it to the vendor asking when it'll be done.
+    {"send": false} only signs it."""
+    data = _json()
+    try:
+        return sign_and_send_quote(case_id, actor, body=data.get('body'), send=data.get('send', True) is not False)
+    except ValueError as e:
+        return {'success': False, 'error': str(e)}, 400
+    except RuntimeError as e:
+        return {'success': False, 'error': str(e)}, 502
+
+
+@api('/cases/<int:case_id>/sign_quote', methods=('GET',))
+def h_case_sign_quote_preview(actor, case_id):
+    """The email Sign quote will send, to show before sending."""
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+        if not row:
+            return {'success': False, 'error': 'No such job'}, 404
+        doc = _approved_quote_doc(conn, case_id)
+    finally:
+        conn.close()
+    if not doc:
+        return {'success': False, 'error': "The vendor's quote isn't saved on this job yet - upload it first"}, 400
+    return {'email': signed_quote_email(dict(row), doc), 'doc': {'id': doc['id'], 'file_name': doc['file_name'],
+            'signed_as': f"{APPROVER} {_today().strftime('%m/%d/%Y')}",
+            'sent_at': (doc.get('jobber') or {}).get('signed_sent_at') or ''}}
+
+
 # ── accounts: Wettech pumps, Gulfshore lakes and SCADA in one list ───────────
 
 def _same_account(a, b):
@@ -9026,7 +9349,7 @@ def h_account_todo(actor):
 # ── the month's maintenance and whether each subcontractor has been told ────
 # Wettech does the pump maintenance, Gulfshore (the diver) the lakes. A lake on
 # the month's diver list counts as told once that list's email has gone; a
-# pump visit counts once someone marks it (or emails Tommy from the Jobs tab).
+# pump visit counts once someone marks it (or emails Tommy from the Home tab).
 
 def _month_arg(text, today=None):
     """"2026-11" (or a date) -> date(2026, 11, 1); else this month."""
