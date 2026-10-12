@@ -222,9 +222,11 @@
       };
       const del = async () => {
         const t = draft.tables.find(x => x.id === state.table); if (!t) return;
+        const gone = new Set(draft.tableOccurrences.filter(x => x.table === t.id).map(x => x.id));
+        const lay = file.schema.layouts.find(l => gone.has(l.to));
+        if (lay) return FM.alert('A layout uses this table ("' + lay.name + '"). Delete the layout or change its table first.');
         if (!(await FM.confirm('Are you sure you want to permanently delete the table "' + t.name + '"? All of its records, fields and table occurrences will be deleted.', { ok: 'Delete' }))) return;
         draft.tables = draft.tables.filter(x => x !== t);
-        const gone = new Set(draft.tableOccurrences.filter(x => x.table === t.id).map(x => x.id));
         draft.tableOccurrences = draft.tableOccurrences.filter(x => !gone.has(x.id));
         draft.relationships = draft.relationships.filter(r => !gone.has(r.left) && !gone.has(r.right));
         state.table = (draft.tables[0] || {}).id; redraw();
@@ -542,31 +544,37 @@
       return wrap;
     }
 
-    const ok = await FM.modal({ title: 'Manage Database for "' + file.name + '"', body, width: 980, height: 640, className: 'fm-mdb-modal', enter: false, buttons: [{ label: 'Cancel', value: false, cancel: true }, { label: 'OK', value: true, primary: true }] });
+    // new tables get a layout (as FileMaker does); new fields join "auto" layouts
+    const save = async () => {
+      const ops = [{ op: 'section', name: 'database', value: draft }], appends = [];
+      const tmpFile = Object.create(file); tmpFile.schema = Object.assign({}, file.schema, draft);
+      draft.tables.forEach(t => {
+        if (!before.has(t.id)) {
+          const to = draft.tableOccurrences.find(x => x.table === t.id);
+          if (to && FM.design) { const lay = FM.design.autoLayout(tmpFile, { name: uniqueName(t.name, file.schema.layouts.map(l => l.name)), to: to.id, kind: 'form', keys: t.fields.filter(f => f.type !== 'summary').map(f => FM.fkey(to.id, f.id)) }); lay.autoAdd = true; ops.push({ op: 'upsert', coll: 'layouts', item: lay }); }
+        } else {
+          const added = t.fields.filter(f => !beforeFields.get(t.id).has(f.id));
+          if (added.length && FM.design && (FM.app.prefs.addFieldsToLayout !== false)) {
+            file.schema.layouts.filter(l => l.autoAdd && (draft.tableOccurrences.find(x => x.id === l.to) || {}).table === t.id).forEach(l => {
+              appends.push({ op: 'upsert', coll: 'layouts', item: FM.design.appendFields(tmpFile, FM.clone(l), added.map(f => FM.fkey(l.to, f.id))) });
+            });
+          }
+        }
+      });
+      // a refused save keeps the dialog open with every edit
+      try { await file.saveSchema(ops, Object.keys(serialEdits).length ? serialEdits : undefined); }
+      catch (e) { await FM.alert(e.message, { icon: 'warn' }); return false; }
+      // one layout at a time: a layout another user is editing keeps its fields as they are
+      for (const op of appends) { try { await file.saveSchema([op]); } catch (e) { FM.toast('The new fields were not added to the layout "' + op.item.name + '": ' + e.message, 'warn'); } }
+      return true;
+    };
+    let saving = false;
+    const ok = await FM.modal({ title: 'Manage Database for "' + file.name + '"', body, width: 980, height: 640, className: 'fm-mdb-modal', enter: false, buttons: [{ label: 'Cancel', value: false, cancel: true }, { label: 'OK', value: true, primary: true, validate: async () => { if (saving) return false; saving = true; try { return await save(); } finally { saving = false; } } }] });
     file.unlock(['schema']);
     if (!ok) return false;
-    // new tables get a layout (as FileMaker does); new fields join "auto" layouts
-    const ops = [{ op: 'section', name: 'database', value: draft }];
-    const tmpFile = Object.create(file); tmpFile.schema = Object.assign({}, file.schema, draft);
-    draft.tables.forEach(t => {
-      if (!before.has(t.id)) {
-        const to = draft.tableOccurrences.find(x => x.table === t.id);
-        if (to && FM.design) { const lay = FM.design.autoLayout(tmpFile, { name: uniqueName(t.name, file.schema.layouts.map(l => l.name)), to: to.id, kind: 'form', keys: t.fields.filter(f => f.type !== 'summary').map(f => FM.fkey(to.id, f.id)) }); lay.autoAdd = true; ops.push({ op: 'upsert', coll: 'layouts', item: lay }); }
-      } else {
-        const added = t.fields.filter(f => !beforeFields.get(t.id).has(f.id));
-        if (added.length && FM.design && (FM.app.prefs.addFieldsToLayout !== false)) {
-          file.schema.layouts.filter(l => l.autoAdd && (draft.tableOccurrences.find(x => x.id === l.to) || {}).table === t.id).forEach(l => {
-            ops.push({ op: 'upsert', coll: 'layouts', item: FM.design.appendFields(tmpFile, FM.clone(l), added.map(f => FM.fkey(l.to, f.id))) });
-          });
-        }
-      }
-    });
-    try {
-      await file.saveSchema(ops, Object.keys(serialEdits).length ? serialEdits : undefined);
-      if (draft.tables.length && !file.schema.layouts.length) FM.toast('Add a layout with File > Manage > Layouts.');
-      FM.app.windows.filter(w => w.file === file).forEach(w => { if (!w.layout) w.setLayout(w.defaultLayout(), { silent: true, noTrigger: true }).catch(() => { }); w.render(); });
-      return true;
-    } catch (e) { await FM.alert(e.message, { icon: 'warn' }); return false; }
+    if (draft.tables.length && !file.schema.layouts.length) FM.toast('Add a layout with File > Manage > Layouts.');
+    FM.app.windows.filter(w => w.file === file).forEach(w => { if (!w.layout) w.setLayout(w.defaultLayout(), { silent: true, noTrigger: true }).catch(() => { }); w.render(); });
+    return true;
   };
   function newTable(name) {
     return {
@@ -1305,7 +1313,7 @@
       } catch (e) { errors += Math.min(2000, ops.length - i); await FM.alert('Some records could not be imported: ' + e.message, { icon: 'warn' }); break; }
     }
     const s = win.set_(); s.ids = [...new Set(createdIds)]; s.index = 0;
-    win.mode = 'browse';
+    if (win.mode !== 'browse') await win.setMode('browse');
     win.render();
     await FM.alert('Import Summary\n\nTotal records added: ' + added + '\nTotal records updated: ' + updated + '\nTotal records skipped due to errors: ' + errors + '\nTotal fields not imported due to errors: ' + fieldErrors, { title: 'Import Summary', icon: 'info' });
     return true;
@@ -1431,8 +1439,8 @@
       if (how === 'serial') { v = serial; serial = FM.serialIncrement(serial, incr); }
       else if (how === 'calc') v = V.toStored(file.evaluate(formula, win.ctx(r)), f.type);
       else v = curVal;
-      const reps = file.reps(f);
-      return { op: 'update', id: r.id, data: { [f.id]: reps > 1 ? [v].concat(((r.d[f.id] || []).slice ? r.d[f.id].slice(1) : [])) : v } };
+      const reps = file.reps(f); const cur0 = r.d[f.id];
+      return { op: 'update', id: r.id, data: { [f.id]: reps > 1 ? [v].concat(Array.isArray(cur0) ? cur0.slice(1) : []) : v } };
     });
     for (let i = 0; i < ops.length; i += 2000) await file.batch(ops.slice(i, i + 2000));
     win.render();
@@ -1460,7 +1468,7 @@
       for (let n = 0; n < recs.length; n++) {
         const i = (start + n) % recs.length; const r = recs[i];
         const k = keys.find(kk => re.test(String(file.raw(r, file.fieldByKey(kk), 1)))); re.lastIndex = 0;
-        if (k) { await win.goTo(i); setTimeout(() => { const el = win.el.querySelector('[data-fm-key="' + CSS.escape(k) + '"]'); if (el && el.setSelectionRange) { el.focus(); const m = el.value.search(re); if (m >= 0) el.setSelectionRange(m, m + find.length); } }, 30); return true; }
+        if (k) { if (scope !== 'current') await win.goTo(i); setTimeout(() => { const el = win.el.querySelector('[data-fm-key="' + CSS.escape(k) + '"]'); if (el && el.setSelectionRange) { el.focus(); const m = el.value.search(re); if (m >= 0) el.setSelectionRange(m, m + find.length); } }, 30); return true; }
       }
       await FM.alert('The text was not found.', { icon: 'info' });
       return false;

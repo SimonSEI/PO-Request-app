@@ -125,11 +125,12 @@
     if (ta === 'empty' && tb === 'empty') return 0;
     if (ta === 'date' || tb === 'date' || ta === 'time' || tb === 'time' || ta === 'ts' || tb === 'ts' || ta === 'num' || tb === 'num') {
       if (ta === 'empty' || tb === 'empty') return V.cmpText(V.text(a), V.text(b));
-      const x = V.numOrNull(a), y = V.numOrNull(b);
-      if (x != null && y != null) return x < y ? -1 : x > y ? 1 : 0;
-      const kind = ta !== 'text' ? ta : tb;
+      // a date, time or timestamp against text reads the text as that type ("3/1/2025" is a date, not 312025)
+      const kind = ta === 'text' ? tb : tb === 'text' ? ta : null;
       const conv = kind === 'date' ? V.date : kind === 'time' ? V.time : kind === 'ts' ? V.ts : null;
       if (conv) { const p = conv(a), q = conv(b); if (p && q) return p.valueOf() < q.valueOf() ? -1 : p.valueOf() > q.valueOf() ? 1 : 0; }
+      const x = V.numOrNull(a), y = V.numOrNull(b);
+      if (x != null && y != null) return x < y ? -1 : x > y ? 1 : 0;
       return V.cmpText(V.text(a), V.text(b));
     }
     return V.cmpText(V.text(a), V.text(b));
@@ -560,6 +561,7 @@
         case '≥': return V.compare(a, b) >= 0 ? 1 : 0;
         case '+': {
           if (a instanceof FMDate && b instanceof FMTime) return new FMTimestamp((a.n - 1) * 86400 + b.s);
+          if (a instanceof FMTime && b instanceof FMDate) return new FMTimestamp((b.n - 1) * 86400 + a.s);
           if (a instanceof FMDate) return new FMDate(a.n + V.num(b));
           if (b instanceof FMDate && !(a instanceof FMDate)) return new FMDate(b.n + V.num(a));
           if (a instanceof FMTimestamp) return new FMTimestamp(a.s + V.num(b));
@@ -631,8 +633,10 @@
   const ret = a => a.join('\n') + (a.length ? '\n' : '');           // values, each followed by ¶
   const values = t => FM.splitValues(V.text(t));
   const words = t => [...String(t).matchAll(/[\p{L}\p{N}_]+(?:['’.@][\p{L}\p{N}_]+)*/gu)];
-  const roundTo = (x, p) => { const s = Math.sign(x) || 1; return s * Number(Math.round(Number(Math.abs(x) + 'e' + p)) + 'e' + (-p)); };
-  const truncTo = (x, p) => { const s = Math.sign(x) || 1; return s * Number(Math.floor(Number(Math.abs(x) + 'e' + p)) + 'e' + (-p)); };
+  // x * 10^p through the decimal exponent, so 1.005 shifts to 100.5 (not 100.49999) and 1e-7 or 1e21 still shift
+  const shift = (x, p) => { if (!isFinite(x)) return x; const [m, e] = x.toExponential().split('e'); return Number(m + 'e' + (+e + p)); };
+  const roundTo = (x, p) => { const s = Math.sign(x) || 1; return s * shift(Math.round(shift(Math.abs(x), p)), -p); };
+  const truncTo = (x, p) => { const s = Math.sign(x) || 1; return s * shift(Math.floor(shift(Math.abs(x), p)), -p); };
   const numOr = (v, fb) => { const n = V.numOrNull(v); return n == null ? fb : n; };
   const out = v => (typeof v === 'number' && !isFinite(v)) ? '?' : v;
 
@@ -682,7 +686,7 @@
     if (start < 1) start = 1;
     if (occ > 0) { let i = start - 2, c = 0; while (c < occ) { i = hay.indexOf(nd, i + 1); if (i < 0) return 0; c++; } return i + 1; }
     let i = Math.min(start - 1, hay.length), c = 0;
-    while (c < -occ) { i = hay.lastIndexOf(nd, i - (c ? 1 : 0)); if (i < 0) return 0; c++; }
+    while (c < -occ) { const from = i - (c ? 1 : 0); if (from < 0) return 0; i = hay.lastIndexOf(nd, from); if (i < 0) return 0; c++; }
     return i + 1;
   });
   def('Proper', 'Proper ( text )', 'Text', ([t]) => T(t).toLowerCase().replace(/(^|[^\p{L}\p{N}'’])(\p{L})/gu, (m, a, b) => a + b.toUpperCase()));
@@ -763,7 +767,14 @@
   def('Abs', 'Abs ( number )', 'Number', n1(Math.abs));
   def('Ceiling', 'Ceiling ( number )', 'Number', n1(Math.ceil));
   def('Combination', 'Combination ( setSize ; numberOfChoices )', 'Number', ([a, b]) => { const n = Math.floor(N(a)), k = Math.floor(N(b)); if (k < 0 || k > n) return 0; let r = 1; for (let i = 1; i <= k; i++) r = r * (n - k + i) / i; return Math.round(r); });
-  def('Div', 'Div ( number ; divisor )', 'Number', ([a, b]) => { const d = N(b); return d === 0 ? '?' : Math.floor(N(a) / d); });
+  // FileMaker divides in decimal: work on scaled integers so Div ( 0.3 ; 0.1 ) is 3 and Mod ( 0.3 ; 0.1 ) is 0
+  const divMod = (x, d) => {
+    const dec = v => { const s = FM.num.plain(Math.abs(v)), i = s.indexOf('.'); return i < 0 ? 0 : s.length - i - 1; };
+    const f = Math.pow(10, Math.max(dec(x), dec(d))), xi = Math.round(x * f), di = Math.round(d * f);
+    if (f > 1e15 || !di || !Number.isSafeInteger(xi) || !Number.isSafeInteger(di)) { const q = Math.floor(x / d); return [q, x - d * q]; }
+    const q = Math.floor(xi / di); return [q, (xi - di * q) / f];
+  };
+  def('Div', 'Div ( number ; divisor )', 'Number', ([a, b]) => { const d = N(b); return d === 0 ? '?' : divMod(N(a), d)[0]; });
   def('Exp', 'Exp ( number )', 'Number', n1(Math.exp));
   def('Factorial', 'Factorial ( number {; numberOfFactors } )', 'Number', ([a, b]) => { const n = Math.floor(N(a)); if (n < 0) return '?'; const k = b == null ? n : Math.floor(N(b)); let r = 1; for (let i = 0; i < k && n - i > 0; i++) r *= n - i; return r; });
   def('Floor', 'Floor ( number )', 'Number', n1(Math.floor));
@@ -771,7 +782,7 @@
   def('Lg', 'Lg ( number )', 'Number', n1(x => x > 0 ? Math.log2(x) : NaN));
   def('Ln', 'Ln ( number )', 'Number', n1(x => x > 0 ? Math.log(x) : NaN));
   def('Log', 'Log ( number )', 'Number', n1(x => x > 0 ? Math.log10(x) : NaN));
-  def('Mod', 'Mod ( number ; divisor )', 'Number', ([a, b]) => { const d = N(b), x = N(a); if (d === 0) return '?'; return x - d * Math.floor(x / d); });
+  def('Mod', 'Mod ( number ; divisor )', 'Number', ([a, b]) => { const d = N(b); return d === 0 ? '?' : divMod(N(a), d)[1]; });
   def('Random', 'Random', 'Number', () => Math.random());
   def('Round', 'Round ( number ; precision )', 'Number', ([x, p]) => { const v = V.numOrNull(x); return v == null ? '' : roundTo(v, Math.floor(N(p))); });
   def('SetPrecision', 'SetPrecision ( expression ; precision )', 'Number', ([x, p]) => { const v = V.numOrNull(x); return v == null ? '' : roundTo(v, FM.clamp(Math.floor(N(p)), 0, 15)); });
@@ -844,7 +855,8 @@
   def('VarianceP', 'VarianceP ( field {; field...} )', 'Aggregate', agg(v => variance(v, true)), { lazy: true, min: 1, max: null });
 
   // ── repeating ───────────────────────────────────────────────────────────
-  def('Extend', 'Extend ( nonRepeatingField )', 'Repeating', (args, c) => c.ev(args[0]), { lazy: true });
+  // a non-repeating field is empty past repetition 1 of a repeating calculation unless it is extended
+  def('Extend', 'Extend ( nonRepeatingField )', 'Repeating', (args, c) => args[0].k === 'field' && !args[0].rep && c.env.repetitions(args[0].ref) <= 1 ? c.env.field(args[0].ref, 1, false) : c.ev(args[0]), { lazy: true });
   def('GetRepetition', 'GetRepetition ( repeatingField ; numberOfRepetition )', 'Repeating', (args, c) => {
     const n = Math.max(1, Math.floor(N(c.ev(args[1]))));
     if (args[0].k === 'field') return c.env.field(args[0].ref, n, false);
@@ -1117,7 +1129,7 @@
   function words2bytes(H, little) { const o = new Uint8Array(H.length * 4); H.forEach((w, i) => { for (let j = 0; j < 4; j++) o[i * 4 + j] = little ? (w >>> (8 * j)) & 255 : (w >>> (24 - 8 * j)) & 255; }); return o; }
 
   FM.calc = {
-    parse, evaluate, refs, usesGet, CalcError, LIB, CATALOG, GET_LIST,
+    parse, evaluate, refs, usesGet, CalcError, LIB, CATALOG, GET_LIST, roundTo,
     CATEGORIES: ['Text', 'Text Formatting', 'Number', 'Date', 'Time', 'Timestamp', 'Container', 'JSON', 'Aggregate', 'Summary', 'Repeating', 'Financial', 'Trigonometric', 'Logical', 'Get', 'Design'],
     jsonPath
   };

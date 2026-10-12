@@ -12,9 +12,14 @@ import io
 import json
 import os
 import shutil
+import socket
 import sys
 import tempfile
+import threading
+import time
 import unittest
+import zipfile
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -24,10 +29,17 @@ os.environ.setdefault('DATA_DIR', TMP)
 os.environ.setdefault('PUMPS_AUTO_SCAN', 'false')
 os.environ.pop('ANTHROPIC_API_KEY', None)
 
-import app as A  # noqa: E402
-import filemaker as FMH  # noqa: E402
+A = FMH = None
 
-A.app.config['TESTING'] = True
+
+def setUpModule():
+    # The app is imported here, not at the top: when this module is loaded together with
+    # tests.test_pumps, that module sets its environment and imports the app first, and
+    # both then run against that one app (it is configured once, when first imported).
+    global A, FMH
+    import app as A
+    import filemaker as FMH
+    A.app.config['TESTING'] = True
 
 
 def schema_with(tables, **extra):
@@ -36,6 +48,49 @@ def schema_with(tables, **extra):
     s['tableOccurrences'] = [{'id': 'O_' + t['id'], 'name': t['name'], 'table': t['id']} for t in tables]
     s.update(extra)
     return s
+
+
+def custom_set(pid, tables, **extra):
+    return dict({'id': pid, 'name': pid, 'records': {'mode': 'custom', 'tables': tables}, 'layouts': {'mode': 'all_view'},
+                 'valueLists': {'mode': 'all_view'}, 'scripts': {'mode': 'all_exec'}, 'extended': ['fmapp']}, **extra)
+
+
+ALL = {'view': 'yes', 'edit': 'yes', 'create': 'yes', 'delete': 'yes'}
+
+
+def serve(reply):
+    """A tiny HTTP server on 127.0.0.1 for the Insert From URL tests. Returns
+    (port, requests seen); each request is answered by reply(conn)."""
+    srv = socket.socket()
+    srv.bind(('127.0.0.1', 0))
+    srv.listen(5)
+    seen = []
+
+    def loop():
+        while True:
+            try:
+                c, _ = srv.accept()
+            except OSError:
+                return
+            with c:
+                c.settimeout(5)
+                req = b''
+                while b'\r\n\r\n' not in req:
+                    chunk = c.recv(4096)
+                    if not chunk:
+                        break
+                    req += chunk
+                seen.append(req.decode('latin-1'))
+                try:
+                    reply(c)
+                except OSError:
+                    pass
+    threading.Thread(target=loop, daemon=True).start()
+    return srv, seen
+
+
+def ok_reply(c):
+    c.sendall(b'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 6\r\nConnection: close\r\n\r\nSECRET')
 
 
 CONTACTS = {'id': 'T1', 'name': 'Contacts', 'fields': [
@@ -76,6 +131,28 @@ class FileMakerHostTests(unittest.TestCase):
     def call(self, method, path, token, body=None, c=None):
         c = c or self.c
         return c.open(path, method=method, json=body, headers={'X-FM-Session': token})
+
+    def sql(self, query, args=()):
+        conn = FMH._conn()
+        try:
+            rows = conn.execute(query, args).fetchall()
+            conn.commit()
+            return rows
+        finally:
+            conn.close()
+
+    def clear_failed_logins(self):
+        self.sql("DELETE FROM fm_login_failures")
+
+    def add_pset(self, fid, tok, pset):
+        schema = self.call('GET', f'/filemaker/api/files/{fid}/schema', tok).get_json()['schema']
+        r = self.call('POST', f'/filemaker/api/files/{fid}/schema', tok, {'ops': [{'op': 'section', 'name': 'privilegeSets', 'value': schema['privilegeSets'] + [pset]}]})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+    def upload(self, fid, tok, data, c=None):
+        r = (c or self.c).post(f'/filemaker/api/files/{fid}/containers', data={'file': (io.BytesIO(data), 'x.png')},
+                               headers={'X-FM-Session': tok}, content_type='multipart/form-data')
+        return r
 
     # ── access ──────────────────────────────────────────────────────────────
     def test_only_office_logins(self):
@@ -125,7 +202,7 @@ class FileMakerHostTests(unittest.TestCase):
         r = self.open(fid, c, account='Admin', password='right')
         self.assertEqual(r.status_code, 401)
         self.assertIn('Too many', r.get_json()['error'])
-        FMH._failed_logins.clear()
+        self.clear_failed_logins()
 
     def test_session_token_tied_to_app_login(self):
         fid = self.make_file('Mine')
@@ -149,7 +226,7 @@ class FileMakerHostTests(unittest.TestCase):
         fid = self.make_file('Doomed', password='pw')
         self.assertEqual(self.c.post(f'/filemaker/api/files/{fid}/delete', json={'account': 'Admin', 'password': 'pw', 'confirm': 'nope'}).status_code, 400)
         self.assertEqual(self.c.post(f'/filemaker/api/files/{fid}/delete', json={'account': 'Admin', 'password': 'x', 'confirm': 'Doomed'}).status_code, 401)
-        FMH._failed_logins.clear()
+        self.clear_failed_logins()
         self.assertEqual(self.c.post(f'/filemaker/api/files/{fid}/delete', json={'account': 'Admin', 'password': 'pw', 'confirm': 'Doomed'}).status_code, 200)
         self.assertFalse(any(f['id'] == fid for f in self.c.get('/filemaker/api/files').get_json()['files']))
 
@@ -384,6 +461,344 @@ class FileMakerHostTests(unittest.TestCase):
             r = self.call('POST', f'/filemaker/api/files/{fid}/fetch', tok, {'url': url})
             self.assertEqual(r.status_code, 400, url)
             self.assertEqual(r.get_json()['fmError'], 1631 if url.startswith('http') else 1631)
+
+    # ── security fixes ─────────────────────────────────────────────────────
+    def test_failed_logins_are_counted_per_account_in_the_database(self):
+        fid = self.make_file('HR', password='right')
+        tok = self.open(fid, account='Admin', password='right').get_json()['token']
+        self.add_account(fid, tok, 'low', 'lowpw', 'PS_READ')
+        c = self.client('attacker')
+        # signing in to another account does not clear the failures against Admin
+        for _ in range(2):
+            for _ in range(2):
+                self.assertEqual(self.open(fid, c, account='Admin', password='wrong').status_code, 401)
+            self.assertEqual(self.open(fid, c, account='low', password='lowpw').status_code, 200)
+        self.assertEqual(self.open(fid, c, account='Admin', password='wrong').status_code, 401)
+        r = self.open(fid, c, account='Admin', password='right')
+        self.assertIn('Too many', r.get_json()['error'])
+        # kept in the database (so every worker process counts them), not in memory
+        self.assertEqual(self.sql("SELECT COUNT(*) FROM fm_login_failures WHERE file_id=?", (fid,))[0][0], 5)
+        # nobody else is locked out
+        self.assertEqual(self.open(fid, self.client('bystander'), account='Admin', password='right').status_code, 200)
+        self.clear_failed_logins()
+
+    def test_limited_view_also_limits_edit_delete_and_lock(self):
+        fid = self.make_file('Hidden')
+        tok = self.open(fid).get_json()['token']
+        self.add_pset(fid, tok, custom_set('P_own', {'T1': dict(ALL, view='limited', viewCalc='Owner = Get ( AccountName )')}))
+        self.add_account(fid, tok, 'sam', 'pw', 'P_own')
+        rid = self.call('POST', f'/filemaker/api/files/{fid}/records', tok, {'ops': [{'op': 'create', 'table': 'T1', 'data': {'F2': 'pat only', 'F3': 'pat'}}]}).get_json()['results'][0]['id']
+        other = self.client('office2')
+        st = self.open(fid, other, account='sam', password='pw').get_json()
+        self.assertTrue(st['records']['T1'][0]['noaccess'])
+        r = self.call('POST', f'/filemaker/api/files/{fid}/records', st['token'], {'ops': [{'op': 'update', 'id': rid, 'data': {'F2': 'overwritten by sam'}}]}, c=other)
+        self.assertEqual(r.status_code, 403)
+        r = self.call('POST', f'/filemaker/api/files/{fid}/lock', st['token'], {'key': f'rec:{rid}'}, c=other)
+        self.assertEqual(r.get_json()['fmError'], 200)
+        r = self.call('POST', f'/filemaker/api/files/{fid}/records', st['token'], {'ops': [{'op': 'delete', 'id': rid}]}, c=other)
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(self.open(fid).get_json()['records']['T1'][0]['d']['F2'], 'pat only')
+
+    def test_view_only_fields_are_never_taken_from_the_client(self):
+        table = json.loads(json.dumps(CONTACTS))
+        table['fields'] += [{'id': 'F6', 'name': 'Created By', 'type': 'text', 'options': {'autoEnter': {'creation': 'account'}}},
+                            {'id': 'F7', 'name': 'Approved', 'type': 'text'},
+                            {'id': 'F8', 'name': 'Modified By', 'type': 'text', 'options': {'autoEnter': {'modification': 'account'}}}]
+        fid = self.make_file('Audit', schema=schema_with([table]))
+        tok = self.open(fid).get_json()['token']
+        self.add_pset(fid, tok, custom_set('P_clerk', {'T1': dict(ALL, fields={'F6': 'view', 'F7': 'view', 'F8': 'view'})}))
+        self.add_account(fid, tok, 'sam', 'pw', 'P_clerk')
+        other = self.client('office2')
+        st = self.open(fid, other, account='sam', password='pw').get_json()['token']
+        url = f'/filemaker/api/files/{fid}/records'
+        forged = {'F6': 'Admin', 'F7': 'APPROVED', 'F8': 'Admin'}
+        r = self.call('POST', url, st, {'ops': [{'op': 'create', 'table': 'T1', 'data': dict(forged, F2='x')}]}, c=other)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        d = r.get_json()['results'][0]['record']['d']
+        self.assertEqual((d['F2'], d['F6'], d.get('F7'), d['F8']), ('x', 'sam', None, 'sam'), 'the host enters auto-enter values itself')
+        # a pending (New Record) record committed later
+        rid = self.call('POST', url, st, {'ops': [{'op': 'create', 'table': 'T1', 'data': {}, 'pending': True}]}, c=other).get_json()['results'][0]['id']
+        r = self.call('POST', url, st, {'ops': [{'op': 'update', 'id': rid, 'data': dict(forged, F2='y'), 'commit': True}]}, c=other)
+        d = r.get_json()['results'][0]['record']['d']
+        self.assertEqual((d['F2'], d['F6'], d.get('F7'), d['F8']), ('y', 'sam', None, 'sam'))
+        # a committed record: a view-only field is refused, its modification auto-enter is the host's
+        self.assertEqual(self.call('POST', url, st, {'ops': [{'op': 'update', 'id': rid, 'data': {'F7': 'APPROVED'}}]}, c=other).status_code, 403)
+        r = self.call('POST', url, st, {'ops': [{'op': 'update', 'id': rid, 'data': {'F2': 'z', 'F8': 'forged'}}]}, c=other)
+        self.assertEqual(r.get_json()['results'][0]['record']['d']['F8'], 'sam')
+
+    def test_concurrent_schema_saves_keep_both_changes(self):
+        fid = self.make_file('Race')
+        tok = self.open(fid).get_json()['token']
+        real_ctx, fired = FMH._ctx, []
+
+        def racing(conn, file_id):
+            out = real_ctx(conn, file_id)
+            if not fired:
+                # another user's save lands after this request read the design
+                fired.append(1)
+                row = self.sql("SELECT schema, schema_version FROM fm_files WHERE id=?", (fid,))[0]
+                s = json.loads(row['schema'])
+                s['layouts'].append({'id': 'LA', 'name': 'Alice', 'to': 'O_T1', 'parts': [], 'objects': []})
+                self.sql("UPDATE fm_files SET schema=?, schema_version=? WHERE id=?", (json.dumps(s), row['schema_version'] + 1, fid))
+            return out
+        with mock.patch.object(FMH, '_ctx', racing):
+            r = self.call('POST', f'/filemaker/api/files/{fid}/schema', tok, {'ops': [{'op': 'upsert', 'coll': 'scripts', 'item': {'id': 'S1', 'name': 'Bob script', 'steps': []}}]})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        d = r.get_json()
+        self.assertEqual(d['version'], 3)
+        self.assertEqual([x['id'] for x in d['schema']['layouts']], ['LA'])
+        self.assertEqual([x['id'] for x in d['schema']['scripts']], ['S1'])
+
+    def test_design_locks_need_design_rights(self):
+        fid = self.make_file('DesignLocks')
+        tok = self.open(fid).get_json()['token']
+        lay = {'id': 'L1', 'name': 'L', 'to': 'O_T1', 'parts': [], 'objects': []}
+        self.call('POST', f'/filemaker/api/files/{fid}/schema', tok, {'ops': [{'op': 'upsert', 'coll': 'layouts', 'item': lay}]})
+        self.add_account(fid, tok, 'ro', 'r', 'PS_READ')
+        other = self.client('office2')
+        rt = self.open(fid, other, account='ro', password='r').get_json()['token']
+        for key in ('schema', 'security', 'layout:L1', 'script:S1', 'valueList:V1'):
+            r = self.call('POST', f'/filemaker/api/files/{fid}/lock', rt, {'key': key}, c=other)
+            self.assertEqual(r.status_code, 403, key)
+        schema = self.call('GET', f'/filemaker/api/files/{fid}/schema', tok).get_json()['schema']
+        r = self.call('POST', f'/filemaker/api/files/{fid}/schema', tok, {'ops': [{'op': 'section', 'name': 'database', 'value': {k: schema[k] for k in ('tables', 'tableOccurrences', 'relationships')}}]})
+        self.assertEqual(r.status_code, 200)
+
+    def test_password_rules_hold_on_open_and_relogin(self):
+        fid = self.make_file('PwRules')
+        tok = self.open(fid).get_json()['token']
+        self.add_pset(fid, tok, custom_set('P_fixed', {'T1': ALL}, modifyOwnPassword=False))
+        self.add_account(fid, tok, 'sam', 'pw', 'P_fixed')
+        self.add_account(fid, tok, 'ro', 'r', 'PS_READ')
+        self.call('POST', f'/filemaker/api/files/{fid}/accounts', tok, {'ops': [{'op': 'add', 'name': 'temp', 'password': 'Welcome1', 'privilegeSet': 'PS_READ', 'mustChange': True}]})
+        other = self.client('office2')
+        self.assertEqual(self.open(fid, other, account='sam', password='pw', newPassword='hijacked').status_code, 403)
+        self.assertEqual(self.open(fid, other, account='sam', password='pw').status_code, 200)
+        rt = self.open(fid, other, account='ro', password='r').get_json()['token']
+        r = self.call('POST', f'/filemaker/api/files/{fid}/relogin', rt, {'account': 'temp', 'password': 'Welcome1'}, c=other)
+        self.assertEqual(r.status_code, 403)
+        self.assertTrue(r.get_json()['mustChange'])
+        # a must-change account may still set its new password when it opens the file
+        self.assertEqual(self.open(fid, other, account='temp', password='Welcome1', newPassword='Mine2').status_code, 200)
+        self.clear_failed_logins()
+
+    def test_change_feed_skips_tables_the_account_cannot_view(self):
+        payroll = {'id': 'T2', 'name': 'Payroll', 'fields': [{'id': 'G1', 'name': 'Amount', 'type': 'number'}]}
+        fid = self.make_file('Feed', schema=schema_with([json.loads(json.dumps(CONTACTS)), payroll]))
+        tok = self.open(fid).get_json()['token']
+        self.add_pset(fid, tok, custom_set('P_t1', {'T1': ALL, 'T2': {'view': 'no'}}))
+        self.add_account(fid, tok, 'sam', 'pw', 'P_t1')
+        other = self.client('office2')
+        st = self.open(fid, other, account='sam', password='pw').get_json()
+        url = f'/filemaker/api/files/{fid}/records'
+        rid = self.call('POST', url, tok, {'ops': [{'op': 'create', 'table': 'T2', 'data': {'G1': '9000'}}, {'op': 'create', 'table': 'T1', 'data': {'F2': 'seen'}}]}).get_json()['results'][0]['id']
+        self.call('POST', url, tok, {'ops': [{'op': 'update', 'id': rid, 'data': {'G1': '9500'}}]})
+        self.call('POST', url, tok, {'ops': [{'op': 'delete', 'id': rid}]})
+        ch = self.call('GET', f'/filemaker/api/files/{fid}/changes?since={st["seq"]}', st['token'], c=other).get_json()
+        self.assertEqual(ch['deleted'], [])
+        self.assertEqual([r['t'] for r in ch['records']], ['T1'])
+
+    def test_open_never_misses_a_change_made_while_it_reads(self):
+        fid = self.make_file('Snapshot')
+        tok = self.open(fid).get_json()['token']
+        rid = self.call('POST', f'/filemaker/api/files/{fid}/records', tok, {'ops': [{'op': 'create', 'table': 'T1', 'data': {'F2': 'v1'}}]}).get_json()['results'][0]['id']
+        real, fired = FMH._all_records, []
+
+        def racing(ctx):
+            out = real(ctx)
+            if not fired:
+                # another user's edit is committed just after the records were read
+                fired.append(1)
+                conn = FMH._conn()
+                conn.execute("UPDATE fm_records SET data=?, mod_count=mod_count+1 WHERE id=?", (json.dumps({'F1': '100', 'F2': 'v2'}), rid))
+                FMH._change(conn, fid, 'rec', 'another-session', 'Admin', 'T1', rid)
+                conn.commit()
+                conn.close()
+            return out
+        other = self.client('office2')
+        with mock.patch.object(FMH, '_all_records', racing):
+            st = self.open(fid, other).get_json()
+        self.assertEqual(st['records']['T1'][0]['d']['F2'], 'v1')
+        ch = self.call('GET', f'/filemaker/api/files/{fid}/changes?since={st["seq"]}', st['token'], c=other).get_json()
+        self.assertEqual([r['d']['F2'] for r in ch['records']], ['v2'])
+
+    def test_malformed_bodies_are_refused_not_crashing(self):
+        fid = self.make_file('Junk')
+        tok = self.open(fid).get_json()['token']
+        rid = self.call('POST', f'/filemaker/api/files/{fid}/records', tok, {'ops': [{'op': 'create', 'table': 'T1', 'data': {'F2': 'a'}}]}).get_json()['results'][0]['id']
+        for path, body in (('records', [1]), ('records', {'ops': ['x']}), ('records', {'ops': [{'op': 'create', 'table': [1]}]}),
+                           ('records', {'ops': [{'op': 'update', 'id': rid, 'data': {}, 'mc': [1]}]}), ('records', {'ops': [{'op': 'delete', 'id': [1]}]}),
+                           ('schema', {'ops': ['x']}), ('schema', {'ops': [{'op': 'upsert', 'coll': ['layouts'], 'item': {}}]}),
+                           ('schema', {'ops': [{'op': 'upsert', 'coll': 'layouts', 'item': [1]}]}),
+                           ('schema', {'ops': [{'op': 'section', 'name': 'database', 'value': [1]}]}), ('schema', {'ops': [], 'serials': [1]}),
+                           ('accounts', {'ops': ['x']}), ('accounts', {'ops': [{'op': 'add', 'name': 'x', 'privilegeSet': ['PS_READ']}]}),
+                           ('fetch', {'url': 'https://example.com/', 'headers': [1]})):
+            r = self.call('POST', f'/filemaker/api/files/{fid}/{path}', tok, body)
+            self.assertIn(r.status_code, (400, 404), (path, body))
+        self.assertEqual(self.call('POST', f'/filemaker/api/files/{fid}/unlock', tok, {'keys': 5}).status_code, 200)
+        r = self.c.post('/filemaker/api/xlsx/build', json={'rows': [['2024-99-99', '1' * 5000, 'a\x01b']], 'types': ['date', 'number', 'text']})
+        self.assertEqual(r.status_code, 200)
+
+    # ── containers ─────────────────────────────────────────────────────────
+    def container_file(self, name):
+        contacts = json.loads(json.dumps(CONTACTS))
+        contacts['fields'].append({'id': 'F6', 'name': 'Photo', 'type': 'container'})
+        secret = {'id': 'T2', 'name': 'Secret', 'fields': [{'id': 'G1', 'name': 'Scan', 'type': 'container'}]}
+        return self.make_file(name, schema=schema_with([contacts, secret]))
+
+    def test_container_downloads_follow_record_privileges(self):
+        fid = self.container_file('Pics')
+        tok = self.open(fid).get_json()['token']
+        own = {'view': 'limited', 'viewCalc': 'Owner = Get ( AccountName )', 'edit': 'limited', 'editCalc': 'Owner = Get ( AccountName )', 'create': 'yes', 'delete': 'no'}
+        self.add_pset(fid, tok, custom_set('P_own', {'T1': own, 'T2': {'view': 'no'}}))
+        self.add_pset(fid, tok, custom_set('P_nophoto', {'T1': dict(ALL, fields={'F6': 'none'}), 'T2': {'view': 'no'}}))
+        self.add_account(fid, tok, 'sam', 'pw', 'P_own')
+        self.add_account(fid, tok, 'nopic', 'pw', 'P_nophoto')
+        secret, theirs, mine = (self.upload(fid, tok, data).get_json()['value'] for data in (b'TOP SECRET SCAN', b'pat photo', b'sam photo'))
+        url = f'/filemaker/api/files/{fid}/records'
+        r = self.call('POST', url, tok, {'ops': [{'op': 'create', 'table': 'T2', 'data': {'G1': secret}},
+                                                 {'op': 'create', 'table': 'T1', 'data': {'F2': 'p', 'F3': 'pat', 'F6': theirs}},
+                                                 {'op': 'create', 'table': 'T1', 'data': {'F2': 's', 'F3': 'sam', 'F6': mine}}]})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        other = self.client('office2')
+        st = self.open(fid, other, account='sam', password='pw').get_json()['token']
+
+        def get(c, v):
+            return c.get(f'/filemaker/api/files/{fid}/containers/{v["c"]}')
+        got = get(other, mine)
+        self.assertEqual(got.data, b'sam photo')
+        self.assertEqual(got.headers['Cache-Control'], 'private, no-cache')
+        self.assertEqual(get(other, secret).status_code, 403)
+        self.assertEqual(get(other, theirs).status_code, 403)
+        # an upload is seen by the session that made it until a record holds it
+        draft = self.upload(fid, st, b'draft', c=other).get_json()['value']
+        self.assertEqual(get(other, draft).data, b'draft')
+        self.assertEqual(get(self.c, draft).status_code, 403)
+        # a guessed id cannot be put into a record of one's own to read it through that
+        r = self.call('POST', url, st, {'ops': [{'op': 'create', 'table': 'T1', 'data': {'F2': 'x', 'F3': 'sam', 'F6': secret}}]}, c=other)
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(get(other, secret).status_code, 403)
+        # a "no access" field hides the file even in a record the account can view
+        third = self.client('office3')
+        self.open(fid, third, account='nopic', password='pw')
+        self.assertEqual(get(third, mine).status_code, 403)
+
+    def test_container_uploads_need_a_field_to_put_them_in_and_orphans_are_removed(self):
+        fid = self.container_file('Uploads')
+        tok = self.open(fid).get_json()['token']
+        self.add_account(fid, tok, 'ro', 'r', 'PS_READ')
+        other = self.client('office2')
+        rt = self.open(fid, other, account='ro', password='r').get_json()['token']
+        self.assertEqual(self.upload(fid, rt, b'junk', c=other).status_code, 403)
+        kept, orphan = (self.upload(fid, tok, data).get_json()['value'] for data in (b'kept', b'orphan'))
+        self.call('POST', f'/filemaker/api/files/{fid}/records', tok, {'ops': [{'op': 'create', 'table': 'T1', 'data': {'F6': kept}}]})
+        self.sql("UPDATE fm_containers SET created_at='2000-01-01 00:00:00' WHERE file_id=?", (fid,))
+        conn = FMH._conn()
+        FMH._cleanup(conn, force=True)
+        conn.close()
+        self.assertEqual([r['id'] for r in self.sql("SELECT id FROM fm_containers WHERE file_id=?", (fid,))], [kept['c']])
+        folder = os.path.join(FMH._data_dir, 'filemaker_files', str(fid))
+        self.assertEqual(sorted(os.listdir(folder)), [str(kept['c'])])
+
+    # ── Excel ──────────────────────────────────────────────────────────────
+    def xlsx_with_sheet(self, sheet_xml):
+        r = self.c.post('/filemaker/api/xlsx/build', json={'rows': [['a']]})
+        src, out = zipfile.ZipFile(io.BytesIO(r.data)), io.BytesIO()
+        with zipfile.ZipFile(out, 'w') as z:
+            for item in src.infolist():
+                z.writestr(item, sheet_xml if item.filename == 'xl/worksheets/sheet1.xml' else src.read(item.filename))
+        return out.getvalue()
+
+    def test_xlsx_declared_size_is_not_trusted(self):
+        ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+        # says it is 16,384 columns by 300 rows, but holds two cells
+        tiny = self.xlsx_with_sheet(f'<worksheet {ns}><dimension ref="A1:XFD300"/><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>x</t></is></c></row>'
+                                    f'<row r="300"><c r="A300" t="inlineStr"><is><t>y</t></is></c></row></sheetData></worksheet>')
+        started = time.time()
+        p = self.c.post('/filemaker/api/xlsx/parse', data={'file': (io.BytesIO(tiny), 'x.xlsx')}, content_type='multipart/form-data').get_json()
+        rows = p['sheets'][0]['rows']
+        self.assertEqual((len(rows), max(len(r) for r in rows), rows[0], rows[-1]), (300, 1, ['x'], ['y']))
+        self.assertLess(time.time() - started, 5)
+        # a cell in the last column of many rows is refused, not padded out
+        wide = ''.join(f'<row r="{i}"><c r="XFD{i}" t="inlineStr"><is><t>z</t></is></c></row>' for i in range(1, 201))
+        r = self.c.post('/filemaker/api/xlsx/parse', data={'file': (io.BytesIO(self.xlsx_with_sheet(f'<worksheet {ns}><sheetData>{wide}</sheetData></worksheet>')), 'x.xlsx')},
+                        content_type='multipart/form-data')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('too large', r.get_json()['error'])
+
+    # ── Insert From URL ─────────────────────────────────────────────────────
+    def fetch(self, fid, tok, url):
+        return self.call('POST', f'/filemaker/api/files/{fid}/fetch', tok, {'url': url})
+
+    def test_fetch_url_parser_tricks_are_refused(self):
+        fid = self.make_file('FetchTricks')
+        tok = self.open(fid).get_json()['token']
+        srv, seen = serve(ok_reply)
+        self.addCleanup(srv.close)
+        port = srv.getsockname()[1]
+        real = socket.getaddrinfo
+        # example.com resolves to a public address here, so only the URL check can stop these
+        with mock.patch('socket.getaddrinfo', lambda host, *a, **k: real('93.184.216.34' if host == 'example.com' else host, *a, **k)):
+            for url in (f'http://127.0.0.1:{port}\\@example.com/', f'http://127.0.0.1:{port} @example.com/', f'http://127.0.0.1:{port}\t@example.com/',
+                        f'http://[::ffff:127.0.0.1]:{port}/'):
+                r = self.fetch(fid, tok, url)
+                self.assertEqual(r.status_code, 400, url)
+        self.assertEqual(seen, [])
+        # every redirect is checked again: the first server counts as public here, the address it sends to does not
+        with mock.patch.object(FMH, '_public_ip', lambda a: a == '127.0.0.1'):
+            for target in (f'http://127.0.0.1:{port}\\@example.com/', 'http://127.0.0.2/'):
+                red, red_seen = serve(lambda c, t=target: c.sendall(f'HTTP/1.1 302 Found\r\nLocation: {t}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'.encode()))
+                self.addCleanup(red.close)
+                r = self.fetch(fid, tok, f'http://127.0.0.1:{red.getsockname()[1]}/')
+                self.assertEqual(r.status_code, 400, target)
+                self.assertEqual(len(red_seen), 1)
+        self.assertEqual(seen, [])
+
+    def test_fetch_connects_to_the_address_it_checked(self):
+        fid = self.make_file('FetchPin')
+        tok = self.open(fid).get_json()['token']
+        srv, seen = serve(ok_reply)
+        self.addCleanup(srv.close)
+        port = srv.getsockname()[1]
+        checked, real = [], socket.getaddrinfo
+
+        def public_host(host, port=None):
+            checked.append(host)
+            return ['127.0.0.1']        # what the check approved
+
+        def resolver(host, *a, **k):
+            # a second lookup (DNS rebinding) would give another answer; it must not be made
+            if host == 'rebind.test':
+                raise socket.gaierror('second lookup')
+            return real(host, *a, **k)
+        with mock.patch.object(FMH, '_public_host', public_host), mock.patch('socket.getaddrinfo', resolver):
+            r = self.fetch(fid, tok, f'http://rebind.test:{port}/x')
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(r.get_json()['text'], 'SECRET')
+        self.assertEqual(checked, ['rebind.test'])
+        self.assertIn(f'Host: rebind.test:{port}', seen[0])
+        # and a name that resolves to a private address is refused at the connection
+        with mock.patch('socket.getaddrinfo', lambda host, *a, **k: real('127.0.0.1' if host == 'internal.test' else host, *a, **k)):
+            self.assertEqual(self.fetch(fid, tok, f'http://internal.test:{port}/').status_code, 400)
+        self.assertEqual(len(seen), 1)
+
+    def test_fetch_has_an_overall_deadline(self):
+        fid = self.make_file('FetchSlow')
+        tok = self.open(fid).get_json()['token']
+
+        def trickle(c):
+            c.sendall(b'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 10\r\n\r\n')
+            for _ in range(10):
+                c.sendall(b'a')
+                time.sleep(0.4)
+        srv, seen = serve(trickle)
+        self.addCleanup(srv.close)
+        started = time.time()
+        with mock.patch.object(FMH, '_public_ip', lambda a: a == '127.0.0.1'), mock.patch.object(FMH, 'FETCH_DEADLINE', 1):
+            r = self.fetch(fid, tok, f'http://127.0.0.1:{srv.getsockname()[1]}/')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('too long', r.get_json()['error'])
+        self.assertLess(time.time() - started, 3)
 
 
 if __name__ == '__main__':

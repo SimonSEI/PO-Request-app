@@ -87,6 +87,7 @@
       this.asts = new Map();
       this.paths = new Map();
       this.cfAsts = new Map();
+      this.unstoredCalcs = new Map();
       if (this.tables) this.schema.tables.forEach(t => { if (!this.tables.has(t.id)) this.tables.set(t.id, { recs: new Map() }); });
       this.touch();
     }
@@ -241,7 +242,7 @@
       if (!rec && !this.isGlobal(f)) return '';
       if (rec && rec.noaccess) return '';
       const key = (rec ? rec.id : 'g') + '|' + f.id + '|' + rep;
-      const unstored = opts.stored === false || C.usesGet(this.ast(opts.formula || '', this.calcTO(f)) || {});
+      const unstored = this.unstoredCalc(f);
       if (!unstored && this.memo.has(key) && !this.editing.has(rec && rec.id)) return this.memo.get(key);
       if (this._calcStack && this._calcStack.has(key)) return '?';
       (this._calcStack || (this._calcStack = new Set())).add(key);
@@ -252,7 +253,7 @@
         else {
           const ast = this.ast(opts.formula || '', this.calcTO(f));
           if (!ast) v = '?';
-          else if (opts.skipIfEmpty !== false && opts.evalIfAllEmpty === false && this.allRefsEmpty(ast, rec, f)) v = '';
+          else if (opts.skipIfEmpty !== false && opts.evalIfAllEmpty === false && this.allRefsEmpty(ast, rec, f, rep)) v = '';
           else v = V.coerce(C.evaluate(ast, this.env({ to: this.calcTO(f), rec, calcRep: rep, win: ctx && ctx.win, summarySet: ctx && ctx.summarySet })), opts.resultType || 'text');
         }
       } catch (e) {
@@ -261,9 +262,21 @@
       if (!unstored) this.memo.set(key, v);
       return v;
     }
-    allRefsEmpty(ast, rec, f) {
-      const refs = C.refs(ast);
-      return refs.length && refs.every(r => V.empty(this.env({ to: this.calcTO(f), rec }).field(r.ref, null, false)));
+    // like FileMaker, a calculation that uses Get functions, a summary field or an unstored calculation is never stored
+    unstoredCalc(f) {
+      if (this.unstoredCalcs.has(f.id)) return this.unstoredCalcs.get(f.id);
+      this.unstoredCalcs.set(f.id, false); // a reference cycle is not a reason on its own
+      const opts = (f.options || {}).calc || {};
+      const ast = this.ast(opts.formula || '', this.calcTO(f)) || {};
+      const u = opts.stored === false || C.usesGet(ast) || C.refs(ast).some(r => { const rf = this.field(r.ref.fid); return !!rf && (rf.type === 'summary' || (rf.type === 'calculation' && this.unstoredCalc(rf))); });
+      this.unstoredCalcs.set(f.id, u);
+      return u;
+    }
+    allRefsEmpty(ast, rec, f, rep) {
+      const refs = C.refs(ast), env = this.env({ to: this.calcTO(f), rec, calcRep: rep });
+      // per repetition, except that a field inside Extend ( ) is read from repetition 1
+      const ext = new Set(); (function walk(nd) { if (!nd || typeof nd !== 'object') return; if (nd.k === 'call' && nd.name === 'extend') C.refs(nd).forEach(r => ext.add(r)); for (const k in nd) if (k !== 'ref') { const v = nd[k]; if (Array.isArray(v)) v.forEach(walk); else walk(v); } })(ast);
+      return refs.length && refs.every(r => V.empty(env.field(r.ref, ext.has(r) ? 1 : null, false)));
     }
     calcTO(f) { const o = ((f.options || {}).calc || {}).context; const t = this.tableOfField(f.id); return (o && this.to(o) && this.to(o).table === t.id) ? o : (this.baseTO(t.id) || {}).id; }
     display(rec, key, rep, ctx, format) { // formatted text for a field key in a TO context
@@ -409,9 +422,11 @@
           const f = file.field(ref.fid);
           if (!f) throw new C.CalcError('The specified field cannot be found.', -1, 102);
           const target = ref.to || ctx.to;
+          // repetition n of a repeating calculation reads repetition n (empty past a field's last one; Extend asks for 1)
+          const r = rep != null ? rep : (ctx.calcRep || 1);
           if (file.isGlobal(f) && f.type !== 'summary') {
             if (all) return file.rawAll(null, f).map(x => V.fromStored(x, f.type === 'calculation' ? ((f.options || {}).calc || {}).resultType : f.type));
-            return f.type === 'calculation' ? file.calcValue(null, f, rep || 1, ctx) : V.fromStored(file.raw(null, f, rep || 1), f.type);
+            return f.type === 'calculation' ? file.calcValue(null, f, r, ctx) : V.fromStored(file.raw(null, f, r), f.type);
           }
           let rec;
           if (ctx.rows && ctx.rows[target]) rec = ctx.rows[target];
@@ -419,17 +434,16 @@
           else {
             const recs = file.related(ctx.to, ctx.rec, target);
             if (f.type === 'summary') return file.summarize(f, recs);
-            if (all) return recs.map(r => file.value(r, f, rep || 1, { to: target, win: ctx.win }));
+            if (all) return recs.map(x => file.value(x, f, rep || 1, { to: target, win: ctx.win }));
             rec = recs[0];
             if (!rec) return '';
-            return file.value(rec, f, rep || 1, { to: target, win: ctx.win });
+            return file.value(rec, f, r, { to: target, win: ctx.win });
           }
           if (all) {
-            if (f.type === 'calculation' || f.type === 'summary') return [file.value(rec, f, 1, ctx)];
+            if (f.type === 'calculation') return Array.from({ length: file.reps(f) }, (x, i) => file.value(rec, f, i + 1, ctx));
+            if (f.type === 'summary') return [file.value(rec, f, 1, ctx)];
             return file.rawAll(rec, f).map(x => V.fromStored(x, f.type));
           }
-          let r = rep;
-          if (r == null) r = (ctx.calcRep && ctx.calcRep <= file.reps(f)) ? ctx.calcRep : 1;
           if (f.type === 'summary') return file.summaryInContext(f, rec, ctx);
           return file.value(rec, f, r, { to: target, win: ctx.win, summarySet: ctx.summarySet });
         },
@@ -450,8 +464,9 @@
           const set = ctx.summarySet || (ctx.win && ctx.win.foundRecords && ctx.win.foundRecords()) || file.records(file.tableOfTO(ctx.to).id);
           if (!f || f.type !== 'summary') return '';
           if (ref.fid === breakRef.fid || !ctx.rec) return file.summarize(f, set);
-          const bv = V.text(file.keyValue(FIELD_KEY(breakRef.to || ctx.to, breakRef.fid), ctx.rec, { to: ctx.to }));
-          return file.summarize(f, set.filter(r => V.text(file.keyValue(FIELD_KEY(breakRef.to || ctx.to, breakRef.fid), r, { to: ctx.to })) === bv));
+          // break groups follow the sort, which compares like V.compare ("Paid" and "paid" sort together)
+          const bv = file.keyValue(FIELD_KEY(breakRef.to || ctx.to, breakRef.fid), ctx.rec, { to: ctx.to });
+          return file.summarize(f, set.filter(r => V.compare(file.keyValue(FIELD_KEY(breakRef.to || ctx.to, breakRef.fid), r, { to: ctx.to }), bv) === 0));
         },
         nth(ref, n) {
           const f = file.field(ref.fid); if (!f) return '';
@@ -567,8 +582,8 @@
         const i = set.indexOf(rec);
         let part = i < 0 ? set : set.slice(0, i + 1);
         if (s.restart) {
-          const bf = this.field(s.restart); const bv = bf ? V.text(this.value(rec, bf, 1, ctx)) : '';
-          let j = part.length - 1; while (j > 0 && V.text(this.value(part[j - 1], bf, 1, ctx)) === bv) j--;
+          const bf = this.field(s.restart); const bv = bf ? this.value(rec, bf, 1, ctx) : '';
+          let j = part.length - 1; while (j > 0 && V.compare(this.value(part[j - 1], bf, 1, ctx), bv) === 0) j--;
           part = part.slice(j);
         }
         return this.summarize(f, part);
@@ -576,7 +591,7 @@
       if (s.op === 'fraction' && rec) {
         const src = this.field(s.field); if (!src) return '';
         let group = set;
-        if (s.subtotal) { const bf = this.field(s.subtotal); const bv = V.text(this.value(rec, bf, 1, ctx)); group = set.filter(r => V.text(this.value(r, bf, 1, ctx)) === bv); }
+        if (s.subtotal) { const bf = this.field(s.subtotal); const bv = this.value(rec, bf, 1, ctx); group = set.filter(r => V.compare(this.value(r, bf, 1, ctx), bv) === 0); }
         const tot = group.reduce((a, r) => a + V.num(this.value(r, src, 1, ctx)), 0);
         return tot ? V.num(this.value(rec, src, 1, ctx)) / tot : '';
       }
@@ -698,11 +713,18 @@
       if (type === 'container') { const w = c.toLowerCase(); return v => V.text(v).toLowerCase().includes(w.replace(/[*"]/g, '')); }
       // ranges and comparisons
       let m = c.match(/^(.+?)\s*\.{2,3}\s*(.+)$/);
-      if (m) { const lo = this.critRange(m[1], type), hi = this.critRange(m[2], type); if (lo && hi) return v => !V.empty(v) && V.compare(conv(v, type), lo[0]) >= 0 && V.compare(conv(v, type), hi[1]) <= 0; }
+      if (m) {
+        const lo = this.critRange(m[1], type), hi = this.critRange(m[2], type);
+        if (lo && hi) return v => !V.empty(v) && V.compare(conv(v, type), lo[0]) >= 0 && V.compare(conv(v, type), hi[1]) <= 0;
+        if (type === 'text') { // collated like the sort; the upper bound takes in everything that starts with it ("a...c" finds "Carter")
+          const a = m[1].trim(), b = m[2].trim();
+          return v => { if (V.empty(v)) return false; const t = V.text(v); return V.cmpText(t, a) >= 0 && (V.cmpText(t, b) <= 0 || V.cmpText(t.slice(0, b.length), b) === 0); };
+        }
+      }
       m = c.match(/^(<=|≤|>=|≥|<|>)\s*(.*)$/);
       if (m) {
         const r = this.critRange(m[2], type);
-        if (!r) { const t = m[2].toLowerCase(); return v => { if (V.empty(v)) return false; const x = V.text(v).toLowerCase(); return { '<': x < t, '≤': x <= t, '<=': x <= t, '>': x > t, '≥': x >= t, '>=': x >= t }[m[1]]; }; }
+        if (!r) return v => { if (V.empty(v)) return false; const k = V.cmpText(V.text(v), m[2]); return { '<': k < 0, '≤': k <= 0, '<=': k <= 0, '>': k > 0, '≥': k >= 0, '>=': k >= 0 }[m[1]]; };
         return v => {
           if (V.empty(v)) return false; const x = conv(v, type);
           switch (m[1]) { case '<': return V.compare(x, r[0]) < 0; case '≤': case '<=': return V.compare(x, r[1]) <= 0; case '>': return V.compare(x, r[1]) > 0; default: return V.compare(x, r[0]) >= 0; }
@@ -781,6 +803,9 @@
         const raw = Object.prototype.hasOwnProperty.call(data, f.id) ? data[f.id] : rec.d[f.id];
         const vals = Array.isArray(raw) ? raw : [raw];
         const fail = (code, msg) => out.push({ field: f, code, message: val.message || msg, override: val.allowOverride !== false });
+        // numbers, dates and times compare by value ("1.50" is "1.5", "1/5/2025" is "2025-01-05"), text ignoring case
+        const typed = f.type === 'number' || f.type === 'date' || f.type === 'time' || f.type === 'timestamp';
+        const norm = x => { x = x == null ? '' : String(x); return (typed && x !== '' ? V.toStored(V.fromStored(x, f.type), f.type) : x).toLowerCase(); };
         for (const rv of vals) {
           const text = rv == null ? '' : (typeof rv === 'object' ? (rv.name || '') : String(rv));
           if (val.notEmpty && text.trim() === '') { fail(509, '"' + f.name + '" is defined to require a value.'); break; }
@@ -791,15 +816,15 @@
           if (val.strict === 'year4' && !/\d{4}/.test(text)) { fail(500, '"' + f.name + '" is defined to contain only dates with a 4-digit year.'); break; }
           if (val.maxChars && text.length > +val.maxChars) { fail(511, '"' + f.name + '" is defined to contain at most ' + val.maxChars + ' characters.'); break; }
           if (val.unique || val.existing) {
-            const lc = text.toLowerCase();
-            const other = this.records(table.id).some(r => r.id !== rec.id && this.rawAll(r, f).some(x => String(x == null ? '' : x).toLowerCase() === lc));
+            const lc = norm(text);
+            const other = this.records(table.id).some(r => r.id !== rec.id && this.rawAll(r, f).some(x => norm(x) === lc));
             if (val.unique && other) { fail(504, '"' + f.name + '" is defined to contain only unique values.'); break; }
             if (val.existing && !other) { fail(505, '"' + f.name + '" is defined to contain only existing values.'); break; }
           }
           if (val.memberOf) {
-            const items = this.valueListItems(this.valueList(val.memberOf), { to: toId, rec }).filter(x => !x.sep).map(x => String(x.value).toLowerCase());
+            const items = this.valueListItems(this.valueList(val.memberOf), { to: toId, rec }).filter(x => !x.sep).map(x => norm(x.value));
             const multi = text.split(/\r\n|\r|\n/);
-            if (!multi.every(x => items.includes(x.toLowerCase()))) { fail(506, '"' + f.name + '" is defined to contain only values from the value list "' + ((this.valueList(val.memberOf) || {}).name || '') + '".'); break; }
+            if (!multi.every(x => items.includes(norm(x)))) { fail(506, '"' + f.name + '" is defined to contain only values from the value list "' + ((this.valueList(val.memberOf) || {}).name || '') + '".'); break; }
           }
           if (val.range && (val.range.from !== '' || val.range.to !== '')) {
             const tv = V.fromStored(text, f.type);
@@ -1056,7 +1081,8 @@
     if (typeof v === 'number') return [FM.num.plain(v)];
     if (v instanceof FMDate) return ['d' + v.n];
     if (v instanceof FMTime || v instanceof FMTimestamp) return ['t' + v.s];
-    return V.text(v).split(/\r\n|\r|\n/).map(s => s.trim().toLowerCase()).filter(Boolean).map(s => /^-?\d+(\.\d+)?$/.test(s) ? FM.num.plain(parseFloat(s)) : s);
+    // text keys match as text ("007" is not "7"); number fields arrive as numbers and match by value above
+    return V.text(v).split(/\r\n|\r|\n/).map(s => s.trim().toLowerCase()).filter(Boolean);
   }
   FM.keyParts = keyParts;
   function conv(v, type) {
@@ -1068,14 +1094,23 @@
   }
   function splitCriteria(s) { // keep "quoted phrases" and ranges together
     if (/\.{2,3}/.test(s) || /^(<|>|≤|≥|=|!|\?|\/\/)/.test(s)) return [s];
-    const out = []; const re = /"[^"]*"|\S+/g; let m;
+    const out = []; const re = /\*?"[^"]*"|\S+/g; let m;
     while ((m = re.exec(s))) out.push(m[0]);
     return out.length ? out : [s];
   }
   function textMatcher(c) {
     let exactField = false, exactWord = false;
-    if (c.startsWith('==')) { exactField = true; c = c.slice(2); } else if (c.startsWith('=')) { exactWord = true; c = c.slice(1); }
-    if (/^".*"$/.test(c)) { const lit = c.slice(1, -1).toLowerCase(); return v => exactField ? V.text(v).toLowerCase() === lit : V.text(v).toLowerCase().includes(lit); }
+    if (c.startsWith('==')) { exactField = true; c = c.slice(2); } else if (c.startsWith('=')) { exactWord = true; c = c.slice(1).trim(); }
+    if (/^\*".*"$/.test(c)) { const lit = c.slice(2, -1).toLowerCase(); return v => V.text(v).toLowerCase().includes(lit); } // *"..." matches anywhere
+    if (/^".*"$/.test(c)) {
+      const lit = c.slice(1, -1).toLowerCase();
+      if (exactField) return v => V.text(v).toLowerCase() === lit;
+      // a quoted phrase starts at the start of a word (and with = ends at the end of one)
+      const re = new RegExp((/^[\p{L}\p{N}_]/u.test(lit) ? '(^|[^\\p{L}\\p{N}_])' : '') + lit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + (exactWord && /[\p{L}\p{N}_]$/u.test(lit) ? '(?![\\p{L}\\p{N}_])' : ''), 'u');
+      return v => re.test(V.text(v).toLowerCase());
+    }
+    // =word word: every word must be a whole word of the field
+    if (exactWord && /\s/.test(c)) { const each = c.split(/\s+/).map(w => textMatcher('=' + w)); return v => each.every(m => m(v)); }
     const pat = '^' + c.toLowerCase().split('').map(ch => ch === '*' ? '.*' : ch === '@' ? '.' : ch === '#' ? '\\d' : ch.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('');
     if (exactField) { const re = new RegExp(pat + '$', 's'); return v => re.test(V.text(v).toLowerCase()); }
     const re = new RegExp(pat + (exactWord ? '$' : ''));
@@ -1213,9 +1248,10 @@
         case 'neg': { const x = ev(e.a, row); return x == null ? null : -V.num(x); }
         case 'ar': { const a = ev(e.a, row), b = ev(e.b, row); if (a == null || b == null) return null; const x = V.num(a), y = V.num(b); return e.op === '+' ? x + y : e.op === '-' ? x - y : e.op === '*' ? x * y : (y === 0 ? null : x / y); }
         case 'cat': { const a = ev(e.a, row), b = ev(e.b, row); return (a == null ? '' : V.text(a)) + (b == null ? '' : V.text(b)); }
-        case 'and': return truthy(ev(e.a, row)) && truthy(ev(e.b, row));
-        case 'or': return truthy(ev(e.a, row)) || truthy(ev(e.b, row));
-        case 'not': return !truthy(ev(e.a, row));
+        // three-valued logic: NULL (unknown) only decides when the other side can't
+        case 'and': { const a = ev(e.a, row); if (a != null && !truthy(a)) return false; const b = ev(e.b, row); if (b != null && !truthy(b)) return false; return a == null || b == null ? null : true; }
+        case 'or': { const a = ev(e.a, row); if (a != null && truthy(a)) return true; const b = ev(e.b, row); if (b != null && truthy(b)) return true; return a == null || b == null ? null : false; }
+        case 'not': { const x = ev(e.a, row); return x == null ? null : !truthy(x); }
         case 'cmp': { const a = ev(e.a, row), b = ev(e.b, row); if (a == null || b == null) return null; const c = sqlCompare(a, b); return { '=': c === 0, '<>': c !== 0, '<': c < 0, '<=': c <= 0, '>': c > 0, '>=': c >= 0 }[e.op]; }
         case 'like': { const a = ev(e.a, row), b = ev(e.b, row); if (a == null || b == null) return null; const re = new RegExp('^' + V.text(b).replace(/[.+?^${}()|[\]\\*]/g, '\\$&').replace(/%/g, '.*').replace(/_/g, '.') + '$', 's'); return re.test(V.text(a)) !== e.neg; }
         case 'in': { const a = ev(e.a, row); if (a == null) return null; return e.items.some(i => { const b = ev(i, row); return b != null && sqlCompare(a, b) === 0; }) !== e.neg; }
@@ -1253,7 +1289,7 @@
         case 'RIGHT': return a[0] == null ? null : V.text(a[0]).slice(-V.num(a[1]));
         case 'COALESCE': case 'IFNULL': case 'NVL': return a.find(x => x != null) ?? null;
         case 'ABS': return a[0] == null ? null : Math.abs(V.num(a[0]));
-        case 'ROUND': return a[0] == null ? null : Number(Math.round(Number(V.num(a[0]) + 'e' + (V.num(a[1]) || 0))) + 'e-' + (V.num(a[1]) || 0));
+        case 'ROUND': return a[0] == null ? null : C.roundTo(V.num(a[0]), Math.floor(V.num(a[1])));
         case 'YEAR': { const d = a[0] == null ? null : V.date(a[0]); return d ? D.parts(d.n)[0] : null; }
         case 'MONTH': { const d = a[0] == null ? null : V.date(a[0]); return d ? D.parts(d.n)[1] : null; }
         case 'DAY': { const d = a[0] == null ? null : V.date(a[0]); return d ? D.parts(d.n)[2] : null; }
@@ -1265,6 +1301,12 @@
       throw new Error('Unknown function ' + e.name);
     };
     const truthy = v => v === true || (typeof v === 'number' && v !== 0);
+    // ORDER BY 2 and ORDER BY alias name output columns
+    const sortKeys = (outRow, r) => q.order.map(o => {
+      if (o.e.k === 'lit' && typeof o.e.v === 'number') return outRow[o.e.v - 1];
+      const al = o.e.k === 'col' && !o.e.table ? q.cols.findIndex(c => c.alias && c.alias.toLowerCase() === String(o.e.name).toLowerCase()) : -1;
+      return al >= 0 ? outRow[al] : ev(o.e, r);
+    });
     // rows
     let rows = file.records(sources[0].table.id).map(r => ({ [sources[0].alias]: r }));
     q.joins.forEach((j, i) => {
@@ -1289,7 +1331,7 @@
         const rep = g[0] || {};
         if (q.having && !truthy(ev(q.having, rep))) { aggRows = null; return; }
         const outRow = q.cols.map(c => ev(c.e, rep));
-        outRow._sort = q.order.map(o => ev(o.e, rep));
+        outRow._sort = sortKeys(outRow, rep);
         result.push(outRow);
         aggRows = null;
       });
@@ -1300,7 +1342,7 @@
           if (c.e.k === 'star') sources.filter(s => !c.e.table || s.alias === c.e.table.toLowerCase()).forEach(s => s.table.fields.forEach(f => outRow.push(r[s.alias] ? (V.empty(file.value(r[s.alias], f, 1, { to: s.to.id })) ? null : file.value(r[s.alias], f, 1, { to: s.to.id })) : null)));
           else outRow.push(ev(c.e, r));
         });
-        outRow._sort = q.order.map(o => { if (o.e.k === 'lit' && typeof o.e.v === 'number') return outRow[o.e.v - 1]; const al = o.e.k === 'col' && !o.e.table && q.cols.findIndex(c => c.alias && c.alias.toLowerCase() === o.e.name.toLowerCase()); return al >= 0 && al !== false ? outRow[al] : ev(o.e, r); });
+        outRow._sort = sortKeys(outRow, r);
         return outRow;
       });
     }

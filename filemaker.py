@@ -37,11 +37,13 @@ import socket
 import sqlite3
 import threading
 import time
-from datetime import date, datetime, time as dtime
+from datetime import date, datetime, time as dtime, timedelta
 from urllib.parse import urljoin, urlparse
 
 import requests as http_requests
+import urllib3
 from flask import Blueprint, Response, jsonify, redirect, render_template_string, request, send_file, session, url_for
+from requests.adapters import HTTPAdapter
 from werkzeug.security import check_password_hash, generate_password_hash
 
 bp = Blueprint('filemaker', __name__, static_folder='filemaker_assets', static_url_path='/filemaker/static')
@@ -58,6 +60,10 @@ MAX_RECORD_BYTES = 1024 * 1024
 MAX_BATCH_OPS = 20000
 MAX_CONTAINER_BYTES = 25 * 1024 * 1024
 MAX_FETCH_BYTES = 5 * 1024 * 1024
+MAX_FILE_CONTAINER_BYTES = 1024 * 1024 * 1024
+MAX_XLSX_CELLS = 2000000
+FETCH_DEADLINE = 30       # seconds an Insert From URL may take in all, redirects included
+CONTAINER_GRACE = 2 * 86400   # an uploaded file no record refers to is deleted after this long
 SESSION_TTL = 90          # seconds without a poll before a session counts as gone
 LOCK_TTL = 60             # a lock whose holder has not polled for this long is free
 FAILED_LOGIN_LIMIT = 5
@@ -101,8 +107,8 @@ _data_dir = None
 _log_activity = None
 _schema_cache = {}
 _schema_lock = threading.Lock()
-_failed_logins = {}
 _last_cleanup = [0.0]
+_last_sweep = [0.0]
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -208,7 +214,18 @@ def init_db():
                   size INTEGER NOT NULL DEFAULT 0,
                   sha1 TEXT,
                   created_at TEXT NOT NULL,
-                  created_by TEXT)''')
+                  created_by TEXT,
+                  token TEXT)''')
+    # token: the session that uploaded it (it may see it before any record refers to it)
+    if 'token' not in [r[1] for r in c.execute("PRAGMA table_info(fm_containers)")]:
+        c.execute("ALTER TABLE fm_containers ADD COLUMN token TEXT")
+    # failed sign-ins, kept here (not in memory) so every worker process counts them
+    c.execute('''CREATE TABLE IF NOT EXISTS fm_login_failures (
+                  file_id INTEGER NOT NULL,
+                  app_user TEXT NOT NULL,
+                  account TEXT NOT NULL,
+                  at REAL NOT NULL)''')
+    c.execute("CREATE INDEX IF NOT EXISTS idx_fm_login_failures ON fm_login_failures(file_id, account)")
     conn.commit()
     conn.close()
 
@@ -235,7 +252,8 @@ def _err(message, code=400, **extra):
 
 
 def _body():
-    return request.get_json(silent=True) or {}
+    b = request.get_json(silent=True)
+    return b if isinstance(b, dict) else {}
 
 
 def _log(action, details, target_id=None):
@@ -849,7 +867,43 @@ def _cleanup(conn, force=False):
     conn.execute("DELETE FROM fm_sessions WHERE closed=1 AND last_seen<?", (now - 7 * 86400,))
     conn.execute("DELETE FROM fm_changes WHERE at<?", (now - 2 * 86400,))
     conn.execute("DELETE FROM fm_messages WHERE delivered=1")
+    conn.execute("DELETE FROM fm_login_failures WHERE at<?", (now - FAILED_LOGIN_WINDOW,))
+    if force or now - _last_sweep[0] > 3600:
+        _last_sweep[0] = now
+        _sweep_containers(conn)
     conn.commit()
+
+
+def _container_refs(data):
+    """{field id: {container id, ...}} for the container values in a record's data."""
+    out = {}
+    for k, v in data.items():
+        for x in (v if isinstance(v, list) else [v]):
+            if isinstance(x, dict) and isinstance(x.get('c'), int):
+                out.setdefault(k, set()).add(x['c'])
+    return out
+
+
+def _sweep_containers(conn):
+    """Delete uploaded files that no record refers to (replaced, cleared, or never
+    saved) once they are CONTAINER_GRACE old."""
+    cutoff = (datetime.now() - timedelta(seconds=CONTAINER_GRACE)).strftime('%Y-%m-%d %H:%M:%S')
+    old = {}
+    for c in conn.execute("SELECT id, file_id FROM fm_containers WHERE created_at<?", (cutoff,)):
+        old.setdefault(c['file_id'], []).append(c['id'])
+    for file_id, cids in old.items():
+        used = set()
+        for r in conn.execute("SELECT data FROM fm_records WHERE file_id=? AND data LIKE '%\"c\": %'", (file_id,)):
+            for ids in _container_refs(json.loads(r['data'] or '{}')).values():
+                used |= ids
+        for cid in cids:
+            if cid in used:
+                continue
+            conn.execute("DELETE FROM fm_containers WHERE id=?", (cid,))
+            try:
+                os.remove(os.path.join(_data_dir, 'filemaker_files', str(file_id), str(cid)))
+            except OSError:
+                pass
 
 
 def _end_session(conn, token):
@@ -912,6 +966,34 @@ def _record_out(ctx, row, tp=None):
     return out
 
 
+def _auto_value(ctx, f, creating):
+    """The auto-enter value the host enters itself into a field the account cannot
+    modify (creation or modification date, time, timestamp, account or user name, or a
+    constant on creation), or None."""
+    ae = (f.get('options') or {}).get('autoEnter') or {}
+    if f['type'] in ('summary', 'calculation', 'container') or \
+            ((f.get('options') or {}).get('storage') or {}).get('global'):
+        return None
+    kind = ae.get('modification') or (ae.get('creation') if creating else None)
+    now = datetime.now()
+    if kind in ('date', 'time', 'timestamp'):
+        return now.strftime({'date': '%Y-%m-%d', 'time': '%H:%M:%S', 'timestamp': '%Y-%m-%d %H:%M:%S'}[kind])
+    if kind in ('account', 'name'):
+        return ctx.account if kind == 'account' else _app_name()
+    if creating and ae.get('data') not in (None, ''):
+        return ae['data']
+    return None
+
+
+def _auto_enter(ctx, table, tp, data, creating):
+    """Put the host's auto-enter values (_auto_value) into data."""
+    for f in table['fields']:
+        if field_access(tp, f['id']) != 'modify':
+            v = _auto_value(ctx, f, creating)
+            if v is not None:
+                data[f['id']] = v
+
+
 def _clean_data(ctx, table, data, tp, creating):
     if not isinstance(data, dict):
         raise ValueError('Record data must be an object')
@@ -923,7 +1005,11 @@ def _clean_data(ctx, table, data, tp, creating):
         if not f or f['type'] in ('summary', 'calculation'):
             continue
         acc = field_access(tp, k)
-        if acc == 'none' or (acc == 'view' and not creating):
+        # a field the account may only view never takes the client's value, not even in a
+        # new record; the host enters its auto-enter value itself (_auto_enter)
+        if acc != 'modify' and ((acc == 'view' and creating) or _auto_value(ctx, f, creating) is not None):
+            continue
+        if acc != 'modify':
             raise PermissionError(f'You do not have permission to modify "{f["name"]}"')
         if not (v is None or isinstance(v, (str, int, float, list, dict))):
             raise ValueError(f'"{f["name"]}" has a value of an unknown kind')
@@ -965,14 +1051,23 @@ def _lock_holder(conn, ctx, key):
     return row['holder']
 
 
+def _op_int(v):
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        raise ValueError(f'"{str(v)[:20]}" is not a record id or modification count')
+
+
 def _op_create(ctx, op):
-    table = ctx.tables.get(op.get('table'))
+    table = ctx.tables.get(op['table']) if isinstance(op.get('table'), str) else None
     if not table:
         raise LookupError('That table does not exist')
     tp = _tp(ctx, table['id'])
     if tp['create'] != 'yes':
         raise PermissionError(f'You do not have permission to create records in "{table["name"]}"')
     data = _clean_data(ctx, table, op.get('data') or {}, tp, True)
+    _auto_enter(ctx, table, tp, data, True)
+    _check_container_refs(ctx, data)
     pending = bool(op.get('pending'))
     _take_serials(ctx.conn, ctx.file_id, table, data, 'create')
     if not pending:
@@ -989,7 +1084,7 @@ def _op_create(ctx, op):
 
 
 def _op_update(ctx, op):
-    rid = int(op.get('id') or 0)
+    rid = _op_int(op.get('id'))
     row = ctx.conn.execute("SELECT * FROM fm_records WHERE id=? AND file_id=?", (rid, ctx.file_id)).fetchone()
     if not row or (row['pending_token'] and row['pending_token'] != ctx.token):
         raise LookupError('That record no longer exists (it may have been deleted by another user)')
@@ -999,18 +1094,20 @@ def _op_update(ctx, op):
     tp = _tp(ctx, table['id'])
     old = json.loads(row['data'] or '{}')
     was_pending = bool(row['pending_token'])
-    if not was_pending and not ctx.allowed(tp, 'edit', old):
+    if not was_pending and not (ctx.allowed(tp, 'view', old) and ctx.allowed(tp, 'edit', old)):
         raise PermissionError(f'You do not have permission to modify this record in "{table["name"]}"')
     if was_pending and tp['create'] != 'yes':
         raise PermissionError(f'You do not have permission to create records in "{table["name"]}"')
     holder = _lock_holder(ctx.conn, ctx, f'rec:{rid}')
     if holder:
         raise BlockingIOError(f'This record is being modified by "{holder}"')
-    if op.get('mc') is not None and int(op['mc']) != row['mod_count'] and not was_pending:
+    if op.get('mc') is not None and _op_int(op['mc']) != row['mod_count'] and not was_pending:
         raise InterruptedError('This record was changed by another user since you started editing it')
     changes = _clean_data(ctx, table, op.get('data') or {}, tp, was_pending)
     new = dict(old)
     new.update(changes)
+    _auto_enter(ctx, table, tp, new, False)
+    _check_container_refs(ctx, new, old)
     if not was_pending and tp.get('edit') == 'limited' and not ctx.allowed(tp, 'edit', new):
         raise PermissionError('You do not have permission to save the record with those values')
     commit = op.get('commit', True)
@@ -1028,14 +1125,15 @@ def _op_update(ctx, op):
 
 
 def _op_delete(ctx, op):
-    rid = int(op.get('id') or 0)
+    rid = _op_int(op.get('id'))
     row = ctx.conn.execute("SELECT * FROM fm_records WHERE id=? AND file_id=?", (rid, ctx.file_id)).fetchone()
     if not row or (row['pending_token'] and row['pending_token'] != ctx.token):
         return None
     tp = _tp(ctx, row['table_id'])
     if not row['pending_token']:
         table = ctx.tables.get(row['table_id']) or {'name': '?'}
-        if not ctx.allowed(tp, 'delete', json.loads(row['data'] or '{}')):
+        data = json.loads(row['data'] or '{}')
+        if not (tp and ctx.allowed(tp, 'view', data) and ctx.allowed(tp, 'delete', data)):
             raise PermissionError(f'You do not have permission to delete this record in "{table["name"]}"')
         holder = _lock_holder(ctx.conn, ctx, f'rec:{rid}')
         if holder:
@@ -1052,8 +1150,10 @@ def _run_ops(ctx, ops):
     (the caller rolls back), naming which operation failed."""
     results = []
     for i, op in enumerate(ops):
-        kind = op.get('op')
+        kind = op.get('op') if isinstance(op, dict) else None
         try:
+            if not isinstance(op, dict):
+                raise ValueError('Every operation must be an object')
             if kind == 'create':
                 rid = _op_create(ctx, op)
             elif kind == 'update':
@@ -1266,11 +1366,13 @@ def create_file():
 
 
 def _check_login(conn, file_id, account, password):
-    key = (_app_user(), file_id)
+    # Failures are counted per account name (and app login, so nobody can lock others
+    # out), and only signing in to that same account clears them.
+    key = (file_id, _app_user(), str(account or '').strip().lower())
     now = time.time()
-    fails = [t for t in _failed_logins.get(key, []) if now - t < FAILED_LOGIN_WINDOW]
-    _failed_logins[key] = fails
-    if len(fails) >= FAILED_LOGIN_LIMIT:
+    fails = conn.execute("SELECT COUNT(*) FROM fm_login_failures WHERE file_id=? AND app_user=? AND account=? "
+                         "AND at>=?", (*key, now - FAILED_LOGIN_WINDOW)).fetchone()[0]
+    if fails >= FAILED_LOGIN_LIMIT:
         raise PermissionError('Too many failed sign-ins. Wait five minutes and try again.')
     row = conn.execute("SELECT * FROM fm_accounts WHERE file_id=? AND name=? COLLATE NOCASE",
                        (file_id, str(account or '').strip())).fetchone()
@@ -1278,10 +1380,12 @@ def _check_login(conn, file_id, account, password):
         (row['password_hash'] == '' and password == '') or
         (row['password_hash'] != '' and check_password_hash(row['password_hash'], password or '')))
     if not ok:
-        fails.append(now)
+        conn.execute("INSERT INTO fm_login_failures (file_id, app_user, account, at) VALUES (?,?,?,?)", (*key, now))
+        conn.commit()
         raise PermissionError('The account name and password you entered cannot be used to access this file. '
                               'Please try again.')
-    _failed_logins.pop(key, None)
+    conn.execute("DELETE FROM fm_login_failures WHERE file_id=? AND app_user=? AND account=?", key)
+    conn.commit()
     return row
 
 
@@ -1316,6 +1420,8 @@ def open_file(file_id):
             return _err('Your privilege set does not include the "Access via FileMaker Network" extended '
                         'privilege, so it cannot open this hosted file.', 403)
         if body.get('newPassword') is not None:
+            if not acct['must_change'] and not pset.get('modifyOwnPassword', True):
+                return _err('Your privilege set does not allow changing your password', 403, fmError=200)
             npw = str(body['newPassword'])
             if len(npw) < 1:
                 return _err('Enter a new password')
@@ -1332,10 +1438,12 @@ def open_file(file_id):
         srow = conn.execute("SELECT * FROM fm_sessions WHERE token=?", (token,)).fetchone()
         ctx = Ctx(conn, file_id, srow, schema, version, pset)
         _log('FILEMAKER_OPEN', f'Opened "{frow["name"]}" as {acct["name"]}', file_id)
+        # seq before the records: a change landing in between is then sent again, never lost
+        seq = _seq(conn, file_id)
         return jsonify({'success': True, 'token': token, 'file': {'id': file_id, 'name': frow['name']},
                         'account': {'name': acct['name'], 'privilegeSet': pset['id']},
                         'schema': schema, 'version': version, 'serials': _serials(conn, file_id, schema),
-                        'records': _all_records(ctx), 'seq': _seq(conn, file_id), 'users': _users(conn, file_id),
+                        'records': _all_records(ctx), 'seq': seq, 'users': _users(conn, file_id),
                         'hasPassword': acct['password_hash'] != ''})
     finally:
         conn.close()
@@ -1359,6 +1467,9 @@ def relogin(file_id):
         pset = _pset(ctx.schema, acct['privilege_set'])
         if not pset or 'fmapp' not in (pset.get('extended') or []):
             return _err('That account cannot open this hosted file.', 403, fmError=212)
+        if acct['must_change']:
+            return _err('You must change your password before you open this file.', 403, fmError=212,
+                        mustChange=True)
         conn.execute("DELETE FROM fm_records WHERE pending_token=?", (ctx.token,))
         conn.execute("DELETE FROM fm_locks WHERE token=?", (ctx.token,))
         conn.execute("UPDATE fm_sessions SET account_id=?, account_name=? WHERE token=?",
@@ -1366,8 +1477,9 @@ def relogin(file_id):
         conn.commit()
         srow = conn.execute("SELECT * FROM fm_sessions WHERE token=?", (ctx.token,)).fetchone()
         nctx = Ctx(conn, file_id, srow, ctx.schema, ctx.version, pset)
+        seq = _seq(conn, file_id)
         return jsonify({'success': True, 'account': {'name': acct['name'], 'privilegeSet': pset['id']},
-                        'records': _all_records(nctx), 'seq': _seq(conn, file_id),
+                        'records': _all_records(nctx), 'seq': seq,
                         'hasPassword': acct['password_hash'] != ''})
     finally:
         conn.close()
@@ -1550,6 +1662,8 @@ def save_schema(file_id):
     ops = body.get('ops') or []
     if not isinstance(ops, list) or not ops and not body.get('serials'):
         return _err('Nothing to save')
+    if not all(isinstance(op, dict) for op in ops) or not isinstance(body.get('serials') or {}, dict):
+        return _err('Every operation must be an object')
     conn = _conn()
     try:
         with _schema_lock:
@@ -1558,6 +1672,19 @@ def save_schema(file_id):
         if err:
             return err
         conn.execute('BEGIN IMMEDIATE')
+        # Another save may have landed while this one waited for the write lock: apply
+        # these operations to the design as it is now, so neither save is lost.
+        schema, version = _load_schema(conn, file_id)
+        if schema is None:
+            conn.rollback()
+            return _err('That file no longer exists', 404, closed=True)
+        if version != ctx.version:
+            acct = conn.execute("SELECT privilege_set FROM fm_accounts WHERE id=?", (ctx.s['account_id'],)).fetchone()
+            pset = _pset(schema, acct['privilege_set']) if acct else None
+            if not pset:
+                conn.rollback()
+                return _err('Your privilege set no longer exists', 401, closed=True)
+            ctx = Ctx(conn, file_id, ctx.s, schema, version, pset)
         schema = json.loads(json.dumps(ctx.schema))
         holder = None
         for op in ops:
@@ -1574,18 +1701,20 @@ def save_schema(file_id):
                         return _err(f'The database schema is being modified by "{holder}". Try again later.', 409)
                     val = op.get('value') or {}
                     for key in ('tables', 'tableOccurrences', 'relationships'):
-                        if not isinstance(val.get(key), list):
+                        if not isinstance(val, dict) or not isinstance(val.get(key), list):
                             return _err(f'"{key}" must be a list')
                         schema[key] = val[key]
                 else:
                     schema[name] = op.get('value')
             elif kind in ('upsert', 'delete'):
                 coll = op.get('coll')
-                check = COLLECTIONS.get(coll)
+                check = COLLECTIONS.get(coll) if isinstance(coll, str) else None
                 if not check:
                     return _err(f'Unknown collection "{coll}"')
+                if kind == 'upsert' and not isinstance(op.get('item'), dict):
+                    return _err('Missing id')
                 items = schema.setdefault(coll, [])
-                item_id = (op.get('item') or {}).get('id') if kind == 'upsert' else op.get('id')
+                item_id = op['item'].get('id') if kind == 'upsert' else op.get('id')
                 if not isinstance(item_id, str) or not item_id:
                     return _err('Missing id')
                 idx = next((i for i, it in enumerate(items) if it.get('id') == item_id), None)
@@ -1706,6 +1835,15 @@ def lock(file_id):
         ctx, err = _ctx(conn, file_id)
         if err:
             return err
+        # a design lock is only for someone who may make that change
+        if key in ('schema', 'security') and not ctx.full:
+            return _err('Only a [Full Access] account can change that', 403, fmError=200)
+        if not key.startswith('rec:') and key not in ('schema', 'security'):
+            kind, item_id = key.split(':', 1)
+            coll = kind + 's'
+            is_new = not any(it.get('id') == item_id for it in ctx.schema.get(coll) or [])
+            if not COLLECTIONS[coll](ctx.pset, item_id, is_new):
+                return _err('Your privilege set does not allow that change', 403, fmError=200)
         conn.execute('BEGIN IMMEDIATE')
         holder = _lock_holder(conn, ctx, key)
         if holder:
@@ -1722,7 +1860,9 @@ def lock(file_id):
                 return jsonify({'success': False, 'fmError': 101, 'gone': True,
                                 'error': 'This record was deleted by another user'})
             tp = _tp(ctx, row['table_id'])
-            if not row['pending_token'] and not ctx.allowed(tp, 'edit', json.loads(row['data'] or '{}')):
+            data = json.loads(row['data'] or '{}')
+            may_edit = ctx.allowed(tp, 'view', data) and ctx.allowed(tp, 'edit', data) if tp else False
+            if not tp or not (row['pending_token'] or may_edit):
                 conn.rollback()
                 return jsonify({'success': False, 'fmError': 200,
                                 'error': 'You do not have permission to modify this record'})
@@ -1743,6 +1883,8 @@ def unlock(file_id):
     if (g := _guard()):
         return g
     keys = _body().get('keys') or [_body().get('key')]
+    if not isinstance(keys, list):
+        keys = [keys]
     conn = _conn()
     try:
         ctx, err = _ctx(conn, file_id)
@@ -1779,20 +1921,26 @@ def changes(file_id):
         seq = rows[-1]['seq'] if rows else max(since, 0)
         schema_changed = any(r['kind'] == 'schema' for r in rows if r['token'] != ctx.token)
         file_changed = any(r['kind'] in ('file', 'acct') for r in rows if r['token'] != ctx.token)
-        rec_ids, deleted = [], []
+        rec_ids, deleted = {}, []
         for r in rows:
-            if r['token'] == ctx.token:
+            if r['token'] == ctx.token or r['kind'] not in ('rec', 'del'):
+                continue
+            # tables this account cannot view are not mentioned at all
+            tpv = _tp(ctx, r['table_id'])
+            if not tpv or tpv['view'] == 'no':
                 continue
             if r['kind'] == 'rec':
-                rec_ids.append(r['record_id'])
-            elif r['kind'] == 'del':
+                rec_ids[r['record_id']] = r['table_id']
+            elif tpv['view'] == 'yes':
                 deleted.append({'id': r['record_id'], 't': r['table_id'], 'by': r['actor']})
-        records = _rows_out(ctx, list(dict.fromkeys(rec_ids)))
+            else:
+                deleted.append({'id': r['record_id'], 't': r['table_id']})
+        records = _rows_out(ctx, list(rec_ids))
         found = {r['id'] for r in records}
         # records that changed so this account may no longer see them
-        for r in rows:
-            if r['kind'] == 'rec' and r['token'] != ctx.token and r['record_id'] not in found:
-                deleted.append({'id': r['record_id'], 't': r['table_id'], 'hidden': True})
+        for rid, tid in rec_ids.items():
+            if rid not in found:
+                deleted.append({'id': rid, 't': tid, 'hidden': True})
         msgs = conn.execute("SELECT id, from_name, text, at FROM fm_messages WHERE to_token=? AND delivered=0",
                             (ctx.token,)).fetchall()
         if msgs:
@@ -1873,6 +2021,8 @@ def save_accounts(file_id):
     if (g := _guard()):
         return g
     ops = _body().get('ops') or []
+    if not isinstance(ops, list) or not all(isinstance(op, dict) for op in ops):
+        return _err('Every operation must be an object')
     conn = _conn()
     try:
         ctx, err = _ctx(conn, file_id)
@@ -1885,7 +2035,7 @@ def save_accounts(file_id):
         now = _now_text()
         for op in ops:
             kind = op.get('op')
-            aid = op.get('id')
+            aid = op.get('id') if isinstance(op.get('id'), int) else None
             if not aid and op.get('match'):
                 r = conn.execute("SELECT id FROM fm_accounts WHERE file_id=? AND name=? COLLATE NOCASE",
                                  (file_id, str(op['match']))).fetchone()
@@ -1894,7 +2044,8 @@ def save_accounts(file_id):
                     return _err(f'There is no account named "{op["match"]}"', 404, fmError=211)
                 aid = r['id']
             name = str(op.get('name') or '').strip()[:60]
-            if kind in ('add', 'update') and 'privilegeSet' in op and op['privilegeSet'] not in set_ids:
+            if kind in ('add', 'update') and 'privilegeSet' in op and \
+                    (not isinstance(op['privilegeSet'], str) or op['privilegeSet'] not in set_ids):
                 conn.rollback()
                 return _err('Choose a privilege set', 400)
             if kind == 'add':
@@ -1932,7 +2083,7 @@ def save_accounts(file_id):
                 for key, col in (('privilegeSet', 'privilege_set'), ('description', 'description')):
                     if key in op:
                         sets.append(f'{col}=?')
-                        vals.append(op[key])
+                        vals.append(str(op[key] or '')[:300])
                 for key, col in (('active', 'active'), ('mustChange', 'must_change')):
                     if key in op:
                         sets.append(f'{col}=?')
@@ -2042,6 +2193,73 @@ def user_action(file_id, uid, action):
 # HTTP: containers, Excel, Insert From URL
 # ═════════════════════════════════════════════════════════════════════════════
 
+def _may_store_container(ctx):
+    """Is there a container field this account may put a file into?"""
+    if ctx.full:
+        return True
+    for t in ctx.schema['tables']:
+        tp = _tp(ctx, t['id'])
+        for f in t['fields']:
+            if f['type'] != 'container' or tp['view'] == 'no' or field_access(tp, f['id']) != 'modify':
+                continue
+            if tp['create'] == 'yes' or tp['edit'] != 'no' or \
+                    ((f.get('options') or {}).get('storage') or {}).get('global'):
+                return True
+    return False
+
+
+def _container_visible(conn, ctxs, crow):
+    """May one of these sessions see this container? Yes if it can view a record that
+    holds it, in a field that is not "no access", or if it uploaded it and no record
+    holds it yet."""
+    refs = []
+    for r in conn.execute("SELECT * FROM fm_records WHERE file_id=? AND data LIKE ?",
+                          (crow['file_id'], f'%"c": {crow["id"]}%')).fetchall():
+        data = json.loads(r['data'] or '{}')
+        fids = [k for k, ids in _container_refs(data).items() if crow['id'] in ids]
+        if fids:
+            refs.append((r, data, fids))
+    if not refs:
+        return any(c.token == crow['token'] for c in ctxs)
+    for c in ctxs:
+        for r, data, fids in refs:
+            if r['pending_token'] and r['pending_token'] != c.token:
+                continue
+            tp = _tp(c, r['table_id'])
+            if tp and tp['view'] != 'no' and c.allowed(tp, 'view', data) and \
+                    any(field_access(tp, k) != 'none' for k in fids):
+                return True
+    return False
+
+
+def _check_container_refs(ctx, data, old=None):
+    """A record may only be given a container this session can already see (one it
+    uploaded, or one in a record it can view), so a guessed id cannot be used to read
+    someone else's file through a record of one's own."""
+    before = set().union(*_container_refs(old or {}).values())
+    for ids in _container_refs(data).values():
+        for cid in ids - before:
+            crow = ctx.conn.execute("SELECT * FROM fm_containers WHERE id=? AND file_id=?",
+                                    (cid, ctx.file_id)).fetchone()
+            if not crow or not _container_visible(ctx.conn, [ctx], crow):
+                raise PermissionError('That container file cannot be used here (it does not exist or you '
+                                      'do not have access to it)')
+
+
+def _app_user_ctxs(conn, file_id):
+    """A Ctx for each live session the signed-in app login has on this file."""
+    schema, version = _load_schema(conn, file_id)
+    out = []
+    for srow in conn.execute("""SELECT * FROM fm_sessions WHERE file_id=? AND app_user=? AND closed=0 AND kicked=0
+                                AND last_seen>=?""", (file_id, _app_user(), time.time() - SESSION_TTL)).fetchall():
+        acct = conn.execute("SELECT privilege_set, active FROM fm_accounts WHERE id=? AND file_id=?",
+                            (srow['account_id'], file_id)).fetchone()
+        pset = _pset(schema, acct['privilege_set']) if schema and acct and acct['active'] else None
+        if pset:
+            out.append(Ctx(conn, file_id, srow, schema, version, pset))
+    return out
+
+
 @bp.route('/filemaker/api/files/<int:file_id>/containers', methods=['POST'])
 def upload_container(file_id):
     if (g := _guard()):
@@ -2057,11 +2275,17 @@ def upload_container(file_id):
         ctx, err = _ctx(conn, file_id)
         if err:
             return err
+        if not _may_store_container(ctx):
+            return _err('You do not have permission to modify a container field in this file', 403, fmError=200)
+        used = conn.execute("SELECT COALESCE(SUM(size), 0) FROM fm_containers WHERE file_id=?", (file_id,)).fetchone()[0]
+        if used + len(data) > MAX_FILE_CONTAINER_BYTES:
+            return _err('This file has no room for more container data (1 GB limit)')
         name = os.path.basename(up.filename or 'file')[:200] or 'file'
         mime = (up.mimetype or 'application/octet-stream')[:100]
-        cur = conn.execute("""INSERT INTO fm_containers (file_id, name, mime, size, sha1, created_at, created_by)
-                              VALUES (?,?,?,?,?,?,?)""",
-                           (file_id, name, mime, len(data), hashlib.sha1(data).hexdigest(), _now_text(), ctx.account))
+        cur = conn.execute("""INSERT INTO fm_containers (file_id, name, mime, size, sha1, created_at, created_by, token)
+                              VALUES (?,?,?,?,?,?,?,?)""",
+                           (file_id, name, mime, len(data), hashlib.sha1(data).hexdigest(), _now_text(), ctx.account,
+                            ctx.token))
         cid = cur.lastrowid
         folder = os.path.join(_data_dir, 'filemaker_files', str(file_id))
         os.makedirs(folder, exist_ok=True)
@@ -2075,26 +2299,30 @@ def upload_container(file_id):
 
 @bp.route('/filemaker/api/files/<int:file_id>/containers/<int:cid>')
 def get_container(file_id, cid):
-    """Served to anyone with this file open (images are loaded by <img>, so by
-    cookie rather than the session header)."""
+    """Images are loaded by <img>, so this goes by the app login's own sessions on the
+    file (the cookie) rather than the session header, and serves the file if one of
+    them may see it (_container_visible)."""
     if (g := _guard()):
         return g
     conn = _conn()
     try:
-        live = conn.execute("""SELECT 1 FROM fm_sessions WHERE file_id=? AND app_user=? AND closed=0 AND kicked=0
-                               AND last_seen>=?""", (file_id, _app_user(), time.time() - SESSION_TTL)).fetchone()
-        if not live:
+        ctxs = _app_user_ctxs(conn, file_id)
+        if not ctxs:
             return _err('Open the file first', 401)
         row = conn.execute("SELECT * FROM fm_containers WHERE id=? AND file_id=?", (cid, file_id)).fetchone()
         if not row:
             return _err('Not found', 404)
+        if not _container_visible(conn, ctxs, row):
+            return _err('You do not have permission to see that file', 403)
         path = os.path.join(_data_dir, 'filemaker_files', str(file_id), str(cid))
         if not os.path.exists(path):
             return _err('Not found', 404)
         mime = row['mime'] or 'application/octet-stream'
         inline = mime.startswith(('image/', 'audio/', 'video/')) and mime != 'image/svg+xml' or mime == 'application/pdf'
         resp = send_file(path, mimetype=mime, as_attachment=not inline or request.args.get('download') == '1',
-                         download_name=row['name'], max_age=3600)
+                         download_name=row['name'], max_age=0)
+        # only the browser may keep it, and it asks again (so access is checked) before reusing it
+        resp.headers['Cache-Control'] = 'private, no-cache'
         resp.headers['Content-Security-Policy'] = "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'"
         return resp
     finally:
@@ -2130,15 +2358,24 @@ def xlsx_parse():
         wb = openpyxl.load_workbook(io.BytesIO(up.read(30 * 1024 * 1024)), read_only=True, data_only=True)
     except Exception:
         return _err('That file could not be read as an Excel workbook (.xlsx)')
-    sheets = []
+    sheets, cells = [], 0
     for ws in wb.worksheets:
-        rows = []
+        # The size a workbook declares is not trusted (openpyxl would pad every row out
+        # to it), and the rows, padded to the widest one, may hold MAX_XLSX_CELLS in all.
+        ws.reset_dimensions()
+        rows, width = [], 0
         for row in ws.iter_rows(values_only=True):
             rows.append([_cell_text(v) for v in row])
+            width = max(width, len(row))
+            if cells + width * len(rows) > MAX_XLSX_CELLS:
+                return _err(f'That workbook is too large to import ({MAX_XLSX_CELLS:,} cells at most)')
             if len(rows) >= 100000:
                 break
         while rows and not any(rows[-1]):
             rows.pop()
+        for r in rows:
+            r.extend([''] * (width - len(r)))
+        cells += width * len(rows)
         sheets.append({'name': ws.title, 'rows': rows})
     return jsonify({'success': True, 'sheets': sheets})
 
@@ -2153,21 +2390,26 @@ def xlsx_build():
     if not isinstance(rows, list) or len(rows) > 200000:
         return _err('Nothing to save')
     import openpyxl
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE    # control characters Excel cannot store
     wb = openpyxl.Workbook(write_only=True)
-    ws = wb.create_sheet(re.sub(r'[\[\]:*?/\\]', '', str(body.get('sheet') or 'Sheet1'))[:31] or 'Sheet1')
-    types = body.get('types') or []
+    ws = wb.create_sheet(re.sub(r'[\[\]:*?/\\\x00-\x1f]', '', str(body.get('sheet') or 'Sheet1'))[:31] or 'Sheet1')
+    types = body.get('types') if isinstance(body.get('types'), list) else []
     for i, row in enumerate(rows):
         out = []
         for j, v in enumerate(row if isinstance(row, list) else []):
             t = types[j] if j < len(types) else 'text'
-            if i > 0 or not body.get('header'):
-                if t == 'number' and isinstance(v, str) and re.fullmatch(r'-?\d+(\.\d+)?', v.strip()):
-                    v = float(v) if '.' in v else int(v)
-                elif t == 'date' and isinstance(v, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', v):
-                    v = datetime.strptime(v, '%Y-%m-%d').date()
-                elif t == 'timestamp' and isinstance(v, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}', v):
-                    v = datetime.strptime(v, '%Y-%m-%d %H:%M:%S')
-            out.append(v if isinstance(v, (int, float, date)) else str(v if v is not None else '')[:32000])
+            if (i > 0 or not body.get('header')) and isinstance(v, str):
+                try:
+                    if t == 'number' and re.fullmatch(r'-?\d+(\.\d+)?', v.strip()):
+                        v = float(v) if '.' in v else int(v)
+                    elif t == 'date' and re.fullmatch(r'\d{4}-\d{2}-\d{2}', v):
+                        v = datetime.strptime(v, '%Y-%m-%d').date()
+                    elif t == 'timestamp' and re.fullmatch(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}', v):
+                        v = datetime.strptime(v, '%Y-%m-%d %H:%M:%S')
+                except ValueError:
+                    pass    # not a real number or date (2024-99-99): kept as text
+            out.append(v if isinstance(v, (int, float, date)) else
+                       ILLEGAL_CHARACTERS_RE.sub('', str(v if v is not None else ''))[:32000])
         ws.append(out)
     buf = io.BytesIO()
     wb.save(buf)
@@ -2179,17 +2421,160 @@ def xlsx_build():
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 
-def _public_host(host):
-    """Every address the host name resolves to is on the public internet."""
+# Insert From URL is fetched by the host, so it must never reach a private or local
+# address (the app itself, a cloud metadata service). The check is made on the address
+# the connection really goes to: the host name is resolved once, every address is
+# checked, and the socket is connected to a checked address, so a DNS answer that
+# changes in between ("rebinding") cannot send it elsewhere. The Host header and, for
+# https, SNI and the certificate check still use the host name.
+
+_URL_REFUSED = re.compile(r'[\\\s\x00-\x1f\x7f]')
+_fetch_slots = threading.BoundedSemaphore(3)
+_fetch_local = threading.local()
+
+
+def _public_ip(addr):
+    ip = ipaddress.ip_address(addr.split('%')[0])
+    if ip.version == 6 and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return ip.is_global and not ip.is_multicast
+
+
+def _public_host(host, port=None):
+    """The addresses a host name resolves to, if every one is on the public internet."""
     try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError):
         raise ValueError(f'Could not find the host "{host}"')
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0].split('%')[0])
-        if not ip.is_global or ip.is_multicast:
-            raise ValueError('Insert From URL can only reach public internet addresses')
-    return True
+    addrs = list(dict.fromkeys(info[4][0] for info in infos))
+    if not addrs or not all(_public_ip(a) for a in addrs):
+        raise ValueError('Insert From URL can only reach public internet addresses')
+    return addrs
+
+
+class _PublicConnection:
+    def _new_conn(self):
+        deadline = getattr(_fetch_local, 'deadline', None) or time.monotonic() + FETCH_DEADLINE
+        err = None
+        for addr in _public_host(self._dns_host, self.port):
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise ValueError(f'The request took too long (more than {FETCH_DEADLINE} seconds)')
+            try:
+                sock = urllib3.util.connection.create_connection(
+                    (addr, self.port), min(self.timeout, left) if isinstance(self.timeout, (int, float)) else left,
+                    source_address=self.source_address, socket_options=self.socket_options)
+            except OSError as e:
+                err = e
+                continue
+            if getattr(_fetch_local, 'socks', None) is not None:
+                _fetch_local.socks.append(sock)
+            return sock
+        raise urllib3.exceptions.NewConnectionError(self, f'Failed to establish a new connection: {err}')
+
+
+class _PublicHTTPConnection(_PublicConnection, urllib3.connection.HTTPConnection):
+    pass
+
+
+class _PublicHTTPSConnection(_PublicConnection, urllib3.connection.HTTPSConnection):
+    pass
+
+
+class _PublicHTTPPool(urllib3.HTTPConnectionPool):
+    ConnectionCls = _PublicHTTPConnection
+
+
+class _PublicHTTPSPool(urllib3.HTTPSConnectionPool):
+    ConnectionCls = _PublicHTTPSConnection
+
+
+class _PublicAdapter(HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs):
+        super().init_poolmanager(*args, **kwargs)
+        self.poolmanager.pool_classes_by_scheme = {'http': _PublicHTTPPool, 'https': _PublicHTTPSPool}
+
+
+def _check_fetch_url(url):
+    """http(s) only, with nothing that makes URL parsers disagree about the host:
+    urlparse reads 'http://127.0.0.1\\@example.com/' as example.com, urllib3 (which
+    makes the connection) as 127.0.0.1."""
+    if _URL_REFUSED.search(url):
+        raise ValueError('The URL has a space, backslash or control character in it (encode it with '
+                         'GetAsURLEncoded)')
+    u = urlparse(url)
+    if u.scheme not in ('http', 'https') or not u.hostname:
+        raise ValueError('Only http:// and https:// addresses are supported')
+    try:
+        host = urllib3.util.parse_url(url).host or ''
+        want = u.hostname.encode('idna').decode('ascii')
+    except (urllib3.exceptions.LocationParseError, UnicodeError):
+        raise ValueError('That URL is not valid')
+    if host.strip('[]').lower() != want.lower():
+        raise ValueError('That URL is not valid')
+
+
+def _shut_sockets(socks):
+    for sock in list(socks):
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+
+def _fetch(url, method, headers, data):
+    """The response of url (following up to 4 redirects, each checked again), as JSON
+    for the browser. Raises ValueError with a message for the person."""
+    too_long = f'The request took too long (more than {FETCH_DEADLINE} seconds)'
+    deadline = time.monotonic() + FETCH_DEADLINE
+    _fetch_local.deadline, _fetch_local.socks = deadline, []
+    # timeouts are per socket operation, so a server sending a byte now and then would
+    # never time out: at the deadline the sockets are shut, whatever they are doing
+    watchdog = threading.Timer(FETCH_DEADLINE, _shut_sockets, (_fetch_local.socks,))
+    watchdog.daemon = True
+    watchdog.start()
+    s = http_requests.Session()
+    s.trust_env = False     # no proxy or .netrc from the environment: straight to the checked address
+    s.mount('http://', _PublicAdapter())
+    s.mount('https://', _PublicAdapter())
+    try:
+        for _ in range(5):
+            _check_fetch_url(url)
+            r = s.request(method, url, headers=headers, data=data if method != 'GET' else None,
+                          timeout=20, allow_redirects=False, stream=True)
+            if r.is_redirect and r.headers.get('Location'):
+                r.close()
+                url = urljoin(url, r.headers['Location'])
+                if r.status_code in (301, 302, 303):
+                    method, data = 'GET', None
+                continue
+            content = bytearray()
+            for chunk in r.iter_content(65536):
+                content += chunk
+                if len(content) > MAX_FETCH_BYTES:
+                    raise ValueError('The response is larger than 5 MB')
+            if time.monotonic() > deadline:
+                raise ValueError(too_long)
+            content = bytes(content)
+            ctype = r.headers.get('Content-Type', '')
+            out = {'success': True, 'status': r.status_code, 'contentType': ctype,
+                   'headers': dict(list(r.headers.items())[:60]), 'url': url}
+            if ctype.startswith(('text/', 'application/json', 'application/xml', 'application/javascript')) or \
+                    '+json' in ctype or '+xml' in ctype or not ctype:
+                out['text'] = content.decode(r.encoding or 'utf-8', errors='replace')
+            else:
+                import base64
+                out['base64'] = base64.b64encode(content).decode()
+            return out
+        raise ValueError('Too many redirects')
+    except http_requests.RequestException as e:
+        if time.monotonic() > deadline:
+            raise ValueError(too_long)
+        raise
+    finally:
+        watchdog.cancel()
+        s.close()
+        _fetch_local.deadline = _fetch_local.socks = None
 
 
 @bp.route('/filemaker/api/files/<int:file_id>/fetch', methods=['POST'])
@@ -2209,40 +2594,27 @@ def fetch_url(file_id):
     method = str(body.get('method') or 'GET').upper()
     if method not in ('GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'):
         return _err('Unsupported method', 400, fmError=1630)
+    if not isinstance(body.get('headers') or {}, dict):
+        return _err('The headers must be an object', 400, fmError=1631)
     headers = {str(k)[:100]: str(v)[:2000] for k, v in (body.get('headers') or {}).items()
                if str(k).lower() not in ('host', 'content-length', 'cookie')}
     data = body.get('body')
+    if data is not None and not isinstance(data, str):
+        data = json.dumps(data)
+    # a few at a time, so slow sites cannot take every worker thread
+    if not _fetch_slots.acquire(timeout=5):
+        return _err('The host is busy with other Insert From URL requests. Try again in a moment.', 503,
+                    fmError=1631)
     try:
-        for _ in range(5):
-            u = urlparse(url)
-            if u.scheme not in ('http', 'https') or not u.hostname:
-                raise ValueError('Only http:// and https:// addresses are supported')
-            _public_host(u.hostname)
-            r = http_requests.request(method, url, headers=headers, data=data if method != 'GET' else None,
-                                      timeout=20, allow_redirects=False, stream=True)
-            if r.is_redirect and r.headers.get('Location'):
-                url = urljoin(url, r.headers['Location'])
-                if r.status_code in (301, 302, 303):
-                    method, data = 'GET', None
-                continue
-            content = r.raw.read(MAX_FETCH_BYTES + 1, decode_content=True)
-            if len(content) > MAX_FETCH_BYTES:
-                raise ValueError('The response is larger than 5 MB')
-            ctype = r.headers.get('Content-Type', '')
-            out = {'success': True, 'status': r.status_code, 'contentType': ctype,
-                   'headers': dict(list(r.headers.items())[:60]), 'url': url}
-            if ctype.startswith(('text/', 'application/json', 'application/xml', 'application/javascript')) or \
-                    '+json' in ctype or '+xml' in ctype or not ctype:
-                out['text'] = content.decode(r.encoding or 'utf-8', errors='replace')
-            else:
-                import base64
-                out['base64'] = base64.b64encode(content).decode()
-            return jsonify(out)
-        raise ValueError('Too many redirects')
+        return jsonify(_fetch(url, method, headers, data))
+    except http_requests.RequestException as e:
+        if isinstance(e, ValueError):     # requests' InvalidURL, InvalidHeader and the like
+            return _err(str(e), 400, fmError=1631)
+        return _err(f'The request failed: {e.__class__.__name__}', 502, fmError=1631)
     except ValueError as e:
         return _err(str(e), 400, fmError=1631)
-    except http_requests.RequestException as e:
-        return _err(f'The request failed: {e.__class__.__name__}', 502, fmError=1631)
+    finally:
+        _fetch_slots.release()
 
 
 # ═════════════════════════════════════════════════════════════════════════════

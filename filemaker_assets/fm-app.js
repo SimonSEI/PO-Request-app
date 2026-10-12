@@ -243,7 +243,7 @@
           '-',
           { label: 'New Layout/Report…', disabled: !f.canCreateLayouts(), action: () => this.newLayoutFlow(w) },
           { label: 'Duplicate Layout', disabled: !f.canCreateLayouts(), action: async () => { await d.saveQuiet(); const c = FM.clone(w.layout); c.id = FM.uid('L'); c.name = FM.uniqueName(c.name + ' Copy', f.schema.layouts.map(l => l.name)); await f.saveSchema([{ op: 'upsert', coll: 'layouts', item: c }]); await w.setLayout(c.id); } },
-          { label: 'Delete Layout…', action: async () => { if (f.schema.layouts.length < 2) return FM.alert('A file needs at least one layout.'); if (!(await FM.confirm('Permanently delete this layout?', { ok: 'Delete' }))) return; const id = w.layoutId; d.dirty = false; f.unlock(['layout:' + id]); await f.saveSchema([{ op: 'delete', coll: 'layouts', id }]); await w.setLayout(f.schema.layouts[0].id, { noTrigger: true }); } },
+          { label: 'Delete Layout…', action: async () => { if (f.schema.layouts.length < 2) return FM.alert('A file needs at least one layout.'); if (!(await FM.confirm('Permanently delete this layout?', { ok: 'Delete' }))) return; const id = w.layoutId; d.dirty = false; f.unlock(['layout:' + id]); await f.saveSchema([{ op: 'delete', coll: 'layouts', id }]); /* schemaChanged moves the window to another layout and takes its lock */ } },
           '-',
           { label: 'Layout Setup…', action: () => d.layoutSetup() },
           { label: 'Part Setup…', action: () => d.partSetup() },
@@ -703,7 +703,14 @@
     }
     schemaChanged(file) {
       file.windows.forEach(w => {
-        if (!w.layout || file.layoutAccess(w.layoutId) === 'none') { const id = w.defaultLayout(); if (id) { w.layoutId = id; w.view = (file.layout(id).view) || 'form'; } }
+        if (!w.layout || file.layoutAccess(w.layoutId) === 'none') {
+          const id = w.defaultLayout();
+          if (id) {
+            w.layoutId = id; w.view = (file.layout(id).view) || 'form';
+            // Layout mode carries on with the replacement layout only once its lock is taken; otherwise back to Browse mode
+            if (w.mode === 'layout') this.lockLayout(w, id).then(ok => { if (ok || w.mode !== 'layout' || w.layoutId !== id) return; if (w.lockedLayout) { file.unlock(['layout:' + w.lockedLayout]); w.lockedLayout = null; } this.designers.delete(w); w.mode = 'browse'; w.render(); });
+          }
+        }
         if (w.mode === 'layout') { const d = this.designers.get(w); if (d && !d.dirty) d.load(); }
         w.render();
       });
@@ -767,7 +774,10 @@
     onFrameMessage(e) {
       const d = e.data;
       if (!d || !d.fmWebViewer) return;
-      const w = this.windows.find(x => x.el && [...x.el.querySelectorAll('iframe')].some(fr => fr.contentWindow === e.source));
+      // only custom HTML from a data: web viewer (sandboxed, so its origin is "null") may perform scripts;
+      // an https page, or a site a viewer navigates to, may not
+      if (e.origin !== 'null') return;
+      const w = this.windows.find(x => x.el && [...x.el.querySelectorAll('iframe[data-fm-bridge]')].some(fr => fr.contentWindow === e.source));
       if (!w) return;
       const s = w.file.scriptByName(String(d.script || ''));
       if (!s) { FM.toast('Web viewer asked for a script that does not exist: ' + d.script, 'warn'); return; }
@@ -841,7 +851,10 @@
       if (w.mode !== 'preview') { if (!(await w.setMode('preview'))) return; await FM.sleep(30); }
       this.print(w);
     }
+    // resolves once the print dialog has closed (window.print blocks), so a script may then restore the window
     print(w) {
+      // draw the preview now: a script may have just changed the found set, or frozen the window (Freeze Window)
+      if (w.mode === 'preview') { const fz = w.frozen; w.frozen = 0; w.render(); w.frozen = fz; }
       const target = w.el && w.el.querySelector('.fm-preview');
       if (!target) { FM.toast('Switch to Preview mode to print.'); return; }
       const ps = w.file.schema.fileOptions.pageSetup || {};
@@ -852,7 +865,7 @@
       document.body.classList.add('fm-printing');
       const done = () => { target.classList.remove('fm-print-target'); document.body.classList.remove('fm-printing'); window.removeEventListener('afterprint', done); };
       window.addEventListener('afterprint', done);
-      setTimeout(() => { window.print(); setTimeout(done, 1000); }, 50);
+      return new Promise(res => setTimeout(() => { window.print(); setTimeout(done, 1000); res(); }, 50));
     }
 
     // ═════════════════════════════════════════════════════════════════════

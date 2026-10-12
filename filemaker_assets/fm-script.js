@@ -70,9 +70,9 @@
     win.timers = setInterval(() => { if (!rt.runner.busy && !FM.modalOpen() && win.el && win.mode !== 'layout' && document.activeElement && !(win.el.contains(document.activeElement) && /INPUT|TEXTAREA/.test(document.activeElement.tagName))) rt.runner.run(s, param, { win, timer: true }); }, secs * 1000);
   });
   step('Set Layout Object Animation', 'Control', [bool('on', 'On', true)], async () => { });
-  step('Open Transaction', 'Control', [bool('skipAuto', 'Skip auto-enter options', false)], async (p, rt) => {
+  step('Open Transaction', 'Control', [bool('skipAuto', 'Skip auto-enter options', false)], async (p, rt, st, fr) => {
     if (rt.txn) throw new FMError(3, 'A transaction is already open.');
-    rt.txn = [];
+    rt.txn = []; rt.txnFrame = fr;
   });
   step('Commit Transaction', 'Control', [], async (p, rt) => {
     if (!rt.txn) throw new FMError(3, 'No transaction is open.');
@@ -88,7 +88,14 @@
     if (!rt.txn) return;
     if (p.cond && !rt.bool(p.cond)) return;
     const ops = rt.txn; rt.txn = null;
+    if (rt.win) await rt.win.revert({ noTrigger: true }); // the record still open is part of the transaction too
     await rt.revertTxn(ops);
+    // execution goes on after the matching Commit Transaction; sub-scripts called inside the transaction exit
+    let at = rt.stack.indexOf(rt.txnFrame); if (at < 0) at = rt.stack.length - 1;
+    rt.stack.slice(at + 1).forEach(f => { f.exit = true; });
+    const f = rt.stack[at]; let k = f.pc + 1, d = 0;
+    for (; k < f.steps.length; k++) { const s = f.steps[k]; if (s.off) continue; if (s.s === 'Open Transaction') d++; else if (s.s === 'Commit Transaction') { if (!d) break; d--; } }
+    f.pc = Math.min(k + 1, f.steps.length);
     if (p.code) { rt.lastErrorDetail = p.msg ? rt.text(p.msg) : ''; throw new FMError(Math.floor(V.num(rt.ev(p.code))) || 1, rt.lastErrorDetail || 'Transaction reverted'); }
   });
   step('#', 'Control', [{ k: 'comment', key: 'text', label: 'Comment' }], async () => { }, { comment: true });
@@ -124,7 +131,7 @@
       w.previewPage = i; w.previewScrollTo = true; w.render(); return;
     }
     const n = w.foundRecords().length; let i = w.index;
-    if (!n) throw new FMError(101);
+    if (!n) { if (p.exitAfterLast && (p.which === 'next' || p.which === 'prev')) { fr.exitLoop = true; return; } throw new FMError(101); }
     let target;
     if (p.which === 'calc' && p.dialog) {
       const v = await FM.prompt('Go to record number (1–' + n + '):', { title: 'Go to Record', value: String(i + 1) });
@@ -163,7 +170,7 @@
     if (p.onlyRelated !== false) { set.ids = recs.map(r => r.id); set.index = 0; }
     else { const all = target.foundRecords(); const i = all.findIndex(r => r.id === recs[0].id); if (i < 0) { set.ids = file.records(target.table.id).map(r => r.id); } set.index = Math.max(0, set.ids.indexOf(recs[0].id)); }
     if (set.sort) target.applySort(set.sort, true);
-    target.mode = 'browse';
+    if (target.mode !== 'browse') await target.setMode('browse', { rt });
     target.render();
     await rt.app.trigger(target, 'OnRecordLoad');
   });
@@ -175,7 +182,7 @@
     if (!portal) throw new FMError(101, 'There is no portal on this layout.');
     const ctx = w.ctx();
     const rows = w.portalRows(portal, ctx);
-    if (!rows.length) throw new FMError(101);
+    if (!rows.length) { if (p.exitAfterLast) { fr.exitLoop = true; return; } throw new FMError(101); }
     let i = w.active && w.active.portal === portal && w.active.rowRec ? rows.indexOf(w.active.rowRec) : -1;
     const n = rows.length;
     let t = p.which === 'first' ? 0 : p.which === 'last' ? n - 1 : p.which === 'prev' ? i - 1 : p.which === 'next' ? i + 1 : Math.floor(rt.num(p.calc)) - 1;
@@ -347,7 +354,7 @@
     const key = p.field || (rt.win.active && rt.win.active.key); if (!key) throw new FMError(102);
     const tg = rt.target(key); const f = rt.file.fieldByKey(key);
     const raw = rt.file.raw(tg.rec, f, 1);
-    if (raw && typeof raw === 'object' && raw.c) { const a = h('a', { href: '/filemaker/api/files/' + rt.file.id + '/containers/' + raw.c + '?download=1', download: raw.name }); document.body.appendChild(a); a.click(); a.remove(); return; }
+    if (raw && typeof raw === 'object' && Number.isInteger(raw.c) && raw.c > 0) { const a = h('a', { href: '/filemaker/api/files/' + rt.file.id + '/containers/' + raw.c + '?download=1', download: raw.name }); document.body.appendChild(a); a.click(); a.remove(); return; }
     FM.download(p.name ? rt.text(p.name) : (f.name + '.txt'), rt.file.display(tg.rec, key, 1, rt.ctx()));
   });
   planned('Insert From Index', 'Fields');
@@ -399,7 +406,7 @@
     if (p.which === 'current' && w.current()) w.set_().ids = [w.current().id];
     await w.setMode('preview', { rt });
     await FM.sleep(50);
-    rt.app.print(w);
+    await rt.app.print(w);
     w.set_().ids = prev.set; w.set_().index = prev.index;
     if (prev.mode !== 'preview') await w.setMode(prev.mode, { rt });
   }, { note: 'Opens the browser\'s print dialog; choose "Save as PDF".' });
@@ -544,7 +551,7 @@
     if (!rt.file.pset().printing && !rt.file.full) throw new FMError(200, 'Your privileges do not allow printing.');
     if (p.which === 'current' && w.current()) w.set_().ids = [w.current().id];
     if (w.mode !== 'preview') await w.setMode('preview', { rt });
-    await FM.sleep(50); rt.app.print(w);
+    await FM.sleep(50); await rt.app.print(w);
     w.set_().ids = ids; w.set_().index = idx;
     if (prevMode !== 'preview') await w.setMode(prevMode, { rt });
   });
@@ -639,7 +646,9 @@
     const o = FM.layoutObjects(w.layout).find(x => x.type === 'webviewer' && x.name && x.name.toLowerCase() === name.toLowerCase());
     if (!o) throw new FMError(112);
     const fr = w.el.querySelector('[data-obj-name="' + CSS.escape(o.name) + '"] iframe');
-    if (p.action === 'url') { const u = rt.text(p.url); if (fr && /^https?:/i.test(u)) fr.src = u; else { o._override = u; w.render(); } return; }
+    // Go to URL holds the address for this window until Reset; renderWebViewer builds the right frame for it
+    if (p.action === 'url') { w.wvOverride = Object.assign({}, w.wvOverride, { [o.id]: rt.text(p.url) }); w.render(); return; }
+    if (p.action === 'reset') { if (w.wvOverride) delete w.wvOverride[o.id]; w.render(); return; }
     if (!fr) return;
     try { if (p.action === 'back') fr.contentWindow.history.back(); else if (p.action === 'forward') fr.contentWindow.history.forward(); else w.render(); } catch (e) { w.render(); }
   });
@@ -724,6 +733,9 @@
       this.frozen = new Set();
     }
     get frame() { return this.stack[this.stack.length - 1]; }
+    // exec notes whether the running step set its own detail
+    get lastErrorDetail() { return this.errorDetail; }
+    set lastErrorDetail(v) { this.errorDetail = v; this.detailSet = true; }
     ctx() {
       const w = this.win; const fr = this.frame;
       const c = { to: w ? w.to : null, rec: w ? w.current() : null, win: w, frame: fr };
@@ -796,17 +808,22 @@
       this.file.touch(); if (this.win) this.win.render();
     }
     pause(o) {
+      const prev = this.runner.pausedFrame;
       return new Promise(resolve => {
         this.paused = { resolve, find: o && o.find };
         this.runner.pausedFrame = this;
         if (this.win) this.app.renderChrome(this.win);
         this.app.renderPausedBar(this);
-      }).finally(() => { this.paused = null; this.runner.pausedFrame = null; if (this.win) this.app.renderChrome(this.win); this.app.renderPausedBar(null); });
+      }).finally(() => {
+        // an outer script that is still paused gets the Continue control back
+        this.paused = null; this.runner.pausedFrame = prev && prev !== this && prev.paused ? prev : null;
+        if (this.win) this.app.renderChrome(this.win); this.app.renderPausedBar(this.runner.pausedFrame);
+      });
     }
     resume(how) { if (this.paused) this.paused.resolve(how || 'continue'); }
     async call(script, param, o) {
       if (this.stack.length > 200) throw new FMError(3, 'Too many nested Perform Script calls.');
-      const frame = { script, steps: script.steps || [], pc: 0, vars: new Map(), param: param == null ? '' : param, rt: this, result: '', j: jumps(script.steps || []), originalLayout: this.win ? this.win.layoutId : null, full: !!script.fullAccess };
+      const frame = { script, steps: script.steps || [], pc: 0, iterations: 0, vars: new Map(), param: param == null ? '' : param, rt: this, result: '', j: jumps(script.steps || []), originalLayout: this.win ? this.win.layoutId : null, full: !!script.fullAccess };
       this.stack.push(frame);
       try { await this.exec(frame); }
       finally { this.stack.pop(); }
@@ -825,6 +842,7 @@
         if (!def) { this.lastError = 4; fr.pc++; continue; }
         const p = st.p || {};
         const jt = fr.j[i];
+        this.detailSet = false;
         try {
           switch (def.block) {
             case 'if': case 'elseif': {
@@ -852,8 +870,11 @@
             case 'exitloopif': { if (this.bool(p.calc || '')) fr.pc = jt ? jt.end + 1 : i + 1; else fr.pc = i + 1; this.lastError = 0; continue; }
           }
           fr.exitLoop = false;
-          this.lastError = 0; this.lastErrorDetail = '';
+          // the step's calculations still see the previous step's error; once it has run, its own (0) replaces it.
+          // After Perform Script the sub-script's last error stands.
+          const ran = this.stepsRun;
           await def.run(p, this, st, fr);
+          if (this.stepsRun === ran) { this.lastError = 0; if (!this.detailSet) this.lastErrorDetail = ''; }
           if (fr.exitLoop) {
             // "Exit after last" leaves the enclosing loop
             let k = i + 1, depth = 0;
@@ -865,6 +886,7 @@
           this.lastError = code;
           this.lastErrorLocation = fr.script.name + '\n' + st.s + '\n' + (i + 1);
           if (!(e instanceof FMError)) { this.lastErrorDetail = e && e.message; console.error(e); }
+          else if (!this.detailSet) this.lastErrorDetail = '';
           if (!this.errorCapture && code !== 0) {
             if (code === 1) { this.halted = true; break; }
             const msg = (e && e.message) || FM.ERR[code] || 'Error ' + code;
@@ -889,7 +911,8 @@
       const win = o.win;
       const file = win ? win.file : o.file;
       if (!script || !file) return '';
-      if (file.scriptAccess(script.id) === 'none') { await FM.alert('You do not have permission to run the script "' + script.name + '".', { icon: 'warn' }); return ''; }
+      // a one-step button or menu command (o.adhoc) is not a stored script, so script privileges do not apply
+      if (!o.adhoc && file.scriptAccess(script.id) === 'none') { await FM.alert('You do not have permission to run the script "' + script.name + '".', { icon: 'warn' }); return ''; }
       // a running (not paused) script finishes before another starts; a paused one is suspended
       if (this.current && !this.current.paused) { if (o.trigger || o.timer) return null; return null; }
       const outer = this.current;
@@ -902,7 +925,8 @@
       finally {
         rt.frozen.forEach(w => { w.frozen = Math.max(0, w.frozen - 1); if (!w.frozen && w.needsRender) w.render(); });
         if (rt.txn && rt.txn.length) await rt.revertTxn(rt.txn);
-        this.current = outer; this.busy = !!outer;
+        // hand back only what this run took over, and never to a script that has finished meanwhile
+        if (this.current === rt) { const up = outer && outer.stack.length ? outer : null; this.current = up; this.busy = !!up; }
         this.app.lastScriptResult = result;
         this.app.lastError = rt.lastError;
         this.app.windows.forEach(w => { if (w.needsRender && !w.frozen) w.render(); });
@@ -920,9 +944,13 @@
         if (!s) { await FM.alert('The script for this button is missing.', { icon: 'warn' }); return; }
         const rt0 = new Runtime(this, win.file, win);
         const param = action.param ? (() => { try { return win.file.evaluate(action.param, Object.assign(rt0.ctx(), ctx || {}), true); } catch (e) { return '?'; } })() : '';
-        if (this.current && this.current.paused) {
-          if (action.current === 'halt') { this.current.halted = true; this.current.resume(); }
-          else if (action.current === 'exit') { this.current.resume(); }
+        const cur = this.current;
+        if (cur && cur.paused && (action.current === 'halt' || action.current === 'exit')) {
+          // Halt stops the paused script and its callers, Exit only the paused script (its caller goes on);
+          // the button's script starts once that has unwound (or paused again)
+          if (action.current === 'halt') cur.halted = true; else cur.frame.exit = true;
+          cur.resume();
+          do await FM.sleep(0); while (this.current === cur && !cur.paused);
         }
         return this.run(s, param, { win });
       }
@@ -1188,6 +1216,7 @@
           if (add) { this.insertStep(add, i); return; }
           if (!data || this.readOnly) return;
           const idx = JSON.parse(data).sort((a, b) => a - b);
+          if (idx.includes(i)) return; // dropped onto itself
           const moving = idx.map(k => steps[k]);
           const rest = steps.filter((x, k) => !idx.includes(k));
           let at = rest.indexOf(steps[i]); if (at < 0) at = rest.length; if (idx[0] < i) at++;

@@ -266,7 +266,8 @@
       if (!ops.length) { this.render(); return true; }
       const rt = o.rt || this.app.runner.current;
       if (rt && rt.txn && !o.flushTxn) {
-        rt.txn.push(...ops);
+        // a record committed again inside the transaction replaces its queued update (ed.data holds every change)
+        ops.forEach(op => { const k = rt.txn.findIndex(x => x.op === 'update' && x.id === op.id); if (k >= 0) rt.txn[k] = op; else rt.txn.push(op); });
         edits.forEach(([id]) => { const e = this.file.editing.get(id); if (e) e.queued = true; });
         return true;
       }
@@ -792,7 +793,8 @@
         el.style.zIndex = 50;
         el.style.overflow = 'visible';
         setTimeout(() => {
-          const close = e => { if (!panel.contains(e.target) && !btn.contains(e.target)) { document.removeEventListener('mousedown', close, true); if (this.popovers[o.id]) { this.popovers[o.id] = false; this.commit().then(() => this.render()); } } };
+          // a later render replaced this panel (and added its own handler): this one only removes itself
+          const close = e => { if (!panel.isConnected) { document.removeEventListener('mousedown', close, true); return; } if (!panel.contains(e.target) && !btn.contains(e.target)) { document.removeEventListener('mousedown', close, true); if (this.popovers[o.id]) { this.popovers[o.id] = false; this.commit().then(() => this.render()); } } };
           document.addEventListener('mousedown', close, true);
         }, 0);
       }
@@ -837,7 +839,9 @@
     renderWebViewer(o, ctx) {
       const el = h('div', { class: 'fm-webviewer' });
       if (this.mode === 'find') { el.appendChild(h('div', { class: 'fm-wv-ph', text: 'Web Viewer' })); return el; }
-      const url = V.text(this.file.evaluate(o.url || '', ctx)).trim();
+      // Set Web Viewer [Go to URL] holds an address for this window until Reset
+      const over = this.wvOverride && this.wvOverride[o.id];
+      const url = V.text(over != null ? over : this.file.evaluate(o.url || '', ctx)).trim();
       if (!url) return el;
       const frame = h('iframe', { class: 'fm-wv-frame', referrerpolicy: 'no-referrer', title: o.name || 'Web viewer' });
       frame.dataset.objId = o.id;
@@ -845,6 +849,7 @@
         let html = url.replace(/^data:text\/html[^,]*,/i, '');
         if (/;base64,/i.test(url.slice(0, 40))) { try { html = new TextDecoder().decode(Uint8Array.from(atob(html), c => c.charCodeAt(0))); } catch (e) { html = ''; } } else { try { html = decodeURIComponent(html); } catch (e) { /* plain text */ } }
         frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals');
+        frame.dataset.fmBridge = '1'; // only this custom HTML may perform scripts (App.onFrameMessage)
         frame.srcdoc = WV_BRIDGE + html;
       } else if (/^https?:\/\//i.test(url)) {
         frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups');
@@ -1106,15 +1111,18 @@
     containerControl(o, f, rec, rep, readOnly, ctx) {
       const raw = rec ? this.file.raw(rec, f, rep) : '';
       const box = h('div', { class: 'fm-container' + (raw ? '' : ' empty'), tabIndex: 0, dataset: { fmKey: o.field, fmRec: rec ? String(rec.id) : '', fmRep: String(rep), fmObj: o.id } });
-      if (raw && typeof raw === 'object') {
-        const url = raw.c ? '/filemaker/api/files/' + this.file.id + '/containers/' + raw.c : raw.url;
-        const mime = raw.mime || '';
+      // only a stored container id (a positive integer) names a file on the host; any other object shows its name
+      const cid = raw && typeof raw === 'object' && Number.isInteger(raw.c) && raw.c > 0 ? raw.c : 0;
+      if (cid) {
+        const url = '/filemaker/api/files/' + this.file.id + '/containers/' + cid;
+        const mime = String(raw.mime || '');
         if (mime.startsWith('image/') && mime !== 'image/svg+xml') box.appendChild(h('img', { src: url, alt: raw.name, style: { objectFit: o.fit || 'contain' } }));
         else if (mime.startsWith('audio/')) box.appendChild(h('audio', { src: url, controls: true }));
         else if (mime.startsWith('video/')) box.appendChild(h('video', { src: url, controls: true }));
         else if (mime === 'application/pdf' && o.pdfInteractive) box.appendChild(h('iframe', { src: url, class: 'fm-pdf' }));
         else box.appendChild(h('a', { class: 'fm-file', href: url + '?download=1', target: '_blank', rel: 'noopener' }, h('span', { html: FM.icon('file', 28) }), h('span', { text: raw.name }), h('small', { text: Math.max(1, Math.round((raw.size || 0) / 1024)) + ' KB' })));
-      } else if (raw) box.appendChild(h('div', { class: 'fm-fv', text: String(raw) }));
+      } else if (raw && typeof raw === 'object') box.appendChild(h('div', { class: 'fm-fv', text: String(raw.name || '') }));
+      else if (raw) box.appendChild(h('div', { class: 'fm-fv', text: String(raw) }));
       else if (!readOnly && this.mode === 'browse') box.appendChild(h('div', { class: 'fm-cont-hint', text: 'Drop a file, or double-click' }));
       const insert = file => this.app.act(this, async () => {
         const fd = new FormData(); fd.append('file', file);
@@ -1138,7 +1146,7 @@
           { label: 'Insert File…', disabled: readOnly, action: async () => { const file = await FM.pickFile(); if (file) insert(file); } },
           { label: 'Insert Picture…', disabled: readOnly, action: async () => { const file = await FM.pickFile('image/*'); if (file) insert(file); } },
           '-',
-          { label: 'Export Field Contents…', disabled: !raw || typeof raw !== 'object', action: () => { const a = h('a', { href: '/filemaker/api/files/' + this.file.id + '/containers/' + raw.c + '?download=1', download: raw.name }); document.body.appendChild(a); a.click(); a.remove(); } },
+          { label: 'Export Field Contents…', disabled: !cid, action: () => { const a = h('a', { href: '/filemaker/api/files/' + this.file.id + '/containers/' + cid + '?download=1', download: raw.name }); document.body.appendChild(a); a.click(); a.remove(); } },
           { label: 'Clear', disabled: readOnly || !raw, action: () => this.app.act(this, async () => { await this.setFieldValue(this.fieldTarget(o, ctx).rec, o.field, '', rep); await this.commit(); }) }
         ], e.clientX, e.clientY);
       });

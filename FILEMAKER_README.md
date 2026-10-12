@@ -16,7 +16,9 @@ then use the result together, with records locked while someone edits them.
   and `filemaker_assets/` (the FileMaker engine and interface, all in the browser). Hooked
   into `app.py` with `init_filemaker(app, csrf, DB_PATH, data_dir=DATA_DIR)`.
 - **Data:** the app's SQLite database, in the `fm_*` tables. Files dropped into container
-  fields are stored under `DATA_DIR/filemaker_files/<file id>/`.
+  fields are stored under `DATA_DIR/filemaker_files/<file id>/`. A file is served only to
+  someone whose account can view a record that holds it (or who has just uploaded it), and
+  one that no record holds is deleted after two days.
 - **Setup:** none. Optional: `FILEMAKER_USERS=simon,beatriz` to limit who sees it.
 
 ## How it fits together
@@ -46,8 +48,10 @@ access** is a calculation that the host evaluates for every record. It may use t
 own fields, `Get ( AccountName )`, `Get ( AccountPrivilegeSetName )`, `Get ( UserName )`,
 `IsEmpty`, `PatternCount`, `Lower`, `Upper`, `Trim`, `If`, `Case`, comparisons and
 `and`/`or`/`not`. A privilege set using anything else is refused when it is saved, so a rule
-is never only half enforced. A privilege set needs the `fmapp` extended privilege to open
-the file.
+is never only half enforced. A field an account may only view never takes a value from that
+account, not even in a new record: the host enters its creation or modification auto-enter
+value (date, time, timestamp, account or user name, or constant data) itself. A privilege
+set needs the `fmapp` extended privilege to open the file.
 
 ### Multi-user behaviour
 
@@ -93,7 +97,8 @@ the file.
 - **Scripts:** the FileMaker step catalog, with control flow, variables, parameters and
   results, error capture with `Get ( LastError )` and transactions. There are triggers
   (layout, object and file), button actions, a debugger with breakpoints, and a Data Viewer.
-  Insert From URL is fetched by the host and refuses private or local addresses.
+  Insert From URL is fetched by the host, refuses private or local addresses (on every
+  redirect too) and gives up after 30 seconds.
   `FileMaker.PerformScript` works from web viewer HTML.
 - **Data in and out:** import from CSV, tab, Excel `.xlsx`, FileMaker XML and JSON (add,
   update in found set, update matching, or create a new table). Export to CSV, tab, Excel,

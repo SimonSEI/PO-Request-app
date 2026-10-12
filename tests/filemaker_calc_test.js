@@ -75,6 +75,17 @@ const calc = f => { try { return V.text(FM.calc.evaluate(FM.calc.parse(f, scope)
   ['Exact ( "a" ; "A" )', '0'], ['Filter ( "(555) 123-4567" ; "0123456789" )', '5551234567'], ['GetAsText ( TextColor ( "red" ; RGB ( 255 ; 0 ; 0 ) ) )', 'red'],
   ['${Last}', 'Lovelace'], ['Contacts :: Last', 'Lovelace'], ['IsValidExpression ( "1 +" )', '0'], ['EvaluationError ( Evaluate ( "1 +" ) )', '1203']
 ].forEach(([f, want]) => eq(calc(f), want, f));
+// regressions: rounding tiny/huge numbers, decimal Div/Mod, typed comparison with text, Position, Time + Date
+[
+  ['Round ( 0.1 + 0.2 - 0.3 ; 2 )', '0'], ['Round ( 0.0000001 ; 2 )', '0'], ['Round ( -0.0000001 ; 2 )', '0'], ['Truncate ( 0.0000001 ; 2 )', '0'],
+  ['SetPrecision ( 0.0000001 ; 2 )', '0'], ['Round ( 10^21 ; 0 )', '1000000000000000000000'], ['Round ( 1.005 ; 2 )', '1.01'], ['Round ( 1234 ; -2 )', '1200'],
+  ['If ( Round ( 100.1 - 100 - 0.1 ; 2 ) = 0 ; "balanced" ; "OUT" )', 'balanced'],
+  ['Div ( 0.3 ; 0.1 )', '3'], ['Div ( 1.15 ; 0.05 )', '23'], ['Mod ( 0.3 ; 0.1 )', '0'], ['Mod ( 1.15 ; 0.05 )', '0'], ['Mod ( 10 ; 3.3 )', '.1'],
+  ['Div ( -15 ; 4 )', '-4'], ['Mod ( 15 ; -4 )', '-1'], ['Div ( 7 ; 0 )', '?'], ['Mod ( 10^-20 ; 1 ) = 10^-20', '1'], ['Div ( 10^20 ; 0.5 )', '200000000000000000000'],
+  ['Due = "3/1/2025"', '1'], ['GetAsDate ( "3/1/2025" ) = "3/1/2025"', '1'], ['Due > "1/1/2026"', '0'], ['Due < "1/1/2026"', '1'], ['Due = 45000', '0'],
+  ['Position ( "abc" ; "a" ; 3 ; -2 )', '0'], ['Position ( "aaa" ; "a" ; 3 ; -4 )', '0'], ['Position ( "aaa" ; "a" ; 3 ; -3 )', '1'],
+  ['Time ( 1 ; 0 ; 0 ) + Date ( 1 ; 1 ; 2025 )', '1/1/2025 1:00:00 AM']
+].forEach(([f, want]) => eq(calc(f), want, f));
 ['1 +', 'Foo ( 1 )', 'Nope', 'If ( 1 )', '"abc', '(1', 'Get ( Nonsense )', 'Left ( "a" ; 1 ; 2 )'].forEach(bad => {
   try { FM.calc.parse(bad, scope); eq('parsed', 'error', 'should not parse: ' + bad); } catch (e) { eq(e instanceof FM.calc.CalcError, true, 'error type for ' + bad); }
 });
@@ -138,6 +149,75 @@ eq(V.text(file.evaluate('GetSummary ( Invoices::Total Amount ; Invoices::Status 
 eq(V.text(file.evaluate('ValueListItems ( "T" ; "Status" )', { to: 'OI', rec: inv(101) })), 'Draft\nPaid', 'design function');
 eq(V.text(file.evaluate('LookupNext ( Invoices::Amount ; Higher )', { to: 'OC', rec: cust(3) })), '5', 'LookupNext takes the next higher key (9)');
 eq(V.text(file.evaluate('LookupNext ( Invoices::Amount ; Lower )', { to: 'OC', rec: cust(3) })), '20', 'LookupNext takes the next lower key (2)');
+// ExecuteSQL regressions: ORDER BY ordinal or alias with GROUP BY, NULL in NOT/AND/OR, ROUND of tiny numbers
+const join = 'FROM Customers c JOIN Invoices i ON c.CustomerID = i.CustomerID GROUP BY c.Name ';
+eq(file.sql('SELECT c.Name, SUM(i.Amount) ' + join + 'ORDER BY 2 ASC', '|', ';', []), 'Globex|20;Acme|125.5', 'ExecuteSQL ORDER BY ordinal with GROUP BY');
+eq(file.sql('SELECT c.Name, SUM(i.Amount) AS tot ' + join + 'ORDER BY tot', '|', ';', []), 'Globex|20;Acme|125.5', 'ExecuteSQL ORDER BY alias with GROUP BY');
+eq(file.sql('SELECT InvoiceID FROM Invoices WHERE NOT (Amount > 30)', ',', ',', []), '103,105', 'ExecuteSQL NOT of NULL is not true');
+eq(file.sql('SELECT InvoiceID FROM Invoices WHERE Amount > 30 OR Amount IS NULL', ',', ',', []), '101,102,104', 'ExecuteSQL OR with a NULL side');
+eq(file.sql('SELECT InvoiceID FROM Invoices WHERE NOT (Amount > 30 AND Status = \'Paid\')', ',', ',', []), '102,103,104,105', 'ExecuteSQL FALSE AND NULL is false');
+eq(file.sql('SELECT ROUND(0.0000001, 2), ROUND(2.345, 2), ROUND(-2.5, 0) FROM Customers FETCH FIRST 1 ROWS ONLY', ',', ';', []), '0,2.35,-3', 'ExecuteSQL ROUND');
+
+// ── a second file for relationship keys, finds, repeating calcs, summaries and validation ──
+const calcF = (id, name, formula, resultType, more) => Object.assign({ id, name, type: 'calculation', options: { calc: { formula, resultType } } }, more || {});
+const schema2 = {
+  tables: [
+    { id: 'TP', name: 'People', fields: [{ id: 'pid', name: 'PersonID', type: 'number' }, { id: 'pname', name: 'Name', type: 'text' }, { id: 'pzip', name: 'Zip', type: 'text' },
+      { id: 'pstat', name: 'Status', type: 'text' }, { id: 'pamt', name: 'Amount', type: 'number' }, { id: 'pprice', name: 'Price', type: 'number' },
+      { id: 'ptot', name: 'Total', type: 'summary', options: { summary: { op: 'total', field: 'pamt' } } },
+      { id: 'prun', name: 'Running', type: 'summary', options: { summary: { op: 'total', field: 'pamt', running: true, restart: 'pstat' } } },
+      { id: 'pfrac', name: 'Fraction', type: 'summary', options: { summary: { op: 'fraction', field: 'pamt', subtotal: 'pstat' } } },
+      calcF('pshare', 'Share', 'Amount / Total', 'number'),
+      calcF('prep', 'RepCalc', 'Price * 2', 'number', { options: { calc: { formula: 'Price * 2', resultType: 'number', evalIfAllEmpty: false }, storage: { repetitions: 3 } } }),
+      calcF('prepx', 'RepCalcExt', 'Extend ( Price ) * 2', 'number', { options: { calc: { formula: 'Extend ( Price ) * 2', resultType: 'number', evalIfAllEmpty: false }, storage: { repetitions: 3 } } }),
+      { id: 'pdate', name: 'PayDate', type: 'date', options: { validation: { memberOf: 'VD' } } }, { id: 'ptime', name: 'PayTime', type: 'time', options: { validation: { memberOf: 'VT' } } },
+      { id: 'pn', name: 'N', type: 'number', options: { validation: { unique: true } } }] },
+    { id: 'TZ', name: 'Zips', fields: [{ id: 'zzip', name: 'Zip', type: 'text' }, { id: 'zcity', name: 'City', type: 'text' }] },
+    { id: 'TO', name: 'Orders', fields: [{ id: 'oid', name: 'OrderID', type: 'number' }, { id: 'opid', name: 'PersonID', type: 'number' }] }
+  ],
+  tableOccurrences: [{ id: 'OP', name: 'People', table: 'TP' }, { id: 'OZ', name: 'Zips', table: 'TZ' }, { id: 'OO', name: 'Orders', table: 'TO' }],
+  relationships: [{ id: 'RZ', left: 'OP', right: 'OZ', predicates: [{ leftField: 'pzip', op: '=', rightField: 'zzip' }], leftOpts: {}, rightOpts: {} },
+    { id: 'RO', left: 'OP', right: 'OO', predicates: [{ leftField: 'pid', op: '=', rightField: 'opid' }], leftOpts: {}, rightOpts: {} }],
+  layouts: [], scripts: [], valueLists: [{ id: 'VD', name: 'Dates', type: 'custom', values: ['1/5/2025', '2/10/2025'] }, { id: 'VT', name: 'Times', type: 'custom', values: ['1:05:00 PM'] }],
+  customFunctions: [], privilegeSets: [{ id: 'PS_FULL', name: '[Full Access]', extended: ['fmapp'] }], fileOptions: {}
+};
+const people = [['Ann Lee', '01234', 'Paid', 10, 5, '1.50'], ['Joann Leeds', '007', 'paid', 30], ['Mary Ann Leeway', '', 'Paid', 60], ['Bob', 'K1A', 'Draft'], ['apple'], ['école'], ['Zebra'], ['Émile'], ['Joanne Leeds'], ['Carter']];
+const recs2 = {
+  TP: people.map(([n, z, s, a, pr, num], i) => ({ id: 100 + i, t: 'TP', d: { pid: String(i + 1), pname: n, pzip: z || '', pstat: s || '', pamt: a == null ? '' : String(a), pprice: pr == null ? '' : String(pr), pn: num || '' }, mc: 0 })),
+  TZ: [['1234', 'Springfield'], ['01234', 'Boston'], ['7', 'Seven'], ['007', 'Bond'], ['k1a', 'Ottawa']].map(([z, c], i) => ({ id: 200 + i, t: 'TZ', d: { zzip: z, zcity: c }, mc: 0 })),
+  TO: ['1.0', '1', '01', '2'].map((p, i) => ({ id: 300 + i, t: 'TO', d: { oid: String(i + 1), opid: p }, mc: 0 }))
+};
+const file2 = new FM.FMFile(app, { file: { id: 2, name: 'T2' }, token: 't', account: { name: 'Admin', privilegeSet: 'PS_FULL' }, schema: schema2, version: 1, serials: {}, records: recs2, seq: 0 });
+const person = n => file2.records('TP').find(r => r.d.pname === n);
+const cities = n => file2.related('OP', person(n), 'OZ').map(r => r.d.zcity).join(',');
+eq(cities('Ann Lee'), 'Boston', 'text key "01234" does not match "1234"');
+eq(cities('Joann Leeds'), 'Bond', 'text key "007" does not match "7"');
+eq(cities('Bob'), 'Ottawa', 'text keys match ignoring case');
+eq(file2.related('OP', person('Ann Lee'), 'OO').length, 3, 'number keys match by value (1 = 1.0 = 01)');
+const find2 = crit => file2.find('TP', 'OP', [{ omit: false, crit: { 'OP::pname': crit } }]).map(r => r.d.pname).join(',');
+eq(find2('=Ann Lee'), 'Ann Lee', 'find = with several words matches whole words');
+eq(find2('"oann"'), '', 'quoted find starts at a word start');
+eq(find2('"joann"'), 'Joann Leeds,Joanne Leeds', 'quoted find matches a word start');
+eq(find2('*"oann"'), 'Joann Leeds,Joanne Leeds', '*"" find matches anywhere');
+eq(find2('a...c'), 'Ann Lee,Bob,apple,Carter', 'text range find');
+eq(find2('<f'), 'Ann Lee,Bob,apple,école,Émile,Carter', 'text < find uses the sort order');
+const paid = file2.sortRecs(file2.records('TP').filter(r => /paid/i.test(r.d.pstat)), [{ key: 'OP::pstat', dir: 'asc' }], 'OP');
+const share = set => V.text(file2.value(person('Ann Lee'), file2.field('pshare'), 1, { summarySet: set }));
+eq(share(paid), '.1', 'calculation over a summary field');
+eq(share(paid.slice(0, 2)), '.25', 'calculation over a summary field follows the found set');
+eq(V.text(file2.evaluate('GetSummary ( People::Total ; People::Status )', { to: 'OP', rec: person('Ann Lee'), summarySet: paid })), '100', 'GetSummary break ignores case like the sort');
+eq(V.text(file2.summaryInContext(file2.field('pfrac'), person('Ann Lee'), { summarySet: paid })), '.1', 'fraction of subtotal ignores case like the sort');
+eq(V.text(file2.summaryInContext(file2.field('prun'), paid[2], { summarySet: paid })), '100', 'running total restart ignores case like the sort');
+const reps = fid => [1, 2, 3].map(i => V.text(file2.value(person('Ann Lee'), file2.field(fid), i, {}))).join(',');
+eq(reps('prep'), '10,,', 'repeating calculation sees a non-repeating field in repetition 1 only');
+eq(reps('prepx'), '10,10,10', 'Extend gives every repetition the field');
+eq(V.text(file2.evaluate('Sum ( People::RepCalcExt ) & "/" & Count ( People::RepCalcExt ) & "/" & Count ( People::RepCalc )', { to: 'OP', rec: person('Ann Lee') })), '30/3/1', 'aggregates over a repeating calculation');
+const v2 = (who, data) => file2.validate(file2.table('TP'), person(who), data, new Set(Object.keys(data)), {}).map(f => f.code).join(',');
+eq(v2('Bob', { pdate: '2025-01-05' }), '', 'date in a value list');
+eq(v2('Bob', { pdate: '2025-01-06' }), '506', 'date not in a value list');
+eq(v2('Bob', { ptime: '13:05:00' }), '', 'time in a value list');
+eq(v2('Bob', { pn: '1.5' }), '504', 'unique number compares by value');
+eq(v2('Bob', { pn: '2' }), '', 'unique number');
 
 console.log(failures ? failures + ' failure(s), ' + passed + ' passed' : 'all ' + passed + ' engine checks pass');
 process.exit(failures ? 1 : 0);
