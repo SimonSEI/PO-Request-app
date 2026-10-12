@@ -319,6 +319,16 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 
 <!-- JOBS -->
 <div class="panel" id="p-jobs">
+  <h3 style="margin:0 0 8px;font-size:14px">Maintenance this month <span class="chip" id="msCount"></span></h3>
+  <div class="toolbar">
+    <select id="msMonth" onchange="loadMaintSchedule()"></select>
+    <select id="msShow" onchange="drawMaintSchedule()"><option value="">All visits</option><option value="todo">Not notified yet</option><option value="Wettech">Wettech (pumps)</option><option value="Gulfshore">Gulfshore (lakes)</option></select>
+    <div class="sp"></div><span id="msInfo" class="note"></span>
+    <button class="btn" id="msEmail" onclick="emailWettechList()">✉️ Email Tommy the pump list</button>
+  </div>
+  <div class="note" style="margin-bottom:8px">Every pump (Wettech) and lake (Gulfshore) maintenance visit due in the month from the Accounts tab, and whether the subcontractor has been told. Lakes count as told once the month's diver list is emailed.</div>
+  <div class="scroll" style="max-height:45vh;margin-bottom:18px"><table class="t"><thead><tr><th>Account</th><th>Subcontractor</th><th>Client approved</th><th>Subcontractor notified</th><th>Report in</th></tr></thead><tbody id="msBody"></tbody></table></div>
+  <h3 style="margin:0 0 8px;font-size:14px">Jobs</h3>
   <div class="toolbar">
     <input type="text" id="jbSearch" placeholder="Find a job, client, PO, quote or invoice #…" oninput="clearTimeout(window._jq);window._jq=setTimeout(loadJobs,300)" style="width:240px">
     <select id="jbShow" onchange="loadJobs()"><option value="open">Open</option><option value="closed">Done</option><option value="all">All</option></select>
@@ -348,7 +358,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
     <button class="btn" onclick="maintEdit(0)">＋ Pump account</button>
     <button class="btn" onclick="editDiveSite()">＋ Lake site</button>
   </div>
-  <div class="note" style="margin-bottom:10px">One row per client: Wettech's pump maintenance (Tommy, tomm@wettec.biz), Gulfshore's lake and diver work (Jordan, Gulfshoreyachts@gmail.com) and SCADA. Recurring Jobber jobs bill the maintenance.</div>
+  <div class="note" style="margin-bottom:10px">Click a client's name for every to-do and job they've had. One row per client: Wettech's pump maintenance (Tommy, tomm@wettec.biz), Gulfshore's lake and diver work (Jordan, Gulfshoreyachts@gmail.com) and SCADA. Recurring Jobber jobs bill the maintenance.</div>
   <div class="scroll"><table class="t"><thead><tr><th>Account</th><th>Pump - Wettech</th><th>Lake - Gulfshore</th><th>SCADA</th><th>Where</th></tr></thead><tbody id="acBody"></tbody></table></div>
   <h3 style="margin:22px 0 8px;font-size:14px">Monthly email to the diver</h3>
   <div class="toolbar"><span id="diveInfo" class="note"></span><div class="sp"></div>
@@ -1291,7 +1301,7 @@ function drawAccounts(){
   const st = {overdue:'r', due_soon:'a', current:'g', inactive:'', unknown:''};
   document.getElementById('acBody').innerHTML = rows.map(a => { const p = a.pump, l = a.lake, s = a.scada;
     const vis = a.visit;
-    return `<tr><td><b>${esc(a.name)}</b>${!a.active ? ' <span class="chip">former</span>' : ''}${a.active ? (vis
+    return `<tr><td><a href="#" title="Every to-do and job for this client" onclick="event.preventDefault();openAccount(${JSON.stringify(a.name).replace(/"/g, '&quot;')})"><b>${esc(a.name)}</b></a>${!a.active ? ' <span class="chip">former</span>' : ''}${a.active ? (vis
       ? `<div class="note">✓ Client approved ${esc((vis.link || {}).since || '')} · waiting on ${esc(((vis.link || {}).vendors || []).filter(x => !((vis.link || {}).reported || []).includes(x)).join(' and '))}</div>`
       : '') + `<div><button class="btn s ${vis ? '' : 'p'}" onclick="accountReady(${JSON.stringify(a.name).replace(/"/g, '&quot;')})">✓ Ready - client approved</button></div>` : ''}</td>
     <td>${p ? `${esc(p.equipment || p.kind)}<div class="note">${p.due_this_month ? '<b>' + esc(schedText(p)) + '</b> <span class="chip b">due</span>' : esc(schedText(p))} · Wettech ${esc(p.vendor_cost || '—')} · we bill ${esc(p.our_bill || '—')}${!p.active ? ' · former' : ''}</div><button class="btn s" onclick="maintEdit(${p.id})">Edit</button>` : '<span class="note">—</span>'}</td>
@@ -1437,6 +1447,7 @@ function jobberNo(c){ const J = c.jobber || {}, r = (J.job && J.job.number) ? ['
 // A document's number with its amount, e.g. "#Q-5521 $950.00".
 function numAmt(num, amt){ const n = num ? `<span class="note">#${esc(String(num).replace(/^#/, ''))}</span>` : ''; const a = amt != null ? `<b>${money(amt)}</b>` : ''; return [n, a].filter(Boolean).join(' '); }
 async function loadJobs(){
+  loadMaintSchedule();
   const st = document.getElementById('jbShow').value, q = document.getElementById('jbSearch').value.trim();
   const [j, ji] = await Promise.all([api('/cases?status=' + st + (q ? '&q=' + encodeURIComponent(q) : '')), api('/jobber/items?open=1&kind=quote&show_ignored=1')]);
   if (!j.success) { document.getElementById('jobsBody').innerHTML = `<tr><td colspan="9" class="empty">${esc(j.error)}</td></tr>`; return; }
@@ -1472,6 +1483,104 @@ async function loadJobs(){
 async function jobberAct(id, action){ const j = await api('/jobber/items/' + encodeURIComponent(id), {method:'POST', body:{action}}); if (!j.success) { toast(j.error, true); return; } loadToday(); if (curTab === 'jobs') loadJobs(); if (action === 'track' && j.case_id) openCase(j.case_id); }
 async function jobberLink(id){ const n = prompt('Job number in Pumps to add it to:'); if (!n) return; const j = await api('/jobber/items/' + encodeURIComponent(id), {method:'POST', body:{action:'link', case_id: parseInt(n)}}); if (j.success) loadJobs(); else toast(j.error, true); }
 async function syncJobber(){ const j = await api('/jobber/sync', {method:'POST', body:{}}); if (!j.success) { toast(j.error, true); return; } toast(j.started ? 'Jobber sync started - this takes a minute or two.' : 'A Jobber sync is already running - the list updates when it finishes.'); setTimeout(loadJobs, 2000); }
+
+// ── the month's maintenance (Jobs tab) ────────────────
+let MS = null;
+function msMonths(){
+  const sel = document.getElementById('msMonth'); if (sel.options.length) return;
+  const d = new Date(); d.setDate(1);
+  for (let i = -1; i <= 2; i++) { const x = new Date(d.getFullYear(), d.getMonth() + i, 1);
+    const v = x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0');
+    sel.add(new Option(x.toLocaleString('en-US', {month:'long', year:'numeric'}) + (i === 0 ? ' (this month)' : i === 1 ? ' (next month)' : ''), v, false, i === 0)); }
+}
+async function loadMaintSchedule(){
+  msMonths();
+  const j = await api('/maint/schedule?month=' + document.getElementById('msMonth').value);
+  if (!j.success) { document.getElementById('msBody').innerHTML = `<tr><td colspan="5" class="empty">${esc(j.error)}</td></tr>`; return; }
+  MS = j; drawMaintSchedule();
+}
+function drawMaintSchedule(){
+  if (!MS) return;
+  const show = document.getElementById('msShow').value;
+  const rows = MS.rows.filter(r => !show || (show === 'todo' ? !r.notified : r.vendor === show));
+  const left = MS.total - MS.notified;
+  document.getElementById('msCount').textContent = MS.total;
+  document.getElementById('msInfo').innerHTML = `${MS.total} visits in ${esc(MS.label)} · ${MS.notified} notified · ` + (left ? `<b class="warn">${left} not notified yet</b>` : '<span class="ok">all notified</span>');
+  document.getElementById('msEmail').classList.toggle('hide', !MS.wettech_mailto);
+  const q = x => JSON.stringify(x).replace(/"/g, '&quot;');
+  document.getElementById('msBody').innerHTML = rows.map(r => { const n = r.notified;
+    return `<tr><td><a href="#" onclick="event.preventDefault();openAccount(${q(r.account)})"><b>${esc(r.account)}</b></a><div class="note">${esc(r.what)}${r.where ? ' · ' + esc(r.where) : ''}</div>${r.hold ? `<span class="chip a">${esc(r.hold)}</span>` : ''}</td>
+    <td>${esc(r.vendor)}<div class="note">${r.vendor === 'Wettech' ? 'pump maintenance' : 'lake / diver'}</div></td>
+    <td>${r.approved ? '<span class="ok">✓ ' + esc(niceDay(r.approved)) + '</span>' : '<span class="note">—</span>'}</td>
+    <td style="min-width:190px">${n ? `<span class="chip g">✓ notified</span> <span class="note">${esc(niceDay(d10(n.notified_at)))}${n.notified_by ? ' · ' + esc(n.notified_by) : ''}${n.how ? ' · ' + esc(n.how) : ''}</span>${n.note ? '<div class="note">' + esc(n.note) + '</div>' : ''}${n.auto ? '' : ` <button class="btn s" title="Not notified after all" onclick="maintNotified(${q(r.account)}, '${r.vendor}', false)">↺</button>`}`
+      : `<span class="chip r">not notified</span> <button class="btn s p" onclick="maintNotifiedAsk(${q(r.account)}, '${r.vendor}')">✓ Mark notified</button>`}</td>
+    <td>${r.report ? '<span class="ok">✓ ' + esc(niceDay(r.report)) + '</span>' : '<span class="note">not yet</span>'}</td></tr>`; }).join('') || `<tr><td colspan="5" class="empty">${MS.total ? 'None to show.' : 'No maintenance due this month.'}</td></tr>`;
+}
+function maintNotifiedAsk(account, vendor){
+  const who = vendor === 'Wettech' ? 'Wettech (Tommy)' : 'Gulfshore (Jordan)';
+  openModal(`${esc(account)} - ${esc(who)} notified`, `<div class="fields">
+    <label>How<select id="mn_how"><option>email</option><option>phone</option><option>text</option><option>in person</option></select></label>
+    <label class="w">Note<input type="text" id="mn_note" placeholder="e.g. Tommy said the week of the 20th"></label></div>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="maintNotified(${JSON.stringify(account).replace(/"/g, '&quot;')}, '${vendor}', true, document.getElementById('mn_how').value, document.getElementById('mn_note').value)">Save</button>`);
+}
+async function maintNotified(account, vendor, on, how, note){
+  const accounts = Array.isArray(account) ? account : [account];
+  const j = await api('/maint/notified', {method:'POST', body:{month: MS.month, vendor, accounts, notified: on, how: how || '', note: note || ''}});
+  if (!j.success) { toast(j.error, true); return; }
+  closeModal(); MS = j; drawMaintSchedule();
+}
+// Opens the email to Tommy in your mail program, then asks whether it went.
+function emailWettechList(){
+  if (!MS || !MS.wettech_mailto) return;
+  const names = MS.rows.filter(r => r.vendor === 'Wettech' && !r.notified).map(r => r.account);
+  location.href = MS.wettech_mailto;
+  setTimeout(() => { if (confirm(`Did the email to Tommy go? Mark these ${names.length} pump visits as notified?`)) maintNotified(names, 'Wettech', true, 'email', 'monthly list'); }, 800);
+}
+
+// ── an account's history (Accounts tab) ───────────────
+let ACH = null;
+async function openAccount(name){
+  const j = await api('/accounts/history?name=' + encodeURIComponent(name));
+  if (!j.success) { toast(j.error || 'Not found', true); return; }
+  ACH = j; renderAccount();
+  document.getElementById('drawerWrap').classList.remove('hide');
+}
+function renderAccount(){
+  const a = ACH, q = x => JSON.stringify(x).replace(/"/g, '&quot;');
+  const todo = t => `<div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--border);border-radius:10px;${t.done_at ? 'opacity:.75' : ''}"><div>
+      <b>${t.done_at ? '✓ ' : ''}${esc(t.title)}</b>${t.detail ? `<div class="note" style="white-space:pre-line">${esc(t.detail)}</div>` : ''}
+      <div class="note">Added ${esc(niceDay(d10(t.created_at)))}${t.created_by ? ' by ' + esc(t.created_by) : ''}${t.due_on ? ' · due ' + esc(niceDay(t.due_on)) : ''}${t.done_at ? ' · done ' + esc(niceDay(d10(t.done_at))) + (t.done_by ? ' by ' + esc(t.done_by) : '') : ''}</div></div>
+      <button class="btn s ${t.done_at ? '' : 'p'}" onclick="accountTodoDone(${t.id}, ${t.done_at ? 'false' : 'true'})">${t.done_at ? '↺ Reopen' : '✓ Done'}</button></div>`;
+  const open = a.todos.filter(t => !t.done_at), done = a.todos.filter(t => t.done_at);
+  const jobs = a.jobs.map(c => `<details style="border-bottom:1px solid var(--border);padding:8px 0"><summary style="cursor:pointer"><b>${esc(c.title || c.client_name)}</b> ${catChip(c.category)} ${c.status === 'open' ? `<span class="chip b">${esc(stepLabel(c.stage, c.vendor))}</span>` : `<span class="chip ${c.status === 'closed' ? 'g' : ''}">${esc(c.status)}</span>`}
+      <span class="note">opened ${esc(c.opened_on || '')}${c.po_number ? ' · PO ' + esc(c.po_number) : ''}${c.vendor ? ' · ' + esc(c.vendor) : ''}</span> <a href="#" onclick="event.preventDefault();openCase(${c.id})">open job ↗</a></summary>
+      <div style="padding:6px 0 0 14px">${c.events.map(e => `<div class="note">${esc((e.at || '').slice(0, 16))} · ${esc(e.actor)} · <b>${esc(e.action)}</b>${e.detail ? ' - ' + esc(e.detail) : ''}</div>`).join('') || '<div class="note">Nothing logged.</div>'}</div></details>`).join('');
+  const notices = a.notices.map(n => `<div class="note">${esc(n.month)} · <b>${esc(n.vendor)}</b> notified ${esc(niceDay(d10(n.notified_at)))}${n.notified_by ? ' by ' + esc(n.notified_by) : ''}${n.how ? ' · ' + esc(n.how) : ''}${n.note ? ' - ' + esc(n.note) : ''}</div>`).join('');
+  document.getElementById('drawer').innerHTML = `
+  <div class="hd"><div><h2>${esc(a.name)}</h2><div class="note">${open.length} open to-do${open.length === 1 ? '' : 's'} · ${a.todos.length} in all · ${a.jobs.length} job${a.jobs.length === 1 ? '' : 's'}</div></div>
+    <div><button class="btn" onclick="closeDrawer()">✕</button></div></div>
+  <div class="bd">
+    <div class="sec"><h4>Add a to-do for ${esc(a.name)}</h4><div style="display:flex;gap:6px;flex-wrap:wrap">
+      <input type="text" id="acTodoTitle" placeholder="What needs doing" style="flex:1;min-width:180px">
+      <input type="date" id="acTodoDue" title="Due (optional)">
+      <button class="btn p" onclick="accountTodoAdd(${q(a.name)})">＋ Add</button></div></div>
+    <div class="sec"><h4>To do (${open.length})</h4><div style="display:flex;flex-direction:column;gap:8px">${open.map(todo).join('') || '<div class="note">Nothing open.</div>'}</div></div>
+    <div class="sec"><h4>Done (${done.length})</h4><div style="display:flex;flex-direction:column;gap:8px">${done.map(todo).join('') || '<div class="note">Nothing done yet.</div>'}</div></div>
+    <div class="sec"><h4>Jobs (${a.jobs.length})</h4>${jobs || '<div class="note">No jobs.</div>'}</div>
+    ${notices ? `<div class="sec"><h4>Maintenance - subcontractor notified</h4>${notices}</div>` : ''}
+  </div>`;
+}
+async function accountTodoAdd(name){
+  const title = document.getElementById('acTodoTitle').value.trim(); if (!title) { toast('Say what needs doing', true); return; }
+  const j = await api('/accounts/todo', {method:'POST', body:{name, title, due_on: document.getElementById('acTodoDue').value}});
+  if (!j.success) { toast(j.error, true); return; }
+  ACH = j; renderAccount(); loadToday();
+}
+async function accountTodoDone(id, done){
+  const j = await api('/todos/' + id + '/done', {method:'POST', body:{done}});
+  if (!j.success) { toast(j.error, true); return; }
+  openAccount(ACH.name); loadToday();
+}
 
 // ── mailbox scan ─────────────────────────────────────
 function updateScanInfo(s){
