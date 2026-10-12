@@ -359,19 +359,21 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
     <button class="btn" onclick="maintEdit(0)">＋ Pump account</button>
     <button class="btn" onclick="editDiveSite()">＋ Lake site</button>
   </div>
-  <div class="note" style="margin-bottom:10px">Click a client's name for every to-do and job they've had. One row per client: Wettech's pump maintenance (Tommy, tomm@wettec.biz), Gulfshore's lake and diver work (Jordan, Gulfshoreyachts@gmail.com) and SCADA. Recurring Jobber jobs bill the maintenance.</div>
-  <div class="scroll"><table class="t"><thead><tr><th>Account</th><th>Pump - Wettech</th><th>Lake - Gulfshore</th><th>SCADA</th><th>Where</th></tr></thead><tbody id="acBody"></tbody></table></div>
-  <h3 style="margin:22px 0 8px;font-size:14px">Monthly email to the diver</h3>
+  <div class="note" style="margin-bottom:10px">Click an account for its page: its pump (Wettech, Tommy), lake and diver (Gulfshore, Jordan) and SCADA setup with Edit, every to-do and job it has had, its reports and signed quotes, and its Jobber links.</div>
+  <div class="scroll"><table class="t"><thead><tr><th>Account</th><th>On</th><th>Next due</th><th>Where</th></tr></thead><tbody id="acBody"></tbody></table></div>
+  <details style="margin-top:22px"><summary style="cursor:pointer;font-size:14px;font-weight:600">Monthly email to the diver</summary>
   <div class="toolbar"><span id="diveInfo" class="note"></span><div class="sp"></div>
     <button class="btn" onclick="diverTodo(diveMonth())">Email ready to copy</button>
     <a class="btn" id="diveDocx" href="#">⬇ Word list</a>
     <button class="btn" onclick="sendDiveEmail()" title="Send it from the PO mailbox">Send from PO@…</button></div>
   <div class="fields" id="diveSettings"></div>
   <div class="scroll" style="max-height:30vh;margin-top:10px"><table class="t"><thead><tr><th>Month</th><th>Sent</th><th>By</th><th>To</th><th class="num">Sites</th><th>Result</th></tr></thead><tbody id="diveSent"></tbody></table></div>
-  <h3 style="margin:22px 0 8px;font-size:14px">Site names</h3>
+  </details>
+  <details style="margin-top:14px"><summary style="cursor:pointer;font-size:14px;font-weight:600">Site names (how vendors write a site)</summary>
   <div class="toolbar"><button class="btn" onclick="siteNameAdd()">＋ Site name</button></div>
   <div class="note" style="margin-bottom:8px">How a site is written on the vendors' paperwork, so quotes and reports go to the right Jobber client and job - e.g. "Carlisle" is on the Greenscapes account. Add one from <b>Draft quote</b> (tick "Remember").</div>
   <div class="scroll" style="max-height:40vh"><table class="t"><thead><tr><th>Written as</th><th>Area</th><th>Jobber client</th><th>Property</th><th>Note</th><th></th></tr></thead><tbody id="siteNamesBody"></tbody></table></div>
+  </details>
 </div>
 
 <!-- REPORTS -->
@@ -645,6 +647,7 @@ function searchCases(v){
 
 // ── item drawer ───────────────────────────────────────
 async function openCase(id){
+  document.getElementById('drawer').dataset.account = '';
   if (!id) return;
   const j = await api('/cases/' + id);
   if (!j.success) { toast(j.error || 'Not found', true); return; }
@@ -653,7 +656,7 @@ async function openCase(id){
   document.getElementById('drawerWrap').classList.remove('hide');
   history.replaceState(null, '', '#item-' + id);
 }
-function closeDrawer(){ document.getElementById('drawerWrap').classList.add('hide'); curCase = null; history.replaceState(null, '', '#' + curTab); loadToday(); showTab(curTab); }
+function closeDrawer(){ document.getElementById('drawerWrap').classList.add('hide'); document.getElementById('drawer').dataset.account = ''; curCase = null; history.replaceState(null, '', '#' + curTab); loadToday(); showTab(curTab); }
 const MONEY = new Set(['vendor_quote_amount','vendor_quote_total','vendor_bill_amount','vendor_bill_total','amount']);
 function renderCase(){
   const c = curCase, v = c.vendor || 'Wettech';
@@ -1230,7 +1233,7 @@ async function scadaSave(id){
   const j = id ? await api('/scada/' + id, {method:'PATCH', body}) : await api('/scada', {method:'POST', body});
   if (!j.success) { toast(j.error, true); return; }
   if (!id) { const n = j.scada.find(x => x.client === body.client.trim()); if (n) await api('/scada/' + n.id, {method:'PATCH', body:{years, active: body.active, jobber_names: body.jobber_names}}); }
-  closeModal(); loadScada();
+  closeModal(); loadScada(); refreshAccountPage();
 }
 // ── maintenance accounts ──────────────────────────────
 let MT = null;
@@ -1277,9 +1280,9 @@ async function maintSave(id){
   if (id) body.id = id;
   const j = await api('/maint', {method:'POST', body});
   if (!j.success) { toast(j.error, true); return; }
-  closeModal(); MT.accounts = j.accounts; drawMaint();
+  closeModal(); MT.accounts = j.accounts; drawMaint(); refreshAccountPage();
 }
-async function maintDelete(id){ if (!confirm('Remove this account? (Untick "Active" instead to keep it as a former account.)')) return; const j = await api('/maint/' + id + '/delete', {method:'POST', body:{}}); if (j.success) { closeModal(); MT.accounts = j.accounts; drawMaint(); } }
+async function maintDelete(id){ if (!confirm('Remove this account? (Untick "Active" instead to keep it as a former account.)')) return; const j = await api('/maint/' + id + '/delete', {method:'POST', body:{}}); if (j.success) { closeModal(); MT.accounts = j.accounts; drawMaint(); refreshAccountPage(); } }
 async function scadaAdd(){ const v = x => document.getElementById(x).value; const j = await api('/scada', {method:'POST', body:{client_name:v('sa_client'), site:v('sa_site'), last_renewed_on:v('sa_last'), annual_amount:v('sa_amt')}}); if (j.success) { closeModal(); loadScada(); } else toast(j.error, true); }
 
 // ── Jobber ────────────────────────────────────────────
@@ -1288,7 +1291,7 @@ let AC = null;
 async function loadAccounts(){ await refreshAccounts(); loadDivers(); loadSiteNames(); }
 async function refreshAccounts(){
   const [a, m] = await Promise.all([api('/accounts'), api('/maint')]);
-  if (!a.success) { document.getElementById('acBody').innerHTML = `<tr><td colspan="5" class="empty">${esc(a.error)}</td></tr>`; return; }
+  if (!a.success) { document.getElementById('acBody').innerHTML = `<tr><td colspan="4" class="empty">${esc(a.error)}</td></tr>`; return; }
   AC = a; if (m.success) MT = m; drawAccounts();
 }
 function lakeSched(l){ return l.months ? (l.months === '1,4,7,10' ? 'Jan, Apr, Jul, Oct' : l.months.split(',').map(m => MSHORT[m - 1]).join(', ')) : 'Every month'; }
@@ -1302,15 +1305,19 @@ function drawAccounts(){
   const act = AC.accounts.filter(a => a.active);
   document.getElementById('acInfo').innerHTML = `${act.length} active accounts · ${act.filter(a => a.pump && a.pump.active).length} pump · ${act.filter(a => a.lake && a.lake.active !== 0).length} lake · <b>${act.filter(due).length} due in ${esc(AC.month)}</b>`;
   const st = {overdue:'r', due_soon:'a', current:'g', inactive:'', unknown:''};
-  document.getElementById('acBody').innerHTML = rows.map(a => { const p = a.pump, l = a.lake, s = a.scada;
-    const vis = a.visit;
-    return `<tr><td><a href="#" title="Every to-do and job for this client" onclick="event.preventDefault();openAccount(${JSON.stringify(a.name).replace(/"/g, '&quot;')})"><b>${esc(a.name)}</b></a>${!a.active ? ' <span class="chip">former</span>' : ''}${a.active ? (vis
-      ? `<div class="note">✓ Client approved ${esc((vis.link || {}).since || '')} · waiting on ${esc(((vis.link || {}).vendors || []).filter(x => !((vis.link || {}).reported || []).includes(x)).join(' and '))}</div>`
-      : '') + `<div><button class="btn s ${vis ? '' : 'p'}" onclick="accountReady(${JSON.stringify(a.name).replace(/"/g, '&quot;')})">✓ Ready - client approved</button></div>` : ''}</td>
-    <td>${p ? `${esc(p.equipment || p.kind)}<div class="note">${p.due_this_month ? '<b>' + esc(schedText(p)) + '</b> <span class="chip b">due</span>' : esc(schedText(p))} · Wettech ${esc(p.vendor_cost || '—')} · we bill ${esc(p.our_bill || '—')}${!p.active ? ' · former' : ''}</div><button class="btn s" onclick="maintEdit(${p.id})">Edit</button>` : '<span class="note">—</span>'}</td>
-    <td>${l ? `${esc(l.equipment || l.kind || '')} ${l.needs_dive ? '<span class="chip b">diver</span>' : '<span class="note">no diving</span>'}<div class="note">${l.due_this_month && l.needs_dive ? '<b>' + esc(lakeSched(l)) + '</b> <span class="chip b">due</span>' : esc(lakeSched(l))} · Gulfshore ${esc(l.diver_cost || '—')} · we bill ${esc(l.our_bill || '—')}${l.active === 0 ? ' · former' : ''}</div><button class="btn s" onclick="editDiveSite(${l.id})">Edit</button>` : '<span class="note">—</span>'}</td>
-    <td>${s ? `<span class="chip ${s.complimentary ? '' : (st[s.state] || '')}">${s.complimentary ? 'complimentary' : esc(s.state.replace('_', ' '))}</span><div class="note">${s.active ? 'next ' + esc(s.next_due_on) : 'off SCADA'}</div>` : ''}</td>
-    <td class="note">${esc((p && p.address) || (l && l.address) || '')}</td></tr>`; }).join('') || '<tr><td colspan="5" class="empty">None.</td></tr>';
+  const nextDue = a => { const out = [], now = new Date().getMonth() + 1;
+    const next = (ms, every) => { if (every) return 'this month'; const m = (ms || '').split(',').filter(Boolean).map(Number); if (!m.length) return '';
+      const n = m.find(x => x >= now) || m[0]; return n === now ? 'this month' : MSHORT[n - 1]; };
+    if (a.pump && a.pump.active) out.push('Pump ' + (a.pump.due_this_month ? 'this month' : next(a.pump.months, a.pump.monthly)));
+    if (a.lake && a.lake.active !== 0 && a.lake.needs_dive) out.push('Diver ' + (a.lake.status === 'hold' ? 'on hold' : next(a.lake.months, !a.lake.months)));
+    if (a.scada && a.scada.active && !a.scada.complimentary) out.push('SCADA ' + (a.scada.next_due_on || ''));
+    return out; };
+  document.getElementById('acBody').innerHTML = rows.map(a => { const p = a.pump, l = a.lake, s = a.scada, vis = a.visit;
+    const on = [p && p.active ? `<span class="chip">pump</span>` : '', l && l.active !== 0 ? `<span class="chip">${l.needs_dive ? 'lake · diver' : 'lake'}</span>` : '', s && s.active ? `<span class="chip ${s.complimentary ? '' : (st[s.state] || '')}">SCADA${s.state === 'overdue' ? ' overdue' : ''}</span>` : ''].join(' ');
+    return `<tr class="click" onclick="openAccount(${JSON.stringify(a.name).replace(/"/g, '&quot;')})"><td><b>${esc(a.name)}</b>${!a.active ? ' <span class="chip">former</span>' : ''}${vis ? `<div class="note">✓ Client approved ${esc((vis.link || {}).since || '')}</div>` : ''}</td>
+    <td>${on || '<span class="note">—</span>'}</td>
+    <td>${nextDue(a).map(x => /this month|overdue/.test(x) ? `<b>${esc(x)}</b>` : esc(x)).join('<br>') || '<span class="note">—</span>'}</td>
+    <td class="note">${esc((p && p.address) || (l && l.address) || '')}</td></tr>`; }).join('') || '<tr><td colspan="4" class="empty">None.</td></tr>';
 }
 // The client called: ready for their maintenance. The lake comes off hold for
 // the diver list and the visit waits under "Waiting on others" until the
@@ -1320,7 +1327,7 @@ async function accountReady(name){
   const j = await api('/accounts/ready', {method:'POST', body:{name}});
   if (!j.success) { toast(j.error, true); return; }
   toast(`${name}: ${j.vendors.join(' and ')} going out` + (j.unheld ? ' - off hold on the diver list' : '') + '. Let them know to put it on their schedule.');
-  loadAccounts(); loadToday();
+  loadAccounts(); loadToday(); refreshAccountPage();
 }
 async function previewDigest(){
   const j = await api('/digest'); if (!j.success) { toast(j.error, true); return; }
@@ -1395,7 +1402,7 @@ async function saveDiveSite(id){
   if (id) body.id = id;
   const j = await api('/dives/sites', {method:'POST', body});
   if (!j.success) { toast(j.error, true); return; }
-  closeModal(); toast('Saved'); loadDivers();
+  closeModal(); toast('Saved'); loadDivers(); refreshAccountPage();
 }
 async function deleteDiveSite(id){ if (!confirm('Remove this site from the diver list?')) return; const j = await api('/dives/sites/' + id + '/delete', {method:'POST', body:{}}); if (j.success) { closeModal(); loadDivers(); } else toast(j.error, true); }
 async function saveDiveSettings(){
@@ -1584,10 +1591,30 @@ function renderAccount(){
       <span class="note">opened ${esc(c.opened_on || '')}${c.po_number ? ' · PO ' + esc(c.po_number) : ''}${c.vendor ? ' · ' + esc(c.vendor) : ''}</span> <a href="#" onclick="event.preventDefault();openCase(${c.id})">open job ↗</a></summary>
       <div style="padding:6px 0 0 14px">${c.events.map(e => `<div class="note">${esc((e.at || '').slice(0, 16))} · ${esc(e.actor)} · <b>${esc(e.action)}</b>${e.detail ? ' - ' + esc(e.detail) : ''}</div>`).join('') || '<div class="note">Nothing logged.</div>'}</div></details>`).join('');
   const notices = a.notices.map(n => `<div class="note">${esc(n.month)} · <b>${esc(n.vendor)}</b> notified ${esc(niceDay(d10(n.notified_at)))}${n.notified_by ? ' by ' + esc(n.notified_by) : ''}${n.how ? ' · ' + esc(n.how) : ''}${n.note ? ' - ' + esc(n.note) : ''}</div>`).join('');
+  const ac = a.account || {}, p = ac.pump, l = ac.lake, s = ac.scada, jb = a.jobber || {};
+  const row = (label, val) => val ? `<div class="note"><span style="display:inline-block;min-width:110px">${label}</span> <b style="font-weight:600;color:var(--text)">${esc(val)}</b></div>` : '';
+  const card = (title, body, btns) => `<div style="flex:1;min-width:220px;border:1px solid var(--border);border-radius:10px;padding:10px 12px"><div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px"><b>${title}</b><span style="display:flex;gap:4px">${btns}</span></div>${body}</div>`;
+  const setup = [
+    p ? card('Pump - Wettech' + (!p.active ? ' <span class="chip">former</span>' : ''), row('Type', p.kind) + row('Equipment', p.equipment) + row('Visits', schedText(p) + (p.due_this_month ? ' (due this month)' : '')) + row('Wettech / visit', p.vendor_cost) + row('Naples Electric', p.naples_electric) + row('We bill', p.our_bill) + row('Repairs by', p.repairs_by || 'Wettech') + row('Joined', p.joined) + row('Before service', p.follow_up) + row('Notes', p.notes), `<button class="btn s" onclick="acEdit('pump', ${p.id})">Edit</button>`)
+      : card('Pump - Wettech', '<div class="note">No pump maintenance.</div>', `<button class="btn s" onclick="acEdit('pump', 0)">＋ Add</button>`),
+    l ? card('Lake - Gulfshore' + (l.active === 0 ? ' <span class="chip">former</span>' : ''), row('Equipment', l.equipment) + row('Diver', l.needs_dive ? (l.months ? lakeSched(l) : 'Every month') + (l.status === 'hold' ? ' - on hold' : '') : 'No diving') + row('Gulfshore', l.diver_cost) + row('We bill', l.our_bill) + row('Diver notes', l.diver_notes) + row('Status', l.status_note), `<button class="btn s" onclick="acEdit('lake', ${l.id})">Edit</button>`)
+      : card('Lake - Gulfshore', '<div class="note">No lake or diver work.</div>', `<button class="btn s" onclick="acEdit('lake', 0)">＋ Add</button>`),
+    s ? card('SCADA', row('Status', s.complimentary ? 'complimentary' : (s.state || '').replace('_', ' ')) + row('Next renewal', s.active ? s.next_due_on : 'off SCADA') + row('Wettech', s.vendor_cost) + row('We bill', s.our_bill) + row('Notes', s.notes), `<button class="btn s" onclick="acEdit('scada', ${s.id})">Edit</button>`)
+      : card('SCADA', '<div class="note">Not on SCADA.</div>', `<button class="btn s" onclick="acEdit('scada', 0)">＋ Add</button>`)].join('');
+  const where = (p && p.address) || (l && l.address) || '';
+  const links = [jb.client && jb.client.uri ? `<a class="btn s" href="${esc(jb.client.uri)}" target="_blank" rel="noopener">${esc(jb.client.name)} in Jobber ↗</a>` : '',
+    ...(jb.recurring || []).map(r => `<a class="btn s" href="${esc(r.uri)}" target="_blank" rel="noopener">Job #${esc(r.number)} ${esc(r.title || '')} ↗</a>`)].filter(Boolean).join(' ');
+  const docs = (a.docs || []).map(d => `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--border)">${kindChip(d.kind)} <span style="flex:1;min-width:160px"><b>${esc(d.file_name)}</b> <span class="note">${d.doc_number ? '#' + esc(d.doc_number) + ' · ' : ''}${d.total != null ? money(d.total) + ' · ' : ''}${esc(d.doc_date || d10(d.created_at))}${d.signed_sent_at ? ' · signed &amp; sent ' + esc(d10(d.signed_sent_at)) : d.signed_at ? ' · signed ' + esc(d10(d.signed_at)) : ''}</span></span>
+      <a class="btn s" href="/pumps/api/docs/${d.id}/file" target="_blank">Open</a>${d.has_branded ? ` <a class="btn s" target="_blank" href="/pumps/api/docs/${d.id}/file?version=branded_pdf">SE report PDF</a>` : ''}${d.signed_at ? ` <a class="btn s" href="/pumps/api/docs/${d.id}/file?version=approved&download=1">⬇ Signed</a>` : ''}${d.case_id ? ` <a href="#" onclick="event.preventDefault();openCase(${d.case_id})">job ↗</a>` : ''}</div>`).join('');
+  const vis = (AC && AC.accounts.find(x => x.name === a.name) || {}).visit;
+  document.getElementById('drawer').dataset.account = a.name;
   document.getElementById('drawer').innerHTML = `
-  <div class="hd"><div><h2>${esc(a.name)}</h2><div class="note">${open.length} open to-do${open.length === 1 ? '' : 's'} · ${a.todos.length} in all · ${a.jobs.length} job${a.jobs.length === 1 ? '' : 's'}</div></div>
+  <div class="hd"><div><h2>${esc(a.name)}${ac.active === false ? ' <span class="chip">former</span>' : ''}</h2><div class="note">${where ? esc(where) + ' · ' : ''}${open.length} open to-do${open.length === 1 ? '' : 's'} · ${a.todos.length} in all · ${a.jobs.length} job${a.jobs.length === 1 ? '' : 's'}</div></div>
     <div><button class="btn" onclick="closeDrawer()">✕</button></div></div>
   <div class="bd">
+    <div class="sec"><h4>Setup</h4><div style="display:flex;gap:8px;flex-wrap:wrap">${setup}</div>
+      ${ac.active && ((p && p.active) || (l && l.active !== 0)) ? `<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn s ${vis ? '' : 'p'}" onclick="accountReady(${q(a.name)})">✓ Ready - client approved</button>${vis ? `<span class="note">✓ Client approved ${esc((vis.link || {}).since || '')} · waiting on ${esc(((vis.link || {}).vendors || []).filter(x => !((vis.link || {}).reported || []).includes(x)).join(' and '))}</span>` : ''}</div>` : ''}
+      ${links ? `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">${links}</div>` : ''}</div>
     <div class="sec"><h4>Add a to-do for ${esc(a.name)}</h4><div style="display:flex;gap:6px;flex-wrap:wrap">
       <input type="text" id="acTodoTitle" placeholder="What needs doing" style="flex:1;min-width:180px">
       <input type="date" id="acTodoDue" title="Due (optional)">
@@ -1595,8 +1622,22 @@ function renderAccount(){
     <div class="sec"><h4>To do (${open.length})</h4><div style="display:flex;flex-direction:column;gap:8px">${open.map(todo).join('') || '<div class="note">Nothing open.</div>'}</div></div>
     <div class="sec"><h4>Done (${done.length})</h4><div style="display:flex;flex-direction:column;gap:8px">${done.map(todo).join('') || '<div class="note">Nothing done yet.</div>'}</div></div>
     <div class="sec"><h4>Jobs (${a.jobs.length})</h4>${jobs || '<div class="note">No jobs.</div>'}</div>
+    <div class="sec"><h4>Documents (${(a.docs || []).length})</h4>${docs || '<div class="note">No quotes, bills or reports yet.</div>'}</div>
     ${notices ? `<div class="sec"><h4>Maintenance - subcontractor notified</h4>${notices}</div>` : ''}
   </div>`;
+}
+// Edit an account's pump, lake or SCADA from its page (the same forms as before).
+async function acEdit(kind, id){
+  if (kind === 'pump') { if (!MT) { const j = await api('/maint'); if (!j.success) { toast(j.error, true); return; } MT = j; }
+    maintEdit(id); if (!id) document.getElementById('mt_name').value = ACH.name; }
+  else if (kind === 'lake') { if (!DV) await loadDivers(); editDiveSite(id); if (!id) document.getElementById('ds_name').value = ACH.name; }
+  else { if (!SC) { const j = await api('/scada'); if (!j.success) { toast(j.error, true); return; } SC = j; } scadaEdit(id); if (!id) document.getElementById('sc_client').value = ACH.name; }
+}
+// After a save: the account page (if it's what's open) and the list catch up.
+function refreshAccountPage(){
+  const dr = document.getElementById('drawer');
+  if (ACH && dr.dataset.account && !document.getElementById('drawerWrap').classList.contains('hide')) setTimeout(() => openAccount(dr.dataset.account), 300);
+  refreshAccounts();
 }
 async function accountTodoAdd(name){
   const title = document.getElementById('acTodoTitle').value.trim(); if (!title) { toast('Say what needs doing', true); return; }
