@@ -1,0 +1,583 @@
+From 301195781f5cec64c39f0384ec91a07ad8f0a0f6 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 12 Oct 2026 12:53:53 +0000
+Subject: [PATCH] WIP: list open work orders on the Jobber WORK ORDER job's
+ next visit
+
+Not merged: Work Orders was archived on main (6a50c11) while this was in progress.
+Tests not yet updated for the visit-list flow.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01R8B7athMbMZyygD1XWFuq8
+---
+ workorders.py | 414 ++++++++++++++++++++++++++++++++++++--------------
+ 1 file changed, 303 insertions(+), 111 deletions(-)
+
+diff --git a/workorders.py b/workorders.py
+index fe2f5ee..97f6b32 100644
+--- a/workorders.py
++++ b/workorders.py
+@@ -6,10 +6,14 @@ Office logins only. Every cycle (every 15 minutes, or "Run now"):
+   1. Scan the inbox (the PO mailbox, PO_EMAIL_ADDRESS, by default) for new work orders
+      from a set-up community, save each one here and forward the email to the
+      techs on the Settings tab (Regino and Fredy).
+-  2. Log each new work order as a note on that community's work order job in Jobber.
+-  3. Read new notes on that job from the tech (Regino by default), match each to
+-     its work order, fix the grammar, and save them as the technician's notes.
+-     A note that says a quote is needed marks the work order "Quote being
++  2. Read the tech's (Regino's) notes on the community's "WORK ORDER" job in Jobber -
++     his job notes and anything he wrote on a finished visit - match them to the
++     work orders, fix the grammar, save them as the technician's notes (Results),
++     and close the work orders he finished. Then list every open work order
++     ("20775-121641     8534 Karina Court") in the Instructions of the job's next
++     visit that is not complete yet.
++  3. (part of 2) A note that says a quote is needed
++     marks the work order "Quote being
+      prepared" and drafts a Jobber quote with the technician's notes on it.
+   4. Draft an update email to the community manager (Erwin for Verona Walk) with
+      the new technician's notes. It is sent from the Emails tab, or on its own
+@@ -249,17 +253,18 @@ def _graph(method, path, **kw):
+     return r.json() if r.content else {}
+ 
+ 
+-# The only Jobber changes Work Orders may make: notes on the work order job and
+-# draft quotes. Nothing is sent to a client from Jobber by this app.
+-ALLOWED_MUTATIONS = ('jobCreateNote', 'quoteCreate')
++# The only Jobber changes Work Orders may make: the instructions on a visit of the
++# work order job, and draft quotes. Nothing is sent to a client from Jobber by this app.
++ALLOWED_MUTATIONS = ('quoteCreate',)
++ALLOWED_MUTATION_PATTERN = re.compile(r'^visit(Edit|Update)\w*$')
+ JOBBER_GQL = 'https://api.getjobber.com/api/graphql'
+ 
+ 
+ def _jobber(query, variables=None):
+     if re.match(r'\s*mutation\b', query):
+         called = re.findall(r'\{\s*(\w+)\s*\(', query)[:1]
+-        if not called or called[0] not in ALLOWED_MUTATIONS:
+-            raise RuntimeError(f'Blocked Jobber change {called}: Work Orders only adds job notes and draft quotes.')
++        if not called or not (called[0] in ALLOWED_MUTATIONS or ALLOWED_MUTATION_PATTERN.match(called[0])):
++            raise RuntimeError(f'Blocked Jobber change {called}: Work Orders only edits visit instructions and drafts quotes.')
+     force = False
+     for _ in range(4):
+         token = _cfg['jobber_token'](force)
+@@ -562,7 +567,7 @@ def _resolve_job(com):
+         cands = [n for n in nodes if re.search(r'(?i)work\s*-?\s*orders?\b', n.get('title') or '')
+                  and all(w in ((n.get('client') or {}).get('name') or '').lower() for w in words)]
+         if not cands:
+-            raise RuntimeError(f"No open \"Work Order\" job found in Jobber for {com['name']}; enter its job number on the Communities tab")
++            raise RuntimeError(f"No job titled \"WORK ORDER\" found in Jobber for {com['name']}")
+         job = max(cands, key=lambda n: n.get('jobNumber') or 0)
+         com['jobber_job'] = str(job.get('jobNumber') or '')
+         conn = _conn()
+@@ -591,56 +596,218 @@ def _resolve_job(com):
+     return com
+ 
+ 
+-def _job_note(job_id, message):
+-    data = _jobber('''mutation($jobId: EncodedId!, $input: JobCreateNoteInput!) {
+-                          jobCreateNote(jobId: $jobId, input: $input) { userErrors { message } } }''',
+-                   {'jobId': job_id, 'input': {'message': f'{NOTE_MARK} {message}'}})
+-    errs = ((data.get('jobCreateNote') or {}).get('userErrors')) or []
++# ── 2. Jobber: the open work order list on the work order job's next visit ────
++#
++# The office keeps the open work orders as the Instructions of the next visit on
++# the community's "WORK ORDER" job, one per line:
++#     20770-121623     7795 Ionio Court
++# Regino works from that list and adds his notes in the Jobber app. Each cycle the
++# app reads his notes, closes what he finished, and rewrites the list on the next
++# visit that is not complete yet: whatever is still open plus anything new.
++
++WO_LINE = re.compile(r'^\s*(\d{3,7}-\d{3,9})\b[ \t]*(.*)$')
++_SCHEMA_CACHE = {}
++_TYPE_REF = 'kind name ofType { kind name ofType { kind name } }'
++
++
++def _gql_type(name):
++    if name not in _SCHEMA_CACHE:
++        q = ('query($n: String!) { __type(name: $n) { name '
++             'fields { name args { name type { %s } } type { %s } } inputFields { name } } }' % (_TYPE_REF, _TYPE_REF))
++        _SCHEMA_CACHE[name] = _jobber(q, {'n': name}).get('__type') or {}
++    return _SCHEMA_CACHE[name]
++
++
++def _base_type(t):
++    while t and t.get('ofType'):
++        t = t['ofType']
++    return (t or {}).get('name') or ''
++
++
++def _type_sig(t):
++    """GraphQL type text for a variable, e.g. EncodedId! or VisitEditInput!"""
++    if not t:
++        return ''
++    if t.get('kind') == 'NON_NULL':
++        return _type_sig(t.get('ofType')) + '!'
++    if t.get('kind') == 'LIST':
++        return '[' + _type_sig(t.get('ofType')) + ']'
++    return t.get('name') or ''
++
++
++def _visit_edit():
++    """The Jobber mutation that edits a visit's instructions, found by asking Jobber's own schema.
++    Returns {name, id_arg, id_type, input_arg, input_type, has_errors}, or raises when there is none."""
++    if 'visit_edit' in _SCHEMA_CACHE:
++        return _SCHEMA_CACHE['visit_edit']
++    found = None
++    for f in _gql_type('Mutation').get('fields') or []:
++        if not ALLOWED_MUTATION_PATTERN.match(f['name']):
++            continue
++        id_arg = next((a for a in f['args'] if _base_type(a['type']) in ('EncodedId', 'ID')), None)
++        if not id_arg:
++            continue
++        for a in f['args']:
++            t = _base_type(a['type'])
++            if a is id_arg or not t:
++                continue
++            if 'instructions' in {x['name'] for x in (_gql_type(t).get('inputFields') or [])}:
++                payload = {x['name'] for x in (_gql_type(_base_type(f['type'])).get('fields') or [])}
++                found = {'name': f['name'], 'id_arg': id_arg['name'], 'id_type': _type_sig(id_arg['type']),
++                         'input_arg': a['name'], 'input_type': _type_sig(a['type']),
++                         'has_errors': 'userErrors' in payload}
++                break
++        if found:
++            break
++    if not found:
++        raise RuntimeError("Jobber's API does not let this app change a visit's instructions")
++    _SCHEMA_CACHE['visit_edit'] = found
++    return found
++
++
++def _job_visits(job_id):
++    """Visits on the job, oldest first, as {id, title, instructions, start, done, completed_at}."""
++    have = {f['name'] for f in (_gql_type('Visit').get('fields') or [])}
++    want = [f for f in ('id', 'title', 'instructions', 'startAt', 'completedAt', 'isComplete', 'visitStatus') if f in have]
++    if 'id' not in want:
++        want.insert(0, 'id')
++    out, after = [], None
++    for _ in range(5):
++        q = ('query($id: EncodedId!, $after: String) { job(id: $id) { visits(first: 50, after: $after) { '
++             'nodes { %s } pageInfo { hasNextPage endCursor } } } }' % ' '.join(want))
++        page = ((_jobber(q, {'id': job_id, 'after': after}).get('job') or {}).get('visits')) or {}
++        for v in page.get('nodes') or []:
++            done = bool(v.get('completedAt') or v.get('isComplete') or
++                        str(v.get('visitStatus') or '').upper() in ('COMPLETED', 'COMPLETE'))
++            out.append({'id': v['id'], 'title': v.get('title') or '', 'instructions': v.get('instructions') or '',
++                        'start': v.get('startAt') or '', 'done': done, 'completed_at': v.get('completedAt') or ''})
++        info = page.get('pageInfo') or {}
++        if not info.get('hasNextPage'):
++            break
++        after = info.get('endCursor')
++    return sorted(out, key=lambda v: v['start'])
++
++
++def _visit_list(orders, keep=''):
++    """The instructions text: lines that are not work orders stay on top, then one line per open work order."""
++    other = [ln for ln in (keep or '').splitlines() if ln.strip() and not WO_LINE.match(ln)]
++    lines = [f"{o['wo_number'] or '(no #)'}     {o['address']}".rstrip() for o in orders]
++    return '\n'.join(other + lines)
++
++
++def _same_list(a, b):
++    def norm(t):
++        return [re.sub(r'\s+', ' ', ln).strip().lower() for ln in (t or '').splitlines() if ln.strip()]
++    return norm(a) == norm(b)
++
++
++def _set_visit_instructions(visit_id, text):
++    m = _visit_edit()
++    result = 'userErrors { message }' if m['has_errors'] else '__typename'
++    q = (f"mutation($id: {m['id_type']}, $input: {m['input_type']}) {{ {m['name']}({m['id_arg']}: $id, "
++         f"{m['input_arg']}: $input) {{ {result} }} }}")
++    data = _jobber(q, {'id': visit_id, 'input': {'instructions': text}})
++    errs = ((data.get(m['name']) or {}).get('userErrors')) or []
+     if errs:
+         raise RuntimeError('; '.join(e.get('message', '?') for e in errs))
+ 
+ 
+-def log_to_jobber():
++def _open_orders(community_id):
++    conn = _conn()
++    rows = [dict(r) for r in conn.execute("""SELECT * FROM wo_inbox_orders WHERE community_id=? AND status='open'
++                                             ORDER BY COALESCE(NULLIF(wo_date, ''), created_at), id""", (community_id,))]
++    conn.close()
++    return rows
++
++
++def _adopt_listed(com, text):
++    """Work orders already listed on the Jobber visit that the app has not seen yet are added as open,
++    so rewriting the list never drops one."""
++    added = 0
++    for ln in (text or '').splitlines():
++        m = WO_LINE.match(ln)
++        if not m:
++            continue
++        address = re.split(r'\s[-–:]\s|\s{3,}', m.group(2).strip())[0].strip()
++        if _add_order(com, f'jobber:{com["id"]}:{m.group(1)}',
++                      {'wo_number': m.group(1), 'address': address,
++                       'description': '(Listed on the Jobber visit - no request on file)'}):
++            added += 1
++    return added
++
++
++def _mark_listed(orders):
++    for o in orders:
++        if not o['jobber_logged_at'] or o['jobber_error']:
++            _set_order(o['id'], jobber_logged_at=_stamp(), jobber_error='')
++
++
++def sync_jobber():
++    """For every community: read the tech's notes, then put the open list on the next visit."""
+     if not jobber_ready():
+         return _log('jobber', 'Skipped: Jobber is not connected (connect it in the Pumps app).')
+     conn = _conn()
+-    rows = [dict(r) for r in conn.execute('''SELECT o.id, o.wo_number, o.wo_date, o.address, o.homeowner, o.phone, o.description,
+-                                             o.received_at, o.community_id
+-                                             FROM wo_inbox_orders o WHERE o.jobber_logged_at IS NULL AND o.status != 'closed' ''')]
+-    coms = {r['id']: dict(r) for r in conn.execute("SELECT * FROM wo_inbox_communities")}
++    coms = [dict(r) for r in conn.execute("SELECT * FROM wo_inbox_communities WHERE active=1")]
+     conn.close()
+-    for o in rows:
+-        com = coms.get(o['community_id'])
+-        if not com:
+-            continue
++    for com in coms:
+         try:
+             com = _resolve_job(com)
+-            label = f"Work order {o['wo_number']}" if o['wo_number'] else f"Work order (Office App #{o['id']})"
+-            where = f" - {o['address']}" if o['address'] else ''
+-            who = f" ({o['homeowner']}{', ' + o['phone'] if o['phone'] else ''})" if o['homeowner'] else ''
+-            _job_note(com['jobber_job_id'], f"OUTSTANDING - {label}{where}{who}, {o['wo_date'] or (o['received_at'] or '')[:10]}: {o['description']}")
+-            _set_order(o['id'], jobber_logged_at=_stamp(), jobber_error='')
+-            _log('jobber', f"Work order #{o['id']} logged on the {com['name']} work order job.")
++            visits = _job_visits(com['jobber_job_id'])
++        except Exception as e:
++            _log('jobber', f"Could not read the {com['name']} work order job: {e}")
++            continue
++        upcoming = [v for v in visits if not v['done']]
++        if upcoming:
++            n = _adopt_listed(com, upcoming[0]['instructions'])
++            if n:
++                _log('jobber', f"{n} work order(s) already listed on the {com['name']} visit added here.")
++        try:
++            scan_tech_notes(com, visits)
++        except Exception as e:
++            _log('notes', f"Could not read {settings()['tech_name']}'s notes on the {com['name']} job: {e}")
++        if not upcoming:
++            _log('jobber', f"The {com['name']} work order job has no upcoming visit to list the open work orders on.")
++            continue
++        target = upcoming[0]
++        orders = _open_orders(com['id'])
++        text = _visit_list(orders, target['instructions'])
++        if _same_list(text, target['instructions']):
++            _mark_listed(orders)
++            continue
++        try:
++            _set_visit_instructions(target['id'], text)
++            _set_state(f"visit_{target['id']}", text)
++            _mark_listed(orders)
++            _log('jobber', f"{com['name']}: {len(orders)} open work order(s) listed on the visit of {(target['start'] or '')[:10]}.")
+         except Exception as e:
+-            _set_order(o['id'], jobber_error=str(e)[:500])
+-            _log('jobber', f"Work order #{o['id']} not logged in Jobber: {e}")
++            for o in orders:
++                if not o['jobber_logged_at']:
++                    _set_order(o['id'], jobber_error=str(e)[:500])
++            _log('jobber', f"Could not update the {com['name']} visit instructions: {e}")
++
++
++def log_to_jobber():
++    """Kept as the one entry point for "Put on Jobber visit", imports and typed-in work orders."""
++    sync_jobber()
+ 
+ 
+ # ── 3. Tech notes from Jobber ────────────────────────────────────────────────
+ 
+-_NOTES_Q = '''query($id: EncodedId!) { job(id: $id) { notes(first: 50) { nodes {
+-                ... on JobNote { id message createdAt %s } } } } }'''
++_NOTES_Q = ('query($id: EncodedId!) { job(id: $id) { notes(first: 50) { nodes { '
++            '... on JobNote { id message createdAt %s } } } } }')
+ _NOTES_AUTHOR = 'createdBy { ... on User { name { full } } }'
+ 
++_UPDATE_FIELDS = {
++    'work_order_id': {'type': 'integer'},
++    'cleaned_notes': {'type': 'string'},
++    'resolved': {'type': 'boolean'},
++    'needs_quote': {'type': 'boolean'},
++    'quote_scope': {'type': 'string'},
++}
+ _MATCH_SCHEMA = {
+-    'type': 'object', 'additionalProperties': False,
+-    'required': ['work_order_id', 'cleaned_notes', 'needs_quote', 'quote_scope'],
+-    'properties': {
+-        'work_order_id': {'type': 'integer', 'description': 'id of the matching open work order, or 0 if none fits'},
+-        'cleaned_notes': {'type': 'string'},
+-        'needs_quote': {'type': 'boolean'},
+-        'quote_scope': {'type': 'string'},
+-    },
++    'type': 'object', 'additionalProperties': False, 'required': ['updates'],
++    'properties': {'updates': {'type': 'array', 'items': {
++        'type': 'object', 'additionalProperties': False, 'required': list(_UPDATE_FIELDS), 'properties': _UPDATE_FIELDS}}},
+ }
+ 
+ 
+@@ -649,7 +816,7 @@ def _job_notes(job_id):
+         data = _jobber(_NOTES_Q % _NOTES_AUTHOR, {'id': job_id})
+         with_author = True
+     except Exception:
+-        # Older API versions shape createdBy differently; fall back to every note that is not ours.
++        # Older API versions shape createdBy differently; fall back to every note.
+         data = _jobber(_NOTES_Q % '', {'id': job_id})
+         with_author = False
+     nodes = ((((data.get('job') or {}).get('notes')) or {}).get('nodes')) or []
+@@ -663,81 +830,110 @@ def _job_notes(job_id):
+     return out
+ 
+ 
++def _visit_additions(v):
++    """What the tech wrote on a finished visit's instructions beyond the list the app put there."""
++    ours = _state(f"visit_{v['id']}")
++    if not ours:
++        # Not written by this app: take what follows the address on a work order line ("... - replaced head").
++        extra = []
++        for ln in v['instructions'].splitlines():
++            m = WO_LINE.match(ln)
++            if m:
++                rest = re.split(r'\s[-–:]\s', m.group(2), maxsplit=1)
++                if len(rest) > 1 and rest[1].strip():
++                    extra.append(f"{m.group(1)}: {rest[1].strip()}")
++        return '\n'.join(extra)
++    mine = {re.sub(r'\s+', ' ', ln).strip().lower() for ln in ours.splitlines()}
++    return '\n'.join(ln for ln in v['instructions'].splitlines()
++                     if ln.strip() and re.sub(r'\s+', ' ', ln).strip().lower() not in mine)
++
++
+ def _clean_and_match(note, orders, tech):
++    """Split one note into updates for the work orders it mentions."""
+     listing = '\n'.join(f"- id {o['id']}: WO {o['wo_number'] or '(no number)'}, {o['address'] or '(no address)'}, "
+                         f"{o.get('homeowner') or '(no name)'}: {o['description']}" for o in orders) or '(none)'
+     got = _claude_json(
+-        'You help an irrigation company office. A technician wrote a note on a Jobber job after a site visit. '
+-        '1) Pick which open work order the note is about (by work order number, address, or the problem '
+-        'described); use 0 if none clearly fits. 2) Rewrite the note with correct spelling, grammar and '
+-        'punctuation so it can go to the community manager. Keep every fact, part, quantity and location; do '
+-        'not add anything; keep it in the technician\'s voice, short and plain. 3) needs_quote is true only if '
+-        'the note says more work must be quoted or approved before it can be done; quote_scope then says '
+-        'what needs quoting in one sentence, else "".',
++        'You help an irrigation company office. A technician wrote notes in Jobber after a visit to a community. '
++        'One note can cover several work orders. For each open work order the note talks about (match by work '
++        'order number, address, or the problem), give: cleaned_notes - what the note says about that work order, '
++        "rewritten with correct spelling, grammar and punctuation for the community manager, keeping every fact, "
++        "part, quantity and location, adding nothing, short and plain in the technician's voice; resolved - true "
++        'if the work is done; needs_quote - true only if more work must be quoted or approved first, with '
++        'quote_scope saying what in one sentence (else ""). Leave out work orders the note does not mention, and '
++        'return no updates if it fits none.',
+         f'Technician: {tech}\n\nOpen work orders:\n{listing}\n\nNote:\n{note}',
+         _MATCH_SCHEMA)
+     if got is None:
+         only = orders[0]['id'] if len(orders) == 1 else 0
+-        return {'work_order_id': only, 'cleaned_notes': note.strip(), 'needs_quote': False, 'quote_scope': ''}
+-    return got
++        return [{'work_order_id': only, 'cleaned_notes': note.strip(), 'resolved': False,
++                 'needs_quote': False, 'quote_scope': ''}] if only else []
++    return got.get('updates') or []
+ 
+ 
+-def scan_tech_notes():
+-    if not jobber_ready():
+-        return _log('notes', 'Skipped: Jobber is not connected.')
+-    s = settings()
+-    tech = s['tech_name'].strip()
++def scan_tech_notes(com, visits=None):
++    """Regino's notes: his notes on the job, and anything he wrote on a finished visit's list."""
++    tech = settings()['tech_name'].strip()
+     conn = _conn()
+-    coms = [dict(r) for r in conn.execute("SELECT * FROM wo_inbox_communities WHERE active=1")]
++    seen = {r[0] for r in conn.execute("SELECT jobber_note_id FROM wo_inbox_tech_notes WHERE community_id=?", (com['id'],))}
+     conn.close()
+-    for com in coms:
+-        try:
+-            com = _resolve_job(com)
+-            notes = _job_notes(com['jobber_job_id'])
+-        except Exception as e:
+-            _log('notes', f"Could not read notes on the {com['name']} job: {e}")
++    first_scan = not seen
++    items = []
++    for n in _job_notes(com['jobber_job_id']):
++        if n['message'].startswith(NOTE_MARK):
++            continue
++        if n['author_known'] and tech and tech.lower() not in n['author'].lower():
++            continue
++        items.append(n)
++    for v in visits or []:
++        if v['done']:
++            extra = _visit_additions(v)
++            if extra:
++                items.append({'id': f"visit:{v['id']}", 'message': extra, 'created_at': v['completed_at'] or v['start'],
++                              'author': tech, 'author_known': False})
++    cutoff = (datetime.now(timezone.utc) - timedelta(days=45)).strftime('%Y-%m-%d')
++    for n in sorted(items, key=lambda x: x['created_at'] or ''):
++        if n['id'] in seen:
++            continue
++        if first_scan and (n['created_at'] or '')[:10] < cutoff:
++            _store_note(n, com, None, '', False)  # history from before the app: remember it, do not process it
+             continue
+         conn = _conn()
+-        seen = {r[0] for r in conn.execute("SELECT jobber_note_id FROM wo_inbox_tech_notes WHERE community_id=?", (com['id'],))}
+-        orders = [dict(r) for r in conn.execute('''SELECT id, wo_number, address, homeowner, description, created_at FROM wo_inbox_orders
+-                                                   WHERE community_id=? AND status != 'closed' ORDER BY id''', (com['id'],))]
++        orders = [dict(r) for r in conn.execute("""SELECT id, wo_number, address, homeowner, description FROM wo_inbox_orders
++                                                   WHERE community_id=? AND status != 'closed' ORDER BY id""", (com['id'],))]
+         conn.close()
+-        first_scan = not seen
+-        for n in notes:
+-            if n['id'] in seen or n['message'].startswith(NOTE_MARK):
+-                continue
+-            if n['author_known'] and tech and tech.lower() not in n['author'].lower():
+-                continue
+-            if first_scan and orders and n['created_at'] and n['created_at'][:10] < min(o['created_at'] for o in orders)[:10]:
+-                # Older than every work order here: history, not a new visit.
+-                _store_note(n, com, None, '', False)
+-                continue
+-            if not orders:
+-                _store_note(n, com, None, '', False)
+-                continue
+-            try:
+-                got = _clean_and_match(n['message'], orders, tech)
+-            except Exception as e:
+-                _log('notes', f'Claude could not read a note on the {com["name"]} job: {e}')
+-                continue
+-            oid = got.get('work_order_id') or None
+-            if oid not in {o['id'] for o in orders}:
+-                oid = None
+-            _store_note(n, com, oid, got.get('cleaned_notes', ''), bool(got.get('needs_quote')))
+-            if oid:
+-                _apply_note(oid)
+-                _set_order(oid, tech=(n.get('author') or tech).split(' ')[0])
+-                _log('notes', f"{tech}'s note added to work order #{oid}.")
+-                if got.get('needs_quote'):
+-                    start_quote(oid, got.get('quote_scope', ''))
+-            else:
+-                _log('notes', f"A note from {n['author'] or tech} on the {com['name']} job did not match a work order; assign it on the Work Orders tab.")
++        if not orders:
++            _store_note(n, com, None, n['message'], False)
++            continue
++        try:
++            updates = _clean_and_match(n['message'], orders, tech)
++        except Exception as e:
++            _log('notes', f'Claude could not read a note on the {com["name"]} job: {e}')
++            continue
++        valid = {o['id'] for o in orders}
++        updates = [u for u in updates if u.get('work_order_id') in valid and (u.get('cleaned_notes') or '').strip()]
++        if not updates:
++            _store_note(n, com, None, n['message'], False)
++            _log('notes', f"A note from {n['author'] or tech} on the {com['name']} job did not match a work order; "
++                          "assign it on the Work Orders tab.")
++            continue
++        _store_note(n, com, None, '', False)  # marks the note as read
++        for u in updates:
++            oid = u['work_order_id']
++            _store_note(dict(n, id=f"{n['id']}#{oid}"), com, oid, u['cleaned_notes'].strip(), bool(u.get('needs_quote')))
++            _apply_note(oid)
++            fields = {'tech': (n.get('author') or tech).split(' ')[0]}
++            if u.get('resolved') and not u.get('needs_quote'):
++                fields['status'] = 'closed'
++            _set_order(oid, **fields)
++            _log('notes', f"{tech}'s note added to work order #{oid}" + (', now closed.' if 'status' in fields else '.'))
++            if u.get('needs_quote'):
++                start_quote(oid, u.get('quote_scope', ''))
+ 
+ 
+ def _store_note(n, com, order_id, cleaned, needs_quote):
+     conn = _conn()
+-    conn.execute('''INSERT OR IGNORE INTO wo_inbox_tech_notes (jobber_note_id, community_id, order_id, author, noted_at, raw,
+-                    cleaned, needs_quote, created_at) VALUES (?,?,?,?,?,?,?,?,?)''',
++    conn.execute("""INSERT OR IGNORE INTO wo_inbox_tech_notes (jobber_note_id, community_id, order_id, author, noted_at, raw,
++                    cleaned, needs_quote, created_at) VALUES (?,?,?,?,?,?,?,?,?)""",
+                  (n['id'], com['id'], order_id, n.get('author', ''), n.get('created_at', ''), n['message'],
+                   cleaned, 1 if needs_quote else 0, _stamp()))
+     conn.commit()
+@@ -747,7 +943,7 @@ def _store_note(n, com, order_id, cleaned, needs_quote):
+ def _apply_note(order_id):
+     """Rebuild the work order's technician's notes from every note assigned to it."""
+     conn = _conn()
+-    rows = conn.execute('''SELECT noted_at, cleaned, raw FROM wo_inbox_tech_notes WHERE order_id=? ORDER BY noted_at, id''',
++    rows = conn.execute("SELECT noted_at, cleaned, raw FROM wo_inbox_tech_notes WHERE order_id=? ORDER BY noted_at, id",
+                         (order_id,)).fetchall()
+     conn.close()
+     parts = []
+@@ -814,10 +1010,6 @@ def start_quote(order_id, scope=''):
+         _set_order(order_id, jobber_quote_id=q.get('id', ''), jobber_quote_number=str(q.get('quoteNumber') or ''),
+                    jobber_quote_url=q.get('jobberWebUri') or '', quote_status='Quote being prepared')
+         _log('quote', f"Work order #{order_id}: draft quote #{q.get('quoteNumber')} made in Jobber with the technician's notes. Add prices before sending it.")
+-        try:
+-            _job_note(c['jobber_job_id'], f"Quote being prepared for {label} (draft quote #{q.get('quoteNumber')}).")
+-        except Exception:
+-            pass
+     except Exception as e:
+         err = str(e)
+         if re.search(r'(?i)scope|permission|access denied|not authori[sz]ed|forbidden|HTTP 403', err):
+@@ -963,7 +1155,7 @@ def run_cycle(manual=False):
+     with _FileLock() as got:
+         if not got:
+             return False
+-        for step in (scan_inbox, log_to_jobber, scan_tech_notes, draft_manager_emails):
++        for step in (scan_inbox, sync_jobber, draft_manager_emails):
+             try:
+                 step()
+             except Exception as e:
+@@ -1245,7 +1437,7 @@ def _sheet_columns(header):
+ 
+ def import_workbook(fileobj, com):
+     """Load the office's work order workbook. Rows with Results become closed work orders;
+-    rows without are outstanding and get logged on the Jobber work order job like new ones."""
++    rows without are outstanding and go on the Jobber visit list like new ones."""
+     from openpyxl import load_workbook
+     wb = load_workbook(fileobj, data_only=True, read_only=True)
+     added = closed = 0
+@@ -1444,14 +1636,14 @@ PAGE_TEMPLATE = r'''<!DOCTYPE html>
+   <section class="panel" id="p-communities">
+     <div class="card">
+       <strong>Add or edit a community</strong>
+-      <p class="muted small">Emails (and their PDF maintenance requests) that mention the community name or one of its keywords are picked up. The work order job is the community's Jobber job titled "WORK ORDER" (Verona Walk: #11351); leave the number blank and it is found for you.</p>
++      <p class="muted small">Emails (and their PDF maintenance requests) that mention the community name are picked up; keywords are only needed if its emails call it something else. Open work orders are listed on the next visit of the community's Jobber job titled "WORK ORDER", which is found by name.</p>
+       <input type="hidden" id="c-id">
+       <div class="grid2">
+         <div><label>Community</label><input id="c-name" placeholder="Verona Walk"></div>
+         <div><label>Keywords (comma separated)</label><input id="c-keywords" placeholder="verona walk, verona"></div>
+         <div><label>Manager name</label><input id="c-manager" placeholder="Erwin"></div>
+         <div><label>Manager email</label><input id="c-email" placeholder="erwin@…"></div>
+-        <div><label>Jobber work order job number</label><input id="c-job" placeholder="Blank = find its &quot;WORK ORDER&quot; job"></div>
++        <input type="hidden" id="c-job">
+       </div>
+       <div class="row" style="margin-top:10px"><button class="primary" onclick="saveCommunity()">Save community</button><button onclick="clearCommunity()">Clear</button></div>
+     </div>
+@@ -1516,7 +1708,7 @@ function renderOrders(){
+   document.getElementById('orders').innerHTML = list.map(function(o){
+     var imported = (o.message_id||'').indexOf('import:')==0 || (o.message_id||'').indexOf('manual:')==0;
+     var stepF = imported ? '<span class="step">'+((o.message_id||'').indexOf('import:')==0?'From spreadsheet':'Typed in')+'</span>' : o.forwarded_at ? '<span class="step done">✓ Forwarded to techs</span>' : (o.forward_error ? '<span class="step err" title="'+esc(o.forward_error)+'">✗ Not forwarded</span>' : '<span class="step">Forward pending</span>');
+-    var stepJ = o.jobber_logged_at ? '<span class="step done">✓ Logged in Jobber</span>' : (o.jobber_error ? '<span class="step err" title="'+esc(o.jobber_error)+'">✗ Not in Jobber</span>' : '<span class="step">Jobber pending</span>');
++    var stepJ = o.jobber_logged_at ? '<span class="step done">✓ On Jobber visit</span>' : (o.jobber_error ? '<span class="step err" title="'+esc(o.jobber_error)+'">✗ Not on Jobber visit</span>' : '<span class="step">Waiting for Jobber</span>');
+     var stepN = o.tech_notes ? '<span class="step done">✓ Tech notes</span>' : '<span class="step">Waiting on tech notes</span>';
+     var stepQ = o.status=='quote' ? (o.jobber_quote_number ? '<span class="step done">✓ Draft quote #'+esc(o.jobber_quote_number)+'</span>' : (o.quote_error ? '<span class="step err" title="'+esc(o.quote_error)+'">✗ Quote not drafted</span>' : '<span class="step">Quote being prepared</span>')) : '';
+     var stepE = o.emailed_at ? '<span class="step done">✓ Emailed manager</span>' : '';
+@@ -1535,7 +1727,7 @@ function renderOrders(){
+       '<div class="row" style="margin-top:8px"><button class="primary" onclick="saveOrder('+o.id+')">Save</button>'+
+       (o.status!='quote' ? '<button onclick="orderAction('+o.id+',\'quote\')">Needs a quote</button>' : '')+
+       (!o.forwarded_at && !imported ? '<button onclick="orderAction('+o.id+',\'forward\')">Forward to techs</button>' : '')+
+-      (!o.jobber_logged_at ? '<button onclick="orderAction('+o.id+',\'relog\')">Log in Jobber</button>' : '')+
++      (!o.jobber_logged_at && o.status=='open' ? '<button onclick="orderAction('+o.id+',\'relog\')">Put on Jobber visit</button>' : '')+
+       (o.status!='closed' ? '<button onclick="setStatus('+o.id+',\'closed\')">Close</button>' : '<button onclick="setStatus('+o.id+',\'open\')">Reopen</button>')+'</div></div>';
+   }).join('');
+ }
+@@ -1575,7 +1767,7 @@ function renderCommunities(){
+   if(!D.communities.length){ document.getElementById('communities').innerHTML = '<div class="empty">No communities yet. Add Verona Walk above.</div>'; return; }
+   document.getElementById('communities').innerHTML = '<div class="card"><table>' + D.communities.map(function(c){
+     return '<tr><td><strong>'+esc(c.name)+'</strong><div class="small muted">'+esc(c.keywords)+'</div></td><td>'+esc(c.manager_name)+'<div class="small muted">'+esc(c.manager_email)+'</div></td>'+
+-      '<td>Job '+esc(c.jobber_job||'—')+(c.jobber_job_id?' <span class="small muted">✓ found in Jobber</span>':'')+'</td>'+
++      '<td>'+(c.jobber_job_id?'Jobber job #'+esc(c.jobber_job)+' <span class="small muted">✓ found</span>':'<span class="small muted">Jobber job found on the next run</span>')+'</td>'+
+       '<td style="text-align:right"><button onclick="editCommunity('+c.id+')">Edit</button> <button class="danger" onclick="deleteCommunity('+c.id+')">Delete</button></td></tr>'; }).join('') + '</table></div>';
+ }
+ function editCommunity(id){ var c = D.communities.find(function(x){ return x.id==id; });
+-- 
+2.43.0
+

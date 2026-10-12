@@ -9288,6 +9288,13 @@ DASHBOARD_MENU_TEMPLATE = '''
                 <div class="card-desc">Manage install jobs, site plans, crew scheduling, daily logs, and job costing all in one place.</div>
                 <button class="card-cta">Open Installation →</button>
             </a>
+
+            <div class="app-card card-green card-disabled" aria-disabled="true">
+                <div class="card-icon-wrap">🛠️</div>
+                <div class="card-title">Work Orders <span class="soon-badge">Coming Soon</span></div>
+                <div class="card-desc">Community work orders from the inbox: forwarded to the techs, listed on the Jobber work order visit, tech notes cleaned up, quotes started and the manager kept up to date.</div>
+                <button class="card-cta" type="button" disabled>Not available yet</button>
+            </div>
             {% endif %}
 
             {% if timeoff_ok %}
