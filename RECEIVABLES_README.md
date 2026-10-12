@@ -60,6 +60,10 @@ The Receivables tile in The Office App chases open invoices from the QuickBooks 
    - **"We paid"**: waits 14 days for it to show up on an upload or in Jobber, then resumes.
    - **Dispute, question, wrong contact, anything else**: follow-ups stop and the invoice goes to *Needs a person* on Today.
    - **Out of office**: ignored. **Bounced email**: *Needs a person* until the address is fixed.
+   - **Emails you send yourself.** Simon's Sent Items are read too. An email sent to a customer from Outlook about an invoice counts as a follow-up: the schedule counts from it, and replies in that thread are read. Emails to anyone else are ignored.
+   - **Not replies:** emails from our own staff (`@stahlman-england.com`). Jobber's notices ("payment received") make the app re-check that invoice in Jobber right away.
+   - **Waiting on.** Every invoice shows who it is waiting on: *Waiting on their reply since …*, *They replied … - needs an answer from us*, or *Not contacted yet*. The Invoices tab can filter on either.
+   - **Claude.** It uses the PO app's `ANTHROPIC_API_KEY`. If that account runs out of credit, the simple rules take over and the status chip at the top of the page says so.
 7. **Liens and the Notice of Nonpayment (NONP).** For install jobs the lien deadline is the last day furnished + 90 days (Florida, Chapter 713). The last day furnished comes from the date on the job, else Jobber's completion date, else the latest invoice date (shown as *estimated*). When money on the job is past due and the deadline is 30 days away:
    - The app prepares a Notice of Nonpayment PDF and a draft email to the property owner (cc the contractor), saying a claim of lien will follow.
    - With *Email the Notice of Nonpayment automatically* on, the email is sent.

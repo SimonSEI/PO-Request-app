@@ -26,6 +26,8 @@ import app as A  # noqa: E402
 import receivables as R  # noqa: E402
 
 REAL_JOBBER = R._jobber  # tests swap in fakes; the guard test needs the real one
+REAL_RUN_CYCLE = R.run_cycle
+REAL_SYNC_JOBBER = R.sync_jobber
 
 A.app.config['TESTING'] = True
 A.app.config['WTF_CSRF_ENABLED'] = False
@@ -62,6 +64,7 @@ class FakeGraph:
     def __init__(self, inbox=None):
         self.calls = []
         self.inbox = inbox or []
+        self.sent_items = []
         self.n = 0
 
     def __call__(self, method, path, **kw):
@@ -71,6 +74,8 @@ class FakeGraph:
             return {'id': f'msg{self.n}', 'conversationId': f'conv{self.n}'}
         if method == 'GET' and '/mailFolders/inbox/messages' in path:
             return {'value': self.inbox}
+        if method == 'GET' and '/mailFolders/sentitems/messages' in path:
+            return {'value': self.sent_items}
         return {}
 
     def sent(self):
@@ -394,6 +399,71 @@ class FollowupTests(Base):
         self.assertIn('owner', msg)
 
 
+class MailboxTests(FollowupTests):
+    """Reading simon@'s mailbox: own staff ignored, Jobber notices, emails sent from Outlook, who it's waiting on."""
+
+    def test_own_staff_and_jobber_notices_are_not_customer_replies(self):
+        rechecked = []
+        R.sync_jobber = lambda limit=500, only_ids=None: rechecked.extend(only_ids or [])
+        self.addCleanup(setattr, R, 'sync_jobber', REAL_SYNC_JOBBER)
+        R._cfg['jobber_connected'] = lambda: True
+        self.graph.inbox = [
+            {'id': 'i1', 'conversationId': 'c1', 'subject': 'invoice 36490',
+             'from': {'emailAddress': {'address': 'erika@stahlman-england.com'}}, 'receivedDateTime': '2026-10-09T12:00:00Z',
+             'body': {'contentType': 'text', 'content': 'Can you look at invoice 36490?'}},
+            {'id': 'i2', 'conversationId': 'c2', 'subject': 'Payment received for invoice #36484',
+             'from': {'emailAddress': {'address': 'noreply@txn.getjobber.com'}}, 'receivedDateTime': '2026-10-09T12:00:00Z',
+             'body': {'contentType': 'text', 'content': 'PAT EXAMPLE paid invoice #36484.'}}]
+        R.scan_replies()
+        self.assertEqual(self.inv('36490')['status'], 'open')
+        self.assertEqual(self.inv('36484')['status'], 'open')
+        self.assertEqual(rechecked, [self.inv('36484')['id']])
+        conn = R._conn()
+        self.assertEqual([r[0] for r in conn.execute("SELECT intent FROM ar_replies")], ['jobber_notice'])
+        conn.close()
+
+    def test_outlook_email_counts_and_its_reply_is_matched(self):
+        self.graph.sent_items = [{'id': 's1', 'conversationId': 'conv-outlook', 'subject': 'Invoice 36490',
+                                  'toRecipients': [{'emailAddress': {'address': 'pat@example.com'}}],
+                                  'sentDateTime': '2026-10-09T14:00:00Z', 'bodyPreview': 'Checking on this invoice'},
+                                 {'id': 's2', 'conversationId': 'x', 'subject': 'Lunch',
+                                  'toRecipients': [{'emailAddress': {'address': 'friend@example.org'}}],
+                                  'sentDateTime': '2026-10-09T14:00:00Z', 'bodyPreview': 'Lunch?'}]
+        R.scan_sent()
+        inv = self.inv('36490')
+        self.assertTrue(inv['last_followup_at'].startswith('2026-10-09'))
+        self.assertIn('Waiting on their reply since 10/09/2026', R.plan(inv, None, None, R.settings())['waiting'])
+        self.assertIsNone(self.inv('36484')['last_followup_at'])  # the email named 36490 only
+        R.scan_sent()  # read again: no doubles
+        conn = R._conn()
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM ar_emails WHERE kind='manual'").fetchone()[0], 1)
+        conn.close()
+        self.graph.inbox = [{'id': 'r9', 'conversationId': 'conv-outlook', 'subject': 'RE: Invoice 36490',
+                             'from': {'emailAddress': {'address': 'pat@example.com'}},
+                             'receivedDateTime': '2026-10-10T12:00:00Z',
+                             'body': {'contentType': 'text', 'content': 'Can you send us a W-9?'}}]
+        R.scan_replies()
+        inv = self.inv('36490')
+        self.assertEqual(inv['status'], 'needs_person')
+        self.assertIn('needs an answer', R.waiting_on(inv))
+
+    def test_fix_misread_mail_once(self):
+        conn = R._conn()
+        iid = self.inv('36490')['id']
+        conn.execute("UPDATE ar_invoices SET status='needs_person', needs_reason='Customer replied: hi' WHERE id=?", (iid,))
+        conn.execute("INSERT INTO ar_replies (graph_id, from_email, intent, invoice_ids) VALUES ('g', 'erika@stahlman-england.com', "
+                     "'other', ?)", (json.dumps([iid]),))
+        conn.commit()
+        conn.close()
+        A.set_setting('receivables_fix_misread_mail_oct12', '')
+        R._fix_misread_mail()
+        self.assertEqual(self.inv('36490')['status'], 'open')
+
+    def test_hourly_cycle_runs_once_across_workers(self):
+        R._set_state('last_run', R._stamp())
+        self.assertFalse(REAL_RUN_CYCLE())
+
+
 class ReplyRuleTests(unittest.TestCase):
     def test_rules(self):
         inv = [{'number': '36484', 'open_balance': 100, 'due_date': ''}]
@@ -422,6 +492,7 @@ class AccessTests(Base):
         self.login()
         f = aging_detail_xlsx([(ago(50), 'Invoice', 36484, 'Pat Example', ago(45), 150, 150)])
         R.run_cycle = lambda manual=False: True
+        self.addCleanup(setattr, R, 'run_cycle', REAL_RUN_CYCLE)
         r = self.client.post('/receivables/api/upload', data={'file': (f, 'ar.xlsx')}, content_type='multipart/form-data')
         self.assertTrue(r.get_json()['success'], r.get_json())
         inv = self.inv('36484')
@@ -575,6 +646,8 @@ class SummaryTests(Base):
         conn.commit()
         conn.close()
         rows = [r for r in self.ROWS if r[0] != 'Quiet Example']
+        import time
+        time.sleep(1.1)  # a later upload (the bug only showed when the uploads were seconds apart)
         self.upload_summary(rows)
         self.assertEqual(self.inv('501')['status'], 'open')   # same note: not acted on again
         self.assertEqual(self.inv('510')['status'], 'paid')   # no longer on the sheet
@@ -604,6 +677,7 @@ class SummaryTests(Base):
     def test_upload_route_detects_summary(self):
         self.login()
         R.run_cycle = lambda manual=False: True
+        self.addCleanup(setattr, R, 'run_cycle', REAL_RUN_CYCLE)
         f = aging_summary_xlsx(self.as_of, self.ROWS)
         j = self.client.post('/receivables/api/upload', data={'file': (f, 'October.xlsx')},
                              content_type='multipart/form-data').get_json()
