@@ -15,3 +15,8 @@
 
 Community work orders from the inbox to Jobber to the community manager. See the docstring at
 the top of `workorders.py` for how each cycle worked.
+
+`visit-list-wip.patch` is unfinished work from before the archive, against the root-level
+`workorders.py`: it lists the open work orders in the Instructions of the next visit on the
+community's Jobber "WORK ORDER" job (one "20775-121641     8534 Karina Court" line each) and reads
+the tech's notes from his job notes and finished visits. Its tests were not written yet.
