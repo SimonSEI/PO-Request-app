@@ -465,7 +465,7 @@ function caseRow(c, extra){
 function todoRow(t){
   return `<div class="row"><div class="main"><div class="tt"><label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer"><input type="checkbox" onchange="todoDone(${t.id}, this.checked)" style="margin-top:3px"><span>${esc(t.title)}</span></label></div>
       ${t.detail || (t.kind === 'manual' && t.due_on) ? `<div class="sub" style="margin-left:24px">${t.kind === 'manual' && t.due_on ? `<b class="${t.due_on < todayIso() ? 'bad' : 'warn'}">due ${esc(niceDay(t.due_on))}</b>${t.detail ? ' · ' : ''}` : ''}${esc(t.detail || '')}</div>` : ''}
-      ${t.kind === 'approved_quote' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><a class="btn s p" href="/pumps/api/docs/${t.link.doc_id}/file?version=approved&download=1">⬇ Approved PDF</a><a class="btn s" href="mailto:${esc(t.link.to || '')}?subject=${encodeURIComponent(t.link.subject || 'Approved quote')}&body=${encodeURIComponent('Hi,\n\nThe attached quote is approved - please go ahead and schedule it.\n\nThank you,\nSimon Weardon')}">✉ Email ${esc(t.link.to || '')}</a>${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}</div>` : ''}
+      ${t.kind === 'approved_quote' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${t.link.case_id ? `<button class="btn s p" onclick="signQuote(${t.link.case_id})">✍ Sign quote &amp; send to ${esc((t.title.match(/send it to (\S+)/) || [])[1] || 'the vendor')}</button>` : ''}${t.link.doc_id ? `<a class="btn s" href="/pumps/api/docs/${t.link.doc_id}/file?version=original" target="_blank" rel="noopener">View quote</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}</div>` : ''}
       ${t.kind !== 'approved_quote' && (t.link.uri || t.link.case_id) ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${(t.link.uris || []).length > 1 ? t.link.uris.map(u => `<a class="btn s" href="${esc(u.uri)}" target="_blank" rel="noopener">Open ${esc(u.label)} ↗</a>`).join('') + `<button class="btn s" onclick='openAll(${JSON.stringify(t.link.uris.map(u => u.uri)).replace(/'/g, "&#39;")})'>Open both ↗</button>` : t.link.uri ? `<a class="btn s" href="${esc(t.link.uri)}" target="_blank" rel="noopener">Open in Jobber ↗</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}${t.link.scada_id ? `<button class="btn s" onclick="showTab('scada')">SCADA</button>` : ''}</div>` : ''}
       ${t.kind === 'diver_email' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="diverTodo('${esc(t.link.month || '')}')">Email ready - copy &amp; attach</button><a class="btn s" href="/pumps/api/dives/docx?month=${encodeURIComponent(t.link.month || '')}">⬇ Word list</a></div>` : ''}</div>
       ${t.kind === 'manual' ? `<button class="btn s" title="Delete from my to do list" onclick="todoDelete(${t.id})">✕</button>` : `<button class="btn s" title="Delete from my to do list" onclick="todoHide('${esc(t.todo_key)}')">✕</button>`}</div>`;
@@ -676,6 +676,8 @@ function renderCase(){
       ${d.has_branded ? `<a class="btn s" target="_blank" href="/pumps/api/docs/${d.id}/file?version=branded_pdf">SE report PDF</a> <a class="btn s" href="/pumps/api/docs/${d.id}/file?version=branded&download=1">⬇ Word</a>` : ''}
       ${d.kind === 'quote' && !(d.jobber||{}).quote_id ? `<button class="btn s p" onclick="draftQuote(${d.id})">Draft quote in Jobber</button>` : ''}
       ${d.kind === 'quote' && (d.jobber||{}).quote_id ? `<a class="chip g" target="_blank" href="${esc(d.jobber.quote_uri||'#')}">Jobber quote #${esc(d.jobber.quote_number)}</a>` : ''}
+      ${d.kind === 'quote' && (d.jobber||{}).approved_at ? `<a class="btn s" href="/pumps/api/docs/${d.id}/file?version=approved&download=1">⬇ Signed quote</a>${d.jobber.signed_sent_at ? ` <span class="chip g" title="${esc(d.jobber.signed_sent_to || '')}">sent ${esc(d.jobber.signed_sent_at.slice(0, 10))}</span>` : ''}` : ''}
+      ${d.kind === 'quote' && !(d.jobber||{}).signed_sent_at && ((c.steps || {}).client_approved || {}).at ? `<button class="btn s p" onclick="signQuote(${c.id})">✍ Sign quote</button>` : ''}
       ${d.kind === 'bill' && !(d.jobber||{}).invoice_id ? `<button class="btn s p" onclick="draftInvoice(${d.id})">Draft invoice in Jobber</button>` : ''}
       ${d.kind === 'bill' && (d.jobber||{}).invoice_id ? `<a class="chip g" target="_blank" href="${esc(d.jobber.invoice_uri||'#')}">Jobber draft #${esc(d.jobber.invoice_number)}</a>` : ''}
       ${d.kind === 'report' && !(d.jobber||{}).note_id ? `<button class="btn s" onclick="logReport(${d.id})">Log in Jobber</button>` : ''}
@@ -728,7 +730,7 @@ function renderCase(){
 // happened to it, oldest first.
 const JOURNEY_ICONS = [
   [/^created|opened/, '🆕', 'b'], [/document received/, '📄', 'b'], [/draft quote created|scada quote drafted/, '💬', 'b'],
-  [/quote stamped approved|quote made a job/, '✅', 'g'], [/quote status/, '💬', ''], [/draft invoice created|invoiced on matching job/, '🧾', 'b'],
+  [/quote stamped approved|quote signed|signed quote emailed|quote made a job/, '✅', 'g'], [/vendor replied|date noted in Jobber/, '📅', 'b'], [/quote status/, '💬', ''], [/draft invoice created|invoiced on matching job/, '🧾', 'b'],
   [/invoice status/, '💵', ''], [/pay vendor/, '💸', 'r'], [/emailed christian/, '✉️', 'g'], [/could not email|not drafted|not logged|not saved/, '⚠️', 'a'],
   [/^issue resolved/, '✔️', 'g'], [/^issue/, '⚠️', 'r'], [/bill matches quote/, '✔️', 'g'], [/^note/, '✎', ''], [/linked/, '🔗', ''],
   [/followed up/, '📞', 'b'], [/service visit|schedule/, '📅', 'b'], [/report/, '📋', 'b'], [/marked done|closed/, '🏁', 'g'], [/reopened/, '↺', 'a'], [/cancelled|removed/, '✕', 'r'],
@@ -1485,6 +1487,26 @@ function drawSent(){
     <td>${it.status === 'changes_requested' ? '<span class="chip a">changes requested</span>' : '<span class="note">sent</span>'}</td>
     <td>${n == null ? '' : n >= 14 ? `<b class="warn">${n} days</b>` : n + (n === 1 ? ' day' : ' days')}</td>
     <td>${it.case_id ? `<span class="note">job ${it.case_id}</span>` : ''}</td></tr>`; }).join('') || `<tr><td colspan="6" class="empty">${!JOBBER_OK ? 'Connect Jobber to see quotes.' : q ? 'No quote matches.' : 'No quotes waiting on a client.'}</td></tr>`;
+}
+// Sign the approved vendor quote ("Simon Weardon 10/12/2026" typed on it),
+// save it here and on the Jobber quote, and email it to the vendor.
+async function signQuote(caseId){
+  const p = await api('/cases/' + caseId + '/sign_quote');
+  if (!p.success) { toast(p.error, true); if (/upload/i.test(p.error || '')) openCase(caseId); return; }
+  const e = p.email, d = p.doc;
+  openModal(`Sign quote and send it to ${esc(e.name || e.to)}`, `<div class="note" style="margin-bottom:8px">Types <b>${esc(d.signed_as)}</b> on <b>${esc(d.file_name)}</b>, saves the signed quote on this job and on the Jobber quote, and emails it from the PO mailbox. When ${esc(e.name || 'they')} replies with a date, the app puts it on the job and in Jobber.${d.sent_at ? `<br><b class="warn">Already sent ${esc(d.sent_at)}.</b>` : ''}</div>
+    <div class="note">To: <b>${esc(e.to || 'no email saved')}</b><br>Subject: ${esc(e.subject)}</div>
+    <textarea id="sq_body" rows="9" style="width:100%;margin-top:8px">${esc(e.body)}</textarea>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn" onclick="signQuoteGo(${caseId}, false)">Only sign it</button><button class="btn p" id="sq_go" onclick="signQuoteGo(${caseId}, true)">✍ Sign &amp; send</button>`);
+}
+async function signQuoteGo(caseId, send){
+  const b = document.getElementById('sq_go'); if (b) { b.disabled = true; b.textContent = 'Sending…'; }
+  const j = await api('/cases/' + caseId + '/sign_quote', {method:'POST', body:{send, body: (document.getElementById('sq_body') || {}).value}});
+  if (!j.success) { toast(j.error, true); if (b) { b.disabled = false; b.textContent = '✍ Sign & send'; } return; }
+  closeModal();
+  toast(j.emailed ? `Signed and sent to ${j.emailed}` + (j.note_error ? ' (not on the Jobber quote: ' + j.note_error + ')' : j.jobber_note ? ' · saved on the Jobber quote' : '') : 'Signed - ' + j.signed);
+  window.open('/pumps/api/docs/' + j.doc_id + '/file?version=approved&download=1');
+  loadToday(); if (curTab === 'jobs') loadJobs();
 }
 async function jobberAct(id, action){ const j = await api('/jobber/items/' + encodeURIComponent(id), {method:'POST', body:{action}}); if (!j.success) { toast(j.error, true); return; } loadToday(); if (curTab === 'jobs') loadJobs(); if (action === 'track' && j.case_id) openCase(j.case_id); }
 async function jobberLink(id){ const n = prompt('Job number in Pumps to add it to:'); if (!n) return; const j = await api('/jobber/items/' + encodeURIComponent(id), {method:'POST', body:{action:'link', case_id: parseInt(n)}}); if (j.success) loadJobs(); else toast(j.error, true); }

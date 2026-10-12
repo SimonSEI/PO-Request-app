@@ -16,6 +16,9 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+import zipfile
+import re
+from datetime import date
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -2310,7 +2313,7 @@ class PumpsTest(unittest.TestCase):
         w.write(out)
         return out.getvalue()
 
-    def test_approved_quote_is_stamped_sent_back_and_invoiced_at_the_quoted_price(self):
+    def test_approved_quote_is_signed_sent_to_the_vendor_and_invoiced_at_the_quoted_price(self):
         self.extracts['q-0950.pdf'] = extraction('quote', 'Q-950', po='PO951', client='Lakeside Pines', subtotal=1000)
         self.extracts['b-0950.pdf'] = extraction('bill', '30950', po='PO951', client='Lakeside Pines', subtotal=1100)
         fake = FakeJobber(quote_lines=[{'name': 'Service Proposal Amount', 'description': 'Replace check valve',
@@ -2323,22 +2326,46 @@ class PumpsTest(unittest.TestCase):
             cid = q['case_id']
             # The client approves quote #812 in Jobber (the sync calls the same thing).
             r = self.c.post(f'/pumps/api/cases/{cid}/approved', json={}).get_json()
-            self.assertTrue(r['approval']['stamped'], r)
+            self.assertTrue(r['approval']['todo'], r)
+            todos = {t['kind']: t for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']
+                     if t['link'].get('case_id') == cid}
+            self.assertEqual(todos['approved_quote']['title'], 'Sign the approved quote and send it to Tommy - Lakeside Pines')
+            self.assertEqual(todos['approved_quote']['link']['to'], 'tomm@wettec.biz')
+            # Sign quote: signed (a PDF quote is stamped), on the Jobber quote, emailed to Tommy.
+            sent = []
+            P.graph_send, saved_send = (lambda to, subject, html, atts=None, sender=None: sent.append((to, subject, html, atts))), P.graph_send
+            try:
+                prev = self.c.get(f'/pumps/api/cases/{cid}/sign_quote').get_json()
+                self.assertIn(f'[P{cid}]', prev['email']['subject'])
+                self.assertIn('When can we expect it to be done?', prev['email']['body'])
+                r = self.c.post(f'/pumps/api/cases/{cid}/sign_quote', json={}).get_json()
+            finally:
+                P.graph_send = saved_send
+            self.assertEqual(r['emailed'], 'tomm@wettec.biz', r)
+            self.assertEqual(sent[0][0], 'tomm@wettec.biz')
+            self.assertTrue(sent[0][3][0]['name'].endswith('SIGNED.pdf'))
             doc = self.c.get(f"/pumps/api/docs/{q['doc_id']}").get_json()['doc']
             self.assertEqual(doc['jobber']['approved_by'], 'Simon Weardon')
+            self.assertTrue(doc['jobber']['signed_sent_at'])
             pdf = self.c.get(f"/pumps/api/docs/{q['doc_id']}/file?version=approved")
             self.assertEqual(pdf.status_code, 200)
             import pdfplumber
             with pdfplumber.open(io.BytesIO(pdf.data)) as f:
                 text = f.pages[0].extract_text()
-            self.assertIn('APPROVED', text)
             self.assertIn('Simon Weardon', text)
             notes = [v for qq, v in fake.calls if 'quoteCreateNote' in qq]
-            self.assertTrue(any('APPROVED.pdf' in json.dumps(v) for v in notes), 'stamped copy on the Jobber quote')
+            self.assertTrue(any('SIGNED.pdf' in json.dumps(v) for v in notes), 'signed copy on the Jobber quote')
             todos = {t['kind']: t for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']
                      if t['link'].get('case_id') == cid}
-            self.assertEqual(todos['approved_quote']['title'], 'Send the approved quote back to Tommy (tomm@wettec.biz)')
-            self.assertEqual(todos['approved_quote']['link']['to'], 'tomm@wettec.biz')
+            self.assertNotIn('approved_quote', todos)
+            # Tommy answers with a date: on the item, and noted in Jobber.
+            rep = P.handle_signed_quote_reply('m77', 'Tommy <tomm@wettec.biz>', f'RE: {sent[0][1]}',
+                                              'We can have it done by Oct 20th.\nFrom: PO <po@example.com>')
+            self.assertEqual(rep['expect_by'][5:], '10-20', rep)
+            case = self.c.get(f'/pumps/api/cases/{cid}').get_json()['case']
+            self.assertEqual(case['scheduled_for'], rep['expect_by'])
+            self.assertTrue(any('expects it done by 10/20' in json.dumps(v) for qq, v in fake.calls if 'CreateNote' in qq))
+            self.assertIsNone(P.handle_signed_quote_reply('m77', 'tomm@wettec.biz', f'RE: {sent[0][1]}', 'Oct 20'))
             # This Jobber has no way to make a job from a quote: a to-do instead.
             self.assertIn('Convert Jobber quote #812 to a job', [t['title'] for t in todos.values()])
             # Wettech bills $1,100 against a $1,000 quote: the client is invoiced the quoted $1,300.
@@ -2350,6 +2377,26 @@ class PumpsTest(unittest.TestCase):
             self.assertTrue(any(t['link'].get('case_id') == cid and t['title'].startswith('Check with Tommy') for t in todos))
         finally:
             P.JOBBER_STATIC_TOKEN = saved
+
+    def test_sign_docx_types_the_name_and_date_under_thank_you(self):
+        body = ('<w:p><w:r><w:t>Your Cost ---- $ 1158.99</w:t></w:r></w:p>'
+                '<w:p><w:pPr><w:pStyle w:val="NoSpacing"/></w:pPr><w:r><w:t xml:space="preserve">      Thank You </w:t></w:r></w:p>'
+                '<w:p><w:pPr><w:pStyle w:val="NoSpacing"/></w:pPr><w:r><w:rPr><w:bCs/></w:rPr><w:tab/></w:r>'
+                '<w:r><w:drawing/></w:r></w:p>'
+                '<w:p><w:r><w:t>H. H. (Tom) Morgan III</w:t></w:r></w:p>')
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as z:
+            z.writestr('[Content_Types].xml', '<Types/>')
+            z.writestr('word/document.xml', f'<w:document xmlns:w="w"><w:body>{body}</w:body></w:document>')
+        out = P.sign_docx(buf.getvalue(), 'Simon Weardon 10/12/2026')
+        xml = zipfile.ZipFile(io.BytesIO(out)).read('word/document.xml').decode()
+        paras = re.findall(r'<w:p>.*?</w:p>', xml)
+        self.assertIn('<w:rPr><w:bCs/></w:rPr><w:t xml:space="preserve">Simon Weardon 10/12/2026</w:t>', paras[2])
+        self.assertLess(paras[2].index('Simon Weardon'), paras[2].index('<w:drawing/>'))
+        self.assertIn('Thank You', paras[1])
+        self.assertEqual(P.expected_date('Should be done by 10/20', date(2026, 10, 12)), '2026-10-20')
+        self.assertEqual(P.expected_date('We will be out January 5th', date(2026, 12, 20)), '2027-01-05')
+        self.assertEqual(P.expected_date('Will check and let you know', date(2026, 10, 12)), '')
 
     def test_job_from_quote_and_service_visit_when_jobber_has_them(self):
         T = lambda name, kind='INPUT_OBJECT': {'kind': kind, 'name': name, 'ofType': None}
