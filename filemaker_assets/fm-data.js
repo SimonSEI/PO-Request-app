@@ -253,6 +253,8 @@
         else {
           const ast = this.ast(opts.formula || '', this.calcTO(f));
           if (!ast) v = '?';
+          // like FileMaker, only repetition 1 is calculated when every field it reads per repetition is non-repeating
+          else if (rep > 1 && this.firstRepOnly(ast)) v = '';
           else if (opts.skipIfEmpty !== false && opts.evalIfAllEmpty === false && this.allRefsEmpty(ast, rec, f, rep)) v = '';
           else v = V.coerce(C.evaluate(ast, this.env({ to: this.calcTO(f), rec, calcRep: rep, win: ctx && ctx.win, summarySet: ctx && ctx.summarySet })), opts.resultType || 'text');
         }
@@ -272,11 +274,28 @@
       this.unstoredCalcs.set(f.id, u);
       return u;
     }
+    // a formula's field references and the repetition each reads: the calculation's own (at null), 1 inside
+    // Extend ( ), or the expression n of Field[n] and GetRepetition ( Field ; n )
+    refReps(ast) {
+      const out = [];
+      (function walk(nd, at) {
+        if (!nd || typeof nd !== 'object') return;
+        if (nd.k === 'field') { out.push({ ref: nd.ref, at: nd.rep || at }); return walk(nd.rep, at); }
+        if (nd.k === 'call' && nd.name === 'getrepetition' && nd.args[0] && nd.args[0].k === 'field') { out.push({ ref: nd.args[0].ref, at: nd.args[1] || 1 }); return walk(nd.args[1], at); }
+        if (nd.k === 'call' && nd.name === 'extend') at = 1;
+        for (const k in nd) if (k !== 'ref') { const v = nd[k]; if (Array.isArray(v)) v.forEach(x => walk(x, at)); else walk(v, at); }
+      })(ast, null);
+      return out;
+    }
+    firstRepOnly(ast) {
+      const own = this.refReps(ast).filter(r => r.at == null);
+      return own.length > 0 && own.every(r => { const rf = this.field(r.ref.fid); return !rf || this.reps(rf) <= 1; });
+    }
     allRefsEmpty(ast, rec, f, rep) {
-      const refs = C.refs(ast), env = this.env({ to: this.calcTO(f), rec, calcRep: rep });
-      // per repetition, except that a field inside Extend ( ) is read from repetition 1
-      const ext = new Set(); (function walk(nd) { if (!nd || typeof nd !== 'object') return; if (nd.k === 'call' && nd.name === 'extend') C.refs(nd).forEach(r => ext.add(r)); for (const k in nd) if (k !== 'ref') { const v = nd[k]; if (Array.isArray(v)) v.forEach(walk); else walk(v); } })(ast);
-      return refs.length && refs.every(r => V.empty(env.field(r.ref, ext.has(r) ? 1 : null, false)));
+      const refs = this.refReps(ast), env = this.env({ to: this.calcTO(f), rec, calcRep: rep });
+      // each at the repetition the formula reads it from, as the evaluator works it out
+      const at = a => a == null || typeof a === 'number' ? a : Math.max(1, Math.floor(V.num(C.evaluate(a, env))));
+      return refs.length && refs.every(r => V.empty(env.field(r.ref, at(r.at), false)));
     }
     calcTO(f) { const o = ((f.options || {}).calc || {}).context; const t = this.tableOfField(f.id); return (o && this.to(o) && this.to(o).table === t.id) ? o : (this.baseTO(t.id) || {}).id; }
     display(rec, key, rep, ctx, format) { // formatted text for a field key in a TO context
@@ -803,9 +822,13 @@
         const raw = Object.prototype.hasOwnProperty.call(data, f.id) ? data[f.id] : rec.d[f.id];
         const vals = Array.isArray(raw) ? raw : [raw];
         const fail = (code, msg) => out.push({ field: f, code, message: val.message || msg, override: val.allowOverride !== false });
-        // numbers, dates and times compare by value ("1.50" is "1.5", "1/5/2025" is "2025-01-05"), text ignoring case
+        // numbers, dates and times compare by value ("1.50" is "1.5", "1/5/2025" is "2025-01-05"), text ignoring case;
+        // a number keeps every digit (shortest round-trip, not 15 digits), so 16-digit card numbers stay distinct
         const typed = f.type === 'number' || f.type === 'date' || f.type === 'time' || f.type === 'timestamp';
-        const norm = x => { x = x == null ? '' : String(x); return (typed && x !== '' ? V.toStored(V.fromStored(x, f.type), f.type) : x).toLowerCase(); };
+        const norm = x => {
+          x = x == null ? '' : String(x); if (!typed || x === '') return x.toLowerCase();
+          const tv = V.fromStored(x, f.type); return (typeof tv === 'number' ? String(tv) : V.toStored(tv, f.type)).toLowerCase();
+        };
         for (const rv of vals) {
           const text = rv == null ? '' : (typeof rv === 'object' ? (rv.name || '') : String(rv));
           if (val.notEmpty && text.trim() === '') { fail(509, '"' + f.name + '" is defined to require a value.'); break; }
@@ -1109,8 +1132,12 @@
       const re = new RegExp((/^[\p{L}\p{N}_]/u.test(lit) ? '(^|[^\\p{L}\\p{N}_])' : '') + lit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + (exactWord && /[\p{L}\p{N}_]$/u.test(lit) ? '(?![\\p{L}\\p{N}_])' : ''), 'u');
       return v => re.test(V.text(v).toLowerCase());
     }
-    // =word word: every word must be a whole word of the field
-    if (exactWord && /\s/.test(c)) { const each = c.split(/\s+/).map(w => textMatcher('=' + w)); return v => each.every(m => m(v)); }
+    // =word word: every word must be a whole word of the field; words split like the field's (wildcards stay in
+    // a word) and punctuation only separates them, so "=Acme, Inc." finds "Acme, Inc."
+    if (exactWord && /\s/.test(c)) {
+      const ws = c.match(/[\p{L}\p{N}_*#@]+(?:['’.@-][\p{L}\p{N}_*#@]+)*/gu) || [];
+      if (ws.length) { const each = ws.map(w => textMatcher('=' + w)); return v => each.every(m => m(v)); }
+    }
     const pat = '^' + c.toLowerCase().split('').map(ch => ch === '*' ? '.*' : ch === '@' ? '.' : ch === '#' ? '\\d' : ch.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('');
     if (exactField) { const re = new RegExp(pat + '$', 's'); return v => re.test(V.text(v).toLowerCase()); }
     const re = new RegExp(pat + (exactWord ? '$' : ''));

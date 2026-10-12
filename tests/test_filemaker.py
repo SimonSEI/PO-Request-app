@@ -480,6 +480,17 @@ class FileMakerHostTests(unittest.TestCase):
         self.assertEqual(self.sql("SELECT COUNT(*) FROM fm_login_failures WHERE file_id=?", (fid,))[0][0], 5)
         # nobody else is locked out
         self.assertEqual(self.open(fid, self.client('bystander'), account='Admin', password='right').status_code, 200)
+        # an attempt already counts while its password is checked, so guesses sent at once
+        # (to any worker) cannot all get in under the limit
+        seen = []
+        real = FMH.check_password_hash
+
+        def checking(h, pw):
+            seen.append(self.sql("SELECT COUNT(*) FROM fm_login_failures WHERE app_user='bystander'")[0][0])
+            return real(h, pw)
+        with mock.patch.object(FMH, 'check_password_hash', checking):
+            self.assertEqual(self.open(fid, self.client('bystander'), account='Admin', password='wrong').status_code, 401)
+        self.assertEqual(seen, [1])
         self.clear_failed_logins()
 
     def test_limited_view_also_limits_edit_delete_and_lock(self):
@@ -753,6 +764,9 @@ class FileMakerHostTests(unittest.TestCase):
                 self.assertEqual(r.status_code, 400, target)
                 self.assertEqual(len(red_seen), 1)
         self.assertEqual(seen, [])
+        # IPv6 forms that carry an IPv4 address are judged by that address
+        self.assertEqual([FMH._public_ip(a) for a in ('::ffff:127.0.0.1', '::127.0.0.1', '64:ff9b::7f00:1', '64:ff9b::5db8:d822')],
+                         [False, False, False, True])
 
     def test_fetch_connects_to_the_address_it_checked(self):
         fid = self.make_file('FetchPin')
@@ -799,6 +813,16 @@ class FileMakerHostTests(unittest.TestCase):
         self.assertEqual(r.status_code, 400)
         self.assertIn('too long', r.get_json()['error'])
         self.assertLess(time.time() - started, 3)
+
+    def test_fetch_with_an_unknown_charset_is_read_as_utf8(self):
+        fid = self.make_file('FetchCharset')
+        tok = self.open(fid).get_json()['token']
+        srv, seen = serve(lambda c: c.sendall(b'HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=nonsense\r\n'
+                                              b'Content-Length: 2\r\nConnection: close\r\n\r\nok'))
+        self.addCleanup(srv.close)
+        with mock.patch.object(FMH, '_public_ip', lambda a: a == '127.0.0.1'):
+            r = self.fetch(fid, tok, f'http://127.0.0.1:{srv.getsockname()[1]}/')
+        self.assertEqual((r.status_code, r.get_json()['text']), (200, 'ok'))
 
 
 if __name__ == '__main__':

@@ -82,6 +82,8 @@ const calc = f => { try { return V.text(FM.calc.evaluate(FM.calc.parse(f, scope)
   ['If ( Round ( 100.1 - 100 - 0.1 ; 2 ) = 0 ; "balanced" ; "OUT" )', 'balanced'],
   ['Div ( 0.3 ; 0.1 )', '3'], ['Div ( 1.15 ; 0.05 )', '23'], ['Mod ( 0.3 ; 0.1 )', '0'], ['Mod ( 1.15 ; 0.05 )', '0'], ['Mod ( 10 ; 3.3 )', '.1'],
   ['Div ( -15 ; 4 )', '-4'], ['Mod ( 15 ; -4 )', '-1'], ['Div ( 7 ; 0 )', '?'], ['Mod ( 10^-20 ; 1 ) = 10^-20', '1'], ['Div ( 10^20 ; 0.5 )', '200000000000000000000'],
+  ['Div ( 200 ; 200/3 )', '3'], ['Mod ( 200 ; 200/3 )', '0'], ['Div ( 1 ; 1/7 )', '7'], ['Div ( 7 ; 7/9 )', '9'], ['Mod ( 2 ; 2/3 )', '0'], ['Mod ( 123456789012.3456 ; 1 )', '.3456'],
+  ['Round ( 10^300 ; 9 ) = 10^300', '1'], ['Truncate ( 10^300 ; 9 ) = 10^300', '1'], ['SetPrecision ( 10^300 ; 9 ) = 10^300', '1'], ['Round ( 1/3 ; 400 ) = 1/3', '1'],
   ['Due = "3/1/2025"', '1'], ['GetAsDate ( "3/1/2025" ) = "3/1/2025"', '1'], ['Due > "1/1/2026"', '0'], ['Due < "1/1/2026"', '1'], ['Due = 45000', '0'],
   ['Position ( "abc" ; "a" ; 3 ; -2 )', '0'], ['Position ( "aaa" ; "a" ; 3 ; -4 )', '0'], ['Position ( "aaa" ; "a" ; 3 ; -3 )', '1'],
   ['Time ( 1 ; 0 ; 0 ) + Date ( 1 ; 1 ; 2025 )', '1/1/2025 1:00:00 AM']
@@ -156,7 +158,7 @@ eq(file.sql('SELECT c.Name, SUM(i.Amount) AS tot ' + join + 'ORDER BY tot', '|',
 eq(file.sql('SELECT InvoiceID FROM Invoices WHERE NOT (Amount > 30)', ',', ',', []), '103,105', 'ExecuteSQL NOT of NULL is not true');
 eq(file.sql('SELECT InvoiceID FROM Invoices WHERE Amount > 30 OR Amount IS NULL', ',', ',', []), '101,102,104', 'ExecuteSQL OR with a NULL side');
 eq(file.sql('SELECT InvoiceID FROM Invoices WHERE NOT (Amount > 30 AND Status = \'Paid\')', ',', ',', []), '102,103,104,105', 'ExecuteSQL FALSE AND NULL is false');
-eq(file.sql('SELECT ROUND(0.0000001, 2), ROUND(2.345, 2), ROUND(-2.5, 0) FROM Customers FETCH FIRST 1 ROWS ONLY', ',', ';', []), '0,2.35,-3', 'ExecuteSQL ROUND');
+eq(file.sql('SELECT ROUND(0.0000001, 2), ROUND(2.345, 2), ROUND(-2.5, 0), ROUND(0.1, 400) FROM Customers FETCH FIRST 1 ROWS ONLY', ',', ';', []), '0,2.35,-3,0.1', 'ExecuteSQL ROUND');
 
 // ── a second file for relationship keys, finds, repeating calcs, summaries and validation ──
 const calcF = (id, name, formula, resultType, more) => Object.assign({ id, name, type: 'calculation', options: { calc: { formula, resultType } } }, more || {});
@@ -170,6 +172,10 @@ const schema2 = {
       calcF('pshare', 'Share', 'Amount / Total', 'number'),
       calcF('prep', 'RepCalc', 'Price * 2', 'number', { options: { calc: { formula: 'Price * 2', resultType: 'number', evalIfAllEmpty: false }, storage: { repetitions: 3 } } }),
       calcF('prepx', 'RepCalcExt', 'Extend ( Price ) * 2', 'number', { options: { calc: { formula: 'Extend ( Price ) * 2', resultType: 'number', evalIfAllEmpty: false }, storage: { repetitions: 3 } } }),
+      calcF('prepd', 'RepCalcDefault', 'Price * 2', 'number', { options: { calc: { formula: 'Price * 2', resultType: 'number' }, storage: { repetitions: 3 } } }),
+      calcF('preps', 'RepCalcSub', 'Price[1] * 2', 'number', { options: { calc: { formula: 'Price[1] * 2', resultType: 'number', evalIfAllEmpty: false }, storage: { repetitions: 3 } } }),
+      calcF('prepg', 'RepCalcGet', 'GetRepetition ( Price ; 1 ) * 2', 'number', { options: { calc: { formula: 'GetRepetition ( Price ; 1 ) * 2', resultType: 'number', evalIfAllEmpty: false }, storage: { repetitions: 3 } } }),
+      calcF('prepn', 'RepCalcNoFields', 'Get ( CalculationRepetitionNumber ) * 2', 'number', { options: { calc: { formula: 'Get ( CalculationRepetitionNumber ) * 2', resultType: 'number' }, storage: { repetitions: 3 } } }),
       { id: 'pdate', name: 'PayDate', type: 'date', options: { validation: { memberOf: 'VD' } } }, { id: 'ptime', name: 'PayTime', type: 'time', options: { validation: { memberOf: 'VT' } } },
       { id: 'pn', name: 'N', type: 'number', options: { validation: { unique: true } } }] },
     { id: 'TZ', name: 'Zips', fields: [{ id: 'zzip', name: 'Zip', type: 'text' }, { id: 'zcity', name: 'City', type: 'text' }] },
@@ -181,10 +187,10 @@ const schema2 = {
   layouts: [], scripts: [], valueLists: [{ id: 'VD', name: 'Dates', type: 'custom', values: ['1/5/2025', '2/10/2025'] }, { id: 'VT', name: 'Times', type: 'custom', values: ['1:05:00 PM'] }],
   customFunctions: [], privilegeSets: [{ id: 'PS_FULL', name: '[Full Access]', extended: ['fmapp'] }], fileOptions: {}
 };
-const people = [['Ann Lee', '01234', 'Paid', 10, 5, '1.50'], ['Joann Leeds', '007', 'paid', 30], ['Mary Ann Leeway', '', 'Paid', 60], ['Bob', 'K1A', 'Draft'], ['apple'], ['école'], ['Zebra'], ['Émile'], ['Joanne Leeds'], ['Carter']];
+const people = [['Ann Lee', '01234', 'Paid', 10, 5, '1.50'], ['Joann Leeds', '007', 'paid', 30, null, '4111111111111111'],['Mary Ann Leeway', '', 'Paid', 60], ['Bob', 'K1A', 'Draft'], ['apple'], ['école'], ['Zebra'], ['Émile'], ['Joanne Leeds'], ['Carter']];
 const recs2 = {
   TP: people.map(([n, z, s, a, pr, num], i) => ({ id: 100 + i, t: 'TP', d: { pid: String(i + 1), pname: n, pzip: z || '', pstat: s || '', pamt: a == null ? '' : String(a), pprice: pr == null ? '' : String(pr), pn: num || '' }, mc: 0 })),
-  TZ: [['1234', 'Springfield'], ['01234', 'Boston'], ['7', 'Seven'], ['007', 'Bond'], ['k1a', 'Ottawa']].map(([z, c], i) => ({ id: 200 + i, t: 'TZ', d: { zzip: z, zcity: c }, mc: 0 })),
+  TZ: [['1234', 'Springfield'], ['01234', 'Boston'], ['7', 'Seven'], ['007', 'Bond'], ['k1a', 'Ottawa'], ['63101', 'St. Louis'], ['10001', 'Acme, Inc.']].map(([z, c], i) => ({ id: 200 + i, t: 'TZ', d: { zzip: z, zcity: c }, mc: 0 })),
   TO: ['1.0', '1', '01', '2'].map((p, i) => ({ id: 300 + i, t: 'TO', d: { oid: String(i + 1), opid: p }, mc: 0 }))
 };
 const file2 = new FM.FMFile(app, { file: { id: 2, name: 'T2' }, token: 't', account: { name: 'Admin', privilegeSet: 'PS_FULL' }, schema: schema2, version: 1, serials: {}, records: recs2, seq: 0 });
@@ -196,6 +202,10 @@ eq(cities('Bob'), 'Ottawa', 'text keys match ignoring case');
 eq(file2.related('OP', person('Ann Lee'), 'OO').length, 3, 'number keys match by value (1 = 1.0 = 01)');
 const find2 = crit => file2.find('TP', 'OP', [{ omit: false, crit: { 'OP::pname': crit } }]).map(r => r.d.pname).join(',');
 eq(find2('=Ann Lee'), 'Ann Lee', 'find = with several words matches whole words');
+eq(find2('=Jo* Leeds'), 'Joann Leeds,Joanne Leeds', 'find = with several words keeps wildcards');
+const findZ = crit => file2.find('TZ', 'OZ', [{ omit: false, crit: { 'OZ::zcity': crit } }]).map(r => r.d.zcity).join('|');
+eq(findZ('=Acme, Inc.'), 'Acme, Inc.', 'find = with several words ignores punctuation between words');
+eq(findZ('=St. Louis'), 'St. Louis', 'find = with a word ending in a full stop');
 eq(find2('"oann"'), '', 'quoted find starts at a word start');
 eq(find2('"joann"'), 'Joann Leeds,Joanne Leeds', 'quoted find matches a word start');
 eq(find2('*"oann"'), 'Joann Leeds,Joanne Leeds', '*"" find matches anywhere');
@@ -211,6 +221,10 @@ eq(V.text(file2.summaryInContext(file2.field('prun'), paid[2], { summarySet: pai
 const reps = fid => [1, 2, 3].map(i => V.text(file2.value(person('Ann Lee'), file2.field(fid), i, {}))).join(',');
 eq(reps('prep'), '10,,', 'repeating calculation sees a non-repeating field in repetition 1 only');
 eq(reps('prepx'), '10,10,10', 'Extend gives every repetition the field');
+eq(reps('prepd'), '10,,', 'repeating calculation of non-repeating fields is blank past repetition 1 by default');
+eq(reps('preps'), '10,10,10', 'a subscript Field[1] is read from repetition 1 when checking for empty fields');
+eq(reps('prepg'), '10,10,10', 'GetRepetition ( Field ; 1 ) is read from repetition 1 when checking for empty fields');
+eq(reps('prepn'), '2,4,6', 'a repeating calculation without fields calculates every repetition');
 eq(V.text(file2.evaluate('Sum ( People::RepCalcExt ) & "/" & Count ( People::RepCalcExt ) & "/" & Count ( People::RepCalc )', { to: 'OP', rec: person('Ann Lee') })), '30/3/1', 'aggregates over a repeating calculation');
 const v2 = (who, data) => file2.validate(file2.table('TP'), person(who), data, new Set(Object.keys(data)), {}).map(f => f.code).join(',');
 eq(v2('Bob', { pdate: '2025-01-05' }), '', 'date in a value list');
@@ -218,6 +232,8 @@ eq(v2('Bob', { pdate: '2025-01-06' }), '506', 'date not in a value list');
 eq(v2('Bob', { ptime: '13:05:00' }), '', 'time in a value list');
 eq(v2('Bob', { pn: '1.5' }), '504', 'unique number compares by value');
 eq(v2('Bob', { pn: '2' }), '', 'unique number');
+eq(v2('Bob', { pn: '4111111111111112' }), '', 'unique 16-digit number compares every digit');
+eq(v2('Bob', { pn: '4111111111111111' }), '504', 'unique 16-digit number');
 
 console.log(failures ? failures + ' failure(s), ' + passed + ' passed' : 'all ' + passed + ' engine checks pass');
 process.exit(failures ? 1 : 0);

@@ -635,8 +635,9 @@
   const words = t => [...String(t).matchAll(/[\p{L}\p{N}_]+(?:['’.@][\p{L}\p{N}_]+)*/gu)];
   // x * 10^p through the decimal exponent, so 1.005 shifts to 100.5 (not 100.49999) and 1e-7 or 1e21 still shift
   const shift = (x, p) => { if (!isFinite(x)) return x; const [m, e] = x.toExponential().split('e'); return Number(m + 'e' + (+e + p)); };
-  const roundTo = (x, p) => { const s = Math.sign(x) || 1; return s * shift(Math.round(shift(Math.abs(x), p)), -p); };
-  const truncTo = (x, p) => { const s = Math.sign(x) || 1; return s * shift(Math.floor(shift(Math.abs(x), p)), -p); };
+  // a double too big to shift has no digits at that precision, so it comes back unchanged (Round ( 10^300 ; 9 ))
+  const roundTo = (x, p) => { const s = Math.sign(x) || 1, y = shift(Math.abs(x), p); return isFinite(y) ? s * shift(Math.round(y), -p) : x; };
+  const truncTo = (x, p) => { const s = Math.sign(x) || 1, y = shift(Math.abs(x), p); return isFinite(y) ? s * shift(Math.floor(y), -p) : x; };
   const numOr = (v, fb) => { const n = V.numOrNull(v); return n == null ? fb : n; };
   const out = v => (typeof v === 'number' && !isFinite(v)) ? '?' : v;
 
@@ -767,12 +768,13 @@
   def('Abs', 'Abs ( number )', 'Number', n1(Math.abs));
   def('Ceiling', 'Ceiling ( number )', 'Number', n1(Math.ceil));
   def('Combination', 'Combination ( setSize ; numberOfChoices )', 'Number', ([a, b]) => { const n = Math.floor(N(a)), k = Math.floor(N(b)); if (k < 0 || k > n) return 0; let r = 1; for (let i = 1; i <= k; i++) r = r * (n - k + i) / i; return Math.round(r); });
-  // FileMaker divides in decimal: work on scaled integers so Div ( 0.3 ; 0.1 ) is 3 and Mod ( 0.3 ; 0.1 ) is 0
+  // FileMaker divides in decimal: work on scaled integers so Div ( 0.3 ; 0.1 ) is 3 and Mod ( 0.3 ; 0.1 ) is 0.
+  // Decimals come from the shortest round-trip form, so 200/3 keeps all its digits and falls back to float
   const divMod = (x, d) => {
-    const dec = v => { const s = FM.num.plain(Math.abs(v)), i = s.indexOf('.'); return i < 0 ? 0 : s.length - i - 1; };
-    const f = Math.pow(10, Math.max(dec(x), dec(d))), xi = Math.round(x * f), di = Math.round(d * f);
-    if (f > 1e15 || !di || !Number.isSafeInteger(xi) || !Number.isSafeInteger(di)) { const q = Math.floor(x / d); return [q, x - d * q]; }
-    const q = Math.floor(xi / di); return [q, (xi - di * q) / f];
+    const dec = v => { const [m, e] = Math.abs(v).toExponential().split('e'), i = m.indexOf('.'); return Math.max(0, (i < 0 ? 0 : m.length - i - 1) - e); };
+    const p = Math.max(dec(x), dec(d)), xi = shift(x, p), di = shift(d, p);
+    if (p > 15 || !di || !Number.isSafeInteger(xi) || !Number.isSafeInteger(di)) { const q = Math.floor(x / d); return [q, x - d * q]; }
+    const q = Math.floor(xi / di); return [q, (xi - di * q) / Math.pow(10, p)];
   };
   def('Div', 'Div ( number ; divisor )', 'Number', ([a, b]) => { const d = N(b); return d === 0 ? '?' : divMod(N(a), d)[0]; });
   def('Exp', 'Exp ( number )', 'Number', n1(Math.exp));

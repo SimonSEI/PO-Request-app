@@ -1367,12 +1367,19 @@ def create_file():
 
 def _check_login(conn, file_id, account, password):
     # Failures are counted per account name (and app login, so nobody can lock others
-    # out), and only signing in to that same account clears them.
+    # out), and only signing in to that same account clears them. An attempt is written
+    # down as failed before the password is checked, so guesses sent at the same time
+    # (to any worker) cannot get past the limit either.
     key = (file_id, _app_user(), str(account or '').strip().lower())
     now = time.time()
+    attempt = conn.execute("INSERT INTO fm_login_failures (file_id, app_user, account, at) VALUES (?,?,?,?)",
+                           (*key, now)).lastrowid
+    conn.commit()
     fails = conn.execute("SELECT COUNT(*) FROM fm_login_failures WHERE file_id=? AND app_user=? AND account=? "
-                         "AND at>=?", (*key, now - FAILED_LOGIN_WINDOW)).fetchone()[0]
-    if fails >= FAILED_LOGIN_LIMIT:
+                         "AND at>=? AND rowid<=?", (*key, now - FAILED_LOGIN_WINDOW, attempt)).fetchone()[0]
+    if fails > FAILED_LOGIN_LIMIT:
+        conn.execute("DELETE FROM fm_login_failures WHERE rowid=?", (attempt,))
+        conn.commit()
         raise PermissionError('Too many failed sign-ins. Wait five minutes and try again.')
     row = conn.execute("SELECT * FROM fm_accounts WHERE file_id=? AND name=? COLLATE NOCASE",
                        (file_id, str(account or '').strip())).fetchone()
@@ -1380,8 +1387,6 @@ def _check_login(conn, file_id, account, password):
         (row['password_hash'] == '' and password == '') or
         (row['password_hash'] != '' and check_password_hash(row['password_hash'], password or '')))
     if not ok:
-        conn.execute("INSERT INTO fm_login_failures (file_id, app_user, account, at) VALUES (?,?,?,?)", (*key, now))
-        conn.commit()
         raise PermissionError('The account name and password you entered cannot be used to access this file. '
                               'Please try again.')
     conn.execute("DELETE FROM fm_login_failures WHERE file_id=? AND app_user=? AND account=?", key)
@@ -2437,6 +2442,9 @@ def _public_ip(addr):
     ip = ipaddress.ip_address(addr.split('%')[0])
     if ip.version == 6 and ip.ipv4_mapped:
         ip = ip.ipv4_mapped
+    elif ip.version == 6 and int(ip) >> 32 in (0, 0x64ff9b << 64):
+        # IPv4-compatible (::a.b.c.d) and NAT64 (64:ff9b::a.b.c.d) go to the IPv4 address inside
+        ip = ipaddress.IPv4Address(int(ip) & 0xffffffff)
     return ip.is_global and not ip.is_multicast
 
 
@@ -2468,7 +2476,9 @@ class _PublicConnection:
                 err = e
                 continue
             if getattr(_fetch_local, 'socks', None) is not None:
-                _fetch_local.socks.append(sock)
+                # a copy, kept for the deadline: https wraps (and empties) the socket returned
+                # here, but shutting down either copy ends the connection they share
+                _fetch_local.socks.append(sock.dup())
             return sock
         raise urllib3.exceptions.NewConnectionError(self, f'Failed to establish a new connection: {err}')
 
@@ -2527,10 +2537,11 @@ def _fetch(url, method, headers, data):
     for the browser. Raises ValueError with a message for the person."""
     too_long = f'The request took too long (more than {FETCH_DEADLINE} seconds)'
     deadline = time.monotonic() + FETCH_DEADLINE
-    _fetch_local.deadline, _fetch_local.socks = deadline, []
+    socks = []
+    _fetch_local.deadline, _fetch_local.socks = deadline, socks
     # timeouts are per socket operation, so a server sending a byte now and then would
     # never time out: at the deadline the sockets are shut, whatever they are doing
-    watchdog = threading.Timer(FETCH_DEADLINE, _shut_sockets, (_fetch_local.socks,))
+    watchdog = threading.Timer(FETCH_DEADLINE, _shut_sockets, (socks,))
     watchdog.daemon = True
     watchdog.start()
     s = http_requests.Session()
@@ -2561,7 +2572,10 @@ def _fetch(url, method, headers, data):
                    'headers': dict(list(r.headers.items())[:60]), 'url': url}
             if ctype.startswith(('text/', 'application/json', 'application/xml', 'application/javascript')) or \
                     '+json' in ctype or '+xml' in ctype or not ctype:
-                out['text'] = content.decode(r.encoding or 'utf-8', errors='replace')
+                try:
+                    out['text'] = content.decode(r.encoding or 'utf-8', errors='replace')
+                except LookupError:     # a charset Python does not know
+                    out['text'] = content.decode('utf-8', errors='replace')
             else:
                 import base64
                 out['base64'] = base64.b64encode(content).decode()
@@ -2574,6 +2588,8 @@ def _fetch(url, method, headers, data):
     finally:
         watchdog.cancel()
         s.close()
+        for sock in socks:
+            sock.close()
         _fetch_local.deadline = _fetch_local.socks = None
 
 
