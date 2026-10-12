@@ -2726,6 +2726,12 @@ class PumpsTest(unittest.TestCase):
         self.assertIn('Ask about the fountain light', titles)
         self.assertTrue(titles['Call Spanish Wells Lake Club about the gate code']['done_at'])
         self.assertNotIn('Order printer paper', titles)
+        # The account page carries its setup too: the pump schedule, the lake, its Jobber links.
+        self.assertEqual(h['account']['pump']['months'], '1,4,7,10')
+        self.assertIn('docs', h)
+        self.assertEqual(set(h['jobber']), {'client', 'recurring'})
+        self.assertEqual(P._jobber_client_uri('Z2lkOi8vSm9iYmVyL0NsaWVudC80OTAwNzI1OA=='),
+                         'https://secure.getjobber.com/clients/49007258')
         self.assertEqual(self.c.get('/pumps/api/accounts/history?name=Nobody').status_code, 400)
 
     def test_month_maintenance_and_subcontractor_notified(self):

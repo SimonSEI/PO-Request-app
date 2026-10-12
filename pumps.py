@@ -9261,6 +9261,15 @@ def _is_account(names, name):
     return bool(name) and any(name == n or _same_account(name, n) for n in names)
 
 
+def _jobber_client_uri(client_id):
+    """Jobber's web page for a client, from its API id (gid://Jobber/Client/123)."""
+    try:
+        n = base64.b64decode(client_id + '=' * (-len(client_id) % 4)).decode().rsplit('/', 1)[-1]
+        return f'https://secure.getjobber.com/clients/{int(n)}'
+    except (ValueError, UnicodeDecodeError):
+        return ''
+
+
 def account_history(conn, name):
     """Every to-do (open and done, however old) and every job for an account,
     newest first, plus the months its subcontractors were told of a visit."""
@@ -9303,8 +9312,29 @@ def account_history(conn, name):
             todos.append(t)
     notices = [dict(r) for r in conn.execute('SELECT * FROM pump_maint_notices ORDER BY month DESC, vendor')
                if _is_account(names, r['account'])]
+    # Its paperwork: the vendors' service reports, and quotes and bills on its jobs.
+    docs = []
+    for r in conn.execute("SELECT * FROM pump_docs WHERE status != 'dismissed' ORDER BY COALESCE(doc_date, created_at) DESC, id DESC"):
+        if r['case_id'] in job_ids or (r['kind'] == 'report' and about(' '.join(x for x in (r['client_name'], r['site']) if x))):
+            d = _doc_dict(r)
+            docs.append({k: d.get(k) for k in ('id', 'kind', 'vendor', 'doc_number', 'doc_date', 'total', 'file_name',
+                                               'case_id', 'has_branded', 'created_at')}
+                        | {'signed_at': (d['jobber'] or {}).get('approved_at') or '',
+                           'signed_sent_at': (d['jobber'] or {}).get('signed_sent_at') or ''})
+    # Where it is in Jobber: the client, and its recurring maintenance job(s).
+    client, recurring = None, []
+    for r in conn.execute("SELECT * FROM pump_jobber_items WHERE client_id != '' ORDER BY updated_at DESC"):
+        if not about(r['client_name'] or ''):
+            continue
+        if not client:
+            client = {'id': r['client_id'], 'name': r['client_name'], 'uri': _jobber_client_uri(r['client_id'])}
+        if r['kind'] == 'job' and r['job_type'] == 'recurring' and r['status'] not in ('archived',):
+            recurring.append({'number': r['number'], 'title': r['title'], 'uri': r['web_uri'], 'status': r['status']})
     return {
         'name': a['name'],
+        'account': {k: a.get(k) for k in ('pump', 'lake', 'scada', 'active')},
+        'docs': docs,
+        'jobber': {'client': client, 'recurring': recurring[:4]},
         'todos': todos,
         'jobs': [{'id': c['id'], 'title': c['title'], 'client_name': c['client_name'], 'site': c['site'],
                   'vendor': c['vendor'], 'category': c['category'], 'stage': c['stage'], 'status': c['status'],
