@@ -1669,6 +1669,7 @@ async function syncJobber(){ const j = await api('/jobber/sync', {method:'POST',
 
 // ── the month's maintenance (Home tab) ────────────────
 let MS = null;
+const MS_SEL = new Set(); // ticked accounts, kept so the table's once-a-minute refresh doesn't clear them
 function msMonths(){
   const sel = document.getElementById('msMonth'); if (sel.options.length) return;
   const d = new Date(); d.setDate(1);
@@ -1697,11 +1698,11 @@ function drawMaintSchedule(){
   rows.forEach(r => { let a = byAcct.find(x => x.account === r.account); if (!a) byAcct.push(a = {account: r.account, rows: {}}); a.rows[r.vendor] = r; });
   const cell = (r, who) => { if (!r) return '<span class="note">—</span>'; const n = r.notified;
     return (n ? `<span class="chip g">✓ told</span> <span class="note">${esc(niceDay(d10(n.notified_at)))}${n.notified_by ? ' · ' + esc(n.notified_by) : ''}${n.how ? ' · ' + esc(n.how) : ''}</span>${n.note ? '<div class="note">' + esc(n.note) + '</div>' : ''}${n.auto ? '' : ` <button class="btn s" title="Not told after all" onclick="maintNotified(${q(r.account)}, '${r.vendor}', false)">↺</button>`}`
-      : `<span class="chip r">not told</span> <button class="btn s p" title="Mark ${who} told" onclick="maintNotifiedAsk(${q(r.account)}, '${r.vendor}')">✓</button>`)
+      : `<span class="chip r">not told</span> <button class="btn s p" title="Mark ${who} told" onclick="maintNotifiedAsk(${q(r.account)}, '${r.vendor}')">✓ Mark told</button>`)
       + `<div class="note">${r.report ? '✓ report ' + esc(niceDay(r.report)) : 'report not in yet'}</div>`; };
   document.getElementById('msBody').innerHTML = byAcct.map(a => { const w = a.rows.Wettech, g = a.rows.Gulfshore, r0 = w || g;
     const both = w && g ? (w.notified && g.notified ? '<span class="chip g">both told</span>' : !w.notified && !g.notified ? '<span class="chip r">neither told</span>' : `<span class="chip a">only ${w.notified ? 'Justin' : 'Jordan'} told</span>`) : '';
-    return `<tr><td><input type="checkbox" class="msSel" data-account="${esc(a.account)}" data-w="${w && !w.notified ? 1 : ''}" data-g="${g && !g.notified ? 1 : ''}" title="Select this account, then use ✓ Justin told / ✓ Jordan told" onchange="msSelChanged()" ${(w && !w.notified) || (g && !g.notified) ? '' : 'disabled'}></td>
+    return `<tr><td><input type="checkbox" class="msSel" data-account="${esc(a.account)}" data-w="${w && !w.notified ? 1 : ''}" data-g="${g && !g.notified ? 1 : ''}" title="Select this account, then use ✓ Justin told / ✓ Jordan told" onchange="msTick(this)" ${(w && !w.notified) || (g && !g.notified) ? (MS_SEL.has(a.account) ? 'checked' : '') : 'disabled'}></td>
     <td style="max-width:300px"><a href="#" onclick="event.preventDefault();openAccount(${q(a.account)})"><b>${esc(a.account)}</b></a> ${both}<div class="note" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r0.what)}${r0.where ? ' · ' + esc(r0.where) : ''}">${esc(r0.what)}${r0.where ? ' · ' + esc(r0.where) : ''}</div>${(w && w.hold) || (g && g.hold) ? `<span class="chip a">${esc((w && w.hold) || g.hold)}</span>` : ''}</td>
     <td>${r0.approved ? '<span class="ok">✓ ' + esc(niceDay(r0.approved)) + '</span>' : '<span class="note">—</span>'}</td>
     <td style="min-width:150px">${cell(w, 'Justin')}</td><td style="min-width:150px">${cell(g, 'Jordan')}</td></tr>`; }).join('') || `<tr><td colspan="5" class="empty">${MS.total ? 'None to show.' : 'No maintenance due this month.'}</td></tr>`;
@@ -1709,8 +1710,9 @@ function drawMaintSchedule(){
 }
 // Several accounts at once: tick them, then "✓ Justin told" or "✓ Jordan told".
 // Only the ticked accounts whose visit for that subcontractor isn't told yet count.
+function msTick(x){ x.checked ? MS_SEL.add(x.dataset.account) : MS_SEL.delete(x.dataset.account); msSelChanged(); }
 function msSelected(vendor){ const k = vendor === 'Wettech' ? 'w' : 'g'; return [...document.querySelectorAll('.msSel:not(:disabled):checked')].filter(x => x.dataset[k]).map(x => x.dataset.account); }
-function msSelectAll(on){ document.querySelectorAll('.msSel:not(:disabled)').forEach(x => x.checked = on); msSelChanged(); }
+function msSelectAll(on){ document.querySelectorAll('.msSel:not(:disabled)').forEach(x => { x.checked = on; msTick(x); }); }
 function msSelChanged(){
   const w = msSelected('Wettech').length, g = msSelected('Gulfshore').length;
   document.getElementById('msMarkW').textContent = '✓ Justin told' + (w ? ` (${w})` : '');
@@ -1727,7 +1729,11 @@ function maintNotifiedAskMany(vendor){
 }
 async function maintNotifiedMany(vendor){
   const sel = msSelected(vendor);
-  if (await maintNotified(sel, vendor, true, document.getElementById('mn_how').value, document.getElementById('mn_note').value)) toast(`${sel.length} marked ${vendor === 'Wettech' ? 'Justin' : 'Jordan'} told`);
+  if (await maintNotified(sel, vendor, true, document.getElementById('mn_how').value, document.getElementById('mn_note').value)) {
+    // Keep the accounts ticked that still have the other subcontractor to tell.
+    MS_SEL.forEach(acct => { if (!MS.rows.some(r => r.account === acct && !r.notified)) MS_SEL.delete(acct); }); drawMaintSchedule();
+  } else return;
+  toast(`${sel.length} marked ${vendor === 'Wettech' ? 'Justin' : 'Jordan'} told`);
 }
 function maintNotifiedAsk(account, vendor){
   const who = vendor === 'Wettech' ? 'Justin (Wettech)' : 'Jordan (Gulfshore)';
