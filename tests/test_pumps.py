@@ -108,6 +108,8 @@ class FakeJobber:
 
     def __call__(self, query, variables=None):
         P.check_mutation_allowed(query)  # the real guard still runs
+        if '__type(name' in query and (variables or {}).get('n') == 'NoteAttachmentAttributes':
+            return {'__type': {'inputFields': [{'name': n} for n in ('url', 'fileName', 'contentType')]}}
         self.calls.append((query, variables))
         if 'invoiceCreate' in query:
             return {'invoiceCreate': {'invoice': {'id': 'INV1', 'invoiceNumber': 5001,
@@ -988,10 +990,10 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(self.case(cid)['title'], 'Renamed')
         acts = self.c.get('/pumps/api/undo').get_json()['actions']
         self.assertEqual([a['label'] for a in acts[:2]], [f'Changed job #{cid}', 'Added a job'])
-        # Undoing the add first is refused - the rename came after it.
+        # Undoing the add first asks first - the rename came after it.
         r = self.c.post(f"/pumps/api/undo/{acts[1]['id']}", json={})
-        self.assertEqual(r.status_code, 400)
-        self.assertIn('undo that first', r.get_json()['error'])
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.get_json()['blocked_by'], [f'Changed job #{cid}'])
         self.assertTrue(self.c.post(f"/pumps/api/undo/{acts[0]['id']}", json={}).get_json()['success'])
         self.assertEqual(self.case(cid)['title'], 'Undo me')
         self.assertEqual(self.c.post(f"/pumps/api/undo/{acts[0]['id']}", json={}).status_code, 400, 'only once')
@@ -1014,6 +1016,17 @@ class PumpsTest(unittest.TestCase):
         open_titles = [t['title'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
         self.assertIn('Call Tommy', open_titles)
         self.assertIn('stays', P._undo_label('/pumps/api/docs/4/quote')[1])
+        # A PATCH (the SCADA and job edit forms) is undoable too.
+        j2 = self.c.post('/pumps/api/cases', json={'title': 'Patch me', 'client_name': 'Quail Run'}).get_json()
+        c2 = j2.get('case_id') or j2['case']['id']
+        self.c.patch(f'/pumps/api/cases/{c2}', json={'title': 'Patched'})
+        self.c.post(f'/pumps/api/cases/{c2}', json={'title': 'Patched again'})
+        acts = self.c.get('/pumps/api/undo').get_json()['actions']
+        self.assertEqual(acts[1]['label'], f'Changed job #{c2}')
+        # Undoing the PATCH and, when asked, the later change on the same job too.
+        r = self.c.post(f"/pumps/api/undo/{acts[1]['id']}", json={'also_later': True}).get_json()
+        self.assertTrue(r['success'], r)
+        self.assertEqual(self.case(c2)['title'], 'Patch me')
         # Background work (scan, sync) is never put on the undo list.
         self.assertEqual(P._UNDO_ACTION.get(), 0)
 
@@ -2397,6 +2410,13 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(P.expected_date('Should be done by 10/20', date(2026, 10, 12)), '2026-10-20')
         self.assertEqual(P.expected_date('We will be out January 5th', date(2026, 12, 20)), '2027-01-05')
         self.assertEqual(P.expected_date('Will check and let you know', date(2026, 10, 12)), '')
+        # This Jobber's note attachments take a url only (no fileName / contentType): send just that.
+        saved = dict(P._SCHEMA_CACHE)
+        try:
+            P._SCHEMA_CACHE['type:NoteAttachmentAttributes'] = {'inputFields': [{'name': 'url'}]}
+            self.assertEqual(P._note_attachment('https://x/f', 'a.pdf', 'application/pdf'), {'url': 'https://x/f'})
+        finally:
+            P._SCHEMA_CACHE.clear(); P._SCHEMA_CACHE.update(saved)
 
     def test_job_from_quote_and_service_visit_when_jobber_has_them(self):
         T = lambda name, kind='INPUT_OBJECT': {'kind': kind, 'name': name, 'ofType': None}
