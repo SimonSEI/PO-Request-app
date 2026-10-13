@@ -330,6 +330,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   <h3 style="margin:18px 0 8px;font-size:14px">Maintenance this month <span class="chip" id="msCount"></span></h3>
   <div class="toolbar">
     <select id="msMonth" onchange="loadMaintSchedule()"></select>
+    <input type="text" id="msSearch" placeholder="Find an account or address…" oninput="drawMaintSchedule()" style="width:220px">
     <select id="msShow" onchange="drawMaintSchedule()"><option value="">All visits</option><option value="todo">Not notified yet</option><option value="Wettech">Wettech (pumps)</option><option value="Gulfshore">Gulfshore (lakes)</option></select>
     <div class="sp"></div><span id="msInfo" class="note"></span>
     <button class="btn" id="msEmail" onclick="emailWettechList()">✉️ Email Tommy the pump list</button>
@@ -1682,7 +1683,8 @@ async function loadMaintSchedule(){
 function drawMaintSchedule(){
   if (!MS) return;
   const show = document.getElementById('msShow').value;
-  const rows = MS.rows.filter(r => !show || (show === 'todo' ? !r.notified : r.vendor === show));
+  const find = (document.getElementById('msSearch').value || '').trim().toLowerCase();
+  const rows = MS.rows.filter(r => (!show || (show === 'todo' ? !r.notified : r.vendor === show)) && (!find || JSON.stringify(r).toLowerCase().includes(find)));
   const left = MS.total - MS.notified;
   document.getElementById('msCount').textContent = MS.total;
   document.getElementById('msInfo').innerHTML = `${MS.total} visits in ${esc(MS.label)} · ${MS.notified} notified · ` + (left ? `<b class="warn">${left} not notified yet</b>` : '<span class="ok">all notified</span>');
