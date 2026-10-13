@@ -465,11 +465,12 @@ function caseRow(c, extra){
     <div style="text-align:right;display:flex;gap:6px;align-items:center">${c.idle_days >= 7 ? `<div class="chip a">${c.idle_days}d idle</div>` : ''}<button class="btn s" title="Mark done" onclick="event.stopPropagation();caseDone(${c.id})">✓</button><button class="btn s" title="Remove" onclick="event.stopPropagation();caseRemove(${c.id})">✕</button></div></div>`;
 }
 function todoRow(t){
-  return `<div class="row"><div class="main"><div class="tt"><label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer"><input type="checkbox" onchange="todoDone(${t.id}, this.checked)" style="margin-top:3px"><span>${esc(t.title)}</span></label></div>
+  return `<div class="row"><div class="main"><div class="tt"><label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer"><input type="checkbox" onclick="event.preventDefault();askDone(event, () => todoDone(${t.id}, true, event))" style="margin-top:3px"><span>${esc(t.title)}</span></label></div>
       ${t.detail || (t.kind === 'manual' && t.due_on) ? `<div class="sub" style="margin-left:24px">${t.kind === 'manual' && t.due_on ? `<b class="${t.due_on < todayIso() ? 'bad' : 'warn'}">due ${esc(niceDay(t.due_on))}</b>${t.detail ? ' · ' : ''}` : ''}${esc(t.detail || '')}</div>` : ''}
       ${t.kind === 'approved_quote' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${t.link.case_id ? `<button class="btn s p" onclick="signQuote(${t.link.case_id})">✍ Sign quote &amp; send to ${esc((t.title.match(/send it to (\S+)/) || [])[1] || 'the vendor')}</button>` : ''}${t.link.doc_id ? `<a class="btn s" href="/pumps/api/docs/${t.link.doc_id}/file?version=original" target="_blank" rel="noopener">View quote</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}</div>` : ''}
       ${t.kind !== 'approved_quote' && (t.link.uri || t.link.case_id) ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${(t.link.uris || []).length > 1 ? t.link.uris.map(u => `<a class="btn s" href="${esc(u.uri)}" target="_blank" rel="noopener">Open ${esc(u.label)} ↗</a>`).join('') + `<button class="btn s" onclick='openAll(${JSON.stringify(t.link.uris.map(u => u.uri)).replace(/'/g, "&#39;")})'>Open both ↗</button>` : t.link.uri ? `<a class="btn s" href="${esc(t.link.uri)}" target="_blank" rel="noopener">Open in Jobber ↗</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}${t.link.scada_id ? `<button class="btn s" onclick="showTab('scada')">SCADA</button>` : ''}</div>` : ''}
       ${t.kind === 'diver_email' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="diverTodo('${esc(t.link.month || '')}')">Email ready - copy &amp; attach</button><a class="btn s" href="/pumps/api/dives/docx?month=${encodeURIComponent(t.link.month || '')}">⬇ Word list</a></div>` : ''}</div>
+      <button class="btn s" title="Edit" onclick='todoEdit(${JSON.stringify({id: t.id, title: t.title, detail: t.detail || "", due_on: t.due_on || ""}).replace(/'/g, "&#39;")})'>✎</button>
       ${t.kind === 'manual' ? `<button class="btn s" title="Delete from my to do list" onclick="todoDelete(${t.id})">✕</button>` : `<button class="btn s" title="Delete from my to do list" onclick="todoHide('${esc(t.todo_key)}')">✕</button>`}</div>`;
 }
 // ── undo ──────────────────────────────────────────────
@@ -515,7 +516,50 @@ async function undoAction(id){
   if (await runUndo(id)) showUndo();
 }
 function openAll(uris){ const blocked = uris.filter(u => { const w = window.open(u, '_blank'); if (w) w.opener = null; return !w; }).length; if (blocked) toast('Your browser blocked a tab - allow pop-ups for this site, or use the buttons one at a time.', true); }
-async function todoDone(id, done){ const j = await api('/todos/' + id + '/done', {method:'POST', body:{done}}); if (!j.success) toast(j.error, true); else { toast(done ? 'Done' : 'Reopened'); loadToday(); } }
+async function todoDone(id, done, ev){ const j = await api('/todos/' + id + '/done', {method:'POST', body:{done}}); if (!j.success) toast(j.error, true); else { if (done) celebrate(ev); else toast('Reopened'); loadToday(); } }
+// "Mark done?" right where you clicked: a second click to be sure.
+function askDone(ev, go){
+  ev.stopPropagation();
+  document.querySelectorAll('.askdone').forEach(x => x.remove());
+  const b = document.createElement('div'); b.className = 'askdone';
+  const x = Math.min(ev.clientX, window.innerWidth - 190), y = Math.min(ev.clientY + 12, window.innerHeight - 60);
+  b.style.cssText = `position:fixed;left:${Math.max(8, x - 80)}px;top:${y}px;z-index:9999;background:var(--card,#fff);color:var(--text,#111);border:1px solid var(--border,#ccc);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:8px 10px;display:flex;gap:6px;align-items:center;font-size:13px`;
+  b.innerHTML = '<b>Mark done?</b> <button class="btn s p">✓ Yes</button><button class="btn s">Cancel</button>';
+  const [yes, no] = b.querySelectorAll('button');
+  const close = () => { b.remove(); document.removeEventListener('mousedown', outside, true); };
+  const outside = e => { if (!b.contains(e.target)) close(); };
+  yes.onclick = e => { e.stopPropagation(); close(); go(); };
+  no.onclick = e => { e.stopPropagation(); close(); };
+  document.body.appendChild(b); setTimeout(() => document.addEventListener('mousedown', outside, true), 0);
+}
+// A little celebration where the to-do was ticked.
+function celebrate(ev){
+  const x = ev && ev.clientX != null ? ev.clientX : window.innerWidth / 2, y = ev && ev.clientY != null ? ev.clientY : window.innerHeight / 3;
+  const colors = ['#1d4ed8', '#16a34a', '#f59e0b', '#db2777', '#06b6d4', '#a855f7'];
+  for (let i = 0; i < 28; i++) {
+    const p = document.createElement('div'), a = Math.random() * Math.PI * 2, d = 50 + Math.random() * 90;
+    p.textContent = i % 7 === 0 ? '🎉' : '';
+    p.style.cssText = `position:fixed;left:${x}px;top:${y}px;width:7px;height:10px;border-radius:2px;background:${i % 7 === 0 ? 'none' : colors[i % colors.length]};z-index:10000;pointer-events:none;font-size:16px;transition:transform .9s cubic-bezier(.2,.7,.3,1),opacity .9s ease-in`;
+    document.body.appendChild(p);
+    requestAnimationFrame(() => { p.style.transform = `translate(${Math.cos(a) * d}px, ${Math.sin(a) * d + 40}px) rotate(${Math.random() * 540}deg)`; p.style.opacity = '0'; });
+    setTimeout(() => p.remove(), 1000);
+  }
+  toast(['Done! 🎉', 'Nice work! ✅', 'One less thing! 🙌', 'Crushed it! 💪'][Math.floor(Math.random() * 4)]);
+}
+// Edit a to-do's wording or due date.
+function todoEdit(t){
+  openModal('Edit to-do', `<div class="fields"><label class="w">What needs doing<input type="text" id="te_title" value="${esc(t.title)}"></label>
+    <label class="w">Details<textarea id="te_detail">${esc(t.detail)}</textarea></label>
+    <label>Due<input type="date" id="te_due" value="${esc(t.due_on)}"></label></div>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="todoEditSave(${t.id})">Save</button>`);
+}
+async function todoEditSave(id){
+  const v = x => document.getElementById(x).value;
+  const j = await api('/todos/' + id + '/edit', {method:'POST', body:{title: v('te_title').trim(), detail: v('te_detail'), due_on: v('te_due')}});
+  if (!j.success) { toast(j.error, true); return; }
+  closeModal(); toast('Saved'); loadToday();
+  const dr = document.getElementById('drawer'); if (dr.dataset.account && !document.getElementById('drawerWrap').classList.contains('hide')) openAccount(dr.dataset.account);
+}
 // Explain it in your own words; the app rewords it as a short to-do to check first.
 async function todoWrite(){
   const el = document.getElementById('todoNew'), text = el.value.trim(); if (!text) return;
@@ -660,7 +704,7 @@ async function loadToday(){
   q.waiting_work.forEach(c => waiting.push(todoItem('Work', '', caseTitle(c), caseSub(c, c.scheduled_for ? 'scheduled ' + esc(c.scheduled_for) : '') + chaseLine(c), open(c), logBtn(c), c.todo_key)));
   (q.waiting_visits || []).forEach(t => { const l = t.link || {}, left = (l.vendors || []).filter(x => !(l.reported || []).includes(x));
     waiting.push(todoItem('Maintenance visit', '', esc(l.account || t.title), `client approved ${esc(l.since || '')} · waiting on ${esc(left.join(' and '))}'s service report${left.length > 1 ? 's' : ''}${(l.reported || []).length ? ' · ✓ ' + esc(l.reported.join(', ')) : ''}`, "showTab('accounts')",
-      `<button class="btn s" onclick="todoDone(${t.id}, true)">✓ Done</button>`, t.todo_key)); });
+      `<button class="btn s" onclick="askDone(event, () => todoDone(${t.id}, true, event))">✓ Done</button>`, t.todo_key)); });
   q.waiting_bill.forEach(c => waiting.push(todoItem(v(c) + ' bill', '', caseTitle(c), caseSub(c), open(c), '', c.todo_key)));
   const n = urgent.length + todo.length + q.todos.length;
   document.getElementById('sideCount').textContent = n;
@@ -1366,7 +1410,9 @@ async function mtPickClient(c){
   const props = j.properties || [], jobs = (j.jobs || []).filter(x => x.status !== 'archived').sort((a, b) => (b.type === 'recurring') - (a.type === 'recurring'));
   if (props.length === 1) Object.assign(MTJ, {property_id: props[0].id, property_label: props[0].label});
   const rec = jobs.filter(x => x.type === 'recurring');
-  if (rec.length === 1) Object.assign(MTJ, {job_id: rec[0].id, job_label: '#' + rec[0].number + ' ' + rec[0].title});
+  // Several (The Carlisle: one per pump): the one at its property, else the first pump one.
+  const pick = rec.find(x => MTJ.property_id && x.property_id === MTJ.property_id) || rec.find(x => /pump/i.test(x.title)) || rec[0];
+  if (pick) Object.assign(MTJ, {job_id: pick.id, job_label: rec.map(x => '#' + x.number).join(', ') + ' ' + pick.title});
   const addr = document.getElementById('mt_address'); if (addr && !addr.value && MTJ.property_label) addr.value = MTJ.property_label;
   mtJobberDraw(null, `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
     <select onchange="mtSet(this, 'property_id', 'property_label')"><option value="">Property…</option>${props.map(p => `<option value="${esc(p.id)}" data-l="${esc(p.label)}" ${p.id === MTJ.property_id ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}</select>
@@ -1684,7 +1730,7 @@ function renderAccount(){
   const todo = t => `<div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--border);border-radius:10px;${t.done_at ? 'opacity:.75' : ''}"><div>
       <b>${t.done_at ? '✓ ' : ''}${esc(t.title)}</b>${t.detail ? `<div class="note" style="white-space:pre-line">${esc(t.detail)}</div>` : ''}
       <div class="note">Added ${esc(niceDay(d10(t.created_at)))}${t.created_by ? ' by ' + esc(t.created_by) : ''}${t.due_on ? ' · due ' + esc(niceDay(t.due_on)) : ''}${t.done_at ? ' · done ' + esc(niceDay(d10(t.done_at))) + (t.done_by ? ' by ' + esc(t.done_by) : '') : ''}</div></div>
-      <button class="btn s ${t.done_at ? '' : 'p'}" onclick="accountTodoDone(${t.id}, ${t.done_at ? 'false' : 'true'})">${t.done_at ? '↺ Reopen' : '✓ Done'}</button></div>`;
+      <span style="display:flex;gap:4px"><button class="btn s" title="Edit" onclick='todoEdit(${JSON.stringify({id: t.id, title: t.title, detail: t.detail || "", due_on: t.due_on || ""}).replace(/'/g, "&#39;")})'>✎</button><button class="btn s ${t.done_at ? '' : 'p'}" onclick="${t.done_at ? `accountTodoDone(${t.id}, false)` : `askDone(event, () => accountTodoDone(${t.id}, true, event))`}">${t.done_at ? '↺ Reopen' : '✓ Done'}</button></span></div>`;
   const open = a.todos.filter(t => !t.done_at), done = a.todos.filter(t => t.done_at);
   const jobs = a.jobs.map(c => `<details style="border-bottom:1px solid var(--border);padding:8px 0"><summary style="cursor:pointer"><b>${esc(c.title || c.client_name)}</b> ${catChip(c.category)} ${c.status === 'open' ? `<span class="chip b">${esc(stepLabel(c.stage, c.vendor))}</span>` : `<span class="chip ${c.status === 'closed' ? 'g' : ''}">${esc(c.status)}</span>`}
       <span class="note">opened ${esc(c.opened_on || '')}${c.po_number ? ' · PO ' + esc(c.po_number) : ''}${c.vendor ? ' · ' + esc(c.vendor) : ''}</span> <a href="#" onclick="event.preventDefault();openCase(${c.id})">open job ↗</a></summary>
@@ -1744,9 +1790,10 @@ async function accountTodoAdd(name){
   if (!j.success) { toast(j.error, true); return; }
   ACH = j; renderAccount(); loadToday();
 }
-async function accountTodoDone(id, done){
+async function accountTodoDone(id, done, ev){
   const j = await api('/todos/' + id + '/done', {method:'POST', body:{done}});
   if (!j.success) { toast(j.error, true); return; }
+  if (done) celebrate(ev);
   openAccount(ACH.name); loadToday();
 }
 

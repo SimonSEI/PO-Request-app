@@ -2473,6 +2473,23 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(h['jobber']['client']['id'], 'C77')
         self.assertEqual(h['jobber']['recurring'][0]['id'], 'J77')
 
+    def test_edit_a_todo_and_stale_todos_close_themselves(self):
+        todo = self.c.post('/pumps/api/todos', json={'title': 'Call Tommy'}).get_json()
+        tid = [t for t in todo['todos'] if t['title'] == 'Call Tommy'][0]['id']
+        r = self.c.post(f'/pumps/api/todos/{tid}/edit', json={'title': 'Call Tommy about Lely', 'due_on': '2026-10-20'})
+        self.assertEqual(r.status_code, 200)
+        t = [t for t in self.c.get('/pumps/api/todos').get_json()['todos'] if t['id'] == tid][0]
+        self.assertEqual((t['title'], t['due_on']), ('Call Tommy about Lely', '2026-10-20'))
+        self.assertEqual(self.c.post(f'/pumps/api/todos/{tid}/edit', json={'title': ''}).status_code, 400)
+        # The county's WO/PO to-do goes once both are on the job.
+        j = self.c.post('/pumps/api/cases', json={'title': 'Twin Lakes motor', 'client_name': 'SARASOTA COUNTY'}).get_json()
+        cid = j.get('case_id') or j['case']['id']
+        P._gov_refs_todo({'id': cid, 'title': 'Twin Lakes motor'}, 'SARASOTA COUNTY')
+        titles = lambda: [t['title'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
+        self.assertTrue(any('WO # and PO #' in x for x in titles()))
+        self.c.post(f'/pumps/api/cases/{cid}', json={'po_number': '260904', 'wo_number': 'WO2143416'})
+        self.assertFalse(any('WO # and PO #' in x for x in titles()))
+
     def test_sarasota_county_is_billed_the_county_way(self):
         doc = {'line_items': [{'description': 'Field service to furnish and install new 15 HP vertical hollow shaft '
                                               'motor on pump #1 at Twin Lakes, wired up and tested.', 'amount': 5226.24}],
