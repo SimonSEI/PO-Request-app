@@ -2439,6 +2439,32 @@ class PumpsTest(unittest.TestCase):
         self.assertFalse(P._category('Irrigation repairs as well'))
         self.assertEqual(P._category('Well pump motor replacement'), 'pump')
 
+    def test_new_pump_account_linked_to_jobber(self):
+        r = self.c.post('/pumps/api/maint', json={'name': 'XYZ Community', 'kind': 'Pump', 'months': '1,4,7,10',
+                                                  'our_bill': '$300.00', 'active': True,
+                                                  'jobber_client_id': 'C77', 'jobber_client_name': 'XYZ HOA',
+                                                  'jobber_property_id': 'P77', 'jobber_property_label': '1 XYZ Way, Naples'}).get_json()
+        self.assertTrue(r['success'], r)
+        acct = [a for a in r['accounts'] if a['name'] == 'XYZ Community'][0]
+        self.assertEqual(acct['jobber_client_id'], 'C77')
+        conn = P._conn()
+        try:
+            alias = conn.execute("SELECT client_id, property_id FROM pump_site_aliases WHERE place='XYZ Community'").fetchone()
+            self.assertEqual(tuple(alias), ('C77', 'P77'))
+            self.assertTrue(P._tracked_account(conn, {'client_id': 'C77', 'client_name': 'XYZ HOA'}))
+        finally:
+            conn.close()
+        todos = [t['title'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
+        self.assertIn("Set up XYZ Community's pump maintenance job in Jobber", todos)
+        # Picking the job later clears that to-do, and the account page links it.
+        self.c.post('/pumps/api/maint', json={'id': acct['id'], 'jobber_client_id': 'C77', 'jobber_client_name': 'XYZ HOA',
+                                              'jobber_job_id': 'J77', 'jobber_job_label': '#1700 Quarterly Pump'})
+        todos = [t['title'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
+        self.assertNotIn("Set up XYZ Community's pump maintenance job in Jobber", todos)
+        h = self.c.get('/pumps/api/accounts/history?name=XYZ Community').get_json()
+        self.assertEqual(h['jobber']['client']['id'], 'C77')
+        self.assertEqual(h['jobber']['recurring'][0]['id'], 'J77')
+
     def test_sarasota_county_is_billed_the_county_way(self):
         doc = {'line_items': [{'description': 'Field service to furnish and install new 15 HP vertical hollow shaft '
                                               'motor on pump #1 at Twin Lakes, wired up and tested.', 'amount': 5226.24}],

@@ -7808,8 +7808,11 @@ def init_account_tables(c):
             c.execute(f'ALTER TABLE pump_dive_sites ADD COLUMN {col} {decl}')
         except sqlite3.OperationalError:
             pass
+    # jobber_*: the account's Jobber client, property and recurring maintenance job (set on the Accounts tab).
     for tbl, col in (('pump_maint_accounts', 'repairs_by'), ('pump_maint_accounts', 'follow_up'),
-                     ('pump_dive_sites', 'follow_up')):
+                     ('pump_dive_sites', 'follow_up'),
+                     *(('pump_maint_accounts', f'jobber_{k}') for k in ('client_id', 'client_name', 'property_id',
+                                                                        'property_label', 'job_id', 'job_label'))):
         try:
             c.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} TEXT DEFAULT ''")
         except sqlite3.OperationalError:
@@ -8193,7 +8196,8 @@ def h_scada_update(actor, sid):
 
 
 MAINT_FIELDS = ('name', 'kind', 'joined', 'equipment', 'address', 'months', 'vendor_cost', 'naples_electric', 'our_bill',
-                'notes', 'repairs_by', 'follow_up')
+                'notes', 'repairs_by', 'follow_up', 'jobber_client_id', 'jobber_client_name', 'jobber_property_id',
+                'jobber_property_label', 'jobber_job_id', 'jobber_job_label')
 
 
 def maint_accounts(conn):
@@ -8239,8 +8243,48 @@ def h_maint_save(actor):
             cols = list(vals) + ['updated_by', 'updated_at']
             conn.execute(f"INSERT INTO pump_maint_accounts ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
                          (*vals.values(), actor, _now_text()))
+        aid = int(d['id']) if d.get('id') else conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        acct = dict(conn.execute('SELECT * FROM pump_maint_accounts WHERE id=?', (aid,)).fetchone())
         conn.commit()
+    finally:
+        conn.close()
+    if vals.get('jobber_client_id'):
+        link_account_to_jobber(acct, actor)
+    conn = _conn()
+    try:
         return {'accounts': maint_accounts(conn)}
+    finally:
+        conn.close()
+
+
+def schedule_text(acct):
+    if acct.get('monthly'):
+        return 'monthly'
+    ms = _month_list(acct.get('months'))
+    return ', '.join(date(2000, m, 1).strftime('%b') for m in ms) if ms else 'scheduled'
+
+
+def link_account_to_jobber(acct, actor):
+    """A pump account tied to its Jobber client: its name becomes a site name
+    for that client, property and maintenance job, so Wettech's quotes and
+    service reports for it go there, and its Jobber quotes are followed. With
+    no recurring maintenance job in Jobber yet, a to-do to set one up."""
+    save_site_alias(acct['name'], '', acct['jobber_client_id'], acct.get('jobber_client_name') or '',
+                    acct.get('jobber_property_id') or '', acct.get('jobber_property_label') or '',
+                    'Pump account (Accounts tab)', actor, acct.get('jobber_job_id') or '', acct.get('jobber_job_label') or '')
+    conn = _conn()
+    try:
+        key = f"maint-job:{acct['id']}"
+        if acct.get('jobber_job_id'):
+            conn.execute("UPDATE pump_todos SET done_at=?, done_by=? WHERE key=? AND done_at IS NULL",
+                         (_now_text(), actor or '', key))
+        elif acct.get('active', 1):
+            add_todo(conn, key, f"Set up {acct['name']}'s pump maintenance job in Jobber",
+                     f"{acct['name']} is a pump account now (Jobber client {acct.get('jobber_client_name') or ''}). Make "
+                     f"its recurring maintenance job in Jobber ({schedule_text(acct)} visits, we bill "
+                     f"{acct.get('our_bill') or 'the agreed price'}), then pick it on the account (Edit).",
+                     {'account': acct['name']})
+        conn.commit()
     finally:
         conn.close()
 
@@ -8829,8 +8873,10 @@ def _tracked_account(conn, it):
     """The quote is for one of the accounts we follow: on the maintenance or
     lake sheets, SCADA, or a Jobber client a site name points to (Greenscapes
     for the Carlisle)."""
-    if it.get('client_id') and conn.execute('SELECT 1 FROM pump_site_aliases WHERE client_id=? LIMIT 1',
-                                            (it['client_id'],)).fetchone():
+    if it.get('client_id') and (
+            conn.execute('SELECT 1 FROM pump_site_aliases WHERE client_id=? LIMIT 1', (it['client_id'],)).fetchone()
+            or conn.execute('SELECT 1 FROM pump_maint_accounts WHERE jobber_client_id=? AND active=1 LIMIT 1',
+                            (it['client_id'],)).fetchone()):
         return True
     return bool(match_account(' '.join(x for x in (it.get('client_name'), it.get('property_label')) if x), conn))
 
@@ -9603,7 +9649,19 @@ def account_history(conn, name):
         if not client:
             client = {'id': r['client_id'], 'name': r['client_name'], 'uri': _jobber_client_uri(r['client_id'])}
         if r['kind'] == 'job' and r['job_type'] == 'recurring' and r['status'] not in ('archived',):
-            recurring.append({'number': r['number'], 'title': r['title'], 'uri': r['web_uri'], 'status': r['status']})
+            recurring.append({'id': r['jobber_id'], 'number': r['number'], 'title': r['title'], 'uri': r['web_uri'],
+                              'status': r['status']})
+    p = a.get('pump') or {}
+    if p.get('jobber_client_id'):
+        # Linked on the Accounts tab: that client and job come first.
+        client = {'id': p['jobber_client_id'], 'name': p.get('jobber_client_name') or client and client['name'] or '',
+                  'uri': _jobber_client_uri(p['jobber_client_id'])}
+        if p.get('jobber_job_id') and not any(r.get('id') == p['jobber_job_id'] for r in recurring):
+            row = conn.execute('SELECT number, title, web_uri, status FROM pump_jobber_items WHERE jobber_id=?',
+                               (p['jobber_job_id'],)).fetchone()
+            recurring.insert(0, {'id': p['jobber_job_id'], 'number': row['number'] if row else '',
+                                 'title': (row['title'] if row else '') or p.get('jobber_job_label') or 'Maintenance job',
+                                 'uri': row['web_uri'] if row else '', 'status': row['status'] if row else ''})
     return {
         'name': a['name'],
         'account': {k: a.get(k) for k in ('pump', 'lake', 'scada', 'active')},
