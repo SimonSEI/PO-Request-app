@@ -64,12 +64,13 @@ The Receivables tile in The Office App chases open invoices from the QuickBooks 
    - **Not replies:** emails from our own staff (`@stahlman-england.com`). Jobber's notices ("payment received") make the app re-check that invoice in Jobber right away.
    - **Waiting on.** Every invoice shows who it is waiting on: *Waiting on their reply since …*, *They replied … - needs an answer from us*, or *Not contacted yet*. The Invoices tab can filter on either.
    - **Claude.** It uses the PO app's `ANTHROPIC_API_KEY`. If that account runs out of credit, the simple rules take over and the status chip at the top of the page says so.
-7. **Liens and the Notice of Nonpayment (NONP).** For install jobs the lien deadline is the last day furnished + 90 days (Florida, Chapter 713). The last day furnished comes from the date on the job, else Jobber's completion date, else the latest invoice date (shown as *estimated*). When money on the job is past due and the deadline is 30 days away:
-   - The app prepares a Notice of Nonpayment PDF and a draft email to the property owner (cc the contractor), saying a claim of lien will follow.
-   - With *Email the Notice of Nonpayment automatically* on, the email is sent.
-   - The job then walks through *sent → mailed certified → lien recorded*.
-   - If the customer looks like a contractor (builder, construction, landscape...), the owner must be entered on the job first.
-   - A last day furnished that is only estimated from the last invoice date shows on the Jobs tab, but never raises an alert or prepares a notice. Enter the real date on the job once the work is finished.
+7. **Liens and the Notice of Nonpayment (NONP).** For install jobs the lien deadline is the last day furnished + 90 days (Florida, Chapter 713). The last day furnished comes from the date on the job, else Jobber's completion date, else the latest invoice date (shown as *estimated*).
+   - **When:** once money on the job that is actually due is **40+ days past due** (Settings), while the lien deadline hasn't passed. Retainage still held doesn't count.
+   - **What the app does:** it drafts a Notice of Nonpayment PDF and an email to the property owner (cc the contractor), saying a claim of lien will follow.
+   - **Approval:** it emails a person (Settings → *Tell this person…*, blank = the sending address) and puts the notice at the top of **Today**. It is **never sent automatically**: only **Approve & send** sends it, and the approver's name is kept on the job.
+   - **After it's sent,** the job walks through *sent → mailed certified → lien recorded*.
+   - **Contractor customers:** if the customer looks like a contractor (builder, construction, landscape...), the owner must be entered on the job first. The notification lists those jobs.
+   - **Estimated dates:** a last day furnished that is only estimated from the last invoice date is shown as *estimated*. Enter the real date on the job once the work is finished.
 
 ### What the app does not do
 
@@ -82,7 +83,8 @@ The Receivables tile in The Office App chases open invoices from the QuickBooks 
 Out of the box follow-ups and notices wait as drafts on **Today**, so the first upload doesn't email every customer at once. Once the drafts look right:
 
 - Settings → **Send follow-ups automatically** (sends Monday–Friday within *Automatic sending hours*, 8–17 by default).
-- Settings → **Email the Notice of Nonpayment automatically**.
+
+A Notice of Nonpayment always waits for a person to approve it, whatever the settings.
 
 Everything else (Jobber, replies, retainage, lien deadlines) runs on its own every hour. **Run now** runs it immediately.
 

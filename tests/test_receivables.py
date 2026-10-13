@@ -240,8 +240,17 @@ class PlanTests(Base):
         invs = [{'status': 'open', 'open_balance': 500, 'txn_date': '', 'due_date': (TODAY - timedelta(days=40)).isoformat()}]
         li = R.lien_info(job, invs, s)
         self.assertEqual(li['days_left'], 20)
+        self.assertEqual(li['days_late'], 40)
         self.assertTrue(li['nonp_due'])
         self.assertFalse(R.lien_info(dict(job, kind='service'), invs, s)['applies'])
+        # Under 40 days late: no notice, however close the lien deadline.
+        recent = [dict(invs[0], due_date=(TODAY - timedelta(days=39)).isoformat())]
+        self.assertFalse(R.lien_info(job, recent, s)['nonp_due'])
+        # Retainage still held doesn't count as late.
+        self.assertFalse(R.lien_info(job, [dict(invs[0], retainage=1)], s)['nonp_due'])
+        # Lien deadline already passed: too late for a notice.
+        old = dict(job, last_furnished=(TODAY - timedelta(days=100)).isoformat())
+        self.assertFalse(R.lien_info(old, invs, s)['nonp_due'])
 
 
 class FollowupTests(Base):
@@ -383,13 +392,50 @@ class FollowupTests(Base):
         self.assertEqual(e['to_email'], 'owner@example.com')
         self.assertEqual(e['cc'], 'ap@builders.example')
         self.assertIn('claim of lien', e['body'])
-        ok, err = R.send_email(e['id'])
-        self.assertTrue(ok, err)
+        # A person was told it's waiting, and nothing went to the owner.
+        sent_to = [c[2]['json']['toRecipients'][0]['emailAddress']['address'] for c in self.graph.calls
+                   if c[0] == 'POST' and c[1].endswith('/messages') and 'json' in c[2]]
+        self.assertEqual(sent_to, ['simon@stahlman-england.com'])
+        self.assertTrue(any('Approve' in c[2]['json']['subject'] for c in self.graph.calls
+                            if c[0] == 'POST' and c[1].endswith('/messages')))
+        # Even with automatic sending on, it is never sent without a person approving it.
+        s = R.settings()
+        s['auto_send'] = True
+        R._save_settings(s)
+        ok, err = R.send_email(e['id'], by='automatic')
+        self.assertFalse(ok)
+        self.assertIn('approve', err)
+        self.login()
+        r = self.client.post('/receivables/api/email', json={'id': e['id'], 'to_email': e['to_email'], 'cc': e['cc'],
+                                                             'subject': e['subject'], 'body': e['body'], 'send': True})
+        self.assertEqual(r.status_code, 400)
+        r = self.client.post('/receivables/api/email', json={'id': e['id'], 'to_email': e['to_email'], 'cc': e['cc'],
+                                                             'subject': e['subject'], 'body': e['body'], 'send': True,
+                                                             'approve': True})
+        self.assertTrue(r.get_json()['success'], r.get_json())
         self.assertEqual(R._job(key)['nonp_status'], 'sent')
         self.assertTrue(self.graph.attachments()[0].startswith('Notice-of-Nonpayment'))
+        conn = R._conn()
+        self.assertTrue(conn.execute("SELECT 1 FROM ar_notes WHERE job_key=? AND text LIKE 'Notice of Nonpayment approved "
+                                     "and sent by Simon Test%'", (key,)).fetchone())
+        conn.close()
         R.check_liens()  # not prepared twice
         conn = R._conn()
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM ar_emails WHERE kind='nonp'").fetchone()[0], 1)
+        conn.close()
+
+    def test_old_rule_drafts_withdrawn_once(self):
+        key = self.inv('36006')['job_key']
+        conn = R._conn()
+        conn.execute("UPDATE ar_jobs SET nonp_status='prepared' WHERE key=?", (key,))
+        conn.execute("INSERT INTO ar_emails (kind, job_key, status) VALUES ('nonp', ?, 'draft')", (key,))
+        conn.commit()
+        conn.close()
+        A.set_setting('receivables_withdraw_nonps_oct13', '')
+        R._withdraw_old_rule_nonps()
+        self.assertEqual(R._job(key)['nonp_status'], '')
+        conn = R._conn()
+        self.assertEqual(conn.execute("SELECT status FROM ar_emails WHERE kind='nonp'").fetchone()[0], 'discarded')
         conn.close()
 
     def test_nonp_needs_owner_for_contractor(self):

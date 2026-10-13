@@ -201,15 +201,28 @@ function kpi(v, l){ return '<div class="kpi"><div class="v">' + esc(v) + '</div>
 
 // ── Today ──
 function renderToday(){
-  var drafts = D.emails.filter(function(e){ return e.status === 'draft'; });
+  var drafts = D.emails.filter(function(e){ return e.status === 'draft' && e.kind !== 'nonp'; });
+  var nonps = D.emails.filter(function(e){ return e.status === 'draft' && e.kind === 'nonp'; });
   var people = D.invoices.filter(function(i){ return i.status === 'needs_person'; });
   var noContact = D.invoices.filter(function(i){ return i.status !== 'paid' && i.plan.due_now && !i.contacts.length; });
   var liens = D.jobs.filter(function(j){ return j.lien && j.lien.applies && !j.lien.estimated && j.open_balance > 0 && j.lien.days_left != null && j.lien.days_left <= Number(D.settings.nonp_lead_days || 30) + 15 && j.nonp_status !== 'lien_recorded'; })
                     .sort(function(a,b){ return a.lien.days_left - b.lien.days_left; });
   var unmatched = D.customers.filter(function(c){ return c.jobber_note; });
-  var n = drafts.length + people.length + liens.length;
+  var n = drafts.length + people.length + liens.length + nonps.length;
   var nt = document.getElementById('n-today'); nt.style.display = n ? '' : 'none'; nt.textContent = n;
   var h = '';
+  if(nonps.length){
+    h += '<div class="card" style="border-color:#FECACA;background:var(--bad-bg)"><h3>⚖️ Notice of Nonpayment waiting for your approval (' + nonps.length + ')</h3><p class="small muted">Drafted because the job is ' + esc(D.settings.nonp_min_days_late) + '+ days past due. Nothing goes to the owner until you approve it.</p>';
+    nonps.forEach(function(e){
+      var j = D.jobs.filter(function(x){ return x.key === e.job_key; })[0] || {};
+      var l = j.lien || {};
+      h += '<div class="item"><div class="row"><b>' + esc(j.name || e.subject) + '</b><span class="muted">' + esc(j.customer_name || '') + '</span>' + (l.days_late ? badge('b-late', l.days_late + ' days past due') : '') + '</div>' +
+           '<div class="small">' + money(j.open_balance) + ' open · to ' + (esc(e.to_email) || '<b style="color:var(--bad)">no owner email</b>') + (e.cc ? ' · cc ' + esc(e.cc) : '') + ' · lien deadline ' + md(l.deadline) + (l.estimated ? ' (estimated)' : '') + '</div>' +
+           (e.error ? '<div class="small" style="color:var(--bad)">' + esc(e.error) + '</div>' : '') +
+           '<div class="row" style="margin-top:6px"><button class="sm primary" onclick="openEmail(' + e.id + ')">Review &amp; approve</button><a class="small" target="_blank" href="/receivables/nonp.pdf?key=' + encodeURIComponent(e.job_key) + '">Preview notice ↗</a><button class="sm danger" onclick="discardEmail(' + e.id + ')">Don\'t send</button></div></div>';
+    });
+    h += '</div>';
+  }
   h += '<div class="card"><h3>✉️ Follow-ups ready (' + drafts.length + ')</h3>';
   if(!drafts.length) h += '<div class="empty">Nothing waiting. ' + (D.settings.auto_send ? 'Follow-ups are sent automatically.' : '') + '</div>';
   else {
@@ -350,7 +363,10 @@ function openEmail(id){
        '<label>Subject</label><input id="em-subj" value="' + esc(e.subject) + '"' + (ro ? ' disabled' : '') + '><label>Message</label><textarea id="em-body" style="min-height:320px"' + (ro ? ' disabled' : '') + '>' + esc(e.body) + '</textarea>' +
        '<label>Attachments</label><div id="em-att" class="small muted">Loading…</div>' +
        '<div class="muted small" style="margin-top:6px">Sent from ' + esc(D.settings.from_email) + '</div>' +
-       (ro ? '' : '<div class="row" style="margin-top:10px"><button class="primary" onclick="saveEmail(' + id + ', true)">Send</button><button onclick="saveEmail(' + id + ', false)">Save draft</button><button class="danger" onclick="discardEmail(' + id + ')">Discard</button></div>') + '</div>';
+       (ro ? '' : '<div class="row" style="margin-top:10px">' + (e.kind === 'nonp'
+          ? '<button class="primary" style="background:var(--bad);border-color:var(--bad)" onclick="approveNonp(' + id + ')">Approve &amp; send to the owner</button>'
+          : '<button class="primary" onclick="saveEmail(' + id + ', true)">Send</button>') +
+        '<button onclick="saveEmail(' + id + ', false)">Save draft</button><button class="danger" onclick="discardEmail(' + id + ')">' + (e.kind === 'nonp' ? 'Don\'t send' : 'Discard') + '</button></div>') + '</div>';
   openDrawer(h);
   getJ('/receivables/api/email/' + id + '/attachments').then(function(j){
     var el = document.getElementById('em-att'); if(!el) return;
@@ -362,11 +378,16 @@ function saveEmail(id, send){
   post('/receivables/api/email', {id:id, to_email:document.getElementById('em-to').value, cc:document.getElementById('em-cc').value,
     subject:document.getElementById('em-subj').value, body:document.getElementById('em-body').value, send:send}).then(function(){ toast(send ? 'Sent' : 'Saved'); closeDrawer(); load(); });
 }
+function approveNonp(id){
+  if(!confirm('Approve this Notice of Nonpayment and email it to the owner now? It says a claim of lien will follow. Your name is recorded as the approver.')) return;
+  post('/receivables/api/email', {id:id, to_email:document.getElementById('em-to').value, cc:document.getElementById('em-cc').value,
+    subject:document.getElementById('em-subj').value, body:document.getElementById('em-body').value, send:true, approve:true}).then(function(){ toast('Notice of Nonpayment sent'); closeDrawer(); load(); });
+}
 function sendEmail(id){ var e = D.emails.filter(function(x){ return x.id === id; })[0];
   post('/receivables/api/email', {id:id, to_email:e.to_email, cc:e.cc, subject:e.subject, body:e.body, send:true}).then(function(){ toast('Sent'); load(); }); }
 function discardEmail(id){ if(!confirm('Discard this email?')) return; post('/receivables/api/email', {id:id, discard:true}).then(function(){ closeDrawer(); load(); }); }
 function sendAll(){
-  var list = D.emails.filter(function(e){ return e.status === 'draft' && e.to_email; });
+  var list = D.emails.filter(function(e){ return e.status === 'draft' && e.to_email && e.kind !== 'nonp'; });
   if(!list.length || !confirm('Send ' + list.length + ' email(s) from ' + D.settings.from_email + '?')) return;
   var chain = Promise.resolve(), ok = 0;
   list.forEach(function(e){ chain = chain.then(function(){ return post('/receivables/api/email', {id:e.id, to_email:e.to_email, cc:e.cc, subject:e.subject, body:e.body, send:true}).then(function(){ ok++; }).catch(function(){}); }); });
@@ -419,7 +440,9 @@ function renderSettings(){
     fld('lien_days', 'Lien window (days after last furnished)', s.lien_days, 'number') + fld('nonp_lead_days', 'Prepare the NONP this many days before the deadline', s.nonp_lead_days, 'number') +
     fld('lien_kinds', 'Applies to (install, service)', s.lien_kinds) + fld('company_name', 'Company name on notices and invoices', s.company_name) +
     fld('company_address', 'Company address', s.company_address) + fld('company_phone', 'Company phone', s.company_phone) + '</div>' +
-    chk('nonp_auto', 'Email the Notice of Nonpayment to the owner automatically', s.nonp_auto) + '</div>';
+    '<div class="grid2">' + fld('nonp_min_days_late', 'Draft a Notice of Nonpayment once the job is this many days past due', s.nonp_min_days_late, 'number') +
+    fld('nonp_notify', 'Tell this person when one is waiting for approval (blank = the sending address)', s.nonp_notify) + '</div>' +
+    '<p class="small muted">A Notice of Nonpayment is never sent on its own: it waits on the Today tab until someone clicks Approve &amp; send.</p></div>';
   h += '<button class="primary" onclick="saveSettings()">Save settings</button>';
   document.getElementById('p-settings').innerHTML = h;
 }
@@ -427,9 +450,9 @@ function fld(k, label, v, type){ return '<div><label>' + esc(label) + '</label><
 function chk(k, label, v){ return '<label style="display:flex;gap:8px;align-items:center;font-weight:500;color:var(--ink)"><input type="checkbox" id="s-' + k + '" style="width:auto"' + (v ? ' checked' : '') + '>' + esc(label) + '</label>'; }
 function saveSettings(){
   var d = {}, v = function(k){ return document.getElementById('s-' + k); };
-  ['from_email','cc','send_hours','signature','install_words','retainage_pcts','lien_kinds','company_name','company_address','company_phone'].forEach(function(k){ d[k] = v(k).value; });
-  ['promise_grace_days','reported_paid_wait_days','min_balance','retainage_tolerance','retainage_every_days','max_attach_mb','lien_days','nonp_lead_days'].forEach(function(k){ d[k] = v(k).value; });
-  ['auto_send','read_replies','enabled','nonp_auto'].forEach(function(k){ d[k] = v(k).checked; });
+  ['from_email','cc','send_hours','signature','install_words','retainage_pcts','lien_kinds','company_name','company_address','company_phone','nonp_notify'].forEach(function(k){ d[k] = v(k).value; });
+  ['promise_grace_days','reported_paid_wait_days','min_balance','retainage_tolerance','retainage_every_days','max_attach_mb','lien_days','nonp_lead_days','nonp_min_days_late'].forEach(function(k){ d[k] = v(k).value; });
+  ['auto_send','read_replies','enabled'].forEach(function(k){ d[k] = v(k).checked; });
   if(d.auto_send && !D.settings.auto_send && !confirm('Follow-ups will be emailed to customers from ' + d.from_email + ' without review. Turn on?')) return;
   d.stages = D.settings.stages.map(function(st, n){ return {key: st.key, name: document.getElementById('st-name-' + n).value, from_days: document.getElementById('st-from-' + n).value, every_days: document.getElementById('st-every-' + n).value}; });
   post('/receivables/api/settings', d).then(function(){ toast('Settings saved'); load(); });
@@ -554,7 +577,7 @@ function openJob(key){
       '<div><label>Retainage on hold</label><select id="j-hold"><option value="0">No: ask for it once the job is complete</option><option value="1"' + (j.retainage_hold ? ' selected' : '') + '>Yes: the project is still going</option></select></div>' +
       '</div><label>Notes</label><textarea id="j-notes">' + esc(j.notes) + '</textarea><div class="row" style="margin-top:8px"><button class="primary" onclick="saveJob(\'' + esc(key) + '\')">Save job</button>' + (j.jobber_job_uri ? '<a target="_blank" href="' + esc(j.jobber_job_uri) + '">Job in Jobber ↗</a>' : '') + '</div></div>';
     if(l.applies){
-      h += '<div class="card"><h3>Lien and Notice of Nonpayment</h3><div class="small">Last furnished ' + md(l.last_furnished) + (l.estimated ? ' (estimated from the last invoice date; enter the real date above)' : '') + ' → claim of lien by <b>' + md(l.deadline) + '</b>. The notice is prepared ' + D.settings.nonp_lead_days + ' days before that if money is still owed and past due.</div>' +
+      h += '<div class="card"><h3>Lien and Notice of Nonpayment</h3><div class="small">Last furnished ' + md(l.last_furnished) + (l.estimated ? ' (estimated from the last invoice date; enter the real date above)' : '') + ' → claim of lien by <b>' + md(l.deadline) + '</b>. A Notice of Nonpayment is drafted once money on the job is ' + D.settings.nonp_min_days_late + '+ days past due' + (l.days_late ? ' (now ' + l.days_late + ')' : '') + ', and it waits for your approval.</div>' +
         '<div class="row" style="margin-top:8px"><span>Step: <b>' + esc(j.nonp_status || 'not started') + '</b></span><a target="_blank" href="/receivables/nonp.pdf?key=' + encodeURIComponent(key) + '">Preview notice ↗</a>' +
         (!j.nonp_status ? '<button class="sm primary" onclick="prepNonp(\'' + esc(key) + '\')">Prepare now</button>' : '') +
         (j.nonp_status === 'sent' || j.nonp_status === 'prepared' ? '<button class="sm" onclick="nonpStep(\'' + esc(key) + '\',\'mailed\')">Mailed certified</button>' : '') +
