@@ -331,13 +331,13 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   <div class="toolbar">
     <select id="msMonth" onchange="loadMaintSchedule()"></select>
     <input type="text" id="msSearch" placeholder="Find an account or address…" oninput="drawMaintSchedule()" style="width:220px">
-    <select id="msShow" onchange="drawMaintSchedule()"><option value="">All visits</option><option value="todo">Not notified yet</option><option value="Wettech">Wettech (pumps)</option><option value="Gulfshore">Gulfshore (lakes)</option></select>
+    <select id="msShow" onchange="drawMaintSchedule()"><option value="">All visits</option><option value="todo">Not notified yet</option><option value="Wettech">Justin - Wettech (pumps)</option><option value="Gulfshore">Jordan - Gulfshore (diving)</option></select>
     <div class="sp"></div><span id="msInfo" class="note"></span>
     <button class="btn p hide" id="msMarkSel" onclick="maintNotifiedAskMany()">✓ Mark selected notified</button>
     <button class="btn" id="msEmail" onclick="emailWettechList()">✉️ Email Tommy the pump list</button>
   </div>
   <div class="note" style="margin-bottom:8px">Every pump (Wettech) and lake (Gulfshore) maintenance visit due in the month from the Accounts tab, and whether the subcontractor has been told. Lakes count as told once the month's diver list is emailed.</div>
-  <div class="scroll" style="max-height:45vh"><table class="t"><thead><tr><th style="width:28px"><input type="checkbox" id="msAll" title="Select all not notified shown" onchange="msSelectAll(this.checked)"></th><th>Account</th><th>Subcontractor</th><th>Client approved</th><th>Subcontractor notified</th><th>Report in</th></tr></thead><tbody id="msBody"></tbody></table></div>
+  <div class="scroll" style="max-height:45vh"><table class="t"><thead><tr><th style="width:28px"><input type="checkbox" id="msAll" title="Select every visit shown that isn't notified yet" onchange="msSelectAll(this.checked)"></th><th>Account</th><th>Client approved</th><th>Justin<div class="note" style="font-weight:400">Wettech pumps</div></th><th>Jordan<div class="note" style="font-weight:400">Gulfshore diving</div></th></tr></thead><tbody id="msBody"></tbody></table></div>
   <h3 style="margin:18px 0 8px;font-size:14px">Quotes sent - waiting on the client <span class="chip" id="jbSentCount"></span></h3>
   <div class="toolbar"><input type="text" id="jbSentSearch" placeholder="Find a quote #, client, address or title…" oninput="drawSent()" style="width:280px"></div>
   <div class="note" style="margin-bottom:8px">Our pump, diver, filter and SCADA quotes in Jobber that have gone to the client and aren't approved yet, newest quote first. They drop off once the client approves (the next Jobber sync).</div>
@@ -1678,7 +1678,7 @@ function msMonths(){
 async function loadMaintSchedule(){
   msMonths();
   const j = await api('/maint/schedule?month=' + document.getElementById('msMonth').value);
-  if (!j.success) { document.getElementById('msBody').innerHTML = `<tr><td colspan="6" class="empty">${esc(j.error)}</td></tr>`; return; }
+  if (!j.success) { document.getElementById('msBody').innerHTML = `<tr><td colspan="5" class="empty">${esc(j.error)}</td></tr>`; return; }
   MS = j; drawMaintSchedule();
 }
 function drawMaintSchedule(){
@@ -1691,13 +1691,19 @@ function drawMaintSchedule(){
   document.getElementById('msInfo').innerHTML = `${MS.total} visits in ${esc(MS.label)} · ${MS.notified} notified · ` + (left ? `<b class="warn">${left} not notified yet</b>` : '<span class="ok">all notified</span>');
   document.getElementById('msEmail').classList.toggle('hide', !MS.wettech_mailto);
   const q = x => JSON.stringify(x).replace(/"/g, '&quot;');
-  document.getElementById('msBody').innerHTML = rows.map(r => { const n = r.notified;
-    return `<tr><td>${n ? '' : `<input type="checkbox" class="msSel" data-account="${esc(r.account)}" data-vendor="${esc(r.vendor)}" onchange="msSelChanged()">`}</td><td><a href="#" onclick="event.preventDefault();openAccount(${q(r.account)})"><b>${esc(r.account)}</b></a><div class="note">${esc(r.what)}${r.where ? ' · ' + esc(r.where) : ''}</div>${r.hold ? `<span class="chip a">${esc(r.hold)}</span>` : ''}</td>
-    <td>${esc(r.vendor)}<div class="note">${r.vendor === 'Wettech' ? 'pump maintenance' : 'lake / diver'}</div></td>
-    <td>${r.approved ? '<span class="ok">✓ ' + esc(niceDay(r.approved)) + '</span>' : '<span class="note">—</span>'}</td>
-    <td style="min-width:190px">${n ? `<span class="chip g">✓ notified</span> <span class="note">${esc(niceDay(d10(n.notified_at)))}${n.notified_by ? ' · ' + esc(n.notified_by) : ''}${n.how ? ' · ' + esc(n.how) : ''}</span>${n.note ? '<div class="note">' + esc(n.note) + '</div>' : ''}${n.auto ? '' : ` <button class="btn s" title="Not notified after all" onclick="maintNotified(${q(r.account)}, '${r.vendor}', false)">↺</button>`}`
-      : `<span class="chip r">not notified</span> <button class="btn s p" onclick="maintNotifiedAsk(${q(r.account)}, '${r.vendor}')">✓ Mark notified</button>`}</td>
-    <td>${r.report ? '<span class="ok">✓ ' + esc(niceDay(r.report)) + '</span>' : '<span class="note">not yet</span>'}</td></tr>`; }).join('') || `<tr><td colspan="6" class="empty">${MS.total ? 'None to show.' : 'No maintenance due this month.'}</td></tr>`;
+  // One row per account: whether Justin (Wettech) and Jordan (Gulfshore) have been told.
+  const byAcct = [];
+  rows.forEach(r => { let a = byAcct.find(x => x.account === r.account); if (!a) byAcct.push(a = {account: r.account, rows: {}}); a.rows[r.vendor] = r; });
+  const cell = (r, who) => { if (!r) return '<span class="note">—</span>'; const n = r.notified;
+    return (n ? `<span class="chip g">✓ told</span> <span class="note">${esc(niceDay(d10(n.notified_at)))}${n.notified_by ? ' · ' + esc(n.notified_by) : ''}${n.how ? ' · ' + esc(n.how) : ''}</span>${n.note ? '<div class="note">' + esc(n.note) + '</div>' : ''}${n.auto ? '' : ` <button class="btn s" title="Not told after all" onclick="maintNotified(${q(r.account)}, '${r.vendor}', false)">↺</button>`}`
+      : `<label style="display:inline-flex;gap:4px;align-items:center"><input type="checkbox" class="msSel" data-account="${esc(r.account)}" data-vendor="${esc(r.vendor)}" onchange="msSelChanged()"><span class="chip r">not told</span></label> <button class="btn s p" title="Mark ${who} told" onclick="maintNotifiedAsk(${q(r.account)}, '${r.vendor}')">✓</button>`)
+      + `<div class="note">${r.report ? '✓ report ' + esc(niceDay(r.report)) : 'report not in yet'}</div>`; };
+  document.getElementById('msBody').innerHTML = byAcct.map(a => { const w = a.rows.Wettech, g = a.rows.Gulfshore, r0 = w || g;
+    const both = w && g ? (w.notified && g.notified ? '<span class="chip g">both told</span>' : !w.notified && !g.notified ? '<span class="chip r">neither told</span>' : `<span class="chip a">only ${w.notified ? 'Justin' : 'Jordan'} told</span>`) : '';
+    return `<tr><td><input type="checkbox" title="Select this account's visits not told yet" onchange="this.closest('tr').querySelectorAll('.msSel').forEach(x => x.checked = this.checked);msSelChanged()" ${(w && !w.notified) || (g && !g.notified) ? '' : 'disabled'}></td>
+    <td style="max-width:300px"><a href="#" onclick="event.preventDefault();openAccount(${q(a.account)})"><b>${esc(a.account)}</b></a> ${both}<div class="note" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r0.what)}${r0.where ? ' · ' + esc(r0.where) : ''}">${esc(r0.what)}${r0.where ? ' · ' + esc(r0.where) : ''}</div>${(w && w.hold) || (g && g.hold) ? `<span class="chip a">${esc((w && w.hold) || g.hold)}</span>` : ''}</td>
+    <td>${r0.approved ? '<span class="ok">✓ ' + esc(niceDay(r0.approved)) + '</span>' : '<span class="note">—</span>'}</td>
+    <td style="min-width:150px">${cell(w, 'Justin')}</td><td style="min-width:150px">${cell(g, 'Jordan')}</td></tr>`; }).join('') || `<tr><td colspan="5" class="empty">${MS.total ? 'None to show.' : 'No maintenance due this month.'}</td></tr>`;
   document.getElementById('msAll').checked = false; msSelChanged();
 }
 // Several visits notified at once: tick them, then "Mark selected notified".
@@ -1710,7 +1716,7 @@ function maintNotifiedAskMany(){
   openModal(`${sel.length} visit${sel.length > 1 ? 's' : ''} notified`, `<div class="note" style="margin-bottom:8px">${sel.map(x => esc(x.account) + ' <span class="note">(' + esc(x.vendor) + ')</span>').join(', ')}</div><div class="fields">
     <label>How<select id="mn_how"><option>email</option><option>phone</option><option>text</option><option>in person</option></select></label>
     <label class="w">Note<input type="text" id="mn_note" placeholder="e.g. sent Tommy the October list"></label></div>
-    <div class="note">This only records that ${vendors.join(' and ')} ${vendors.length > 1 ? 'were' : 'was'} told - nothing is sent.</div>`,
+    <div class="note">This only records that ${vendors.map(v => v === 'Wettech' ? 'Justin (Wettech)' : 'Jordan (Gulfshore)').join(' and ')} ${vendors.length > 1 ? 'were' : 'was'} told - nothing is sent.</div>`,
     `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="maintNotifiedMany()">Save</button>`);
 }
 async function maintNotifiedMany(){
@@ -1723,7 +1729,7 @@ async function maintNotifiedMany(){
   closeModal(); drawMaintSchedule(); toast(`${sel.length} marked notified`);
 }
 function maintNotifiedAsk(account, vendor){
-  const who = vendor === 'Wettech' ? 'Wettech (Tommy)' : 'Gulfshore (Jordan)';
+  const who = vendor === 'Wettech' ? 'Justin (Wettech)' : 'Jordan (Gulfshore)';
   openModal(`${esc(account)} - ${esc(who)} notified`, `<div class="fields">
     <label>How<select id="mn_how"><option>email</option><option>phone</option><option>text</option><option>in person</option></select></label>
     <label class="w">Note<input type="text" id="mn_note" placeholder="e.g. Tommy said the week of the 20th"></label></div>`,
