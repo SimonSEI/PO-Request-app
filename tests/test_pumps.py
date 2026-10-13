@@ -2929,6 +2929,11 @@ class PumpsTest(unittest.TestCase):
             self.assertIsNone(lc['notified'])
             self.assertIn('Lake%20Club', j['wettech_mailto'])
             self.assertFalse(any(a == 'Forum c/o LandQwest Commercial Property' for a, _ in rows), 'January/July only')
+            # Only the subcontractor the account has, per the master list: Allura and
+            # Wild Blue are Wettech (Justin) only, Clubside's lake is Gulfshore (Jordan) only.
+            for acct in ('Allura', 'Wild Blue'):
+                self.assertEqual({v for a, v in rows if a == acct}, {'Wettech'}, acct)
+            self.assertNotIn(('Clubside', 'Wettech'), rows)
             r = self.c.post('/pumps/api/maint/notified', json={'month': '2026-10', 'vendor': 'Wettech',
                                                                'accounts': ['Lake Club (Spanish Wells)'], 'how': 'phone'})
             j = r.get_json()
