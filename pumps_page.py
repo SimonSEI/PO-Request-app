@@ -282,7 +282,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   <div class="r">
     <button class="btn p" onclick="newCase()">＋ New item</button>
     <span class="who" data-i="{{ (full_name or '?')[:1]|upper }}">{{ full_name }}</span>
-    <button class="btn" onclick="showUndo()" title="Undo a recent change">↶ Undo</button>
+    <button class="btn" onclick="showUndo()" title="Undo a recent change (Ctrl+Z / ⌘Z undoes your last one)">↶ Undo</button>
     <a class="btn" href="{{ url_for('dashboard') }}">← Dashboard</a>
   </div>
 </nav>
@@ -478,11 +478,41 @@ async function showUndo(){
   const rows = j.actions.map(a => `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line,#ddd)"><div style="flex:1"><b>${esc(a.label)}</b><div class="note">${esc(a.created_at.slice(5,16))} · ${esc(a.actor || '')}${a.external ? ' · ' + esc(a.external) : ''}</div></div><button class="btn s" onclick="undoAction(${a.id})">Undo</button></div>`).join('');
   openModal('Undo a recent change', rows ? `<p class="note">Changes from the last 24 hours, newest first. Undo puts the app back as it was before that click.</p>${rows}` : '<div class="empty">Nothing to undo from the last 24 hours.</div>');
 }
+// Undo one change. When a later change touched the same thing, ask to undo
+// that too. Then whatever is open (a job, an account) shows the result.
+async function runUndo(id){
+  let r = await api('/undo/' + id, {method:'POST', body:{}});
+  if (!r.success && r.blocked_by) {
+    if (!confirm('A later change touched the same thing:\n\n• ' + r.blocked_by.join('\n• ') + '\n\nUndo that too?')) return null;
+    r = await api('/undo/' + id, {method:'POST', body:{also_later: true}});
+  }
+  if (!r.success) { toast(r.error, true); return null; }
+  toast('Undone: ' + r.label + (r.outside ? ' - ' + r.outside : ''));
+  loadToday();
+  const dr = document.getElementById('drawer');
+  if (!document.getElementById('drawerWrap').classList.contains('hide')) { if (dr.dataset.account) openAccount(dr.dataset.account); else if (curCase) openCase(curCase.id); }
+  showTab(curTab);
+  return r;
+}
+// Ctrl+Z / ⌘Z (not while typing in a box): undo your own last change.
+let undoBusy = false;
+async function undoLast(){
+  if (undoBusy) return; undoBusy = true;
+  try {
+    const j = await api('/undo'); if (!j.success) { toast(j.error, true); return; }
+    const a = j.actions.find(x => !j.me || x.actor === j.me);
+    if (!a) { toast('Nothing of yours to undo from the last 24 hours.'); return; }
+    await runUndo(a.id);
+  } finally { undoBusy = false; }
+}
+document.addEventListener('keydown', e => {
+  if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== 'z') return;
+  const t = e.target, tag = (t.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select' || t.isContentEditable) return;   // the box's own undo
+  e.preventDefault(); undoLast();
+});
 async function undoAction(id){
-  const j = await api('/undo/' + id, {method:'POST', body:{}});
-  if (!j.success) { toast(j.error, true); return; }
-  toast('Undone: ' + j.label + (j.outside ? ' - ' + j.outside : ''));
-  loadToday(); showTab(curTab); showUndo();
+  if (await runUndo(id)) showUndo();
 }
 function openAll(uris){ const blocked = uris.filter(u => { const w = window.open(u, '_blank'); if (w) w.opener = null; return !w; }).length; if (blocked) toast('Your browser blocked a tab - allow pop-ups for this site, or use the buttons one at a time.', true); }
 async function todoDone(id, done){ const j = await api('/todos/' + id + '/done', {method:'POST', body:{done}}); if (!j.success) toast(j.error, true); else { toast(done ? 'Done' : 'Reopened'); loadToday(); } }

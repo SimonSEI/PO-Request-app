@@ -3812,6 +3812,21 @@ def _quote_note_text(doc, total):
     return '\n'.join(lines)
 
 
+def _note_attachment(url, file_name, content_type):
+    """A note attachment with only the fields this Jobber takes (its
+    NoteAttachmentAttributes has no fileName or contentType - Oct 2026)."""
+    try:
+        have = {f['name'] for f in (_type_fields('NoteAttachmentAttributes').get('inputFields') or [])}
+    except JobberError:
+        have = set()
+    att = {'url': url}
+    for keys, value in ((('fileName', 'name', 'filename'), file_name), (('contentType', 'mimeType'), content_type)):
+        key = next((k for k in keys if k in have), None)
+        if key and value:
+            att[key] = value
+    return att
+
+
 def note_vendor_file(doc, target_type, target_id, text, version='original', file_name=None, content_type=None):
     """A note on a Jobber record with the vendor's own document attached (or
     linked, when Jobber will not take the attachment)."""
@@ -3824,7 +3839,7 @@ def note_vendor_file(doc, target_type, target_id, text, version='original', file
     if url:
         try:
             data = jobber_gql(q, {'id': target_id, 'input': {'message': text, 'attachments': [
-                {'url': url, 'fileName': file_name or doc.get('file_name'), 'contentType': ctype}]}})
+                _note_attachment(url, file_name or doc.get('file_name'), ctype)]}})
             payload = data.get(mutation) or {}
             if not payload.get('userErrors'):
                 return {'note_id': (payload.get(field) or {}).get('id'), 'attached': True}
@@ -4618,8 +4633,8 @@ def log_report_to_jobber(doc_id, target_type, target_id, actor='system', message
             ctype = 'application/pdf' if has_pdf else \
                 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
             try:
-                data = jobber_gql(q, {'id': target_id, 'input': {'message': text, 'attachments': [{
-                    'url': url, 'fileName': fname, 'contentType': ctype}]}})
+                data = jobber_gql(q, {'id': target_id, 'input': {'message': text, 'attachments': [
+                    _note_attachment(url, fname, ctype)]}})
                 attached = not ((data.get(mutation) or {}).get('userErrors'))
             except JobberError as e:
                 print(f'  ⚠ Pumps: Jobber would not take the attachment ({e}); saving the note without it')
@@ -5065,7 +5080,8 @@ def _register_routes(app, csrf):
 
 
 def _call(fn, actor, kw):
-    action = _start_undo(actor) if request.method == 'POST' and not re.search(UNDO_SKIP, request.path) else 0
+    action = _start_undo(actor) if request.method in ('POST', 'PATCH', 'PUT', 'DELETE') and \
+        not re.search(UNDO_SKIP, request.path) else 0
     token = _UNDO_ACTION.set(action)
     try:
         out = fn(actor, **kw)
@@ -5184,9 +5200,17 @@ def recent_actions(limit=15):
         conn.close()
 
 
-def undo_action(action_id, actor):
+class UndoBlocked(ValueError):
+    """A later click changed the same rows: undo those too (cascade) or not at all."""
+    def __init__(self, labels):
+        self.labels = labels
+        super().__init__(f'"{labels[0]}" changed the same thing afterwards - undo that too?')
+
+
+def undo_action(action_id, actor, cascade=False):
     """Put back every row the click added, changed or deleted, newest first.
-    Refused when a later click changed the same rows (undo that one first)."""
+    When a later click changed the same rows, it is refused unless cascade -
+    then those later clicks are undone first."""
     conn = _conn()
     try:
         a = conn.execute('SELECT * FROM pump_undo_actions WHERE id=?', (action_id,)).fetchone()
@@ -5202,8 +5226,23 @@ def undo_action(action_id, actor):
             'SELECT DISTINCT x.label FROM pump_undo_rows r JOIN pump_undo_actions x ON x.id = r.action_id '
             'WHERE r.action_id > ? AND x.undone_at IS NULL AND EXISTS (SELECT 1 FROM pump_undo_rows o '
             'WHERE o.action_id=? AND o.tbl=r.tbl AND o.row_id=r.row_id)', (action_id, action_id)).fetchall()
+        if later and not cascade:
+            raise UndoBlocked([r[0] for r in later])
         if later:
-            raise ValueError(f"\"{later[0][0]}\" changed the same thing afterwards - undo that first")
+            # Undo the later clicks that changed the same rows first, newest first.
+            ids = [r[0] for r in conn.execute(
+                'SELECT DISTINCT r.action_id FROM pump_undo_rows r JOIN pump_undo_actions x ON x.id = r.action_id '
+                'WHERE r.action_id > ? AND x.undone_at IS NULL AND EXISTS (SELECT 1 FROM pump_undo_rows o '
+                'WHERE o.action_id=? AND o.tbl=r.tbl AND o.row_id=r.row_id) ORDER BY r.action_id DESC',
+                (action_id, action_id))]
+            conn.close()
+            for i in ids:
+                try:
+                    undo_action(i, actor, cascade=True)
+                except ValueError as e:
+                    if 'Already undone' not in str(e):
+                        raise
+            conn = _conn()
         for r in rows:
             t = r['tbl']
             if t not in UNDO_TABLES:
@@ -6900,12 +6939,16 @@ def h_todo_done(actor, todo_id):
 
 @api('/undo')
 def h_undo_list(actor):
-    return {'actions': recent_actions()}
+    return {'actions': recent_actions(), 'me': actor or ''}
 
 
 @api('/undo/<int:action_id>', methods=('POST',))
 def h_undo(actor, action_id):
-    return undo_action(action_id, actor)
+    """{"also_later": true} also undoes later clicks that changed the same things."""
+    try:
+        return undo_action(action_id, actor, cascade=bool(_json().get('also_later')))
+    except UndoBlocked as e:
+        return {'success': False, 'error': str(e), 'blocked_by': e.labels}, 409
 
 
 @api('/todos/hide', methods=('POST',))
