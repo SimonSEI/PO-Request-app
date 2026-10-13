@@ -7690,7 +7690,7 @@ SEED_LAKES = [
      '$450.00', 'October only - Naples Electric does this, not the diver.', 0, 1),
     ('Watercrest @ Falling Waters', 'Both', '2017-01-01', '1 Lake 1 Filter', None, Q, '$125.00', '', '', None, 1, 1),
     ('Westminster HOA', 'Lake', '2016-12-01', '4 Lakes 9 Filters', None, Q, '$325.00', 'Included in m/m $780', '', None, 1, 1),
-    ('Wild Blue', 'Pump', '2026-03-17', '1 Pump 1 Lake', None, Q, '$250.00', '', '', None, 1, 1),
+    ('Wild Blue', 'Pump', '2026-03-17', '1 Pump 1 Lake', None, Q, '', '', '', 'No diving - Wettech only (master list).', 0, 1),
     # Former accounts (yellow on the sheet)
     ('Bentley Village', 'Lake', '2018-01-01', '1 Lake 6 Filters', 'LR 602 Lake Louise Circle (The Retreat)', Q, '$145.00',
      '$500.00', '', '', 1, 0),
@@ -7800,6 +7800,18 @@ def _apply_master_list(c, now):
                        years, active, notes, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
                   (client, due, product, cost, bill, vendor, json.dumps(years), active, notes,
                    'Master list (Oct 7 2026)', now))
+
+
+def _apply_master_vendors(c, now):
+    """Once (Oct 13 2026): the office's master list ("Gulfshore Yacht Service /
+    Wet Tech") has Gulfshore N/A at Wild Blue - Wettech does the pump, no diver.
+    It had been on the lake sheet with Wettech's $250, so Jordan was being asked."""
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('master_vendors_oct26', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    c.execute("UPDATE pump_dive_sites SET needs_dive=0, diver_cost='', diver_notes=TRIM(COALESCE(diver_notes, '') || "
+              "' No diving - Wettech only (master list).'), updated_by='Master list (Oct 13 2026)', updated_at=? "
+              "WHERE name='Wild Blue'", (now,))
 
 
 def _apply_repairs_by(c, now):
@@ -7986,6 +7998,7 @@ def init_account_tables(c):
     _scada_jobber_migrate(c)
     _apply_master_list(c, now)
     _apply_repairs_by(c, now)
+    _apply_master_vendors(c, now)
     _apply_follow_ups(c, now)
     if not seeded('office_answers_oct26'):
         # What the office said (Oct 2026): Old Collier and Camas Willows are off

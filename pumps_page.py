@@ -1470,11 +1470,21 @@ function drawAccounts(){
 // The client called: ready for their maintenance. The lake comes off hold for
 // the diver list and the visit waits under "Waiting on others" until the
 // vendors' service reports come in.
+// Only the subcontractors the account actually has - a pump-only account never mentions Jordan, a lake-only one never Justin.
+const VENDOR_WHO = {Wettech: 'Justin (Wettech)', Gulfshore: 'Jordan (Gulfshore)'};
+function accountVendors(a){
+  const p = a && a.pump, l = a && a.lake, v = [];
+  if (p && p.active) v.push('Wettech');
+  if (l && l.active !== 0 && l.needs_dive !== 0) v.push('Gulfshore');
+  return v;
+}
 async function accountReady(name){
-  if (!confirm(`${name} is ready for their maintenance (client approved)?\n\nTheir lake comes off hold for the diver list, and the visit is followed under "Waiting on others" until Wettech's / Gulfshore's service reports come in.`)) return;
+  const v = accountVendors(AC && AC.accounts.find(x => x.name === name)), who = v.map(x => VENDOR_WHO[x]).join(' and ');
+  if (!confirm(`${name} is ready for their maintenance (client approved)?\n\n` + (v.includes('Gulfshore') ? 'Their lake comes off hold for the diver list, and the' : 'The')
+    + ` visit is followed under "Waiting on others" until ${who ? who + "'s service report" + (v.length > 1 ? 's come' : ' comes') : 'the service report comes'} in.`)) return;
   const j = await api('/accounts/ready', {method:'POST', body:{name}});
   if (!j.success) { toast(j.error, true); return; }
-  toast(`${name}: ${j.vendors.join(' and ')} going out` + (j.unheld ? ' - off hold on the diver list' : '') + '. Let them know to put it on their schedule.');
+  toast(`${name}: ${j.vendors.join(' and ')} going out` + (j.unheld ? ' - off hold on the diver list' : '') + `. Let ${j.vendors.map(x => VENDOR_WHO[x] || x).join(' and ')} know to put it on the schedule.`);
   loadAccounts(); loadToday(); refreshAccountPage();
 }
 async function previewDigest(){
@@ -1696,7 +1706,7 @@ function drawMaintSchedule(){
   // One row per account: whether Justin (Wettech) and Jordan (Gulfshore) have been told.
   const byAcct = [];
   rows.forEach(r => { let a = byAcct.find(x => x.account === r.account); if (!a) byAcct.push(a = {account: r.account, rows: {}}); a.rows[r.vendor] = r; });
-  const cell = (r, who) => { if (!r) return '<span class="note">—</span>'; const n = r.notified;
+  const cell = (r, who) => { if (!r) return `<span class="note" title="This account has no ${who === 'Justin' ? 'Wettech pump' : 'Gulfshore lake'} visit this month">— not for ${who}</span>`; const n = r.notified;
     return (n ? `<span class="chip g">✓ told</span> <span class="note">${esc(niceDay(d10(n.notified_at)))}${n.notified_by ? ' · ' + esc(n.notified_by) : ''}${n.how ? ' · ' + esc(n.how) : ''}</span>${n.note ? '<div class="note">' + esc(n.note) + '</div>' : ''}${n.auto ? '' : ` <button class="btn s" title="Not told after all" onclick="maintNotified(${q(r.account)}, '${r.vendor}', false)">↺</button>`}`
       : `<span class="chip r">not told</span> <button class="btn s p" title="Mark ${who} told" onclick="maintNotifiedAsk(${q(r.account)}, '${r.vendor}')">✓ Mark told</button>`)
       + `<div class="note">${r.report ? '✓ report ' + esc(niceDay(r.report)) : 'report not in yet'}</div>`; };
@@ -1715,8 +1725,10 @@ function msSelected(vendor){ const k = vendor === 'Wettech' ? 'w' : 'g'; return 
 function msSelectAll(on){ document.querySelectorAll('.msSel:not(:disabled)').forEach(x => { x.checked = on; msTick(x); }); }
 function msSelChanged(){
   const w = msSelected('Wettech').length, g = msSelected('Gulfshore').length;
-  document.getElementById('msMarkW').textContent = '✓ Justin told' + (w ? ` (${w})` : '');
-  document.getElementById('msMarkG').textContent = '✓ Jordan told' + (g ? ` (${g})` : '');
+  const any = document.querySelectorAll('.msSel:not(:disabled):checked').length;
+  // Ticked accounts that are only Wettech (or only Gulfshore) leave the other one's button off.
+  [['msMarkW', '✓ Justin told', w], ['msMarkG', '✓ Jordan told', g]].forEach(([id, label, n]) => {
+    const b = document.getElementById(id); b.textContent = label + (n ? ` (${n})` : ''); b.disabled = !!any && !n; });
 }
 function maintNotifiedAskMany(vendor){
   const sel = msSelected(vendor), who = vendor === 'Wettech' ? 'Justin (Wettech)' : 'Jordan (Gulfshore)';
