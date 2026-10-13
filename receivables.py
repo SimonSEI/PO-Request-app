@@ -84,8 +84,7 @@ DEFAULT_SETTINGS = {
     'promise_grace_days': 7,        # after a promised date passes, wait this long before following up
     'reported_paid_wait_days': 14,  # "we paid": wait this long for it to show up before following up again
     'min_balance': 1.0,
-    'retainage_pcts': '5, 10',
-    'retainage_tolerance': 0.6,     # percentage points either side
+    'retainage_range': '2-12',      # an install invoice with this share (%) still open is retainage
     'retainage_every_days': 30,     # once the job is complete
     'install_words': 'pay app, install, installation, proposal, retainage, retention',
     'lien_days': 90,                # Florida: claim of lien within 90 days of the last day furnished
@@ -1207,24 +1206,19 @@ def apply_sheet_notes():
 
 # ── Classification: service or install, which job, retainage ─────────────────
 
-def _retainage_pct(amount, open_bal, pcts, tol):
+def _retainage_pct(amount, open_bal, lo, hi):
+    """The share (%) still open when it looks like retainage held back (lo..hi %), else None."""
     if not amount or amount <= 0 or open_bal is None or open_bal <= 0.004 or open_bal >= amount - 0.004:
         return None
     pct = open_bal / amount * 100
-    for p in pcts:
-        if abs(pct - p) <= tol:
-            return p
-    return None
+    return round(pct, 1) if lo - 0.05 <= pct <= hi + 0.05 else None
 
 
-def _pcts(s):
-    out = []
-    for t in re.split(r'[,\s]+', str(s.get('retainage_pcts') or '')):
-        try:
-            out.append(float(t.strip('%')))
-        except ValueError:
-            pass
-    return out or [5.0, 10.0]
+def _ret_range(s):
+    nums = [float(x) for x in re.findall(r'\d+(?:\.\d+)?', str(s.get('retainage_range') or ''))]
+    if len(nums) >= 2 and nums[0] < nums[1]:
+        return nums[0], nums[1]
+    return 2.0, 12.0
 
 
 _PROJECT = re.compile(r'^\s*(\d{4,6})\s*[-–]\s*(.+?)\s*$')
@@ -1271,7 +1265,7 @@ def _job_for(inv, lines, jobber_job=None):
 
 def classify_all(only_ids=None):
     s = settings()
-    pcts, tol = _pcts(s), float(s.get('retainage_tolerance') or 0.6)
+    lo, hi = _ret_range(s)
     words = _words(s['install_words'])
     conn = _conn()
     custs = {r['key']: dict(r) for r in conn.execute("SELECT * FROM ar_customers")}
@@ -1285,18 +1279,12 @@ def classify_all(only_ids=None):
         text = ' '.join([inv.get('jobber_subject') or '', inv.get('memo') or '', inv.get('qb_job') or ''] +
                         [(ln.get('name') or '') + ' ' + (ln.get('description') or '') for ln in lines]).lower()
         fields = {}
-        # Retainage
-        if not inv['retainage_locked']:
-            amount = inv['amount'] if inv['amount'] else inv['jobber_total']
-            p = _retainage_pct(amount, inv['open_balance'], pcts, tol)
-            named = bool(re.search(r'\b(retainage|retention)\b', text))
-            fields['retainage'] = 1 if (p is not None or named) else 0
-            fields['retainage_pct'] = p
-        retain = fields.get('retainage', inv['retainage'])
-        # Service call or install
+        named = bool(re.search(r'\b(retainage|retention)\b', text))
+        # Service call or install (decided first: only installs carry retainage). A QuickBooks sub-customer
+        # ("Builder:Project") is a project, so an install.
         if not inv['kind_locked']:
             kd = (custs.get(inv['customer_key']) or {}).get('kind_default') or ''
-            if retain or any(w in text for w in words):
+            if named or inv.get('qb_job') or any(w in text for w in words):
                 fields['kind'] = 'install'
             elif kd in ('service', 'install'):
                 fields['kind'] = kd
@@ -1328,6 +1316,20 @@ def classify_all(only_ids=None):
                     AND job_key IN (SELECT job_key FROM ar_invoices WHERE kind='install' AND job_key != '')''')
     conn.execute('''UPDATE ar_jobs SET kind='install' WHERE key IN
                     (SELECT job_key FROM ar_invoices WHERE kind='install' AND job_key != '')''')
+    # Retainage: an install invoice paid all but a small share (2-12% by default: the 5% or 10% held back, give or
+    # take), or one that says "retainage". A short-paid service call is never retainage.
+    for inv in conn.execute("SELECT * FROM ar_invoices WHERE status != 'paid' AND retainage_locked=0").fetchall():
+        if only_ids and inv['id'] not in only_ids:
+            continue
+        lines = json.loads(inv['jobber_lines'] or '[]')
+        text = ' '.join([inv['jobber_subject'] or '', inv['memo'] or ''] + [(ln.get('name') or '') + ' ' +
+                         (ln.get('description') or '') for ln in lines]).lower()
+        named = bool(re.search(r'\b(retainage|retention)\b', text))
+        p = _retainage_pct(inv['amount'] or inv['jobber_total'], inv['open_balance'], lo, hi) \
+            if inv['kind'] == 'install' else None
+        retain = 1 if (p is not None or named) else 0
+        if retain != inv['retainage'] or p != inv['retainage_pct']:
+            conn.execute("UPDATE ar_invoices SET retainage=?, retainage_pct=? WHERE id=?", (retain, p, inv['id']))
     conn.commit()
     conn.close()
 
@@ -3060,7 +3062,7 @@ def api_settings():
         return _forbidden()
     d = request.get_json(silent=True) or {}
     s = settings()
-    for k in ('from_email', 'cc', 'signature', 'retainage_pcts', 'install_words', 'lien_kinds', 'company_name', 'nonp_notify',
+    for k in ('from_email', 'cc', 'signature', 'retainage_range', 'install_words', 'lien_kinds', 'company_name', 'nonp_notify',
               'company_address', 'company_phone', 'send_hours'):
         if k in d:
             s[k] = str(d[k]).strip()[:3000]
@@ -3075,7 +3077,7 @@ def api_settings():
                 s[k] = max(0, int(d[k]))
             except (TypeError, ValueError):
                 return jsonify({'success': False, 'error': f'{k} must be a whole number'}), 400
-    for k in ('min_balance', 'retainage_tolerance'):
+    for k in ('min_balance',):
         if k in d:
             try:
                 s[k] = max(0.0, float(d[k]))
@@ -3092,8 +3094,11 @@ def api_settings():
         s['stages'] = sorted(stages, key=lambda x: x['from_days'])
     if '@' not in s['from_email']:
         return jsonify({'success': False, 'error': 'The "send from" address must be an email address'}), 400
+    nums = [float(x) for x in re.findall(r'\d+(?:\.\d+)?', s.get('retainage_range') or '')]
+    if 'retainage_range' in d and not (len(nums) == 2 and 0 < nums[0] < nums[1] <= 50):
+        return jsonify({'success': False, 'error': 'Retainage range should look like 2-12 (percent)'}), 400
     _save_settings(s)
-    if 'retainage_pcts' in d or 'install_words' in d or 'retainage_tolerance' in d:
+    if 'retainage_range' in d or 'install_words' in d:
         classify_all()
     return jsonify({'success': True})
 

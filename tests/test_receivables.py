@@ -166,6 +166,27 @@ class ClassifyTests(Base):
         self.assertEqual((c['retainage'], c['kind'], c['job_key']), (0, 'service', ''))
         self.assertEqual(d['retainage'], 0)  # half paid is not retainage
 
+    def test_short_paid_service_call_is_not_retainage(self):
+        self.upload([
+            (ago(40), 'Invoice', 501, 'Pat Example', ago(35), 1000, 100),      # service call paid $900 of $1,000
+            (ago(40), 'Invoice', 502, 'Lake Example HOA', ago(35), 500, 25),   # 5% left, still a service call
+            (ago(50), 'Invoice', 601, 'Sample Builders:Example Park', ago(40), 10000, 300),   # 3% held: "similar"
+            (ago(50), 'Invoice', 602, 'Sample Builders:Example Park', ago(40), 10000, 700),   # 7% held
+            (ago(50), 'Invoice', 603, 'Sample Builders:Example Park', ago(40), 10000, 2000),  # 20% left: a part payment
+        ])
+        self.assertEqual((self.inv('501')['retainage'], self.inv('501')['kind']), (0, 'service'))
+        self.assertEqual((self.inv('502')['retainage'], self.inv('502')['kind']), (0, 'service'))
+        self.assertEqual((self.inv('601')['retainage'], self.inv('601')['retainage_pct']), (1, 3.0))
+        self.assertEqual((self.inv('602')['retainage'], self.inv('602')['retainage_pct']), (1, 7.0))
+        self.assertEqual(self.inv('603')['retainage'], 0)
+        # A service call that says "retainage" on it is still taken at its word.
+        conn = R._conn()
+        conn.execute("UPDATE ar_invoices SET memo='Retainage release' WHERE number='501'")
+        conn.commit()
+        conn.close()
+        R.classify_all()
+        self.assertEqual(self.inv('501')['retainage'], 1)
+
     def test_jobber_project_code_groups_pay_apps(self):
         self.upload([(ago(50), 'Invoice', 36006, 'Sample Builders', ago(40), 2000, 2000)])
         inv = self.inv('36006')
@@ -209,7 +230,7 @@ class UploadTests(Base):
         self.upload([(ago(50), 'Invoice', 7, 'Pat Example', ago(40), 1000, 1000)])
         self.upload([(ago(50), 'Invoice', 7, 'Pat Example', ago(40), 1000, 100)])
         inv = self.inv('7')
-        self.assertEqual(inv['retainage'], 1)
+        self.assertEqual(inv['retainage'], 0)  # a service call paid down to 10% is not retainage
         conn = R._conn()
         notes = [r['text'] for r in conn.execute("SELECT text FROM ar_notes WHERE invoice_id=?", (inv['id'],))]
         conn.close()

@@ -433,8 +433,7 @@ function renderSettings(){
   h += '</tbody></table><div class="grid2">' + fld('promise_grace_days', 'After a promised date passes, wait (days)', s.promise_grace_days, 'number') +
     fld('reported_paid_wait_days', '"We paid": wait for it to show up (days)', s.reported_paid_wait_days, 'number') + fld('min_balance', 'Ignore balances under ($)', s.min_balance, 'number') + '</div></div>';
   h += '<div class="card"><h3>Service calls, installs and retainage</h3><div class="grid2">' +
-    fld('install_words', 'Words that mark an install invoice', s.install_words) + fld('retainage_pcts', 'Retainage percentages', s.retainage_pcts) +
-    fld('retainage_tolerance', 'Retainage tolerance (± percentage points)', s.retainage_tolerance, 'number') + fld('retainage_every_days', 'Ask for retainage every (days, once the job is complete)', s.retainage_every_days, 'number') +
+    fld('install_words', 'Words that mark an install invoice', s.install_words) + fld('retainage_range', 'Retainage: share of an install invoice still open (%, e.g. 2-12)', s.retainage_range) + fld('retainage_every_days', 'Ask for retainage every (days, once the job is complete)', s.retainage_every_days, 'number') +
     fld('max_attach_mb', 'Most attachments per email (MB)', s.max_attach_mb, 'number') + '</div></div>';
   h += '<div class="card"><h3>Liens and the Notice of Nonpayment</h3><p class="muted small">A claim of lien has to be recorded within the lien window after the last day labor or materials were furnished (90 days in Florida). Ahead of that deadline the app prepares a Notice of Nonpayment for the owner. Have your attorney check the wording once; the notice should also go by certified mail, and the lien itself is recorded with the county.</p><div class="grid2">' +
     fld('lien_days', 'Lien window (days after last furnished)', s.lien_days, 'number') + fld('nonp_lead_days', 'Prepare the NONP this many days before the deadline', s.nonp_lead_days, 'number') +
@@ -450,8 +449,8 @@ function fld(k, label, v, type){ return '<div><label>' + esc(label) + '</label><
 function chk(k, label, v){ return '<label style="display:flex;gap:8px;align-items:center;font-weight:500;color:var(--ink)"><input type="checkbox" id="s-' + k + '" style="width:auto"' + (v ? ' checked' : '') + '>' + esc(label) + '</label>'; }
 function saveSettings(){
   var d = {}, v = function(k){ return document.getElementById('s-' + k); };
-  ['from_email','cc','send_hours','signature','install_words','retainage_pcts','lien_kinds','company_name','company_address','company_phone','nonp_notify'].forEach(function(k){ d[k] = v(k).value; });
-  ['promise_grace_days','reported_paid_wait_days','min_balance','retainage_tolerance','retainage_every_days','max_attach_mb','lien_days','nonp_lead_days','nonp_min_days_late'].forEach(function(k){ d[k] = v(k).value; });
+  ['from_email','cc','send_hours','signature','install_words','retainage_range','lien_kinds','company_name','company_address','company_phone','nonp_notify'].forEach(function(k){ d[k] = v(k).value; });
+  ['promise_grace_days','reported_paid_wait_days','min_balance','retainage_every_days','max_attach_mb','lien_days','nonp_lead_days','nonp_min_days_late'].forEach(function(k){ d[k] = v(k).value; });
   ['auto_send','read_replies','enabled'].forEach(function(k){ d[k] = v(k).checked; });
   if(d.auto_send && !D.settings.auto_send && !confirm('Follow-ups will be emailed to customers from ' + d.from_email + ' without review. Turn on?')) return;
   d.stages = D.settings.stages.map(function(st, n){ return {key: st.key, name: document.getElementById('st-name-' + n).value, from_days: document.getElementById('st-from-' + n).value, every_days: document.getElementById('st-every-' + n).value}; });

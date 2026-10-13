@@ -41,7 +41,7 @@ The Receivables tile in The Office App chases open invoices from the QuickBooks 
    4. The QuickBooks sub-customer (`Builder:Project`).
 
    Type, retainage and job can all be set by hand on the invoice.
-4. **Retainage.** An invoice paid all but 5% or 10% (± 0.6 points; percentages on Settings) is retainage. The Jobs tab totals it per job. Retainage isn't chased while the job is open. Once the job is complete (Jobber marks it complete, or you set it on the job) a *Retainage release* email goes out every 30 days.
+4. **Retainage.** Only install invoices carry retainage: pay apps, proposals, install work, QuickBooks sub-customer projects, and anything on a job with those. An install invoice paid all but a small share is retainage: 2-12% still open, so the usual 5% or 10% and anything near it (Settings). So is any invoice that says "retainage" or "retention". A short-paid service call is never retainage; it stays an ordinary past-due invoice. The Jobs tab totals it per job. Retainage isn't chased while the job is open. Once the job is complete (Jobber marks it complete, or you set it on the job) a *Retainage release* email goes out every 30 days.
 5. **Follow-ups.** Due follow-ups are grouped into one email per install job and one per customer for service calls. They are sent from **simon@stahlman-england.com** (Settings → *Send from*; any mailbox in the Microsoft 365 tenant works). The tone gets firmer the later the invoice is:
 
    | Stage | Starts (days past due) | Repeats every |
