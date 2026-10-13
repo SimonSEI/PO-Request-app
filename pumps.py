@@ -4107,8 +4107,8 @@ def find_quote_by_number(number):
     number = str(number or '').strip().lstrip('#')
     if not number.isdigit():
         raise ValueError('Type the Jobber quote number, e.g. 9136')
-    spec = ['id', 'quoteNumber', 'quoteStatus', 'title', 'jobberWebUri', ('amounts', ['total']),
-            ('client', ['id', 'name']), ('property', ['id', _ADDR])]
+    spec = ['id', 'quoteNumber', 'quoteStatus', 'title', 'createdAt', 'updatedAt', 'jobberWebUri',
+            ('amounts', ['total']), ('client', ['id', 'name']), ('property', ['id', _ADDR])]
 
     def make(fields):
         return f'query($q: String!) {{ quotes(searchTerm: $q, first: 20) {{ nodes {{ {fields} }} }} }}'
@@ -6392,6 +6392,69 @@ def track_jobber_item(conn, it, actor):
         _set_assessment(conn, cid, (it['start_at'] or '')[:10],
                         done=it['kind'] == 'request' and it['status'] == 'assessment_completed', by=actor)
     return cid
+
+
+def track_quote_by_number(number, actor='system'):
+    """Follow a Jobber quote by its number - one the sync doesn't pick up
+    because its title doesn't say pump work (e.g. an approved Greenscapes
+    quote). Joins the open job whose vendor quote it was priced from, else
+    starts a new one. An approved quote then goes on like any other: made a
+    job in Jobber, and "Sign the quote" on To do."""
+    q = find_quote_by_number(number)
+    if not q:
+        raise ValueError(f"No Jobber quote #{str(number).strip().lstrip('#')} found")
+    client, prop = q.get('client') or {}, q.get('property') or {}
+    title, plabel = q.get('title') or '', _prop_label(prop)
+    it = {'jobber_id': q['id'], 'kind': 'quote', 'number': str(q.get('quoteNumber')), 'title': title,
+          'status': (q.get('quoteStatus') or '').lower(), 'client_id': client.get('id') or '',
+          'client_name': client.get('name') or '', 'property_id': prop.get('id') or '', 'property_label': plabel,
+          'total': _money((q.get('amounts') or {}).get('total')), 'created_at': q.get('createdAt') or '',
+          'updated_at': q.get('updatedAt') or '', 'web_uri': q.get('jobberWebUri') or '',
+          'category': _category(title, plabel) or 'pump', 'po_number': po_from_title(title)}
+    conn = _conn()
+    try:
+        conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, job_type, client_id, "
+                     "client_name, property_id, property_label, total, created_at, updated_at, start_at, "
+                     "completed_at, approved_at, web_uri, category, po_number, synced_at) "
+                     "VALUES (?,?,?,?,?,'',?,?,?,?,?,?,?,'','','',?,?,?,?) "
+                     "ON CONFLICT(jobber_id) DO UPDATE SET number=excluded.number, title=excluded.title, "
+                     "status=excluded.status, client_id=excluded.client_id, client_name=excluded.client_name, "
+                     "property_id=excluded.property_id, property_label=excluded.property_label, "
+                     "total=excluded.total, updated_at=excluded.updated_at, web_uri=excluded.web_uri, ignored=0",
+                     (it['jobber_id'], 'quote', it['number'], title, it['status'], it['client_id'], it['client_name'],
+                      it['property_id'], plabel, it['total'], it['created_at'], it['updated_at'], it['web_uri'],
+                      it['category'], it['po_number'], _now_text()))
+        row = dict(conn.execute('SELECT * FROM pump_jobber_items WHERE jobber_id=?', (q['id'],)).fetchone())
+        if row['case_id'] and conn.execute("SELECT 1 FROM pump_cases WHERE id=? AND status != 'cancelled'",
+                                           (row['case_id'],)).fetchone():
+            conn.commit()
+            return {'case_id': row['case_id'], 'already': True, 'quote': it}
+        cid = job_for_quote_price(conn, row)
+        if cid:
+            _link_item(conn, row['jobber_id'], cid, actor)
+            if it['status'] in ('awaiting_response', 'changes_requested', 'approved', 'converted'):
+                _set_step(conn, cid, 'client_quote', at=(row['created_at'] or '')[:10] or None, by=actor)
+            if it['status'] in ('approved', 'converted'):
+                _set_step(conn, cid, 'client_approved', at=(row['updated_at'] or '')[:10] or None, by=actor)
+        else:
+            cid = track_jobber_item(conn, row, actor)
+        conn.commit()
+    finally:
+        conn.close()
+    out = {'case_id': cid, 'already': False, 'quote': it}
+    if it['status'] == 'approved':
+        try:
+            on_quote_approved(cid, actor)
+        except Exception as e:  # tracked either way - the next sync tries again
+            out['warning'] = f'Tracked, but making the Jobber job failed: {e}'
+    return out
+
+
+@api('/jobber/track_quote', methods=('POST',))
+def h_track_quote(actor):
+    if not jobber_status()['connected']:
+        raise ValueError('Connect Jobber first')
+    return track_quote_by_number(_json().get('number'), actor)
 
 
 @api('/jobber/items/<path:jobber_id>', methods=('POST',))

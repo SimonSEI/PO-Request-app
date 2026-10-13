@@ -1206,6 +1206,37 @@ class PumpsTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_track_an_approved_quote_by_number_from_the_jobs_tab(self):
+        """An approved Greenscapes quote the sync never read (its title doesn't
+        say pump): typed in on Jobs, it becomes a job here; typed again, no twin."""
+        approved = []
+
+        def jobber(query, variables=None):
+            if 'quotes(searchTerm' in query:
+                return {'quotes': {'nodes': [
+                    {'id': 'Q9277', 'quoteNumber': 9277, 'quoteStatus': 'approved', 'title': 'Irrigation repair',
+                     'createdAt': '2026-10-08T12:00:00Z', 'updatedAt': '2026-10-12T12:00:00Z',
+                     'jobberWebUri': 'https://j/q/9277', 'amounts': {'total': 840.0},
+                     'client': {'id': 'CGREEN', 'name': 'Greenscapes'},
+                     'property': {'id': 'PCARL', 'address': {'street1': '1 Carlisle Way', 'city': 'Naples'}}}]}}
+            return {}
+        real = P.jobber_gql, P.jobber_status, P.on_quote_approved
+        P.jobber_gql, P.jobber_status = jobber, lambda: {'connected': True}
+        P.on_quote_approved = lambda cid, actor='': approved.append(cid)
+        try:
+            r = self.c.post('/pumps/api/jobber/track_quote', json={'number': '#9277'})
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            cid = r.get_json()['case_id']
+            again = self.c.post('/pumps/api/jobber/track_quote', json={'number': '9277'}).get_json()
+            self.assertEqual((again['case_id'], again['already']), (cid, True))
+        finally:
+            P.jobber_gql, P.jobber_status, P.on_quote_approved = real
+        self.assertEqual(approved, [cid])
+        case = self.case(cid)
+        self.assertEqual(case['client_name'], 'Greenscapes')
+        self.assertEqual(case['jobber']['quote']['number'], '9277')
+        self.assertTrue(case['steps']['client_approved'].get('at'))
+
     def test_follow_the_quote_already_in_jobber_instead_of_the_apps_draft(self):
         """The Carlise: the app drafted #9146 under 'The Carlise', but the real
         quote is #9136 under Greenscapes, already out with them."""

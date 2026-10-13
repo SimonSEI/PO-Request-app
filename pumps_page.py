@@ -324,6 +324,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
     <input type="text" id="jbSearch" placeholder="Find a job, client, PO, quote or invoice #…" oninput="clearTimeout(window._jq);window._jq=setTimeout(loadJobs,300)" style="width:240px">
     <select id="jbShow" onchange="loadJobs()"><option value="open">Open</option><option value="closed">Done</option><option value="all">All</option></select>
     <div class="sp"></div><span id="syncInfo" class="note"></span>
+    <button class="btn s" title="Follow a Jobber quote the sync didn't pick up, e.g. an approved quote for an account" onclick="trackQuote()">+ Track a Jobber quote</button>
     <button class="btn s" title="It syncs on its own - this just does it now" onclick="syncJobber()">↻ Sync now</button>
   </div>
   <div class="scroll" style="max-height:45vh"><table class="t"><thead><tr><th>Job</th><th>Where it is</th><th>Vendor</th><th class="num">Vendor quote</th><th>Our quote</th><th class="num">Vendor bill</th><th>Our invoice</th><th>Vendor paid</th><th></th></tr></thead><tbody id="jobsBody"></tbody></table></div>
@@ -1573,6 +1574,16 @@ async function signQuoteGo(caseId, send){
 }
 async function jobberAct(id, action){ const j = await api('/jobber/items/' + encodeURIComponent(id), {method:'POST', body:{action}}); if (!j.success) { toast(j.error, true); return; } loadToday(); if (curTab === 'jobs') loadJobs(); if (action === 'track' && j.case_id) openCase(j.case_id); }
 async function jobberLink(id){ const n = prompt('Job number in Pumps to add it to:'); if (!n) return; const j = await api('/jobber/items/' + encodeURIComponent(id), {method:'POST', body:{action:'link', case_id: parseInt(n)}}); if (j.success) loadJobs(); else toast(j.error, true); }
+async function trackQuote(){
+  const n = prompt('Jobber quote number to track (e.g. 9136):', '');
+  if (!n || !n.trim()) return;
+  const j = await api('/jobber/track_quote', {method:'POST', body:{number: n.trim()}});
+  if (!j.success) { toast(j.error, true); return; }
+  const q = j.quote || {};
+  toast(j.already ? `Quote #${q.number} is already tracked (job ${j.case_id})` : `Now tracking Jobber quote #${q.number}${q.client_name ? ' for ' + q.client_name : ''} (${(q.status || '').replace(/_/g, ' ') || 'status unknown'})`);
+  if (j.warning) toast(j.warning, true);
+  loadToday(); loadJobs(); if (j.case_id) openCase(j.case_id);
+}
 async function syncJobber(){ const j = await api('/jobber/sync', {method:'POST', body:{}}); if (!j.success) { toast(j.error, true); return; } toast(j.started ? 'Jobber sync started - this takes a minute or two.' : 'A Jobber sync is already running - the list updates when it finishes.'); setTimeout(loadJobs, 2000); }
 
 // ── the month's maintenance (Home tab) ────────────────
