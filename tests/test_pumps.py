@@ -2391,6 +2391,26 @@ class PumpsTest(unittest.TestCase):
         finally:
             P.JOBBER_STATIC_TOKEN = saved
 
+    def test_sarasota_county_is_billed_the_county_way(self):
+        doc = {'line_items': [{'description': 'Field service to furnish and install new 15 HP vertical hollow shaft '
+                                              'motor on pump #1 at Twin Lakes, wired up and tested.', 'amount': 5226.24}],
+               'subtotal': 5226.24, 'client_name': 'Twin Lakes Park', 'description': ''}
+        case = {'id': 0, 'client_name': 'SARASOTA COUNTY', 'po_number': '260904', 'wo_number': 'WO2143416'}
+        s = P.suggest_invoice(doc, case)
+        self.assertEqual(s['subject'], 'Invoice-PO260904')
+        li = s['line_items']
+        self.assertEqual(len(li), 1)
+        self.assertEqual((li[0]['name'], li[0]['unit_price'], li[0]['taxable']), ('PUMP SERVICE', 5748.86, False))
+        self.assertIn('WO2143416  PO260904', li[0]['description'])
+        self.assertIn('Subcontractor Cost: $5,226.24\nVendor 10% Markup: $522.62\nTotal Cost: $5,748.86', li[0]['description'])
+        q = P.suggest_quote(doc, case)
+        self.assertEqual((q['line_items'][0]['unit_price'], q['markup_pct']), (5748.86, 10))
+        # Everyone else: still one Service Proposal Amount line at +30%.
+        other = P.suggest_invoice(doc, {'client_name': 'Quail Run'})
+        self.assertEqual((other['line_items'][0]['name'], other['line_items'][0]['unit_price']),
+                         ('Service Proposal Amount', 6794.11))
+        self.assertEqual(P.gov_missing_refs({'po_number': '1'}), ['WO #'])
+
     def test_status_updates_on_an_approved_job(self):
         j = self.c.post('/pumps/api/cases', json={'title': 'Motor', 'client_name': 'Quail Run'}).get_json()
         cid = j.get('case_id') or j['case']['id']

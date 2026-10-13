@@ -97,6 +97,11 @@ MARKUP_PCT = float(os.environ.get('PUMPS_MARKUP_PCT', '0') or 0)
 # Our quote to the client = the vendor's price plus this (Simon's Jobber quote
 # 9136: Wettech $1,158.99 tax included -> $1,506.69, i.e. 30%).
 QUOTE_MARKUP_PCT = float(os.environ.get('PUMPS_QUOTE_MARKUP_PCT', '30') or 0)
+# Government clients (Sarasota County, Oct 2026) are billed their own way: the
+# sub's cost plus 10%, one "PUMP SERVICE" line with their WO # and PO #, the
+# work, and "Subcontractor Cost / Vendor 10% Markup / Total Cost"; no sales tax.
+GOV_MARKUP_PCT = float(os.environ.get('PUMPS_GOV_MARKUP_PCT', '10') or 0)
+GOV_CLIENTS = re.compile(os.environ.get('PUMPS_GOV_CLIENTS', r'\bsarasota\s+county\b'), re.I)
 # Our client quote is drafted in Jobber only when someone clicks Draft quote -
 # never on its own when a vendor quote arrives or is read again.
 AUTO_DRAFT_QUOTES = False
@@ -3679,10 +3684,85 @@ def find_matching_job(doc, client_id):
     return {**scored[0][2], 'score': scored[0][0]}
 
 
+def gov_client(doc=None, case=None):
+    """The government client name this work is for (Sarasota County), or ''."""
+    case = case or {}
+    j = json.loads(case.get('jobber') or '{}') if isinstance(case.get('jobber'), str) else (case.get('jobber') or {})
+    for name in ((j.get('client') or {}).get('name'), case.get('client_name'), (doc or {}).get('client_name'),
+                 case.get('title')):
+        if name and GOV_CLIENTS.search(name):
+            return name
+    return ''
+
+
+def _ref(prefix, value):
+    """'PO', '# 260904' -> 'PO260904' (a number already starting with PO keeps it once)."""
+    value = re.sub(rf'^\s*{prefix}\s*#?\s*', '', (value or '').strip(), flags=re.I)
+    return f'{prefix}{value}' if value else ''
+
+
+def _usd(x):
+    return f'${x:,.2f}'
+
+
+def gov_line_items(doc, case=None):
+    """Sarasota County's way (invoice 36176): one PUMP SERVICE line -
+    "WO2135661  PO 260904", the work, then Subcontractor Cost / Vendor 10%
+    Markup / Total Cost - not taxable."""
+    case = case or {}
+    plain = one_line_items(doc, 0)
+    main = [it for it in plain if not it.get('optional')]
+    if not main:
+        return []
+    cost = round(sum(it['unit_price'] for it in main), 2)
+    mark = round(cost * GOV_MARKUP_PCT / 100, 2)
+    pump = pump_named(doc)
+    wo = (case.get('wo_number') or '').strip()
+    po = (case.get('po_number') or doc.get('po_number') or '').strip()
+    refs = '  '.join(x for x in (_ref('WO', wo), _ref('PO', po)) if x)
+    work = '\n\n'.join(it['description'] for it in main if it.get('description'))
+    desc = '\n'.join(x for x in (f'Pump #{pump}' if pump else '', refs) if x)
+    desc = (desc + '\n\n' if desc else '') + work + (
+        f"\n\nSubcontractor Cost: {_usd(cost)}\nVendor {GOV_MARKUP_PCT:g}% Markup: {_usd(mark)}\n"
+        f"Total Cost: {_usd(cost + mark)}")
+    out = [{'name': 'PUMP SERVICE', 'description': desc[:2000], 'quantity': 1, 'unit_price': round(cost + mark, 2),
+            'taxable': False}]
+    for it in plain:
+        if it.get('optional'):
+            out.append({**it, 'unit_price': round(it['unit_price'] * (1 + GOV_MARKUP_PCT / 100), 2), 'taxable': False})
+    return out
+
+
+def gov_missing_refs(case):
+    """What the county needs on the invoice that this job doesn't have yet."""
+    return [label for key, label in (('wo_number', 'WO #'), ('po_number', 'PO #'))
+            if not ((case or {}).get(key) or '').strip()]
+
+
+def _gov_refs_todo(case, who):
+    missing = gov_missing_refs(case)
+    if not missing or not case.get('id'):
+        return
+    conn = _conn()
+    try:
+        add_todo(conn, f"gov-refs:{case['id']}", f"Get {who}'s {' and '.join(missing)} for {case.get('title') or 'this job'}",
+                 f"{who} needs its work order # and PO # on the invoice. Put them on the job (Details: PO #, W/O #) "
+                 f"and on the Jobber invoice before it goes out.", {'case_id': case['id']})
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def suggest_invoice(doc, case=None):
     """Our invoice for a vendor bill when there is no client quote to copy:
     one Service Proposal Amount line, the bill before tax plus the quote
     markup (30%). Jobber adds the client's tax itself."""
+    gov = gov_client(doc, case)
+    if gov:
+        po = ((case or {}).get('po_number') or doc.get('po_number') or '').strip()
+        _gov_refs_todo(case or {}, gov)
+        return {'subject': ('Invoice-' + _ref('PO', po) if po else 'Invoice')[:255],
+                'line_items': gov_line_items(doc, case), 'markup_pct': GOV_MARKUP_PCT, 'gov': gov}
     items = one_line_items(doc, QUOTE_MARKUP_PCT)
     where = (case or {}).get('client_name') or doc.get('client_name') or ''
     subject = f"Pump service - {where}" if where else 'Pump service'
@@ -3756,10 +3836,11 @@ def suggest_quote(doc, case=None):
     tax line, a single-price quote as one "Service Proposal Amount" line
     carrying the vendor's description of the work, titled "Proposal to ...".
     A price that already includes the vendor's tax stays not taxable."""
-    items = one_line_items(doc, QUOTE_MARKUP_PCT)
+    gov = gov_client(doc, case)
+    items = gov_line_items(doc, case) if gov else one_line_items(doc, QUOTE_MARKUP_PCT)
     words = ' '.join([doc.get('description') or ''] + [f"{i.get('name') or ''} {i.get('description') or ''}"
                                                        for i in doc.get('line_items') or []])
-    markup = QUOTE_MARKUP_PCT
+    markup = GOV_MARKUP_PCT if gov else QUOTE_MARKUP_PCT
     if is_scada_renewal(words):
         # SCADA is not marked up: each client pays their price from the SCADA tab.
         conn = _conn()
@@ -3806,7 +3887,9 @@ def _quote_note_text(doc, total):
     if price is not None:
         lines.append(f"{vendor} price: ${price:,.2f}" + (' (includes sales tax)' if doc.get('subtotal') is None and
                                                         doc.get('total') is not None else ''))
-    lines.append(f'Our price: ${total:,.2f} ({QUOTE_MARKUP_PCT:g}% markup). Drafted by the Pumps app.')
+    base = doc.get('subtotal') if doc.get('subtotal') is not None else price
+    pct = round((total / base - 1) * 100) if base else QUOTE_MARKUP_PCT
+    lines.append(f'Our price: ${total:,.2f} ({pct:g}% markup). Drafted by the Pumps app.')
     base = (CFG.get('website_url') or '').rstrip('/')
     if base and 'localhost' not in base:
         lines.append(f"File: {base}/pumps#doc-{doc['id']}")
@@ -8802,6 +8885,11 @@ def auto_draft_invoice(doc_id, actor='Pumps (automatic)'):
         client_id = (j.get('client') or {}).get('id') or case.get('jobber_client_id')
         where = case.get('client_name') or ''
         subject = (doc.get('proposal_title') or case.get('title') or f'Pump service - {where}')[:255]
+        gov = gov_client(doc, case)
+        if gov:
+            # The county is invoiced what it approved, with its PO in the subject and nothing taxed.
+            subject = suggest_invoice(doc, case)['subject']
+            lines['line_items'] = [{**li, 'taxable': False} for li in lines['line_items']]
         return create_draft_invoice(doc_id, client_id, lines['line_items'], subject,
                                     (j.get('job') or {}).get('id') or '', actor)
     except (JobberError, ValueError) as e:

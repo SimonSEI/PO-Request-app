@@ -752,7 +752,7 @@ function renderCase(){
       ${f('title','Title','text',1)}
       <label>Kind of work<select data-f="category">${CATS.map(x => `<option ${x === c.category ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
       ${f('po_number','PO #')}${f('client_name','Client')}${f('site','Pump / location')}${f('vendor','Vendor')}${f('approved_by','Approved by')}
-      ${f('scheduled_for','Scheduled for','date')}${f('wo_number','Vendor W/O #')}
+      ${f('scheduled_for','Scheduled for','date')}${f('wo_number','Work order # (W/O)')}
       ${f('vendor_quote_number','Vendor quote #')}${f('vendor_quote_amount','Vendor quote $ (before tax)','number')}
       ${f('vendor_bill_number','Vendor bill #')}${f('vendor_bill_amount','Vendor bill $ (before tax)','number')}
       ${f('sei_invoice_number','Our (Jobber) invoice #')}${f('amount','Our invoice $','number')}
