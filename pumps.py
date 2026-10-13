@@ -2835,6 +2835,7 @@ def _sync_jobber(full=False, actor='system'):
             duplicate_jobber_invoices(conn)
             approved = _follow_quotes(conn)
             approved += auto_track_approved(conn)
+            close_stale_todos(conn)
             rebuild_scada(conn)
             conn.commit()
             status['errors'] += refresh_client_contacts(conn)
@@ -5218,6 +5219,7 @@ UNDO_LABELS = (
     (r'/dives/send$', 'Sent the dive email'),
     (r'/dives/', 'Changed a dive site'),
     (r'/todos/(\d+)/done$', 'Ticked a to-do'),
+    (r'/todos/(\d+)/edit$', 'Edited a to-do'),
     (r'/todos/hide$', 'Took a row off the To do list'),
     (r'/accounts/ready$', 'Client ready for maintenance'),
     (r'/todos', 'Changed a to-do'),
@@ -5369,6 +5371,8 @@ def h_summary(actor):
     ensure_monthly_todos()
     conn = _conn()
     try:
+        close_stale_todos(conn)
+        conn.commit()
         q = work_queue(conn)
         return {'queue': q, 'counts': {k: len(v) for k, v in q.items() if isinstance(v, list)},
                 'scan': _state_get('scan_status') or {}, 'jobber': {**jobber_status(),
@@ -7097,6 +7101,26 @@ def h_todo_reword(actor):
     return {'todo': reword_todo(str(_json().get('text') or '')[:4000])}
 
 
+@api('/todos/<int:todo_id>/edit', methods=('POST',))
+def h_todo_edit(actor, todo_id):
+    """Change a to-do's wording or due date: {"title", "detail", "due_on"}."""
+    d = _json()
+    title = str(d.get('title') or '').strip()
+    if not title:
+        raise ValueError('Say what needs doing')
+    conn = _conn()
+    try:
+        if not conn.execute('SELECT 1 FROM pump_todos WHERE id=?', (todo_id,)).fetchone():
+            return {'success': False, 'error': 'Not found'}, 404
+        conn.execute('UPDATE pump_todos SET title=?, detail=?, due_on=? WHERE id=?',
+                     (title[:300], str(d.get('detail') or '')[:2000], _iso_date(d.get('due_on')) or '', todo_id))
+        _event(conn, actor, 'to-do edited', title[:300])
+        conn.commit()
+    finally:
+        conn.close()
+    return {'id': todo_id}
+
+
 @api('/todos/<int:todo_id>/done', methods=('POST',))
 def h_todo_done(actor, todo_id):
     """{"done": true|false}"""
@@ -8288,6 +8312,84 @@ def schedule_text(acct):
     return ', '.join(date(2000, m, 1).strftime('%b') for m in ms) if ms else 'scheduled'
 
 
+def recurring_job_for(acct):
+    """The account's recurring maintenance job(s) in Jobber - from the last
+    sync, or asked of Jobber - the one at its property first. None if there is none."""
+    cid, pid = acct.get('jobber_client_id'), acct.get('jobber_property_id') or ''
+    if not cid:
+        return None
+    conn = _conn()
+    try:
+        jobs = [{'id': r['jobber_id'], 'number': r['number'], 'title': r['title'] or '', 'property_id': r['property_id']}
+                for r in conn.execute("SELECT * FROM pump_jobber_items WHERE kind='job' AND job_type='recurring' "
+                                      "AND client_id=? AND status NOT IN ('archived')", (cid,))]
+    finally:
+        conn.close()
+    if not jobs and jobber_status()['connected']:
+        try:
+            jobs = [j for j in client_jobs(cid).get('jobs') or [] if j.get('type') == 'recurring'
+                    and j.get('status') != 'archived']
+        except JobberError:
+            jobs = []
+    if not jobs:
+        return None
+    jobs.sort(key=lambda j: (not (pid and j.get('property_id') == pid),
+                             not TITLE_PATTERNS['pump'].search(j.get('title') or '')))
+    j = jobs[0]
+    label = ', '.join(f"#{x['number']}" for x in jobs if x.get('number')) + (f" {j['title']}" if j.get('title') else '')
+    return {'id': j['id'], 'label': label.strip()}
+
+
+# To-dos the app adds about a job, that the job itself can show are done.
+_JOB_TODOS = ('sign-quote', 'approved-quote', 'quote-to-job', 'service-visit', 'gov-refs', 'signed-reply',
+              'date-to-jobber')
+
+
+def close_stale_todos(conn):
+    """Tick the app's own to-dos whose work is visibly done, so To do only has
+    what still needs someone: the job is closed or cancelled; its Jobber job
+    exists (convert the quote, add the visit); its WO # and PO # are in (the
+    county); the quote is signed and sent; the account's maintenance job is in Jobber."""
+    now = _now_text()
+    for t in conn.execute("SELECT id, key, link FROM pump_todos WHERE done_at IS NULL AND kind != 'manual'").fetchall():
+        prefix = (t['key'] or '').split(':')[0]
+        if prefix not in _JOB_TODOS:
+            continue
+        try:
+            cid = int((json.loads(t['link'] or '{}') or {}).get('case_id') or 0)
+        except (TypeError, ValueError):
+            cid = 0
+        row = conn.execute('SELECT * FROM pump_cases WHERE id=?', (cid,)).fetchone() if cid else None
+        if not row:
+            continue
+        c = dict(row)
+        j = json.loads(c.get('jobber') or '{}')
+        done = c['status'] != 'open'
+        if prefix in ('quote-to-job', 'service-visit'):
+            done = done or bool((j.get('job') or {}).get('id'))
+        elif prefix == 'gov-refs':
+            done = done or not gov_missing_refs(c)
+        elif prefix in ('sign-quote', 'approved-quote'):
+            doc = _approved_quote_doc(conn, cid)
+            done = done or bool(doc and (doc.get('jobber') or {}).get('signed_sent_at'))
+        if done:
+            conn.execute("UPDATE pump_todos SET done_at=?, done_by='Pumps' WHERE id=?", (now, t['id']))
+    close_maint_job_todos(conn)
+
+
+def close_maint_job_todos(conn):
+    """"Set up X's pump maintenance job in Jobber" once Jobber has one (each sync)."""
+    for t in conn.execute("SELECT id, key FROM pump_todos WHERE key LIKE 'maint-job:%' AND done_at IS NULL").fetchall():
+        row = conn.execute('SELECT * FROM pump_maint_accounts WHERE id=?', (int(t['key'].split(':')[1]),)).fetchone()
+        if not row:
+            continue
+        acct = dict(row)
+        if not acct.get('active') or (acct.get('jobber_client_id') and conn.execute(
+                "SELECT 1 FROM pump_jobber_items WHERE kind='job' AND job_type='recurring' AND client_id=? "
+                "AND status NOT IN ('archived') LIMIT 1", (acct['jobber_client_id'],)).fetchone()):
+            conn.execute("UPDATE pump_todos SET done_at=?, done_by='Pumps' WHERE id=?", (_now_text(), t['id']))
+
+
 def link_account_to_jobber(acct, actor):
     """A pump account tied to its Jobber client: its name becomes a site name
     for that client, property and maintenance job, so Wettech's quotes and
@@ -8296,6 +8398,18 @@ def link_account_to_jobber(acct, actor):
     save_site_alias(acct['name'], '', acct['jobber_client_id'], acct.get('jobber_client_name') or '',
                     acct.get('jobber_property_id') or '', acct.get('jobber_property_label') or '',
                     'Pump account (Accounts tab)', actor, acct.get('jobber_job_id') or '', acct.get('jobber_job_label') or '')
+    if not acct.get('jobber_job_id'):
+        job = recurring_job_for(acct)
+        if job:
+            # Already in Jobber (The Carlisle: #3249 and #3250, one per pump) - use it, no to-do.
+            acct = {**acct, 'jobber_job_id': job['id'], 'jobber_job_label': job['label']}
+            conn = _conn()
+            try:
+                conn.execute('UPDATE pump_maint_accounts SET jobber_job_id=?, jobber_job_label=? WHERE id=?',
+                             (job['id'], job['label'], acct['id']))
+                conn.commit()
+            finally:
+                conn.close()
     conn = _conn()
     try:
         key = f"maint-job:{acct['id']}"
@@ -9074,13 +9188,13 @@ def _core_name(name):
     return re.sub(r'\s*[\(\[].*?[\)\]]', '', name or '').split(' c/o ')[0].split(' - ')[0].strip()
 
 
-def match_account(text, conn=None):
+def match_account(text, conn=None, names=None):
     """The account a service-call email is about: the longest name it mentions."""
     own = conn is None
     conn = conn or _conn()
     try:
         best = None
-        for n in _account_names(conn):
+        for n in (names if names is not None else _account_names(conn)):
             core = _core_name(n)
             if len(core) < 4 or not fuzzy_has(core, text):
                 continue
@@ -9622,10 +9736,23 @@ def account_history(conn, name):
         raise ValueError('No such account')
     names = _account_aliases(a)
     found = {}
+    # A quick look first: text with none of the account's words (their first
+    # three letters, so "Carslie" still counts) can't be about it, and only
+    # accounts whose words are in the text can be the better match. Before
+    # this the page took ~25 s with a year of to-dos and Jobber records.
+    def stems(n):
+        return {w[:3] for w in re.findall(r'[a-z0-9]+', _core_name(n).lower()) if len(w) >= 4}
+    own_stems = set().union(*(stems(n) for n in names)) if names else set()
+    others = [(n, stems(n)) for n in _account_names(conn)]
 
     def about(text):
         if text not in found:
-            found[text] = _is_account(names, match_account(text, conn))
+            low = (text or '').lower()
+            if not own_stems or not any(st in low for st in own_stems):
+                found[text] = False
+            else:
+                cands = [n for n, st in others if st and any(x in low for x in st)]
+                found[text] = _is_account(names, match_account(text, conn, cands))
         return found[text]
 
     jobs = []
