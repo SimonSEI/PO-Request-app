@@ -184,6 +184,11 @@ EXPENSE_RECEIPTS_DIR = os.path.join(INSTALLATION_DIR, 'receipts')
 DB_PATH = os.path.join(DATA_DIR, 'po_requests.db')
 print(f"✓ Database path: {DB_PATH}")
 
+# Off-site backups live in backups.py. On a new server or an empty volume this
+# brings back the newest backed-up database before anything opens a blank one.
+from backups import restore_if_empty, init_backups
+restore_if_empty(DB_PATH, DATA_DIR)
+
 # Check if PDF libraries are available
 try:
     import PyPDF2
@@ -5313,7 +5318,7 @@ def backup_database():
         import shutil
         from datetime import datetime
 
-        backup_dir = os.path.join(os.path.dirname(__file__), 'backups')
+        backup_dir = os.path.join(DATA_DIR, 'backups')
         os.makedirs(backup_dir, exist_ok=True)
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -5346,7 +5351,7 @@ def list_backups():
         return jsonify({'error': 'Unauthorized'}), 401
 
     try:
-        backup_dir = os.path.join(os.path.dirname(__file__), 'backups')
+        backup_dir = os.path.join(DATA_DIR, 'backups')
         backups = []
 
         if os.path.exists(backup_dir):
@@ -5378,7 +5383,7 @@ def download_backup(filename):
         return 'Unauthorized', 401
 
     try:
-        backup_dir = os.path.join(os.path.dirname(__file__), 'backups')
+        backup_dir = os.path.join(DATA_DIR, 'backups')
         filepath = os.path.join(backup_dir, filename)
 
         # Security: ensure the file is in the backups directory
@@ -8650,8 +8655,9 @@ JOB_MANAGEMENT_TEMPLATE = '''
 
     <div class="card" style="background: #f0f8ff; border-left: 4px solid #28a745;">
         <h2 style="color: #28a745; margin-bottom: 15px;">💾 Database Backups</h2>
-        <p style="color: #666; margin-bottom: 15px;">Create and manage backups of your database.</p>
+        <p style="color: #666; margin-bottom: 15px;">The database and uploaded files are copied to off-site storage every few minutes. See every copy, download one, or restore on the Backups page.</p>
         <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 20px;">
+            <a href="/backups" class="btn btn-primary" style="text-decoration: none;">🛡️ Backups &amp; Restore</a>
             <button onclick="createBackup()" class="btn btn-success" style="background: #28a745;">💾 Create Backup Now</button>
             <button onclick="loadBackupsList()" class="btn btn-primary">📂 View Backups</button>
         </div>
@@ -39464,6 +39470,13 @@ init_receivables(app, DB_PATH, data_dir=DATA_DIR, get_setting=get_setting, set_s
                  anthropic_client=(anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                                    if ANTHROPIC_AVAILABLE and ANTHROPIC_API_KEY else None),
                  scheduler_cls=BackgroundScheduler if SCHEDULER_AVAILABLE else None, website_url=WEBSITE_URL)
+
+# Off-site backups (database every few minutes + uploaded files) live in backups.py.
+# Same people as full backup downloads: office, and only Cash Flow users once that list is set.
+init_backups(app, csrf, DB_PATH, data_dir=DATA_DIR,
+             allowed=lambda: session.get('role') == 'office' and (
+                 not CASHFLOW_USERS or session.get('username', '').lower() in CASHFLOW_USERS),
+             scheduler_cls=BackgroundScheduler if SCHEDULER_AVAILABLE else None)
 
 # Set up background scheduler for automatic email checking
 if SCHEDULER_AVAILABLE and PO_EMAIL_MONITORING_ENABLED:
