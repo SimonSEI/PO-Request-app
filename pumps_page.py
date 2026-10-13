@@ -629,6 +629,14 @@ async function loadToday(){
   q.scada_attention.filter(s => s.state === 'overdue').forEach(s => urgent.push(todoItem('SCADA overdue', 'r', esc(s.client_name) + (s.site ? ' · ' + esc(s.site) : ''), 'Renewal overdue since ' + esc(s.next_due_on) + (s.state_note ? ' · ' + esc(s.state_note) : '') + followUp(s.follow_up), "showTab('scada')", '', s.todo_key)));
   q.bills_to_draft.forEach(d => { const ip = (d.jobber || {}).invoice_pending || {}; todo.push(todoItem('Draft invoice', 'a', esc(d.client_name || d.file_name), `${esc(d.vendor)} bill #${esc(d.doc_number)} · ${money(d.total)}${ip.reason ? ' · <b class="warn">' + esc(ip.reason) + '</b>' : ''}`, `openCase(${d.case_id})`,
     `<button class="btn s p" onclick="draftInvoice(${d.id})">Draft invoice</button>${(ip.possible_duplicate || {}).uri ? `<a class="btn s" target="_blank" rel="noopener" href="${esc(ip.possible_duplicate.uri)}">Open #${esc(ip.possible_duplicate.number)} ↗</a>` : ''}`, d.todo_key)); });
+  // A client approved one of our quotes in Jobber and no job here follows it
+  // (the sync picks most up by itself). Only approved quotes - other new work
+  // in Jobber stays off this list (#546).
+  (q.new_jobber_requests || []).filter(it => it.kind === 'quote' && it.status === 'approved').forEach(it => { const what = 'Approved quote';
+    todo.push(todoItem('Approved - not tracked', 'v', esc((it.number ? '#' + it.number + ' ' : '') + (it.title || it.client_name || what)),
+      `${what} · ${esc([it.client_name, it.property_label].filter(Boolean).join(' · '))}${it.total != null ? ' · ' + money(it.total) : ''}`,
+      `window.open('${esc(it.web_uri || '')}', '_blank')`,
+      `<button class="btn s p" onclick="jobberAct('${esc(it.jobber_id)}', 'track')">＋ Track</button><button class="btn s" title="Not pump work - don't show it again" onclick="jobberAct('${esc(it.jobber_id)}', 'ignore')">Not ours</button>`, it.todo_key)); });
   q.quotes_to_draft.forEach(d => todo.push(todoItem('Draft quote', 'a', esc(d.client_name || d.file_name), `${esc(d.vendor)} quote ${d.doc_number ? '#' + esc(d.doc_number) + ' ' : ''}· ${money(d.subtotal ?? d.total)}${((d.jobber || {}).quote_pending || {}).reason ? ' · <b class="warn">' + esc(d.jobber.quote_pending.reason) + '</b>' : ''}`, `openCase(${d.case_id})`,
     `<button class="btn s p" onclick="draftQuote(${d.id})">Draft quote</button>${(((d.jobber || {}).quote_pending || {}).possible_duplicate || {}).number ? `<button class="btn s" onclick="linkQuoteNumber(${d.case_id}, '${esc(d.jobber.quote_pending.possible_duplicate.number)}')">Link #${esc(d.jobber.quote_pending.possible_duplicate.number)}</button>` : ''}`, d.todo_key)));
   q.to_quote_client.forEach(c => todo.push(todoItem('Send quote', 'a', caseTitle(c), caseSub(c, 'send our quote to the client in Jobber - this goes away by itself once Jobber shows it sent') + followUp(c.follow_up), open(c), doDone(c), c.todo_key)));
@@ -1311,7 +1319,8 @@ function drawMaint(){
     <td><button class="btn s" onclick="maintEdit(${a.id})">Edit</button></td></tr>`).join('') || '<tr><td colspan="10" class="empty">None.</td></tr>';
 }
 function maintEdit(id){
-  const a = id ? MT.accounts.find(x => x.id === id) : {name:'', kind:'Pump', joined:'', equipment:'', address:'', months:'1,4,7,10', monthly:0, vendor_cost:'', naples_electric:'', our_bill:'', notes:'', repairs_by:'', follow_up:'', active:1};
+  const a = id ? MT.accounts.find(x => x.id === id) : {name:'', kind:'Pump', joined:new Date().toISOString().slice(0, 10), equipment:'', address:'', months:'1,4,7,10', monthly:0, vendor_cost:'', naples_electric:'', our_bill:'', notes:'', repairs_by:'', follow_up:'', active:1};
+  MTJ = {client_id: a.jobber_client_id || '', client_name: a.jobber_client_name || '', property_id: a.jobber_property_id || '', property_label: a.jobber_property_label || '', job_id: a.jobber_job_id || '', job_label: a.jobber_job_label || ''};
   const months = (a.months || '').split(',').filter(Boolean).map(Number);
   openModal(id ? 'Account - ' + esc(a.name) : 'Add maintenance account', `<div class="fields">
     <label class="w">Account<input type="text" id="mt_name" value="${esc(a.name)}"></label>
@@ -1326,13 +1335,47 @@ function maintEdit(id){
     <div class="w"><b class="note">Months</b><div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px">${MSHORT.map((m, i) => `<label style="display:flex;gap:3px;align-items:center"><input type="checkbox" class="mt_m" value="${i + 1}" ${months.includes(i + 1) ? 'checked' : ''}>${m}</label>`).join('')}</div></div>
     <label class="w">Repairs by<select id="mt_repairs_by">${[['', 'Wettech (Tommy)'], ['SiteOne', 'SiteOne'], ['Naples Electric', 'Naples Electric'], ['Oscar (our technician)', 'Oscar (our technician) - no Wettech quote or bill']].map(([v, l]) => `<option value="${esc(v)}" ${v === (a.repairs_by || '') ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select><span class="note">New repair jobs for this account go to them.</span></label>
     <label class="w">Before each service, follow up with…<textarea id="mt_follow_up" placeholder="e.g. Email Lauren to approve the visit">${esc(a.follow_up || '')}</textarea><span class="note">Shows in the to-do list about a week before each service month.</span></label>
+    <div class="w" style="border:1px solid var(--border);border-radius:10px;padding:10px 12px"><b>Jobber</b> <span class="note">- the client, property and recurring maintenance job, so Wettech's quotes and reports for this account go there and its quotes are followed.</span>
+      <div style="display:flex;gap:6px;margin-top:6px"><input type="text" id="mt_jq" placeholder="Find the client in Jobber…" value="${esc(a.jobber_client_name || a.name || '')}" style="flex:1"><button class="btn s" type="button" onclick="mtFindClient()">Find</button></div>
+      <div id="mt_jobber" style="margin-top:6px"></div></div>
     <label class="w">Notes<textarea id="mt_notes">${esc(a.notes)}</textarea></label>
     <label><span><input type="checkbox" id="mt_active" ${a.active ? 'checked' : ''}> Active account</span></label></div>`,
     `${id ? `<button class="btn danger" onclick="maintDelete(${id})">Remove</button>` : ''}<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="maintSave(${id})">Save</button>`);
+  mtJobberDraw();
+}
+// The account's Jobber client, property and recurring job (picked in the form).
+let MTJ = {};
+function mtSum(){ const el = document.getElementById('mt_jsum'); if (el) el.innerHTML = MTJ.client_id ? `✓ <b>${esc(MTJ.client_name)}</b>${MTJ.property_label ? ' · ' + esc(MTJ.property_label) : ''}${MTJ.job_label ? ' · job ' + esc(MTJ.job_label) : ' · <span class="warn">no maintenance job picked</span>'} <a href="#" onclick="event.preventDefault();MTJ={};mtJobberDraw()">clear</a>` : 'Not linked to Jobber yet.'; }
+function mtJobberDraw(cands, info){
+  const el = document.getElementById('mt_jobber'); if (!el) return;
+  el.innerHTML = '<div class="note" id="mt_jsum"></div>' + (cands ? cands.map(c => `<div style="display:flex;gap:6px;align-items:center;padding:3px 0"><button class="btn s" type="button" onclick='mtPickClient(${JSON.stringify({id: c.id, name: c.name}).replace(/'/g, "&#39;")})'>Use</button> <b>${esc(c.name)}</b> <span class="note">${esc(c.address || '')}${c.is_lead ? ' · lead' : ''}</span></div>`).join('') || '<div class="note">No Jobber client found - add the client in Jobber first, then Find again.</div>' : '') + (info || '');
+  mtSum();
+}
+async function mtFindClient(){
+  const q = document.getElementById('mt_jq').value.trim(); if (!q) return;
+  const j = await api('/jobber/clients?q=' + encodeURIComponent(q));
+  if (!j.success) { toast(j.error, true); return; }
+  mtJobberDraw(j.candidates || []);
+}
+function mtSet(sel, idKey, labelKey){ const o = sel.selectedOptions[0]; MTJ[idKey] = sel.value; MTJ[labelKey] = sel.value ? (o.dataset.l || '') : ''; mtSum(); }
+async function mtPickClient(c){
+  MTJ = {client_id: c.id, client_name: c.name, property_id: '', property_label: '', job_id: '', job_label: ''};
+  mtJobberDraw(null, '<div class="note">Loading its properties and jobs…</div>');
+  const j = await api('/jobber/clients/' + encodeURIComponent(c.id) + '/jobs');
+  if (!j.success) { mtJobberDraw(null, `<div class="note bad">${esc(j.error)}</div>`); return; }
+  const props = j.properties || [], jobs = (j.jobs || []).filter(x => x.status !== 'archived').sort((a, b) => (b.type === 'recurring') - (a.type === 'recurring'));
+  if (props.length === 1) Object.assign(MTJ, {property_id: props[0].id, property_label: props[0].label});
+  const rec = jobs.filter(x => x.type === 'recurring');
+  if (rec.length === 1) Object.assign(MTJ, {job_id: rec[0].id, job_label: '#' + rec[0].number + ' ' + rec[0].title});
+  const addr = document.getElementById('mt_address'); if (addr && !addr.value && MTJ.property_label) addr.value = MTJ.property_label;
+  mtJobberDraw(null, `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+    <select onchange="mtSet(this, 'property_id', 'property_label')"><option value="">Property…</option>${props.map(p => `<option value="${esc(p.id)}" data-l="${esc(p.label)}" ${p.id === MTJ.property_id ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}</select>
+    <select onchange="mtSet(this, 'job_id', 'job_label')"><option value="">Maintenance job…${rec.length ? '' : ' (none recurring yet - a to-do to set one up)'}</option>${jobs.map(x => `<option value="${esc(x.id)}" data-l="${esc('#' + x.number + ' ' + x.title)}" ${x.id === MTJ.job_id ? 'selected' : ''}>#${esc(x.number)} ${esc(x.title)}${x.type === 'recurring' ? ' (recurring)' : ''}</option>`).join('')}</select></div>`);
 }
 async function maintSave(id){
   const v = k => document.getElementById('mt_' + k).value;
-  const body = {name: v('name'), kind: v('kind'), joined: v('joined'), equipment: v('equipment'), address: v('address'), vendor_cost: v('vendor_cost'), naples_electric: v('naples_electric'), our_bill: v('our_bill'), notes: v('notes'), repairs_by: v('repairs_by'), follow_up: v('follow_up'), monthly: document.getElementById('mt_monthly').checked, active: document.getElementById('mt_active').checked, months: [...document.querySelectorAll('.mt_m:checked')].map(x => x.value).join(',')};
+  const body = {name: v('name'), kind: v('kind'), joined: v('joined'), equipment: v('equipment'), address: v('address'), vendor_cost: v('vendor_cost'), naples_electric: v('naples_electric'), our_bill: v('our_bill'), notes: v('notes'), repairs_by: v('repairs_by'), follow_up: v('follow_up'), monthly: document.getElementById('mt_monthly').checked, active: document.getElementById('mt_active').checked, months: [...document.querySelectorAll('.mt_m:checked')].map(x => x.value).join(','),
+    ...Object.fromEntries(Object.entries(MTJ).map(([k, v]) => ['jobber_' + k, v || '']))};
   if (id) body.id = id;
   const j = await api('/maint', {method:'POST', body});
   if (!j.success) { toast(j.error, true); return; }
@@ -1369,7 +1412,7 @@ function drawAccounts(){
     if (a.scada && a.scada.active && !a.scada.complimentary) out.push('SCADA ' + (a.scada.next_due_on || ''));
     return out; };
   document.getElementById('acBody').innerHTML = rows.map(a => { const p = a.pump, l = a.lake, s = a.scada, vis = a.visit;
-    const on = [p && p.active ? `<span class="chip">pump</span>` : '', l && l.active !== 0 ? `<span class="chip">${l.needs_dive ? 'lake · diver' : 'lake'}</span>` : '', s && s.active ? `<span class="chip ${s.complimentary ? '' : (st[s.state] || '')}">SCADA${s.state === 'overdue' ? ' overdue' : ''}</span>` : ''].join(' ');
+    const on = [p && p.active ? `<span class="chip" title="${p.jobber_client_id ? 'Linked to Jobber: ' + esc(p.jobber_client_name || '') : 'Not linked to Jobber yet'}">pump${p.jobber_client_id ? ' 🔗' : ''}</span>` : '', l && l.active !== 0 ? `<span class="chip">${l.needs_dive ? 'lake · diver' : 'lake'}</span>` : '', s && s.active ? `<span class="chip ${s.complimentary ? '' : (st[s.state] || '')}">SCADA${s.state === 'overdue' ? ' overdue' : ''}</span>` : ''].join(' ');
     return `<tr class="click" onclick="openAccount(${JSON.stringify(a.name).replace(/"/g, '&quot;')})"><td><b>${esc(a.name)}</b>${!a.active ? ' <span class="chip">former</span>' : ''}${vis ? `<div class="note">✓ Client approved ${esc((vis.link || {}).since || '')}</div>` : ''}</td>
     <td>${on || '<span class="note">—</span>'}</td>
     <td>${nextDue(a).map(x => /this month|overdue/.test(x) ? `<b>${esc(x)}</b>` : esc(x)).join('<br>') || '<span class="note">—</span>'}</td>
@@ -1651,7 +1694,7 @@ function renderAccount(){
   const row = (label, val) => val ? `<div class="note"><span style="display:inline-block;min-width:110px">${label}</span> <b style="font-weight:600;color:var(--text)">${esc(val)}</b></div>` : '';
   const card = (title, body, btns) => `<div style="flex:1;min-width:220px;border:1px solid var(--border);border-radius:10px;padding:10px 12px"><div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px"><b>${title}</b><span style="display:flex;gap:4px">${btns}</span></div>${body}</div>`;
   const setup = [
-    p ? card('Pump - Wettech' + (!p.active ? ' <span class="chip">former</span>' : ''), row('Type', p.kind) + row('Equipment', p.equipment) + row('Visits', schedText(p) + (p.due_this_month ? ' (due this month)' : '')) + row('Wettech / visit', p.vendor_cost) + row('Naples Electric', p.naples_electric) + row('We bill', p.our_bill) + row('Repairs by', p.repairs_by || 'Wettech') + row('Joined', p.joined) + row('Before service', p.follow_up) + row('Notes', p.notes), `<button class="btn s" onclick="acEdit('pump', ${p.id})">Edit</button>`)
+    p ? card('Pump - Wettech' + (!p.active ? ' <span class="chip">former</span>' : ''), row('Type', p.kind) + row('Equipment', p.equipment) + row('Visits', schedText(p) + (p.due_this_month ? ' (due this month)' : '')) + row('Wettech / visit', p.vendor_cost) + row('Naples Electric', p.naples_electric) + row('We bill', p.our_bill) + row('Repairs by', p.repairs_by || 'Wettech') + row('Joined', p.joined) + row('Before service', p.follow_up) + row('Notes', p.notes) + (p.jobber_client_id ? row('Jobber', [p.jobber_client_name, p.jobber_property_label, p.jobber_job_label].filter(Boolean).join(' · ')) : `<div class="note warn" style="margin-top:4px">Not linked to Jobber. <button class="btn s" onclick="acEdit('pump', ${p.id})">🔗 Link to Jobber</button></div>`), `<button class="btn s" onclick="acEdit('pump', ${p.id})">Edit</button>`)
       : card('Pump - Wettech', '<div class="note">No pump maintenance.</div>', `<button class="btn s" onclick="acEdit('pump', 0)">＋ Add</button>`),
     l ? card('Lake - Gulfshore' + (l.active === 0 ? ' <span class="chip">former</span>' : ''), row('Equipment', l.equipment) + row('Diver', l.needs_dive ? (l.months ? lakeSched(l) : 'Every month') + (l.status === 'hold' ? ' - on hold' : '') : 'No diving') + row('Gulfshore', l.diver_cost) + row('We bill', l.our_bill) + row('Diver notes', l.diver_notes) + row('Status', l.status_note), `<button class="btn s" onclick="acEdit('lake', ${l.id})">Edit</button>`)
       : card('Lake - Gulfshore', '<div class="note">No lake or diver work.</div>', `<button class="btn s" onclick="acEdit('lake', 0)">＋ Add</button>`),
@@ -1659,7 +1702,7 @@ function renderAccount(){
       : card('SCADA', '<div class="note">Not on SCADA.</div>', `<button class="btn s" onclick="acEdit('scada', 0)">＋ Add</button>`)].join('');
   const where = (p && p.address) || (l && l.address) || '';
   const links = [jb.client && jb.client.uri ? `<a class="btn s" href="${esc(jb.client.uri)}" target="_blank" rel="noopener">${esc(jb.client.name)} in Jobber ↗</a>` : '',
-    ...(jb.recurring || []).map(r => `<a class="btn s" href="${esc(r.uri)}" target="_blank" rel="noopener">Job #${esc(r.number)} ${esc(r.title || '')} ↗</a>`)].filter(Boolean).join(' ');
+    ...(jb.recurring || []).filter(r => r.uri).map(r => `<a class="btn s" href="${esc(r.uri)}" target="_blank" rel="noopener">Job #${esc(r.number)} ${esc(r.title || '')} ↗</a>`)].filter(Boolean).join(' ');
   const docs = (a.docs || []).map(d => `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--border)">${kindChip(d.kind)} <span style="flex:1;min-width:160px"><b>${esc(d.file_name)}</b> <span class="note">${d.doc_number ? '#' + esc(d.doc_number) + ' · ' : ''}${d.total != null ? money(d.total) + ' · ' : ''}${esc(d.doc_date || d10(d.created_at))}${d.signed_sent_at ? ' · signed &amp; sent ' + esc(d10(d.signed_sent_at)) : d.signed_at ? ' · signed ' + esc(d10(d.signed_at)) : ''}</span></span>
       <a class="btn s" href="/pumps/api/docs/${d.id}/file" target="_blank">Open</a>${d.has_branded ? ` <a class="btn s" target="_blank" href="/pumps/api/docs/${d.id}/file?version=branded_pdf">SE report PDF</a>` : ''}${d.signed_at ? ` <a class="btn s" href="/pumps/api/docs/${d.id}/file?version=approved&download=1">⬇ Signed</a>` : ''}${d.case_id ? ` <a href="#" onclick="event.preventDefault();openCase(${d.case_id})">job ↗</a>` : ''}</div>`).join('');
   const vis = (AC && AC.accounts.find(x => x.name === a.name) || {}).visit;
