@@ -2391,6 +2391,44 @@ class PumpsTest(unittest.TestCase):
         finally:
             P.JOBBER_STATIC_TOKEN = saved
 
+    def test_sarasota_county_is_billed_the_county_way(self):
+        doc = {'line_items': [{'description': 'Field service to furnish and install new 15 HP vertical hollow shaft '
+                                              'motor on pump #1 at Twin Lakes, wired up and tested.', 'amount': 5226.24}],
+               'subtotal': 5226.24, 'client_name': 'Twin Lakes Park', 'description': ''}
+        case = {'id': 0, 'client_name': 'SARASOTA COUNTY', 'po_number': '260904', 'wo_number': 'WO2143416'}
+        s = P.suggest_invoice(doc, case)
+        self.assertEqual(s['subject'], 'Invoice-PO260904')
+        li = s['line_items']
+        self.assertEqual(len(li), 1)
+        self.assertEqual((li[0]['name'], li[0]['unit_price'], li[0]['taxable']), ('PUMP SERVICE', 5748.86, False))
+        self.assertIn('WO2143416  PO260904', li[0]['description'])
+        self.assertIn('Subcontractor Cost: $5,226.24\nVendor 10% Markup: $522.62\nTotal Cost: $5,748.86', li[0]['description'])
+        q = P.suggest_quote(doc, case)
+        self.assertEqual((q['line_items'][0]['unit_price'], q['markup_pct']), (5748.86, 10))
+        # Everyone else: still one Service Proposal Amount line at +30%.
+        other = P.suggest_invoice(doc, {'client_name': 'Quail Run'})
+        self.assertEqual((other['line_items'][0]['name'], other['line_items'][0]['unit_price']),
+                         ('Service Proposal Amount', 6794.11))
+        self.assertEqual(P.gov_missing_refs({'po_number': '1'}), ['WO #'])
+
+    def test_status_updates_on_an_approved_job(self):
+        j = self.c.post('/pumps/api/cases', json={'title': 'Motor', 'client_name': 'Quail Run'}).get_json()
+        cid = j.get('case_id') or j['case']['id']
+        r = self.c.post(f'/pumps/api/cases/{cid}/status', json={'kind': 'parts_ordered', 'text': '2 weeks out',
+                                                                 'on': '2026-10-27'}).get_json()
+        self.assertTrue(r['success'], r)
+        self.assertEqual((r['case']['job_status']['label'], r['case']['job_status']['on']), ('Parts ordered', '2026-10-27'))
+        self.c.post(f'/pumps/api/cases/{cid}/status', json={'kind': 'client_notified', 'text': 'emailed Lauren'})
+        r = self.c.post(f'/pumps/api/cases/{cid}/status', json={'kind': 'scheduled', 'on': '2026-10-29'}).get_json()
+        c = r['case']
+        self.assertEqual(c['scheduled_for'], '2026-10-29')
+        self.assertTrue(c['steps']['scheduled']['at'])
+        hist = [e['detail'] for e in c['events'] if e['action'] == 'status']
+        self.assertEqual(hist, ['Scheduled · for 2026-10-29', 'Client notified · emailed Lauren',
+                                'Parts ordered · 2 weeks out · parts due 2026-10-27'])
+        self.assertEqual(self.c.post(f'/pumps/api/cases/{cid}/status', json={'kind': 'scheduled'}).status_code, 400)
+        self.assertEqual(self.c.get('/pumps/api/undo').get_json()['actions'][0]['label'], f'Status update on job #{cid}')
+
     def test_sign_docx_types_the_name_and_date_under_thank_you(self):
         body = ('<w:p><w:r><w:t>Your Cost ---- $ 1158.99</w:t></w:r></w:p>'
                 '<w:p><w:pPr><w:pStyle w:val="NoSpacing"/></w:pPr><w:r><w:t xml:space="preserve">      Thank You </w:t></w:r></w:p>'
