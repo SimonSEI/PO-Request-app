@@ -90,8 +90,9 @@ DEFAULT_SETTINGS = {
     'install_words': 'pay app, install, installation, proposal, retainage, retention',
     'lien_days': 90,                # Florida: claim of lien within 90 days of the last day furnished
     'lien_kinds': 'install',        # which invoices carry lien deadlines: install, or install,service
-    'nonp_lead_days': 30,           # prepare the Notice of Nonpayment this many days before the lien deadline
-    'nonp_auto': False,             # email the Notice of Nonpayment on its own
+    'nonp_lead_days': 30,           # list install jobs on Today this many days (+15) before their lien deadline
+    'nonp_min_days_late': 40,       # a Notice of Nonpayment is drafted once the job's money is this many days late
+    'nonp_notify': '',              # who is told a notice is waiting for approval (blank = the sending address)
     'company_name': 'Stahlman-England Irrigation, Inc.',
     'company_address': '',
     'company_phone': '',
@@ -1606,15 +1607,18 @@ def lien_info(job, invoices, s, today=None):
         estimated = True
     if not last:
         return {'applies': True, 'last_furnished': '', 'estimated': True, 'deadline': '', 'days_left': None,
-                'nonp_due': False}
+                'nonp_due': False, 'days_late': 0}
     deadline = last + timedelta(days=int(s.get('lien_days') or 90))
     days_left = (deadline - today).days
-    past_due = any(_due(i) and _due(i) < today for i in open_inv)
-    # Only a real last day furnished (entered, or Jobber's completion) starts the Notice of Nonpayment.
-    nonp_due = bool(open_inv) and past_due and not estimated and days_left <= int(s.get('nonp_lead_days') or 30) and \
-        not (job.get('nonp_status') or '')
+    # A Notice of Nonpayment is drafted (for approval) once money on the job that is actually due - not retainage
+    # still held - is nonp_min_days_late days past due, while the lien deadline hasn't passed.
+    late = [(today - _due(i)).days for i in open_inv if not i.get('retainage') and _due(i)]
+    days_late = max(late) if late else 0
+    nonp_due = bool(open_inv) and days_late >= int(s.get('nonp_min_days_late') or 40) and \
+        (estimated or days_left >= 0) and not (job.get('nonp_status') or '')
     return {'applies': True, 'last_furnished': last.isoformat(), 'estimated': estimated, 'deadline': deadline.isoformat(),
-            'days_left': days_left, 'nonp_due': nonp_due, 'open_balance': round(sum(i['open_balance'] or 0 for i in open_inv), 2)}
+            'days_left': days_left, 'nonp_due': nonp_due, 'days_late': days_late,
+            'open_balance': round(sum(i['open_balance'] or 0 for i in open_inv), 2)}
 
 
 def _load_all():
@@ -1972,6 +1976,23 @@ def scan_sent():
         _log('sent', f'{found} email(s) you sent customers from {mailbox} counted as follow-ups.')
 
 
+def _withdraw_old_rule_nonps():
+    """Once (Oct 13): notices drafted under the first rule (30 days before the lien deadline) and not sent are
+    withdrawn; the next cycle drafts them again only if the job's money is 40+ days late, for approval."""
+    if _state('withdraw_nonps_oct13'):
+        return
+    _set_state('withdraw_nonps_oct13', _stamp())
+    conn = _conn()
+    for r in conn.execute("SELECT DISTINCT job_key FROM ar_emails WHERE kind='nonp' AND status='draft'").fetchall():
+        conn.execute("UPDATE ar_emails SET status='discarded', error='Withdrawn: drafted under the old rule' "
+                     "WHERE kind='nonp' AND status='draft' AND job_key=?", (r['job_key'],))
+        conn.execute("UPDATE ar_jobs SET nonp_status='' WHERE key=? AND nonp_status='prepared'", (r['job_key'],))
+        _note(conn, 'Notice of Nonpayment draft withdrawn: notices are now drafted only once the money is 40+ days '
+                    'past due, and always wait for approval.', job_key=r['job_key'], kind='nonp')
+    conn.commit()
+    conn.close()
+
+
 def _fix_misread_mail():
     """Once: undo what the first days' reply reading got wrong - our own staff's emails read as customer
     replies, and Jobber's "payment received" notices read as the customer saying they paid."""
@@ -2269,7 +2290,7 @@ def _send_mail(mailbox, to, cc, subject, body, attachments):
     return mid, draft.get('conversationId') or ''
 
 
-def send_email(email_id, by=''):
+def send_email(email_id, by='', approved_by=''):
     s = settings()
     conn = _conn()
     e = conn.execute("SELECT * FROM ar_emails WHERE id=?", (email_id,)).fetchone()
@@ -2277,6 +2298,8 @@ def send_email(email_id, by=''):
     if not e or e['status'] == 'sent':
         return False, 'Already sent'
     e = dict(e)
+    if e['kind'] == 'nonp' and not approved_by:
+        return False, 'A Notice of Nonpayment needs a person to approve it before it is sent'
     to, cc = _emails(e['to_email']), _emails(e['cc'])
     if not to:
         return False, 'No email address to send to'
@@ -2322,6 +2345,8 @@ def send_email(email_id, by=''):
               by=by or 'office')
     if e['kind'] == 'nonp' and e['job_key']:
         conn.execute("UPDATE ar_jobs SET nonp_status='sent', nonp_at=? WHERE key=?", (now, e['job_key']))
+        _note(conn, f"Notice of Nonpayment approved and sent by {approved_by}.", job_key=e['job_key'], kind='nonp',
+              by=approved_by)
         _note(conn, f"Notice of Nonpayment emailed to {', '.join(to)}. Serve it by certified mail as well and record the "
                     f"claim of lien before the deadline.", job_key=e['job_key'], kind='nonp')
     conn.commit()
@@ -2399,26 +2424,74 @@ def prepare_nonp(job_key, by='Office App'):
                              f"Notice of Nonpayment - {job.get('property_address') or job['name']}", body, _stamp(),
                              '' if owner_email else 'No owner email: add it on the job, or mail the notice')).lastrowid
     conn.execute("UPDATE ar_jobs SET nonp_status='prepared', nonp_at=?, nonp_doc_id=? WHERE key=?", (_stamp(), doc_id, job_key))
-    _note(conn, f"Notice of Nonpayment prepared for {owner_name} ({_money_text(total)}). Lien deadline "
-                f"{_fmt_date(li.get('deadline'))}.", job_key=job_key, kind='nonp', by=by)
+    _note(conn, f"Notice of Nonpayment prepared for {owner_name} ({_money_text(total)}), {li.get('days_late') or 0} days "
+                f"past due. Lien deadline {_fmt_date(li.get('deadline'))}"
+                f"{' (estimated)' if li.get('estimated') else ''}. Waiting for approval - it is not sent until someone "
+                f"approves it.", job_key=job_key, kind='nonp', by=by)
     conn.commit()
     conn.close()
-    _log('lien', f"Notice of Nonpayment prepared for {job['name']} ({_money_text(total)}).")
-    if s.get('nonp_auto') and owner_email and _in_send_window(s):
-        send_email(email_id, by='automatic')
+    _log('lien', f"Notice of Nonpayment prepared for {job['name']} ({_money_text(total)}): waiting for approval.")
     return True, email_id
 
 
 def check_liens():
+    """Draft a Notice of Nonpayment for each install job whose money is 40+ days late, and tell a person.
+    Nothing is sent to the owner until someone approves it on the Today tab."""
     s = settings()
     invs, jobs, custs = _load_all()
+    ready, blocked = [], []
     for key, job in jobs.items():
         members = [i for i in invs if i['job_key'] == key]
         li = lien_info(job, members, s)
         if li.get('applies') and li.get('nonp_due'):
             ok, msg = prepare_nonp(key)
-            if not ok:
+            row = (job, _nice_name((custs.get(job['customer_key']) or {}).get('name') or ''), li)
+            if ok:
+                ready.append(row)
+            else:
+                blocked.append(row + (msg,))
                 _log('lien', f"{job['name']}: Notice of Nonpayment due but not prepared: {msg}")
+    blocked = [b for b in blocked if _state(f"nonp_blocked:{b[0]['key']}") != b[3]]
+    for b in blocked:
+        _set_state(f"nonp_blocked:{b[0]['key']}", b[3])
+    if ready or blocked:
+        notify_nonp(ready, blocked, s)
+
+
+def notify_nonp(ready, blocked, s):
+    """Email a person that Notices of Nonpayment are waiting for approval (or can't be drafted yet)."""
+    to = _emails(s.get('nonp_notify')) or _emails(s['from_email'])
+    link = (_cfg.get('website_url') or '').rstrip('/') + '/receivables'
+    lines = []
+    if ready:
+        lines += [f"{len(ready)} Notice(s) of Nonpayment are drafted and waiting for your approval. Nothing goes to the "
+                  f"owner until you approve it on the Today tab:", '']
+        for job, cust, li in ready:
+            lines.append(f"- {job['name']} ({cust}): {_money_text(li.get('open_balance'))} open, {li.get('days_late')} days "
+                         f"past due; lien deadline {_fmt_date(li.get('deadline'))}"
+                         f"{' (estimated - enter the last day furnished on the job)' if li.get('estimated') else ''}")
+        lines.append('')
+    if blocked:
+        lines += ['These are 40+ days past due but the notice could not be drafted yet:', '']
+        for job, cust, li, why in blocked:
+            lines.append(f"- {job['name']} ({cust}): {_money_text(li.get('open_balance'))}, {li.get('days_late')} days "
+                         f"past due - {why}")
+        lines.append('')
+    lines += [f"Open Receivables: {link}" if link != '/receivables' else 'Open Receivables in the Office App.']
+    subject = (f"Approve: {len(ready)} Notice(s) of Nonpayment ready" if ready else
+               f"{len(blocked)} job(s) 40+ days past due need an owner before a Notice of Nonpayment")
+    conn = _conn()
+    for job, *_ in ready + blocked:
+        _note(conn, f"{', '.join(to)} was notified: {subject}.", job_key=job['key'], kind='nonp')
+    conn.commit()
+    conn.close()
+    if not graph_ready() or not to:
+        return _log('lien', f'{subject} (no email sent: Microsoft 365 not connected).')
+    try:
+        _send_mail(s['from_email'].strip(), to, [], subject, '\n'.join(lines), [])
+        _log('lien', f"{subject}: {', '.join(to)} notified.")
+    except Exception as e:
+        _log('lien', f'{subject}: notification email failed: {e}')
 
 
 # ── PDFs ─────────────────────────────────────────────────────────────────────
@@ -2949,7 +3022,7 @@ def api_email():
     conn.commit()
     conn.close()
     if d.get('send'):
-        ok, err = send_email(eid, by=_who())
+        ok, err = send_email(eid, by=_who(), approved_by=_who() if d.get('approve') else '')
         if not ok:
             return jsonify({'success': False, 'error': err}), 400
     return jsonify({'success': True})
@@ -2987,14 +3060,15 @@ def api_settings():
         return _forbidden()
     d = request.get_json(silent=True) or {}
     s = settings()
-    for k in ('from_email', 'cc', 'signature', 'retainage_pcts', 'install_words', 'lien_kinds', 'company_name',
+    for k in ('from_email', 'cc', 'signature', 'retainage_pcts', 'install_words', 'lien_kinds', 'company_name', 'nonp_notify',
               'company_address', 'company_phone', 'send_hours'):
         if k in d:
             s[k] = str(d[k]).strip()[:3000]
-    for k in ('auto_send', 'enabled', 'read_replies', 'nonp_auto'):
+    for k in ('auto_send', 'enabled', 'read_replies'):
         if k in d:
             s[k] = bool(d[k])
     for k in ('promise_grace_days', 'reported_paid_wait_days', 'retainage_every_days', 'lien_days', 'nonp_lead_days',
+              'nonp_min_days_late',
               'max_attach_mb'):
         if k in d:
             try:
@@ -3126,15 +3200,18 @@ def nonp_pdf_view():
 
 
 def init_receivables(app, db_path, *, data_dir, get_setting, set_setting, graph_token, graph_enabled,
-                     jobber_token, jobber_connected, jobber_version, anthropic_client=None, scheduler_cls=None):
+                     jobber_token, jobber_connected, jobber_version, anthropic_client=None, scheduler_cls=None,
+                     website_url=''):
     """Create the tables, register the routes and schedule the cycle every hour.
     jobber_token(force_refresh) hands over an access token from the Jobber app connected for Pumps."""
     _cfg.update(db_path=db_path, data_dir=data_dir, get_setting=get_setting, set_setting=set_setting,
                 graph_token=graph_token, graph_enabled=graph_enabled, jobber_token=jobber_token,
-                jobber_connected=jobber_connected, jobber_version=jobber_version, anthropic_client=anthropic_client)
+                jobber_connected=jobber_connected, jobber_version=jobber_version, anthropic_client=anthropic_client,
+                website_url=website_url)
     init_db()
     try:
         _fix_misread_mail()
+        _withdraw_old_rule_nonps()
     except Exception as e:
         print(f"⚠ Receivables: could not tidy misread mail: {e}")
     app.register_blueprint(bp)

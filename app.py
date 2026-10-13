@@ -39463,7 +39463,7 @@ init_receivables(app, DB_PATH, data_dir=DATA_DIR, get_setting=get_setting, set_s
                  jobber_connected=lambda: _pumps.jobber_status()['connected'],
                  anthropic_client=(anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                                    if ANTHROPIC_AVAILABLE and ANTHROPIC_API_KEY else None),
-                 scheduler_cls=BackgroundScheduler if SCHEDULER_AVAILABLE else None)
+                 scheduler_cls=BackgroundScheduler if SCHEDULER_AVAILABLE else None, website_url=WEBSITE_URL)
 
 # Set up background scheduler for automatic email checking
 if SCHEDULER_AVAILABLE and PO_EMAIL_MONITORING_ENABLED:
