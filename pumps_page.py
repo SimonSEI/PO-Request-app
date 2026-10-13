@@ -607,7 +607,9 @@ function chaseLine(c){
     + (ch.said ? ` · <i>"${esc(ch.said)}"</i>` : '') + (ch.state === 'follow_up' ? '' : ` · <span class="ok">no follow-up needed until ${esc(niceDay(ch.check_on))}</span>`);
 }
 function caseTitle(c){ return esc(c.title || c.client_name || 'Item ' + c.id); }
-function caseSub(c, extra){ return esc([c.client_name, c.site].filter(Boolean).join(' · ')) + (c.po_number ? ' · PO ' + esc(c.po_number) : '') + jobberNo(c) + (extra ? ' · ' + extra : '') + (c.idle_days >= 7 ? ` · <b class="warn">${c.idle_days}d idle</b>` : ''); }
+// The latest status update on a job ("Parts ordered · 2 weeks out · parts due Oct 27").
+function statusLine(c){ const st = c.job_status || {}; if (!st.kind) return ''; return `<span title="${esc((st.by || '') + ' ' + (st.at || ''))}">📌 <b>${esc(st.label)}</b>${st.text ? ' - ' + esc(st.text) : ''}${st.on ? ' · ' + ({parts_ordered: 'parts due', waiting_vendor: 'expected', scheduled: 'for'}[st.kind] || 'on') + ' ' + esc(niceDay(st.on)) : ''} <span class="note">(${esc(niceDay(d10(st.at)))})</span></span>`; }
+function caseSub(c, extra){ return esc([c.client_name, c.site].filter(Boolean).join(' · ')) + (c.po_number ? ' · PO ' + esc(c.po_number) : '') + jobberNo(c) + (extra ? ' · ' + extra : '') + (c.idle_days >= 7 ? ` · <b class="warn">${c.idle_days}d idle</b>` : '') + (statusLine(c) ? '<br>' + statusLine(c) : ''); }
 async function loadToday(){
   const j = await api('/summary');
   checkVersion(j.version);
@@ -735,6 +737,7 @@ function renderCase(){
       <button class="btn" onclick="addNote()">✎ Add note</button>
       ${c.status === 'open' ? `<button class="btn p" onclick="caseDone(${c.id})">✓ Mark done</button><button class="btn danger" onclick="caseRemove(${c.id})">✕ Remove</button>` : `<button class="btn" onclick="caseReopen(${c.id})">↺ Reopen</button>`}
     </div></div>
+    ${statusSec(c)}
     ${c.chase ? `<div class="sec"><div class="note" style="padding:10px 12px;border-radius:10px;background:${c.chase.state === 'follow_up' ? 'var(--amber-bg)' : 'var(--violet-bg)'}"><b>${c.chase.phase === 'job' ? 'Job' : 'Quote'} - waiting on ${esc(v)}</b>${chaseLine(c)}${c.chase.last_at ? `<br><span class="note">Last asked ${esc(niceDay(c.chase.last_at))}${c.chase.how ? ' by ' + esc(c.chase.how) : ''}${c.chase.by ? ' · ' + esc(c.chase.by) : ''}</span>` : ''}</div></div>` : ''}
     <div class="sec"><h4>Journey</h4>${journeyHtml(c)}</div>
     <div class="sec"><h4>Checklist</h4><div class="steps">${steps}</div></div>
@@ -763,7 +766,7 @@ function renderCase(){
 // happened to it, oldest first.
 const JOURNEY_ICONS = [
   [/^created|opened/, '🆕', 'b'], [/document received/, '📄', 'b'], [/draft quote created|scada quote drafted/, '💬', 'b'],
-  [/quote stamped approved|quote signed|signed quote emailed|quote made a job/, '✅', 'g'], [/vendor replied|date noted in Jobber/, '📅', 'b'], [/quote status/, '💬', ''], [/draft invoice created|invoiced on matching job/, '🧾', 'b'],
+  [/quote stamped approved|quote signed|signed quote emailed|quote made a job/, '✅', 'g'], [/vendor replied|date noted in Jobber/, '📅', 'b'], [/^status$/, '📌', 'b'], [/quote status/, '💬', ''], [/draft invoice created|invoiced on matching job/, '🧾', 'b'],
   [/invoice status/, '💵', ''], [/pay vendor/, '💸', 'r'], [/emailed christian/, '✉️', 'g'], [/could not email|not drafted|not logged|not saved/, '⚠️', 'a'],
   [/^issue resolved/, '✔️', 'g'], [/^issue/, '⚠️', 'r'], [/bill matches quote/, '✔️', 'g'], [/^note/, '✎', ''], [/linked/, '🔗', ''],
   [/followed up/, '📞', 'b'], [/service visit|schedule/, '📅', 'b'], [/report/, '📋', 'b'], [/marked done|closed/, '🏁', 'g'], [/reopened/, '↺', 'a'], [/cancelled|removed/, '✕', 'r'],
@@ -908,6 +911,29 @@ function saveCaseFields(){
   const data = {};
   document.querySelectorAll('#drawer [data-f]').forEach(el => data[el.dataset.f] = el.value);
   patchCase(data).then(j => { if (j.success) { toast('Saved'); closeDrawer(); } });
+}
+// Status of an approved job: parts ordered (and when they're due), client
+// notified, scheduled, work done… newest on top, every update in the log.
+const JOB_STATUSES = [['parts_ordered', 'Parts ordered'], ['waiting_vendor', 'Waiting on the vendor'], ['client_notified', 'Client notified'], ['scheduled', 'Scheduled'], ['in_progress', 'Work under way'], ['work_done', 'Work done'], ['on_hold', 'On hold'], ['note', 'Note']];
+function statusSec(c){
+  const hist = (c.events || []).filter(e => e.action === 'status');
+  return `<div class="sec"><h4>Status</h4>
+    ${statusLine(c) ? `<div style="margin-bottom:8px">${statusLine(c)}</div>` : '<div class="note" style="margin-bottom:8px">No status updates yet.</div>'}
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <select id="js_kind" onchange="jsKind()">${JOB_STATUSES.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select>
+      <input type="date" id="js_on" title="When the parts are due / the day it is scheduled">
+      <span id="js_weeks" style="display:flex;gap:4px">${[1, 2, 3, 4].map(w => `<button class="btn s" onclick="jsWeeks(${w})">${w} wk${w > 1 ? 's' : ''}</button>`).join('')}</span>
+      <input type="text" id="js_text" placeholder="Note - e.g. motor ordered from Wettech, client told by email" style="flex:1;min-width:200px">
+      <button class="btn p" onclick="jsAdd(${c.id})">＋ Add update</button></div>
+    ${hist.length ? `<div style="margin-top:8px">${hist.map(e => `<div class="note">${esc(niceDay(d10(e.at)))} · ${esc(e.actor || '')} · ${esc(e.detail)}</div>`).join('')}</div>` : ''}</div>`;
+}
+function jsKind(){ const k = document.getElementById('js_kind').value; document.getElementById('js_weeks').style.display = ['parts_ordered', 'waiting_vendor', 'scheduled'].includes(k) ? 'flex' : 'none'; }
+function jsWeeks(w){ const d = new Date(); d.setDate(d.getDate() + 7 * w); document.getElementById('js_on').value = d.toISOString().slice(0, 10); const t = document.getElementById('js_text'); if (!t.value) t.value = w + ' week' + (w > 1 ? 's' : '') + ' out'; }
+async function jsAdd(id){
+  const v = x => document.getElementById(x).value;
+  const j = await api('/cases/' + id + '/status', {method:'POST', body:{kind: v('js_kind'), on: v('js_on'), text: v('js_text').trim()}});
+  if (!j.success) { toast(j.error, true); return; }
+  curCase = j.case; renderCase(); toast('Status updated'); loadToday();
 }
 function addNote(){ const t = prompt('Note for this item:'); if (t) patchCase({note: t}); }
 async function caseDone(id){
@@ -1495,7 +1521,7 @@ async function loadJobs(){
   document.getElementById('jobsBody').innerHTML = (j.cases || []).map(c => { const jb = c.jobber || {}, vp = c.vendor_pay || {};
     return `<tr class="click" onclick="openCase(${c.id})">
     <td><b>${esc(c.title || c.client_name)}</b><div class="note">${esc([c.client_name, c.site].filter(Boolean).join(' · '))}${c.po_number ? ' · PO ' + esc(c.po_number) : ''}${jobberNo(c)}</div></td>
-    <td>${stageChip(c)}${c.idle_days >= 7 && c.status === 'open' ? ` <span class="chip a">${c.idle_days}d idle</span>` : ''}</td>
+    <td>${stageChip(c)}${c.idle_days >= 7 && c.status === 'open' ? ` <span class="chip a">${c.idle_days}d idle</span>` : ''}${statusLine(c) ? `<div class="note">${statusLine(c)}</div>` : ''}</td>
     <td>${esc(c.vendor)}</td><td>${numAmt(c.vendor_quote_number, c.vendor_quote_amount ?? c.vendor_quote_total)}</td>
     <td>${ref(jb.quote)}${jb.quote && jb.quote.total != null ? ' <b>' + money(jb.quote.total) + '</b>' : ''}${jb.quote && jb.quote.status ? ` <span class="note">${esc(jb.quote.status.replace(/_/g, ' '))}</span>` : ''}</td>
     <td>${numAmt(c.vendor_bill_number, c.vendor_bill_amount ?? c.vendor_bill_total)}</td>

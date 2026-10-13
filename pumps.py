@@ -575,7 +575,8 @@ def init_db():
                       "COALESCE(job_id, '')=''", (a['job_id'], a['job_label'], a['place'], a['area']))
     # When the vendor's bill was paid, and who said so (added after launch).
     # vendor_follow: the last time we chased the vendor and what they said (JSON).
-    for col in ('vendor_paid_on', 'vendor_paid_by', 'closed_by_hand', 'vendor_follow'):
+    # job_status: the latest status update on an approved job (JSON) - parts ordered, client told, scheduled...
+    for col in ('vendor_paid_on', 'vendor_paid_by', 'closed_by_hand', 'vendor_follow', 'job_status'):
         try:
             c.execute(f"ALTER TABLE pump_cases ADD COLUMN {col} TEXT DEFAULT ''")
         except sqlite3.OperationalError:
@@ -798,7 +799,7 @@ def _stage(steps, status='open'):
 
 def _case_dict(row, conn=None):
     d = dict(row)
-    for k in ('jobber', 'steps', 'vendor_follow'):
+    for k in ('jobber', 'steps', 'vendor_follow', 'job_status'):
         try:
             d[k] = json.loads(d.get(k) or '{}')
         except (TypeError, ValueError):
@@ -5114,6 +5115,7 @@ UNDO_LABELS = (
     (r'/cases/(\d+)/pay_email/send$', 'Emailed Christian to pay for job #{0}'),
     (r'/cases/(\d+)/done$', 'Marked a step on job #{0}'),
     (r'/cases/(\d+)/vendor_follow$', 'Logged a follow-up with the vendor on job #{0}'),
+    (r'/cases/(\d+)/status$', 'Status update on job #{0}'),
     (r'/cases/(\d+)/delete$', 'Deleted job #{0}'),
     (r'/cases/(\d+)/approved$', 'Marked job #{0} approved'),
     (r'/cases/(\d+)$', 'Changed job #{0}'),
@@ -5726,6 +5728,75 @@ def h_vendor_follow(actor, case_id):
     try:
         if not log_vendor_follow(conn, case_id, actor, d.get('who'), d.get('how'), d.get('said'),
                                  d.get('expect_by'), d.get('check_on')):
+            return {'success': False, 'error': 'Not found'}, 404
+        conn.commit()
+        return {'case': case_detail(conn, case_id)}
+    finally:
+        conn.close()
+
+
+# Status updates on an approved job, newest kept on the job and every one in its log.
+JOB_STATUSES = {
+    'parts_ordered': 'Parts ordered',
+    'waiting_vendor': 'Waiting on the vendor',
+    'client_notified': 'Client notified',
+    'scheduled': 'Scheduled',
+    'in_progress': 'Work under way',
+    'work_done': 'Work done',
+    'on_hold': 'On hold',
+    'note': 'Note',
+}
+
+
+def set_job_status(conn, case_id, actor, kind, text='', on=''):
+    """A status update: {kind} with a note and a date - when the parts are due
+    (parts ordered, waiting on the vendor) or the day it's booked (scheduled).
+    A date for the work moves the job's follow-up to then; Scheduled sets the
+    job's date and ticks Scheduled; Work done ticks Work done."""
+    row = conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+    if not row:
+        return None
+    if kind not in JOB_STATUSES:
+        raise ValueError('Pick what the update is')
+    text = (text or '').strip()[:1000]
+    on = _iso_date(on) if on else ''
+    if kind == 'note' and not text:
+        raise ValueError('Write the note')
+    if kind == 'scheduled' and not on:
+        raise ValueError('Say what day it is scheduled for')
+    c = _case_dict(row)
+    today = _today().isoformat()
+    rec = {'kind': kind, 'label': JOB_STATUSES[kind], 'text': text, 'on': on, 'at': _now_text(), 'by': actor or ''}
+    conn.execute('UPDATE pump_cases SET job_status=?, last_activity_at=?, updated_at=? WHERE id=?',
+                 (json.dumps(rec), _now_text(), _now_text(), case_id))
+    if kind == 'scheduled':
+        conn.execute('UPDATE pump_cases SET scheduled_for=? WHERE id=?', (on, case_id))
+        if not (c['steps'].get('scheduled') or {}).get('at'):
+            _set_step(conn, case_id, 'scheduled', at=today, by=actor)
+    elif kind == 'work_done' and not (c['steps'].get('work_done') or {}).get('at'):
+        _set_step(conn, case_id, 'work_done', at=on or today, by=actor)
+    if on and kind in ('parts_ordered', 'waiting_vendor', 'scheduled') and CHASE_PHASES.get(c['stage']):
+        # Nobody needs to chase the vendor before the date they gave.
+        conn.execute('UPDATE pump_cases SET vendor_follow=? WHERE id=?', (json.dumps(
+            {'phase': CHASE_PHASES[c['stage']], 'at': _now_text(), 'by': actor or '',
+             'who': _vendor_contact(c.get('vendor') or 'Wettech')[0], 'how': '',
+             'said': f"{JOB_STATUSES[kind]}{': ' + text if text else ''}", 'expect_by': on, 'check_on': ''}), case_id))
+    when = {'parts_ordered': 'parts due', 'waiting_vendor': 'expected', 'scheduled': 'for',
+            'work_done': 'on'}.get(kind, 'on')
+    _event(conn, actor, 'status', ' · '.join(x for x in (JOB_STATUSES[kind], text,
+                                                        f'{when} {on}' if on else '') if x), case_id=case_id)
+    return rec
+
+
+@api('/cases/<int:case_id>/status', methods=('POST',))
+def h_case_status(actor, case_id):
+    """A status update on a job: {"kind": parts_ordered|waiting_vendor|client_notified|scheduled|
+    in_progress|work_done|on_hold|note, "text": "...", "on": "YYYY-MM-DD"}."""
+    d = _json()
+    conn = _conn()
+    try:
+        if not set_job_status(conn, case_id, actor, str(d.get('kind') or ''), str(d.get('text') or ''),
+                              str(d.get('on') or '')):
             return {'success': False, 'error': 'Not found'}, 404
         conn.commit()
         return {'case': case_detail(conn, case_id)}

@@ -2391,6 +2391,24 @@ class PumpsTest(unittest.TestCase):
         finally:
             P.JOBBER_STATIC_TOKEN = saved
 
+    def test_status_updates_on_an_approved_job(self):
+        j = self.c.post('/pumps/api/cases', json={'title': 'Motor', 'client_name': 'Quail Run'}).get_json()
+        cid = j.get('case_id') or j['case']['id']
+        r = self.c.post(f'/pumps/api/cases/{cid}/status', json={'kind': 'parts_ordered', 'text': '2 weeks out',
+                                                                 'on': '2026-10-27'}).get_json()
+        self.assertTrue(r['success'], r)
+        self.assertEqual((r['case']['job_status']['label'], r['case']['job_status']['on']), ('Parts ordered', '2026-10-27'))
+        self.c.post(f'/pumps/api/cases/{cid}/status', json={'kind': 'client_notified', 'text': 'emailed Lauren'})
+        r = self.c.post(f'/pumps/api/cases/{cid}/status', json={'kind': 'scheduled', 'on': '2026-10-29'}).get_json()
+        c = r['case']
+        self.assertEqual(c['scheduled_for'], '2026-10-29')
+        self.assertTrue(c['steps']['scheduled']['at'])
+        hist = [e['detail'] for e in c['events'] if e['action'] == 'status']
+        self.assertEqual(hist, ['Scheduled · for 2026-10-29', 'Client notified · emailed Lauren',
+                                'Parts ordered · 2 weeks out · parts due 2026-10-27'])
+        self.assertEqual(self.c.post(f'/pumps/api/cases/{cid}/status', json={'kind': 'scheduled'}).status_code, 400)
+        self.assertEqual(self.c.get('/pumps/api/undo').get_json()['actions'][0]['label'], f'Status update on job #{cid}')
+
     def test_sign_docx_types_the_name_and_date_under_thank_you(self):
         body = ('<w:p><w:r><w:t>Your Cost ---- $ 1158.99</w:t></w:r></w:p>'
                 '<w:p><w:pPr><w:pStyle w:val="NoSpacing"/></w:pPr><w:r><w:t xml:space="preserve">      Thank You </w:t></w:r></w:p>'
