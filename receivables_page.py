@@ -109,7 +109,7 @@ PAGE_TEMPLATE = r'''<!DOCTYPE html>
       <input id="f-q" placeholder="Search # / customer / job" oninput="renderInvoices()">
       <select id="f-status" onchange="renderInvoices()">
         <option value="active">All open</option><option value="due">Due for follow-up</option>
-        <option value="needs_person">Needs a person</option><option value="promised">Promised / says paid</option>
+        <option value="needs_person">Needs a person</option><option value="waiting">Waiting on their reply</option><option value="answer">They replied - needs an answer</option><option value="promised">Promised / says paid</option>
         <option value="ret">Retainage</option><option value="paused">Paused</option><option value="paid">Paid / closed</option>
         <option value="all">Everything</option>
       </select>
@@ -172,7 +172,7 @@ function render(){
   document.getElementById('status').innerHTML =
     '<span class="chip ' + (st.graph ? 'ok' : 'no') + '">Microsoft 365 ' + (st.graph ? 'connected' : 'not connected') + '</span>' +
     '<span class="chip ' + (st.jobber ? 'ok' : 'no') + '">Jobber ' + (st.jobber ? 'connected' : 'not connected (connect it in Pumps)') + '</span>' +
-    '<span class="chip ' + (st.claude ? 'ok' : 'warn') + '">' + (st.claude ? 'Claude reads replies' : 'Replies read by simple rules') + '</span>' +
+    '<span class="chip ' + (st.claude_error ? 'no' : st.claude ? 'ok' : 'warn') + '"' + (st.claude_error ? ' title="' + esc(st.claude_error) + '"' : '') + '>' + (st.claude_error ? 'Claude not working (' + esc(st.claude_error.slice(0, 60)) + ') - simple rules in use' : st.claude ? 'Claude reads replies and notes' : 'Replies read by simple rules') + '</span>' +
     '<span class="chip ' + (s.auto_send ? 'ok' : 'warn') + '">' + (s.auto_send ? 'Sending automatically' : 'Drafts wait for review') + '</span>' +
     '<span class="chip">From ' + esc(s.from_email) + '</span>' +
     '<span class="muted small">Last run ' + esc(st.last_run || 'never') + (D.uploads.length ? ' · Last upload ' + esc(D.uploads[0].at) + ' (' + esc(D.uploads[0].filename) + ')' : '') + '</span>';
@@ -189,6 +189,12 @@ function render(){
     kpi(money(sum(vlate)), vlate.length + ' over 60 days late') + kpi(money(sum(ret)), ret.length + ' retainage invoices') +
     kpi(open.filter(function(i){ return i.status === 'needs_person' || (i.plan.due_now && !i.contacts.length); }).length, 'need a person');
   renderToday(); renderInvoices(); renderJobs(); renderCustomers(); renderEmails(); renderDocs(); renderSettings(); renderActivity();
+}
+function waitText(w){
+  if(!w) return '';
+  if(w.indexOf('needs an answer') >= 0) return '<b style="color:var(--bad)">' + esc(w) + '</b>';
+  if(w.indexOf('Waiting on their reply') === 0) return '<span style="color:var(--warn)">' + esc(w) + '</span>';
+  return '<span class="muted">' + esc(w) + '</span>';
 }
 function custOf(k){ return (D.customers || []).filter(function(c){ return c.key === k; })[0] || {}; }
 function kpi(v, l){ return '<div class="kpi"><div class="v">' + esc(v) + '</div><div class="l">' + esc(l) + '</div></div>'; }
@@ -259,6 +265,8 @@ function renderInvoices(){
     if(f === 'active' && i.status === 'paid') return false;
     if(f === 'due' && !i.plan.due_now) return false;
     if(f === 'needs_person' && i.status !== 'needs_person') return false;
+    if(f === 'waiting' && (i.plan.waiting || '').indexOf('Waiting on their reply') !== 0) return false;
+    if(f === 'answer' && (i.plan.waiting || '').indexOf('needs an answer') < 0) return false;
     if(f === 'promised' && ['promised','reported_paid'].indexOf(i.status) < 0) return false;
     if(f === 'ret' && (!i.retainage || i.status === 'paid')) return false;
     if(f === 'paused' && i.status !== 'paused') return false;
@@ -270,11 +278,11 @@ function renderInvoices(){
     if(q && (i.number + ' ' + i.customer_name + ' ' + i.job_name + ' ' + (i.jobber_subject || '') + ' ' + (i.memo || '')).toLowerCase().indexOf(q) < 0) return false;
     return true;
   }).sort(function(x,y){ return y.plan.dpd - x.plan.dpd; });
-  var h = '<thead><tr><th>Invoice</th><th>Customer</th><th>Job</th><th>Type</th><th>Date</th><th>Due</th><th>Age</th><th class="num">Amount</th><th class="num">Open</th><th>Status</th><th>Next</th></tr></thead><tbody>';
+  var h = '<thead><tr><th>Invoice</th><th>Customer</th><th>Job</th><th>Type</th><th>Date</th><th>Due</th><th>Age</th><th class="num">Amount</th><th class="num">Open</th><th>Status</th><th>Waiting on</th><th>Next</th></tr></thead><tbody>';
   rows.forEach(function(i){
-    h += '<tr class="click" onclick="openInvoice(' + i.id + ')"><td><b>#' + esc(i.number) + '</b></td><td>' + esc(i.customer_name) + (custOf(i.customer_key).sheet_notes ? '<div class="small muted" title="' + esc(custOf(i.customer_key).sheet_notes) + '">📝 ' + esc(custOf(i.customer_key).sheet_notes.split('\n')[0].replace(/^[^:]{1,12}:\s*/, '').slice(0, 70)) + '</div>' : '') + '</td><td class="small">' + esc(i.job_name) + '</td><td>' + kindBadge(i.kind) + '</td><td>' + md(i.txn_date) + '</td><td>' + md(i.due_date) + '</td><td>' + ageText(i) + '</td><td class="num">' + (i.amount != null ? money(i.amount) : '') + '</td><td class="num"><b>' + money(i.open_balance) + '</b></td><td>' + statusBadge(i) + '</td><td class="small">' + (i.plan.due_now ? '<b style="color:var(--brand-dark)">Due now</b>' : esc(i.plan.reason)) + '</td></tr>';
+    h += '<tr class="click" onclick="openInvoice(' + i.id + ')"><td><b>#' + esc(i.number) + '</b></td><td>' + esc(i.customer_name) + (custOf(i.customer_key).sheet_notes ? '<div class="small muted" title="' + esc(custOf(i.customer_key).sheet_notes) + '">📝 ' + esc(custOf(i.customer_key).sheet_notes.split('\n')[0].replace(/^[^:]{1,12}:\s*/, '').slice(0, 70)) + '</div>' : '') + '</td><td class="small">' + esc(i.job_name) + '</td><td>' + kindBadge(i.kind) + '</td><td>' + md(i.txn_date) + '</td><td>' + md(i.due_date) + '</td><td>' + ageText(i) + '</td><td class="num">' + (i.amount != null ? money(i.amount) : '') + '</td><td class="num"><b>' + money(i.open_balance) + '</b></td><td>' + statusBadge(i) + '</td><td class="small">' + waitText(i.plan.waiting) + '</td><td class="small">' + (i.plan.due_now ? '<b style="color:var(--brand-dark)">Due now</b>' : esc(i.plan.reason)) + '</td></tr>';
   });
-  if(!rows.length) h += '<tr><td colspan="11" class="empty">No invoices match.</td></tr>';
+  if(!rows.length) h += '<tr><td colspan="12" class="empty">No invoices match.</td></tr>';
   document.getElementById('t-inv').innerHTML = h + '</tbody>';
 }
 
@@ -329,7 +337,7 @@ function saveCustomer(k){
 function renderEmails(){
   var h = '<div class="card"><h3>Emails</h3><div class="tbl-wrap"><table><thead><tr><th>When</th><th>Status</th><th>To</th><th>Subject</th><th></th></tr></thead><tbody>';
   D.emails.forEach(function(e){
-    h += '<tr><td class="small">' + esc(e.sent_at || e.created_at) + '</td><td>' + badge(e.status === 'sent' ? 'b-promised' : 'b-open', e.status + (e.sent_by ? ' (' + e.sent_by + ')' : '')) + '</td><td class="small">' + esc(e.to_email) + '</td><td>' + esc(e.subject) + (e.error ? '<div class="small" style="color:var(--bad)">' + esc(e.error) + '</div>' : '') + '</td><td><button class="sm" onclick="openEmail(' + e.id + ')">' + (e.status === 'sent' ? 'View' : 'Review') + '</button></td></tr>';
+    h += '<tr><td class="small">' + esc(e.sent_at || e.created_at) + '</td><td>' + badge(e.kind === 'manual' ? 'b-paused' : (e.status === 'sent' ? 'b-promised' : 'b-open'), e.kind === 'manual' ? 'you sent (Outlook)' : e.status + (e.sent_by ? ' (' + e.sent_by + ')' : '')) + '</td><td class="small">' + esc(e.to_email) + '</td><td>' + esc(e.subject) + (e.error ? '<div class="small" style="color:var(--bad)">' + esc(e.error) + '</div>' : '') + '</td><td><button class="sm" onclick="openEmail(' + e.id + ')">' + (e.status === 'sent' ? 'View' : 'Review') + '</button></td></tr>';
   });
   if(!D.emails.length) h += '<tr><td colspan="5" class="empty">No emails yet.</td></tr>';
   document.getElementById('p-emails').innerHTML = h + '</tbody></table></div></div>';
@@ -449,6 +457,7 @@ function openInvoice(id){
       '<dt>Open balance</dt><dd><b>' + money(i.open_balance) + '</b>' + (i.amount != null ? ' of ' + money(i.amount) : '') + '</dd>' +
       '<dt>Invoice / due date</dt><dd>' + md(i.txn_date) + ' / ' + md(i.due_date) + (p.dpd > 0 ? ' · <b>' + p.dpd + ' days past due</b>' : '') + '</dd>' +
       '<dt>Stage</dt><dd>' + esc(p.stage_name || '—') + (i.followup_count ? ' · ' + i.followup_count + ' follow-up(s), last ' + esc((i.last_followup_at || '').slice(0,10)) : ' · not followed up yet') + '</dd>' +
+      '<dt>Waiting on</dt><dd>' + waitText(p.waiting) + '</dd>' +
       '<dt>Next step</dt><dd>' + (p.due_now ? '<b>Follow-up due now</b>' : esc(p.reason)) + '</dd>' +
       '<dt>Follow up with</dt><dd>' + (j.contacts.length ? esc(j.contacts.join(', ')) : '<b style="color:var(--bad)">No email address</b>') + (job && job.contact_name ? ' (' + esc(job.contact_name) + ')' : (c.contact_name ? ' (' + esc(c.contact_name) + ')' : '')) + '</dd>' +
       (i.needs_reason ? '<dt>Needs</dt><dd style="color:var(--bad)">' + esc(i.needs_reason) + '</dd>' : '') +
