@@ -319,7 +319,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 
 <!-- JOBS -->
 <div class="panel" id="p-jobs">
-  <h3 style="margin:0 0 8px;font-size:14px">Ongoing jobs</h3>
+  <h3 style="margin:0 0 8px;font-size:14px">Job Watchlist</h3>
   <div class="toolbar">
     <input type="text" id="jbSearch" placeholder="Find a job, client, PO, quote or invoice #…" oninput="clearTimeout(window._jq);window._jq=setTimeout(loadJobs,300)" style="width:240px">
     <select id="jbShow" onchange="loadJobs()"><option value="open">Open</option><option value="closed">Done</option><option value="all">All</option></select>
