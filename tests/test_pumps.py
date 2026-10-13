@@ -2425,6 +2425,14 @@ class PumpsTest(unittest.TestCase):
         finally:
             conn.close()
         self.assertTrue(self.case(cid)['steps']['client_approved']['at'])
+        # Tracked from Jobber's Greenscapes: on the job it's the pump account, The Carlisle.
+        conn = P._conn()
+        try:
+            gid = conn.execute("SELECT client_id FROM pump_site_aliases WHERE place='Carlisle' LIMIT 1").fetchone()[0]
+            self.assertEqual(P.account_for_jobber(conn, {'client_id': gid, 'client_name': 'Greenscapes'}),
+                             'Carlisle (The Carlisle)')
+        finally:
+            conn.close()
         # A quote whose title says nothing: Wettech in a note on it is enough.
         saved = (P.jobber_status, P.fetch_quote_lines, P.jobber_gql)
         try:

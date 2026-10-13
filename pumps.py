@@ -6361,13 +6361,37 @@ def h_jobber_sync(actor):
     return {'started': start_jobber_sync(bool(_json().get('full')), actor), 'status': jobber_sync_state()}
 
 
+def account_for_jobber(conn, it):
+    """Our account name for a Jobber record. Jobber has who we bill, the
+    account sheets have the community: Greenscapes in Jobber is "Carlisle
+    (The Carlisle)" here. From the account's own Jobber link, the site names,
+    or the client/property names; '' when it isn't clear."""
+    it = dict(it)
+    cid, pid = it.get('client_id') or '', it.get('property_id') or ''
+    if cid:
+        rows = conn.execute("SELECT name, jobber_property_id FROM pump_maint_accounts WHERE jobber_client_id=? "
+                            "AND active=1", (cid,)).fetchall()
+        hit = [r['name'] for r in rows if pid and r['jobber_property_id'] == pid] or \
+            ([rows[0]['name']] if len(rows) == 1 else [])
+        if hit:
+            return hit[0]
+        aliases = conn.execute('SELECT place, property_id FROM pump_site_aliases WHERE client_id=?', (cid,)).fetchall()
+        places = {a['place'] for a in aliases if pid and a['property_id'] == pid} or \
+            ({a['place'] for a in aliases} if len({a['place'] for a in aliases}) == 1 else set())
+        if len(places) == 1:
+            place = places.pop()
+            return match_account(place, conn) or place
+    return match_account(' '.join(x for x in (it.get('property_label'), it.get('client_name')) if x), conn) or ''
+
+
 def track_jobber_item(conn, it, actor):
     """Make an item here from a Jobber record and link the record to it."""
     cat = {'scada': 'scada', 'diver': 'diver', 'filter': 'filter'}.get(it['category'], 'repair')
     if it['kind'] == 'job' and re.search(r'maint|quarter|monthly|annual', it['title'] or '', re.I):
         cat = 'maintenance'
+    account = account_for_jobber(conn, it)
     cid = create_case(conn, {'title': it['title'] or it['client_name'], 'category': cat,
-                             'client_name': it['client_name'], 'site': it['property_label'],
+                             'client_name': account or it['client_name'], 'site': it['property_label'],
                              'po_number': it['po_number'], 'jobber_client_id': it['client_id'],
                              'jobber_property_id': it['property_id'],
                              'vendor': 'Wettech' if cat in ('repair', 'maintenance')
