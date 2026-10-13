@@ -2411,8 +2411,19 @@ class PumpsTest(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual(linked, cid, 'joins the Wettech quote job by price')
-        self.assertIsNone(other, 'not pump work, no vendor quote - left alone')
+        self.assertIsNone(other, 'not pump work, no vendor quote, not an account we follow - left alone')
         self.assertEqual(len(got), 2)
+        # The same kind of quote for an account we follow is followed.
+        conn = P._conn()
+        try:
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, total, client_name, "
+                         "client_company, created_at, updated_at, category) VALUES ('Q9300', 'quote', '9300', "
+                         "'Repairs as discussed', 'approved', 450, 'Quail Run', 1, ?, ?, '')", (today, today))
+            P.auto_track_approved(conn)
+            conn.commit()
+            self.assertTrue(conn.execute("SELECT case_id FROM pump_jobber_items WHERE jobber_id='Q9300'").fetchone()[0])
+        finally:
+            conn.close()
         self.assertTrue(self.case(cid)['steps']['client_approved']['at'])
         # A quote whose title says nothing: Wettech in a note on it is enough.
         saved = (P.jobber_status, P.fetch_quote_lines, P.jobber_gql)

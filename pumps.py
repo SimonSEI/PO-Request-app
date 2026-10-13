@@ -8813,7 +8813,8 @@ def auto_track_approved(conn, actor='Jobber sync'):
                 _link_item(conn, it['jobber_id'], cid, actor)
                 _set_step(conn, cid, 'client_quote', at=(it['created_at'] or '')[:10] or None, by=actor)
                 _set_step(conn, cid, 'client_approved', at=(it['updated_at'] or '')[:10] or None, by=actor)
-            elif it.get('category') in ('pump', 'diver', 'filter', 'scada') or _quote_is_pump_work(it['jobber_id']):
+            elif it.get('category') in ('pump', 'diver', 'filter', 'scada') or _tracked_account(conn, it) \
+                    or _quote_is_pump_work(it['jobber_id']):
                 cid = track_jobber_item(conn, it, actor)
             else:
                 continue
@@ -8822,6 +8823,16 @@ def auto_track_approved(conn, actor='Jobber sync'):
 
 
 _VENDOR_WORDS = re.compile(r'\bwe?t+e?ch\b|\bwater\s+equipment\s+tech|\bgulfshore\b', re.I)
+
+
+def _tracked_account(conn, it):
+    """The quote is for one of the accounts we follow: on the maintenance or
+    lake sheets, SCADA, or a Jobber client a site name points to (Greenscapes
+    for the Carlisle)."""
+    if it.get('client_id') and conn.execute('SELECT 1 FROM pump_site_aliases WHERE client_id=? LIMIT 1',
+                                            (it['client_id'],)).fetchone():
+        return True
+    return bool(match_account(' '.join(x for x in (it.get('client_name'), it.get('property_label')) if x), conn))
 
 
 def _quote_is_pump_work(quote_id):
