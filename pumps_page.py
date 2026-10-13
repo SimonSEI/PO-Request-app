@@ -333,11 +333,12 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
     <input type="text" id="msSearch" placeholder="Find an account or address…" oninput="drawMaintSchedule()" style="width:220px">
     <select id="msShow" onchange="drawMaintSchedule()"><option value="">All visits</option><option value="todo">Not notified yet</option><option value="Wettech">Justin - Wettech (pumps)</option><option value="Gulfshore">Jordan - Gulfshore (diving)</option></select>
     <div class="sp"></div><span id="msInfo" class="note"></span>
-    <button class="btn p hide" id="msMarkSel" onclick="maintNotifiedAskMany()">✓ Mark selected notified</button>
+    <button class="btn p" id="msMarkW" title="Tick the accounts, then record that Justin (Wettech) was told about their pump visits" onclick="maintNotifiedAskMany('Wettech')">✓ Justin told</button>
+    <button class="btn p" id="msMarkG" title="Tick the accounts, then record that Jordan (Gulfshore) was told about their lake visits" onclick="maintNotifiedAskMany('Gulfshore')">✓ Jordan told</button>
     <button class="btn" id="msEmail" onclick="emailWettechList()">✉️ Email Tommy the pump list</button>
   </div>
   <div class="note" style="margin-bottom:8px">Every pump (Wettech) and lake (Gulfshore) maintenance visit due in the month from the Accounts tab, and whether the subcontractor has been told. Lakes count as told once the month's diver list is emailed.</div>
-  <div class="scroll" style="max-height:45vh"><table class="t"><thead><tr><th style="width:28px"><input type="checkbox" id="msAll" title="Select every visit shown that isn't notified yet" onchange="msSelectAll(this.checked)"></th><th>Account</th><th>Client approved</th><th>Justin<div class="note" style="font-weight:400">Wettech pumps</div></th><th>Jordan<div class="note" style="font-weight:400">Gulfshore diving</div></th></tr></thead><tbody id="msBody"></tbody></table></div>
+  <div class="scroll" style="max-height:45vh"><table class="t"><thead><tr><th style="width:28px"><input type="checkbox" id="msAll" title="Select every account shown that isn't fully told yet" onchange="msSelectAll(this.checked)"></th><th>Account</th><th>Client approved</th><th>Justin<div class="note" style="font-weight:400">Wettech pumps</div></th><th>Jordan<div class="note" style="font-weight:400">Gulfshore diving</div></th></tr></thead><tbody id="msBody"></tbody></table></div>
   <h3 style="margin:18px 0 8px;font-size:14px">Quotes sent - waiting on the client <span class="chip" id="jbSentCount"></span></h3>
   <div class="toolbar"><input type="text" id="jbSentSearch" placeholder="Find a quote #, client, address or title…" oninput="drawSent()" style="width:280px"></div>
   <div class="note" style="margin-bottom:8px">Our pump, diver, filter and SCADA quotes in Jobber that have gone to the client and aren't approved yet, newest quote first. They drop off once the client approves (the next Jobber sync).</div>
@@ -1696,37 +1697,37 @@ function drawMaintSchedule(){
   rows.forEach(r => { let a = byAcct.find(x => x.account === r.account); if (!a) byAcct.push(a = {account: r.account, rows: {}}); a.rows[r.vendor] = r; });
   const cell = (r, who) => { if (!r) return '<span class="note">—</span>'; const n = r.notified;
     return (n ? `<span class="chip g">✓ told</span> <span class="note">${esc(niceDay(d10(n.notified_at)))}${n.notified_by ? ' · ' + esc(n.notified_by) : ''}${n.how ? ' · ' + esc(n.how) : ''}</span>${n.note ? '<div class="note">' + esc(n.note) + '</div>' : ''}${n.auto ? '' : ` <button class="btn s" title="Not told after all" onclick="maintNotified(${q(r.account)}, '${r.vendor}', false)">↺</button>`}`
-      : `<label style="display:inline-flex;gap:4px;align-items:center"><input type="checkbox" class="msSel" data-account="${esc(r.account)}" data-vendor="${esc(r.vendor)}" onchange="msSelChanged()"><span class="chip r">not told</span></label> <button class="btn s p" title="Mark ${who} told" onclick="maintNotifiedAsk(${q(r.account)}, '${r.vendor}')">✓</button>`)
+      : `<span class="chip r">not told</span> <button class="btn s p" title="Mark ${who} told" onclick="maintNotifiedAsk(${q(r.account)}, '${r.vendor}')">✓</button>`)
       + `<div class="note">${r.report ? '✓ report ' + esc(niceDay(r.report)) : 'report not in yet'}</div>`; };
   document.getElementById('msBody').innerHTML = byAcct.map(a => { const w = a.rows.Wettech, g = a.rows.Gulfshore, r0 = w || g;
     const both = w && g ? (w.notified && g.notified ? '<span class="chip g">both told</span>' : !w.notified && !g.notified ? '<span class="chip r">neither told</span>' : `<span class="chip a">only ${w.notified ? 'Justin' : 'Jordan'} told</span>`) : '';
-    return `<tr><td><input type="checkbox" title="Select this account's visits not told yet" onchange="this.closest('tr').querySelectorAll('.msSel').forEach(x => x.checked = this.checked);msSelChanged()" ${(w && !w.notified) || (g && !g.notified) ? '' : 'disabled'}></td>
+    return `<tr><td><input type="checkbox" class="msSel" data-account="${esc(a.account)}" data-w="${w && !w.notified ? 1 : ''}" data-g="${g && !g.notified ? 1 : ''}" title="Select this account, then use ✓ Justin told / ✓ Jordan told" onchange="msSelChanged()" ${(w && !w.notified) || (g && !g.notified) ? '' : 'disabled'}></td>
     <td style="max-width:300px"><a href="#" onclick="event.preventDefault();openAccount(${q(a.account)})"><b>${esc(a.account)}</b></a> ${both}<div class="note" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r0.what)}${r0.where ? ' · ' + esc(r0.where) : ''}">${esc(r0.what)}${r0.where ? ' · ' + esc(r0.where) : ''}</div>${(w && w.hold) || (g && g.hold) ? `<span class="chip a">${esc((w && w.hold) || g.hold)}</span>` : ''}</td>
     <td>${r0.approved ? '<span class="ok">✓ ' + esc(niceDay(r0.approved)) + '</span>' : '<span class="note">—</span>'}</td>
     <td style="min-width:150px">${cell(w, 'Justin')}</td><td style="min-width:150px">${cell(g, 'Jordan')}</td></tr>`; }).join('') || `<tr><td colspan="5" class="empty">${MS.total ? 'None to show.' : 'No maintenance due this month.'}</td></tr>`;
   document.getElementById('msAll').checked = false; msSelChanged();
 }
-// Several visits notified at once: tick them, then "Mark selected notified".
-function msSelected(){ return [...document.querySelectorAll('.msSel:checked')].map(x => ({account: x.dataset.account, vendor: x.dataset.vendor})); }
-function msSelectAll(on){ document.querySelectorAll('.msSel').forEach(x => x.checked = on); msSelChanged(); }
-function msSelChanged(){ const n = msSelected().length, b = document.getElementById('msMarkSel'); b.classList.toggle('hide', !n); b.textContent = `✓ Mark ${n} notified`; }
-function maintNotifiedAskMany(){
-  const sel = msSelected(); if (!sel.length) return;
-  const vendors = [...new Set(sel.map(x => x.vendor))];
-  openModal(`${sel.length} visit${sel.length > 1 ? 's' : ''} notified`, `<div class="note" style="margin-bottom:8px">${sel.map(x => esc(x.account) + ' <span class="note">(' + esc(x.vendor) + ')</span>').join(', ')}</div><div class="fields">
+// Several accounts at once: tick them, then "✓ Justin told" or "✓ Jordan told".
+// Only the ticked accounts whose visit for that subcontractor isn't told yet count.
+function msSelected(vendor){ const k = vendor === 'Wettech' ? 'w' : 'g'; return [...document.querySelectorAll('.msSel:not(:disabled):checked')].filter(x => x.dataset[k]).map(x => x.dataset.account); }
+function msSelectAll(on){ document.querySelectorAll('.msSel:not(:disabled)').forEach(x => x.checked = on); msSelChanged(); }
+function msSelChanged(){
+  const w = msSelected('Wettech').length, g = msSelected('Gulfshore').length;
+  document.getElementById('msMarkW').textContent = '✓ Justin told' + (w ? ` (${w})` : '');
+  document.getElementById('msMarkG').textContent = '✓ Jordan told' + (g ? ` (${g})` : '');
+}
+function maintNotifiedAskMany(vendor){
+  const sel = msSelected(vendor), who = vendor === 'Wettech' ? 'Justin (Wettech)' : 'Jordan (Gulfshore)';
+  if (!sel.length) { toast(`Tick the accounts ${who} has been told about first`, true); return; }
+  openModal(`${esc(who)} told - ${sel.length} account${sel.length > 1 ? 's' : ''}`, `<div class="note" style="margin-bottom:8px">${sel.map(esc).join(', ')}</div><div class="fields">
     <label>How<select id="mn_how"><option>email</option><option>phone</option><option>text</option><option>in person</option></select></label>
     <label class="w">Note<input type="text" id="mn_note" placeholder="e.g. sent Tommy the October list"></label></div>
-    <div class="note">This only records that ${vendors.map(v => v === 'Wettech' ? 'Justin (Wettech)' : 'Jordan (Gulfshore)').join(' and ')} ${vendors.length > 1 ? 'were' : 'was'} told - nothing is sent.</div>`,
-    `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="maintNotifiedMany()">Save</button>`);
+    <div class="note">This only records that ${esc(who)} was told - nothing is sent.</div>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="maintNotifiedMany('${vendor}')">Save</button>`);
 }
-async function maintNotifiedMany(){
-  const sel = msSelected(), how = document.getElementById('mn_how').value, note = document.getElementById('mn_note').value;
-  for (const v of [...new Set(sel.map(x => x.vendor))]) {
-    const j = await api('/maint/notified', {method:'POST', body:{month: MS.month, vendor: v, accounts: sel.filter(x => x.vendor === v).map(x => x.account), notified: true, how, note}});
-    if (!j.success) { toast(j.error, true); return; }
-    MS = j;
-  }
-  closeModal(); drawMaintSchedule(); toast(`${sel.length} marked notified`);
+async function maintNotifiedMany(vendor){
+  const sel = msSelected(vendor);
+  if (await maintNotified(sel, vendor, true, document.getElementById('mn_how').value, document.getElementById('mn_note').value)) toast(`${sel.length} marked ${vendor === 'Wettech' ? 'Justin' : 'Jordan'} told`);
 }
 function maintNotifiedAsk(account, vendor){
   const who = vendor === 'Wettech' ? 'Justin (Wettech)' : 'Jordan (Gulfshore)';
@@ -1738,8 +1739,8 @@ function maintNotifiedAsk(account, vendor){
 async function maintNotified(account, vendor, on, how, note){
   const accounts = Array.isArray(account) ? account : [account];
   const j = await api('/maint/notified', {method:'POST', body:{month: MS.month, vendor, accounts, notified: on, how: how || '', note: note || ''}});
-  if (!j.success) { toast(j.error, true); return; }
-  closeModal(); MS = j; drawMaintSchedule();
+  if (!j.success) { toast(j.error, true); return false; }
+  closeModal(); MS = j; drawMaintSchedule(); return true;
 }
 // Opens the email to Tommy in your mail program, then asks whether it went.
 function emailWettechList(){
