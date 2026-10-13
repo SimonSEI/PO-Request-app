@@ -142,7 +142,7 @@ ALLOWED_MUTATIONS = frozenset({'quoteCreate', 'invoiceCreate', 'jobCreateNote', 
 
 # What counts as pump work when searching Jobber, by category.
 JOBBER_TERMS = {
-    'pump': ['pump', 'fountain', 'wettech', 'wttech', 'wetech', 'lift station', 'vfd', 'well'],
+    'pump': ['pump', 'fountain', 'wettech', 'wttech', 'wetech', 'lift station', 'vfd', 'well pump'],
     'diver': ['diver'],
     'filter': ['filter'],
     'scada': ['scada'],
@@ -151,7 +151,7 @@ TITLE_PATTERNS = {
     'scada': re.compile(r'\bscada\b', re.I),
     'diver': re.compile(r'\bdivers?\b', re.I),
     'filter': re.compile(r'\bfilters?\b', re.I),
-    'pump': re.compile(r'\bpumps?\b|\bfountains?\b|\bwe?t+e?ch\b|\bwet\*|\blift\s+station\b|\bvfd\b|\bwell\b', re.I),
+    'pump': re.compile(r'\bpumps?\b|\bfountains?\b|\bwe?t+e?ch\b|\bwet\*|\blift\s+station\b|\bvfd\b|\bwell\s*(?:pumps?|#|no\.?\s*\d|\d|motors?|service|repairs?)\b|\b(?:deep|irrigation|potable)\s+wells?\b', re.I),
 }
 # Strong words for mail from someone who is not a known pump vendor.
 STRONG_TERMS = re.compile(r'pump\s+station|pump\s+report|pump\s+maintenance|pump\s+service|\bscada\b|\bdivers?\b|'
@@ -8797,15 +8797,76 @@ def note_expected_date(case_id, who, when, said=''):
 
 
 def auto_track_approved(conn, actor='Jobber sync'):
-    """Approved pump / well quotes in Jobber that no item follows yet: follow
-    them (so they get "Sign the quote and send it to Tom"). Returns the new items."""
+    """Approved quotes in Jobber (the sync only reads pump, Wettech, diver,
+    filter and SCADA work) that no item follows yet: follow them, so they're on
+    the Jobs list and get "Sign the quote and send it to Tom". A quote the
+    office typed by hand from a vendor's quote already here (Greenscapes
+    #9136: "Proposal to inspect suction line", Wettech's $1,158.99 + 30%)
+    joins that vendor quote's job instead of starting a new one. Returns the items."""
     since = (_today() - timedelta(days=30)).isoformat()
     out = []
     for it in untracked_jobber_items(conn):
-        if it['kind'] == 'quote' and it['status'] == 'approved' and it.get('category') == 'pump' \
+        if it['kind'] == 'quote' and it['status'] == 'approved' \
                 and (it.get('updated_at') or it.get('created_at') or '') >= since:
-            out.append(track_jobber_item(conn, it, actor))
+            cid = job_for_quote_price(conn, it)
+            if cid:
+                _link_item(conn, it['jobber_id'], cid, actor)
+                _set_step(conn, cid, 'client_quote', at=(it['created_at'] or '')[:10] or None, by=actor)
+                _set_step(conn, cid, 'client_approved', at=(it['updated_at'] or '')[:10] or None, by=actor)
+            elif it.get('category') in ('pump', 'diver', 'filter', 'scada') or _quote_is_pump_work(it['jobber_id']):
+                cid = track_jobber_item(conn, it, actor)
+            else:
+                continue
+            out.append(cid)
     return out
+
+
+_VENDOR_WORDS = re.compile(r'\bwe?t+e?ch\b|\bwater\s+equipment\s+tech|\bgulfshore\b', re.I)
+
+
+def _quote_is_pump_work(quote_id):
+    """A quote whose title doesn't say so, but whose lines or notes do: the
+    vendor's description of the work ("Field service to check out pump
+    station...") or the vendor's quote noted on it ("Wettech quote #...")."""
+    if not jobber_status()['connected']:
+        return False
+    texts = []
+    try:
+        q = fetch_quote_lines(quote_id) or {}
+        texts += [f"{li.get('name') or ''} {li.get('description') or ''}" for li in q.get('line_items') or []]
+    except JobberError:
+        pass
+    for spec in ('notes { nodes { ... on QuoteNote { message } } }', 'notes(first: 20) { nodes { message } }',
+                 'notes { nodes { message } }'):
+        try:
+            data = jobber_gql(f'query($id: EncodedId!) {{ quote(id: $id) {{ {spec} }} }}', {'id': quote_id})
+        except JobberError:
+            continue
+        texts += [n.get('message') or '' for n in (((data.get('quote') or {}).get('notes') or {}).get('nodes') or [])]
+        break
+    text = ' '.join(texts)
+    return bool(_VENDOR_WORDS.search(text) or TITLE_PATTERNS['pump'].search(text))
+
+
+def job_for_quote_price(conn, it):
+    """The one open job, with no Jobber quote yet, whose vendor quote marked up
+    the way we quote (30%, or 10% for the county) comes to this quote's total."""
+    total = it.get('total')
+    if not total:
+        return None
+    hits = []
+    for c in conn.execute("SELECT id, client_name, title, jobber, vendor_quote_amount, vendor_quote_total "
+                          "FROM pump_cases WHERE status='open'"):
+        if (json.loads(c['jobber'] or '{}').get('quote') or {}).get('id'):
+            continue
+        prices = {p for p in (c['vendor_quote_amount'], c['vendor_quote_total']) if p}
+        for d in conn.execute("SELECT subtotal, total FROM pump_docs WHERE case_id=? AND kind='quote' "
+                              "AND status != 'dismissed'", (c['id'],)):
+            prices |= {p for p in (d['subtotal'], d['total']) if p}
+        pcts = (GOV_MARKUP_PCT,) if gov_client(None, {'client_name': it.get('client_name')}) else (QUOTE_MARKUP_PCT,)
+        if any(abs(p * (1 + m / 100) - total) <= 1.0 for p in prices for m in pcts):
+            hits.append(c['id'])
+    return hits[0] if len(hits) == 1 else None
 
 
 def make_job_from_quote(case_id, actor='Jobber sync'):

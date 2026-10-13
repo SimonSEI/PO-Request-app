@@ -2391,6 +2391,43 @@ class PumpsTest(unittest.TestCase):
         finally:
             P.JOBBER_STATIC_TOKEN = saved
 
+    def test_approved_quote_typed_by_hand_joins_the_vendor_quotes_job(self):
+        j = self.c.post('/pumps/api/cases', json={'title': 'Carlisle back station', 'client_name': 'Greenscapes',
+                                                  'vendor_quote_total': 1158.99}).get_json()
+        cid = j.get('case_id') or j['case']['id']
+        today = P._today().isoformat()
+        conn = P._conn()
+        try:
+            for jid, title, total, client in (('Q9136', 'Proposal to inspect suction line', 1506.69, 'Greenscapes'),
+                                              ('Q9200', 'Irrigation repairs as well', 800.0, 'Greenscapes'),
+                                              ('Q9201', 'Replace pump motor', 2600.0, 'Greenscapes')):
+                conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, total, client_name, "
+                             "client_company, created_at, updated_at, category) VALUES (?, 'quote', ?, ?, 'approved', ?, ?, 1, ?, ?, ?)",
+                             (jid, jid[1:], title, total, client, today, today, P._category(title)))
+            got = P.auto_track_approved(conn)
+            conn.commit()
+            linked = conn.execute("SELECT case_id FROM pump_jobber_items WHERE jobber_id='Q9136'").fetchone()[0]
+            other = conn.execute("SELECT case_id FROM pump_jobber_items WHERE jobber_id='Q9200'").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(linked, cid, 'joins the Wettech quote job by price')
+        self.assertIsNone(other, 'not pump work, no vendor quote - left alone')
+        self.assertEqual(len(got), 2)
+        self.assertTrue(self.case(cid)['steps']['client_approved']['at'])
+        # A quote whose title says nothing: Wettech in a note on it is enough.
+        saved = (P.jobber_status, P.fetch_quote_lines, P.jobber_gql)
+        try:
+            P.jobber_status = lambda: {'connected': True}
+            P.fetch_quote_lines = lambda q: {'line_items': [{'name': 'Service Proposal Amount', 'description': 'Inspect suction line'}]}
+            P.jobber_gql = lambda q, v=None: {'quote': {'notes': {'nodes': [{'message': 'Wettech quote dated 10/05/2026'}]}}}
+            self.assertTrue(P._quote_is_pump_work('Q1'))
+            P.jobber_gql = lambda q, v=None: {'quote': {'notes': {'nodes': [{'message': 'Client asked for Tuesday'}]}}}
+            self.assertFalse(P._quote_is_pump_work('Q1'))
+        finally:
+            P.jobber_status, P.fetch_quote_lines, P.jobber_gql = saved
+        self.assertFalse(P._category('Irrigation repairs as well'))
+        self.assertEqual(P._category('Well pump motor replacement'), 'pump')
+
     def test_sarasota_county_is_billed_the_county_way(self):
         doc = {'line_items': [{'description': 'Field service to furnish and install new 15 HP vertical hollow shaft '
                                               'motor on pump #1 at Twin Lakes, wired up and tested.', 'amount': 5226.24}],
