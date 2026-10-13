@@ -2490,6 +2490,34 @@ class PumpsTest(unittest.TestCase):
         self.c.post(f'/pumps/api/cases/{cid}', json={'po_number': '260904', 'wo_number': 'WO2143416'})
         self.assertFalse(any('WO # and PO #' in x for x in titles()))
 
+    def test_sync_finds_approved_quotes_whose_title_says_nothing(self):
+        today = P._today().isoformat()
+        node = lambda i, title, desc, client: {
+            'id': i, 'quoteNumber': i[1:], 'title': title, 'quoteStatus': 'APPROVED', 'createdAt': today, 'updatedAt': today,
+            'jobberWebUri': '', 'amounts': {'total': 1506.69}, 'client': {'id': 'CX' + i, 'name': client, 'isCompany': True},
+            'property': None, 'lineItems': {'nodes': [{'name': 'Service Proposal Amount', 'description': desc}]}}
+        calls = []
+
+        def fake(q, v=None):
+            calls.append(q)
+            if 'filter: { status: approved }' in q:
+                return {'quotes': {'nodes': [node('Q9136', 'Proposal to inspect suction line',
+                                                  'Field service to check out pump station, found pipe had melted', 'Greenscapes'),
+                                             node('Q9500', 'Sod and irrigation repairs', 'Replace sod by the clubhouse', 'Some HOA')],
+                                   'pageInfo': {'hasNextPage': False}}}
+            return {'quotes': {'nodes': [], 'pageInfo': {'hasNextPage': False}}}
+        saved = P.jobber_gql
+        P.jobber_gql = fake
+        try:
+            seen = {}
+            errs = P._sync_recent_quotes(seen)
+        finally:
+            P.jobber_gql = saved
+        self.assertEqual(errs, [])
+        self.assertIn('Q9136', seen, 'pump station in the line - kept')
+        self.assertEqual((seen['Q9136']['status'], seen['Q9136']['category']), ('approved', 'pump'))
+        self.assertNotIn('Q9500', seen, 'sod work for someone else - left out')
+
     def test_sarasota_county_is_billed_the_county_way(self):
         doc = {'line_items': [{'description': 'Field service to furnish and install new 15 HP vertical hollow shaft '
                                               'motor on pump #1 at Twin Lakes, wired up and tested.', 'amount': 5226.24}],

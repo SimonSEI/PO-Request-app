@@ -2779,6 +2779,81 @@ def _sync_search(conn_name, spec, status_field, term, full):
     return spec, seen, errors
 
 
+RECENT_QUOTE_DAYS = 120
+
+
+def _sync_recent_quotes(seen):
+    """Quotes approved or out with the client lately whose TITLE doesn't say
+    pump - the office's "Proposal to inspect suction line" (Greenscapes
+    #9136) - which the keyword searches never return: kept when their lines
+    say pump, well or Wettech, or the client is an account we follow. Added
+    to seen (records already found are left as they are). Returns errors."""
+    errors, kept = [], {}
+    spec = ['id', 'quoteNumber', 'title', 'quoteStatus', 'createdAt', 'updatedAt', 'jobberWebUri',
+            ('amounts', ['total']), ('client', ['id', 'name', 'isCompany']), ('property', ['id', _ADDR]),
+            ('lineItems', [('nodes', ['name', 'description'])])]
+    since = (_today() - timedelta(days=RECENT_QUOTE_DAYS)).isoformat()
+    conn = _conn()
+    try:
+        def ours(n):
+            text = ' '.join([n.get('title') or ''] + [f"{li.get('name') or ''} {li.get('description') or ''}"
+                                                      for li in ((n.get('lineItems') or {}).get('nodes') or [])])
+            if TITLE_PATTERNS['pump'].search(text) or _VENDOR_WORDS.search(text):
+                return True
+            c = n.get('client') or {}
+            return _tracked_account(conn, {'client_id': c.get('id'), 'client_name': c.get('name'),
+                                           'property_label': _prop_label(n.get('property'))})
+        filter_failed = False
+        for status in ('approved', 'awaiting_response', None):
+            if status is None and not filter_failed:
+                break          # both filtered passes worked: nothing more to read
+            cursor, pages, filtered = None, 0, status is not None
+            while pages < (3 if filtered else 6):
+                flt = f', filter: {{ status: {status} }}' if filtered else ''
+                def make(fields):
+                    return (f'query($first: Int!, $after: String) {{ quotes(first: $first, after: $after{flt}) '
+                            f'{{ nodes {{ {fields} }} pageInfo {{ hasNextPage endCursor }} }} }}')
+                try:
+                    data, spec = _gql_tolerant(make, spec, {'first': 50, 'after': cursor}, required=('id', 'title', 'client'))
+                except JobberError as e:
+                    if filtered:
+                        filter_failed = True   # this Jobber can't filter by status: the unfiltered pass covers it
+                        break
+                    errors.append(f'recent quotes: {e}')
+                    break
+                page = data.get('quotes') or {}
+                for n in page.get('nodes') or []:
+                    st = (n.get('quoteStatus') or '').lower()
+                    if n['id'] in seen or n['id'] in kept or st not in ('approved', 'awaiting_response', 'changes_requested'):
+                        continue
+                    if (n.get('updatedAt') or n.get('createdAt') or '')[:10] < since or not ours(n):
+                        continue
+                    title = n.get('title') or ''
+                    kept[n['id']] = {
+                        'jobber_id': n['id'], 'kind': 'quote', 'number': str(n.get('quoteNumber') or ''),
+                        'title': title, 'status': st, 'job_type': '',
+                        'client_id': (n.get('client') or {}).get('id', ''),
+                        'client_name': (n.get('client') or {}).get('name', ''),
+                        'client_company': (None if 'isCompany' not in (n.get('client') or {})
+                                           else int(bool(n['client']['isCompany']))),
+                        'property_id': (n.get('property') or {}).get('id', ''),
+                        'property_label': _prop_label(n.get('property')),
+                        'total': _money((n.get('amounts') or {}).get('total')),
+                        'created_at': n.get('createdAt') or '', 'updated_at': n.get('updatedAt') or '',
+                        'start_at': '', 'completed_at': '', 'approved_at': '',
+                        'web_uri': n.get('jobberWebUri') or '', 'category': 'pump', 'po_number': po_from_title(title)}
+                info = page.get('pageInfo') or {}
+                pages += 1
+                if not info.get('hasNextPage'):
+                    break
+                cursor = info.get('endCursor')
+                time.sleep(0.2)
+    finally:
+        conn.close()
+    seen.update(kept)
+    return errors
+
+
 def _sync_jobber(full=False, actor='system'):
     """Pull pump, diver, filter and SCADA requests, quotes, jobs and invoices
     from Jobber, then rebuild the SCADA list and link items by PO number."""
@@ -2805,6 +2880,7 @@ def _sync_jobber(full=False, actor='system'):
         for _, found, errs in results:
             seen.update(found)
             status['errors'] += errs
+        status['errors'] += _sync_recent_quotes(seen)
         for conn_name in SYNC_SPECS:
             status['counts'][conn_name] = sum(1 for v in seen.values() if v['kind'] == conn_name[:-1])
         conn = _conn()
