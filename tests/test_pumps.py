@@ -1663,6 +1663,32 @@ class PumpsTest(unittest.TestCase):
         t = P.resolve_quote_target({'client_name': 'Ospray Pointe', 'file_name': 'q.pdf'})
         self.assertEqual((t['client_id'], t['property_id']), ('LS1', None), 'two pumps, no hint: a person picks')
 
+    def test_approved_client_quote_is_not_waiting_on_the_vendor_quote(self):
+        """Carlisle (Oct 2026): our quote #9136 approved, no Wettech quote filed
+        here - not "Waiting on quote from Wettech"."""
+        self.assertEqual(P._stage({'client_quote': {'at': '2026-10-01'}, 'client_approved': {'at': '2026-10-02'}}),
+                         'scheduled')
+        self.assertEqual(P._stage({'client_quote': {'at': '2026-10-01'}}), 'client_approved')
+        self.assertEqual(P._stage({}), 'vendor_quote')
+        self.assertEqual(P._stage({'vendor_bill': {'at': '2026-10-01'}}), 'vendor_quote', 'bill before quote still waits')
+
+    def test_parts_lead_waits_then_follow_up_after_14_days(self):
+        """A quote saying "2-3 weeks": once approved the job waits on parts and
+        comes up to follow up with Tom 14 days after the approval."""
+        self.assertEqual(P.parts_lead_in('Delivery: 2-3 weeks after receipt of order'), '2-3 weeks')
+        self.assertEqual(P.parts_lead_in('It will take 2-3 weeks to deliver after approval.'), '2-3 weeks')
+        self.assertEqual(P.parts_lead_in('Delivery: 3-5 days after receipt of order'), '')
+        case = {'id': 1, 'status': 'open', 'stage': 'scheduled', 'category': 'repair', 'vendor': 'Wettech',
+                'parts_lead': '2-3 weeks', 'opened_on': '2026-09-20',
+                'steps': {'client_approved': {'at': '2026-10-01'}}}
+        ch = P.vendor_chase(case, today=P.date(2026, 10, 14))
+        self.assertEqual((ch['state'], ch['check_on'], ch['parts']), ('waiting', '2026-10-15', '2-3 weeks'))
+        ch = P.vendor_chase(case, today=P.date(2026, 10, 15))
+        self.assertEqual(ch['state'], 'follow_up')
+        self.assertIn('parts', ch['reason'])
+        # No lead time: ask for a date straight away, as before.
+        self.assertEqual(P.vendor_chase({**case, 'parts_lead': ''}, today=P.date(2026, 10, 2))['state'], 'follow_up')
+
     def test_homewood_optional_on_the_cost_line(self):
         """Wettech's Homewood Suites letter (Oct 14 2026): the option's work and
         its "Your Additional Cost" are on one line - an optional line, not in
