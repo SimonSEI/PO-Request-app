@@ -522,6 +522,7 @@ class PumpsTest(unittest.TestCase):
     def test_sub_quote_goes_on_the_jobber_invoice(self):
         """Oct 2026: the sub's quote is noted on our Jobber invoice for later -
         on the invoice when Jobber takes invoice notes, else the client."""
+        self.addCleanup(setattr, P, '_SCHEMA_CACHE', {})
         for n, notes in ((1, True), (2, False)):
             self.extracts[f'q-07{n}0.pdf'] = extraction('quote', f'Q-7{n}', po=f'PO7{n}', client='Lakeside Pines')
             self.extracts[f'b-07{n}0.pdf'] = extraction('bill', f'307{n}', po=f'PO7{n}', client='Lakeside Pines')
@@ -1721,6 +1722,36 @@ class PumpsTest(unittest.TestCase):
         # Our own technician has no parts to wait on: schedule straight away.
         ch = P.vendor_chase({**case, 'vendor': P.IN_HOUSE}, today=P.date(2026, 10, 2))
         self.assertEqual((ch['state'], ch['parts_wait']), ('follow_up', False))
+
+    def test_approved_quote_sent_by_hand_waits_on_tom(self):
+        """Huntington #6 (quote 9160, Oct 2026): the office emailed the approved
+        quote to Tom themselves - the to-do is done and the job waits on Tom's
+        reply about when it'll be scheduled."""
+        self.extracts['q-0916.pdf'] = extraction('quote', 'Q-916', po='PO916', client='Huntington Lakes')
+        q = self.upload('q-0916.pdf')
+        cid = q['case_id']
+        self.c.patch(f'/pumps/api/cases/{cid}', json={'steps': {'client_quote': '2026-10-09',
+                                                                'client_approved': '2026-10-14'}})
+        conn = P._conn()
+        try:
+            P.add_sign_todo(conn, dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (cid,)).fetchone()))
+            conn.commit()
+        finally:
+            conn.close()
+        case = self.case(cid)
+        self.assertEqual(case['stage'], 'scheduled')
+        self.assertFalse(case['chase']['last_at'], 'not sent yet')
+        r = self.c.post(f'/pumps/api/cases/{cid}/quote_sent', json={}).get_json()
+        self.assertTrue(r['success'], r)
+        case = self.case(cid)
+        ch = case['chase']
+        self.assertTrue(ch['last_at'])
+        self.assertEqual(ch['state'], 'waiting')
+        self.assertIn("when it'll be scheduled", ch['said'])
+        todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
+        self.assertFalse([t for t in todos if t['key'] == f'sign-quote:{cid}'], 'the send-it-to-Tom to-do is done')
+        doc = self.c.get(f"/pumps/api/docs/{q['doc_id']}").get_json()['doc']
+        self.assertTrue(doc['jobber']['sent_by_hand'])
 
     def test_homewood_optional_on_the_cost_line(self):
         """Wettech's Homewood Suites letter (Oct 14 2026): the option's work and

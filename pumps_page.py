@@ -439,8 +439,13 @@ function stageText(c){
   const v = c.vendor || 'Wettech', st = c.steps || {}, w = quoteWait(c);
   const hasBill = c.vendor_bill_amount != null || c.vendor_bill_total != null || !!(st.vendor_bill || {}).at;
   if (c.stage === 'vendor_quote' && hasBill) return `Bill in · waiting on ${v}'s quote` + (w ? ' · ' + w : '');
-  // Approved, and the quote said parts take weeks: waiting on the parts, not a date.
-  if (c.stage === 'scheduled' && (c.chase || {}).parts_wait) return `Waiting on ${v} parts` + (c.chase.parts ? ' · ' + c.chase.parts : '');
+  // Approved: the quote goes to the vendor, then we wait on them for a date
+  // (and on their parts, when the quote said weeks).
+  const ch = c.chase || {};
+  if (c.stage === 'scheduled' && ch.parts_wait) {
+    if (!ch.last_at) return `Approved · send the quote to ${ch.who || v}`;
+    if (!ch.expect_by) return (ch.parts ? `Waiting on ${v} parts (${ch.parts}) · ` : '') + `Waiting on ${ch.who || v}: when it'll be scheduled`;
+  }
   return ({
     assessment: `Waiting on ${v} to assess` + ((st.assessment || {}).due ? ' · ' + st.assessment.due : '') + (w ? ' · ' + w : ''),
     vendor_quote: `Waiting on quote from ${v}` + (w ? ' · ' + w : ''),
@@ -481,7 +486,7 @@ function caseRow(c, extra){
 function todoRow(t){
   return `<div class="row"><div class="main"><div class="tt"><label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer"><input type="checkbox" onclick="event.preventDefault();askDone(event, () => todoDone(${t.id}, true, event))" style="margin-top:3px"><span>${esc(t.title)}</span></label></div>
       ${t.detail || (t.kind === 'manual' && t.due_on) ? `<div class="sub" style="margin-left:24px">${t.kind === 'manual' && t.due_on ? `<b class="${t.due_on < todayIso() ? 'bad' : 'warn'}">due ${esc(niceDay(t.due_on))}</b>${t.detail ? ' · ' : ''}` : ''}${esc(t.detail || '')}</div>` : ''}
-      ${t.kind === 'approved_quote' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${t.link.case_id ? `<button class="btn s p" onclick="signQuote(${t.link.case_id})">✍ Sign quote &amp; send to ${esc((t.title.match(/send it to (\S+)/) || [])[1] || 'the vendor')}</button>` : ''}${t.link.doc_id ? `<a class="btn s" href="/pumps/api/docs/${t.link.doc_id}/file?version=original" target="_blank" rel="noopener">View quote</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}</div>` : ''}
+      ${t.kind === 'approved_quote' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${t.link.case_id ? `<button class="btn s p" onclick="signQuote(${t.link.case_id})">✍ Sign quote &amp; send to ${esc((t.title.match(/send it to (\S+)/) || [])[1] || 'the vendor')}</button><button class="btn s" onclick="quoteSent(${t.link.case_id})">I already sent it</button>` : ''}${t.link.doc_id ? `<a class="btn s" href="/pumps/api/docs/${t.link.doc_id}/file?version=original" target="_blank" rel="noopener">View quote</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}</div>` : ''}
       ${t.kind !== 'approved_quote' && (t.link.uri || t.link.case_id) ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${(t.link.uris || []).length > 1 ? t.link.uris.map(u => `<a class="btn s" href="${esc(u.uri)}" target="_blank" rel="noopener">Open ${esc(u.label)} ↗</a>`).join('') + `<button class="btn s" onclick='openAll(${JSON.stringify(t.link.uris.map(u => u.uri)).replace(/'/g, "&#39;")})'>Open both ↗</button>` : t.link.uri ? `<a class="btn s" href="${esc(t.link.uri)}" target="_blank" rel="noopener">Open in Jobber ↗</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}${t.link.scada_id ? `<button class="btn s" onclick="showTab('scada')">SCADA</button>` : ''}</div>` : ''}
       ${t.kind === 'diver_email' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="diverTodo('${esc(t.link.month || '')}')">Email ready - copy &amp; attach</button><a class="btn s" href="/pumps/api/dives/docx?month=${encodeURIComponent(t.link.month || '')}">⬇ Word list</a></div>` : ''}</div>
       <button class="btn s" title="Edit" onclick='todoEdit(${JSON.stringify({id: t.id, title: t.title, detail: t.detail || "", due_on: t.due_on || ""}).replace(/'/g, "&#39;")})'>✎</button>
@@ -797,6 +802,7 @@ function renderCase(){
     <div class="sec"><h4>Next</h4><div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn ${['assessment','vendor_quote','scheduled','vendor_bill'].includes(c.stage) ? 'p' : ''}" onclick="vendorEmail(${c.id})">✉️ ${esc(({assessment: 'Ask ' + v + ' to assess', vendor_quote: 'Ask ' + v + ' for the quote', scheduled: 'Ask ' + v + ' to schedule', vendor_bill: 'Ask ' + v + ' for the invoice'})[c.stage] || 'Email ' + v)}</button>
       ${c.chase ? `<button class="btn ${c.chase.state === 'follow_up' ? 'p' : ''}" onclick="logFollow(${c.id})">📞 Log follow-up</button>` : ''}
+      ${c.chase && c.chase.parts_wait && !c.chase.last_at ? `<button class="btn" onclick="quoteSent(${c.id})">📤 Approved quote sent to ${esc(c.chase.who || c.vendor || 'the vendor')}</button>` : ''}
       ${c.stage === 'client_quote' ? `<button class="btn" onclick="linkQuote(${c.id})">🔗 Quote's already in Jobber? Link it</button>` : ''}
       ${c.stage === 'vendor_quote' && !((c.steps || {}).assessment && !c.steps.assessment.na) ? `<button class="btn" onclick="needsVisit()">🔍 ${esc(v)} needs to visit first</button>` : ''}
       <button class="btn" onclick="uploadForCase()">⬆ Add document</button>
@@ -939,6 +945,14 @@ async function linkQuote(id){
 }
 // Log a call / text / email with the vendor: what they said and when they'll be out.
 function fridayOf(weeksAhead, dow){ const d = new Date(todayIso() + 'T12:00:00'); const mon = new Date(d); mon.setDate(d.getDate() - ((d.getDay() + 6) % 7) + 7 * weeksAhead); mon.setDate(mon.getDate() + dow); return mon.toISOString().slice(0, 10); }
+// The approved quote went to the vendor outside the app: now waiting on their date.
+async function quoteSent(caseId){
+  if (!confirm('Mark the approved quote as sent to the vendor? The job then waits on their reply about when it will be scheduled.')) return;
+  const j = await api('/cases/' + caseId + '/quote_sent', {method:'POST', body:{how:'email'}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast(`Noted - waiting on ${j.to} for a date`);
+  loadToday(); if (curCase && curCase.id === caseId) openCase(caseId);
+}
 async function logFollow(id){
   const j = await api('/cases/' + id);
   if (!j.success) { toast(j.error, true); return; }

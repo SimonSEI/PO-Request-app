@@ -9035,7 +9035,7 @@ def sign_and_send_quote(case_id, actor, body=None, send=True):
         try:
             log_vendor_follow(conn, case_id, actor, who=mail['name'], how='email',
                               said='Sent the signed quote - asked when it will be done',
-                              check_on=_workdays_after(_today(), 2).isoformat())
+                              check_on=_quote_sent_check_on(case))
         except ValueError:
             pass   # not waiting on the vendor (already scheduled or done)
         conn.commit()
@@ -9043,6 +9043,50 @@ def sign_and_send_quote(case_id, actor, body=None, send=True):
         conn.close()
     out['emailed'] = mail['to']
     return out
+
+
+def _quote_sent_check_on(case):
+    """When to ask again after the approved quote went to the vendor: two
+    workdays, or PARTS_FOLLOW_DAYS after the approval when parts take weeks."""
+    check = _workdays_after(_today(), 2)
+    approved = _iso_date((json.loads(case.get('steps') or '{}') if isinstance(case.get('steps'), str)
+                          else (case.get('steps') or {})).get('client_approved', {}).get('at'))
+    if case.get('parts_lead') and approved:
+        check = max(check, _weekday_from(date.fromisoformat(approved) + timedelta(days=PARTS_FOLLOW_DAYS)))
+    return check.isoformat()
+
+
+def mark_quote_sent(case_id, actor, who='', how='email'):
+    """The office sent the approved quote to the vendor themselves (Huntington
+    #6, quote 9160, Oct 2026): the job now waits on the vendor's reply about
+    when it'll be scheduled, and the "send it to Tom" to-do is done."""
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+        if not row:
+            raise ValueError('No such job')
+        case = dict(row)
+        name = (who or '').strip()[:80] or _vendor_contact(case.get('vendor') or 'Wettech')[0]
+        doc = _approved_quote_doc(conn, case_id)
+        if doc:
+            dj = {**(doc.get('jobber') or {}), 'signed_sent_at': _now_text(), 'signed_sent_to': name,
+                  'signed_sent_by': actor, 'sent_by_hand': True}
+            conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(dj), doc['id']))
+        for key in [f'sign-quote:{case_id}'] + ([f"approved-quote:{doc['id']}"] if doc else []):
+            conn.execute("UPDATE pump_todos SET done_at=?, done_by=? WHERE key=? AND done_at IS NULL",
+                         (_now_text(), actor, key))
+        _event(conn, actor, 'approved quote sent', f"to {name} by {how or 'email'} (sent by hand) - "
+                                                    f"waiting on when it'll be scheduled", case_id=case_id)
+        try:
+            log_vendor_follow(conn, case_id, actor, who=name, how=how,
+                              said="Sent the approved quote - asked when it'll be scheduled",
+                              check_on=_quote_sent_check_on(case))
+        except ValueError:
+            pass   # not waiting on the vendor (already scheduled or done)
+        conn.commit()
+        return {'case_id': case_id, 'to': name}
+    finally:
+        conn.close()
 
 
 def _save_doc_jobber(doc_id, dj):
@@ -9798,6 +9842,13 @@ def h_case_sign_quote(actor, case_id):
         return {'success': False, 'error': str(e)}, 400
     except RuntimeError as e:
         return {'success': False, 'error': str(e)}, 502
+
+
+@api('/cases/<int:case_id>/quote_sent', methods=('POST',))
+def h_case_quote_sent(actor, case_id):
+    """{"who", "how"}: the approved quote went to the vendor outside the app."""
+    d = _json()
+    return mark_quote_sent(case_id, actor, d.get('who') or '', d.get('how') or 'email')
 
 
 @api('/cases/<int:case_id>/sign_quote', methods=('GET',))
