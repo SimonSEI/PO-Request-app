@@ -3007,7 +3007,7 @@ _LINKED_QUERIES = {
 }
 
 
-def _refresh_linked_records(conn):
+def _refresh_linked_records(conn, kinds=None):
     """Update pump_jobber_items for every quote, invoice and job an item is
     linked to that isn't finished yet - open items, and closed ones still
     waiting on the client to pay. Returns errors."""
@@ -3016,6 +3016,8 @@ def _refresh_linked_records(conn):
                           "AND jobber LIKE '%\"id\"%'").fetchall():
         j = json.loads(c['jobber'] or '{}')
         for kind, (_, _, _, _, final) in _LINKED_QUERIES.items():
+            if kinds and kind not in kinds:
+                continue
             rec = j.get(kind) or {}
             if not rec.get('id') or (rec.get('status') or '') in final:
                 continue
@@ -8966,9 +8968,44 @@ def on_quote_approved(case_id, actor='Jobber sync'):
         conn.commit()
     finally:
         conn.close()
+    if out.get('todo'):
+        # Said straight away, not only on the Pumps page (quote 9160, Oct 2026).
+        try:
+            out['emailed'] = email_quote_approved(case, doc)
+        except Exception as e:
+            print(f'  ⚠ Pumps: approved-quote email: {e}')
     if q.get('id') and not (j.get('job') or {}).get('id'):
         out['job'] = make_job_from_quote(case_id)
     return out
+
+
+def email_quote_approved(case, doc=None):
+    """Email the office once per job when the client approves our quote:
+    send the approved quote to the vendor and ask when it'll be scheduled."""
+    import html as _html
+    key = f"approved_mail:{case['id']}"
+    if _state_get(key):
+        return False
+    name = _vendor_contact(case.get('vendor') or 'Wettech')[0]
+    q = (json.loads(case.get('jobber') or '{}').get('quote') or {})
+    who = case.get('client_name') or case.get('title') or f"job #{case['id']}"
+    num = f" #{q['number']}" if q.get('number') else ''
+    base = (CFG.get('website_url') or '').rstrip('/')
+    lines = [f"{who} approved our quote{num}" + (f" (${q['total']:,.2f})" if q.get('total') else '') + '.',
+             f"Next: send the approved {(doc or {}).get('vendor') or case.get('vendor') or 'vendor'} quote to {name} "
+             f"and ask when it can be scheduled - \"Sign quote & send\" on the Pumps page does both, or click "
+             f"\"I already sent it\" there if you've emailed it yourself."]
+    links = []
+    if base and 'localhost' not in base:
+        links.append(f'<a href="{base}/pumps#item-{case["id"]}">Open the job in Pumps</a>')
+    if q.get('uri'):
+        links.append(f'<a href="{_html.escape(q["uri"])}">Quote{num} in Jobber</a>')
+    html = ('<div style="font-family:Arial,sans-serif;font-size:14px">'
+            + ''.join(f'<p>{_html.escape(l)}</p>' for l in lines) + ('<p>' + ' · '.join(links) + '</p>' if links else '')
+            + '</div>')
+    graph_send(DIGEST_TO, f"Quote{num} approved - {who}: send it to {name}"[:255], html)
+    _state_set(key, {'at': _now_text(), 'to': DIGEST_TO})
+    return True
 
 
 def _approved_quote_doc(conn, case_id):
@@ -10514,6 +10551,8 @@ def init_pumps(app, csrf, db_path, *, data_dir, secret_key, website_url, email_e
                               next_run_time=datetime.now() + timedelta(minutes=2))
             sched.add_job(_safe(_scheduled_jobber_sync), 'interval', minutes=JOBBER_SYNC_EVERY_MIN,
                           id='pumps_jobber_sync', next_run_time=datetime.now() + timedelta(minutes=2))
+            sched.add_job(_safe(check_quote_approvals), 'interval', minutes=QUOTE_CHECK_EVERY_MIN,
+                          id='pumps_quote_check', next_run_time=datetime.now() + timedelta(minutes=1))
             sched.add_job(_safe(_scheduled_hourly), 'interval', hours=1, id='pumps_hourly',
                           next_run_time=datetime.now() + timedelta(minutes=3))
             sched.start()
@@ -10521,6 +10560,37 @@ def init_pumps(app, csrf, db_path, *, data_dir, secret_key, website_url, email_e
                   'ℹ Pumps: mailbox not configured - no automatic scan')
         except Exception as e:
             print(f'⚠ Pumps scheduler did not start: {e}')
+
+
+QUOTE_CHECK_EVERY_MIN = max(2, int(os.environ.get('PUMPS_QUOTE_CHECK_MINUTES', '5') or 5))
+
+
+def check_quote_approvals(actor='Jobber sync'):
+    """Our open quotes read straight from Jobber every few minutes, apart from
+    the full sync (Huntington #5 and #6, quotes 9149 and 9160, Oct 2026: the
+    full sync is long, and a restart part way never reached the approvals).
+    Ticks sent / approved, and an approval gets its to-do and email. Returns
+    the jobs just approved."""
+    if not jobber_status()['connected']:
+        return []
+    with _FileLock('quote_check', blocking=False) as got:
+        if not got:
+            return []
+        conn = _conn()
+        try:
+            errors = _refresh_linked_records(conn, kinds=('quote',))
+            approved = _follow_quotes(conn)
+            conn.commit()
+        finally:
+            conn.close()
+        for e in errors:
+            print(f'  ⚠ Pumps: quote check: {e}')
+        for cid in approved:
+            try:
+                on_quote_approved(cid, actor)
+            except Exception as e:
+                print(f'  ⚠ Pumps: approved quote (item {cid}): {e}')
+        return approved
 
 
 def _scheduled_jobber_sync():
