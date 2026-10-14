@@ -36,6 +36,7 @@ import difflib
 import hashlib
 import hmac
 import io
+import math
 import json
 import os
 import re
@@ -132,7 +133,7 @@ JOBBER_TOKEN = 'https://api.getjobber.com/api/oauth/token'
 # emails, texts or marks anything as sent - quotes and invoices are created as
 # drafts and stay drafts until someone in the office sends them from Jobber.
 ALLOWED_MUTATIONS = frozenset({'quoteCreate', 'invoiceCreate', 'jobCreateNote', 'clientCreateNote',
-                               'requestCreateNote', 'quoteCreateNote',
+                               'requestCreateNote', 'quoteCreateNote', 'invoiceCreateNote',
                                # An approved quote made a job, and a service-call visit on a job (Oct 2026).
                                'jobCreate', 'visitCreate', 'jobAddVisit', 'jobCreateVisit', 'jobVisitCreate',
                                # Redoing the lines of OUR OWN quote while it is still a draft, after the
@@ -1366,6 +1367,8 @@ Classify the document and pull out its fields:
   is marked taxable (e.g. a trailing "T") or tax is charged on it. Use null for numbers that are not shown.
   A quote written as a letter with a single price (e.g. "Your Cost ------ $1158.99") is one line item: name a
   short label for the work, description the work paragraph, quantity 1, unit_price and amount the price.
+  The descriptions go to our client, so correct obvious typing mistakes in them (e.g. "check out well nor
+  pumping" -> "check out well not pumping", "teh" -> "the") - never change the meaning, sizes, models or numbers.
 - subtotal (before tax), tax, total: as printed; null when not shown.
 - tax_included: true when the document says its price already includes sales tax (e.g. "Price includes Sales
   tax and freight"). Then put that price in total, leave subtotal and tax null, and set taxable false on its
@@ -3685,11 +3688,40 @@ def best_job_for_report(jobs, properties, location, title):
     return ranked[0] if ranked and score(ranked[0])[0] >= 3 else None
 
 
-def one_line_items(doc, markup_pct):
+# Typing slips in vendor letters that would otherwise go to the client
+# (Homewood Suites, Oct 2026: "check out well nor pumping").
+_TYPOS = (
+    (re.compile(r'\bnor(\s+(?:pumping|running|working|starting|holding|pulling|draining|operating|'
+                r'responding|turning|coming|getting|keeping|building|making|reaching|cycling|shutting|'
+                r'priming|charging|reading|communicating|functioning)\b)', re.I), r'not\1'),
+    (re.compile(r'\bteh\b', re.I), 'the'),
+    (re.compile(r'\b(the|a|an|and|to|of|on|in|with|for) \1\b', re.I), r'\1'),   # "the the"
+    (re.compile(r'[ \t]{2,}'), ' '),
+)
+
+
+def fix_typos(text):
+    """(text with the known typing slips corrected, [what was changed])."""
+    changes = []
+    for pat, good in _TYPOS:
+        def sub(m, good=good):
+            new = m.expand(good)
+            if new != m.group(0) and new.strip():
+                changes.append(f'"{m.group(0).strip()}" -> "{new.strip()}"')
+            return new
+        text = pat.sub(sub, text or '')
+    return text, changes
+
+
+def one_line_items(doc, markup_pct, whole=False):
     """Our quotes and invoices are always one "Service Proposal Amount" line:
     the vendor's work described (without their name), priced at their total
     before tax plus the markup. A price that already includes the vendor's
-    sales tax stays not taxable."""
+    sales tax stays not taxable. whole: marked-up prices in whole dollars, the
+    cents dropped ($2,215.80 -> $2,215), as our client quotes go (Oct 2026)."""
+    def up(a):
+        v = a * (1 + (markup_pct or 0) / 100)
+        return float(math.floor(v + 1e-9)) if whole and markup_pct else round(v, 2)
     every = [it for it in (doc.get('line_items') or []) if not it.get('is_tax')]
     lines = [it for it in every if not it.get('optional')]
     options = [it for it in every if it.get('optional')]
@@ -3720,11 +3752,11 @@ def one_line_items(doc, markup_pct):
         # A letter quoting several pieces of work, each at its own price
         # (Lely, Oct 2026): a line each, so the client sees what each costs.
         out = [{'name': 'Service Proposal Amount', 'description': _strip_vendor(it.get('description') or '')[:2000],
-                'quantity': 1, 'unit_price': round(amt(it) * (1 + (markup_pct or 0) / 100), 2),
+                'quantity': 1, 'unit_price': up(amt(it)),
                 'taxable': bool(it.get('taxable', taxable))} for it in priced]
     else:
         out = [{'name': 'Service Proposal Amount', 'description': '\n'.join(descs)[:2000], 'quantity': 1,
-                'unit_price': round(base * (1 + (markup_pct or 0) / 100), 2), 'taxable': bool(taxable)}]
+                'unit_price': up(base), 'taxable': bool(taxable)}]
     # Work the vendor quoted as "possibly needed": its own optional line,
     # marked up the same, not in the quote's total.
     for it in options:
@@ -3732,7 +3764,7 @@ def one_line_items(doc, markup_pct):
         if a is None:
             continue
         out.append({'name': 'Optional', 'description': _strip_vendor(it.get('description') or '')[:2000],
-                    'quantity': 1, 'unit_price': round(a * (1 + (markup_pct or 0) / 100), 2),
+                    'quantity': 1, 'unit_price': up(a),
                     'taxable': bool(it.get('taxable', taxable)), 'optional': True})
     return out
 
@@ -3967,7 +3999,7 @@ def suggest_quote(doc, case=None):
     carrying the vendor's description of the work, titled "Proposal to ...".
     A price that already includes the vendor's tax stays not taxable."""
     gov = gov_client(doc, case)
-    items = gov_line_items(doc, case) if gov else one_line_items(doc, QUOTE_MARKUP_PCT)
+    items = gov_line_items(doc, case) if gov else one_line_items(doc, QUOTE_MARKUP_PCT, whole=True)
     words = ' '.join([doc.get('description') or ''] + [f"{i.get('name') or ''} {i.get('description') or ''}"
                                                        for i in doc.get('line_items') or []])
     markup = GOV_MARKUP_PCT if gov else QUOTE_MARKUP_PCT
@@ -3985,8 +4017,15 @@ def suggest_quote(doc, case=None):
             items = [{'name': 'Service Proposal Amount', 'description': desc, 'quantity': 1, 'unit_price': price,
                       'taxable': False}]
             markup = 0
+    # Typing slips in the vendor's letter don't go to the client.
+    corrections = []
+    for it in items:
+        it['description'], ch = fix_typos(it.get('description') or '')
+        corrections += [c for c in ch if c not in corrections]
     title = (doc.get('proposal_title') or '').strip() or _proposal_title(
         items[0]['description'] if items else (doc.get('description') or ''))
+    title, ch = fix_typos(title)
+    corrections += [c for c in ch if c not in corrections]
     pump = pump_named(doc)
     if pump and not re.search(rf'#\s*{pump}\b|pump\s*{pump}\b', title, re.I):
         # Which pump, on a property with several (the address alone doesn't say).
@@ -3994,7 +4033,8 @@ def suggest_quote(doc, case=None):
     lead = delivery_note(doc)
     if lead:
         items = [{**it, 'description': f"{it['description']}\n\n{lead}".strip()[:2000]} for it in items]
-    return {'title': title[:255], 'line_items': items, 'markup_pct': markup, 'delivery': lead}
+    return {'title': title[:255], 'line_items': items, 'markup_pct': markup, 'delivery': lead,
+            'corrections': corrections}
 
 
 def _proposal_title(work):
@@ -4696,6 +4736,19 @@ def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', a
                            f"Jobber reports invoice #{ref['invoice_number']} as '{status}', not draft. "
                            'Open it in Jobber and check it has not gone to the client.', doc_id=doc_id)
         conn.commit()
+        if doc.get('case_id'):
+            # The sub's quote on the invoice, for later. Never holds up the invoice.
+            try:
+                note = note_sub_quote_on_invoice(doc['case_id'], inv.get('id'), job_id, client_id,
+                                                 ref['invoice_number'])
+            except Exception as e:
+                note, ref['sub_quote_note_error'] = None, str(e)
+            if note:
+                ref['sub_quote_note'] = note
+                _event(conn, actor, 'sub quote on invoice',
+                       f"{doc.get('vendor') or 'Vendor'} quote {'attached' if note.get('attached') else 'noted'} "
+                       f"on the Jobber {note['on']}", case_id=doc['case_id'], doc_id=note['doc_id'])
+                conn.commit()
         return {**ref, 'total': total}
     finally:
         conn.close()
@@ -4736,7 +4789,40 @@ NOTE_MUTATION = {
     'client': ('clientCreateNote', 'clientId', 'ClientCreateNoteInput', 'clientNote'),
     'request': ('requestCreateNote', 'requestId', 'RequestCreateNoteInput', 'requestNote'),
     'quote': ('quoteCreateNote', 'quoteId', 'QuoteCreateNoteInput', 'quoteNote'),
+    'invoice': ('invoiceCreateNote', 'invoiceId', 'InvoiceCreateNoteInput', 'invoiceNote'),
 }
+
+
+def note_sub_quote_on_invoice(case_id, invoice_id, job_id='', client_id='', invoice_number=''):
+    """The sub's quote for the work, attached to our Jobber invoice so it's at
+    hand later (Oct 2026) - on the invoice when Jobber takes invoice notes,
+    else on the job, else on the client. None when there is no sub quote."""
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT * FROM pump_docs WHERE case_id=? AND kind='quote' AND status != 'dismissed' "
+                           "ORDER BY id DESC", (case_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    doc = _doc_dict(row)
+    vendor = doc.get('vendor') or 'Vendor'
+    price = doc.get('total') if doc.get('total') is not None else doc.get('subtotal')
+    base = (CFG.get('website_url') or '').rstrip('/')
+    text = '\n'.join(x for x in (
+        f"{vendor} quote{' #' + doc['doc_number'] if doc.get('doc_number') else ''}"
+        f"{' dated ' + doc['doc_date'] if doc.get('doc_date') else ''} for this work: {doc.get('file_name')}",
+        f"{vendor} price: ${price:,.2f}" if price is not None else '',
+        f"File: {base}/pumps#doc-{doc['id']}" if base and 'localhost' not in base else '') if x)
+    targets = ([('invoice', invoice_id)] if invoice_id and 'invoiceCreateNote' in _mutation_schema() else []) + \
+        [(t, i) for t, i in (('job', job_id), ('client', client_id)) if i]
+    for target, tid in targets:
+        try:
+            msg = text if target == 'invoice' or not invoice_number else f"For invoice #{invoice_number} - {text}"
+            return {**note_vendor_file(doc, target, tid, msg), 'on': target, 'doc_id': doc['id']}
+        except JobberError as e:
+            print(f'  ⚠ Pumps: could not put the sub quote on the {target} ({e})')
+    return None
 
 
 def report_note_title(doc):
@@ -8989,7 +9075,7 @@ def sign_and_send_quote(case_id, actor, body=None, send=True):
         try:
             log_vendor_follow(conn, case_id, actor, who=mail['name'], how='email',
                               said='Sent the signed quote - asked when it will be done',
-                              check_on=_workdays_after(_today(), 2).isoformat())
+                              check_on=_quote_sent_check_on(case))
         except ValueError:
             pass   # not waiting on the vendor (already scheduled or done)
         conn.commit()
@@ -8997,6 +9083,50 @@ def sign_and_send_quote(case_id, actor, body=None, send=True):
         conn.close()
     out['emailed'] = mail['to']
     return out
+
+
+def _quote_sent_check_on(case):
+    """When to ask again after the approved quote went to the vendor: two
+    workdays, or PARTS_FOLLOW_DAYS after the approval when parts take weeks."""
+    check = _workdays_after(_today(), 2)
+    approved = _iso_date((json.loads(case.get('steps') or '{}') if isinstance(case.get('steps'), str)
+                          else (case.get('steps') or {})).get('client_approved', {}).get('at'))
+    if case.get('parts_lead') and approved:
+        check = max(check, _weekday_from(date.fromisoformat(approved) + timedelta(days=PARTS_FOLLOW_DAYS)))
+    return check.isoformat()
+
+
+def mark_quote_sent(case_id, actor, who='', how='email'):
+    """The office sent the approved quote to the vendor themselves (Huntington
+    #6, quote 9160, Oct 2026): the job now waits on the vendor's reply about
+    when it'll be scheduled, and the "send it to Tom" to-do is done."""
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+        if not row:
+            raise ValueError('No such job')
+        case = dict(row)
+        name = (who or '').strip()[:80] or _vendor_contact(case.get('vendor') or 'Wettech')[0]
+        doc = _approved_quote_doc(conn, case_id)
+        if doc:
+            dj = {**(doc.get('jobber') or {}), 'signed_sent_at': _now_text(), 'signed_sent_to': name,
+                  'signed_sent_by': actor, 'sent_by_hand': True}
+            conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(dj), doc['id']))
+        for key in [f'sign-quote:{case_id}'] + ([f"approved-quote:{doc['id']}"] if doc else []):
+            conn.execute("UPDATE pump_todos SET done_at=?, done_by=? WHERE key=? AND done_at IS NULL",
+                         (_now_text(), actor, key))
+        _event(conn, actor, 'approved quote sent', f"to {name} by {how or 'email'} (sent by hand) - "
+                                                    f"waiting on when it'll be scheduled", case_id=case_id)
+        try:
+            log_vendor_follow(conn, case_id, actor, who=name, how=how,
+                              said="Sent the approved quote - asked when it'll be scheduled",
+                              check_on=_quote_sent_check_on(case))
+        except ValueError:
+            pass   # not waiting on the vendor (already scheduled or done)
+        conn.commit()
+        return {'case_id': case_id, 'to': name}
+    finally:
+        conn.close()
 
 
 def _save_doc_jobber(doc_id, dj):
@@ -9752,6 +9882,13 @@ def h_case_sign_quote(actor, case_id):
         return {'success': False, 'error': str(e)}, 400
     except RuntimeError as e:
         return {'success': False, 'error': str(e)}, 502
+
+
+@api('/cases/<int:case_id>/quote_sent', methods=('POST',))
+def h_case_quote_sent(actor, case_id):
+    """{"who", "how"}: the approved quote went to the vendor outside the app."""
+    d = _json()
+    return mark_quote_sent(case_id, actor, d.get('who') or '', d.get('how') or 'email')
 
 
 @api('/cases/<int:case_id>/sign_quote', methods=('GET',))

@@ -97,8 +97,10 @@ def extraction(kind, number, po='', client='Lakeside Pines', subtotal=1000.0, ta
 class FakeJobber:
     """Stands in for Jobber: records every query and answers the ones Pumps sends."""
 
-    def __init__(self, invoice_status='draft', quote_status='draft', properties=None, clients=None, quote_lines=None):
+    def __init__(self, invoice_status='draft', quote_status='draft', properties=None, clients=None, quote_lines=None,
+                 invoice_notes=False):
         self.calls = []
+        self.invoice_notes = invoice_notes
         self.clients = clients
         self.quote_lines = quote_lines or []
         self.invoice_status = invoice_status
@@ -111,6 +113,11 @@ class FakeJobber:
         if '__type(name' in query and (variables or {}).get('n') == 'NoteAttachmentAttributes':
             return {'__type': {'inputFields': [{'name': n} for n in ('url', 'fileName', 'contentType')]}}
         self.calls.append((query, variables))
+        if 'mutationType' in query:
+            return {'__schema': {'mutationType': {'fields': [{'name': n, 'type': {}, 'args': []} for n in
+                                                             (['invoiceCreateNote'] if self.invoice_notes else [])]}}}
+        if 'invoiceCreateNote' in query:
+            return {'invoiceCreateNote': {'invoiceNote': {'id': 'IN1'}, 'userErrors': []}}
         if 'invoiceCreate' in query:
             return {'invoiceCreate': {'invoice': {'id': 'INV1', 'invoiceNumber': 5001,
                                                   'invoiceStatus': self.invoice_status,
@@ -437,7 +444,7 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual((doc['subtotal'], doc['total']), (None, 1158.99))
         self.assertEqual(len(doc['line_items']), 1)
         line = doc['quote_suggestion']['line_items'][0]
-        self.assertEqual(line['unit_price'], 1506.69, 'Simon quoted $1,506.69 in Jobber quote 9136')
+        self.assertEqual(line['unit_price'], 1506.0, 'Simon quoted $1,506.69 in Jobber quote 9136 - whole dollars now')
         self.assertEqual(line['name'], 'Service Proposal Amount')
         self.assertFalse(line['taxable'], 'tax is already in the price - Jobber must not add it again')
         # Claude's reading of the same letter is cleaned up the same way.
@@ -511,6 +518,28 @@ class PumpsTest(unittest.TestCase):
         # A second draft for the same bill is refused.
         r = self.c.post(f"/pumps/api/docs/{b['doc_id']}/invoice", json={'client_id': 'C1'})
         self.assertEqual(r.status_code, 400)
+
+    def test_sub_quote_goes_on_the_jobber_invoice(self):
+        """Oct 2026: the sub's quote is noted on our Jobber invoice for later -
+        on the invoice when Jobber takes invoice notes, else the client."""
+        self.addCleanup(setattr, P, '_SCHEMA_CACHE', {})
+        for n, notes in ((1, True), (2, False)):
+            self.extracts[f'q-07{n}0.pdf'] = extraction('quote', f'Q-7{n}', po=f'PO7{n}', client='Lakeside Pines')
+            self.extracts[f'b-07{n}0.pdf'] = extraction('bill', f'307{n}', po=f'PO7{n}', client='Lakeside Pines')
+            self.upload(f'q-07{n}0.pdf')
+            b = self.upload(f'b-07{n}0.pdf')
+            fake = FakeJobber(invoice_notes=notes)
+            P.jobber_gql, P._SCHEMA_CACHE = fake, {}
+            body = self.c.post(f"/pumps/api/docs/{b['doc_id']}/invoice", json={}).get_json()
+            self.assertTrue(body['success'], body)
+            target = 'invoiceCreateNote' if notes else 'clientCreateNote'
+            made = [v for q, v in fake.calls if target in q]
+            self.assertEqual(len(made), 1, target)
+            self.assertIn(f'Wettech quote #Q-7{n}', made[0]['input']['message'])
+            self.assertEqual(made[0]['id'], 'INV1' if notes else 'C1')
+            if not notes:
+                self.assertIn('For invoice #5001', made[0]['input']['message'])
+            self.assertIn('sub quote on invoice', [e['action'] for e in self.case(b['case_id'])['events']])
 
     def test_non_draft_status_from_jobber_raises_issue(self):
         self.extracts['b-0600.pdf'] = extraction('bill', '29700', po='PO600', client='Sunset Cove', subtotal=400)
@@ -830,8 +859,8 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(len(made), 1, 'one quote')
         lines = made[0]['lineItems']
         self.assertEqual([(l['name'], l['unitPrice'], l['taxable']) for l in lines],
-                         [('Service Proposal Amount', round(2757.32 * 1.3, 2), False),
-                          ('Service Proposal Amount', round(1047.62 * 1.3, 2), False)])
+                         [('Service Proposal Amount', 3584.0, False),
+                          ('Service Proposal Amount', 1361.0, False)])
         self.assertIn('flow meter', lines[0]['description'])
         self.assertIn('surge arrestor', lines[1]['description'])
         self.assertFalse(any(l.get('optional') for l in lines))
@@ -1563,13 +1592,13 @@ class PumpsTest(unittest.TestCase):
             self.assertEqual(len(attrs['lineItems']), 1)
             li = attrs['lineItems'][0]
             self.assertEqual((li['name'], li['unitPrice'], li['quantity'], li['taxable']),
-                             ('Service Proposal Amount', 1506.69, 1.0, False))
+                             ('Service Proposal Amount', 1506.0, 1.0, False))
             self.assertEqual(li['description'], work)
             note = [v for q, v in fake.calls if 'quoteCreateNote' in q][0]
             self.assertEqual(note['id'], 'Q1')
             self.assertIn('Wettech quote', note['input']['message'])
             self.assertIn('$1,158.99 (includes sales tax)', note['input']['message'])
-            self.assertIn('$1,506.69 (30% markup)', note['input']['message'])
+            self.assertIn('$1,506.00 (30% markup)', note['input']['message'])
             self.assertFalse(any(w in q for q, _ in fake.calls for w in ('Send', 'MarkAsSent')))
             queue = self.c.get('/pumps/api/summary').get_json()['queue']
             self.assertNotIn(res['doc_id'], [d['id'] for d in queue['quotes_to_draft']])
@@ -1614,7 +1643,7 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual((attrs['clientId'], attrs['propertyId']), ('Z2lkOi8vSm9iYmVyL0NsaWVudC80OTAwNzI1OA==', 'Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzUyOTc4MjYw'))
         self.assertEqual(attrs['title'], 'Proposal to pull and inspect suction line')
         li = attrs['lineItems'][0]
-        self.assertEqual((li['name'], li['unitPrice'], li['taxable']), ('Service Proposal Amount', 1506.69, False))
+        self.assertEqual((li['name'], li['unitPrice'], li['taxable']), ('Service Proposal Amount', 1506.0, False))
         self.assertTrue([v for q, v in fake.calls if 'quoteCreateNote' in q])
         self.c.post(f"/pumps/api/cases/{res['case_id']}/delete", json={'reason': 'test done'})
 
@@ -1694,6 +1723,36 @@ class PumpsTest(unittest.TestCase):
         ch = P.vendor_chase({**case, 'vendor': P.IN_HOUSE}, today=P.date(2026, 10, 2))
         self.assertEqual((ch['state'], ch['parts_wait']), ('follow_up', False))
 
+    def test_approved_quote_sent_by_hand_waits_on_tom(self):
+        """Huntington #6 (quote 9160, Oct 2026): the office emailed the approved
+        quote to Tom themselves - the to-do is done and the job waits on Tom's
+        reply about when it'll be scheduled."""
+        self.extracts['q-0916.pdf'] = extraction('quote', 'Q-916', po='PO916', client='Huntington Lakes')
+        q = self.upload('q-0916.pdf')
+        cid = q['case_id']
+        self.c.patch(f'/pumps/api/cases/{cid}', json={'steps': {'client_quote': '2026-10-09',
+                                                                'client_approved': '2026-10-14'}})
+        conn = P._conn()
+        try:
+            P.add_sign_todo(conn, dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (cid,)).fetchone()))
+            conn.commit()
+        finally:
+            conn.close()
+        case = self.case(cid)
+        self.assertEqual(case['stage'], 'scheduled')
+        self.assertFalse(case['chase']['last_at'], 'not sent yet')
+        r = self.c.post(f'/pumps/api/cases/{cid}/quote_sent', json={}).get_json()
+        self.assertTrue(r['success'], r)
+        case = self.case(cid)
+        ch = case['chase']
+        self.assertTrue(ch['last_at'])
+        self.assertEqual(ch['state'], 'waiting')
+        self.assertIn("when it'll be scheduled", ch['said'])
+        todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
+        self.assertFalse([t for t in todos if t['key'] == f'sign-quote:{cid}'], 'the send-it-to-Tom to-do is done')
+        doc = self.c.get(f"/pumps/api/docs/{q['doc_id']}").get_json()['doc']
+        self.assertTrue(doc['jobber']['sent_by_hand'])
+
     def test_homewood_optional_on_the_cost_line(self):
         """Wettech's Homewood Suites letter (Oct 14 2026): the option's work and
         its "Your Additional Cost" are on one line - an optional line, not in
@@ -1714,6 +1773,14 @@ class PumpsTest(unittest.TestCase):
         lines = P.one_line_items(x, 30)
         self.assertEqual([(l['unit_price'], bool(l.get('optional')), l['taxable']) for l in lines],
                          [(round(5427.63 * 1.3, 2), False, False), (round(534.86 * 1.3, 2), True, False)])
+        # Our client quote in whole dollars, the cents dropped ($7,055.92 -> $7,055).
+        self.assertEqual([l['unit_price'] for l in P.suggest_quote(x)['line_items']], [7055.0, 695.0])
+        # Tom's typo ("well nor pumping") doesn't go to the client.
+        s = P.suggest_quote(x)
+        self.assertIn('check out well not pumping', s['line_items'][0]['description'])
+        self.assertEqual(s['title'], 'Proposal to check out well not pumping')
+        self.assertEqual(s['corrections'], ['"nor pumping" -> "not pumping"'])
+        self.assertEqual(P.fix_typos('neither Wettech nor Gulfshore')[1], [], 'a real "nor" stays')
 
     def test_huntington_6_letter_is_one_quote_with_an_optional_line(self):
         """Wettech, Oct 8 2026: a control box at $1,780.11 and "Possibly
@@ -1744,7 +1811,7 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(len(made), 1, 'one quote')
         lines = made[0]['lineItems']
         self.assertEqual([(l['unitPrice'], bool(l.get('optional'))) for l in lines],
-                         [(round(1780.11 * 1.3, 2), False), (round(4836.90 * 1.3, 2), True)])
+                         [(2314.0, False), (6287.0, True)])
         self.assertIn('motor', lines[1]['description'])
 
     def test_delete_from_to_do_list(self):
@@ -2744,7 +2811,7 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual((s['line_items'][0]['unit_price'], s['markup_pct']), (600.0, 0))
         doc['description'] = 'Replace pressure switch'
         doc['line_items'][0].update(name='Pressure switch', description='Replace pressure switch')
-        self.assertEqual(P.suggest_quote(doc)['line_items'][0]['unit_price'], 556.4)
+        self.assertEqual(P.suggest_quote(doc)['line_items'][0]['unit_price'], 556.0)
 
     def test_daily_email(self):
         sent = []
