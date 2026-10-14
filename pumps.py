@@ -1866,6 +1866,11 @@ def _find_case_for(conn, doc):
     for r in rows:
         score = max(similarity(name, r.get('client_name') or r.get('title') or ''),
                     similarity(name, r.get('title') or ''))
+        # "Magnolia Cove Pressure Transducer" (the work read into the name, Oct 2026)
+        # is the job at "Magnolia Cove".
+        cn = (r.get('client_name') or '').strip().lower()
+        if len(cn) >= 6 and re.match(rf'{re.escape(cn)}\b', name.strip().lower()):
+            score = max(score, 0.9)
         if score < 0.75:
             continue
         steps = json.loads(r.get('steps') or '{}')
@@ -2949,6 +2954,7 @@ def _sync_jobber(full=False, actor='system'):
             status['errors'] += _refresh_linked_records(conn)
             _follow_invoices(conn)
             duplicate_jobber_invoices(conn)
+            reconcile_quote_waits(conn)
             approved = _follow_quotes(conn)
             approved += auto_track_approved(conn)
             close_stale_todos(conn)
@@ -3173,6 +3179,71 @@ def _follow_invoices(conn):
         if c['status'] == 'open' and it['status'] not in ('draft', 'voided', 'bad_debt') and \
                 _stage(json.loads(c['steps'] or '{}')) == 'closed':
             _set_step(conn, c['id'], 'closed', at=_today().isoformat(), by='jobber sync')
+
+
+QUOTE_GONE_OUT = ('awaiting_response', 'changes_requested', 'approved', 'converted')
+
+
+def reconcile_quote_waits(conn, actor='Jobber sync'):
+    """A job still "waiting on quote" whose client has since been sent a quote
+    in Jobber (Magnolia Cove, Oct 2026: "Quote is needed" kept waiting after
+    quote #9186 went out from another job). The one such quote, when it's on
+    no job, is linked to this one; when it's on another job and this one is
+    an empty placeholder (no documents, no Jobber quote or job), this one is
+    merged into that job. Returns what was done."""
+    done = []
+    rows = [dict(r) for r in conn.execute("SELECT * FROM pump_cases WHERE status='open' "
+                                          "AND stage IN ('assessment', 'vendor_quote')")]
+    for c in rows:
+        j = json.loads(c.get('jobber') or '{}')
+        if any((j.get(k) or {}).get('id') for k in ('quote', 'job', 'invoice')):
+            continue
+        name, cid_j = c.get('client_name') or '', c.get('jobber_client_id') or (j.get('client') or {}).get('id') or ''
+        opened = c.get('opened_on') or (c.get('created_at') or '')[:10]
+        cands = []
+        for it in conn.execute("SELECT * FROM pump_jobber_items WHERE kind='quote' AND COALESCE(ignored, 0)=0 "
+                               "AND COALESCE(case_id, 0) != ?", (c['id'],)):
+            it = dict(it)
+            if it['status'] not in QUOTE_GONE_OUT or (it.get('created_at') or '')[:10] < opened:
+                continue
+            same = (cid_j and it.get('client_id') == cid_j) or (
+                name and max(similarity(name, it.get('client_name') or ''),
+                             similarity(name, it.get('property_label') or '')) >= 0.85)
+            if same:
+                cands.append(it)
+        if len(cands) != 1:
+            continue   # none, or more than one: a person sorts it out
+        it = cands[0]
+        # The job it's on: marked on the Jobber record, or the quote our app drafted from a job.
+        own = conn.execute("SELECT id FROM pump_cases WHERE id != ? AND json_extract(jobber, '$.quote.id')=? "
+                           "ORDER BY id DESC", (c['id'], it['jobber_id'])).fetchone()
+        other = it.get('case_id') or (own[0] if own else None)
+        if other == c['id']:
+            continue
+        if other:
+            o = conn.execute("SELECT status FROM pump_cases WHERE id=?", (other,)).fetchone()
+            # Only a placeholder made BEFORE the job that quoted it (a lower job #):
+            # one opened later at the same client is new work, not this quote.
+            if not o or o['status'] == 'cancelled' or other < c['id']:
+                continue
+            if conn.execute("SELECT 1 FROM pump_docs WHERE case_id=? AND status != 'dismissed'",
+                            (c['id'],)).fetchone():
+                continue   # it has its own documents: not just a placeholder
+            conn.execute("UPDATE pump_cases SET status='cancelled', stage='cancelled', updated_at=? WHERE id=?",
+                         (_now_text(), c['id']))
+            conn.execute("UPDATE pump_issues SET resolved_at=?, resolved_by=?, resolution=? WHERE case_id=? "
+                         "AND resolved_at IS NULL", (_now_text(), actor, f"Covered by job #{other}", c['id']))
+            for jt in conn.execute("SELECT jobber_id FROM pump_jobber_items WHERE case_id=?", (c['id'],)).fetchall():
+                _link_item(conn, jt[0], other, actor)   # its Jobber request goes with it
+            _event(conn, actor, 'merged', f"Quote #{it['number']} went to {it['client_name']} from job #{other} - "
+                                          f"this job is the same work", case_id=c['id'])
+            _event(conn, actor, 'merged', f"\"{c.get('title') or name}\" (job #{c['id']}) was waiting on this quote "
+                                          f"- merged into this job", case_id=other)
+            done.append(('merged', c['id'], other))
+        elif not other:
+            _link_item(conn, it['jobber_id'], c['id'], actor)
+            done.append(('linked', c['id'], it['number']))
+    return done
 
 
 def _follow_quotes(conn):
