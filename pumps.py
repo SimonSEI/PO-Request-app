@@ -36,6 +36,7 @@ import difflib
 import hashlib
 import hmac
 import io
+import math
 import json
 import os
 import re
@@ -3685,11 +3686,15 @@ def best_job_for_report(jobs, properties, location, title):
     return ranked[0] if ranked and score(ranked[0])[0] >= 3 else None
 
 
-def one_line_items(doc, markup_pct):
+def one_line_items(doc, markup_pct, whole=False):
     """Our quotes and invoices are always one "Service Proposal Amount" line:
     the vendor's work described (without their name), priced at their total
     before tax plus the markup. A price that already includes the vendor's
-    sales tax stays not taxable."""
+    sales tax stays not taxable. whole: marked-up prices in whole dollars, the
+    cents dropped ($2,215.80 -> $2,215), as our client quotes go (Oct 2026)."""
+    def up(a):
+        v = a * (1 + (markup_pct or 0) / 100)
+        return float(math.floor(v + 1e-9)) if whole and markup_pct else round(v, 2)
     every = [it for it in (doc.get('line_items') or []) if not it.get('is_tax')]
     lines = [it for it in every if not it.get('optional')]
     options = [it for it in every if it.get('optional')]
@@ -3720,11 +3725,11 @@ def one_line_items(doc, markup_pct):
         # A letter quoting several pieces of work, each at its own price
         # (Lely, Oct 2026): a line each, so the client sees what each costs.
         out = [{'name': 'Service Proposal Amount', 'description': _strip_vendor(it.get('description') or '')[:2000],
-                'quantity': 1, 'unit_price': round(amt(it) * (1 + (markup_pct or 0) / 100), 2),
+                'quantity': 1, 'unit_price': up(amt(it)),
                 'taxable': bool(it.get('taxable', taxable))} for it in priced]
     else:
         out = [{'name': 'Service Proposal Amount', 'description': '\n'.join(descs)[:2000], 'quantity': 1,
-                'unit_price': round(base * (1 + (markup_pct or 0) / 100), 2), 'taxable': bool(taxable)}]
+                'unit_price': up(base), 'taxable': bool(taxable)}]
     # Work the vendor quoted as "possibly needed": its own optional line,
     # marked up the same, not in the quote's total.
     for it in options:
@@ -3732,7 +3737,7 @@ def one_line_items(doc, markup_pct):
         if a is None:
             continue
         out.append({'name': 'Optional', 'description': _strip_vendor(it.get('description') or '')[:2000],
-                    'quantity': 1, 'unit_price': round(a * (1 + (markup_pct or 0) / 100), 2),
+                    'quantity': 1, 'unit_price': up(a),
                     'taxable': bool(it.get('taxable', taxable)), 'optional': True})
     return out
 
@@ -3967,7 +3972,7 @@ def suggest_quote(doc, case=None):
     carrying the vendor's description of the work, titled "Proposal to ...".
     A price that already includes the vendor's tax stays not taxable."""
     gov = gov_client(doc, case)
-    items = gov_line_items(doc, case) if gov else one_line_items(doc, QUOTE_MARKUP_PCT)
+    items = gov_line_items(doc, case) if gov else one_line_items(doc, QUOTE_MARKUP_PCT, whole=True)
     words = ' '.join([doc.get('description') or ''] + [f"{i.get('name') or ''} {i.get('description') or ''}"
                                                        for i in doc.get('line_items') or []])
     markup = GOV_MARKUP_PCT if gov else QUOTE_MARKUP_PCT

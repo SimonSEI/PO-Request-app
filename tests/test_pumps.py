@@ -444,7 +444,7 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual((doc['subtotal'], doc['total']), (None, 1158.99))
         self.assertEqual(len(doc['line_items']), 1)
         line = doc['quote_suggestion']['line_items'][0]
-        self.assertEqual(line['unit_price'], 1506.69, 'Simon quoted $1,506.69 in Jobber quote 9136')
+        self.assertEqual(line['unit_price'], 1506.0, 'Simon quoted $1,506.69 in Jobber quote 9136 - whole dollars now')
         self.assertEqual(line['name'], 'Service Proposal Amount')
         self.assertFalse(line['taxable'], 'tax is already in the price - Jobber must not add it again')
         # Claude's reading of the same letter is cleaned up the same way.
@@ -859,8 +859,8 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(len(made), 1, 'one quote')
         lines = made[0]['lineItems']
         self.assertEqual([(l['name'], l['unitPrice'], l['taxable']) for l in lines],
-                         [('Service Proposal Amount', round(2757.32 * 1.3, 2), False),
-                          ('Service Proposal Amount', round(1047.62 * 1.3, 2), False)])
+                         [('Service Proposal Amount', 3584.0, False),
+                          ('Service Proposal Amount', 1361.0, False)])
         self.assertIn('flow meter', lines[0]['description'])
         self.assertIn('surge arrestor', lines[1]['description'])
         self.assertFalse(any(l.get('optional') for l in lines))
@@ -1592,13 +1592,13 @@ class PumpsTest(unittest.TestCase):
             self.assertEqual(len(attrs['lineItems']), 1)
             li = attrs['lineItems'][0]
             self.assertEqual((li['name'], li['unitPrice'], li['quantity'], li['taxable']),
-                             ('Service Proposal Amount', 1506.69, 1.0, False))
+                             ('Service Proposal Amount', 1506.0, 1.0, False))
             self.assertEqual(li['description'], work)
             note = [v for q, v in fake.calls if 'quoteCreateNote' in q][0]
             self.assertEqual(note['id'], 'Q1')
             self.assertIn('Wettech quote', note['input']['message'])
             self.assertIn('$1,158.99 (includes sales tax)', note['input']['message'])
-            self.assertIn('$1,506.69 (30% markup)', note['input']['message'])
+            self.assertIn('$1,506.00 (30% markup)', note['input']['message'])
             self.assertFalse(any(w in q for q, _ in fake.calls for w in ('Send', 'MarkAsSent')))
             queue = self.c.get('/pumps/api/summary').get_json()['queue']
             self.assertNotIn(res['doc_id'], [d['id'] for d in queue['quotes_to_draft']])
@@ -1643,7 +1643,7 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual((attrs['clientId'], attrs['propertyId']), ('Z2lkOi8vSm9iYmVyL0NsaWVudC80OTAwNzI1OA==', 'Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzUyOTc4MjYw'))
         self.assertEqual(attrs['title'], 'Proposal to pull and inspect suction line')
         li = attrs['lineItems'][0]
-        self.assertEqual((li['name'], li['unitPrice'], li['taxable']), ('Service Proposal Amount', 1506.69, False))
+        self.assertEqual((li['name'], li['unitPrice'], li['taxable']), ('Service Proposal Amount', 1506.0, False))
         self.assertTrue([v for q, v in fake.calls if 'quoteCreateNote' in q])
         self.c.post(f"/pumps/api/cases/{res['case_id']}/delete", json={'reason': 'test done'})
 
@@ -1773,6 +1773,8 @@ class PumpsTest(unittest.TestCase):
         lines = P.one_line_items(x, 30)
         self.assertEqual([(l['unit_price'], bool(l.get('optional')), l['taxable']) for l in lines],
                          [(round(5427.63 * 1.3, 2), False, False), (round(534.86 * 1.3, 2), True, False)])
+        # Our client quote in whole dollars, the cents dropped ($7,055.92 -> $7,055).
+        self.assertEqual([l['unit_price'] for l in P.suggest_quote(x)['line_items']], [7055.0, 695.0])
 
     def test_huntington_6_letter_is_one_quote_with_an_optional_line(self):
         """Wettech, Oct 8 2026: a control box at $1,780.11 and "Possibly
@@ -1803,7 +1805,7 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(len(made), 1, 'one quote')
         lines = made[0]['lineItems']
         self.assertEqual([(l['unitPrice'], bool(l.get('optional'))) for l in lines],
-                         [(round(1780.11 * 1.3, 2), False), (round(4836.90 * 1.3, 2), True)])
+                         [(2314.0, False), (6287.0, True)])
         self.assertIn('motor', lines[1]['description'])
 
     def test_delete_from_to_do_list(self):
@@ -2803,7 +2805,7 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual((s['line_items'][0]['unit_price'], s['markup_pct']), (600.0, 0))
         doc['description'] = 'Replace pressure switch'
         doc['line_items'][0].update(name='Pressure switch', description='Replace pressure switch')
-        self.assertEqual(P.suggest_quote(doc)['line_items'][0]['unit_price'], 556.4)
+        self.assertEqual(P.suggest_quote(doc)['line_items'][0]['unit_price'], 556.0)
 
     def test_daily_email(self):
         sent = []
