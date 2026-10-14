@@ -1426,7 +1426,7 @@ class PumpsTest(unittest.TestCase):
             real = P.create_case(conn, {'title': 'Service call - Front lake pump down', 'client_name': 'Barrington Cove'},
                                  'email scan', source='service_call')
             P.add_todo(conn, f'service-visit:{bad}', 'Add a "Service call - Pumps today - 1 to do" visit')
-            conn.execute("DELETE FROM pump_state WHERE key='own_email_calls_removed'")
+            conn.execute("DELETE FROM pump_state WHERE key='own_email_calls_removed_2'")
             conn.commit()
             P._remove_own_email_service_calls(conn)
             self.assertEqual(conn.execute('SELECT status FROM pump_cases WHERE id=?', (bad,)).fetchone()[0], 'cancelled')
@@ -1823,6 +1823,10 @@ class PumpsTest(unittest.TestCase):
         finally:
             P.graph_send = saved
         self.assertEqual(len(sent), 1, 'once per job')
+        # The mailbox scan doesn't read the approval email as a service call (Lely, quote 9152).
+        self.assertTrue(P.from_this_app('Simon <simon@stahlman-england.com>', sent[0][1]))
+        self.assertIsNone(P.handle_service_call_email('m9152', 'simon@stahlman-england.com', sent[0][1],
+                                                      'Lely approved our quote #9152. Next: send the approved pump quote'))
         to, subject, html = sent[0]
         self.assertEqual(to, P.DIGEST_TO)
         self.assertIn('Quote #9160 approved - Huntington Lakes', subject)

@@ -9645,7 +9645,9 @@ def service_call_summary(subject, preview=''):
 # pay-the-vendor email and approved quotes. Read back from the mailbox they are
 # never a service call.
 OWN_SUBJECTS = re.compile(r'^\s*((re|fw|fwd)\s*:\s*)*(pumps today\b|diver schedule\b|please pay \w+ invoice\b|'
-                          r'approved\s*-\s|signed\s+quote\s*-\s)', re.I)
+                          r'approved\s*-\s|signed\s+quote\s*-\s|'
+                          # The approval email (Oct 2026): "Quote #9152 approved - Lely: send it to Tommy".
+                          r'quote\s*(#\s*\d+\s*)?approved\s*-\s)', re.I)
 
 
 def from_this_app(sender, subject):
@@ -9658,7 +9660,8 @@ def _remove_own_email_service_calls(conn):
     """Undo service calls opened from the app's own daily email ("Pumps today -
     N to do") before such emails were ignored. Once."""
     conn.row_factory = sqlite3.Row
-    if not _claim_once(conn, 'own_email_calls_removed'):
+    # Again for the approval emails, which the first pass didn't know (Oct 14 2026).
+    if not _claim_once(conn, 'own_email_calls_removed_2'):
         return
     for c in conn.execute("SELECT id, title FROM pump_cases WHERE source='service_call' AND status='open'").fetchall():
         if not OWN_SUBJECTS.search(re.sub(r'^Service call - ', '', c['title'] or '')):
