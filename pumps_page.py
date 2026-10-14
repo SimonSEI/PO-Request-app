@@ -428,14 +428,22 @@ async function api(path, opts){
 }
 function toast(msg, bad){ const d = document.createElement('div'); d.textContent = msg; d.className = 'toast' + (bad ? ' bad' : ''); document.body.appendChild(d); setTimeout(() => d.remove(), bad ? 6000 : 3000); }
 function catChip(c){ const m = {scada:'v', diver:'b', filter:'b', maintenance:'g', install:'a'}; return `<span class="chip ${m[c]||''}">${esc(c)}</span>`; }
+// How long a job has waited on the vendor's quote: since it was opened.
+function quoteWait(c){
+  const since = d10(c.opened_on || c.created_at); if (!since) return '';
+  const n = Math.round((new Date(todayIso() + 'T12:00:00') - new Date(since + 'T12:00:00')) / 864e5);
+  return n < 1 ? 'since today' : n === 1 ? '1 day' : n + ' days';
+}
 // What a job is waiting on, in plain words, from the first step not done.
 function stageText(c){
-  const v = c.vendor || 'Wettech', st = c.steps || {};
+  const v = c.vendor || 'Wettech', st = c.steps || {}, w = quoteWait(c);
   const hasBill = c.vendor_bill_amount != null || c.vendor_bill_total != null || !!(st.vendor_bill || {}).at;
-  if (c.stage === 'vendor_quote' && hasBill) return `Bill in · waiting on ${v}'s quote`;
+  if (c.stage === 'vendor_quote' && hasBill) return `Bill in · waiting on ${v}'s quote` + (w ? ' · ' + w : '');
+  // Approved, and the quote said parts take weeks: waiting on the parts, not a date.
+  if (c.stage === 'scheduled' && (c.chase || {}).parts) return `Waiting on ${v} parts · ${c.chase.parts}`;
   return ({
-    assessment: `Waiting on ${v} to assess` + ((st.assessment || {}).due ? ' · ' + st.assessment.due : ''),
-    vendor_quote: `Waiting on quote from ${v}`,
+    assessment: `Waiting on ${v} to assess` + ((st.assessment || {}).due ? ' · ' + st.assessment.due : '') + (w ? ' · ' + w : ''),
+    vendor_quote: `Waiting on quote from ${v}` + (w ? ' · ' + w : ''),
     client_quote: 'Send our quote to the client',
     client_approved: 'Waiting on client approval',
     scheduled: `Schedule with ${v}`,
@@ -694,7 +702,7 @@ async function loadToday(){
     c.chase ? `<button class="btn s p" onclick="event.stopPropagation();logFollow(${c.id})">📞 Log follow-up</button>` : '', c.todo_key)));
   // Chase the vendor: jobs to get scheduled / done, and quotes, where nobody has heard back.
   (q.vendor_follow_ups || []).forEach(c => { const ch = c.chase, late = ch.expect_by && ch.expect_by < todayIso();
-    todo.push(todoItem('Follow up · ' + (ch.phase === 'job' ? 'job' : 'quote'), late ? 'r' : 'a', caseTitle(c), caseSub(c, esc(stageText(c))) + chaseLine(c),
+    todo.push(todoItem('Follow up · ' + (ch.parts && c.stage === 'scheduled' ? 'parts' : ch.phase === 'job' ? 'job' : 'quote'), late ? 'r' : 'a', caseTitle(c), caseSub(c, esc(stageText(c))) + chaseLine(c),
       open(c), `<button class="btn s p" onclick="event.stopPropagation();logFollow(${c.id})">📞 Log follow-up</button><button class="btn s" onclick="event.stopPropagation();vendorEmail(${c.id})">✉ Email</button>`, c.todo_key)); });
   q.ready_to_close.forEach(c => todo.push(todoItem('Send invoice', 'a', caseTitle(c), caseSub(c, 'send the invoice from Jobber' + (c.sei_invoice_number ? ' · #' + esc(c.sei_invoice_number) : '')) + followUp(c.follow_up), open(c), doDone(c), c.todo_key)));
   q.reports_to_log.forEach(d => todo.push(todoItem('Log report', 'b', esc(d.client_name || d.file_name), `${esc((d.report_fields||{}).title || 'Report')} · ${esc(d.doc_date)}`, d.case_id ? `openCase(${d.case_id})` : `openDoc(${d.id})`,
@@ -705,7 +713,7 @@ async function loadToday(){
   const logBtn = c => c.chase ? `<button class="btn s" onclick="event.stopPropagation();logFollow(${c.id})">📞 Log</button>` : '';
   (q.waiting_assessment || []).forEach(c => waiting.push(todoItem(v(c) + ' visit', '', caseTitle(c), caseSub(c, ((c.steps || {}).assessment || {}).due ? 'visit ' + esc(c.steps.assessment.due) : 'visit not booked') + chaseLine(c), open(c), logBtn(c), c.todo_key)));
   q.waiting_vendor_quote.forEach(c => waiting.push(todoItem(v(c) + ' quote', '', caseTitle(c), caseSub(c) + chaseLine(c), open(c), logBtn(c), c.todo_key)));
-  (q.scheduling_asked || []).forEach(c => waiting.push(todoItem('Schedule', '', caseTitle(c), caseSub(c, 'client approved - asked ' + v(c) + ' for a date') + chaseLine(c), open(c), logBtn(c), c.todo_key)));
+  (q.scheduling_asked || []).forEach(c => { const p = (c.chase || {}).parts; waiting.push(todoItem(p ? 'Parts' : 'Schedule', '', caseTitle(c), caseSub(c, p ? `client approved - ${v(c)} parts take ${esc(p)}` : 'client approved - asked ' + v(c) + ' for a date') + chaseLine(c), open(c), logBtn(c), c.todo_key)); });
   q.waiting_approval.forEach(c => waiting.push(todoItem('Client approval', '', caseTitle(c), caseSub(c) + followUp(c.follow_up), open(c), '', c.todo_key)));
   q.waiting_work.forEach(c => waiting.push(todoItem('Work', '', caseTitle(c), caseSub(c, c.scheduled_for ? 'scheduled ' + esc(c.scheduled_for) : '') + chaseLine(c), open(c), logBtn(c), c.todo_key)));
   (q.waiting_visits || []).forEach(t => { const l = t.link || {}, left = (l.vendors || []).filter(x => !(l.reported || []).includes(x));

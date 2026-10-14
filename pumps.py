@@ -586,6 +586,11 @@ def init_db():
             c.execute(f"ALTER TABLE pump_cases ADD COLUMN {col} TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass
+    # parts_lead: how long the vendor said parts take ("2-3 weeks"); NULL = not looked yet, '' = none said.
+    try:
+        c.execute('ALTER TABLE pump_cases ADD COLUMN parts_lead TEXT')
+    except sqlite3.OperationalError:
+        pass
     c.execute('''CREATE TABLE IF NOT EXISTS pump_email_scan_log (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   email_uid TEXT UNIQUE,
@@ -608,7 +613,19 @@ def init_db():
     _remove_own_email_service_calls(conn)
     _dedupe_startup_events(conn)
     _seed_homewood_follow_up(conn)
+    _restage_quoted_jobs(conn)
     conn.close()
+
+
+def _restage_quoted_jobs(conn):
+    """Jobs whose client quote went out but whose vendor quote was never filed
+    here showed "Waiting on quote" (Oct 2026): work out their stage again, once."""
+    if not _claim_once(conn, 'restage_quoted_jobs'):
+        return
+    conn.row_factory = sqlite3.Row
+    for r in conn.execute("SELECT id FROM pump_cases WHERE status='open'").fetchall():
+        _refresh_case(conn, r['id'])
+    conn.commit()
 
 
 def _claim_once(conn, key):
@@ -794,7 +811,15 @@ def _steps_for(category):
 def _stage(steps, status='open'):
     if status == 'cancelled':
         return 'cancelled'
-    steps = _with_optional(steps)
+    steps = dict(_with_optional(steps))
+    # Our quote went to the client (Carlisle, #9136): the vendor's visit and price
+    # came before it, filed here or not - the job isn't waiting on their quote.
+    for later, earlier in (('client_approved', ('assessment', 'vendor_quote', 'client_quote')),
+                           ('client_quote', ('assessment', 'vendor_quote'))):
+        if (steps.get(later) or {}).get('at'):
+            for k in earlier:
+                if not (steps.get(k) or {}).get('at') and not (steps.get(k) or {}).get('na'):
+                    steps[k] = {'na': True}
     for k in STEP_KEYS:
         s = steps.get(k) or {}
         if not s.get('at') and not s.get('na'):
@@ -1915,6 +1940,9 @@ def _file_on_case(conn, doc, case_id, how, actor):
                     vendor_quote_total=doc.get('total'))
         _apply(conn, case_id, fill)
         _set_step(conn, case_id, 'vendor_quote', at=date_, by=actor)
+        lead = parts_lead_in(delivery_note(doc))
+        if lead:
+            conn.execute('UPDATE pump_cases SET parts_lead=? WHERE id=?', (lead, case_id))
     elif kind == 'bill':
         other_bill = conn.execute("SELECT 1 FROM pump_docs WHERE case_id=? AND kind='bill' AND id != ? "
                                   "AND status != 'dismissed'", (case_id, doc_id)).fetchone()
@@ -3901,6 +3929,10 @@ def delivery_note(doc):
                 text = extract_text(doc.get('file_name') or '', f.read())[:4000]
         except (OSError, TypeError, ValueError):
             text = ''
+    return _delivery_in(text)
+
+
+def _delivery_in(text):
     for line in re.split(r'\n|(?<=\.)\s+', text):
         line = re.sub(r'\s+', ' ', line).strip()
         if _LONG_LEAD.search(line) and _DELIVERY.search(line) and len(line) <= 200:
@@ -3914,6 +3946,18 @@ def delivery_note(doc):
                 return f'It will take {span} {unit} to deliver after approval.'
             return line if re.match(r'(?i)delivery\b', line) else f'Delivery: {line}'
     return ''
+
+
+def parts_lead_in(text):
+    """"2-3 weeks" when the text says delivery takes weeks or months, else ''."""
+    m = re.search(r'(\d+\s*(?:-|–|to)\s*\d+|\d+|a\s+few|several)\s*(weeks?|wks?|months?)', _delivery_in(text or ''), re.I)
+    if not m:
+        return ''
+    unit = {'wk': 'weeks', 'wks': 'weeks'}.get(m.group(2).lower(), m.group(2).lower())
+    span = re.sub(r'\s*(?:-|–|to)\s*', '-', m.group(1).strip())
+    if span == '1':
+        unit = unit.rstrip('s')
+    return f'{span} {unit}'
 
 
 def suggest_quote(doc, case=None):
@@ -4856,6 +4900,10 @@ def log_report_to_jobber(doc_id, target_type, target_id, actor='system', message
 CHASE_PHASES = {'assessment': 'quote', 'vendor_quote': 'quote', 'scheduled': 'job', 'work_done': 'job'}
 CHASE_SKIP_CATEGORIES = ('maintenance', 'scada')   # followed by the account sheets / SCADA tab
 VENDOR_FOLLOW_DAYS = max(1, int(os.environ.get('PUMPS_VENDOR_FOLLOW_DAYS', '3') or 3))
+# A quote saying parts take weeks (Carlisle, Oct 2026: "2-3 weeks"): once the
+# client approves, the job waits on the parts; ask the vendor about them this
+# many days after the approval.
+PARTS_FOLLOW_DAYS = max(1, int(os.environ.get('PUMPS_PARTS_FOLLOW_DAYS', '14') or 14))
 FOLLOW_HOW = ('call', 'text', 'email', 'in person')
 
 
@@ -4898,10 +4946,15 @@ def vendor_chase(case, today=None):
         expect = _iso_date(((case.get('steps') or {}).get('assessment') or {}).get('due'))
     last = _iso_date((f.get('at') or '')[:10])
     since = date.fromisoformat(last) if last else _phase_since(case)
+    parts = (case.get('parts_lead') or '') if case['stage'] == 'scheduled' else ''
+    approved = _iso_date(((case.get('steps') or {}).get('client_approved') or {}).get('at'))
     if _iso_date(f.get('check_on')):
         check = date.fromisoformat(f['check_on'])
     elif expect:
         check = _workdays_after(date.fromisoformat(expect), 1)
+    elif parts and approved and not last:
+        # Waiting on parts: ask about them PARTS_FOLLOW_DAYS after the approval.
+        check = _weekday_from(date.fromisoformat(approved) + timedelta(days=PARTS_FOLLOW_DAYS))
     elif case['stage'] == 'scheduled' and not last:
         check = since   # approved: ask them for a date straight away
     else:
@@ -4913,6 +4966,9 @@ def vendor_chase(case, today=None):
         reason = f"{who} said by {expect} - the {what} isn't in yet"
     elif expect:
         reason = f"{who} said by {expect}"
+    elif parts and approved and not last:
+        reason = (f"approved {approved}; parts take {parts} - ask {who} if the parts are in and when they can "
+                  f"schedule it")
     elif last:
         reason = f"asked {who} {last}, no date given"
     else:
@@ -4920,7 +4976,7 @@ def vendor_chase(case, today=None):
     return {'phase': phase, 'state': 'follow_up' if today >= check else 'waiting', 'check_on': check.isoformat(),
             'expect_by': expect or '', 'last_at': last or '', 'said': f.get('said') or '', 'who': who,
             'how': f.get('how') or '', 'by': f.get('by') or '', 'days': (today - since).days, 'reason': reason,
-            'contact': contact}
+            'contact': contact, 'parts': parts}
 
 
 def log_vendor_follow(conn, case_id, actor, who='', how='call', said='', expect_by='', check_on='', today=None):
@@ -4991,7 +5047,7 @@ def work_queue(conn):
     by_stage, chase = {}, []
     for c in cases:
         state = (c.get('chase') or {}).get('state')
-        if state == 'follow_up' and c['stage'] != 'scheduled':
+        if state == 'follow_up' and (c['stage'] != 'scheduled' or c['chase'].get('parts')):
             chase.append(c)
         elif state == 'waiting' and c['stage'] == 'scheduled':
             by_stage.setdefault('scheduling_asked', []).append(c)
@@ -9594,10 +9650,48 @@ def send_digest(force=False, actor='Pumps (8am)'):
     return {'sent': True, 'to': DIGEST_TO, 'subject': mail['subject']}
 
 
+def find_parts_leads():
+    """Approved jobs not yet scheduled whose parts lead hasn't been looked for:
+    the vendor's quote on file, else our Jobber quote's lines ("It will take 2-3
+    weeks to deliver after approval"). Looked for once per job."""
+    conn = _conn()
+    try:
+        rows = conn.execute("SELECT * FROM pump_cases WHERE status='open' AND stage='scheduled' "
+                            "AND parts_lead IS NULL").fetchall()
+        found, live = {}, bool(rows) and jobber_status()['connected']
+        for r in rows:
+            lead = ''
+            for d in conn.execute("SELECT * FROM pump_docs WHERE case_id=? AND kind='quote' AND status != 'dismissed' "
+                                  "ORDER BY id DESC", (r['id'],)):
+                lead = parts_lead_in(delivery_note(dict(d)))
+                if lead:
+                    break
+            qid = (json.loads(r['jobber'] or '{}').get('quote') or {}).get('id')
+            if not lead and qid:
+                if not live:
+                    continue   # look again once Jobber is connected
+                try:
+                    q = fetch_quote_lines(qid) or {}
+                except JobberError:
+                    continue   # try again next hour
+                lead = parts_lead_in('\n'.join(li.get('description') or '' for li in q.get('line_items') or []))
+            conn.execute('UPDATE pump_cases SET parts_lead=? WHERE id=?', (lead, r['id']))
+            if lead:
+                found[r['id']] = lead
+        conn.commit()
+        return found
+    finally:
+        conn.close()
+
+
 def _scheduled_hourly():
     """Every hour: the month's diver to-do / email, SCADA renewals coming due,
-    and the weekday 8am email."""
+    parts lead times on approved jobs, and the weekday 8am email."""
     _scheduled_dive_email()
+    try:
+        find_parts_leads()
+    except Exception as e:
+        print(f'  ⚠ Pumps: parts lead times: {e}')
     try:
         service_follow_ups()
     except Exception as e:
