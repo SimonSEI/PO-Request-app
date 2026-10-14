@@ -3269,6 +3269,9 @@ def fuzzy_match_job():
 
 @app.errorhandler(CSRFError)
 def csrf_error(e):
+    if '/api/' in request.path:
+        # A page's save: a redirect to the login page reads as "Server error 200" there.
+        return jsonify({'success': False, 'error': 'This page was open too long - reload it and try again.'}), 400
     flash('Your session expired. Please try signing in again.')
     return redirect(url_for('login'))
 

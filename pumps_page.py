@@ -265,11 +265,14 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 </style>
 <script>
 (function(){
-  var t = (document.querySelector('meta[name="csrf-token"]')||{}).content || '';
+  var t0 = (document.querySelector('meta[name="csrf-token"]')||{}).content || '';
   var f = window.fetch;
   window.fetch = function(url, o){
     o = o || {};
     var m = (o.method || 'GET').toUpperCase();
+    // The page's own token expires after 12 hours (left open overnight); every
+    // response refreshes the csrf_token cookie, so send that one.
+    var c = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/), t = c ? decodeURIComponent(c[1]) : t0;
     if (m !== 'GET' && m !== 'HEAD') { o.headers = o.headers || {}; if (!(o.headers instanceof Headers)) o.headers['X-CSRFToken'] = t; else o.headers.set('X-CSRFToken', t); }
     return f.call(this, url, o);
   };
@@ -1140,10 +1143,16 @@ function drawLines(){
     <td><input type="number" step="any" value="${esc(l.quantity)}" oninput="inv.lines[${i}].quantity=parseFloat(this.value);invTotal()" style="width:64px"></td>
     <td><input type="number" step="0.01" value="${esc(l.unit_price)}" oninput="inv.lines[${i}].unit_price=parseFloat(this.value);invTotal()" style="width:100px"></td>
     <td><input type="checkbox" ${l.taxable ? 'checked' : ''} onchange="inv.lines[${i}].taxable=this.checked"></td>
+    ${inv.mode === 'quote' ? `<td><input type="checkbox" ${l.optional ? 'checked' : ''} onchange="inv.lines[${i}].optional=this.checked;invTotal()"></td>` : ''}
     <td><button class="btn s" onclick="inv.lines.splice(${i},1);drawLines()">✕</button></td></tr>`).join('');
   invTotal();
 }
-function invTotal(){ const t = inv.lines.reduce((a, l) => a + (l.quantity || 0) * (l.unit_price || 0), 0); document.getElementById('invTotal').textContent = 'Before tax: ' + money(t) + (inv.doc.subtotal != null && Math.abs(t - inv.doc.subtotal) > 0.005 ? ` (${inv.mode === 'quote' ? 'vendor quote' : 'bill'}: ${money(inv.doc.subtotal)})` : ''); }
+// Like Jobber: an optional line is not in the quote's total unless the client picks it.
+function invTotal(){
+  const sum = ls => ls.reduce((a, l) => a + (l.quantity || 0) * (l.unit_price || 0), 0);
+  const opt = inv.mode === 'quote' ? inv.lines.filter(l => l.optional) : [], t = sum(inv.lines.filter(l => !opt.includes(l)));
+  document.getElementById('invTotal').textContent = 'Before tax: ' + money(t) + (opt.length ? ` + optional ${money(sum(opt))} if the client picks it` : '') + (inv.doc.subtotal != null && Math.abs(t - inv.doc.subtotal) > 0.005 ? ` (${inv.mode === 'quote' ? 'vendor quote' : 'bill'}: ${money(inv.doc.subtotal)})` : '');
+}
 async function findClients(){
   const q = document.getElementById('cq').value.trim();
   const box = document.getElementById('cands');
@@ -1193,7 +1202,7 @@ async function draftQuote(docId){
     <label class="note" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="qRemember" checked> Remember: when Wettech writes <input type="text" id="qPlace" value="${esc(d.client_name)}" style="width:140px"> <input type="text" id="qArea" value="${esc(d.site)}" placeholder="area, e.g. back station" style="width:160px"> it means this client and property</label>
     <label class="note">Quote title<input type="text" id="qTitle" value="${esc(s.title)}" style="width:100%"></label>
     <label class="note">Message to the client (optional)<textarea id="qMsg" style="width:100%;min-height:44px"></textarea></label>
-    <div><b>Line items</b> <span class="note">(edit before creating)</span><table class="t" style="margin-top:6px"><thead><tr><th>Name</th><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th>Tax</th><th></th></tr></thead><tbody id="invLines"></tbody></table>
+    <div><b>Line items</b> <span class="note">(edit before creating)</span><table class="t" style="margin-top:6px"><thead><tr><th>Name</th><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th>Tax</th><th title="Optional: the client can pick it in Jobber - not in the total unless they do">Optional</th><th></th></tr></thead><tbody id="invLines"></tbody></table>
       <button class="btn s" style="margin-top:6px" onclick="inv.lines.push({name:'',description:'',quantity:1,unit_price:0,taxable:true});drawLines()">＋ Line</button>
       <div class="foot"><span id="invTotal"></span></div></div>`,
     `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" id="qGo" onclick="createQuote()">Create draft quote in Jobber</button>`);
