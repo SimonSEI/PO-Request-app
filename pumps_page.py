@@ -428,14 +428,20 @@ async function api(path, opts){
 }
 function toast(msg, bad){ const d = document.createElement('div'); d.textContent = msg; d.className = 'toast' + (bad ? ' bad' : ''); document.body.appendChild(d); setTimeout(() => d.remove(), bad ? 6000 : 3000); }
 function catChip(c){ const m = {scada:'v', diver:'b', filter:'b', maintenance:'g', install:'a'}; return `<span class="chip ${m[c]||''}">${esc(c)}</span>`; }
+// How long a job has waited on the vendor's quote: since it was opened.
+function quoteWait(c){
+  const since = d10(c.opened_on || c.created_at); if (!since) return '';
+  const n = Math.round((new Date(todayIso() + 'T12:00:00') - new Date(since + 'T12:00:00')) / 864e5);
+  return n < 1 ? 'since today' : n === 1 ? '1 day' : n + ' days';
+}
 // What a job is waiting on, in plain words, from the first step not done.
 function stageText(c){
-  const v = c.vendor || 'Wettech', st = c.steps || {};
+  const v = c.vendor || 'Wettech', st = c.steps || {}, w = quoteWait(c);
   const hasBill = c.vendor_bill_amount != null || c.vendor_bill_total != null || !!(st.vendor_bill || {}).at;
-  if (c.stage === 'vendor_quote' && hasBill) return `Bill in · waiting on ${v}'s quote`;
+  if (c.stage === 'vendor_quote' && hasBill) return `Bill in · waiting on ${v}'s quote` + (w ? ' · ' + w : '');
   return ({
-    assessment: `Waiting on ${v} to assess` + ((st.assessment || {}).due ? ' · ' + st.assessment.due : ''),
-    vendor_quote: `Waiting on quote from ${v}`,
+    assessment: `Waiting on ${v} to assess` + ((st.assessment || {}).due ? ' · ' + st.assessment.due : '') + (w ? ' · ' + w : ''),
+    vendor_quote: `Waiting on quote from ${v}` + (w ? ' · ' + w : ''),
     client_quote: 'Send our quote to the client',
     client_approved: 'Waiting on client approval',
     scheduled: `Schedule with ${v}`,
