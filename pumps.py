@@ -8966,9 +8966,44 @@ def on_quote_approved(case_id, actor='Jobber sync'):
         conn.commit()
     finally:
         conn.close()
+    if out.get('todo'):
+        # Said straight away, not only on the Pumps page (quote 9160, Oct 2026).
+        try:
+            out['emailed'] = email_quote_approved(case, doc)
+        except Exception as e:
+            print(f'  ⚠ Pumps: approved-quote email: {e}')
     if q.get('id') and not (j.get('job') or {}).get('id'):
         out['job'] = make_job_from_quote(case_id)
     return out
+
+
+def email_quote_approved(case, doc=None):
+    """Email the office once per job when the client approves our quote:
+    send the approved quote to the vendor and ask when it'll be scheduled."""
+    import html as _html
+    key = f"approved_mail:{case['id']}"
+    if _state_get(key):
+        return False
+    name = _vendor_contact(case.get('vendor') or 'Wettech')[0]
+    q = (json.loads(case.get('jobber') or '{}').get('quote') or {})
+    who = case.get('client_name') or case.get('title') or f"job #{case['id']}"
+    num = f" #{q['number']}" if q.get('number') else ''
+    base = (CFG.get('website_url') or '').rstrip('/')
+    lines = [f"{who} approved our quote{num}" + (f" (${q['total']:,.2f})" if q.get('total') else '') + '.',
+             f"Next: send the approved {(doc or {}).get('vendor') or case.get('vendor') or 'vendor'} quote to {name} "
+             f"and ask when it can be scheduled - \"Sign quote & send\" on the Pumps page does both, or click "
+             f"\"I already sent it\" there if you've emailed it yourself."]
+    links = []
+    if base and 'localhost' not in base:
+        links.append(f'<a href="{base}/pumps#item-{case["id"]}">Open the job in Pumps</a>')
+    if q.get('uri'):
+        links.append(f'<a href="{_html.escape(q["uri"])}">Quote{num} in Jobber</a>')
+    html = ('<div style="font-family:Arial,sans-serif;font-size:14px">'
+            + ''.join(f'<p>{_html.escape(l)}</p>' for l in lines) + ('<p>' + ' · '.join(links) + '</p>' if links else '')
+            + '</div>')
+    graph_send(DIGEST_TO, f"Quote{num} approved - {who}: send it to {name}"[:255], html)
+    _state_set(key, {'at': _now_text(), 'to': DIGEST_TO})
+    return True
 
 
 def _approved_quote_doc(conn, case_id):

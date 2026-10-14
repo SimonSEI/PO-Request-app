@@ -1801,6 +1801,34 @@ class PumpsTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_approved_quote_is_emailed_to_the_office_once(self):
+        """Quote 9160 (Oct 2026): an approval is emailed to the office straight
+        away - send the approved quote to Tom - once per job."""
+        self.extracts['q-0931.pdf'] = extraction('quote', 'Q-931', po='PO931', client='Huntington Lakes')
+        q = self.upload('q-0931.pdf')
+        cid = q['case_id']
+        conn = P._conn()
+        try:
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(
+                {'quote': {'id': 'Q9160', 'number': '9160', 'total': 1884.14, 'uri': 'https://j/q/9160'}}), cid))
+            conn.commit()
+        finally:
+            conn.close()
+        sent = []
+        P.graph_send, saved = (lambda to, subject, html, atts=None, sender=None: sent.append((to, subject, html))), P.graph_send
+        P.jobber_gql = FakeJobber()
+        try:
+            P.on_quote_approved(cid)
+            P.on_quote_approved(cid)
+        finally:
+            P.graph_send = saved
+        self.assertEqual(len(sent), 1, 'once per job')
+        to, subject, html = sent[0]
+        self.assertEqual(to, P.DIGEST_TO)
+        self.assertIn('Quote #9160 approved - Huntington Lakes', subject)
+        self.assertIn('I already sent it', html)
+        self.assertIn('https://j/q/9160', html)
+
     def test_homewood_optional_on_the_cost_line(self):
         """Wettech's Homewood Suites letter (Oct 14 2026): the option's work and
         its "Your Additional Cost" are on one line - an optional line, not in
