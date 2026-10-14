@@ -1753,6 +1753,54 @@ class PumpsTest(unittest.TestCase):
         doc = self.c.get(f"/pumps/api/docs/{q['doc_id']}").get_json()['doc']
         self.assertTrue(doc['jobber']['sent_by_hand'])
 
+    def test_waiting_on_quote_catches_up_with_a_quote_sent_in_jobber(self):
+        """Magnolia Cove (Oct 2026): "Quote is needed" kept waiting on Wettech's
+        quote after quote #9186 went to the client from another job - it's
+        merged into that job. With no job behind the quote, it's linked."""
+        conn = P._conn()
+        try:
+            b = P.create_case(conn, {'title': 'Quote is needed', 'client_name': 'Magnolia Cove',
+                                     'opened_on': '2026-10-07'}, 'test')
+            a = P.create_case(conn, {'title': 'Pressure transducer', 'client_name': 'Magnolia Cove',
+                                     'opened_on': '2026-10-13',
+                                     'jobber': {'quote': {'id': 'QM9186', 'number': '9186'}}}, 'test')
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id, "
+                         "client_name, total, created_at) VALUES ('QM9186', 'quote', '9186', 'Proposal - transducer', "
+                         "'awaiting_response', 'CMAG', 'MAGNOLIA COVE', 1022, '2026-10-14T16:28:48Z')")
+            # A job opened after the quoting job, at the same client, is new work: left alone.
+            later = P.create_case(conn, {'title': 'Motor', 'client_name': 'Magnolia Cove',
+                                         'opened_on': '2026-10-14'}, 'test')
+            done = P.reconcile_quote_waits(conn)
+            self.assertIn(('merged', b, a), done)
+            self.assertNotIn(later, [x[1] for x in done])
+            self.assertEqual(conn.execute('SELECT status FROM pump_cases WHERE id=?', (b,)).fetchone()[0], 'cancelled')
+            self.assertEqual(conn.execute('SELECT status FROM pump_cases WHERE id=?', (a,)).fetchone()[0], 'open')
+            # And Wettech's quote read as "Magnolia Cove Pressure Transducer" files on that job, not a new one.
+            e = P.create_case(conn, {'title': 'Quote is needed', 'client_name': 'Lakewood Ranch',
+                                     'opened_on': '2026-10-07'}, 'test')
+            self.assertEqual(P._find_case_for(conn, {'kind': 'quote', 'client_name': 'Lakewood Ranch Pressure '
+                                                                                     'Transducer'})[0], e)
+            # A quote made by hand in Jobber, on no job: linked to the job waiting on it.
+            c = P.create_case(conn, {'title': 'Quote is needed', 'client_name': 'Pelican Sound Estates',
+                                     'opened_on': '2026-10-07'}, 'test')
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id, "
+                         "client_name, total, created_at) VALUES ('QB1', 'quote', '9190', 'Proposal - valve', "
+                         "'awaiting_response', 'CPEL', 'Pelican Sound Estates', 900, '2026-10-14T10:00:00Z')")
+            self.assertIn(('linked', c, '9190'), P.reconcile_quote_waits(conn))
+            P._follow_quotes(conn)
+            self.assertEqual(conn.execute('SELECT stage FROM pump_cases WHERE id=?', (c,)).fetchone()[0],
+                             'client_approved', 'quote sent: waiting on the client, not on Wettech')
+            # An older quote (before the job opened) is not this work.
+            d = P.create_case(conn, {'title': 'Quote is needed', 'client_name': 'Sunset Cove',
+                                     'opened_on': '2026-10-10'}, 'test')
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id, "
+                         "client_name, total, created_at) VALUES ('QSUN8000', 'quote', '8000', 'Old', "
+                         "'awaiting_response', 'CSUN', 'Sunset Cove', 500, '2026-09-01T10:00:00Z')")
+            self.assertNotIn(d, [x[1] for x in P.reconcile_quote_waits(conn)])
+            conn.rollback()
+        finally:
+            conn.close()
+
     def test_homewood_optional_on_the_cost_line(self):
         """Wettech's Homewood Suites letter (Oct 14 2026): the option's work and
         its "Your Additional Cost" are on one line - an optional line, not in
