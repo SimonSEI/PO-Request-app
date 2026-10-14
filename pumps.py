@@ -132,7 +132,7 @@ JOBBER_TOKEN = 'https://api.getjobber.com/api/oauth/token'
 # emails, texts or marks anything as sent - quotes and invoices are created as
 # drafts and stay drafts until someone in the office sends them from Jobber.
 ALLOWED_MUTATIONS = frozenset({'quoteCreate', 'invoiceCreate', 'jobCreateNote', 'clientCreateNote',
-                               'requestCreateNote', 'quoteCreateNote',
+                               'requestCreateNote', 'quoteCreateNote', 'invoiceCreateNote',
                                # An approved quote made a job, and a service-call visit on a job (Oct 2026).
                                'jobCreate', 'visitCreate', 'jobAddVisit', 'jobCreateVisit', 'jobVisitCreate',
                                # Redoing the lines of OUR OWN quote while it is still a draft, after the
@@ -4696,6 +4696,19 @@ def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', a
                            f"Jobber reports invoice #{ref['invoice_number']} as '{status}', not draft. "
                            'Open it in Jobber and check it has not gone to the client.', doc_id=doc_id)
         conn.commit()
+        if doc.get('case_id'):
+            # The sub's quote on the invoice, for later. Never holds up the invoice.
+            try:
+                note = note_sub_quote_on_invoice(doc['case_id'], inv.get('id'), job_id, client_id,
+                                                 ref['invoice_number'])
+            except Exception as e:
+                note, ref['sub_quote_note_error'] = None, str(e)
+            if note:
+                ref['sub_quote_note'] = note
+                _event(conn, actor, 'sub quote on invoice',
+                       f"{doc.get('vendor') or 'Vendor'} quote {'attached' if note.get('attached') else 'noted'} "
+                       f"on the Jobber {note['on']}", case_id=doc['case_id'], doc_id=note['doc_id'])
+                conn.commit()
         return {**ref, 'total': total}
     finally:
         conn.close()
@@ -4736,7 +4749,40 @@ NOTE_MUTATION = {
     'client': ('clientCreateNote', 'clientId', 'ClientCreateNoteInput', 'clientNote'),
     'request': ('requestCreateNote', 'requestId', 'RequestCreateNoteInput', 'requestNote'),
     'quote': ('quoteCreateNote', 'quoteId', 'QuoteCreateNoteInput', 'quoteNote'),
+    'invoice': ('invoiceCreateNote', 'invoiceId', 'InvoiceCreateNoteInput', 'invoiceNote'),
 }
+
+
+def note_sub_quote_on_invoice(case_id, invoice_id, job_id='', client_id='', invoice_number=''):
+    """The sub's quote for the work, attached to our Jobber invoice so it's at
+    hand later (Oct 2026) - on the invoice when Jobber takes invoice notes,
+    else on the job, else on the client. None when there is no sub quote."""
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT * FROM pump_docs WHERE case_id=? AND kind='quote' AND status != 'dismissed' "
+                           "ORDER BY id DESC", (case_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    doc = _doc_dict(row)
+    vendor = doc.get('vendor') or 'Vendor'
+    price = doc.get('total') if doc.get('total') is not None else doc.get('subtotal')
+    base = (CFG.get('website_url') or '').rstrip('/')
+    text = '\n'.join(x for x in (
+        f"{vendor} quote{' #' + doc['doc_number'] if doc.get('doc_number') else ''}"
+        f"{' dated ' + doc['doc_date'] if doc.get('doc_date') else ''} for this work: {doc.get('file_name')}",
+        f"{vendor} price: ${price:,.2f}" if price is not None else '',
+        f"File: {base}/pumps#doc-{doc['id']}" if base and 'localhost' not in base else '') if x)
+    targets = ([('invoice', invoice_id)] if invoice_id and 'invoiceCreateNote' in _mutation_schema() else []) + \
+        [(t, i) for t, i in (('job', job_id), ('client', client_id)) if i]
+    for target, tid in targets:
+        try:
+            msg = text if target == 'invoice' or not invoice_number else f"For invoice #{invoice_number} - {text}"
+            return {**note_vendor_file(doc, target, tid, msg), 'on': target, 'doc_id': doc['id']}
+        except JobberError as e:
+            print(f'  ⚠ Pumps: could not put the sub quote on the {target} ({e})')
+    return None
 
 
 def report_note_title(doc):

@@ -97,8 +97,10 @@ def extraction(kind, number, po='', client='Lakeside Pines', subtotal=1000.0, ta
 class FakeJobber:
     """Stands in for Jobber: records every query and answers the ones Pumps sends."""
 
-    def __init__(self, invoice_status='draft', quote_status='draft', properties=None, clients=None, quote_lines=None):
+    def __init__(self, invoice_status='draft', quote_status='draft', properties=None, clients=None, quote_lines=None,
+                 invoice_notes=False):
         self.calls = []
+        self.invoice_notes = invoice_notes
         self.clients = clients
         self.quote_lines = quote_lines or []
         self.invoice_status = invoice_status
@@ -111,6 +113,11 @@ class FakeJobber:
         if '__type(name' in query and (variables or {}).get('n') == 'NoteAttachmentAttributes':
             return {'__type': {'inputFields': [{'name': n} for n in ('url', 'fileName', 'contentType')]}}
         self.calls.append((query, variables))
+        if 'mutationType' in query:
+            return {'__schema': {'mutationType': {'fields': [{'name': n, 'type': {}, 'args': []} for n in
+                                                             (['invoiceCreateNote'] if self.invoice_notes else [])]}}}
+        if 'invoiceCreateNote' in query:
+            return {'invoiceCreateNote': {'invoiceNote': {'id': 'IN1'}, 'userErrors': []}}
         if 'invoiceCreate' in query:
             return {'invoiceCreate': {'invoice': {'id': 'INV1', 'invoiceNumber': 5001,
                                                   'invoiceStatus': self.invoice_status,
@@ -511,6 +518,27 @@ class PumpsTest(unittest.TestCase):
         # A second draft for the same bill is refused.
         r = self.c.post(f"/pumps/api/docs/{b['doc_id']}/invoice", json={'client_id': 'C1'})
         self.assertEqual(r.status_code, 400)
+
+    def test_sub_quote_goes_on_the_jobber_invoice(self):
+        """Oct 2026: the sub's quote is noted on our Jobber invoice for later -
+        on the invoice when Jobber takes invoice notes, else the client."""
+        for n, notes in ((1, True), (2, False)):
+            self.extracts[f'q-07{n}0.pdf'] = extraction('quote', f'Q-7{n}', po=f'PO7{n}', client='Lakeside Pines')
+            self.extracts[f'b-07{n}0.pdf'] = extraction('bill', f'307{n}', po=f'PO7{n}', client='Lakeside Pines')
+            self.upload(f'q-07{n}0.pdf')
+            b = self.upload(f'b-07{n}0.pdf')
+            fake = FakeJobber(invoice_notes=notes)
+            P.jobber_gql, P._SCHEMA_CACHE = fake, {}
+            body = self.c.post(f"/pumps/api/docs/{b['doc_id']}/invoice", json={}).get_json()
+            self.assertTrue(body['success'], body)
+            target = 'invoiceCreateNote' if notes else 'clientCreateNote'
+            made = [v for q, v in fake.calls if target in q]
+            self.assertEqual(len(made), 1, target)
+            self.assertIn(f'Wettech quote #Q-7{n}', made[0]['input']['message'])
+            self.assertEqual(made[0]['id'], 'INV1' if notes else 'C1')
+            if not notes:
+                self.assertIn('For invoice #5001', made[0]['input']['message'])
+            self.assertIn('sub quote on invoice', [e['action'] for e in self.case(b['case_id'])['events']])
 
     def test_non_draft_status_from_jobber_raises_issue(self):
         self.extracts['b-0600.pdf'] = extraction('bill', '29700', po='PO600', client='Sunset Cove', subtotal=400)
