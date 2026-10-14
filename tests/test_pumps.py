@@ -1829,6 +1829,45 @@ class PumpsTest(unittest.TestCase):
         self.assertIn('I already sent it', html)
         self.assertIn('https://j/q/9160', html)
 
+    def test_quick_check_sees_an_approval_without_the_full_sync(self):
+        """Huntington #5 (quote 9149, Oct 2026): approved in Jobber - the
+        5-minute check reads our open quotes straight from Jobber, ticks the
+        approval, puts "send it to Tom" on To do and emails the office."""
+        self.extracts['q-0949.pdf'] = extraction('quote', 'Q-949', po='PO949', client='Huntington Five')
+        q = self.upload('q-0949.pdf')
+        cid = q['case_id']
+        conn = P._conn()
+        try:
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(
+                {'quote': {'id': 'Q9149', 'number': '9149', 'status': 'awaiting_response', 'total': 1760.02}}), cid))
+            conn.commit()
+        finally:
+            conn.close()
+
+        class Fake(FakeJobber):
+            def __call__(self, query, variables=None):
+                if 'quote(id' in query and (variables or {}).get('id') == 'Q9149':
+                    self.calls.append((query, variables))
+                    return {'quote': {'id': 'Q9149', 'quoteNumber': 9149, 'quoteStatus': 'approved',
+                                      'amounts': {'total': 1760.02}, 'jobberWebUri': 'https://j/q/9149',
+                                      'updatedAt': '2026-10-14T14:25:18Z'}}
+                return super().__call__(query, variables)
+        sent = []
+        P.jobber_gql = Fake()
+        P.JOBBER_STATIC_TOKEN, saved_tok = 'test-token', P.JOBBER_STATIC_TOKEN
+        P.graph_send, saved = (lambda to, subject, html, atts=None, sender=None: sent.append(subject)), P.graph_send
+        try:
+            self.assertIn(cid, P.check_quote_approvals())
+            self.assertEqual(P.check_quote_approvals(), [], 'seen once')
+        finally:
+            P.graph_send, P.JOBBER_STATIC_TOKEN = saved, saved_tok
+        case = self.case(cid)
+        self.assertTrue({s['key']: s for s in case['step_list']}['client_approved'].get('at'))
+        self.assertEqual(case['stage'], 'scheduled')
+        self.assertEqual(sent, ['Quote #9149 approved - Huntington Five: send it to Tommy'])
+        todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
+        self.assertTrue(any(t['key'] == f'sign-quote:{cid}' for t in todos))
+
     def test_homewood_optional_on_the_cost_line(self):
         """Wettech's Homewood Suites letter (Oct 14 2026): the option's work and
         its "Your Additional Cost" are on one line - an optional line, not in
