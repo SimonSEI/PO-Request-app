@@ -1367,6 +1367,8 @@ Classify the document and pull out its fields:
   is marked taxable (e.g. a trailing "T") or tax is charged on it. Use null for numbers that are not shown.
   A quote written as a letter with a single price (e.g. "Your Cost ------ $1158.99") is one line item: name a
   short label for the work, description the work paragraph, quantity 1, unit_price and amount the price.
+  The descriptions go to our client, so correct obvious typing mistakes in them (e.g. "check out well nor
+  pumping" -> "check out well not pumping", "teh" -> "the") - never change the meaning, sizes, models or numbers.
 - subtotal (before tax), tax, total: as printed; null when not shown.
 - tax_included: true when the document says its price already includes sales tax (e.g. "Price includes Sales
   tax and freight"). Then put that price in total, leave subtotal and tax null, and set taxable false on its
@@ -3686,6 +3688,31 @@ def best_job_for_report(jobs, properties, location, title):
     return ranked[0] if ranked and score(ranked[0])[0] >= 3 else None
 
 
+# Typing slips in vendor letters that would otherwise go to the client
+# (Homewood Suites, Oct 2026: "check out well nor pumping").
+_TYPOS = (
+    (re.compile(r'\bnor(\s+(?:pumping|running|working|starting|holding|pulling|draining|operating|'
+                r'responding|turning|coming|getting|keeping|building|making|reaching|cycling|shutting|'
+                r'priming|charging|reading|communicating|functioning)\b)', re.I), r'not\1'),
+    (re.compile(r'\bteh\b', re.I), 'the'),
+    (re.compile(r'\b(the|a|an|and|to|of|on|in|with|for) \1\b', re.I), r'\1'),   # "the the"
+    (re.compile(r'[ \t]{2,}'), ' '),
+)
+
+
+def fix_typos(text):
+    """(text with the known typing slips corrected, [what was changed])."""
+    changes = []
+    for pat, good in _TYPOS:
+        def sub(m, good=good):
+            new = m.expand(good)
+            if new != m.group(0) and new.strip():
+                changes.append(f'"{m.group(0).strip()}" -> "{new.strip()}"')
+            return new
+        text = pat.sub(sub, text or '')
+    return text, changes
+
+
 def one_line_items(doc, markup_pct, whole=False):
     """Our quotes and invoices are always one "Service Proposal Amount" line:
     the vendor's work described (without their name), priced at their total
@@ -3990,8 +4017,15 @@ def suggest_quote(doc, case=None):
             items = [{'name': 'Service Proposal Amount', 'description': desc, 'quantity': 1, 'unit_price': price,
                       'taxable': False}]
             markup = 0
+    # Typing slips in the vendor's letter don't go to the client.
+    corrections = []
+    for it in items:
+        it['description'], ch = fix_typos(it.get('description') or '')
+        corrections += [c for c in ch if c not in corrections]
     title = (doc.get('proposal_title') or '').strip() or _proposal_title(
         items[0]['description'] if items else (doc.get('description') or ''))
+    title, ch = fix_typos(title)
+    corrections += [c for c in ch if c not in corrections]
     pump = pump_named(doc)
     if pump and not re.search(rf'#\s*{pump}\b|pump\s*{pump}\b', title, re.I):
         # Which pump, on a property with several (the address alone doesn't say).
@@ -3999,7 +4033,8 @@ def suggest_quote(doc, case=None):
     lead = delivery_note(doc)
     if lead:
         items = [{**it, 'description': f"{it['description']}\n\n{lead}".strip()[:2000]} for it in items]
-    return {'title': title[:255], 'line_items': items, 'markup_pct': markup, 'delivery': lead}
+    return {'title': title[:255], 'line_items': items, 'markup_pct': markup, 'delivery': lead,
+            'corrections': corrections}
 
 
 def _proposal_title(work):

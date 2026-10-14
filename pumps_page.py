@@ -1218,6 +1218,7 @@ async function draftQuote(docId){
   openModal('Draft quote in Jobber', `
     <div class="safe">This creates a DRAFT quote for the client in Jobber. Nothing is sent to the client - review it in Jobber and send it from there.</div>
     <div class="note">From ${esc(d.vendor)} quote #${esc(d.doc_number)} - ${money(d.subtotal)} before tax, ${money(d.total)} total. The vendor's sales tax line and name are left off: Jobber adds the client's tax to taxable lines.${s.markup_pct ? ' Prices include ' + s.markup_pct + '% markup.' : ''}${d.subtotal == null && d.total != null && s.line_items.length && s.line_items.every(l => !l.taxable) ? " <b>The vendor's price already includes sales tax</b>, so its lines are set not taxable - change that if this client should be taxed on top." : ''}</div>
+    ${(s.corrections || []).length ? `<div class="note">✏ Typos in ${esc(d.vendor || 'the vendor')}'s quote corrected for the client: ${s.corrections.map(esc).join(', ')}</div>` : ''}
     <div><b>Jobber client</b><div class="toolbar" style="margin:6px 0"><input type="text" id="cq" value="${esc(d.client_name)}" style="flex:1"><button class="btn" onclick="findClients()">Search</button></div><div id="cands"><div class="note">Searching…</div></div></div>
     <div><b>Property</b><div id="qprops" class="note">Choose the client first.</div></div>
     <div id="qHow" class="note"></div>

@@ -1775,6 +1775,12 @@ class PumpsTest(unittest.TestCase):
                          [(round(5427.63 * 1.3, 2), False, False), (round(534.86 * 1.3, 2), True, False)])
         # Our client quote in whole dollars, the cents dropped ($7,055.92 -> $7,055).
         self.assertEqual([l['unit_price'] for l in P.suggest_quote(x)['line_items']], [7055.0, 695.0])
+        # Tom's typo ("well nor pumping") doesn't go to the client.
+        s = P.suggest_quote(x)
+        self.assertIn('check out well not pumping', s['line_items'][0]['description'])
+        self.assertEqual(s['title'], 'Proposal to check out well not pumping')
+        self.assertEqual(s['corrections'], ['"nor pumping" -> "not pumping"'])
+        self.assertEqual(P.fix_typos('neither Wettech nor Gulfshore')[1], [], 'a real "nor" stays')
 
     def test_huntington_6_letter_is_one_quote_with_an_optional_line(self):
         """Wettech, Oct 8 2026: a control box at $1,780.11 and "Possibly
