@@ -3012,8 +3012,9 @@ def _refresh_linked_records(conn, kinds=None):
     linked to that isn't finished yet - open items, and closed ones still
     waiting on the client to pay. Returns errors."""
     errors, want = [], {}
-    for c in conn.execute("SELECT id, status, jobber FROM pump_cases WHERE status != 'cancelled' "
-                          "AND jobber LIKE '%\"id\"%'").fetchall():
+    recent = (_today() - timedelta(days=REOPEN_DAYS)).isoformat()
+    for c in conn.execute("SELECT id, status, jobber, updated_at FROM pump_cases "
+                          "WHERE jobber LIKE '%\"id\"%'").fetchall():
         j = json.loads(c['jobber'] or '{}')
         for kind, (_, _, _, _, final) in _LINKED_QUERIES.items():
             if kinds and kind not in kinds:
@@ -3021,7 +3022,10 @@ def _refresh_linked_records(conn, kinds=None):
             rec = j.get(kind) or {}
             if not rec.get('id') or (rec.get('status') or '') in final:
                 continue
-            if c['status'] != 'open' and kind != 'invoice':
+            # A quote still out on a job closed or cancelled lately: the client may
+            # yet approve it (Huntington #5 and #6, Oct 2026).
+            if c['status'] != 'open' and not (kind == 'invoice' and c['status'] != 'cancelled') and \
+                    not (kind == 'quote' and (c['updated_at'] or '')[:10] >= recent):
                 continue
             want[rec['id']] = (kind, c['id'])
     # Approved quotes no item follows yet show in To do as new work: checked
@@ -3183,6 +3187,8 @@ def _follow_invoices(conn):
             _set_step(conn, c['id'], 'closed', at=_today().isoformat(), by='jobber sync')
 
 
+# How far back a closed or cancelled job's quote is still watched for approval.
+REOPEN_DAYS = 60
 QUOTE_GONE_OUT = ('awaiting_response', 'changes_requested', 'approved', 'converted')
 
 
@@ -3253,8 +3259,9 @@ def _follow_quotes(conn):
     client" / "Client approved" once the office has sent it and the client
     has approved it in Jobber. Returns the items just approved."""
     approved = []
-    for c in conn.execute("SELECT id, jobber, steps FROM pump_cases WHERE status='open' "
-                          "AND jobber LIKE '%quote%'").fetchall():
+    recent = (_today() - timedelta(days=REOPEN_DAYS)).isoformat()
+    for c in conn.execute("SELECT id, status, jobber, steps FROM pump_cases WHERE (status='open' OR updated_at >= ?) "
+                          "AND jobber LIKE '%quote%'", (recent,)).fetchall():
         j = json.loads(c['jobber'] or '{}')
         q = j.get('quote') or {}
         if not q.get('id'):
@@ -3267,6 +3274,24 @@ def _follow_quotes(conn):
             q['total'] = it['total']
             j['quote'] = q
             conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(j), c['id']))
+        steps = json.loads(c['steps'] or '{}')
+        if c['status'] != 'open':
+            # Closed or cancelled while the quote was still out, and now the client
+            # approved it: the work is on again. Anything else stays as it is.
+            # (Not when the quote now belongs to another job: this one was replaced.)
+            if it['status'] != 'approved' or q.get('status') == 'approved' or \
+                    (steps.get('client_approved') or {}).get('at') or \
+                    conn.execute("SELECT 1 FROM pump_cases WHERE id != ? AND status != 'cancelled' "
+                                 "AND json_extract(jobber, '$.quote.id')=?", (c['id'], q['id'])).fetchone():
+                if it['status'] != q.get('status'):
+                    q['status'] = it['status']
+                    j['quote'] = q
+                    conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(j), c['id']))
+                continue
+            conn.execute("UPDATE pump_cases SET status='open', closed_at=NULL, closed_by_hand='', updated_at=? "
+                         "WHERE id=?", (_now_text(), c['id']))
+            _event(conn, 'jobber sync', 'reopened', f"The client approved Jobber quote #{q.get('number')} - "
+                                                    f"this job was {c['status']}, it's open again", case_id=c['id'])
         if it['status'] != q.get('status'):
             q['status'] = it['status']
             j['quote'] = q

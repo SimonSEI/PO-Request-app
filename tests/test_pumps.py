@@ -1868,6 +1868,46 @@ class PumpsTest(unittest.TestCase):
         todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
         self.assertTrue(any(t['key'] == f'sign-quote:{cid}' for t in todos))
 
+    def test_approval_reopens_a_job_closed_while_its_quote_was_out(self):
+        """Huntington #5 / #6 (Oct 2026): their jobs were off the watchlist when
+        the client approved quotes 9149 and 9160 - the approval reopens them.
+        A finished job whose approval was already ticked stays closed."""
+        conn = P._conn()
+        try:
+            gone = P.create_case(conn, {'title': 'Check out #5 pump station', 'client_name': 'Huntington Reopen',
+                                        'jobber': {'quote': {'id': 'QR9149', 'number': '9149',
+                                                             'status': 'awaiting_response'}}}, 'test')
+            conn.execute("UPDATE pump_cases SET status='cancelled', stage='cancelled' WHERE id=?", (gone,))
+            done = P.create_case(conn, {'title': 'Old finished job', 'client_name': 'Huntington Reopen',
+                                        'jobber': {'quote': {'id': 'QR8000', 'number': '8000',
+                                                             'status': 'awaiting_response'}}}, 'test')
+            for k in P.STEP_KEYS:
+                P._set_step(conn, done, k, at='2026-10-01', by='test')
+            self.assertEqual(conn.execute('SELECT status FROM pump_cases WHERE id=?', (done,)).fetchone()[0], 'closed')
+            conn.commit()
+        finally:
+            conn.close()
+        statuses = {'QR9149': 'approved', 'QR8000': 'converted'}
+
+        class Fake(FakeJobber):
+            def __call__(self, query, variables=None):
+                jid = (variables or {}).get('id')
+                if 'quote(id' in query and jid in statuses:
+                    return {'quote': {'id': jid, 'quoteNumber': jid[2:], 'quoteStatus': statuses[jid],
+                                      'amounts': {'total': 100}, 'jobberWebUri': '', 'updatedAt': '2026-10-14T14:25:00Z'}}
+                return super().__call__(query, variables)
+        P.jobber_gql = Fake()
+        P.JOBBER_STATIC_TOKEN, saved_tok = 'test-token', P.JOBBER_STATIC_TOKEN
+        P.graph_send, saved = (lambda *a, **k: None), P.graph_send
+        try:
+            self.assertIn(gone, P.check_quote_approvals())
+        finally:
+            P.graph_send, P.JOBBER_STATIC_TOKEN = saved, saved_tok
+        case = self.case(gone)
+        self.assertEqual((case['status'], case['stage']), ('open', 'scheduled'))
+        self.assertIn('reopened', [e['action'] for e in case['events']])
+        self.assertEqual(self.case(done)['status'], 'closed', 'a finished job stays closed')
+
     def test_homewood_optional_on_the_cost_line(self):
         """Wettech's Homewood Suites letter (Oct 14 2026): the option's work and
         its "Your Additional Cost" are on one line - an optional line, not in
