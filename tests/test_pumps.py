@@ -1686,8 +1686,13 @@ class PumpsTest(unittest.TestCase):
         ch = P.vendor_chase(case, today=P.date(2026, 10, 15))
         self.assertEqual(ch['state'], 'follow_up')
         self.assertIn('parts', ch['reason'])
-        # No lead time: ask for a date straight away, as before.
-        self.assertEqual(P.vendor_chase({**case, 'parts_lead': ''}, today=P.date(2026, 10, 2))['state'], 'follow_up')
+        # No lead time on the quote: still waiting on the parts, followed up the same.
+        ch = P.vendor_chase({**case, 'parts_lead': ''}, today=P.date(2026, 10, 2))
+        self.assertEqual((ch['state'], ch['parts_wait'], ch['check_on']), ('waiting', True, '2026-10-15'))
+        self.assertIn('waiting on parts', ch['reason'])
+        # Our own technician has no parts to wait on: schedule straight away.
+        ch = P.vendor_chase({**case, 'vendor': P.IN_HOUSE}, today=P.date(2026, 10, 2))
+        self.assertEqual((ch['state'], ch['parts_wait']), ('follow_up', False))
 
     def test_homewood_optional_on_the_cost_line(self):
         """Wettech's Homewood Suites letter (Oct 14 2026): the option's work and
@@ -2290,7 +2295,8 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(case['stage'], 'scheduled')
         self.assertIn('mailto:', case['schedule_email'])
         summary = self.c.get('/pumps/api/summary').get_json()
-        self.assertTrue(any(c['id'] == cid for c in summary['queue']['needs_scheduling']))
+        # Approved: waiting on the vendor's parts, under Waiting on others.
+        self.assertTrue(any(c['id'] == cid for c in summary['queue']['scheduling_asked']))
         r = self.c.get('/pumps/api/export.xlsx?month=October 2026')
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.data[:2] == b'PK')
@@ -3094,8 +3100,8 @@ W/O No. 41105'''
             conn.close()
 
     def test_follow_up_with_the_vendor_on_a_job(self):
-        """Approved job: follow up for a date straight away. Tom says "later next
-        week" on Fri Oct 9 -> scheduled for Fri Oct 16, nothing to do until Mon Oct 19,
+        """Approved job: it waits on Wettech's parts, and comes up to follow up
+        14 days after the approval (Oct 2026). Tom says "later next week" on Fri Oct 9 -> scheduled for Fri Oct 16, nothing to do until Mon Oct 19,
         then a follow-up if the work isn't in."""
         from datetime import date
         cid = self._chase_case(title='Chase Suites lift pump', client_name='Chase Suites')
@@ -3103,8 +3109,9 @@ W/O No. 41105'''
                                                                  ('vendor_quote', 'client_quote', 'client_approved')}})
         self.assertEqual(self.case(cid)['stage'], 'scheduled')
         ch = self._chase(cid, date(2026, 10, 9))
-        self.assertEqual((ch['phase'], ch['state']), ('job', 'follow_up'))
-        self.assertIn('nobody has asked', ch['reason'])
+        self.assertEqual((ch['phase'], ch['state'], ch['check_on']), ('job', 'waiting', '2026-10-22'))
+        self.assertIn('waiting on parts', ch['reason'])
+        self.assertEqual(self._chase(cid, date(2026, 10, 22))['state'], 'follow_up')
         conn = P._conn()
         try:
             P.log_vendor_follow(conn, cid, 'Simon', 'Tom', 'call', "He'll be out later next week", '2026-10-16',
