@@ -4946,13 +4946,16 @@ def vendor_chase(case, today=None):
         expect = _iso_date(((case.get('steps') or {}).get('assessment') or {}).get('due'))
     last = _iso_date((f.get('at') or '')[:10])
     since = date.fromisoformat(last) if last else _phase_since(case)
-    parts = (case.get('parts_lead') or '') if case['stage'] == 'scheduled' else ''
-    approved = _iso_date(((case.get('steps') or {}).get('client_approved') or {}).get('at'))
+    # Approved: the vendor orders the parts, and gives a date once they are in -
+    # the job waits on the parts, not on scheduling (Oct 2026).
+    parts_wait = case['stage'] == 'scheduled' and vendor != IN_HOUSE
+    parts = (case.get('parts_lead') or '') if parts_wait else ''
+    approved = _iso_date(((case.get('steps') or {}).get('client_approved') or {}).get('at')) or since.isoformat()
     if _iso_date(f.get('check_on')):
         check = date.fromisoformat(f['check_on'])
     elif expect:
         check = _workdays_after(date.fromisoformat(expect), 1)
-    elif parts and approved and not last:
+    elif parts_wait and not last:
         # Waiting on parts: ask about them PARTS_FOLLOW_DAYS after the approval.
         check = _weekday_from(date.fromisoformat(approved) + timedelta(days=PARTS_FOLLOW_DAYS))
     elif case['stage'] == 'scheduled' and not last:
@@ -4966,9 +4969,9 @@ def vendor_chase(case, today=None):
         reason = f"{who} said by {expect} - the {what} isn't in yet"
     elif expect:
         reason = f"{who} said by {expect}"
-    elif parts and approved and not last:
-        reason = (f"approved {approved}; parts take {parts} - ask {who} if the parts are in and when they can "
-                  f"schedule it")
+    elif parts_wait and not last:
+        reason = (f"approved {approved}; {'parts take ' + parts if parts else 'waiting on parts'} - ask {who} "
+                  f"if the parts are in and when they can schedule it")
     elif last:
         reason = f"asked {who} {last}, no date given"
     else:
@@ -4976,7 +4979,7 @@ def vendor_chase(case, today=None):
     return {'phase': phase, 'state': 'follow_up' if today >= check else 'waiting', 'check_on': check.isoformat(),
             'expect_by': expect or '', 'last_at': last or '', 'said': f.get('said') or '', 'who': who,
             'how': f.get('how') or '', 'by': f.get('by') or '', 'days': (today - since).days, 'reason': reason,
-            'contact': contact, 'parts': parts}
+            'contact': contact, 'parts': parts, 'parts_wait': parts_wait}
 
 
 def log_vendor_follow(conn, case_id, actor, who='', how='call', said='', expect_by='', check_on='', today=None):
@@ -5047,7 +5050,7 @@ def work_queue(conn):
     by_stage, chase = {}, []
     for c in cases:
         state = (c.get('chase') or {}).get('state')
-        if state == 'follow_up' and (c['stage'] != 'scheduled' or c['chase'].get('parts')):
+        if state == 'follow_up' and (c['stage'] != 'scheduled' or c['chase'].get('parts_wait')):
             chase.append(c)
         elif state == 'waiting' and c['stage'] == 'scheduled':
             by_stage.setdefault('scheduling_asked', []).append(c)
