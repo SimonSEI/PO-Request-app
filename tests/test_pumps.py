@@ -1663,6 +1663,27 @@ class PumpsTest(unittest.TestCase):
         t = P.resolve_quote_target({'client_name': 'Ospray Pointe', 'file_name': 'q.pdf'})
         self.assertEqual((t['client_id'], t['property_id']), ('LS1', None), 'two pumps, no hint: a person picks')
 
+    def test_homewood_optional_on_the_cost_line(self):
+        """Wettech's Homewood Suites letter (Oct 14 2026): the option's work and
+        its "Your Additional Cost" are on one line - an optional line, not in
+        the total."""
+        text = ('October 14, 2026\nStahlman England\nAttn: Andrea\nRE: Homewood Suites\n'
+                'We are pleased to quote you on the following services\n'
+                'Field service to check out well nor pumping, pulled with crane and crew, found pump had overheated '
+                'and fell off pipe, we recovered all equipment from well and suggest the following\n'
+                'Furnish and install new 5 HP pump, motor, 130 foot wire, 20 foot certalock pipe, drop nipple and '
+                'coupling, wire up and test.\n                    Your Cost ---------------- $ 5427.63\n'
+                'Optional ... replace all PVC pipe with galvanized pipe            Your Additional Cost ... $ 534.86\n'
+                'Price includes Sales tax\nTerms: Net 10 days\n')
+        x = P._clean_extraction(P._regex_extract(text, 'tomm@wettec.biz', 'Homewood Suites'))
+        self.assertEqual(x['total'], 5427.63)
+        self.assertEqual([(i['amount'], i.get('optional', False)) for i in x['line_items']],
+                         [(5427.63, False), (534.86, True)])
+        self.assertEqual(x['line_items'][1]['description'], 'Replace all PVC pipe with galvanized pipe')
+        lines = P.one_line_items(x, 30)
+        self.assertEqual([(l['unit_price'], bool(l.get('optional')), l['taxable']) for l in lines],
+                         [(round(5427.63 * 1.3, 2), False, False), (round(534.86 * 1.3, 2), True, False)])
+
     def test_huntington_6_letter_is_one_quote_with_an_optional_line(self):
         """Wettech, Oct 8 2026: a control box at $1,780.11 and "Possibly
         needed" a new motor at $4,836.90 - one quote: the control box, and

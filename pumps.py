@@ -1519,7 +1519,12 @@ def _letter_quote(text, out):
                           'taxable': not out['tax_included'], 'is_tax': False}]
 
 
-_COST_LINE = re.compile(r'^.*?(?:your|total)\s+(?:cost|price)\b[\s\-–—_.:]*\$\s*([\d,]+\.\d{2}).*$', re.I | re.M)
+# "Your Cost ---- $ 5427.63", and an option's "Your Additional Cost ... $ 534.86"
+# with its work on the same line (Homewood Suites, Oct 14 2026): group 1 is
+# what's before the label, group 2 the price.
+_COST_LINE = re.compile(r'^(.*?)\b(?:your|total)\s+(?:(?:additional|optional|extra|added)\s+)?(?:cost|price)\b'
+                        r'[\s\-–—_.…:]*\$\s*([\d,]+\.\d{2}).*$', re.I | re.M)
+_EXTRA_COST = re.compile(r'\b(?:additional|optional|extra|added)\s+(?:cost|price)\b', re.I)
 _OPTIONAL_WORK = re.compile(r'^\s*(?:possibly|if\s+(?:still\s+)?needed|if\s+required|optional|option\b|alternate|'
                             r'alternative|additional(?:ly)?\s+if)', re.I)
 
@@ -1536,16 +1541,20 @@ def _letter_options(text, out):
     pos = start.end() if start else 0
     items = []
     for m in costs:
-        work = re.sub(r'\s+', ' ', text[pos:m.start()]).strip()
+        work = re.sub(r'\s+', ' ', text[pos:m.start()] + ' ' + m.group(1)).strip()
+        work = re.sub(r'\s*(?:[.…_\-–—]{2,}|…)\s*$', '', work)
         # "Item #1 ... Field service to ..." (Autumn Woods 2): the numbering is not the work.
         work = re.sub(r'^item\s*#?\s*\d+\s*[.…:\-–—]*\s*', '', work, flags=re.I)
         pos = m.end()
-        amount = _money(m.group(1))
+        amount = _money(m.group(2))
         if not work or amount is None:
             continue
-        optional = bool(_OPTIONAL_WORK.match(work))
-        work = re.sub(r'^(?:possibly|if\s+(?:still\s+)?needed|if\s+required|optional(?:ly)?|option\s*\d*)\s*'
-                      r'(?:needed)?\s*[-–—:]+\s*', '', work, flags=re.I) if optional else work
+        # "Optional ... replace all PVC pipe ... Your Additional Cost" - either says it.
+        optional = bool(_OPTIONAL_WORK.match(work)) or bool(_EXTRA_COST.search(m.group(0)))
+        if optional:
+            work = re.sub(r'^(?:possibly|if\s+(?:still\s+)?needed|if\s+required|optional(?:ly)?|option\s*\d*)\s*'
+                          r'(?:needed)?\s*[-–—:.…]+\s*', '', work, flags=re.I)
+            work = work[:1].upper() + work[1:]
         items.append({'name': short_name(work) or 'Pump service', 'description': work, 'quantity': 1.0,
                       'unit_price': amount, 'amount': amount, 'taxable': not out['tax_included'], 'is_tax': False,
                       'own_price': True, **({'optional': True} if optional else {})})
@@ -3694,7 +3703,7 @@ def one_line_items(doc, markup_pct):
         a = amt(it)
         if a is None:
             continue
-        out.append({'name': 'Optional - if needed', 'description': _strip_vendor(it.get('description') or '')[:2000],
+        out.append({'name': 'Optional', 'description': _strip_vendor(it.get('description') or '')[:2000],
                     'quantity': 1, 'unit_price': round(a * (1 + (markup_pct or 0) / 100), 2),
                     'taxable': bool(it.get('taxable', taxable)), 'optional': True})
     return out
