@@ -1908,6 +1908,22 @@ class PumpsTest(unittest.TestCase):
         self.assertIn('reopened', [e['action'] for e in case['events']])
         self.assertEqual(self.case(done)['status'], 'closed', 'a finished job stays closed')
 
+    def test_jobs_show_days_since_the_last_action(self):
+        """Oct 2026: each job says how long since anything was done on it, and what."""
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': 'Last action test', 'client_name': 'Idle Pines'}, 'test')
+            conn.execute("UPDATE pump_events SET at='2026-01-02 09:00:00' WHERE case_id=?", (cid,))
+            conn.commit()
+        finally:
+            conn.close()
+        la = next(c for c in self.c.get('/pumps/api/cases?status=open').get_json()['cases'] if c['id'] == cid)['last_action']
+        self.assertEqual((la['at'], la['action']), ('2026-01-02', 'created'))
+        self.assertEqual(la['days'], (P._today() - P.date(2026, 1, 2)).days)
+        self.c.patch(f'/pumps/api/cases/{cid}', json={'notes': 'Called the manager'})
+        la = self.case(cid)['last_action']
+        self.assertEqual(la['days'], 0, 'an edit is an action')
+
     def test_homewood_optional_on_the_cost_line(self):
         """Wettech's Homewood Suites letter (Oct 14 2026): the option's work and
         its "Your Additional Cost" are on one line - an optional line, not in

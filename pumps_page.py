@@ -669,6 +669,13 @@ function chaseLine(c){
   return `<br>📞 ${ch.state === 'follow_up' ? `<b class="${late ? 'bad' : 'warn'}">Follow up</b> - ` : ''}${esc(ch.reason.replace(/(\d{4}-\d{2}-\d{2})/g, d => niceDay(d)))}`
     + (ch.said ? ` · <i>"${esc(ch.said)}"</i>` : '') + (ch.state === 'follow_up' ? '' : ` · <span class="ok">no follow-up needed until ${esc(niceDay(ch.check_on))}</span>`);
 }
+// Days since anything was done on a job, and what it was; amber after a week.
+function lastAction(c){
+  const la = c.last_action; if (!la || la.days == null) return '';
+  const ago = la.days <= 0 ? 'today' : la.days === 1 ? 'yesterday' : la.days + ' days ago';
+  const what = la.detail ? `${la.action} - ${la.detail}` : la.action;
+  return `<div class="note" title="${esc((la.by ? la.by + ': ' : '') + what)}">Last action: <b class="${la.days >= 7 ? 'warn' : ''}">${ago}</b>${what ? ' · ' + esc(what.length > 70 ? what.slice(0, 70) + '…' : what) : ''}</div>`;
+}
 function caseTitle(c){ return esc(c.title || c.client_name || 'Item ' + c.id); }
 // The latest status update on a job ("Parts ordered · 2 weeks out · parts due Oct 27").
 function statusLine(c){ const st = c.job_status || {}; if (!st.kind) return ''; return `<span title="${esc((st.by || '') + ' ' + (st.at || ''))}">📌 <b>${esc(st.label)}</b>${st.text ? ' - ' + esc(st.text) : ''}${st.on ? ' · ' + ({parts_ordered: 'parts due', waiting_vendor: 'expected', scheduled: 'for'}[st.kind] || 'on') + ' ' + esc(niceDay(st.on)) : ''} <span class="note">(${esc(niceDay(d10(st.at)))})</span></span>`; }
@@ -1655,7 +1662,7 @@ async function loadJobs(){
   document.getElementById('jobsBody').innerHTML = (j.cases || []).map(c => { const jb = c.jobber || {}, vp = c.vendor_pay || {};
     return `<tr class="click" onclick="openCase(${c.id})">
     <td><b>${esc(c.title || c.client_name)}</b><div class="note">${esc([c.client_name, c.site].filter(Boolean).join(' · '))}${c.po_number ? ' · PO ' + esc(c.po_number) : ''}${jobberNo(c)}</div></td>
-    <td>${stageChip(c)}${c.idle_days >= 7 && c.status === 'open' ? ` <span class="chip a">${c.idle_days}d idle</span>` : ''}${statusLine(c) ? `<div class="note">${statusLine(c)}</div>` : ''}</td>
+    <td>${stageChip(c)}${statusLine(c) ? `<div class="note">${statusLine(c)}</div>` : ''}${c.status === 'open' ? lastAction(c) : ''}</td>
     <td>${esc(c.vendor)}</td><td>${numAmt(c.vendor_quote_number, c.vendor_quote_amount ?? c.vendor_quote_total)}</td>
     <td>${ref(jb.quote)}${jb.quote && jb.quote.total != null ? ' <b>' + money(jb.quote.total) + '</b>' : ''}${jb.quote && jb.quote.status ? ` <span class="note">${esc(jb.quote.status.replace(/_/g, ' '))}</span>` : ''}</td>
     <td>${numAmt(c.vendor_bill_number, c.vendor_bill_amount ?? c.vendor_bill_total)}</td>

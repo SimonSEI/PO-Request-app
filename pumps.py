@@ -849,6 +849,16 @@ def _case_dict(row, conn=None):
     if conn is not None:
         d['open_issues'] = [dict(r) for r in conn.execute(
             'SELECT * FROM pump_issues WHERE case_id=? AND resolved_at IS NULL ORDER BY id', (d['id'],))]
+        # The last thing done on the job, and how many days ago (Oct 2026).
+        ev = conn.execute('SELECT at, actor, action, detail FROM pump_events WHERE case_id=? ORDER BY id DESC LIMIT 1',
+                          (d['id'],)).fetchone()
+        when = (ev['at'] if ev else last)[:10]
+        try:
+            days = (_today() - date.fromisoformat(when)).days
+        except ValueError:
+            days = None
+        d['last_action'] = {'at': when, 'days': days, 'action': ev['action'] if ev else '',
+                            'detail': (ev['detail'] or '')[:120] if ev else '', 'by': ev['actor'] if ev else ''}
     return d
 
 
