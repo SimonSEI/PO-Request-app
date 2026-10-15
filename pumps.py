@@ -139,7 +139,10 @@ ALLOWED_MUTATIONS = frozenset({'quoteCreate', 'invoiceCreate', 'jobCreateNote', 
                                # Redoing the lines of OUR OWN quote while it is still a draft, after the
                                # vendor's quote is read again (Oct 2026). update_draft_quote() checks the
                                # quote is a draft right before, and never touches a sent quote.
-                               'quoteCreateLineItems', 'quoteDeleteLineItems'})
+                               'quoteCreateLineItems', 'quoteDeleteLineItems',
+                               # Marking the recurring maintenance job's visit for the bill's month complete,
+                               # once its draft invoice is made (Oct 2026). Only complete_visit_for_bill() uses it.
+                               'visitComplete', 'visitMarkComplete', 'completeVisit'})
 
 # What counts as pump work when searching Jobber, by category.
 JOBBER_TERMS = {
@@ -2824,7 +2827,7 @@ def check_mutation_allowed(query):
     if not fields or bad:
             raise JobberError(f"Blocked Jobber mutation {bad or '(unreadable)'}: "
                           'Pumps only creates draft quotes, draft invoices, notes, jobs from approved quotes '
-                          'and visits.')
+                          'and visits, and completes maintenance visits.')
 
 
 def jobber_gql(query, variables=None):
@@ -6677,6 +6680,7 @@ def h_doc_invoice(actor, doc_id):
         return {'success': False, 'possible_duplicate': e.rec, 'error': str(e)}, 409
     if sugg.get('job') and job_id == sugg['job']['id']:
         invoiced_on_job(doc, case, sugg['job'], actor)
+        res['visit'] = complete_visit_for_bill(doc, case, sugg['job'], actor)
     return {'invoice': res}
 
 
@@ -9150,6 +9154,106 @@ def try_mutation(candidates, values, want=None):
     return None
 
 
+# ── the maintenance visit a bill is for, marked complete ─────────────────────
+# A maintenance bill invoiced on the client's recurring job also completes
+# that job's visit for the month the bill is for, so Jobber shows the month
+# done instead of a late visit. Anything that can't be done is a to-do.
+
+COMPLETE_VISITS = os.environ.get('PUMPS_COMPLETE_VISITS', 'true').lower() in ('1', 'true', 'yes', 'on')
+VISIT_COMPLETE_MUTATIONS = ('visitComplete', 'visitMarkComplete', 'completeVisit')
+_MONTH_YEAR = re.compile(r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?,?\s+(20\d\d)\b', re.I)
+_MONTH_ABBR = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+VISIT_SPEC = ['id', 'title', 'startAt', 'completedAt', 'visitStatus']
+
+
+def bill_service_month(doc):
+    """(year, month) a maintenance bill is for: the month it names ("quarterly
+    maintenance ... for OCTOBER 2026"), else the bill's date's month."""
+    text = ' '.join([doc.get('description') or ''] +
+                    [f"{li.get('name') or ''} {li.get('description') or ''}" for li in doc.get('line_items') or []])
+    m = _MONTH_YEAR.search(text)
+    if m:
+        return int(m.group(2)), _MONTH_ABBR.index(m.group(1).lower()[:3]) + 1
+    d = _iso_date(doc.get('doc_date')) or _today().isoformat()
+    return int(d[:4]), int(d[5:7])
+
+
+def job_visits(job_id, pages=6):
+    """A Jobber job's visits: [{id, title, date, completed}], oldest first."""
+    def make(fields):
+        return ('query($id: EncodedId!, $after: String) { job(id: $id) { visits(first: 50, after: $after) '
+                f'{{ nodes {{ {fields} }} pageInfo {{ hasNextPage endCursor }} }} }} }}')
+    out, after, spec = [], None, VISIT_SPEC
+    for _ in range(pages):
+        data, spec = _gql_tolerant(make, spec, {'id': job_id, 'after': after}, required=('id', 'startAt'))
+        page = (data.get('job') or {}).get('visits') or {}
+        out += page.get('nodes') or []
+        info = page.get('pageInfo') or {}
+        if not info.get('hasNextPage') or not info.get('endCursor'):
+            break
+        after = info['endCursor']
+    return sorted(({'id': v.get('id'), 'title': v.get('title') or '', 'date': (v.get('startAt') or '')[:10],
+                    'completed': bool(v.get('completedAt')) or (v.get('visitStatus') or '').lower() == 'completed'}
+                   for v in out if v.get('id')), key=lambda v: v['date'])
+
+
+def complete_visit_for_bill(doc, case, job, actor='system'):
+    """Mark the recurring job's visit for the bill's month complete in Jobber
+    (the one nearest the bill's date when the month has more than one).
+    Returns what happened; never raises - a visit that can't be completed is
+    a to-do to do it in Jobber."""
+    if not COMPLETE_VISITS or not job or not job.get('id') or job.get('type') != 'recurring':
+        return None
+    year, month = bill_service_month(doc)
+    label = date(year, month, 1).strftime('%B %Y')
+    num = job.get('number') or ''
+    cid = (case or {}).get('id')
+
+    def pending(why):
+        conn = _conn()
+        try:
+            add_todo(conn, f"visit-complete:{job['id']}:{year}-{month:02d}",
+                     f"Mark the {label} visit complete on Jobber job #{num}", why,
+                     {'case_id': cid, 'uri': job.get('uri') or ''})
+            if cid:
+                _event(conn, actor, 'visit not marked complete', why, case_id=cid, doc_id=doc.get('id'))
+            conn.commit()
+        finally:
+            conn.close()
+        return {'pending': why, 'month': label}
+
+    try:
+        visits = job_visits(job['id'])
+    except JobberError as e:
+        return pending(f"Could not read job #{num}'s visits from Jobber ({e}).")
+    in_month = [v for v in visits if v['date'][:7] == f'{year:04d}-{month:02d}']
+    if not in_month:
+        return pending(f"Jobber job #{num} has no {label} visit.")
+    todo = [v for v in in_month if not v['completed']]
+    if not todo:
+        return {'already_complete': True, 'month': label, 'visit': in_month[0]}
+    billed = _iso_date(doc.get('doc_date'))
+    near = date.fromisoformat(billed) if billed[:7] == f'{year:04d}-{month:02d}' else date(year, month, 15)
+    visit = min(todo, key=lambda v: abs((date.fromisoformat(v['date']) - near).days))
+    try:
+        res = try_mutation(VISIT_COMPLETE_MUTATIONS, {'visitId': visit['id'], 'id': visit['id']},
+                           want={'visit': 'id'})
+    except JobberError as e:
+        return pending(f"Jobber would not mark the {visit['date']} visit complete ({e}).")
+    if res is None:
+        return pending("This Jobber API version doesn't let Pumps complete visits.")
+    if cid:
+        conn = _conn()
+        try:
+            _event(conn, actor, 'visit marked complete',
+                   f"{label} visit ({visit['date']}) on Jobber job #{num} {job.get('title') or ''}".strip(),
+                   case_id=cid, doc_id=doc.get('id'))
+            conn.commit()
+        finally:
+            conn.close()
+    return {'completed': True, 'month': label, 'visit': visit}
+
+
 # ── approval: stamp the vendor's quote, send it back, make it a job ───────────
 
 def _pdf_text(s):
@@ -9768,7 +9872,7 @@ def auto_draft_invoice(doc_id, actor='Pumps (automatic)'):
             res = create_draft_invoice(doc_id, sugg['client_id'], sugg['line_items'], sugg['subject'],
                                        sugg['job']['id'], actor)
             invoiced_on_job(doc, case, sugg['job'], actor)
-            return {**res, 'job': sugg['job']}
+            return {**res, 'job': sugg['job'], 'visit': complete_visit_for_bill(doc, case, sugg['job'], actor)}
         except (JobberError, ValueError) as e:
             return _invoice_pending(doc_id, e)
     try:
