@@ -4150,21 +4150,27 @@ def best_job_for_report(jobs, properties, location, title):
     (e.g. "Pump #2", "Fountain"), preferring the recurring maintenance job."""
     loc = (location or '').lower()
     prop_ids = {p['id'] for p in properties if loc and any(t in p['label'].lower() for t in re.findall(r'[a-z0-9#]+', loc) if len(t) > 2)}
+    # A finished one-off job is never where this month's report goes (Cypress
+    # Legends, Oct 2026: archived "Service Call - Wttech PO243" beat "Quarterly 500").
+    jobs = [j for j in jobs if not (j.get('type') != 'recurring' and j.get('status') == 'archived')]
+
     def score(j):
         s = 0
         t = (j['title'] or '').lower()
-        if TITLE_PATTERNS['pump'].search(t):
+        if TITLE_PATTERNS['pump'].search(t) or re.search(r'\b(?:quarterly|monthly|maint\w*|annual|semi-?annual)\b', t):
             s += 3
         if loc and any(w in t for w in re.findall(r'[a-z0-9#]+', loc) if len(w) > 2):
             s += 2
         if j.get('property_id') in prop_ids:
             s += 2
         if j.get('type') == 'recurring' and j.get('status') not in ('archived',):
-            s += 2
+            s += 3
         if j.get('status') in ('active', 'upcoming', 'today', 'late'):
             s += 1
         return (s, j.get('created') or '')
     ranked = sorted(jobs, key=score, reverse=True)
+    if len(ranked) > 1 and score(ranked[0])[0] == score(ranked[1])[0]:
+        return None   # two jobs fit as well (Honda: "Monthly 180" and "Quarterly 300") - a person picks
     return ranked[0] if ranked and score(ranked[0])[0] >= 3 else None
 
 
@@ -5469,6 +5475,10 @@ def resolve_report_target(doc, case=None):
         return {'type': 'job', 'id': alias['job_id'], 'label': f"{alias['client_name']} {alias['job_label']}".strip(),
                 'how': f'site name "{alias["place"]}"'}
     j = case.get('jobber') if isinstance(case.get('jobber'), dict) else json.loads(case.get('jobber') or '{}')
+    if case.get('category') in ('maintenance', 'inspection') and (j.get('job') or {}).get('id'):
+        # The maintenance visit's own job - where its bill was invoiced.
+        return {'type': 'job', 'id': j['job']['id'], 'label': f"#{j['job'].get('number') or ''}".strip(),
+                'how': "the item's Jobber job"}
     client_id = (alias or {}).get('client_id') or (j.get('client') or {}).get('id') or case.get('jobber_client_id')
     how = f'site name "{alias["place"]}"' if alias else 'the item'
     cands = []

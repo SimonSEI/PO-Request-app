@@ -3543,6 +3543,19 @@ class PumpsTest(unittest.TestCase):
         self.assertNotIn(rid, [d['id'] for d in q()['reports_to_log']])
         self.assertTrue(self.case(b['case_id'])['steps']['report_logged'].get('at'))
 
+    def test_report_goes_on_the_live_maintenance_job_not_an_old_service_call(self):
+        """Cypress Legends (Oct 2026): the report went on archived "Service Call - Wttech PO243" instead of
+        "Quarterly 500". Old one-offs are out; the item's own maintenance job comes first; a tie is asked."""
+        old = {'id': 'A', 'title': 'Service Call - Wttech PO243', 'type': 'one_off', 'status': 'archived', 'created': '2025-06-17'}
+        q500 = {'id': 'B', 'title': 'Quarterly 500', 'type': 'recurring', 'status': 'upcoming', 'created': '2021-04-05'}
+        self.assertEqual(P.best_job_for_report([old, q500], [], 'Cypress Legends', '')['id'], 'B')
+        m180 = {'id': 'M', 'title': 'Monthly 180', 'type': 'recurring', 'status': 'upcoming', 'created': '2025'}
+        q300 = {'id': 'Q', 'title': 'Quarterly 300', 'type': 'recurring', 'status': 'upcoming', 'created': '2020'}
+        self.assertIsNone(P.best_job_for_report([m180, q300], [], 'Honda', ''))
+        t = P.resolve_report_target({'client_name': 'Cypress Legends'},
+                                    {'category': 'maintenance', 'jobber': {'job': {'id': 'B', 'number': '940'}}})
+        self.assertEqual((t['type'], t['id']), ('job', 'B'))
+
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's
         usual vendor cost - it's the monthly visit, invoiced at the recurring job's $250, not $130."""
