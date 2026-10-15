@@ -30,6 +30,7 @@ import bisect
 from collections import defaultdict
 import threading
 import requests as http_requests  # aliased to avoid conflict with flask.request
+import shared_mail  # PO mailbox helpers shared with the Pumps app
 
 # Microsoft Graph API (OAuth2)
 try:
@@ -551,132 +552,9 @@ Return ONLY valid JSON, no explanation:
 
 
 def _fetch_emails_for_vi_scan(log_table='vendor_invoice_email_log', extensions=('.pdf',), since=None, plain_since=None):
-    """
-    Fetch emails for vendor invoice scanning using a SEPARATE log table
-    (vendor_invoice_email_log) so it runs independently of the PO scanner.
-    Pass log_table='pump_email_scan_log' to dedupe against the Pumps scanner's
-    own history instead.
-    extensions: attachment types worth fetching the email for (Pumps also
-    wants Word reports). since: 'YYYY-MM-DD' - skip mail received before it.
-    plain_since: 'YYYY-MM-DD' - also return emails with no wanted attachment
-    received since then (Pumps reads plain service-call emails).
-    Returns {'emails': [(uid, msg), ...], 'diagnostics': {...}, 'source': '...'}
-    """
-    if log_table not in ('vendor_invoice_email_log', 'pump_email_scan_log'):
-        raise ValueError(f'Unsupported scan log table: {log_table}')
-    if not PO_EMAIL_ADDRESS:
-        return {'emails': [], 'diagnostics': {'error': 'PO_EMAIL_ADDRESS not configured'}, 'source': 'none'}
-
-    # Load already-scanned UIDs from the scanner's own log
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute(f"SELECT email_uid FROM {log_table}")
-    scanned_uids = {r[0] for r in c.fetchall()}
-    conn.close()
-
-    emails_out = []
-    diagnostics = {'scanned_uids': len(scanned_uids)}
-    exts = tuple(e.lower() for e in extensions)
-    wants_pdf_type = '.pdf' in exts
-
-    def _wanted(name, ctype=''):
-        return (name or '').lower().endswith(exts) or (wants_pdf_type and ctype == 'application/pdf')
-
-    if MS_GRAPH_ENABLED:
-        try:
-            token = _get_graph_access_token()
-            headers = {'Authorization': f'Bearer {token}'}
-            url = f'https://graph.microsoft.com/v1.0/users/{PO_EMAIL_ADDRESS}/messages'
-            graph_filter = 'hasAttachments eq true'
-            if since:
-                # Graph wants the $orderby field (receivedDateTime) first in $filter.
-                graph_filter = f'receivedDateTime ge {since}T00:00:00Z and hasAttachments eq true'
-            params = {
-                '$filter': graph_filter,
-                '$top': 100,
-                '$select': 'id,subject,from,receivedDateTime,hasAttachments,bodyPreview',
-                '$expand': 'attachments($select=id,name,contentType,size)',
-                '$orderby': 'receivedDateTime desc',
-            }
-            while url:
-                resp = http_requests.get(url, headers=headers, params=params, timeout=30)
-                resp.raise_for_status()
-                data = resp.json()
-                for msg_data in data.get('value', []):
-                    msg_id = msg_data['id']
-                    if msg_id in scanned_uids:
-                        continue
-                    atts = msg_data.get('attachments', [])
-                    if any(_wanted(a.get('name', ''), a.get('contentType', '')) for a in atts):
-                        emails_out.append((msg_id, msg_data))
-                url = data.get('@odata.nextLink')
-                params = None
-            if plain_since:
-                seen = {m for m, _ in emails_out}
-                url = f'https://graph.microsoft.com/v1.0/users/{PO_EMAIL_ADDRESS}/messages'
-                params = {'$filter': f'receivedDateTime ge {plain_since}T00:00:00Z', '$top': 100,
-                          '$select': 'id,subject,from,receivedDateTime,hasAttachments,bodyPreview',
-                          '$orderby': 'receivedDateTime desc'}
-                while url:
-                    resp = http_requests.get(url, headers=headers, params=params, timeout=30)
-                    resp.raise_for_status()
-                    data = resp.json()
-                    for msg_data in data.get('value', []):
-                        if msg_data['id'] not in scanned_uids and msg_data['id'] not in seen:
-                            emails_out.append((msg_data['id'], msg_data))
-                    url = data.get('@odata.nextLink')
-                    params = None
-            diagnostics['source'] = 'graph_api'
-            diagnostics['found'] = len(emails_out)
-        except Exception as e:
-            diagnostics['error'] = str(e)
-            diagnostics['source'] = 'graph_api'
-    elif PO_EMAIL_PASSWORD:
-        try:
-            mail = imaplib.IMAP4_SSL(PO_EMAIL_IMAP_SERVER, PO_EMAIL_IMAP_PORT)
-            mail.login(PO_EMAIL_ADDRESS, PO_EMAIL_PASSWORD)
-            mail.select('INBOX')
-            if since:
-                imap_since = datetime.strptime(since, '%Y-%m-%d').strftime('%d-%b-%Y')
-                status, uid_data = mail.uid('search', None, 'SINCE', imap_since)
-            else:
-                status, uid_data = mail.uid('search', None, 'ALL')
-            if status == 'OK':
-                for uid in reversed(uid_data[0].split()):
-                    uid_str = uid.decode()
-                    if uid_str in scanned_uids:
-                        continue
-                    status2, msg_data = mail.uid('fetch', uid, '(RFC822)')
-                    if status2 == 'OK':
-                        msg = email.message_from_bytes(msg_data[0][1])
-                        # Only bother with emails that have the attachments we want
-                        has_pdf = any(
-                            (p.get_content_disposition() == 'attachment' or
-                             p.get_content_maintype() == 'application') and
-                            _wanted(p.get_filename() or '')
-                            for p in msg.walk()
-                        )
-                        if has_pdf:
-                            emails_out.append((uid_str, msg))
-                        elif plain_since:
-                            try:
-                                sent = email.utils.parsedate_to_datetime(msg.get('Date', '')).strftime('%Y-%m-%d')
-                            except (TypeError, ValueError):
-                                sent = ''
-                            if sent >= plain_since:
-                                emails_out.append((uid_str, msg))
-            mail.close()
-            mail.logout()
-            diagnostics['source'] = 'imap'
-            diagnostics['found'] = len(emails_out)
-        except Exception as e:
-            diagnostics['error'] = str(e)
-            diagnostics['source'] = 'imap'
-    else:
-        diagnostics['error'] = 'No email credentials configured'
-        diagnostics['source'] = 'none'
-
-    return {'emails': emails_out, 'diagnostics': diagnostics, 'source': diagnostics.get('source', 'none')}
+    """New emails for the vendor invoice (or Pumps) scanner - see shared_mail.fetch_scan_emails."""
+    return shared_mail.fetch_scan_emails(DB_PATH, log_table=log_table, extensions=extensions, since=since,
+                                         plain_since=plain_since)
 
 
 def lookup_jobber_invoices_for_sei_proposal(sei_proposal_number):
@@ -971,18 +849,7 @@ class GraphEmailMessage:
         return iter([])
 
 
-def _get_graph_access_token():
-    """Get OAuth2 access token using Client Credentials flow via MSAL"""
-    authority = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
-    app = msal.ConfidentialClientApplication(
-        MS_CLIENT_ID,
-        authority=authority,
-        client_credential=MS_CLIENT_SECRET,
-    )
-    result = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
-    if "access_token" in result:
-        return result["access_token"]
-    raise Exception(f"Graph auth failed: {result.get('error_description', result.get('error', 'Unknown'))}")
+_get_graph_access_token = shared_mail.graph_access_token
 
 
 def fetch_emails_from_graph():
@@ -1107,42 +974,7 @@ def fetch_emails_from_graph():
         return {'emails': [], 'diagnostics': diagnostics}
 
 
-def extract_attachments_from_graph_message(msg_id, token=None):
-    """
-    Download attachments from a Graph API message.
-    Returns list of (filename, file_content_bytes) tuples - same format as extract_attachments_from_email.
-    """
-    if token is None:
-        token = _get_graph_access_token()
-
-    headers = {'Authorization': f'Bearer {token}'}
-    url = f"https://graph.microsoft.com/v1.0/users/{PO_EMAIL_ADDRESS}/messages/{msg_id}/attachments"
-    response = http_requests.get(url, headers=headers)
-    response.raise_for_status()
-
-    attachments = []
-    for att in response.json().get('value', []):
-        if att.get('@odata.type') == '#microsoft.graph.fileAttachment':
-            filename = att.get('name', 'unnamed')
-            content_bytes = base64.b64decode(att['contentBytes'])
-            attachments.append((filename, content_bytes))
-            print(f"    📎 Downloaded attachment: {filename} ({len(content_bytes)} bytes)")
-        elif att.get('@odata.type') == '#microsoft.graph.itemAttachment':
-            # Forwarded email attachment - check for nested file attachments
-            item_att_url = f"{url}/{att['id']}?$expand=microsoft.graph.itemAttachment/item"
-            item_resp = http_requests.get(item_att_url, headers=headers)
-            if item_resp.ok:
-                item_data = item_resp.json()
-                nested_item = item_data.get('item', {})
-                if nested_item.get('attachments'):
-                    for nested_att in nested_item['attachments']:
-                        if nested_att.get('@odata.type') == '#microsoft.graph.fileAttachment':
-                            filename = nested_att.get('name', 'unnamed')
-                            content_bytes = base64.b64decode(nested_att['contentBytes'])
-                            attachments.append((filename, content_bytes))
-                            print(f"    📎 Downloaded nested attachment: {filename} ({len(content_bytes)} bytes)")
-
-    return attachments
+extract_attachments_from_graph_message = shared_mail.graph_attachments
 
 
 def fetch_emails():
@@ -1320,35 +1152,7 @@ def fetch_emails_from_imap():
         traceback.print_exc()
         return {'emails': [], 'diagnostics': diagnostics}
 
-def extract_attachments_from_email(msg):
-    """
-    Extract attachments from an email message
-    Returns list of (filename, file_content) tuples
-    """
-    attachments = []
-    try:
-        for part in msg.walk():
-            if part.get_content_disposition() == 'attachment':
-                filename = part.get_filename()
-                if filename:
-                    # Decode filename if needed
-                    if isinstance(filename, str):
-                        # Handle encoded-word format
-                        try:
-                            decoded_parts = decode_header(filename)
-                            filename = ''.join([part.decode(enc or 'utf-8') if isinstance(part, bytes) else part
-                                               for part, enc in decoded_parts])
-                        except:
-                            pass
-
-                    file_content = part.get_payload(decode=True)
-                    attachments.append((filename, file_content))
-                    print(f"  📎 Extracted attachment: {filename}")
-
-        return attachments
-    except Exception as e:
-        print(f"✗ Error extracting attachments: {e}")
-        return []
+extract_attachments_from_email = shared_mail.email_attachments
 
 def process_email_attachments(msg_uid, msg, attachments):
     """
@@ -39441,13 +39245,70 @@ if TIMEOFF_ENABLED:
     init_timeoff(app, csrf, DB_PATH)
 
 # Pumps (pump/diver/filter/SCADA work from request to invoice) lives in pumps.py.
+# With PUMPS_URL set it runs as its own Railway service (pumps_server.py, see
+# PUMPS_SERVICE.md), so a Pumps update doesn't redeploy this app: /pumps here
+# signs the person in there, and Receivables gets the Jobber token from it.
+# Without PUMPS_URL it runs inside this app, as it always has.
 from pumps import init_pumps, pumps_allowed
-init_pumps(app, csrf, DB_PATH, data_dir=DATA_DIR, secret_key=app.secret_key, website_url=WEBSITE_URL,
-           email_enabled=PO_EMAIL_MONITORING_ENABLED, fetch_emails=_fetch_emails_for_vi_scan,
-           graph_attachments=extract_attachments_from_graph_message,
-           email_attachments=extract_attachments_from_email, log_activity=log_activity,
-           scheduler_available=SCHEDULER_AVAILABLE,
-           graph_token=_get_graph_access_token if MS_GRAPH_ENABLED else None, mail_from=PO_EMAIL_ADDRESS)
+import pumps_link
+PUMPS_URL = os.environ.get('PUMPS_URL', '').rstrip('/')
+PUMPS_INTERNAL_URL = os.environ.get('PUMPS_INTERNAL_URL', '').rstrip('/')
+PUMPS_SHARED_SECRET = os.environ.get('PUMPS_SHARED_SECRET', '')
+if PUMPS_URL and not PUMPS_SHARED_SECRET:
+    print('⚠ PUMPS_URL is set but PUMPS_SHARED_SECRET is not - Pumps stays inside this app')
+    PUMPS_URL = ''
+if PUMPS_URL and not PUMPS_INTERNAL_URL:
+    print('⚠ PUMPS_INTERNAL_URL is not set - Receivables cannot reach Jobber through Pumps')
+_pumps_jobber = pumps_link.JobberLink(PUMPS_INTERNAL_URL or PUMPS_URL, PUMPS_SHARED_SECRET)
+if PUMPS_URL:
+    print(f'✓ Pumps runs as its own service: {PUMPS_URL}')
+
+    from urllib.parse import urlencode
+    from flask import Blueprint
+    # Named 'pumps' / 'page' like the real Pumps page, so url_for('pumps.page') still works here.
+    _pumps_handoff_bp = Blueprint('pumps', __name__)
+
+    def _pumps_handoff(rest=''):
+        if not pumps_allowed():
+            return redirect(url_for('login'))
+        ticket = pumps_link.make_ticket(PUMPS_SHARED_SECRET, session['username'], session.get('role', ''),
+                                        session.get('full_name') or '')
+        nxt = '/pumps' + ('/' + rest if rest else '')
+        return redirect(f'{PUMPS_URL}/pumps/sso?' + urlencode({'t': ticket, 'next': nxt}))
+
+    _pumps_handoff_bp.add_url_rule('/pumps', 'page', _pumps_handoff)
+    _pumps_handoff_bp.add_url_rule('/pumps/<path:rest>', 'handoff', _pumps_handoff)
+    app.register_blueprint(_pumps_handoff_bp)
+
+
+@app.route('/internal/pumps-export')
+def pumps_export():
+    """The switch-over: the Pumps service fetches its data from here once
+    (pumps_link.import_bundle). Private network and shared secret only, and
+    only once Pumps has stopped running here. This app's copy is left as is."""
+    if not request.host.split(':')[0].endswith('.railway.internal'):
+        return 'Not found', 404
+    if not pumps_link.secret_ok(PUMPS_SHARED_SECRET, request.headers.get('X-Pumps-Secret')):
+        return 'Unauthorized', 401
+    if not PUMPS_URL:
+        return 'Pumps still runs in the Office App - set PUMPS_URL here first', 409
+    import shutil
+    import tempfile
+    out = os.path.join(tempfile.mkdtemp(prefix='pumps_export_'), 'pumps_export.zip')
+    manifest = pumps_link.export_bundle(DB_PATH, DATA_DIR, out)
+    print(f"✓ Pumps export: {sum(manifest['tables'].values())} rows, {len(manifest['files'])} files")
+    resp = send_file(out, mimetype='application/zip', as_attachment=True, download_name='pumps_export.zip')
+    resp.call_on_close(lambda: shutil.rmtree(os.path.dirname(out), ignore_errors=True))
+    return resp
+
+
+if not PUMPS_URL:
+    init_pumps(app, csrf, DB_PATH, data_dir=DATA_DIR, secret_key=app.secret_key, website_url=WEBSITE_URL,
+               email_enabled=PO_EMAIL_MONITORING_ENABLED, fetch_emails=_fetch_emails_for_vi_scan,
+               graph_attachments=extract_attachments_from_graph_message,
+               email_attachments=extract_attachments_from_email, log_activity=log_activity,
+               scheduler_available=SCHEDULER_AVAILABLE,
+               graph_token=_get_graph_access_token if MS_GRAPH_ENABLED else None, mail_from=PO_EMAIL_ADDRESS)
 if not CASHFLOW_ENABLED:
     # Switched off: forget any Jobber or QuickBooks sign-in, so neither the
     # database nor a downloaded backup holds a working key to either account.
@@ -39462,8 +39323,10 @@ import pumps as _pumps
 from receivables import init_receivables, receivables_allowed
 init_receivables(app, DB_PATH, data_dir=DATA_DIR, get_setting=get_setting, set_setting=set_setting,
                  graph_token=_get_graph_access_token, graph_enabled=MS_GRAPH_ENABLED,
-                 jobber_token=_pumps._access_token, jobber_version=_pumps.JOBBER_API_VERSION,
-                 jobber_connected=lambda: _pumps.jobber_status()['connected'],
+                 jobber_token=_pumps_jobber.token if PUMPS_URL else _pumps._access_token,
+                 jobber_version=_pumps.JOBBER_API_VERSION,
+                 jobber_connected=(_pumps_jobber.connected if PUMPS_URL else
+                                   lambda: _pumps.jobber_status()['connected']),
                  anthropic_client=(anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                                    if ANTHROPIC_AVAILABLE and ANTHROPIC_API_KEY else None),
                  scheduler_cls=BackgroundScheduler if SCHEDULER_AVAILABLE else None, website_url=WEBSITE_URL)
