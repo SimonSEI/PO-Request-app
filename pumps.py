@@ -107,7 +107,7 @@ GOV_CLIENTS = re.compile(os.environ.get('PUMPS_GOV_CLIENTS', r'\bsarasota\s+coun
 # never on its own when a vendor quote arrives or is read again.
 AUTO_DRAFT_QUOTES = False
 # A rebranded service report is put on the site's pump job in Jobber as a
-# note ("October Pump Maintenance" + the PDF) as soon as it arrives, when the
+# note ("October Pump Report" + the PDF, named as the vendor sent it) as soon as it arrives, when the
 # job is clear.
 AUTO_LOG_REPORTS = os.environ.get('PUMPS_AUTO_LOG_REPORTS', 'true').lower() in ('1', 'true', 'yes', 'on')
 MATCH_TOLERANCE = float(os.environ.get('PUMPS_MATCH_TOLERANCE', '0.50') or 0.5)
@@ -181,6 +181,76 @@ OPTIONAL_STEPS = ('assessment',)
 
 def _with_optional(steps):
     return {**{k: {'na': True} for k in OPTIONAL_STEPS if k not in steps}, **steps}
+
+
+# A vendor bill for a maintenance visit ("Service to perform quarterly
+# maintenance ... Maintenance Report Attached", Oct 2026) needs no quote - it
+# is billed at the client's recurring job price - unless the bill names one.
+_MAINT_WORDS = re.compile(r'\bmaint(?:enance|\.)?\b', re.I)
+_QUOTE_WORDS = re.compile(r'\b(?:quote[sd]?|quotation|estimate|proposal)\b', re.I)
+
+
+def maintenance_bill(doc):
+    """True when a bill is for a maintenance visit and says nothing of a quote."""
+    if (doc or {}).get('kind') != 'bill':
+        return False
+    items = doc.get('line_items')
+    if isinstance(items, str):
+        try:
+            items = json.loads(items or '[]')
+        except ValueError:
+            items = []
+    text = ' '.join([doc.get('description') or '', doc.get('proposal_title') or '', doc.get('quote_reference') or '',
+                     doc.get('notes') or ''] + [f"{i.get('name') or ''} {i.get('description') or ''}"
+                                                for i in items or [] if isinstance(i, dict)])
+    return bool(_MAINT_WORDS.search(text)) and not _QUOTE_WORDS.search(text)
+
+
+_NO_QUOTE_STEPS = ('vendor_quote', 'client_quote', 'client_approved', 'bill_checked')
+
+
+def _maintenance_needs_no_quote(conn, case_id, actor):
+    """A maintenance bill on an item still waiting on a quote: it's maintenance,
+    and the quote steps don't apply (unless a vendor quote is on the item)."""
+    case = conn.execute('SELECT category, steps FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+    if not case:
+        return False
+    steps = json.loads(case['steps'] or '{}')
+    if (steps.get('vendor_quote') or {}).get('at') or conn.execute(
+            "SELECT 1 FROM pump_docs WHERE case_id=? AND kind='quote' AND status != 'dismissed'", (case_id,)).fetchone():
+        return False
+    if case['category'] in ('maintenance', 'inspection') and \
+            all((steps.get(k) or {}).get('na') or (steps.get(k) or {}).get('at') for k in _NO_QUOTE_STEPS):
+        return False
+    if case['category'] not in ('maintenance', 'inspection'):
+        conn.execute("UPDATE pump_cases SET category='maintenance' WHERE id=?", (case_id,))
+    for k in _NO_QUOTE_STEPS:
+        if not (steps.get(k) or {}).get('at'):
+            _set_step(conn, case_id, k, by=actor, na=True)
+    resolve_issues(conn, case_id, 'no_quote', actor, 'Maintenance bill - no quote needed')
+    _event(conn, actor, 'no quote needed', 'Maintenance bill - billed at the recurring job price', case_id=case_id)
+    return True
+
+
+def fix_terms_as_po(conn):
+    """Items and documents whose PO was read from the payment terms."""
+    for table in ('pump_cases', 'pump_docs'):
+        for r in conn.execute(f"SELECT id, po_number FROM {table} WHERE po_number != ''").fetchall():
+            if not clean_po(r['po_number']):
+                conn.execute(f"UPDATE {table} SET po_number='' WHERE id=?", (r['id'],))
+
+
+def fix_maintenance_bills(conn, actor='Pumps'):
+    """Open items waiting on a quote that only have a maintenance bill."""
+    n = 0
+    for r in conn.execute("SELECT DISTINCT c.id FROM pump_cases c JOIN pump_docs d ON d.case_id=c.id "
+                          "WHERE c.status='open' AND c.stage IN ('assessment', 'vendor_quote', 'client_quote', "
+                          "'client_approved') AND d.kind='bill' AND d.status != 'dismissed'").fetchall():
+        bills = [dict(d) for d in conn.execute("SELECT * FROM pump_docs WHERE case_id=? AND kind='bill' "
+                                               "AND status != 'dismissed'", (r['id'],))]
+        if bills and all(maintenance_bill(b) for b in bills):
+            n += _maintenance_needs_no_quote(conn, r['id'], actor)
+    return n
 # Steps that do not apply by default, per kind of work. Any step can be
 # switched on or off on the item.
 NA_BY_CATEGORY = {
@@ -1437,6 +1507,7 @@ Classify the document and pull out its fields:
 - doc_date: YYYY-MM-DD, or "".
 - po_number: our PO number only when the P.O. field holds a number or code (e.g. "PO322", "0322"). If the P.O.
   field holds a person's name, leave po_number "" and put the name in ordered_by.
+  Payment terms (e.g. "1.5% Finance Chrg over 30 days", "Net 30") are never a PO number.
 - wo_number: the vendor's work order (W/O) number, or "".
 - quote_reference: the vendor quote number a bill refers to, or "".
 - client_name: the client/community the work is for (not Stahlman-England) - on Wettech's letter-style quotes
@@ -1873,9 +1944,21 @@ def short_name(text, limit=60):
     return cut.rstrip(' -,') or first[:limit]
 
 
+# Wettech's invoice puts its payment terms ("1.5% Finance Chrg over 30 days")
+# next to the P.O. box (Oct 2026): that's not a PO number.
+_NOT_A_PO = re.compile(r'%|finance|charge|chrg|\bterms?\b|\bnet\s*\d|\bdue\b|\bdays?\b|receipt|\binterest\b', re.I)
+
+
+def clean_po(value):
+    """The PO number, or '' when what was read is the payment terms or other text."""
+    value = (value or '').strip()
+    return '' if not value or _NOT_A_PO.search(value) else value
+
+
 def _clean_extraction(x):
     x = dict(x or {})
     x['kind'] = x.get('kind') if x.get('kind') in ('quote', 'bill', 'report', 'other') else 'other'
+    x['po_number'] = clean_po(x.get('po_number'))
     x['doc_date'] = _iso_date(x.get('doc_date'))
     for k in ('subtotal', 'tax', 'total'):
         x[k] = _money(x.get(k))
@@ -2003,7 +2086,7 @@ def _new_case_for(conn, doc, actor):
         title = f"{doc['client_name']} - {title.splitlines()[0]}"
     fields = {
         'title': (title or f"{doc.get('client_name') or 'Pump work'}")[:160],
-        'category': ('maintenance' if kind == 'report' else doc.get('category') or 'repair'),
+        'category': ('maintenance' if kind == 'report' or maintenance_bill(doc) else doc.get('category') or 'repair'),
         'client_name': doc.get('client_name') or '',
         'site': doc.get('site') or '',
         'po_number': doc.get('po_number') or '',
@@ -2046,6 +2129,8 @@ def _file_on_case(conn, doc, case_id, how, actor):
             fill.update(vendor_bill_number=doc.get('doc_number') or '', vendor_bill_amount=doc.get('subtotal'),
                         vendor_bill_total=doc.get('total'))
             _apply(conn, case_id, fill)
+        if maintenance_bill(doc):
+            _maintenance_needs_no_quote(conn, case_id, actor)
         _set_step(conn, case_id, 'vendor_bill', at=date_, by=actor)
         steps = json.loads(conn.execute('SELECT steps FROM pump_cases WHERE id=?', (case_id,)).fetchone()[0])
         if not (steps.get('work_done') or {}).get('at') and not (steps.get('work_done') or {}).get('na'):
@@ -2446,9 +2531,9 @@ def _branded_name(filename):
     return f'{base} - Stahlman-England.docx'
 
 
-def _pdf_name(filename):
-    """"10-26  Spanish Wells.docx" -> "10-26 Spanish Wells.pdf", as the office names them."""
-    return re.sub(r'\s+', ' ', os.path.splitext(_safe_name(filename))[0]).strip() + '.pdf'
+def _vendor_file_name(filename, ext):
+    """The vendor's own file name with our file's extension: "10-26  Spanish Wells.docx" -> "10-26  Spanish Wells.pdf"."""
+    return os.path.splitext(os.path.basename(filename or 'report'))[0] + ext
 
 
 def _branded_pdf_path(branded_path):
@@ -4549,6 +4634,19 @@ def invoice_suggestion(doc, case=None):
         if q and q['line_items']:
             sugg.update(line_items=q['line_items'], from_quote=q['number'] or True)
             return sugg
+    if jobber_status()['connected'] and (case.get('category') in ('maintenance', 'inspection') or
+                                         maintenance_bill(doc)):
+        # A maintenance visit: the client pays their recurring job's price, not the bill plus markup.
+        try:
+            client_id = invoice_client(doc, case)
+            job = recurring_job_price(doc, case, client_id) if client_id else None
+        except JobberError:
+            job = None
+        if job:
+            sugg.update(bill_lines=sugg['line_items'], line_items=job['line_items'], client_id=client_id,
+                        markup_pct=0, recurring=True,
+                        job={k: job[k] for k in ('id', 'number', 'title', 'uri', 'total', 'status', 'type')})
+            return sugg
     if jobber_status()['connected'] and not (json.loads(case.get('jobber') or '{}').get('job') or {}).get('id'):
         try:
             client_id = invoice_client(doc, case)
@@ -4559,6 +4657,29 @@ def invoice_suggestion(doc, case=None):
             sugg.update(bill_lines=sugg['line_items'], line_items=job['line_items'], client_id=client_id,
                         job={k: job[k] for k in ('id', 'number', 'title', 'uri', 'total', 'status')})
     return sugg
+
+
+def recurring_job_price(doc, case, client_id):
+    """The client's recurring maintenance job a maintenance bill is for, with
+    its line items (the visit price): the item's own job when it is recurring,
+    a remembered site's job, else the client's live recurring jobs - pump /
+    maintenance ones first. None when it has no priced lines."""
+    j = json.loads(case.get('jobber') or '{}') if isinstance(case.get('jobber'), str) else (case.get('jobber') or {})
+    ids = [(j.get('job') or {}).get('id'), (match_site_alias(doc, case) or {}).get('job_id')]
+    live = [x for x in recurring_jobs(client_id) if x.get('status') != 'archived']
+    live.sort(key=lambda x: (not (TITLE_PATTERNS['pump'].search(x.get('title') or '') or
+                                  re.search(r'quarterly|monthly|maint', x.get('title') or '', re.I)),
+                             -(int(x.get('number') or 0))))
+    ids += [x['id'] for x in live]
+    seen = set()
+    for jid in ids:
+        if not jid or jid in seen:
+            continue
+        seen.add(jid)
+        d = job_detail(jid)
+        if d.get('type') == 'recurring' and d.get('status') != 'archived' and d['line_items']:
+            return d
+    return None
 
 
 def invoice_client(doc, case=None):
@@ -5017,14 +5138,14 @@ def note_sub_quote_on_invoice(case_id, invoice_id, job_id='', client_id='', invo
 
 
 def report_note_title(doc):
-    """"October Pump Maintenance": the month of the visit, as the office titles them."""
+    """"October Pump Report": the month of the visit, as the office titles them."""
     rf = doc.get('report_fields') or {}
     when = _iso_date(rf.get('date')) or doc.get('doc_date') or _today().isoformat()
     try:
         month = datetime.strptime(when[:10], '%Y-%m-%d').strftime('%B')
     except ValueError:
         month = _today().strftime('%B')
-    what = 'Fountain Maintenance' if re.search(r'fountain', rf.get('title') or '', re.I) else 'Pump Maintenance'
+    what = 'Fountain Report' if re.search(r'fountain', rf.get('title') or '', re.I) else 'Pump Report'
     return f'{month} {what}'
 
 
@@ -5119,8 +5240,8 @@ def log_report_to_jobber(doc_id, target_type, target_id, actor='system', message
         attached = False
         data = None
         if url:
-            fname = _pdf_name(doc['file_name']) if has_pdf else \
-                (_branded_name(doc['file_name']) if doc['has_branded'] else doc['file_name'])
+            # Named as the vendor sent it ("10-26  Spanish Wells"), only the extension changes.
+            fname = _vendor_file_name(doc['file_name'], '.pdf' if has_pdf else '.docx')
             ctype = 'application/pdf' if has_pdf else \
                 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
             try:
@@ -5793,6 +5914,8 @@ def h_summary(actor):
     conn = _conn()
     try:
         close_stale_todos(conn)
+        fix_terms_as_po(conn)
+        fix_maintenance_bills(conn)
         conn.commit()
         q = work_queue(conn)
         return {'queue': q, 'counts': {k: len(v) for k, v in q.items() if isinstance(v, list)},
@@ -6090,7 +6213,7 @@ def _send_doc_file(doc_id, version):
         if not path or not os.path.exists(path):
             return {'success': False, 'error': 'No PDF of this report on this server - download the Word file.'}, 404
         return send_file(path, mimetype='application/pdf', as_attachment=request.args.get('download') == '1',
-                         download_name=_pdf_name(row['file_name']))
+                         download_name=_vendor_file_name(row['file_name'], '.pdf'))
     if version == 'approved':
         dj = json.loads(row['jobber'] or '{}')
         path = dj.get('approved_path')
@@ -6573,7 +6696,8 @@ def invoiced_on_job(doc, case, job, actor='system'):
         _event(conn, actor, 'invoiced on matching job', f"Jobber job #{job.get('number')} {job.get('title')}",
                case_id=case['id'], doc_id=doc.get('id'))
         base = doc.get('subtotal') if doc.get('subtotal') is not None else doc.get('total')
-        if base is not None and job.get('total') is not None and \
+        # A recurring maintenance job has its own price; the bill isn't marked up to it.
+        if job.get('type') != 'recurring' and base is not None and job.get('total') is not None and \
                 abs(round(base * (1 + QUOTE_MARKUP_PCT / 100), 2) - float(job['total'])) > 1:
             name, email = _vendor_contact(case.get('vendor') or doc.get('vendor'))
             add_todo(conn, f"job-check:{case['id']}:{doc.get('doc_number') or doc.get('id')}",
