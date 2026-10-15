@@ -46,6 +46,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 import time
 from datetime import date, datetime, timedelta
+from urllib.parse import quote as url_quote
 from zoneinfo import ZoneInfo
 
 import requests as http_requests
@@ -4361,7 +4362,7 @@ def note_vendor_file(doc, target_type, target_id, text, version='original', file
     mutation, id_arg, input_type, field = NOTE_MUTATION[target_type]
     q = (f'mutation PumpsVendorNote($id: EncodedId!, $input: {input_type}!) {{ {mutation}({id_arg}: $id, '
          f'input: $input) {{ {field} {{ id }} userErrors {{ message path }} }} }}')
-    url = _signed_file_url(doc['id'], version, days=7)
+    url = _signed_file_url(doc['id'], version, days=7, name=file_name or os.path.basename(doc.get('file_name') or ''))
     ctype = content_type or ('application/pdf' if (doc.get('file_name') or '').lower().endswith('.pdf') else
                              'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
     if url:
@@ -4638,7 +4639,7 @@ def invoice_suggestion(doc, case=None):
             sugg.update(line_items=q['line_items'], from_quote=q['number'] or True)
             return sugg
     if jobber_status()['connected'] and (case.get('category') in ('maintenance', 'inspection') or
-                                         maintenance_bill(doc)):
+                                         maintenance_bill(doc) or maint_visit_bill(doc, case)):
         # A maintenance visit: the client pays their recurring job's price, not the bill plus markup.
         try:
             client_id = invoice_client(doc, case)
@@ -4660,6 +4661,37 @@ def invoice_suggestion(doc, case=None):
             sugg.update(bill_lines=sugg['line_items'], line_items=job['line_items'], client_id=client_id,
                         job={k: job[k] for k in ('id', 'number', 'title', 'uri', 'total', 'status')})
     return sugg
+
+
+def maint_visit_bill(doc, case=None):
+    """A bill from a maintenance account for the account's usual vendor cost
+    (Evergreen, Oct 2026: Wettech's $100 visit, nothing saying maintenance) -
+    the monthly visit, invoiced at the recurring job's price."""
+    case = case or {}
+    base = doc.get('subtotal') if doc.get('subtotal') is not None else doc.get('total')
+    if doc.get('kind') != 'bill' or base is None:
+        return False
+    text = ' '.join(str(x or '') for x in (case.get('client_name'), case.get('title'), case.get('site'),
+                                           doc.get('client_name'), doc.get('site')))
+    conn = _conn()
+    try:
+        accts = {r['name']: r['vendor_cost'] for r in
+                 conn.execute('SELECT name, vendor_cost FROM pump_maint_accounts WHERE active=1')}
+        name = match_account(text, conn, list(accts))
+    finally:
+        conn.close()
+    cost = _money(accts.get(name)) if name else None
+    if cost is None or abs(float(base) - cost) > 1:
+        return False
+    items = doc.get('line_items')
+    if isinstance(items, str):
+        try:
+            items = json.loads(items or '[]')
+        except ValueError:
+            items = []
+    words = ' '.join([doc.get('description') or '', doc.get('proposal_title') or '', doc.get('quote_reference') or ''] +
+                     [f"{i.get('name') or ''} {i.get('description') or ''}" for i in items or [] if isinstance(i, dict)])
+    return not _QUOTE_WORDS.search(words)
 
 
 def recurring_job_price(doc, case, client_id):
@@ -5069,14 +5101,16 @@ def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', a
         conn.close()
 
 
-def _signed_file_url(doc_id, version='branded', days=2):
+def _signed_file_url(doc_id, version='branded', days=2, name=''):
+    """A short-lived link to a document. Jobber names an attached file after
+    the link's last part, so `name` ("10-26 Evergreen.pdf") goes on the end."""
     base = (CFG.get('website_url') or '').rstrip('/')
     if not base or 'localhost' in base or '127.0.0.1' in base:
         return ''
     exp = int(time.time()) + days * 86400
     sig = hmac.new((CFG.get('secret_key') or '').encode(), f'{doc_id}:{version}:{exp}'.encode(),
                    'sha256').hexdigest()[:32]
-    return f'{base}/pumps/f/{doc_id}/{version}/{exp}/{sig}'
+    return f'{base}/pumps/f/{doc_id}/{version}/{exp}/{sig}' + (f'/{url_quote(name)}' if name else '')
 
 
 def _check_signed(doc_id, version, exp, sig):
@@ -5239,12 +5273,13 @@ def log_report_to_jobber(doc_id, target_type, target_id, actor='system', message
         has_pdf = bool(row['branded_path']) and (os.path.exists(_branded_pdf_path(row['branded_path'])) or
                                                   bool(_make_branded_pdf(row['branded_path'])))
         version = 'branded_pdf' if has_pdf else ('branded' if doc['has_branded'] else 'original')
-        url = _signed_file_url(doc_id, version, days=7)
+        # Named as the vendor sent it ("10-26  Spanish Wells"), only the extension changes. Jobber
+        # takes the name from the link, so it goes on the end of it.
+        fname = _vendor_file_name(doc['file_name'], '.pdf' if has_pdf else '.docx')
+        url = _signed_file_url(doc_id, version, days=7, name=fname)
         attached = False
         data = None
         if url:
-            # Named as the vendor sent it ("10-26  Spanish Wells"), only the extension changes.
-            fname = _vendor_file_name(doc['file_name'], '.pdf' if has_pdf else '.docx')
             ctype = 'application/pdf' if has_pdf else \
                 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
             try:
@@ -10808,7 +10843,8 @@ def page():
 
 
 @bp.route('/pumps/f/<int:doc_id>/<version>/<int:exp>/<sig>')
-def signed_file(doc_id, version, exp, sig):
+@bp.route('/pumps/f/<int:doc_id>/<version>/<int:exp>/<sig>/<path:name>')
+def signed_file(doc_id, version, exp, sig, name=''):
     """Short-lived link Jobber uses to fetch a report it is attaching to a note."""
     if version not in ('branded', 'branded_pdf', 'original', 'approved') or not _check_signed(doc_id, version, exp, sig):
         return 'Link expired', 403

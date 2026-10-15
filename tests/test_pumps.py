@@ -319,6 +319,9 @@ class PumpsTest(unittest.TestCase):
             self.assertEqual((att[0]['fileName'], att[0]['contentType']), ('10-26  Spanish Wells.pdf', 'application/pdf'))
         else:
             self.assertEqual(att[0]['fileName'], '10-26  Spanish Wells.docx')
+        # Jobber names the file from the link (it ignores fileName), so the link ends with the name.
+        self.assertTrue(att[0]['url'].endswith('/10-26%20%20Spanish%20Wells' + os.path.splitext(att[0]['fileName'])[1]),
+                        att[0]['url'])
         self.assertEqual(res['auto_note']['target'], 'The Lake Club #1609 Quarterly Pump- 850')
         # Kept in the app by year.
         lib = self.c.get('/pumps/api/reports?year=2026').get_json()
@@ -3157,6 +3160,49 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(self.case(e['case_id'])['po_number'], '')
         # A bill that names a quote still waits on it.
         self.assertFalse(P.maintenance_bill({'kind': 'bill', 'description': 'Pump maintenance repairs as per quote'}))
+
+    def test_report_is_saved_in_jobber_under_the_vendors_name(self):
+        """Jobber names a note's file after the link's last part (Oct 2026: a hash), so the link ends with the
+        name the vendor gave the report."""
+        b = self.upload('b-0950.pdf')
+        saved = P.CFG.get('website_url')
+        P.CFG['website_url'] = 'https://example.com'
+        try:
+            url = P._signed_file_url(b['doc_id'], 'original', name='10-26 Evergreen Pump Report.pdf')
+        finally:
+            P.CFG['website_url'] = saved
+        self.assertTrue(url.endswith('/10-26%20Evergreen%20Pump%20Report.pdf'), url)
+        r = self.c.get(url.replace('https://example.com', ''))
+        self.assertEqual(r.status_code, 200)
+
+    def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
+        """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's
+        usual vendor cost - it's the monthly visit, invoiced at the recurring job's $250, not $130."""
+        conn = P._conn()
+        conn.execute("UPDATE pump_maint_accounts SET active=1, vendor_cost='$100.00' WHERE name='Evergreen (Bradenton)'")
+        conn.commit()
+        conn.close()
+        bill = {'kind': 'bill', 'client_name': 'Evergreen c/o Access Difference', 'subtotal': 100.0,
+                'description': 'Pump service', 'line_items': [{'name': 'Service', 'description': 'Pump service'}]}
+        self.assertTrue(P.maint_visit_bill(bill, {}))
+        self.assertFalse(P.maint_visit_bill({**bill, 'subtotal': 1665.0}, {}), 'a repair, not the visit')
+        self.assertFalse(P.maint_visit_bill({**bill, 'description': 'Repairs as per quote'}, {}))
+        self.assertFalse(P.maint_visit_bill({**bill, 'client_name': 'Somewhere Else HOA'}, {}))
+        job = {'id': 'J1450', 'number': '1450', 'title': 'Monthly Pump 250', 'uri': '', 'total': 250.0,
+               'status': 'requires_invoicing', 'type': 'recurring', 'instructions': '', 'property_label': '',
+               'line_items': [{'name': 'MONTHLY PUMP PROGRAM', 'description': '', 'quantity': 1,
+                               'unit_price': 250.0, 'taxable': False}]}
+        saved = (P.jobber_status, P.invoice_client, P.recurring_jobs, P.job_detail)
+        P.jobber_status = lambda: {'connected': True}
+        P.invoice_client = lambda doc, case=None: 'CE'
+        P.recurring_jobs = lambda cid: [{'id': 'J1450', 'number': '1450', 'title': job['title'], 'status': 'active'}]
+        P.job_detail = lambda jid: job
+        try:
+            sugg = P.invoice_suggestion(bill, {})
+        finally:
+            P.jobber_status, P.invoice_client, P.recurring_jobs, P.job_detail = saved
+        self.assertEqual([li['unit_price'] for li in sugg['line_items']], [250.0])
+        self.assertEqual(sugg['job']['id'], 'J1450')
 
     def test_maintenance_invoice_marks_the_months_visit_complete(self):
         """Oct 2026: invoicing a maintenance bill on the recurring job also completes that job's visit for the
