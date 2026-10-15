@@ -318,6 +318,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   <div class="tab" data-tab="scada">SCADA <span class="n" id="n-scada"></span></div>
   <div class="tab" data-tab="accounts">Accounts</div>
   <div class="tab" data-tab="reports">Reports</div>
+  <div class="tab" data-tab="bills">Bills to pay <span class="n" id="n-bills"></span></div>
 </div>
 
 <!-- JOBS -->
@@ -383,6 +384,14 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 </div>
 
 <!-- REPORTS -->
+<div class="panel hide" id="p-bills">
+  <div class="toolbar">
+    <button class="btn p" id="billsGo" onclick="billsEmail()">✉ Email Christian</button>
+    <div class="sp"></div><span class="note" id="billsInfo"></span>
+  </div>
+  <div class="note" style="margin-bottom:10px">Every vendor bill not paid yet, by vendor. A bill can be paid once we've invoiced the client for it; ticked ones go in one email to Christian, with the bills attached. Mark each paid when it is.</div>
+  <div id="billsList"><div class="empty">Loading…</div></div>
+</div>
 <div class="panel hide" id="p-reports">
   <div class="toolbar">
     <select id="repYear" onchange="loadReports()"></select>
@@ -480,7 +489,7 @@ function showTab(name){
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === name));
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('hide', p.id !== 'p-' + name));
   if (name === 'jobs') loadJobs(); else if (name === 'scada') loadScada();
-  else if (name === 'accounts') loadAccounts(); else if (name === 'reports') loadReports();
+  else if (name === 'accounts') loadAccounts(); else if (name === 'reports') loadReports(); else if (name === 'bills') loadBills();
   history.replaceState(null, '', '#' + name);
 }
 
@@ -954,6 +963,49 @@ async function sendPayEmail(id, btn){
   if (!j.success) { toast(j.error, true); loadToday(); return; }
   toast('Sent to ' + j.sent.to);
   closeModal(); loadToday();
+}
+// ── bills to pay ──────────────────────────────────────
+async function loadBills(){
+  const j = await api('/bills_to_pay');
+  const box = document.getElementById('billsList');
+  if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
+  let n = 0, total = 0;
+  box.innerHTML = j.vendors.map(g => `<div class="grp">${esc(g.vendor)} · ${money(g.payable_total)} to pay${g.waiting_total ? ' · ' + money(g.waiting_total) + ' waiting' : ''}</div>
+    <table class="t"><thead><tr><th></th><th>Job</th><th>Their invoice</th><th class="num">Amount</th><th>Can it be paid?</th><th></th></tr></thead><tbody>
+    ${g.bills.map(b => { if (b.payable) { n++; total += b.amount || 0; }
+      return `<tr class="${b.payable ? '' : 'note'}"><td>${b.payable ? `<input type="checkbox" class="billPick" value="${b.case_id}" ${b.asked_at ? '' : 'checked'} onchange="billsInfo()">` : ''}</td>
+      <td><a href="#" onclick="event.preventDefault();openCase(${b.case_id})">${esc(b.client_name || b.title)}</a><div class="note">${esc(b.title)}</div></td>
+      <td>${b.bill_doc_id ? `<a target="_blank" href="/pumps/api/docs/${b.bill_doc_id}/file">#${esc(b.bill_number || '?')}</a>` : '#' + esc(b.bill_number || '?')}<div class="note">${esc(b.bill_date)}</div></td>
+      <td class="num">${b.amount != null ? money(b.amount) : '?'}</td>
+      <td>${b.payable ? '<b class="ok">✓ Yes</b> - ' : 'Not yet - '}${esc(b.why)}${b.asked_at ? `<div class="note">✉ Emailed Christian ${esc(b.asked_at.slice(0, 10))}</div>` : ''}</td>
+      <td><button class="btn s" onclick="markVendorPaid(${b.case_id}).then(loadBills)">Mark paid</button></td></tr>`; }).join('')}
+    </tbody></table>`).join('') || '<div class="empty">No vendor bills waiting to be paid. 🎉</div>';
+  const t = document.getElementById('n-bills'); if (t) t.textContent = n || '';
+  billsInfo();
+}
+function billsPicked(){ return [...document.querySelectorAll('.billPick:checked')].map(x => +x.value); }
+function billsInfo(){
+  const ids = billsPicked();
+  document.getElementById('billsInfo').textContent = ids.length ? `${ids.length} ticked for Christian` : 'Tick the bills to send';
+  document.getElementById('billsGo').disabled = !ids.length;
+}
+async function billsEmail(){
+  const ids = billsPicked();
+  if (!ids.length) { toast('Tick the bills to send.', true); return; }
+  const j = await api('/bills_to_pay/email', {method:'POST', body:{case_ids: ids}});
+  if (!j.success) { toast(j.error, true); return; }
+  const e = j.email;
+  openModal('Email Christian - bills to pay', `
+    <div class="note">To <b>${esc(e.to || '(no address saved for Christian)')}</b> · ${esc(e.subject)} · the ${e.count} bill${e.count > 1 ? 's are' : ' is'} attached.</div>
+    <textarea id="billsBody" style="width:100%;min-height:260px;font:inherit">${esc(e.body)}</textarea>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" id="billsSend" onclick="billsSend()">Send to Christian</button>`);
+}
+async function billsSend(){
+  const btn = document.getElementById('billsSend'); btn.disabled = true; btn.textContent = 'Sending…';
+  const j = await api('/bills_to_pay/email', {method:'POST', body:{case_ids: billsPicked(), send: true, body: document.getElementById('billsBody').value}});
+  btn.disabled = false; btn.textContent = 'Send to Christian';
+  if (!j.success) { toast(j.error, true); return; }
+  closeModal(); toast(`Emailed Christian: ${j.sent} bill${j.sent > 1 ? 's' : ''}, ${money(j.total)}.`); loadBills();
 }
 async function markVendorPaid(id){
   const d = prompt('Date Wettech\'s bill was paid (YYYY-MM-DD):', new Date().toISOString().slice(0,10));
@@ -1994,8 +2046,8 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (!docum
   const h = location.hash.slice(1);
   if (h.startsWith('item-')) { loadToday(); loadJobs(); openCase(parseInt(h.slice(5))); }
   else if (h.startsWith('doc-')) { loadToday(); loadJobs(); openDoc(parseInt(h.slice(4))); }
-  if (['jobs','scada','accounts','reports'].includes(h)) showTab(h); else if (!h.startsWith('item-') && !h.startsWith('doc-')) showTab('jobs');
-  if (!h || ['jobs','scada','accounts','reports'].includes(h)) loadToday();
+  if (['jobs','scada','accounts','reports','bills'].includes(h)) showTab(h); else if (!h.startsWith('item-') && !h.startsWith('doc-')) showTab('jobs');
+  if (!h || ['jobs','scada','accounts','reports','bills'].includes(h)) loadToday();
   setInterval(() => { if (document.getElementById('drawerWrap').classList.contains('hide') && document.getElementById('modalWrap').classList.contains('hide')) { loadToday(); if (curTab === 'jobs') loadJobs(); } }, 60000);
 })();
 </script>

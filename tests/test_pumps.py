@@ -3556,6 +3556,43 @@ class PumpsTest(unittest.TestCase):
                                     {'category': 'maintenance', 'jobber': {'job': {'id': 'B', 'number': '940'}}})
         self.assertEqual((t['type'], t['id']), ('job', 'B'))
 
+    def test_bills_to_pay_tab_and_one_email_to_christian(self):
+        """Oct 2026: a Bills to pay tab - every unpaid vendor bill by vendor; one invoiced to the client can be
+        paid; the ticked ones go to Christian in one email with the bills attached."""
+        self.extracts['b-pay1.pdf'] = extraction('bill', '40001', client='Pay Lakes HOA', subtotal=500)
+        self.extracts['b-pay2.pdf'] = extraction('bill', '40002', client='Wait Pines HOA', subtotal=300)
+        b1, b2 = self.upload('b-pay1.pdf'), self.upload('b-pay2.pdf')
+        self.c.patch(f"/pumps/api/cases/{b1['case_id']}", json={'sei_invoice_number': '37001'})
+        j = self.c.get('/pumps/api/bills_to_pay').get_json()
+        bills = {b['case_id']: b for g in j['vendors'] for b in g['bills']}
+        self.assertTrue(bills[b1['case_id']]['payable'], bills[b1['case_id']])
+        self.assertFalse(bills[b2['case_id']]['payable'])
+        self.assertIn('not invoiced', bills[b2['case_id']]['why'])
+        e = self.c.post('/pumps/api/bills_to_pay/email', json={'case_ids': [b1['case_id'], b2['case_id']]}).get_json()['email']
+        self.assertEqual(e['count'], 1)
+        self.assertIn('#40001', e['body'])
+        self.assertNotIn('#40002', e['body'])
+        sent = []
+        saved, env = P.graph_send, os.environ.get('CHRISTIAN_EMAIL')
+        P.graph_send = lambda to, subject, html, atts=None, sender=None: sent.append((to, subject, atts))
+        os.environ['CHRISTIAN_EMAIL'] = 'christian@example.com'
+        try:
+            r = self.c.post('/pumps/api/bills_to_pay/email', json={'case_ids': [b1['case_id']], 'send': True}).get_json()
+        finally:
+            P.graph_send = saved
+            if env is None:
+                os.environ.pop('CHRISTIAN_EMAIL', None)
+            else:
+                os.environ['CHRISTIAN_EMAIL'] = env
+        self.assertTrue(r['success'], r)
+        self.assertEqual((r['sent'], sent[0][0]), (1, 'christian@example.com'))
+        got = {b['case_id']: b for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for b in g['bills']}
+        self.assertTrue(got[b1['case_id']]['asked_at'])
+        # Paid: off the tab.
+        self.c.patch(f"/pumps/api/cases/{b1['case_id']}", json={'vendor_paid_on': '2026-10-16'})
+        left = {b['case_id'] for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for b in g['bills']}
+        self.assertNotIn(b1['case_id'], left)
+
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's
         usual vendor cost - it's the monthly visit, invoiced at the recurring job's $250, not $130."""
