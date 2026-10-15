@@ -3272,6 +3272,34 @@ class PumpsTest(unittest.TestCase):
         t = P.resolve_report_target({'client_name': 'Brookside Lakes', 'site': 'Brookside Lakes'})
         self.assertEqual((t['type'], t['id']), ('job', 'J1609'))
 
+    def test_maintenance_bill_as_per_quotation_takes_the_picked_clients_job_price(self):
+        """Rosewood (Oct 2026): "Service to perform irrigation maintenance ... OCTOBER 2026. As per quotation."
+        is the month's visit under the contract, not quoted work - and once the office picks the client, the
+        invoice is that client's recurring job price, not $150 + 30%."""
+        desc = ('Service to perform irrigation maintenance to ensure equipment is operating properly. '
+                'OCTOBER 2026. As per quotation.')
+        bill = {'kind': 'bill', 'client_name': 'Rosewood Irrigation Maintenance', 'subtotal': 150.0,
+                'description': desc, 'line_items': [{'name': 'Rosewood Irrigation Maintenance', 'description': desc}]}
+        self.assertTrue(P.maintenance_bill(bill))
+        self.assertFalse(P.maintenance_bill({'kind': 'bill', 'description': 'Pump maintenance repairs as per quote'}))
+        self.assertFalse(P.maintenance_bill({'kind': 'bill', 'description': 'Maintenance OCTOBER 2026 per quote #812'}))
+        job = {'id': 'JRW', 'number': '1700', 'title': 'Quarterly Pump', 'uri': '', 'total': 195.0,
+               'status': 'active', 'type': 'recurring', 'instructions': '', 'property_label': '',
+               'line_items': [{'name': 'QUARTERLY PUMP PROGRAM', 'description': '', 'quantity': 1,
+                               'unit_price': 195.0, 'taxable': False}]}
+        saved = (P.jobber_status, P.invoice_client, P.recurring_jobs, P.job_detail)
+        P.jobber_status = lambda: {'connected': True}
+        P.invoice_client = lambda doc, case=None: None   # the app can't tell which Rosewood
+        P.recurring_jobs = lambda cid: [{'id': 'JRW', 'number': '1700', 'title': job['title'], 'status': 'active'}] \
+            if cid == 'CRW' else []
+        P.job_detail = lambda jid: job
+        try:
+            self.assertFalse(P.invoice_suggestion(bill, {}).get('job'))
+            sugg = P.invoice_suggestion(bill, {}, 'CRW')
+        finally:
+            P.jobber_status, P.invoice_client, P.recurring_jobs, P.job_detail = saved
+        self.assertEqual(([li['unit_price'] for li in sugg['line_items']], sugg['job']['id']), ([195.0], 'JRW'))
+
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's
         usual vendor cost - it's the monthly visit, invoiced at the recurring job's $250, not $130."""
