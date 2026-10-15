@@ -593,7 +593,7 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(inp['clientId'], 'C1', 'the clear best client, not the work-orders lead')
         self.assertEqual(len(inp['lineItems']), 1, 'sales tax line left off')
         # No Jobber quote to copy: one line, the bill before tax plus 30%.
-        self.assertEqual((inp['lineItems'][0]['name'], inp['lineItems'][0]['unitPrice']), ('Service Proposal Amount', 2344.95))
+        self.assertEqual((inp['lineItems'][0]['name'], inp['lineItems'][0]['unitPrice']), ('Service Proposal Amount', 2345.0), 'whole dollars, rounded up')
         self.assertNotIn('quotation', inp['lineItems'][0]['description'].lower())
         self.assertEqual(inp['tax'], {'taxCalculationMethod': 'EXCLUSIVE'})
         self.assertFalse(any(word in q for q, _ in fake.calls for word in ('Send', 'MarkAsSent')))
@@ -1695,7 +1695,7 @@ class PumpsTest(unittest.TestCase):
             sugg = self.c.get(f"/pumps/api/docs/{b['doc_id']}").get_json()['doc']['invoice_suggestion']
             self.assertEqual(sugg['from_quote'], '812')
             self.assertEqual([(l['name'], l['unit_price']) for l in sugg['line_items']],
-                             [('Service Proposal Amount', 1506.69)])
+                             [('Service Proposal Amount', 1507.0)])
         finally:
             P.JOBBER_STATIC_TOKEN = saved
 
@@ -3597,6 +3597,20 @@ class PumpsTest(unittest.TestCase):
         left = {b['case_id'] for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for b in g['bills']}
         self.assertNotIn(b1['case_id'], left)
 
+    def test_our_invoices_are_in_whole_dollars(self):
+        """Carlisle (Oct 2026): $1,506.69 on our invoice - rounded up to the dollar, no cents."""
+        bill = {'kind': 'bill', 'client_name': 'Carlisle', 'subtotal': 1158.99, 'description': 'Field service to check '
+                'out pump station', 'line_items': [{'name': 'Service', 'description': 'Field service', 'amount': 1158.99}]}
+        saved = P.jobber_status
+        P.jobber_status = lambda: {'connected': False}
+        try:
+            sugg = P.invoice_suggestion(bill, {})
+        finally:
+            P.jobber_status = saved
+        self.assertEqual([li['unit_price'] for li in sugg['line_items']], [1507.0])
+        self.assertEqual(P.whole_dollars([{'unit_price': 250.0}, {'unit_price': 99.01}])[1]['unit_price'], 100.0)
+        self.assertEqual(P.whole_dollars([{'unit_price': 250.0}])[0]['unit_price'], 250.0)
+
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's
         usual vendor cost - it's the monthly visit, invoiced at the recurring job's $250, not $130."""
@@ -3812,7 +3826,7 @@ class PumpsTest(unittest.TestCase):
             self.assertEqual(inv['job']['number'], '14511', inv)
             sent = [v for q, v in fake.calls if 'invoiceCreate' in q][-1]['input']
             self.assertEqual((sent['clientId'], sent['jobId']), (HODGES, 'J14511'))
-            self.assertEqual([(l['name'], l['unitPrice']) for l in sent['lineItems']], [('PROPOSAL AMOUNT SERVICE', 3471.43)])
+            self.assertEqual([(l['name'], l['unitPrice']) for l in sent['lineItems']], [('PROPOSAL AMOUNT SERVICE', 3472.0)])
             case = self.case(b['case_id'])
             self.assertEqual(case['jobber']['job']['number'], '14511')
             self.assertEqual([i for i in case['issues'] if not i['resolved_at']], [])

@@ -4845,7 +4845,25 @@ def link_jobber_quote(case_id, number, actor='system'):
         conn.close()
 
 
+def whole_dollars(lines):
+    """Our invoice prices rounded up to the dollar - no cents ($1,506.69 ->
+    $1,507, Oct 2026)."""
+    return [{**li, 'unit_price': float(math.ceil(float(li['unit_price']) - 1e-9))}
+            if isinstance(li.get('unit_price'), (int, float)) else li for li in lines or []]
+
+
 def invoice_suggestion(doc, case=None, client_id=None):
+    """The invoice for a bill (see _invoice_suggestion), prices in whole
+    dollars - except the county's, whose line shows its cost math in cents."""
+    sugg = _invoice_suggestion(doc, case, client_id)
+    if not sugg.get('gov'):
+        for k in ('line_items', 'bill_lines'):
+            if sugg.get(k):
+                sugg[k] = whole_dollars(sugg[k])
+    return sugg
+
+
+def _invoice_suggestion(doc, case=None, client_id=None):
     """The invoice for a bill: when the bill matches the vendor's quote and
     the item has our client quote in Jobber, the client is invoiced what they
     were quoted (and approved). Otherwise the bill's lines plus any markup."""
@@ -10624,8 +10642,8 @@ def auto_draft_invoice(doc_id, actor='Pumps (automatic)'):
             # The county is invoiced what it approved, with its PO in the subject and nothing taxed.
             subject = suggest_invoice(doc, case)['subject']
             lines['line_items'] = [{**li, 'taxable': False} for li in lines['line_items']]
-        return create_draft_invoice(doc_id, client_id, lines['line_items'], subject,
-                                    (j.get('job') or {}).get('id') or '', actor)
+        return create_draft_invoice(doc_id, client_id, lines['line_items'] if gov else whole_dollars(lines['line_items']),
+                                    subject, (j.get('job') or {}).get('id') or '', actor)
     except (JobberError, ValueError) as e:
         return _invoice_pending(doc_id, e)
 
