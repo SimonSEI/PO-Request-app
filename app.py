@@ -39245,13 +39245,70 @@ if TIMEOFF_ENABLED:
     init_timeoff(app, csrf, DB_PATH)
 
 # Pumps (pump/diver/filter/SCADA work from request to invoice) lives in pumps.py.
+# With PUMPS_URL set it runs as its own Railway service (pumps_server.py, see
+# PUMPS_SERVICE.md), so a Pumps update doesn't redeploy this app: /pumps here
+# signs the person in there, and Receivables gets the Jobber token from it.
+# Without PUMPS_URL it runs inside this app, as it always has.
 from pumps import init_pumps, pumps_allowed
-init_pumps(app, csrf, DB_PATH, data_dir=DATA_DIR, secret_key=app.secret_key, website_url=WEBSITE_URL,
-           email_enabled=PO_EMAIL_MONITORING_ENABLED, fetch_emails=_fetch_emails_for_vi_scan,
-           graph_attachments=extract_attachments_from_graph_message,
-           email_attachments=extract_attachments_from_email, log_activity=log_activity,
-           scheduler_available=SCHEDULER_AVAILABLE,
-           graph_token=_get_graph_access_token if MS_GRAPH_ENABLED else None, mail_from=PO_EMAIL_ADDRESS)
+import pumps_link
+PUMPS_URL = os.environ.get('PUMPS_URL', '').rstrip('/')
+PUMPS_INTERNAL_URL = os.environ.get('PUMPS_INTERNAL_URL', '').rstrip('/')
+PUMPS_SHARED_SECRET = os.environ.get('PUMPS_SHARED_SECRET', '')
+if PUMPS_URL and not PUMPS_SHARED_SECRET:
+    print('⚠ PUMPS_URL is set but PUMPS_SHARED_SECRET is not - Pumps stays inside this app')
+    PUMPS_URL = ''
+if PUMPS_URL and not PUMPS_INTERNAL_URL:
+    print('⚠ PUMPS_INTERNAL_URL is not set - Receivables cannot reach Jobber through Pumps')
+_pumps_jobber = pumps_link.JobberLink(PUMPS_INTERNAL_URL or PUMPS_URL, PUMPS_SHARED_SECRET)
+if PUMPS_URL:
+    print(f'✓ Pumps runs as its own service: {PUMPS_URL}')
+
+    from urllib.parse import urlencode
+    from flask import Blueprint
+    # Named 'pumps' / 'page' like the real Pumps page, so url_for('pumps.page') still works here.
+    _pumps_handoff_bp = Blueprint('pumps', __name__)
+
+    def _pumps_handoff(rest=''):
+        if not pumps_allowed():
+            return redirect(url_for('login'))
+        ticket = pumps_link.make_ticket(PUMPS_SHARED_SECRET, session['username'], session.get('role', ''),
+                                        session.get('full_name') or '')
+        nxt = '/pumps' + ('/' + rest if rest else '')
+        return redirect(f'{PUMPS_URL}/pumps/sso?' + urlencode({'t': ticket, 'next': nxt}))
+
+    _pumps_handoff_bp.add_url_rule('/pumps', 'page', _pumps_handoff)
+    _pumps_handoff_bp.add_url_rule('/pumps/<path:rest>', 'handoff', _pumps_handoff)
+    app.register_blueprint(_pumps_handoff_bp)
+
+
+@app.route('/internal/pumps-export')
+def pumps_export():
+    """The switch-over: the Pumps service fetches its data from here once
+    (pumps_link.import_bundle). Private network and shared secret only, and
+    only once Pumps has stopped running here. This app's copy is left as is."""
+    if not request.host.split(':')[0].endswith('.railway.internal'):
+        return 'Not found', 404
+    if not pumps_link.secret_ok(PUMPS_SHARED_SECRET, request.headers.get('X-Pumps-Secret')):
+        return 'Unauthorized', 401
+    if not PUMPS_URL:
+        return 'Pumps still runs in the Office App - set PUMPS_URL here first', 409
+    import shutil
+    import tempfile
+    out = os.path.join(tempfile.mkdtemp(prefix='pumps_export_'), 'pumps_export.zip')
+    manifest = pumps_link.export_bundle(DB_PATH, DATA_DIR, out)
+    print(f"✓ Pumps export: {sum(manifest['tables'].values())} rows, {len(manifest['files'])} files")
+    resp = send_file(out, mimetype='application/zip', as_attachment=True, download_name='pumps_export.zip')
+    resp.call_on_close(lambda: shutil.rmtree(os.path.dirname(out), ignore_errors=True))
+    return resp
+
+
+if not PUMPS_URL:
+    init_pumps(app, csrf, DB_PATH, data_dir=DATA_DIR, secret_key=app.secret_key, website_url=WEBSITE_URL,
+               email_enabled=PO_EMAIL_MONITORING_ENABLED, fetch_emails=_fetch_emails_for_vi_scan,
+               graph_attachments=extract_attachments_from_graph_message,
+               email_attachments=extract_attachments_from_email, log_activity=log_activity,
+               scheduler_available=SCHEDULER_AVAILABLE,
+               graph_token=_get_graph_access_token if MS_GRAPH_ENABLED else None, mail_from=PO_EMAIL_ADDRESS)
 if not CASHFLOW_ENABLED:
     # Switched off: forget any Jobber or QuickBooks sign-in, so neither the
     # database nor a downloaded backup holds a working key to either account.
@@ -39266,8 +39323,10 @@ import pumps as _pumps
 from receivables import init_receivables, receivables_allowed
 init_receivables(app, DB_PATH, data_dir=DATA_DIR, get_setting=get_setting, set_setting=set_setting,
                  graph_token=_get_graph_access_token, graph_enabled=MS_GRAPH_ENABLED,
-                 jobber_token=_pumps._access_token, jobber_version=_pumps.JOBBER_API_VERSION,
-                 jobber_connected=lambda: _pumps.jobber_status()['connected'],
+                 jobber_token=_pumps_jobber.token if PUMPS_URL else _pumps._access_token,
+                 jobber_version=_pumps.JOBBER_API_VERSION,
+                 jobber_connected=(_pumps_jobber.connected if PUMPS_URL else
+                                   lambda: _pumps.jobber_status()['connected']),
                  anthropic_client=(anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                                    if ANTHROPIC_AVAILABLE and ANTHROPIC_API_KEY else None),
                  scheduler_cls=BackgroundScheduler if SCHEDULER_AVAILABLE else None, website_url=WEBSITE_URL)
