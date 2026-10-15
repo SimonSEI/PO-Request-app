@@ -674,6 +674,8 @@ function jobberInvoiceUri(inv){
   if (inv.uri) return inv.uri;
   try { const n = atob(inv.id || '').split('/').pop(); return /^\d+$/.test(n) ? 'https://secure.getjobber.com/invoices/' + n : ''; } catch (e) { return ''; }
 }
+// Client search boxes search as you type (a moment after the last key), no Search click needed.
+function liveSearch(fn){ clearTimeout(window._lsT); window._lsT = setTimeout(() => { const el = document.activeElement; if (el && el.value && el.value.trim().length >= 2) fn(); }, 350); }
 function todoItem(tag, cls, title, sub, open, buttons, key){
   if (key) buttons = (buttons || '') + `<button class="btn s" title="Delete from my to do list" onclick="todoHide('${esc(key)}')">✕</button>`;
   return `<div class="row" onclick="${open}"><div class="main"><div class="tt"><span class="chip ${cls}">${tag}</span> ${title}</div>${sub ? `<div class="sub">${sub}</div>` : ''}${buttons ? `<div class="act" onclick="event.stopPropagation()">${buttons}</div>` : ''}</div></div>`;
@@ -1249,7 +1251,7 @@ async function draftInvoice(docId){
     <div class="safe">This creates a DRAFT invoice in Jobber. Nothing is sent to the client - review it in Jobber and send it from there.</div>
     ${(d.case_issues || []).map(i => `<div class="issue">⚠️ ${esc(i.message)}</div>`).join('')}
     <div class="note">From ${esc(d.vendor)} bill #${esc(d.doc_number)} - ${money(d.subtotal)} before tax, ${money(d.total)} total. One Service Proposal Amount line: the bill before tax${s.markup_pct ? ' plus ' + s.markup_pct + '%' : ''}; Jobber adds the client's tax.</div>
-    <div><b>Jobber client</b><div class="toolbar" style="margin:6px 0"><input type="text" id="cq" value="${esc(d.client_name)}" style="flex:1"><button class="btn" onclick="findClients()">Search</button></div><div id="cands"><div class="note">Searching…</div></div></div>
+    <div><b>Jobber client</b><div class="toolbar" style="margin:6px 0"><input type="text" id="cq" oninput="liveSearch(findClients)" onkeydown="if(event.key==='Enter'){event.preventDefault();clearTimeout(window._lsT);findClients()}" value="${esc(d.client_name)}" style="flex:1"><button class="btn" onclick="findClients()">Search</button></div><div id="cands"><div class="note">Searching…</div></div></div>
     <div id="jobMatchBox">${jobMatchHtml(s.job)}</div>
     <div class="note">The client you pick is remembered for "${esc(d.client_name)}", so next time it's filled in by itself.</div>
     <label class="note">Invoice subject<input type="text" id="invSubject" value="${esc(inv.subject)}" style="width:100%"></label>
@@ -1297,6 +1299,7 @@ async function findClients(){
   if (!q) { box.innerHTML = '<div class="note">Type a client name.</div>'; return; }
   box.innerHTML = '<div class="note">Searching Jobber…</div>';
   const j = await api('/jobber/clients?q=' + encodeURIComponent(q));
+  if (document.getElementById('cq') && document.getElementById('cq').value.trim() !== q) return;   // still typing: a newer search shows
   if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
   inv.client_id = j.pick ? j.pick.id : null;
   box.innerHTML = (j.candidates || []).map(c => `<div class="cand ${c.id === inv.client_id ? 'on' : ''}" onclick="pickClient(this, '${esc(c.id)}')"><input type="radio" name="cl" ${c.id === inv.client_id ? 'checked' : ''}>
@@ -1338,7 +1341,7 @@ async function draftQuote(docId){
     <div class="safe">This creates a DRAFT quote for the client in Jobber. Nothing is sent to the client - review it in Jobber and send it from there.</div>
     <div class="note">From ${esc(d.vendor)} quote #${esc(d.doc_number)} - ${money(d.subtotal)} before tax, ${money(d.total)} total. The vendor's sales tax line and name are left off: Jobber adds the client's tax to taxable lines.${s.markup_pct ? ' Prices include ' + s.markup_pct + '% markup.' : ''}${d.subtotal == null && d.total != null && s.line_items.length && s.line_items.every(l => !l.taxable) ? " <b>The vendor's price already includes sales tax</b>, so its lines are set not taxable - change that if this client should be taxed on top." : ''}</div>
     ${(s.corrections || []).length ? `<div class="note">✏ Typos in ${esc(d.vendor || 'the vendor')}'s quote corrected for the client: ${s.corrections.map(esc).join(', ')}</div>` : ''}
-    <div><b>Jobber client</b><div class="toolbar" style="margin:6px 0"><input type="text" id="cq" value="${esc(d.client_name)}" style="flex:1"><button class="btn" onclick="findClients()">Search</button></div><div id="cands"><div class="note">Searching…</div></div></div>
+    <div><b>Jobber client</b><div class="toolbar" style="margin:6px 0"><input type="text" id="cq" oninput="liveSearch(findClients)" onkeydown="if(event.key==='Enter'){event.preventDefault();clearTimeout(window._lsT);findClients()}" value="${esc(d.client_name)}" style="flex:1"><button class="btn" onclick="findClients()">Search</button></div><div id="cands"><div class="note">Searching…</div></div></div>
     <div><b>Property</b><div id="qprops" class="note">Choose the client first.</div></div>
     <div id="qHow" class="note"></div>
     <label class="note" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="qRemember" checked> Remember: when Wettech writes <input type="text" id="qPlace" value="${esc(d.client_name)}" style="width:140px"> <input type="text" id="qArea" value="${esc(d.site)}" placeholder="area, e.g. back station" style="width:160px"> it means this client and property</label>
@@ -1404,7 +1407,7 @@ async function logReport(docId){
   rep = {doc: d, client_id: null, target: null};
   openModal('Log report in Jobber', `
     <div class="note">${esc((d.report_fields||{}).title || 'Report')} · ${esc(d.client_name)} · ${esc(d.site)} · ${esc(d.doc_date)}. The note goes on the pump's job in Jobber (or on the client), with the Stahlman-England report attached when Jobber accepts it.</div>
-    <div><b>Jobber client</b><div class="toolbar" style="margin:6px 0"><input type="text" id="rq" value="${esc(d.client_name)}" style="flex:1"><button class="btn" onclick="repClients()">Search</button></div><div id="rcands"></div></div>
+    <div><b>Jobber client</b><div class="toolbar" style="margin:6px 0"><input type="text" id="rq" oninput="liveSearch(repClients)" onkeydown="if(event.key==='Enter'){event.preventDefault();clearTimeout(window._lsT);repClients()}" value="${esc(d.client_name)}" style="flex:1"><button class="btn" onclick="repClients()">Search</button></div><div id="rcands"></div></div>
     <div><b>Where the note goes</b><div id="rjobs" class="note">Choose the client first.</div></div>`,
     `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" id="repGo" onclick="sendReport()">Add note in Jobber</button>`);
   repClients();
@@ -1413,7 +1416,9 @@ async function repClients(all){
   const box = document.getElementById('rcands');
   box.innerHTML = '<div class="note">Searching Jobber…</div>';
   // Only clients we do pump work for, unless asked for everyone.
-  const j = await api('/jobber/clients?pump=1' + (all ? '&all=1' : '') + '&q=' + encodeURIComponent(document.getElementById('rq').value.trim()));
+  const q = document.getElementById('rq').value.trim();
+  const j = await api('/jobber/clients?pump=1' + (all ? '&all=1' : '') + '&q=' + encodeURIComponent(q));
+  if (document.getElementById('rq') && document.getElementById('rq').value.trim() !== q) return;   // still typing
   if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
   box.innerHTML = ((j.candidates || []).map(c => `<div class="cand" data-id="${esc(c.id)}" onclick="repPick('${esc(c.id)}')"><input type="radio" name="rc"><div style="flex:1"><b>${esc(c.name)}</b><div class="note">${esc(c.address)}</div></div><span class="chip">${Math.round(c.score*100)}%</span></div>`).join('') || '<div class="note">No clients found.</div>')
     + (j.hidden ? `<div class="note">${j.hidden} other client${j.hidden > 1 ? 's' : ''} with no pump work hidden · <a href="#" onclick="repClients(true); return false">show all</a></div>` : '');
@@ -1753,7 +1758,7 @@ function siteNameAdd(){
   openModal('Add a site name', `<div class="fields">
     <label>Vendor writes<input type="text" id="snPlace" placeholder="e.g. Lee Memorial"></label>
     <label>Area (optional)<input type="text" id="snArea" placeholder="e.g. back station"></label></div>
-    <div><b>It means this Jobber client</b><div class="toolbar" style="margin:6px 0"><input type="text" id="cq" placeholder="e.g. Hodges Funeral Home" style="flex:1"><button class="btn" onclick="findClients()">Search</button></div><div id="cands"></div></div>`,
+    <div><b>It means this Jobber client</b><div class="toolbar" style="margin:6px 0"><input type="text" id="cq" oninput="liveSearch(findClients)" onkeydown="if(event.key==='Enter'){event.preventDefault();clearTimeout(window._lsT);findClients()}" placeholder="e.g. Hodges Funeral Home" style="flex:1"><button class="btn" onclick="findClients()">Search</button></div><div id="cands"></div></div>`,
     `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="siteNameSave()">Save</button>`);
 }
 async function siteNameSave(){
