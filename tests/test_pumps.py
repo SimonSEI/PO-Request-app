@@ -3393,6 +3393,21 @@ class PumpsTest(unittest.TestCase):
         self.assertFalse((c['steps'].get('work_done') or {}).get('at'))
         self.assertEqual(self.c.post(f'/pumps/api/cases/{cid}/move', json={'stage': 'nope'}).status_code, 400)
 
+    def test_send_invoice_todo_links_the_jobber_invoice(self):
+        """Caymas (Oct 2026): "Send invoice" opens the drafted invoice in Jobber to look over and send - found by
+        its number when the app didn't draft it."""
+        conn = P._conn()
+        conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, status, web_uri) "
+                     "VALUES ('I36832', 'invoice', '36832', 'draft', 'https://secure.getjobber.com/invoices/36832')")
+        conn.commit()
+        c = P._with_invoice_link(conn, {'id': 1, 'jobber': {}, 'sei_invoice_number': '36832'})
+        self.assertEqual(c['jobber']['invoice']['uri'], 'https://secure.getjobber.com/invoices/36832')
+        c = P._with_invoice_link(conn, {'id': 2, 'jobber': {'invoice': {'id': 'X', 'uri': 'https://j/inv'}}})
+        self.assertEqual(c['jobber']['invoice']['uri'], 'https://j/inv')
+        self.assertEqual(P._with_invoice_link(conn, {'id': 3, 'jobber': {}, 'sei_invoice_number': ''}),
+                         {'id': 3, 'jobber': {}, 'sei_invoice_number': ''})
+        conn.close()
+
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's
         usual vendor cost - it's the monthly visit, invoiced at the recurring job's $250, not $130."""

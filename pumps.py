@@ -3417,6 +3417,20 @@ def _link_jobber_items(conn):
     return linked
 
 
+def _with_invoice_link(conn, c):
+    """A job waiting on its invoice to be sent, with the Jobber invoice's page
+    to open - from the draft we made, else the synced invoice with its number."""
+    inv = dict((c.get('jobber') or {}).get('invoice') or {})
+    if not inv.get('uri'):
+        num = str(inv.get('number') or c.get('sei_invoice_number') or '').lstrip('#').strip()
+        row = conn.execute("SELECT jobber_id, web_uri FROM pump_jobber_items WHERE kind='invoice' AND "
+                           "(jobber_id=? OR number=?) AND web_uri != '' LIMIT 1",
+                           (inv.get('id') or '', num or '-')).fetchone()
+        if row:
+            inv.update(uri=row['web_uri'], number=inv.get('number') or num)
+    return {**c, 'jobber': {**(c.get('jobber') or {}), 'invoice': inv}} if inv else c
+
+
 def _follow_invoices(conn):
     """Keep each item's Jobber invoice status current. Once the office has sent
     the invoice from Jobber and everything else on the item is done, the item
@@ -5722,7 +5736,7 @@ def work_queue(conn):
         'quotes_to_draft': quotes_to_draft,
         'vendor_bills_to_pay': vendor_bills_to_pay,
         'reports_to_log': reports_to_log,
-        'ready_to_close': by_stage.get('closed', []),
+        'ready_to_close': [_with_invoice_link(conn, c) for c in by_stage.get('closed', [])],
         'review_docs': review_docs,
         'scada_attention': scada,
         'new_jobber_requests': new_requests,
