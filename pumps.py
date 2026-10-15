@@ -484,10 +484,22 @@ def name_tokens(s):
     return set(keep) or set(t for t in toks if len(t) > 2 and t not in ('the', 'and', 'of', 'at'))
 
 
+def _join_split_words(ta, b, tb):
+    """tb with two neighbouring words written as one in ta joined up:
+    Wettech's "Watercrest" is Jobber's "WATER CREST" (Oct 2026)."""
+    order = [t for t in re.findall(r'[a-z0-9]+', re.split(r'\bc/o\b|\bcare of\b', (b or '').lower())[0]) if t in tb]
+    for x, y in zip(order, order[1:]):
+        if x + y in ta and x + y not in tb:
+            tb = (tb - {x, y}) | {x + y}
+    return tb
+
+
 def similarity(a, b):
     ta, tb = name_tokens(a), name_tokens(b)
     if not ta or not tb:
         return 0.0
+    tb = _join_split_words(ta, b, tb)
+    ta = _join_split_words(tb, a, ta)
     inter = len(ta & tb)
     contain = inter / len(ta)
     jacc = inter / len(ta | tb)
@@ -8764,6 +8776,31 @@ def _apply_report_only(c, now):
               REPORT_ONLY_ACCOUNTS)
 
 
+# Falling Waters II's client and pump job in Jobber.
+_FW2_CLIENT, _FW2_JOB = 'Z2lkOi8vSm9iYmVyL0NsaWVudC8zNTM3MDA2Mg==', 'Z2lkOi8vSm9iYmVyL0pvYi80OTI1NjUzMA=='
+
+
+def _undo_watercrest_mismatch(c, now):
+    """Once (Oct 15 2026): Watercrest's October report was logged on Falling
+    Waters II's job #2874 ("Watercrest" didn't match Jobber's "WATER CREST"),
+    and that pick was remembered. Forget it, and put the report back on the
+    Log report list so it can go on Water Crest's job."""
+    if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pump_site_aliases'").fetchone():
+        return   # a new database: nothing to undo yet
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('watercrest_fw2_oct26', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    c.execute("DELETE FROM pump_site_aliases WHERE client_id=? AND LOWER(REPLACE(place, ' ', '')) LIKE '%watercrest%'",
+              (_FW2_CLIENT,))
+    for r in c.execute("SELECT id, jobber FROM pump_docs WHERE kind='report' AND jobber LIKE ?",
+                       (f'%{_FW2_JOB}%',)).fetchall():
+        j = json.loads(r[1] or '{}')
+        if j.get('note_target_id') == _FW2_JOB and 'watercrest' in json.dumps(j).lower() + \
+                (c.execute('SELECT client_name FROM pump_docs WHERE id=?', (r[0],)).fetchone()[0] or '').lower().replace(' ', ''):
+            c.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(
+                {k: v for k, v in j.items() if not k.startswith('note_') and k not in ('logged_by', 'logged_at')}), r[0]))
+
+
 def report_only_account(conn, case):
     """The account's name when a maintenance item is for an account that gets
     only its report logged - no invoice to draft or send. '' otherwise."""
@@ -8967,6 +9004,7 @@ def init_account_tables(c):
     _apply_repairs_by(c, now)
     _apply_master_vendors(c, now)
     _apply_report_only(c, now)
+    _undo_watercrest_mismatch(c, now)
     _apply_follow_ups(c, now)
     if not seeded('office_answers_oct26'):
         # What the office said (Oct 2026): Old Collier and Camas Willows are off

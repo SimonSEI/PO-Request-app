@@ -3497,6 +3497,30 @@ class PumpsTest(unittest.TestCase):
         # A report that says nothing of a quote adds nothing.
         self.assertEqual(P.quote_needed_note({'kind': 'report', 'report_fields': {}, 'text_excerpt': 'All good.'}), '')
 
+    def test_watercrest_is_water_crest(self):
+        """Oct 2026: Wettech's "Watercrest @ Falling Waters" scored lowest against Jobber's "WATER CREST AT FALLING
+        WATERS", so its report went on Falling Waters II. Words run together still match; the wrong pick is undone."""
+        wc = P.similarity('Watercrest @ Falling Waters', 'WATER CREST AT FALLING WATERS')
+        fw2 = P.similarity('Watercrest @ Falling Waters', 'FALLING WATERS II AT FALLING WATERS c/o GUARDIAN PROPERTY MANAGEMENT')
+        self.assertEqual(wc, 1.0)
+        self.assertGreater(wc - fw2, 0.3)
+        self.assertEqual(P.pick_client([{'id': 'W', 'score': wc}, {'id': 'F', 'score': fw2}])['id'], 'W')
+        conn = P._conn()
+        conn.execute("INSERT INTO pump_site_aliases (place, area, client_id, client_name, job_id) VALUES "
+                     "('Watercrest @ Falling Waters', '', ?, 'FALLING WATERS II', ?)", (P._FW2_CLIENT, P._FW2_JOB))
+        conn.execute("INSERT INTO pump_docs (kind, client_name, file_name, status, jobber) VALUES "
+                     "('report', 'Watercrest @ Falling Waters', '10-26 Watercrest.docx', 'filed', ?)",
+                     (json.dumps({'note_id': 'N9', 'note_target': 'job', 'note_target_id': P._FW2_JOB}),))
+        did = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        conn.execute("DELETE FROM pump_state WHERE key='watercrest_fw2_oct26'")
+        P._undo_watercrest_mismatch(conn.cursor(), P._now_text())
+        conn.commit()
+        self.assertIsNone(conn.execute("SELECT 1 FROM pump_site_aliases WHERE client_id=?", (P._FW2_CLIENT,)).fetchone())
+        self.assertNotIn('note_id', json.loads(conn.execute('SELECT jobber FROM pump_docs WHERE id=?', (did,)).fetchone()[0]))
+        conn.close()
+        todos = self.c.get('/pumps/api/summary').get_json()['queue']['reports_to_log']
+        self.assertIn(did, [d['id'] for d in todos])
+
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's
         usual vendor cost - it's the monthly visit, invoiced at the recurring job's $250, not $130."""
