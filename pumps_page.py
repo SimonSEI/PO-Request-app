@@ -678,7 +678,7 @@ function lastAction(c){
 }
 function caseTitle(c){ return `<span title="${esc(c.title || '')}">${esc(c.short_title || c.title || c.client_name || 'Item ' + c.id)}</span>`; }
 // The latest status update on a job ("Parts ordered · 2 weeks out · parts due Oct 27").
-function statusLine(c){ const st = c.job_status || {}; if (!st.kind) return ''; return `<span title="${esc((st.by || '') + ' ' + (st.at || ''))}">📌 <b>${esc(st.label)}</b>${st.text ? ' - ' + esc(st.text) : ''}${st.on ? ' · ' + ({parts_ordered: 'parts due', waiting_vendor: 'expected', scheduled: 'for'}[st.kind] || 'on') + ' ' + esc(niceDay(st.on)) : ''} <span class="note">(${esc(niceDay(d10(st.at)))})</span></span>`; }
+function statusLine(c){ const st = c.job_status || {}; if (!st.kind) return ''; return `<span style="font-weight:700" title="${esc((st.by || '') + ' ' + (st.at || ''))}">📌 <b>${esc(st.label)}</b>${st.text ? ' - ' + esc(st.text) : ''}${st.on ? ' · ' + ({parts_ordered: 'parts due', waiting_vendor: 'expected', scheduled: 'for'}[st.kind] || 'on') + ' ' + esc(niceDay(st.on)) : ''} <span class="note">(${esc(niceDay(d10(st.at)))})</span></span>`; }
 function caseSub(c, extra){ return esc([c.client_name, c.site].filter(Boolean).join(' · ')) + (c.po_number ? ' · PO ' + esc(c.po_number) : '') + jobberNo(c) + (extra ? ' · ' + extra : '') + (c.idle_days >= 7 ? ` · <b class="warn">${c.idle_days}d idle</b>` : '') + (statusLine(c) ? '<br>' + statusLine(c) : ''); }
 async function loadToday(){
   const j = await api('/summary');
