@@ -5775,7 +5775,8 @@ def work_queue(conn):
     bills_to_draft = [_doc_dict(r) for r in conn.execute(
         "SELECT d.* FROM pump_docs d JOIN pump_cases c ON c.id = d.case_id WHERE d.kind='bill' "
         "AND d.status != 'dismissed' AND (d.jobber IS NULL OR d.jobber NOT LIKE '%invoice_id%') "
-        "AND c.status='open' AND COALESCE(json_extract(c.steps, '$.invoice_drafted.na'), 0) = 0 ORDER BY d.id")]
+        "AND c.status='open' AND COALESCE(json_extract(c.steps, '$.invoice_drafted.na'), 0) = 0 "
+        "AND COALESCE(json_extract(c.steps, '$.invoice_drafted.at'), '') = '' ORDER BY d.id")]
     bill_cases = {r['id']: dict(r) for r in conn.execute(
         f"SELECT * FROM pump_cases WHERE id IN ({','.join('?' * len(bills_to_draft))})",
         [d['case_id'] for d in bills_to_draft])} if bills_to_draft else {}
@@ -7254,6 +7255,30 @@ def h_site_name_delete(actor, alias_id):
     finally:
         conn.close()
     return {'site_names': site_aliases()}
+
+
+@api('/docs/<int:doc_id>/report_done', methods=('POST',))
+def h_doc_report_done(actor, doc_id):
+    """The report was put in Jobber by hand: off the Log report list, and
+    "Report logged in Jobber" ticked on its job."""
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+        if not row or row['kind'] != 'report':
+            return {'success': False, 'error': 'Not found'}, 404
+        doc = _doc_dict(row)
+        j = {k: v for k, v in (doc.get('jobber') or {}).items() if k != 'note_pending'}
+        j.update(note_id='by hand', logged_by=actor, logged_at=_now_text())
+        conn.execute("UPDATE pump_docs SET jobber=?, status='done', updated_at=? WHERE id=?",
+                     (json.dumps(j), _now_text(), doc_id))
+        if doc.get('case_id'):
+            _set_step(conn, doc['case_id'], 'report_logged', at=_today().isoformat(), by=actor)
+            _event(conn, actor, 'report logged by hand', doc.get('file_name') or '', case_id=doc['case_id'],
+                   doc_id=doc_id)
+        conn.commit()
+        return {'case_id': doc.get('case_id')}
+    finally:
+        conn.close()
 
 
 @api('/docs/<int:doc_id>/report_note', methods=('POST',))

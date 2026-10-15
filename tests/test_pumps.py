@@ -3521,6 +3521,27 @@ class PumpsTest(unittest.TestCase):
         todos = self.c.get('/pumps/api/summary').get_json()['queue']['reports_to_log']
         self.assertIn(did, [d['id'] for d in todos])
 
+    def test_done_on_the_to_do_list_ticks_the_job(self):
+        """Oct 2026: done on the to-do list is done on the job - an invoice drafted straight in Jobber ticks
+        "Draft invoice in Jobber", a report logged by hand ticks "Report logged in Jobber"."""
+        self.extracts['b-sync.pdf'] = extraction('bill', '31901', client='Sync Lakes HOA', subtotal=400)
+        b = self.upload('b-sync.pdf')
+        q = lambda: self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertIn(b['doc_id'], [d['id'] for d in q()['bills_to_draft']])
+        self.c.patch(f"/pumps/api/cases/{b['case_id']}", json={'steps': {'invoice_drafted': '2026-10-15'}})
+        self.assertNotIn(b['doc_id'], [d['id'] for d in q()['bills_to_draft']])
+        conn = P._conn()
+        conn.execute("INSERT INTO pump_docs (kind, client_name, file_name, status, case_id, jobber) "
+                     "VALUES ('report', 'Sync Lakes HOA', 'r.docx', 'filed', ?, '{}')", (b['case_id'],))
+        rid = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        conn.commit()
+        conn.close()
+        self.assertIn(rid, [d['id'] for d in q()['reports_to_log']])
+        r = self.c.post(f'/pumps/api/docs/{rid}/report_done').get_json()
+        self.assertTrue(r['success'], r)
+        self.assertNotIn(rid, [d['id'] for d in q()['reports_to_log']])
+        self.assertTrue(self.case(b['case_id'])['steps']['report_logged'].get('at'))
+
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's
         usual vendor cost - it's the monthly visit, invoiced at the recurring job's $250, not $130."""
