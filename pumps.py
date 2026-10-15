@@ -8942,6 +8942,12 @@ def close_stale_todos(conn):
         done = c['status'] != 'open'
         if prefix in ('quote-to-job', 'service-visit'):
             done = done or bool((j.get('job') or {}).get('id'))
+        if prefix == 'quote-to-job' and not done:
+            # Converted by hand in Jobber: the synced quote says so.
+            q = j.get('quote') or {}
+            it = conn.execute("SELECT status FROM pump_jobber_items WHERE jobber_id=?",
+                              (q.get('id'),)).fetchone() if q.get('id') else None
+            done = 'converted' in (q.get('status'), it and it['status'])
         elif prefix == 'gov-refs':
             done = done or not gov_missing_refs(c)
         elif prefix in ('sign-quote', 'approved-quote'):

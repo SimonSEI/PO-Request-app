@@ -442,6 +442,11 @@ function stageText(c){
   // Approved: the quote goes to the vendor, then we wait on them for a date
   // (and on their parts, when the quote said weeks).
   const ch = c.chase || {};
+  // The vendor has it lined up (parts in or ordered, booked, under way): what's
+  // left is the work itself, not a date (Magnolia Cove, Oct 2026).
+  const js = c.job_status || {};
+  if (c.stage === 'scheduled' && ['parts_ordered', 'scheduled', 'in_progress'].includes(js.kind))
+    return `Waiting on ${ch.who || v} to complete the work` + (js.on || c.scheduled_for ? ' · ' + niceDay(js.on || c.scheduled_for) : '');
   if (c.stage === 'scheduled' && ch.parts_wait) {
     if (!ch.last_at) return `Approved · send the quote to ${ch.who || v}`;
     if (!ch.expect_by) return (ch.parts ? `Waiting on ${v} parts (${ch.parts}) · ` : '') + `Waiting on ${ch.who || v}: when it'll be scheduled`;
