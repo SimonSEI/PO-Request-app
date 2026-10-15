@@ -2363,6 +2363,16 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
                     conn.commit()
                     return {'doc_id': dup['id'], 'case_id': dup['case_id'], 'kind': prev['kind'], 'review': ''}
                 conn.commit()
+            on = conn.execute('SELECT category FROM pump_cases WHERE id=?', (dup['case_id'],)).fetchone() \
+                if dup['case_id'] else None
+            if prev['kind'] == 'bill' and on and on['category'] not in ('maintenance', 'inspection') and \
+                    prev['status'] != 'dismissed' and not pj.get('invoice_id') and \
+                    maintenance_bill(dict(conn.execute('SELECT * FROM pump_docs WHERE id=?', (dup['id'],)).fetchone())):
+                # A maintenance bill sent again that sits on a repair (Lely, Oct 2026):
+                # off it and filed on its own maintenance item, then invoiced as usual.
+                case_id = refile_document(conn, dup['id'], actor)
+                conn.commit()
+                return {'doc_id': dup['id'], 'case_id': case_id, 'kind': 'bill', 'review': '', 'refiled': True}
             if prev['kind'] in ('quote', 'bill') and prev['status'] != 'dismissed' and not edited and \
                     not pj.get('invoice_id') and (prev['kind'] == 'quote' or not pj.get('quote_id')):
                 # Sent again: read it again with today's reader (it may have
