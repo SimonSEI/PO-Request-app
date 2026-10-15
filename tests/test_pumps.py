@@ -3175,6 +3175,34 @@ class PumpsTest(unittest.TestCase):
         r = self.c.get(url.replace('https://example.com', ''))
         self.assertEqual(r.status_code, 200)
 
+    def test_report_only_accounts_get_no_maintenance_invoice(self):
+        """The office (Oct 15 2026): Autumn Woods, The Reserve @ Estero and Wild Blue only get their pump report
+        logged - Wettech's maintenance bill there is never invoiced."""
+        items = [{'name': 'Maintenance', 'description': 'Service to perform monthly maintenance on pump station '
+                  'for OCTOBER 2026.', 'quantity': 1, 'unit_price': 250.0, 'amount': 250.0, 'taxable': False,
+                  'is_tax': False}]
+        ex = extraction('bill', '29201', client='Wild Blue', subtotal=250, tax=0, items=items)
+        ex['description'] = items[0]['description']
+        self.extracts['b-wildblue.pdf'] = ex
+        saved = P.jobber_status
+        P.jobber_status = lambda: {'connected': True}
+        try:
+            b = self.upload('b-wildblue.pdf')
+        finally:
+            P.jobber_status = saved
+        self.assertFalse(b.get('auto_invoice'), b)
+        case = self.case(b['case_id'])
+        self.assertEqual(case['category'], 'maintenance')
+        self.assertTrue(case['steps']['invoice_drafted'].get('na'), case['steps'])
+        self.assertTrue(case['steps']['closed'].get('na'), case['steps'])
+        self.assertEqual(case['stage'], 'report_logged')
+        drafts = self.c.get('/pumps/api/summary').get_json()['queue']['bills_to_draft']
+        self.assertNotIn(b['case_id'], [d['case_id'] for d in drafts])
+        # Anyone else's maintenance bill still gets invoiced.
+        self.extracts['b-allura2.pdf'] = {**ex, 'doc_number': '29202', 'client_name': 'Allura'}
+        a = self.upload('b-allura2.pdf')
+        self.assertFalse((self.case(a['case_id'])['steps'].get('invoice_drafted') or {}).get('na'))
+
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's
         usual vendor cost - it's the monthly visit, invoiced at the recurring job's $250, not $130."""
