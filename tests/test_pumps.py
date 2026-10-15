@@ -3145,6 +3145,51 @@ class PumpsTest(unittest.TestCase):
         # A bill that names a quote still waits on it.
         self.assertFalse(P.maintenance_bill({'kind': 'bill', 'description': 'Pump maintenance repairs as per quote'}))
 
+    def test_maintenance_invoice_marks_the_months_visit_complete(self):
+        """Oct 2026: invoicing a maintenance bill on the recurring job also completes that job's visit for the
+        month the bill is for - the one nearest the bill's date - and anything that can't be done is a to-do."""
+        self.addCleanup(setattr, P, '_SCHEMA_CACHE', {})
+        visits = [{'id': 'V9', 'title': 'Monthly Pump 250', 'startAt': '2026-09-25T12:00:00Z', 'completedAt': None},
+                  {'id': 'V10', 'title': 'Monthly Pump 250', 'startAt': '2026-10-23T12:00:00Z', 'completedAt': None},
+                  {'id': 'V11', 'title': 'Monthly Pump 250', 'startAt': '2026-11-27T12:00:00Z', 'completedAt': None}]
+
+        class Visits(FakeJobber):
+            def __call__(self, query, variables=None):
+                P.check_mutation_allowed(query)
+                if 'mutationType' in query:
+                    self.calls.append((query, variables))
+                    return {'__schema': {'mutationType': {'fields': [{'name': 'visitComplete', 'type': {}, 'args': [
+                        {'name': 'visitId', 'type': {'kind': 'NON_NULL', 'ofType': {'kind': 'SCALAR', 'name': 'EncodedId'}}}]}]}}}
+                if 'visits(' in query:
+                    self.calls.append((query, variables))
+                    return {'job': {'visits': {'nodes': visits, 'pageInfo': {'hasNextPage': False}}}}
+                if 'visitComplete' in query:
+                    self.calls.append((query, variables))
+                    return {'visitComplete': {'__typename': 'VisitCompletePayload'}}
+                return super().__call__(query, variables)
+        job = {'id': 'J1450', 'number': '1450', 'title': 'Monthly Pump 250', 'type': 'recurring', 'uri': 'u'}
+        doc = {'id': None, 'doc_date': '2026-10-10', 'description': 'Monthly pump readings for OCTOBER 2026',
+               'line_items': []}
+        self.assertEqual(P.bill_service_month(doc), (2026, 10))
+        self.assertEqual(P.bill_service_month({'doc_date': '2026-09-30'}), (2026, 9))
+        fake = P.jobber_gql = Visits()
+        r = P.complete_visit_for_bill(doc, {}, job, 'test')
+        self.assertTrue(r['completed'], r)
+        self.assertEqual(r['visit']['id'], 'V10')
+        self.assertEqual([v for q, v in fake.calls if 'visitComplete(' in q], [{'visitId': 'V10'}])
+        # Already done: nothing is sent again.
+        visits[1]['completedAt'] = '2026-10-23T15:00:00Z'
+        fake.calls.clear()
+        self.assertTrue(P.complete_visit_for_bill(doc, {}, job, 'test')['already_complete'])
+        self.assertFalse([q for q, _ in fake.calls if 'visitComplete(' in q])
+        # No visit that month: a to-do, not a guess at another month.
+        r = P.complete_visit_for_bill({**doc, 'description': 'for DECEMBER 2026'}, {}, job, 'test')
+        self.assertIn('no December 2026 visit', r['pending'])
+        todos = [row[0] for row in P._conn().execute("SELECT title FROM pump_todos")]
+        self.assertIn('Mark the December 2026 visit complete on Jobber job #1450', todos)
+        # A one-off job's visits are left alone.
+        self.assertIsNone(P.complete_visit_for_bill(doc, {}, {**job, 'type': 'one_off'}, 'test'))
+
     def test_picking_a_client_is_remembered_for_the_vendors_name(self):
         """Wettech still writes "Lee Memorial"; the office picks Hodges Funeral Home once."""
         hodges = [{'id': 'CH', 'name': 'Hodges Funeral Home', 'isLead': False, 'isArchived': False}]

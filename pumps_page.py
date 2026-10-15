@@ -1155,7 +1155,7 @@ async function draftInvoice(docId){
     ${(d.case_issues || []).map(i => `<div class="issue">⚠️ ${esc(i.message)}</div>`).join('')}
     <div class="note">From ${esc(d.vendor)} bill #${esc(d.doc_number)} - ${money(d.subtotal)} before tax, ${money(d.total)} total. One Service Proposal Amount line: the bill before tax${s.markup_pct ? ' plus ' + s.markup_pct + '%' : ''}; Jobber adds the client's tax.</div>
     <div><b>Jobber client</b><div class="toolbar" style="margin:6px 0"><input type="text" id="cq" value="${esc(d.client_name)}" style="flex:1"><button class="btn" onclick="findClients()">Search</button></div><div id="cands"><div class="note">Searching…</div></div></div>
-    ${s.job ? `<div class="safe" id="jobMatch">Matches Jobber job <a href="${esc(s.job.uri)}" target="_blank" rel="noopener"><b>#${esc(s.job.number)} ${esc(s.job.title)}</b> ↗</a> (${esc((s.job.status || '').replace(/_/g, ' '))}, ${money(s.job.total)}) - the invoice goes on that job at its price. <button class="btn s" onclick="dropJobMatch()">Not this job - bill + 30%</button></div>` : ''}
+    ${s.job ? `<div class="safe" id="jobMatch">Matches Jobber job <a href="${esc(s.job.uri)}" target="_blank" rel="noopener"><b>#${esc(s.job.number)} ${esc(s.job.title)}</b> ↗</a> (${esc((s.job.status || '').replace(/_/g, ' '))}, ${money(s.job.total)}) - the invoice goes on that job at its price${s.job.type === 'recurring' ? ", and the job's visit for the bill's month is marked complete" : ''}. <button class="btn s" onclick="dropJobMatch()">Not this job - bill + 30%</button></div>` : ''}
     <div class="note">The client you pick is remembered for "${esc(d.client_name)}", so next time it's filled in by itself.</div>
     <label class="note">Invoice subject<input type="text" id="invSubject" value="${esc(inv.subject)}" style="width:100%"></label>
     <div><b>Line items</b> <span class="note">(edit before creating)</span><table class="t" style="margin-top:6px"><thead><tr><th>Name</th><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th>Tax</th><th></th></tr></thead><tbody id="invLines"></tbody></table>
@@ -1211,7 +1211,9 @@ async function createInvoice(){
   btn.disabled = false; btn.textContent = 'Create draft in Jobber';
   if (!j.success) { if (!j.possible_duplicate) toast(j.error, true); return; }
   closeModal();
-  toast(`Draft invoice #${j.invoice.invoice_number} created in Jobber (${j.invoice.invoice_status || 'draft'}). Review and send it from Jobber.`);
+  const v = j.invoice.visit || {};
+  toast(`Draft invoice #${j.invoice.invoice_number} created in Jobber (${j.invoice.invoice_status || 'draft'}). Review and send it from Jobber.` +
+    (v.completed ? ` ${v.month} visit (${v.visit.date}) marked complete.` : v.already_complete ? ` ${v.month} visit was already complete.` : v.pending ? ` Visit not marked complete: ${v.pending} (on To do)` : ''), !!v.pending);
   if (inv.doc.case_id) openCase(inv.doc.case_id); else loadToday();
 }
 
