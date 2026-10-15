@@ -1304,12 +1304,14 @@ async function logReport(docId){
     `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" id="repGo" onclick="sendReport()">Add note in Jobber</button>`);
   repClients();
 }
-async function repClients(){
+async function repClients(all){
   const box = document.getElementById('rcands');
   box.innerHTML = '<div class="note">Searching Jobber…</div>';
-  const j = await api('/jobber/clients?q=' + encodeURIComponent(document.getElementById('rq').value.trim()));
+  // Only clients we do pump work for, unless asked for everyone.
+  const j = await api('/jobber/clients?pump=1' + (all ? '&all=1' : '') + '&q=' + encodeURIComponent(document.getElementById('rq').value.trim()));
   if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
-  box.innerHTML = (j.candidates || []).map(c => `<div class="cand" data-id="${esc(c.id)}" onclick="repPick('${esc(c.id)}')"><input type="radio" name="rc"><div style="flex:1"><b>${esc(c.name)}</b><div class="note">${esc(c.address)}</div></div><span class="chip">${Math.round(c.score*100)}%</span></div>`).join('') || '<div class="note">No clients found.</div>';
+  box.innerHTML = ((j.candidates || []).map(c => `<div class="cand" data-id="${esc(c.id)}" onclick="repPick('${esc(c.id)}')"><input type="radio" name="rc"><div style="flex:1"><b>${esc(c.name)}</b><div class="note">${esc(c.address)}</div></div><span class="chip">${Math.round(c.score*100)}%</span></div>`).join('') || '<div class="note">No clients found.</div>')
+    + (j.hidden ? `<div class="note">${j.hidden} other client${j.hidden > 1 ? 's' : ''} with no pump work hidden · <a href="#" onclick="repClients(true); return false">show all</a></div>` : '');
   if (j.pick) repPick(j.pick.id);
 }
 async function repPick(id){

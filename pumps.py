@@ -6352,7 +6352,32 @@ def h_jobber_clients(actor):
         mine = {**mine, 'score': 1.0, 'remembered': f'You matched "{a["place"]}" to {a["client_name"]} before'}
         cands = [mine] + [c for c in cands if c['id'] != a['client_id']]
         return {'candidates': cands, 'pick': mine}
-    return {'candidates': cands, 'pick': pick_client(cands)}
+    hidden = 0
+    if request.args.get('pump') and not request.args.get('all'):
+        # A pump report (Rosewood, Oct 2026): only clients we do pump work for -
+        # not everyone whose address or contact has the word in it.
+        pumped = pump_client_ids()
+        keep = [c for c in cands if c['id'] in pumped]
+        if keep:
+            hidden, cands = len(cands) - len(keep), keep
+    return {'candidates': cands, 'pick': pick_client(cands), 'hidden': hidden}
+
+
+def pump_client_ids():
+    """Jobber clients we do pump work for: pump jobs, quotes or invoices synced
+    from Jobber, a pump account's client, or a client on one of our items."""
+    conn = _conn()
+    try:
+        ids = {r[0] for r in conn.execute("SELECT DISTINCT client_id FROM pump_jobber_items WHERE client_id != '' "
+                                          "AND COALESCE(ignored, 0)=0")}
+        ids |= {r[0] for r in conn.execute("SELECT jobber_client_id FROM pump_maint_accounts "
+                                           "WHERE COALESCE(jobber_client_id, '') != ''")}
+        ids |= {r[0] for r in conn.execute("SELECT jobber_client_id FROM pump_cases "
+                                           "WHERE COALESCE(jobber_client_id, '') != ''")}
+        ids |= {r[0] for r in conn.execute("SELECT client_id FROM pump_site_aliases WHERE COALESCE(client_id, '') != ''")}
+    finally:
+        conn.close()
+    return ids
 
 
 @api('/jobber/clients/<path:client_id>/jobs')
