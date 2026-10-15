@@ -323,6 +323,22 @@ class PumpsTest(unittest.TestCase):
         self.assertTrue(att[0]['url'].endswith('/10-26%20%20Spanish%20Wells' + os.path.splitext(att[0]['fileName'])[1]),
                         att[0]['url'])
         self.assertEqual(res['auto_note']['target'], 'The Lake Club #1609 Quarterly Pump- 850')
+        # Not in Jobber after all (Lely, Oct 2026: the first try didn't take): the same email sent again tries again.
+        conn = P._conn()
+        conn.execute("UPDATE pump_docs SET jobber='{}' WHERE id=?", (res['doc_id'],))
+        conn.commit()
+        conn.close()
+        fake.calls.clear()
+        P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN
+        try:
+            again = P.ingest_document('10-26  Spanish Wells.docx', buf.getvalue(), source='email', actor='email scan',
+                                      email={'uid': 'sw-2', 'from': 'simon@stahlman-england.com',
+                                             'subject': 'FW: Inv 29099', 'preview': ''})
+        finally:
+            P.JOBBER_STATIC_TOKEN = saved
+        self.assertEqual((again['doc_id'], again.get('skipped')), (res['doc_id'], 'already have this file'), again)
+        self.assertTrue(again['auto_note'].get('note_id'), again)
+        self.assertTrue([v for q, v in fake.calls if 'jobCreateNote' in q])
         # Kept in the app by year.
         lib = self.c.get('/pumps/api/reports?year=2026').get_json()
         row = [r for r in lib['reports'] if r['id'] == res['doc_id']][0]
