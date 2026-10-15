@@ -3308,6 +3308,25 @@ class PumpsTest(unittest.TestCase):
                                                              'VFD for OCTOBER 2026. Maintenance Report Attached!'}])[0]['description'],
                          'SITE LOCATION: Evergreen\nService to perform maintenance on irrigation system and VFD for OCTOBER 2026.')
 
+    def test_move_a_job_up_to_where_it_really_is(self):
+        """Carlisle (Oct 2026): Wettech emailed that the work is done while the job still read "send the quote
+        to Tom" - the office moves it up to waiting on the bill in one go, and can move it back."""
+        j = self.c.post('/pumps/api/cases', json={'title': 'Inspect suction line', 'client_name': 'Carlisle'}).get_json()
+        cid = j.get('case_id') or j['case']['id']
+        r = self.c.post(f'/pumps/api/cases/{cid}/move', json={'stage': 'vendor_bill'}).get_json()
+        self.assertTrue(r['success'], r)
+        c = r['case']
+        self.assertEqual(c['stage'], 'vendor_bill')
+        for k in ('vendor_quote', 'client_quote', 'client_approved', 'scheduled', 'work_done'):
+            self.assertTrue((c['steps'].get(k) or {}).get('at'), k)
+        self.assertFalse((c['steps'].get('vendor_bill') or {}).get('at'))
+        self.assertFalse((c['steps'].get('assessment') or {}).get('at'), 'an optional step left off stays off')
+        # Back a step: work_done is open again.
+        c = self.c.post(f'/pumps/api/cases/{cid}/move', json={'stage': 'work_done'}).get_json()['case']
+        self.assertEqual(c['stage'], 'work_done')
+        self.assertFalse((c['steps'].get('work_done') or {}).get('at'))
+        self.assertEqual(self.c.post(f'/pumps/api/cases/{cid}/move', json={'stage': 'nope'}).status_code, 400)
+
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's
         usual vendor cost - it's the monthly visit, invoiced at the recurring job's $250, not $130."""

@@ -824,7 +824,7 @@ function renderCase(){
     ${statusSec(c)}
     ${c.chase ? `<div class="sec"><div class="note" style="padding:10px 12px;border-radius:10px;background:${c.chase.state === 'follow_up' ? 'var(--amber-bg)' : 'var(--violet-bg)'}"><b>${c.chase.phase === 'job' ? 'Job' : 'Quote'} - waiting on ${esc(v)}</b>${chaseLine(c)}${c.chase.last_at ? `<br><span class="note">Last asked ${esc(niceDay(c.chase.last_at))}${c.chase.how ? ' by ' + esc(c.chase.how) : ''}${c.chase.by ? ' · ' + esc(c.chase.by) : ''}</span>` : ''}</div></div>` : ''}
     <div class="sec"><h4>Journey</h4>${journeyHtml(c)}</div>
-    <div class="sec"><h4>Checklist</h4><div class="steps">${steps}</div></div>
+    <div class="sec"><h4>Checklist <select class="s" onchange="moveCase(this)" title="Out of step? Bring the job up to where it really is - the steps before are ticked done today." style="float:right;padding:2px 4px;font-size:11px;font-weight:400"><option value="">Move to…</option>${c.step_list.filter(s => !s.na).map(s => `<option value="${s.key}">${esc(s.label)}</option>`).join('')}</select></h4><div class="steps">${steps}</div></div>
     <div class="sec"><h4>Quote vs bill</h4><div class="money">
       <div class="m"><div class="k">${esc(v)} quote ${c.vendor_quote_number ? '#' + esc(c.vendor_quote_number) : ''}</div><div class="v">${money(c.vendor_quote_amount ?? c.vendor_quote_total) || '—'}</div>${c.vendor_quote_total != null && c.vendor_quote_amount != null ? `<div class="note">${money(c.vendor_quote_total)} with tax</div>` : ''}</div>
       <div class="m"><div class="k">${esc(v)} bill ${c.vendor_bill_number ? '#' + esc(c.vendor_bill_number) : ''}</div><div class="v">${money(c.vendor_bill_amount ?? c.vendor_bill_total) || '—'}</div>${c.vendor_bill_total != null && c.vendor_bill_amount != null ? `<div class="note">${money(c.vendor_bill_total)} with tax</div>` : ''}</div>
@@ -993,6 +993,13 @@ async function saveFollow(id){
   if (curCase && curCase.id === id) { curCase = j.case; renderCase(); } else loadToday();
 }
 function needsVisit(){ const d = prompt('Date of the visit, if you know it (YYYY-MM-DD) - or leave blank:', ''); if (d === null) return; patchCase({steps: {assessment: null}, assessment_due: d.trim()}); }
+// Out of step (Carlisle: the work's done, still reads "send the quote to Tom"): jump to the real step.
+async function moveCase(sel){
+  const k = sel.value, label = sel.options[sel.selectedIndex].text; sel.value = '';
+  if (!k || !confirm(`Move this job to "${label}"?\n\nThe steps before it are ticked done today.`)) return;
+  const j = await api('/cases/' + curCase.id + '/move', {method:'POST', body:{stage: k}});
+  if (j.success) { curCase = j.case; renderCase(); toast('Moved to: ' + label); } else toast(j.error || 'Not moved', true);
+}
 function setStep(k, v){ patchCase({steps: {[k]: v === 'today' ? new Date().toISOString().slice(0,10) : v}}); }
 function stepMenu(k, sel){
   const v = sel.value; sel.value = '';

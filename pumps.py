@@ -6479,6 +6479,46 @@ def h_case_create(actor):
         conn.close()
 
 
+def move_case_to(conn, case_id, stage, actor):
+    """Bring a job that's out of step up to (or back to) a stage by hand
+    (Carlisle, Oct 2026: Wettech said the work was done while it still read
+    "send the quote to Tom"): every step before it is ticked done today, unless
+    done or not needed already; moving back un-ticks it and the steps after."""
+    if stage not in STEP_KEYS:
+        raise ValueError('Pick the step the job is at')
+    row = conn.execute('SELECT steps FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+    if not row:
+        return False
+    steps = _with_optional(json.loads(row['steps'] or '{}'))   # an optional step left off stays off
+    at = STEP_KEYS.index(stage)
+    today = _today().isoformat()
+    for k in STEP_KEYS[:at]:
+        if not (steps.get(k) or {}).get('at') and not (steps.get(k) or {}).get('na'):
+            _set_step(conn, case_id, k, at=today, by=f'{actor} (moved up)')
+    for k in STEP_KEYS[at:]:
+        if (steps.get(k) or {}).get('at'):
+            _set_step(conn, case_id, k, by=actor, na=False)
+    _refresh_case(conn, case_id)
+    label = dict(STEPS)[stage].format(vendor='the vendor')
+    _event(conn, actor, 'moved', f'Moved by hand to: {label}', case_id=case_id)
+    return True
+
+
+@api('/cases/<int:case_id>/move', methods=('POST',))
+def h_case_move(actor, case_id):
+    """Body: {"stage": step key} - the next step the job is waiting on."""
+    if actor == BOT:
+        return _office_only(actor, 'Moving a job to another step')
+    conn = _conn()
+    try:
+        if not move_case_to(conn, case_id, (_json().get('stage') or '').strip(), actor):
+            return {'success': False, 'error': 'Not found'}, 404
+        conn.commit()
+        return {'case': case_detail(conn, case_id)}
+    finally:
+        conn.close()
+
+
 @api('/cases/<int:case_id>', methods=('PATCH', 'POST'))
 def h_case_update(actor, case_id):
     data = _json()
