@@ -615,7 +615,37 @@ def init_db():
     _dedupe_startup_events(conn)
     _seed_homewood_follow_up(conn)
     _restage_quoted_jobs(conn)
+    _file_quoted_docs(conn)
     conn.close()
+
+
+def _file_quoted_docs(conn):
+    """Vendor quotes our Jobber quote was drafted from while they were on no job
+    (Homewood Suites, quote 9176): each goes on a job with that quote linked, so
+    it's on the watchlist waiting on the client. Once."""
+    if not _claim_once(conn, 'file_quoted_docs'):
+        return
+    conn.row_factory = sqlite3.Row
+    for r in conn.execute("SELECT id, jobber FROM pump_docs WHERE kind='quote' AND case_id IS NULL "
+                          "AND status != 'dismissed' AND jobber LIKE '%quote_id%'").fetchall():
+        dj = json.loads(r['jobber'] or '{}')
+        if not dj.get('quote_id'):
+            continue
+        cid = file_document(conn, r['id'], 'Pumps')
+        cid = conn.execute('SELECT case_id FROM pump_docs WHERE id=?', (r['id'],)).fetchone()[0]
+        if not cid:
+            continue
+        j = json.loads(conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (cid,)).fetchone()[0] or '{}')
+        if not (j.get('quote') or {}).get('id'):
+            j['quote'] = {'id': dj['quote_id'], 'number': dj.get('quote_number') or '', 'uri': dj.get('quote_uri'),
+                          'status': dj.get('quote_status') or 'draft'}
+            if dj.get('client_id'):
+                j.setdefault('client', {'id': dj['client_id']})
+            conn.execute('UPDATE pump_cases SET jobber=?, jobber_client_id=COALESCE(NULLIF(jobber_client_id, \'\'), ?) '
+                         'WHERE id=?', (json.dumps(j), dj.get('client_id') or '', cid))
+            _event(conn, 'Pumps', 'linked Jobber', f"quote #{dj.get('quote_number') or ''} - drafted from this "
+                                                   f"vendor quote before it was on a job", case_id=cid, doc_id=r['id'])
+    conn.commit()
 
 
 def _restage_quoted_jobs(conn):
@@ -828,6 +858,48 @@ def _stage(steps, status='open'):
     return 'done'
 
 
+_WORK_LEAD = re.compile(r'^(?:service\s+call\s*-\s*|proposal\s*(?:to|for|-)\s*|estimate\s*(?:to|for|-)\s*|'
+                        r'quote\s*(?:to|for|-)\s*|field\s+service\s+to\s+)', re.I)
+_TAIL_WORDS = {'a', 'an', 'the', 'and', 'or', 'of', 'to', 'at', 'in', 'on', 'for', 'with', 'is', 'are', 'was', 'not', 'from'}
+_CLIENT_TAIL = re.compile(r'\s+(?:master\s+)?(?:association|assoc\.?|hoa|homeowners|condominium|condo|community|'
+                          r'inc\.?|llc|property\s+owners)\b.*$', re.I)
+
+
+def short_title(case):
+    """"Client · work" in a few words, to skim the watchlist (Oct 2026):
+    "Magnolia Cove Pressure Transducer - Furnish and install new 0-150 Pressure
+    transducer, wire up, program and test" -> "Magnolia Cove · New 0-150 pressure transducer"."""
+    client = _core_name(case.get('client_name') or '')
+    client = re.split(r'\s+c/o\s+', client, flags=re.I)[0]
+    client = _CLIENT_TAIL.sub('', client).strip() or client
+    if client.isupper():
+        client = client.title()
+    work = (case.get('title') or '').strip()
+    # The client's name at the front of the title is already said.
+    for name in sorted({case.get('client_name') or '', client}, key=len, reverse=True):
+        if name and work.lower().startswith(name.lower()):
+            work = work[len(name):].lstrip(' -:·,')
+            break
+    work = _WORK_LEAD.sub('', work)
+    if ' - ' in work and len(work.split(' - ')[0].split()) >= 2:
+        work = work.split(' - ')[0]
+    work = re.split(r'[,.;]\s|\s+(?:and\s+)?(?:wire\s+up|reinstall|program)\b', work)[0]
+    work = re.sub(r'^furnish\s+(?:and|&)\s+install\s+(?:a\s+)?(?:new\s+)?', 'New ', work, flags=re.I)
+    words = work.split()[:6]
+    while len(words) > 1 and words[-1].lower() in _TAIL_WORDS:
+        words.pop()   # not "... front lake is"
+    work = ' '.join(words).strip(' -:,')
+    # "Magnolia Cove Pressure Transducer" (the work read into the client's name): just "Magnolia Cove".
+    cw = client.split()
+    while len(cw) > 2 and cw[-1].lower() in work.lower():
+        cw.pop()
+    client = ' '.join(cw)
+    work = (work[:1].upper() + work[1:]) if work else ''
+    if work and client and client.lower() in work.lower():
+        return work
+    return ' · '.join(x for x in (client, work) if x) or case.get('title') or ''
+
+
 def _case_dict(row, conn=None):
     d = dict(row)
     for k in ('jobber', 'steps', 'vendor_follow', 'job_status'):
@@ -846,6 +918,7 @@ def _case_dict(row, conn=None):
     except ValueError:
         d['idle_days'] = 0
     d['chase'] = vendor_chase(d)
+    d['short_title'] = short_title(d)
     if conn is not None:
         d['open_issues'] = [dict(r) for r in conn.execute(
             'SELECT * FROM pump_issues WHERE case_id=? AND resolved_at IS NULL ORDER BY id', (d['id'],))]
@@ -3288,9 +3361,13 @@ def _follow_quotes(conn):
         if c['status'] != 'open':
             # Closed or cancelled while the quote was still out, and now the client
             # approved it: the work is on again. Anything else stays as it is.
+            # Or it was still a draft, and has now gone to the client (Homewood, 9176).
             # (Not when the quote now belongs to another job: this one was replaced.)
-            if it['status'] != 'approved' or q.get('status') == 'approved' or \
-                    (steps.get('client_approved') or {}).get('at') or \
+            approved_now = it['status'] == 'approved' and q.get('status') != 'approved' and \
+                not (steps.get('client_approved') or {}).get('at')
+            sent_now = it['status'] in QUOTE_GONE_OUT and (q.get('status') or 'draft') == 'draft' and \
+                not (steps.get('client_quote') or {}).get('at')
+            if not (approved_now or sent_now) or \
                     conn.execute("SELECT 1 FROM pump_cases WHERE id != ? AND status != 'cancelled' "
                                  "AND json_extract(jobber, '$.quote.id')=?", (c['id'], q['id'])).fetchone():
                 if it['status'] != q.get('status'):
@@ -3300,7 +3377,8 @@ def _follow_quotes(conn):
                 continue
             conn.execute("UPDATE pump_cases SET status='open', closed_at=NULL, closed_by_hand='', updated_at=? "
                          "WHERE id=?", (_now_text(), c['id']))
-            _event(conn, 'jobber sync', 'reopened', f"The client approved Jobber quote #{q.get('number')} - "
+            _event(conn, 'jobber sync', 'reopened', f"Jobber quote #{q.get('number')} "
+                                                    f"{'was approved' if approved_now else 'went to the client'} - "
                                                     f"this job was {c['status']}, it's open again", case_id=c['id'])
         if it['status'] != q.get('status'):
             q['status'] = it['status']
@@ -4693,6 +4771,11 @@ def create_draft_quote(doc_id, client_id, property_id, line_items, title='', mes
         conn.execute('UPDATE pump_docs SET jobber=?, updated_at=? WHERE id=?',
                      (json.dumps({**(doc.get('jobber') or {}), **ref}), _now_text(), doc_id))
         total = round(sum(i['quantity'] * i['unitPrice'] for i in items if not i.get('optional')), 2)
+        if not doc.get('case_id'):
+            # A vendor quote not on a job yet (Homewood Suites, quote 9176, Oct 2026):
+            # it goes on one, so our quote is followed on the watchlist.
+            file_document(conn, doc_id, actor)
+            doc['case_id'] = conn.execute('SELECT case_id FROM pump_docs WHERE id=?', (doc_id,)).fetchone()[0]
         if doc.get('case_id'):
             cid = doc['case_id']
             case = conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (cid,)).fetchone()
@@ -7835,7 +7918,7 @@ SEED_MAINT = [
     ('Forum c/o LandQwest Commercial Property', 'Pump', '2024-06-17', '1 Pump',
      '3049 Forum Boulevard, NE side of Starbucks, Fort Myers, FL 33905', '1,7', '$125.00', '', '$475.00', '', 1),
     ('Hodges Funeral Home', 'Pump', '2021-10-01', 'Pump', '525 111th Avenue, Naples FL', '1,5,9', '$125.00', '',
-     '$1,125.00', 'SiteOne, not Tommy', 1),
+     '$1,125.00', 'SiteOne, not Tom', 1),
     ('Honda Fort Myers', 'Pump', '2020-01-01', '1 Pump Station', '3550 Colonial Blvd, Fort Myers', Q, '$125.00', '', 'N/A',
      '', 1),
     ('Huntington Lakes Residence Assoc.', 'Pump', '2023-10-24', '10 Pumps, 1 Lake 1 Filter',
@@ -9646,7 +9729,7 @@ def service_call_summary(subject, preview=''):
 # never a service call.
 OWN_SUBJECTS = re.compile(r'^\s*((re|fw|fwd)\s*:\s*)*(pumps today\b|diver schedule\b|please pay \w+ invoice\b|'
                           r'approved\s*-\s|signed\s+quote\s*-\s|'
-                          # The approval email (Oct 2026): "Quote #9152 approved - Lely: send it to Tommy".
+                          # The approval email (Oct 2026): "Quote #9152 approved - Lely: send it to Tom".
                           r'quote\s*(#\s*\d+\s*)?approved\s*-\s)', re.I)
 
 
@@ -10340,7 +10423,7 @@ def h_account_todo(actor):
 # ── the month's maintenance and whether each subcontractor has been told ────
 # Wettech does the pump maintenance, Gulfshore (the diver) the lakes. A lake on
 # the month's diver list counts as told once that list's email has gone; a
-# pump visit counts once someone marks it (or emails Tommy from the Home tab).
+# pump visit counts once someone marks it (or emails Tom from the Home tab).
 
 def _month_arg(text, today=None):
     """"2026-11" (or a date) -> date(2026, 11, 1); else this month."""
@@ -10392,13 +10475,13 @@ def maint_schedule(conn, month_date):
 
 
 def _notify_mailto(month_date, rows):
-    """A ready email to Tommy listing the month's pump visits he hasn't been told of."""
+    """A ready email to Tom listing the month's pump visits he hasn't been told of."""
     from urllib.parse import quote
     todo = [r for r in rows if r['vendor'] == 'Wettech' and not r['notified']]
     if not todo:
         return ''
     label = month_date.strftime('%B %Y')
-    body = '\n'.join(['Hi Tommy,', '', f'These pump maintenance visits are due in {label}:', ''] +
+    body = '\n'.join(['Hi Tom,', '', f'These pump maintenance visits are due in {label}:', ''] +
                      [f"- {r['account']} ({r['what']})" + (f" - {r['where']}" if r['where'] else '') for r in todo] +
                      ['', 'Please put them on your schedule and send the service reports when done.', '', 'Thank you,',
                       'Stahlman-England Irrigation'])

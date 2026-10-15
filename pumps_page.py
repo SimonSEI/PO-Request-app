@@ -338,7 +338,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
     <div class="sp"></div><span id="msInfo" class="note"></span>
     <button class="btn p" id="msMarkW" title="Tick the accounts, then record that Justin (Wettech) was told about their pump visits" onclick="maintNotifiedAskMany('Wettech')">✓ Justin told</button>
     <button class="btn p" id="msMarkG" title="Tick the accounts, then record that Jordan (Gulfshore) was told about their lake visits" onclick="maintNotifiedAskMany('Gulfshore')">✓ Jordan told</button>
-    <button class="btn" id="msEmail" onclick="emailWettechList()">✉️ Email Tommy the pump list</button>
+    <button class="btn" id="msEmail" onclick="emailWettechList()">✉️ Email Tom the pump list</button>
   </div>
   <div class="note" style="margin-bottom:8px">Every pump (Wettech) and lake (Gulfshore) maintenance visit due in the month from the Accounts tab, and whether the subcontractor has been told. Lakes count as told once the month's diver list is emailed.</div>
   <div class="scroll" style="max-height:45vh"><table class="t"><thead><tr><th style="width:28px"><input type="checkbox" id="msAll" title="Select every account shown that isn't fully told yet" onchange="msSelectAll(this.checked)"></th><th>Account</th><th>Client approved</th><th>Justin<div class="note" style="font-weight:400">Wettech pumps</div></th><th>Jordan<div class="note" style="font-weight:400">Gulfshore diving</div></th></tr></thead><tbody id="msBody"></tbody></table></div>
@@ -365,7 +365,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
     <button class="btn" onclick="maintEdit(0)">＋ Pump account</button>
     <button class="btn" onclick="editDiveSite()">＋ Lake site</button>
   </div>
-  <div class="note" style="margin-bottom:10px">Click an account for its page: its pump (Wettech, Tommy), lake and diver (Gulfshore, Jordan) and SCADA setup with Edit, every to-do and job it has had, its reports and signed quotes, and its Jobber links.</div>
+  <div class="note" style="margin-bottom:10px">Click an account for its page: its pump (Wettech, Tom), lake and diver (Gulfshore, Jordan) and SCADA setup with Edit, every to-do and job it has had, its reports and signed quotes, and its Jobber links.</div>
   <div class="scroll"><table class="t"><thead><tr><th>Account</th><th>On</th><th>Next due</th><th>Where</th></tr></thead><tbody id="acBody"></tbody></table></div>
   <details style="margin-top:22px"><summary style="cursor:pointer;font-size:14px;font-weight:600">Monthly email to the diver</summary>
   <div class="toolbar"><span id="diveInfo" class="note"></span><div class="sp"></div>
@@ -676,7 +676,7 @@ function lastAction(c){
   const what = la.detail ? `${la.action} - ${la.detail}` : la.action;
   return `<div class="note" title="${esc((la.by ? la.by + ': ' : '') + what)}">Last action: <b class="${la.days >= 7 ? 'warn' : ''}">${ago}</b>${what ? ' · ' + esc(what.length > 70 ? what.slice(0, 70) + '…' : what) : ''}</div>`;
 }
-function caseTitle(c){ return esc(c.title || c.client_name || 'Item ' + c.id); }
+function caseTitle(c){ return `<span title="${esc(c.title || '')}">${esc(c.short_title || c.title || c.client_name || 'Item ' + c.id)}</span>`; }
 // The latest status update on a job ("Parts ordered · 2 weeks out · parts due Oct 27").
 function statusLine(c){ const st = c.job_status || {}; if (!st.kind) return ''; return `<span title="${esc((st.by || '') + ' ' + (st.at || ''))}">📌 <b>${esc(st.label)}</b>${st.text ? ' - ' + esc(st.text) : ''}${st.on ? ' · ' + ({parts_ordered: 'parts due', waiting_vendor: 'expected', scheduled: 'for'}[st.kind] || 'on') + ' ' + esc(niceDay(st.on)) : ''} <span class="note">(${esc(niceDay(d10(st.at)))})</span></span>`; }
 function caseSub(c, extra){ return esc([c.client_name, c.site].filter(Boolean).join(' · ')) + (c.po_number ? ' · PO ' + esc(c.po_number) : '') + jobberNo(c) + (extra ? ' · ' + extra : '') + (c.idle_days >= 7 ? ` · <b class="warn">${c.idle_days}d idle</b>` : '') + (statusLine(c) ? '<br>' + statusLine(c) : ''); }
@@ -1419,7 +1419,7 @@ function maintEdit(id){
     <label>Our bill (Stahlman invoice)<input type="text" id="mt_our_bill" value="${esc(a.our_bill)}"></label>
     <label><span><input type="checkbox" id="mt_monthly" ${a.monthly ? 'checked' : ''}> Monthly</span></label>
     <div class="w"><b class="note">Months</b><div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px">${MSHORT.map((m, i) => `<label style="display:flex;gap:3px;align-items:center"><input type="checkbox" class="mt_m" value="${i + 1}" ${months.includes(i + 1) ? 'checked' : ''}>${m}</label>`).join('')}</div></div>
-    <label class="w">Repairs by<select id="mt_repairs_by">${[['', 'Wettech (Tommy)'], ['SiteOne', 'SiteOne'], ['Naples Electric', 'Naples Electric'], ['Oscar (our technician)', 'Oscar (our technician) - no Wettech quote or bill']].map(([v, l]) => `<option value="${esc(v)}" ${v === (a.repairs_by || '') ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select><span class="note">New repair jobs for this account go to them.</span></label>
+    <label class="w">Repairs by<select id="mt_repairs_by">${[['', 'Wettech (Tom)'], ['SiteOne', 'SiteOne'], ['Naples Electric', 'Naples Electric'], ['Oscar (our technician)', 'Oscar (our technician) - no Wettech quote or bill']].map(([v, l]) => `<option value="${esc(v)}" ${v === (a.repairs_by || '') ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select><span class="note">New repair jobs for this account go to them.</span></label>
     <label class="w">Before each service, follow up with…<textarea id="mt_follow_up" placeholder="e.g. Email Lauren to approve the visit">${esc(a.follow_up || '')}</textarea><span class="note">Shows in the to-do list about a week before each service month.</span></label>
     <div class="w" style="border:1px solid var(--border);border-radius:10px;padding:10px 12px"><b>Jobber</b> <span class="note">- the client, property and recurring maintenance job, so Wettech's quotes and reports for this account go there and its quotes are followed.</span>
       <div style="display:flex;gap:6px;margin-top:6px"><input type="text" id="mt_jq" placeholder="Find the client in Jobber…" value="${esc(a.jobber_client_name || a.name || '')}" style="flex:1"><button class="btn s" type="button" onclick="mtFindClient()">Find</button></div>
@@ -1661,7 +1661,7 @@ async function loadJobs(){
   const ref = r => r ? (r.uri ? `<a href="${esc(r.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">#${esc(r.number || '')} ↗</a>` : (r.number ? '#' + esc(r.number) : '')) : '';
   document.getElementById('jobsBody').innerHTML = (j.cases || []).map(c => { const jb = c.jobber || {}, vp = c.vendor_pay || {};
     return `<tr class="click" onclick="openCase(${c.id})">
-    <td><b>${esc(c.title || c.client_name)}</b><div class="note">${esc([c.client_name, c.site].filter(Boolean).join(' · '))}${c.po_number ? ' · PO ' + esc(c.po_number) : ''}${jobberNo(c)}</div></td>
+    <td><b title="${esc(c.title || c.client_name)}">${esc(c.short_title || c.title || c.client_name)}</b><div class="note">${esc([c.client_name, c.site].filter(Boolean).join(' · '))}${c.po_number ? ' · PO ' + esc(c.po_number) : ''}${jobberNo(c)}</div></td>
     <td>${stageChip(c)}${statusLine(c) ? `<div class="note">${statusLine(c)}</div>` : ''}${c.status === 'open' ? lastAction(c) : ''}</td>
     <td>${esc(c.vendor)}</td><td>${numAmt(c.vendor_quote_number, c.vendor_quote_amount ?? c.vendor_quote_total)}</td>
     <td>${ref(jb.quote)}${jb.quote && jb.quote.total != null ? ' <b>' + money(jb.quote.total) + '</b>' : ''}${jb.quote && jb.quote.status ? ` <span class="note">${esc(jb.quote.status.replace(/_/g, ' '))}</span>` : ''}</td>
@@ -1774,7 +1774,7 @@ function maintNotifiedAskMany(vendor){
   if (!sel.length) { toast(`Tick the accounts ${who} has been told about first`, true); return; }
   openModal(`${esc(who)} told - ${sel.length} account${sel.length > 1 ? 's' : ''}`, `<div class="note" style="margin-bottom:8px">${sel.map(esc).join(', ')}</div><div class="fields">
     <label>How<select id="mn_how"><option>email</option><option>phone</option><option>text</option><option>in person</option></select></label>
-    <label class="w">Note<input type="text" id="mn_note" placeholder="e.g. sent Tommy the October list"></label></div>
+    <label class="w">Note<input type="text" id="mn_note" placeholder="e.g. sent Tom the October list"></label></div>
     <div class="note">This only records that ${esc(who)} was told - nothing is sent.</div>`,
     `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="maintNotifiedMany('${vendor}')">Save</button>`);
 }
@@ -1790,7 +1790,7 @@ function maintNotifiedAsk(account, vendor){
   const who = vendor === 'Wettech' ? 'Justin (Wettech)' : 'Jordan (Gulfshore)';
   openModal(`${esc(account)} - ${esc(who)} notified`, `<div class="fields">
     <label>How<select id="mn_how"><option>email</option><option>phone</option><option>text</option><option>in person</option></select></label>
-    <label class="w">Note<input type="text" id="mn_note" placeholder="e.g. Tommy said the week of the 20th"></label></div>`,
+    <label class="w">Note<input type="text" id="mn_note" placeholder="e.g. Tom said the week of the 20th"></label></div>`,
     `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="maintNotified(${JSON.stringify(account).replace(/"/g, '&quot;')}, '${vendor}', true, document.getElementById('mn_how').value, document.getElementById('mn_note').value)">Save</button>`);
 }
 async function maintNotified(account, vendor, on, how, note){
@@ -1799,12 +1799,12 @@ async function maintNotified(account, vendor, on, how, note){
   if (!j.success) { toast(j.error, true); return false; }
   closeModal(); MS = j; drawMaintSchedule(); return true;
 }
-// Opens the email to Tommy in your mail program, then asks whether it went.
+// Opens the email to Tom in your mail program, then asks whether it went.
 function emailWettechList(){
   if (!MS || !MS.wettech_mailto) return;
   const names = MS.rows.filter(r => r.vendor === 'Wettech' && !r.notified).map(r => r.account);
   location.href = MS.wettech_mailto;
-  setTimeout(() => { if (confirm(`Did the email to Tommy go? Mark these ${names.length} pump visits as notified?`)) maintNotified(names, 'Wettech', true, 'email', 'monthly list'); }, 800);
+  setTimeout(() => { if (confirm(`Did the email to Tom go? Mark these ${names.length} pump visits as notified?`)) maintNotified(names, 'Wettech', true, 'email', 'monthly list'); }, 800);
 }
 
 // ── an account's history (Accounts tab) ───────────────

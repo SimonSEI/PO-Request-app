@@ -58,9 +58,9 @@ DEFAULT_VENDORS = [{
     'other': ['CFC1429137', '#CFC1429137', '451 Interstate Court', '451 interstate Court',
               'State of Florida Certified Plumbing Contractor'],
     'sender_match': ['wettec', 'wetech', 'wettech', 'water equipment technologies'],
-    # Approved quotes go back to Tommy.
+    # Approved quotes go back to Tom.
     'contact_email': 'tomm@wettec.biz',
-    'contact_name': 'Tommy',
+    'contact_name': 'Tom',
 }, {
     'key': 'gulfshore',
     'display': 'Gulfshore',
