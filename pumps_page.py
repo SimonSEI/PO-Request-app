@@ -719,6 +719,7 @@ async function loadToday(){
   const q = j.queue;
   setCount('n-jobs', q.open_count, false);
   setCount('n-scada', q.scada_attention.length, q.scada_attention.some(s => s.state === 'overdue'));
+  setCount('n-bills', q.bills_to_pay_count || 0, false);
   updateScanInfo(j.scan);
   const open = c => `openCase(${c.id})`;
   // ✓ Done on a to-do ticks that step on its job, so the watchlist moves on with it.
@@ -980,7 +981,7 @@ async function loadBills(){
       <td>${b.payable ? '<b class="ok">✓ Yes</b> - ' : 'Not yet - '}${esc(b.why)}${b.asked_at ? `<div class="note">✉ Emailed Christian ${esc(b.asked_at.slice(0, 10))}</div>` : ''}</td>
       <td><button class="btn s" onclick="markVendorPaid(${b.case_id}).then(loadBills)">Mark paid</button></td></tr>`; }).join('')}
     </tbody></table>`).join('') || '<div class="empty">No vendor bills waiting to be paid. 🎉</div>';
-  const t = document.getElementById('n-bills'); if (t) t.textContent = n || '';
+  setCount('n-bills', j.vendors.reduce((a, g) => a + g.bills.filter(b => b.payable && !b.asked_at).length, 0), false);
   billsInfo();
 }
 function billsPicked(){ return [...document.querySelectorAll('.billPick:checked')].map(x => +x.value); }
