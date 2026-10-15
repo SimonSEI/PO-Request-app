@@ -258,7 +258,7 @@ class PumpsTest(unittest.TestCase):
     def test_multi_page_report_like_spanish_wells(self):
         """Wettech's Spanish Wells report (Oct 2026): one page per pump, each with Wettech's letterhead,
         "CUSTOMER: Stahlman England", an empty comments box and the technician - rebranded on every page, then
-        put on The Lake Club's "Quarterly Pump- 850" job as "October Pump Maintenance"."""
+        put on The Lake Club's "Quarterly Pump- 850" job as "October Pump Report"."""
         from docx import Document
         d = Document()
         for pump in ('Pump #1', 'Pump #2', 'Pump #3', 'Pump #5'):
@@ -312,19 +312,19 @@ class PumpsTest(unittest.TestCase):
         notes = [v for q, v in fake.calls if 'jobCreateNote' in q]
         self.assertTrue(notes, res)
         self.assertEqual(notes[0]['id'], 'Z2lkOi8vSm9iYmVyL0pvYi80MTQyMDAxOA==', 'job #1609 Quarterly Pump- 850')
-        self.assertEqual(notes[0]['input']['message'], 'October Pump Maintenance')
+        self.assertEqual(notes[0]['input']['message'], 'October Pump Report')
         att = notes[0]['input'].get('attachments') or []
         # The PDF where the server can make one (LibreOffice), else the Word file.
         if self.c.get(f"/pumps/api/docs/{res['doc_id']}/file?version=branded_pdf").status_code == 200:
-            self.assertEqual((att[0]['fileName'], att[0]['contentType']), ('10-26 Spanish Wells.pdf', 'application/pdf'))
+            self.assertEqual((att[0]['fileName'], att[0]['contentType']), ('10-26  Spanish Wells.pdf', 'application/pdf'))
         else:
-            self.assertTrue(att[0]['fileName'].endswith('.docx'))
+            self.assertEqual(att[0]['fileName'], '10-26  Spanish Wells.docx')
         self.assertEqual(res['auto_note']['target'], 'The Lake Club #1609 Quarterly Pump- 850')
         # Kept in the app by year.
         lib = self.c.get('/pumps/api/reports?year=2026').get_json()
         row = [r for r in lib['reports'] if r['id'] == res['doc_id']][0]
         self.assertEqual((row['date'], row['site'], row['jobber']['logged'], row['jobber']['title']),
-                         ('2026-10-01', 'Spanish Wells', True, 'October Pump Maintenance'))
+                         ('2026-10-01', 'Spanish Wells', True, 'October Pump Report'))
         self.assertIn('2026', lib['years'])
 
     # ── quotes, bills, issues ───────────────────────────────────────────────
@@ -3052,6 +3052,40 @@ class PumpsTest(unittest.TestCase):
         self.assertTrue({s['key']: s for s in case['step_list']}['bill_checked'].get('at'))
         doc = self.c.get(f"/pumps/api/docs/{b['doc_id']}").get_json()['doc']
         self.assertEqual(doc['invoice_suggestion']['line_items'][0]['unit_price'], 650.0)
+
+    def test_maintenance_bill_needs_no_quote_and_bills_the_recurring_job(self):
+        """Wettech's bill for Allura's quarterly maintenance (Oct 2026): no quote is waited on, and our invoice
+        is the recurring job's price - not the bill plus 30%."""
+        items = [{'name': 'Maintenance', 'description': 'Service to perform quarterly maintenance on irrigation system '
+                  'for OCTOBER 2026. Maintenance Report Attached!', 'quantity': 1, 'unit_price': 125.0,
+                  'amount': 125.0, 'taxable': False, 'is_tax': False}]
+        ex = extraction('bill', '29139', client='Allura', subtotal=125, tax=0, items=items)
+        ex['description'] = items[0]['description']
+        self.extracts['b-allura.pdf'] = ex
+        b = self.upload('b-allura.pdf')
+        case = self.case(b['case_id'])
+        self.assertEqual(case['category'], 'maintenance')
+        self.assertNotIn(case['stage'], ('vendor_quote', 'client_quote', 'client_approved'))
+        self.assertEqual([i for i in case['issues'] if not i['resolved_at']], [])
+        job = {'id': 'JR', 'number': '13196', 'title': 'Quarterly Pump Maintenance', 'uri': '', 'total': 320.0,
+               'status': 'active', 'type': 'recurring', 'instructions': '', 'property_label': '',
+               'line_items': [{'name': 'Quarterly Pump Maintenance', 'description': '', 'quantity': 1,
+                               'unit_price': 320.0, 'taxable': False}]}
+        saved = (P.jobber_status, P.invoice_client, P.recurring_jobs, P.job_detail)
+        P.jobber_status = lambda: {'connected': True}
+        P.invoice_client = lambda doc, case=None: 'CA'
+        P.recurring_jobs = lambda cid: [{'id': 'JR', 'number': '13196', 'title': job['title'], 'status': 'active'}]
+        P.job_detail = lambda jid: job
+        try:
+            doc = P._doc_dict(P._conn().execute('SELECT * FROM pump_docs WHERE id=?', (b['doc_id'],)).fetchone())
+            sugg = P.invoice_suggestion(doc, dict(P._conn().execute('SELECT * FROM pump_cases WHERE id=?',
+                                                                    (b['case_id'],)).fetchone()))
+        finally:
+            P.jobber_status, P.invoice_client, P.recurring_jobs, P.job_detail = saved
+        self.assertEqual([li['unit_price'] for li in sugg['line_items']], [320.0])
+        self.assertEqual(sugg['job']['id'], 'JR')
+        # A bill that names a quote still waits on it.
+        self.assertFalse(P.maintenance_bill({'kind': 'bill', 'description': 'Pump maintenance repairs as per quote'}))
 
     def test_picking_a_client_is_remembered_for_the_vendors_name(self):
         """Wettech still writes "Lee Memorial"; the office picks Hodges Funeral Home once."""
