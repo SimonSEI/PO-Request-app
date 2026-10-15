@@ -799,6 +799,7 @@ function renderCase(){
       <span class="note">${d.doc_number ? '#' + esc(d.doc_number) + ' · ' : ''}${d.total != null ? money(d.total) : ''} ${esc(d.doc_date)}</span>
       <span style="flex:1"></span>
       <a class="btn s" href="/pumps/api/docs/${d.id}/file" target="_blank">Open</a>
+      ${['bill', 'report', 'quote'].includes(d.kind) && !(d.jobber||{}).invoice_id && !(d.jobber||{}).quote_id ? `<button class="btn s" title="Not for this job - take it off and file it again" onclick="refileDoc(${d.id})">Wrong job</button>` : ''}
       ${d.has_branded ? `<a class="btn s" target="_blank" href="/pumps/api/docs/${d.id}/file?version=branded_pdf">SE report PDF</a> <a class="btn s" href="/pumps/api/docs/${d.id}/file?version=branded&download=1">⬇ Word</a>` : ''}
       ${d.kind === 'quote' && !(d.jobber||{}).quote_id ? `<button class="btn s p" onclick="draftQuote(${d.id})">Draft quote in Jobber</button>` : ''}
       ${d.kind === 'quote' && (d.jobber||{}).quote_id ? `<a class="chip g" target="_blank" href="${esc(d.jobber.quote_uri||'#')}">Jobber quote #${esc(d.jobber.quote_number)}</a>` : ''}
@@ -1007,6 +1008,14 @@ async function moveCase(sel){
   if (!k || !confirm(`Move this job to "${label}"?\n\nThe steps before it are ticked done today.`)) return;
   const j = await api('/cases/' + curCase.id + '/move', {method:'POST', body:{stage: k}});
   if (j.success) { curCase = j.case; renderCase(); toast('Moved to: ' + label); } else toast(j.error || 'Not moved', true);
+}
+// A bill or report on the wrong job (Lely: the quarterly bill on the valve repair): off it, filed again.
+async function refileDoc(id){
+  if (!confirm("Take this document off this job and file it again?\n\nWhat it ticked here is undone. It goes on the job it fits, or a new one.")) return;
+  const j = await api('/docs/' + id + '/refile', {method:'POST'});
+  if (!j.success) { toast(j.error, true); return; }
+  toast('Filed again' + (j.case_id ? ' - opening that job' : ''));
+  if (j.case_id) openCase(j.case_id);
 }
 function setStep(k, v){ patchCase({steps: {[k]: v === 'today' ? new Date().toISOString().slice(0,10) : v}}); }
 function stepMenu(k, sel){
