@@ -5837,6 +5837,13 @@ def work_queue(conn):
         [d['case_id'] for d in bills_to_draft])} if bills_to_draft else {}
     for d in bills_to_draft:
         d['bill_kind'] = bill_kind_note(d, bill_cases.get(d['case_id']))
+    for d in bills_to_draft:
+        # The account's notes where the invoice is made (Evergreen: attach the report in
+        # Jobber but don't send it - only report the gallons used for the north and south pumps).
+        crow = conn.execute('SELECT client_name, title, site FROM pump_cases WHERE id=?', (d['case_id'],)).fetchone()
+        acct = account_info(conn, dict(crow)) if crow else None
+        d['account_note'] = (acct or {}).get('notes') or ''
+        d['account_name'] = (acct or {}).get('name') or ''
     to_quote_ids = {c['id'] for c in by_stage.get('client_quote', []) if not (c['jobber'].get('quote') or {}).get('id')}
     quotes_to_draft = [d for d in (_doc_dict(r) for r in conn.execute(
         "SELECT * FROM pump_docs WHERE kind='quote' AND status != 'dismissed' "
@@ -6732,6 +6739,8 @@ def h_doc(actor, doc_id):
         case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (d['case_id'],)).fetchone()) if d['case_id'] else None
         if d['kind'] == 'bill':
             d['invoice_suggestion'] = invoice_suggestion(d, case)
+            acct = account_info(conn, case) if case else None
+            d['account_note'], d['account_name'] = (acct or {}).get('notes') or '', (acct or {}).get('name') or ''
         if d['kind'] == 'quote':
             d['quote_suggestion'] = suggest_quote(d, case)
         if case:
