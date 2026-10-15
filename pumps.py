@@ -142,7 +142,7 @@ ALLOWED_MUTATIONS = frozenset({'quoteCreate', 'invoiceCreate', 'jobCreateNote', 
                                # quote is a draft right before, and never touches a sent quote.
                                'quoteCreateLineItems', 'quoteDeleteLineItems',
                                # Marking the recurring maintenance job's visit for the bill's month complete,
-                               # once its draft invoice is made (Oct 2026). Only complete_visit_for_bill() uses it.
+                               # right before its draft invoice is made (Oct 2026). Only complete_visit_for_bill() uses it.
                                'visitComplete', 'visitMarkComplete', 'completeVisit'})
 
 # What counts as pump work when searching Jobber, by category.
@@ -5046,7 +5046,18 @@ def _enum_values(name):
     return _SCHEMA_CACHE[key]
 
 
-def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', actor='system', force=False):
+def _invoice_visit_field():
+    """The InvoiceCreateInput field that ties an invoice to job visits, when
+    this Jobber API has one ('' when not)."""
+    try:
+        have = {f['name'] for f in (_type_fields('InvoiceCreateInput').get('inputFields') or [])}
+    except JobberError:
+        return ''
+    return next((k for k in ('visitIds', 'visitsIds', 'visits') if k in have), '')
+
+
+def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', actor='system', force=False,
+                         visit_ids=None):
     """Create the invoice in Jobber as a DRAFT. Nothing is sent: the only
     mutation used is invoiceCreate, and check_mutation_allowed() refuses any
     other. If Jobber ever hands back a status other than draft, an issue is
@@ -5073,6 +5084,11 @@ def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', a
                'tax': {'taxCalculationMethod': 'EXCLUSIVE'}, 'lineItems': items}
         if job_id:
             inp['jobId'] = job_id
+            # A recurring job's visit, completed just before: the invoice is for it, so
+            # Jobber counts the visit as invoiced (not "completed, not invoiced").
+            vfield = _invoice_visit_field() if visit_ids else ''
+            if vfield:
+                inp[vfield] = list(visit_ids)
         try:
             data = gql_with_lines(INVOICE_CREATE, {'input': inp}, 'input')
         except JobberError as e:
@@ -6780,16 +6796,25 @@ def h_doc_invoice(actor, doc_id):
     if job_id is None:
         job_id = (json.loads(case.get('jobber') or '{}').get('job') or {}).get('id') or \
             ((sugg.get('job') or {}).get('id') if (sugg.get('client_id') in (None, client_id)) else '') or ''
+    on_job = bool(sugg.get('job') and job_id == sugg['job']['id'])
+    # A monthly/quarterly: the visit is marked complete first, then invoiced, as a draft.
+    visit = complete_visit_for_bill(doc, case, sugg['job'], actor) if on_job else None
     try:
         res = create_draft_invoice(doc_id, client_id, data.get('line_items') or sugg['line_items'],
                                    data.get('subject') or sugg['subject'], job_id or '', actor,
-                                   force=bool(data.get('force')))
+                                   force=bool(data.get('force')), visit_ids=_visit_ids(visit))
     except PossibleDuplicate as e:
         return {'success': False, 'possible_duplicate': e.rec, 'error': str(e)}, 409
-    if sugg.get('job') and job_id == sugg['job']['id']:
+    if on_job:
         invoiced_on_job(doc, case, sugg['job'], actor)
-        res['visit'] = complete_visit_for_bill(doc, case, sugg['job'], actor)
+        res['visit'] = visit
     return {'invoice': res}
+
+
+def _visit_ids(visit):
+    """The completed visit's id from complete_visit_for_bill()'s answer."""
+    v = (visit or {}).get('visit') or {}
+    return [v['id']] if v.get('id') and ((visit or {}).get('completed') or (visit or {}).get('already_complete')) else []
 
 
 def invoiced_on_job(doc, case, job, actor='system'):
@@ -10060,10 +10085,11 @@ def auto_draft_invoice(doc_id, actor='Pumps (automatic)'):
             sugg = invoice_suggestion(doc, case)
             if not sugg.get('job'):
                 return None
+            visit = complete_visit_for_bill(doc, case, sugg['job'], actor)
             res = create_draft_invoice(doc_id, sugg['client_id'], sugg['line_items'], sugg['subject'],
-                                       sugg['job']['id'], actor)
+                                       sugg['job']['id'], actor, visit_ids=_visit_ids(visit))
             invoiced_on_job(doc, case, sugg['job'], actor)
-            return {**res, 'job': sugg['job'], 'visit': complete_visit_for_bill(doc, case, sugg['job'], actor)}
+            return {**res, 'job': sugg['job'], 'visit': visit}
         except (JobberError, ValueError) as e:
             return _invoice_pending(doc_id, e)
     try:

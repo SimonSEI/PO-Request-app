@@ -3374,6 +3374,40 @@ class PumpsTest(unittest.TestCase):
         # A one-off job's visits are left alone.
         self.assertIsNone(P.complete_visit_for_bill(doc, {}, {**job, 'type': 'one_off'}, 'test'))
 
+    def test_monthly_marks_the_visit_complete_then_invoices_it_as_a_draft(self):
+        """Oct 2026: a monthly/quarterly is invoiced the Jobber way - the recurring job's visit is marked
+        complete first, then the draft invoice is made for that visit, so Jobber doesn't still list it as
+        completed and not invoiced."""
+        self.extracts['b-mon.pdf'] = extraction('bill', '31501', client='Evergreen', subtotal=100)
+        b = self.upload('b-mon.pdf')
+        job = {'id': 'J1450', 'number': '1450', 'title': 'Monthly Pump 250', 'uri': '', 'total': 250.0,
+               'status': 'active', 'type': 'recurring'}
+        order, sent = [], {}
+        saved = (P.invoice_suggestion, P.complete_visit_for_bill, P.gql_with_lines, P._invoice_visit_field,
+                 P.existing_jobber_record)
+        P.invoice_suggestion = lambda doc, case=None, client_id=None: {
+            'subject': 'Pump service', 'client_id': 'CE', 'job': job, 'recurring': True,
+            'line_items': [{'name': 'MONTHLY PUMP PROGRAM', 'description': '', 'quantity': 1, 'unit_price': 250.0}]}
+        P.complete_visit_for_bill = lambda doc, case, j, actor='system': (
+            order.append('visit'), {'completed': True, 'month': 'October 2026', 'visit': {'id': 'V10'}})[1]
+
+        def create(query, variables, key):
+            order.append('invoice')
+            sent.update(variables['input'])
+            return {'invoiceCreate': {'invoice': {'id': 'I1', 'invoiceNumber': 9001, 'invoiceStatus': 'draft'}}}
+        P.gql_with_lines = create
+        P._invoice_visit_field = lambda: 'visitIds'
+        P.existing_jobber_record = lambda *a, **k: None
+        try:
+            r = self.c.post(f"/pumps/api/docs/{b['doc_id']}/invoice", json={'client_id': 'CE'}).get_json()
+        finally:
+            (P.invoice_suggestion, P.complete_visit_for_bill, P.gql_with_lines, P._invoice_visit_field,
+             P.existing_jobber_record) = saved
+        self.assertTrue(r['success'], r)
+        self.assertEqual(order, ['visit', 'invoice'])
+        self.assertEqual((sent['jobId'], sent['visitIds']), ('J1450', ['V10']))
+        self.assertEqual(r['invoice']['invoice_status'], 'draft')
+
     def test_picking_a_client_is_remembered_for_the_vendors_name(self):
         """Wettech still writes "Lee Memorial"; the office picks Hodges Funeral Home once."""
         hodges = [{'id': 'CH', 'name': 'Hodges Funeral Home', 'isLead': False, 'isArchived': False}]
