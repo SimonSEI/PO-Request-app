@@ -2721,7 +2721,7 @@ class PumpsTest(unittest.TestCase):
             self.assertTrue(any('expects it done by 10/20' in json.dumps(v) for qq, v in fake.calls if 'CreateNote' in qq))
             self.assertIsNone(P.handle_signed_quote_reply('m77', 'tomm@wettec.biz', f'RE: {sent[0][1]}', 'Oct 20'))
             # This Jobber has no way to make a job from a quote: a to-do instead.
-            self.assertIn('Convert Jobber quote #812 to a job', [t['title'] for t in todos.values()])
+            self.assertTrue(any(t['title'].startswith('Convert quote for ') and t['title'].endswith(' (#812) to a job') for t in todos.values()), todos)
             # Wettech bills $1,100 against a $1,000 quote: the client is invoiced the quoted $1,300.
             b = self.upload('b-0950.pdf')
             self.assertEqual(b['case_id'], cid)

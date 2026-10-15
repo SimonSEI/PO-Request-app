@@ -7134,6 +7134,12 @@ SEED_DIVE_SITES = [
 ]
 
 
+def quote_to_job_title(client, number):
+    """'Convert quote for Huntington #5 (#9149) to a job'."""
+    who = f'quote for {client}' if client else 'Jobber quote'
+    return f"Convert {who}{f' (#{number})' if number else ''} to a job"
+
+
 def init_todo_table(c):
     c.execute('''CREATE TABLE IF NOT EXISTS pump_todos (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -7154,6 +7160,13 @@ def init_todo_table(c):
                   key TEXT PRIMARY KEY,
                   hidden_by TEXT DEFAULT '',
                   hidden_at TEXT)''')
+    # Older quote-to-job to-dos led with the quote number; retitle open ones.
+    for tid, title, detail in c.execute("SELECT id, title, detail FROM pump_todos WHERE key LIKE 'quote-to-job:%' "
+                                        "AND done_at IS NULL AND title LIKE 'Convert Jobber quote #%'").fetchall():
+        m = re.match(r'Convert Jobber quote #(\S*) to a job$', title)
+        if m:
+            client = (detail or '').split(' approved it.')[0] if ' approved it.' in (detail or '') else ''
+            c.execute('UPDATE pump_todos SET title=? WHERE id=?', (quote_to_job_title(client.strip(), m.group(1)), tid))
 
 
 def init_dive_tables(c):
@@ -9830,7 +9843,7 @@ def make_job_from_quote(case_id, actor='Jobber sync'):
             conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(j), case_id))
             _event(conn, actor, 'quote made a job', f"Jobber job #{j['job']['number']}", case_id=case_id)
         else:
-            add_todo(conn, f'quote-to-job:{case_id}', f"Convert Jobber quote #{q.get('number') or ''} to a job",
+            add_todo(conn, f'quote-to-job:{case_id}', quote_to_job_title(case.get('client_name'), q.get('number')),
                      f"{case.get('client_name') or ''} approved it. " + (f'(Jobber: {err})' if err else
                      "Jobber's API can't do this one by itself."),
                      {'case_id': case_id, 'uri': q.get('uri') or ''})
