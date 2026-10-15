@@ -3622,6 +3622,21 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(P._with_quote_link(conn, {'id': 2, 'jobber': {}}), {'id': 2, 'jobber': {}})
         conn.close()
 
+    def test_account_note_shows_where_the_invoice_is_drafted(self):
+        """Evergreen (Oct 2026): "Attach the report in Jobber but don't send the pump report - only report the
+        gallons used for the north and south pumps" shows on the Draft invoice to-do and window."""
+        conn = P._conn()
+        conn.execute("UPDATE pump_maint_accounts SET active=1 WHERE name='Evergreen (Bradenton)'")
+        conn.commit()
+        conn.close()
+        self.extracts['b-ever.pdf'] = extraction('bill', '29301', client='Evergreen c/o Access Difference', subtotal=100)
+        b = self.upload('b-ever.pdf')
+        todo = [d for d in self.c.get('/pumps/api/summary').get_json()['queue']['bills_to_draft'] if d['id'] == b['doc_id']]
+        self.assertTrue(todo, 'on the Draft invoice list')
+        self.assertIn('gallons used for the north and south pumps', todo[0]['account_note'])
+        doc = self.c.get(f"/pumps/api/docs/{b['doc_id']}").get_json()['doc']
+        self.assertIn("don't send the pump report", doc['account_note'])
+
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's
         usual vendor cost - it's the monthly visit, invoiced at the recurring job's $250, not $130."""
