@@ -3637,6 +3637,50 @@ class PumpsTest(unittest.TestCase):
         doc = self.c.get(f"/pumps/api/docs/{b['doc_id']}").get_json()['doc']
         self.assertIn("don't send the pump report", doc['account_note'])
 
+    def test_evergreen_invoice_carries_the_flow_meter_readings(self):
+        """Evergreen's job #1450 says "TAKE MONTHLY READING OF PUMP FLOW METERS AND NOTE ON INVOICE": the
+        invoice line reads like the office's September #36362 - the job's description, "OCTOBER PUMP
+        MAINTENANCE", then each pump's reading in gallons from that month's report."""
+        from docx import Document
+        d = Document()
+        for loc, gal in (('North Pump', '230512870'), ('South Pump', '113401552')):
+            for t in ('Water Equipment Technologies of Southwest Florida LLC', 'IRRIGATION PUMP SYSTEM REPORT'):
+                d.add_paragraph(t)
+            t = d.add_table(rows=2, cols=4)
+            t.rows[0].cells[2].text, t.rows[0].cells[3].text = 'DATE', '10-2-2026'
+            for cell, text in zip(t.rows[1].cells, ('CUSTOMER', 'Stahlman England', 'LOCATION', loc)):
+                cell.text = text
+            t = d.add_table(rows=1, cols=3)
+            for cell, text in zip(t.rows[0].cells, ('√', 'CHECK & RECORD FLOW METER READINGS', gal)):
+                cell.text = text
+        buf = io.BytesIO()
+        d.save(buf)
+        rep = P.ingest_document('10-26 Evergreen.docx', buf.getvalue(), source='email', actor='email scan',
+                                email={'uid': 'ev-1', 'from': 'office@wettec.biz', 'subject': 'Inv 29301'})
+        self.assertEqual(rep['kind'], 'report', rep)
+        case = dict(P._conn().execute('SELECT * FROM pump_cases WHERE id=?', (rep['case_id'],)).fetchone())
+        job = {'id': 'J1450', 'number': '1450', 'title': 'Monthly Pump 250', 'uri': '', 'total': 250.0,
+               'status': 'active', 'type': 'recurring', 'property_label': '',
+               'instructions': 'TAKE MONTHLY READING OF PUMP FLOW METERS AND NOTE ON INVOICE.',
+               'line_items': [{'name': 'MONTHLY PUMP PROGRAM', 'description': 'SITE LOCATION: Evergreen of Manatee County',
+                               'quantity': 1, 'unit_price': 250.0, 'taxable': False}]}
+        bill = {'kind': 'bill', 'client_name': case['client_name'], 'subtotal': 100.0, 'doc_date': '2026-10-10',
+                'description': 'Monthly pump maintenance for OCTOBER 2026', 'line_items': []}
+        saved = (P.jobber_status, P.invoice_client, P.recurring_jobs, P.job_detail)
+        P.jobber_status = lambda: {'connected': True}
+        P.invoice_client = lambda doc, case=None: 'CE'
+        P.recurring_jobs = lambda cid: [{'id': 'J1450', 'number': '1450', 'title': job['title'], 'status': 'active'}]
+        P.job_detail = lambda jid: job
+        try:
+            sugg = P.invoice_suggestion(bill, {**case, 'category': 'maintenance'})
+        finally:
+            P.jobber_status, P.invoice_client, P.recurring_jobs, P.job_detail = saved
+        self.assertEqual(sugg['line_items'][0]['description'],
+                         'SITE LOCATION: Evergreen of Manatee County\n\nOCTOBER PUMP MAINTENANCE\n\n'
+                         'North Pump - FLOW METER READINGS 230512870 GALLONS\n'
+                         'South Pump - FLOW METER READINGS 113401552 GALLONS')
+        self.assertEqual(sugg['line_items'][0]['unit_price'], 250.0)
+
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's
         usual vendor cost - it's the monthly visit, invoiced at the recurring job's $250, not $130."""

@@ -4901,9 +4901,15 @@ def _invoice_suggestion(doc, case=None, client_id=None):
             # The month the visit was for, in the title: "Pump service - Honda of Ft Myers - October 2026".
             y, m = bill_service_month(doc)
             month = date(y, m, 1).strftime('%B %Y')
+            if FLOW_ON_INVOICE.search(job.get('instructions') or ''):
+                # "TAKE MONTHLY READING OF PUMP FLOW METERS AND NOTE ON INVOICE" (Evergreen #1450).
+                lines = _with_flow_readings(job['line_items'], case, doc, y, m)
+                if lines:
+                    job = {**job, 'line_items': lines, 'flow_readings': True}
             if month.lower() not in (sugg.get('subject') or '').lower():
                 sugg['subject'] = f"{sugg.get('subject') or 'Pump service'} - {month}"[:255]
-            sugg.update(bill_lines=sugg['line_items'], line_items=_with_bill_notes(job['line_items'], sugg['line_items']),
+            sugg.update(bill_lines=sugg['line_items'], line_items=job['line_items'] if job.get('flow_readings')
+                        else _with_bill_notes(job['line_items'], sugg['line_items']),
                         client_id=client_id, markup_pct=0, recurring=True,
                         job={k: job[k] for k in ('id', 'number', 'title', 'uri', 'total', 'status', 'type')})
             return sugg
@@ -4950,6 +4956,56 @@ def bill_kind_note(doc, case=None):
 
 
 _REPORT_ATTACHED = re.compile(r'\s*\(?\b(?:maintenance\s+)?report\s+attached\b[!.)]*', re.I)
+
+
+FLOW_ON_INVOICE = re.compile(r'flow\s*meters?\b.{0,80}\binvoice|invoice.{0,80}flow\s*meters?', re.I | re.S)
+
+
+def flow_readings(lines):
+    """Flow meter readings in a pump report, by pump: [("North Pump", "229985393")].
+    The report's rows: "LOCATION · North Pump" starts each pump's page, and
+    "√ · CHECK & RECORD FLOW METER READINGS · 229985393" is its reading."""
+    out, loc = [], ''
+    for line in lines or []:
+        m = re.search(r'\bLOCATION\b\s*[·:|]\s*([^·|]+)', line, re.I)
+        if m:
+            loc = m.group(1).strip()
+        if re.search(r'FLOW\s*METER\s*READING', line, re.I):
+            n = re.search(r'(\d[\d,]{3,})', re.split(r'FLOW\s*METER\s*READINGS?', line, flags=re.I)[-1])
+            if n:
+                out.append((loc or f'Pump {len(out) + 1}', n.group(1).replace(',', '')))
+    return out
+
+
+def _with_flow_readings(job_lines, case, doc, year, month):
+    """The recurring job's line written the way the office invoices it (Evergreen,
+    Sept 2026 #36362): the job's description, "SEPTEMBER PUMP MAINTENANCE", then
+    each pump's flow meter reading in gallons, from that month's report. None
+    when there is no report with readings yet."""
+    conn = _conn()
+    try:
+        rows = [_doc_dict(r) for r in conn.execute(
+            "SELECT * FROM pump_docs WHERE kind='report' AND status != 'dismissed' AND "
+            "(case_id=? OR (client_name=? AND client_name != '')) ORDER BY id DESC",
+            ((case or {}).get('id') or -1, (doc or {}).get('client_name') or ''))]
+    finally:
+        conn.close()
+    ym = f'{year:04d}-{month:02d}'
+    for r in sorted(rows, key=lambda r: ((r.get('doc_date') or '')[:7] != ym, -r['id'])):
+        readings = flow_readings((r.get('report_fields') or {}).get('lines') or
+                                 (r.get('text_excerpt') or '').replace(' | ', ' · ').split('\n'))
+        if readings:
+            break
+    else:
+        return None
+    out = [dict(li) for li in job_lines or []]
+    if not out:
+        return None
+    own = (out[0].get('description') or '').strip()
+    body = f"{date(year, month, 1).strftime('%B').upper()} PUMP MAINTENANCE\n\n" + '\n'.join(
+        f'{loc} - FLOW METER READINGS {n} GALLONS' for loc, n in readings)
+    out[0]['description'] = (f'{own}\n\n{body}' if own else body)[:2000]
+    return out
 
 
 def _with_bill_notes(job_lines, bill_lines):
