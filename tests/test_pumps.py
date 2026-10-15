@@ -3568,6 +3568,9 @@ class PumpsTest(unittest.TestCase):
         self.assertTrue(bills[b1['case_id']]['payable'], bills[b1['case_id']])
         self.assertFalse(bills[b2['case_id']]['payable'])
         self.assertIn('not invoiced', bills[b2['case_id']]['why'])
+        count = lambda: self.c.get('/pumps/api/summary').get_json()['queue']['bills_to_pay_count']
+        before = count()
+        self.assertGreaterEqual(before, 1)
         e = self.c.post('/pumps/api/bills_to_pay/email', json={'case_ids': [b1['case_id'], b2['case_id']]}).get_json()['email']
         self.assertEqual(e['count'], 1)
         self.assertIn('#40001', e['body'])
@@ -3588,6 +3591,7 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual((r['sent'], sent[0][0]), (1, 'christian@example.com'))
         got = {b['case_id']: b for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for b in g['bills']}
         self.assertTrue(got[b1['case_id']]['asked_at'])
+        self.assertEqual(count(), before - 1, 'sent to Christian: off the badge')
         # Paid: off the tab.
         self.c.patch(f"/pumps/api/cases/{b1['case_id']}", json={'vendor_paid_on': '2026-10-16'})
         left = {b['case_id'] for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for b in g['bills']}

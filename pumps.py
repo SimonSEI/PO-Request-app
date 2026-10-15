@@ -6253,6 +6253,9 @@ def h_summary(actor):
         fix_maintenance_bills(conn)
         conn.commit()
         q = work_queue(conn)
+        # Bills Christian can pay that he hasn't been sent yet - the Bills to pay tab's badge.
+        q['bills_to_pay_count'] = sum(1 for g in bills_to_pay(conn) for b in g['bills']
+                                      if b['payable'] and not b['asked_at'])
         return {'queue': q, 'counts': {k: len(v) for k, v in q.items() if isinstance(v, list)},
                 'scan': _state_get('scan_status') or {}, 'jobber': {**jobber_status(),
                                                                      'sync': jobber_sync_state()},
