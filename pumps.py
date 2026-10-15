@@ -2263,6 +2263,8 @@ def ingest_document(filename, data, source='upload', email=None, kind_hint=None,
             res['parts'] = parts
             _quote_each_part(parts, actor)
     if res.get('kind') == 'report' and res.get('doc_id') and not res.get('review'):
+        # A report sent again (Lely, Oct 2026: the email forwarded to the mailbox
+        # once more) that isn't in Jobber yet is tried again.
         res['auto_note'] = auto_log_report(res['doc_id'])
     if res.get('kind') == 'bill' and res.get('case_id') and not res.get('review'):
         res['auto_invoice'] = auto_draft_invoice(res['doc_id'])
@@ -2323,7 +2325,8 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
                     return {**read_doc_again(dup['id'], actor), 'read_again': True}
                 except ValueError as e:
                     return {'skipped': f'already have this file ({e})', 'doc_id': dup['id'], 'case_id': dup['case_id']}
-            return {'skipped': 'already have this file', 'doc_id': dup['id'], 'case_id': dup['case_id']}
+            return {'skipped': 'already have this file', 'doc_id': dup['id'], 'case_id': dup['case_id'],
+                    'kind': prev['kind']}
         text = extract_text(filename, data)
         sender, subject = email.get('from', ''), email.get('subject', '')
         # A forwarded email is from one of us; the vendor shows in the
@@ -5398,9 +5401,12 @@ def auto_log_report(doc_id, actor='Pumps (automatic)'):
             if doc and doc.get('case_id') else {}
     finally:
         conn.close()
-    if not doc or doc['kind'] != 'report' or not doc['has_branded'] or doc['status'] in ('review', 'dismissed') \
-            or (doc.get('jobber') or {}).get('note_id'):
+    if not doc or doc['kind'] != 'report' or doc['status'] == 'dismissed' or (doc.get('jobber') or {}).get('note_id'):
         return None
+    if doc['status'] == 'review':
+        return _note_pending(doc, 'The report needs a look first (Look at) - then log it in Jobber.', actor)
+    if not doc['has_branded']:
+        return _note_pending(doc, "The report couldn't be rebranded, so it wasn't put in Jobber by itself.", actor)
     try:
         t = resolve_report_target(doc, case)
         if t.get('id'):
@@ -5408,11 +5414,16 @@ def auto_log_report(doc_id, actor='Pumps (automatic)'):
         reason = t['needs']
     except (JobberError, ValueError) as e:
         reason = f'Could not log it automatically: {e}'
+    return _note_pending(doc, reason, actor)
+
+
+def _note_pending(doc, reason, actor):
+    """Why a report wasn't put in Jobber by itself - kept on it and shown on its to-do."""
     conn = _conn()
     try:
         j = {**(doc.get('jobber') or {}), 'note_pending': {'reason': reason, 'at': _now_text()}}
-        conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(j), doc_id))
-        _event(conn, actor, 'report not logged in Jobber', reason, case_id=doc.get('case_id'), doc_id=doc_id)
+        conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(j), doc['id']))
+        _event(conn, actor, 'report not logged in Jobber', reason, case_id=doc.get('case_id'), doc_id=doc['id'])
         conn.commit()
     finally:
         conn.close()
