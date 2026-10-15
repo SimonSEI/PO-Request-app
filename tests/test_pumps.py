@@ -3198,6 +3198,26 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(case['stage'], 'report_logged')
         drafts = self.c.get('/pumps/api/summary').get_json()['queue']['bills_to_draft']
         self.assertNotIn(b['case_id'], [d['case_id'] for d in drafts])
+        # Wettech is paid once the account's monthly is billed - from the end of the bill's month.
+        pay = case['vendor_pay']
+        self.assertTrue(pay['report_only'], pay)
+        saved = P._today
+        P._today = lambda: date.fromisoformat(pay['month_end']).replace(day=1)
+        try:
+            self.assertEqual(self.case(b['case_id'])['vendor_pay']['state'], 'unpaid')
+            q = self.c.get('/pumps/api/summary').get_json()['queue']
+            self.assertNotIn(b['case_id'], [c['id'] for c in q['vendor_bills_to_pay']])
+        finally:
+            P._today = saved
+        P._today = lambda: date.fromisoformat(pay['month_end'])
+        try:
+            q = self.c.get('/pumps/api/summary').get_json()['queue']
+            self.assertIn(b['case_id'], [c['id'] for c in q['vendor_bills_to_pay']])
+            conn = P._conn()
+            self.assertIn('monthly has been billed', P.vendor_pay_email(conn, b['case_id'])['body'])
+            conn.close()
+        finally:
+            P._today = saved
         # Anyone else's maintenance bill still gets invoiced.
         self.extracts['b-allura2.pdf'] = {**ex, 'doc_number': '29202', 'client_name': 'Allura'}
         a = self.upload('b-allura2.pdf')
