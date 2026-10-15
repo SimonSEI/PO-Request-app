@@ -3455,6 +3455,17 @@ class PumpsTest(unittest.TestCase):
         c = self.case(repair)
         self.assertFalse((c['steps'].get('vendor_bill') or {}).get('at'))
         self.assertEqual(c['vendor_bill_number'], '')
+        # The same email forwarded again does it too.
+        conn = P._conn()
+        conn.execute('UPDATE pump_docs SET case_id=? WHERE id=?', (repair, b['doc_id']))
+        P._file_on_case(conn, dict(conn.execute('SELECT * FROM pump_docs WHERE id=?', (b['doc_id'],)).fetchone()),
+                        repair, 'test', 'test')
+        conn.commit()
+        conn.close()
+        again = self.upload('b-lely.pdf')
+        self.assertEqual(again['doc_id'], b['doc_id'], again)
+        self.assertNotEqual(again['case_id'], repair, again)
+        self.assertFalse((self.case(repair)['steps'].get('vendor_bill') or {}).get('at'))
 
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's
