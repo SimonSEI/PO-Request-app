@@ -880,7 +880,7 @@ function renderCase(){
       ${f('sei_invoice_number','Our (Jobber) invoice #')}${f('amount','Our invoice $','number')}
       ${f('jobber_request_made','Jobber request made')}${f('opened_on','Opened','date')}
       ${f('description','Description of work','area',1)}${f('notes','Notes','area',1)}
-      <label class="w">Jobber ${jl || '<span class="note">nothing linked - Track it from the Jobber tab</span>'} <a href="#" onclick="event.preventDefault();linkQuote(${c.id})">${J.quote ? 'Use a different Jobber quote…' : 'Link a Jobber quote…'}</a></label>
+      <label class="w">Jobber ${jl || '<span class="note">nothing linked - Track it from the Jobber tab</span>'} <a href="#" onclick="event.preventDefault();linkQuote(${c.id})">${J.quote ? 'Use a different Jobber quote…' : 'Link a Jobber quote…'}</a> · <a href="#" onclick="event.preventDefault();linkInvoice(${c.id})">${J.invoice ? 'Use a different Jobber invoice…' : 'Link a Jobber invoice…'}</a></label>
     </div><div style="margin-top:10px"><button class="btn p" onclick="saveCaseFields()">Save details</button></div></div>
   </div>`;
 }
@@ -985,7 +985,7 @@ async function loadBills(){
       <td>${b.bill_doc_id ? `<a target="_blank" href="/pumps/api/docs/${b.bill_doc_id}/file">#${esc(b.bill_number || '?')}</a>` : '#' + esc(b.bill_number || '?')}<div class="note">${esc(b.bill_date)}</div></td>
       <td class="num">${b.amount != null ? money(b.amount) : '?'}</td>
       <td>${b.payable ? '<b class="ok">✓ Yes</b> - ' : 'Not yet - '}${esc(b.why)}${b.asked_at ? `<div class="note">✉ Emailed Christian ${esc(b.asked_at.slice(0, 10))}</div>` : ''}</td>
-      <td><button class="btn s" onclick="markVendorPaid(${b.case_id}).then(loadBills)">Mark paid</button></td></tr>`; }).join('')}
+      <td>${b.payable ? '' : `<button class="btn s" title="Invoiced straight in Jobber? Tie that invoice to this job" onclick="linkInvoice(${b.case_id}).then(loadBills)">Link invoice</button> `}<button class="btn s" onclick="markVendorPaid(${b.case_id}).then(loadBills)">Mark paid</button></td></tr>`; }).join('')}
     </tbody></table>`).join('') || '<div class="empty">No vendor bills waiting to be paid. 🎉</div>';
   setCount('n-bills', j.vendors.reduce((a, g) => a + g.bills.filter(b => b.payable && !b.asked_at).length, 0), false);
   billsInfo();
@@ -1013,6 +1013,15 @@ async function billsSend(){
   btn.disabled = false; btn.textContent = 'Send to Christian';
   if (!j.success) { toast(j.error, true); return; }
   closeModal(); toast(`Emailed Christian: ${j.sent} bill${j.sent > 1 ? 's' : ''}, ${money(j.total)}.`); loadBills();
+}
+// Invoiced straight in Jobber (Enclave @ Palmira): tie that invoice to the job.
+async function linkInvoice(id){
+  const n = prompt('Jobber invoice number for this job (e.g. 36806):', '');
+  if (!n || !n.trim()) return;
+  const j = await api('/cases/' + id + '/jobber_invoice', {method:'POST', body:{number: n.trim()}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast(`Linked Jobber invoice #${j.invoice.number}${j.invoice.status ? ' (' + j.invoice.status.replace(/_/g, ' ') + ')' : ''}.`);
+  if (curCase && curCase.id === id) openCase(id); else loadToday();
 }
 async function markVendorPaid(id){
   const d = prompt('Date Wettech\'s bill was paid (YYYY-MM-DD):', new Date().toISOString().slice(0,10));

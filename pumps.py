@@ -4795,6 +4795,75 @@ def find_quote_by_number(number):
                  if str(n.get('quoteNumber') or '') == number), None)
 
 
+def find_invoice_by_number(number):
+    """Our Jobber invoice with this number (e.g. 36806): from the sync, else Jobber."""
+    number = str(number or '').strip().lstrip('#')
+    if not number.isdigit():
+        raise ValueError('Type the Jobber invoice number, e.g. 36806')
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT * FROM pump_jobber_items WHERE kind='invoice' AND number=?", (number,)).fetchone()
+    finally:
+        conn.close()
+    if row:
+        return {'id': row['jobber_id'], 'invoiceNumber': number, 'invoiceStatus': row['status'] or '',
+                'jobberWebUri': row['web_uri'] or '', 'amounts': {'total': row['total']},
+                'client': {'id': row['client_id'] or '', 'name': row['client_name'] or ''}}
+    spec = ['id', 'invoiceNumber', 'invoiceStatus', 'subject', 'jobberWebUri', ('amounts', ['total']),
+            ('client', ['id', 'name'])]
+
+    def make(fields):
+        return f'query($q: String!) {{ invoices(searchTerm: $q, first: 20) {{ nodes {{ {fields} }} }} }}'
+    data, _ = _gql_tolerant(make, spec, {'q': number}, required=('id', 'invoiceNumber'))
+    return next((n for n in (data.get('invoices') or {}).get('nodes') or []
+                 if str(n.get('invoiceNumber') or '') == number), None)
+
+
+def link_jobber_invoice(case_id, number, actor='system'):
+    """The client was invoiced straight in Jobber (Enclave @ Palmira, Oct 2026):
+    tie that invoice to the job - "Draft invoice" is done, the bill leaves the
+    Draft invoice list and can be paid, and the invoice's status is followed."""
+    inv = find_invoice_by_number(number)
+    if not inv:
+        raise ValueError(f'No Jobber invoice #{str(number).lstrip("#")} found')
+    num = str(inv.get('invoiceNumber'))
+    status = (inv.get('invoiceStatus') or '').lower()
+    total = _money((inv.get('amounts') or {}).get('total'))
+    client = inv.get('client') or {}
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+        if not row:
+            raise ValueError('No such item')
+        j = json.loads(row['jobber'] or '{}')
+        j['invoice'] = {'id': inv['id'], 'number': num, 'uri': inv.get('jobberWebUri') or '', 'status': status,
+                        'total': total}
+        if client.get('id') and not (j.get('client') or {}).get('id'):
+            j['client'] = {'id': client['id'], 'name': client.get('name') or ''}
+        conn.execute('UPDATE pump_cases SET jobber=?, sei_invoice_number=?, updated_at=? WHERE id=?',
+                     (json.dumps(j), num, _now_text(), case_id))
+        for d in conn.execute("SELECT id, jobber FROM pump_docs WHERE case_id=? AND kind='bill' AND status != 'dismissed'",
+                              (case_id,)).fetchall():
+            dj = json.loads(d['jobber'] or '{}')
+            if not dj.get('invoice_id'):
+                dj.update(invoice_id=inv['id'], invoice_number=num, invoice_uri=inv.get('jobberWebUri') or '',
+                          invoice_status=status, linked_by=actor)
+                dj.pop('invoice_pending', None)
+                conn.execute("UPDATE pump_docs SET jobber=?, status='done' WHERE id=?", (json.dumps(dj), d['id']))
+        conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, status, client_id, client_name, total, "
+                     "web_uri, case_id, category, synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+                     "ON CONFLICT(jobber_id) DO UPDATE SET case_id=excluded.case_id",
+                     (inv['id'], 'invoice', num, status, client.get('id') or '', client.get('name') or '', total,
+                      inv.get('jobberWebUri') or '', case_id, 'pump', _now_text()))
+        _set_step(conn, case_id, 'invoice_drafted', at=_today().isoformat(), by=actor)
+        _event(conn, actor, 'linked Jobber invoice', f"Invoice #{num} ({status or 'status unknown'}"
+               f"{', $' + format(total, ',.2f') if total is not None else ''})", case_id=case_id)
+        conn.commit()
+    finally:
+        conn.close()
+    return j['invoice']
+
+
 def link_jobber_quote(case_id, number, actor='system'):
     """Point an item at the Jobber quote that is really ours for it - e.g. one
     the office made by hand - instead of the one the app drafted. The item's
@@ -6473,6 +6542,13 @@ def h_link_jobber_quote(actor, case_id):
     if not jobber_status()['connected']:
         raise ValueError('Connect Jobber first')
     return {'quote': link_jobber_quote(case_id, _json().get('number'), actor)}
+
+
+@api('/cases/<int:case_id>/jobber_invoice', methods=('POST',))
+def h_link_jobber_invoice(actor, case_id):
+    if actor == BOT:
+        return _office_only(actor, 'Linking a Jobber invoice')
+    return {'invoice': link_jobber_invoice(case_id, _json().get('number'), actor)}
 
 
 @api('/cases/<int:case_id>/vendor_email')

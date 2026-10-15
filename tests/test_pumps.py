@@ -3681,6 +3681,28 @@ class PumpsTest(unittest.TestCase):
                          'South Pump - FLOW METER READINGS 113401552 GALLONS')
         self.assertEqual(sugg['line_items'][0]['unit_price'], 250.0)
 
+    def test_link_an_invoice_made_straight_in_jobber(self):
+        """Enclave @ Palmira (Oct 2026): invoiced straight in Jobber, the app still said "not invoiced yet".
+        Linking the invoice number ties it to the job: Draft invoice done, payable on Bills to pay."""
+        self.extracts['b-encl.pdf'] = extraction('bill', '39140', client='Enclave Palmira Tests', subtotal=100)
+        b = self.upload('b-encl.pdf')
+        conn = P._conn()
+        conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, status, total, web_uri, client_id, client_name) "
+                     "VALUES ('I36806', 'invoice', '36806', 'draft', 125, 'https://secure.getjobber.com/invoices/1', 'CE', 'Enclave')")
+        conn.commit()
+        conn.close()
+        bills = lambda: {x['case_id']: x for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for x in g['bills']}
+        self.assertFalse(bills()[b['case_id']]['payable'])
+        r = self.c.post(f"/pumps/api/cases/{b['case_id']}/jobber_invoice", json={'number': '#36806'}).get_json()
+        self.assertTrue(r['success'], r)
+        self.assertEqual(r['invoice']['number'], '36806')
+        self.assertTrue(bills()[b['case_id']]['payable'])
+        c = self.case(b['case_id'])
+        self.assertTrue(c['steps']['invoice_drafted'].get('at'))
+        self.assertEqual(c['sei_invoice_number'], '36806')
+        drafts = self.c.get('/pumps/api/summary').get_json()['queue']['bills_to_draft']
+        self.assertNotIn(b['doc_id'], [d['id'] for d in drafts])
+
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's
         usual vendor cost - it's the monthly visit, invoiced at the recurring job's $250, not $130."""
