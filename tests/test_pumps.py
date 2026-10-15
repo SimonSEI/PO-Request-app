@@ -3424,6 +3424,38 @@ class PumpsTest(unittest.TestCase):
                          {'id': 3, 'jobber': {}, 'sei_invoice_number': ''})
         conn.close()
 
+    def test_maintenance_bill_does_not_land_on_a_repair_waiting_on_its_quote(self):
+        """Lely (Oct 2026): Wettech's quarterly maintenance bill went on the open "New 10 in valve" repair (quote
+        #9152 approved). A maintenance bill only goes on a maintenance item by name; one filed wrong can be moved."""
+        rq = extraction('quote', '9152', client='Lely', subtotal=2000)
+        rq['description'] = 'Furnish and install new 10 in valve'
+        self.extracts['q-lely.pdf'] = rq
+        q = self.upload('q-lely.pdf')
+        repair = q['case_id']
+        desc = 'Service to perform quarterly maintenance on pump station for OCTOBER 2026. As per quotation.'
+        items = [{'name': 'Lely Maintenance', 'description': desc, 'quantity': 1, 'unit_price': 300.0, 'amount': 300.0}]
+        ex = extraction('bill', '29129', client='Lely', subtotal=300, tax=0, items=items)
+        ex['description'] = desc
+        self.extracts['b-lely.pdf'] = ex
+        b = self.upload('b-lely.pdf')
+        self.assertNotEqual(b['case_id'], repair)
+        self.assertEqual(self.case(b['case_id'])['category'], 'maintenance')
+        self.assertFalse((self.case(repair)['steps'].get('vendor_bill') or {}).get('at'))
+        # Filed on the repair before this fix: "Wrong job" takes it off, undoes what it ticked, and files it again.
+        conn = P._conn()
+        conn.execute('UPDATE pump_docs SET case_id=? WHERE id=?', (repair, b['doc_id']))
+        P._file_on_case(conn, dict(conn.execute('SELECT * FROM pump_docs WHERE id=?', (b['doc_id'],)).fetchone()),
+                        repair, 'test', 'test')
+        conn.commit()
+        conn.close()
+        self.assertTrue(self.case(repair)['steps']['vendor_bill'].get('at'))
+        r = self.c.post(f"/pumps/api/docs/{b['doc_id']}/refile").get_json()
+        self.assertTrue(r['success'], r)
+        self.assertNotEqual(r['case_id'], repair)
+        c = self.case(repair)
+        self.assertFalse((c['steps'].get('vendor_bill') or {}).get('at'))
+        self.assertEqual(c['vendor_bill_number'], '')
+
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's
         usual vendor cost - it's the monthly visit, invoiced at the recurring job's $250, not $130."""

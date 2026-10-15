@@ -2100,10 +2100,10 @@ def _clean_extraction(x):
 
 # ── filing a document against an item ────────────────────────────────────────
 
-def _find_case_for(conn, doc):
+def _find_case_for(conn, doc, exclude=None):
     """Best open item for a document, with how it was matched; (None, '') if none."""
     po = po_key(doc.get('po_number'))
-    rows = [dict(r) for r in conn.execute("SELECT * FROM pump_cases WHERE status='open'")]
+    rows = [dict(r) for r in conn.execute("SELECT * FROM pump_cases WHERE status='open'") if r['id'] != exclude]
     if po:
         hits = [r for r in rows if po_key(r.get('po_number')) == po]
         if len(hits) == 1:
@@ -2122,8 +2122,14 @@ def _find_case_for(conn, doc):
     if not name:
         return None, ''
     kind = doc.get('kind')
+    # A maintenance visit's bill or report (Lely, Oct 2026: the quarterly bill
+    # went on the 10" valve repair waiting on its quote) only goes on a
+    # maintenance item by name - otherwise it gets its own.
+    maint = kind == 'report' or (kind == 'bill' and maintenance_bill(doc))
     best, best_score = None, 0.0
     for r in rows:
+        if maint and r.get('category') not in ('maintenance', 'inspection'):
+            continue
         score = max(similarity(name, r.get('client_name') or r.get('title') or ''),
                     similarity(name, r.get('title') or ''))
         # "Magnolia Cove Pressure Transducer" (the work read into the name, Oct 2026)
@@ -2167,6 +2173,47 @@ def file_document(conn, doc_id, actor='system'):
     conn.execute("UPDATE pump_docs SET case_id=?, status=CASE WHEN status='new' THEN 'filed' ELSE status END, "
                  "updated_at=? WHERE id=?", (case_id, _now_text(), doc_id))
     return _file_on_case(conn, doc, case_id, how, actor)
+
+
+def refile_document(conn, doc_id, actor):
+    """A document filed on the wrong item: off it - what it put there undone
+    (its bill number and amounts, Bill from vendor / Work done when it ticked
+    them) - and filed again on another open item or a new one."""
+    row = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+    if not row:
+        return None
+    doc, old = dict(row), row['case_id']
+    if (_doc_dict(row).get('jobber') or {}).get('invoice_id') or (_doc_dict(row).get('jobber') or {}).get('quote_id'):
+        raise ValueError("It's already drafted in Jobber from this item - delete that draft in Jobber first.")
+    if old:
+        case = conn.execute('SELECT * FROM pump_cases WHERE id=?', (old,)).fetchone()
+        others = conn.execute("SELECT 1 FROM pump_docs WHERE case_id=? AND kind=? AND id != ? AND status != 'dismissed'",
+                              (old, doc['kind'], doc_id)).fetchone()
+        if case and not others:
+            steps = json.loads(case['steps'] or '{}')
+            when = doc.get('doc_date') or ''
+            if doc['kind'] == 'bill':
+                conn.execute("UPDATE pump_cases SET vendor_bill_number='', vendor_bill_amount=NULL, vendor_bill_total=NULL "
+                             "WHERE id=?", (old,))
+                for k in ('vendor_bill', 'bill_checked', 'work_done'):
+                    if (steps.get(k) or {}).get('at') and (k != 'work_done' or steps[k]['at'] == when):
+                        _set_step(conn, old, k, by=actor, na=False)
+                conn.execute("UPDATE pump_issues SET resolved_at=?, resolved_by=? WHERE case_id=? AND doc_id=? "
+                             "AND resolved_at IS NULL", (_now_text(), actor, old, doc_id))
+            elif doc['kind'] == 'quote' and (steps.get('vendor_quote') or {}).get('at'):
+                conn.execute("UPDATE pump_cases SET vendor_quote_number='', vendor_quote_amount=NULL, "
+                             "vendor_quote_total=NULL WHERE id=?", (old,))
+                _set_step(conn, old, 'vendor_quote', by=actor, na=False)
+            _refresh_case(conn, old)
+        _event(conn, actor, 'moved off', f"{doc.get('file_name')} wasn't for this item", case_id=old, doc_id=doc_id)
+    conn.execute("UPDATE pump_docs SET case_id=NULL, status='new', updated_at=? WHERE id=?", (_now_text(), doc_id))
+    case_id, how = _find_case_for(conn, dict(conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()),
+                                  exclude=old)
+    if not case_id:
+        case_id = _new_case_for(conn, doc, actor)
+        how = 'new item'
+    conn.execute("UPDATE pump_docs SET case_id=?, status='filed', updated_at=? WHERE id=?", (case_id, _now_text(), doc_id))
+    return _file_on_case(conn, doc, case_id, f'moved from item {old} - {how}', actor)
 
 
 def _new_case_for(conn, doc, actor):
@@ -6393,6 +6440,29 @@ def h_docs(actor):
         return {'docs': [_doc_dict(r) for r in conn.execute(sql, args)]}
     finally:
         conn.close()
+
+
+@api('/docs/<int:doc_id>/refile', methods=('POST',))
+def h_doc_refile(actor, doc_id):
+    """Wrong item: take the document off it and file it again (on the item it
+    fits, or a new one). A bill or report then carries on as when it came in."""
+    if actor == BOT:
+        return _office_only(actor, 'Moving a document to another item')
+    conn = _conn()
+    try:
+        case_id = refile_document(conn, doc_id, actor)
+        if case_id is None:
+            return {'success': False, 'error': 'Not found'}, 404
+        conn.commit()
+        kind = conn.execute('SELECT kind FROM pump_docs WHERE id=?', (doc_id,)).fetchone()['kind']
+    finally:
+        conn.close()
+    out = {'case_id': case_id}
+    if kind == 'report':
+        out['auto_note'] = auto_log_report(doc_id)
+    elif kind == 'bill':
+        out['auto_invoice'] = auto_draft_invoice(doc_id)
+    return out
 
 
 @api('/docs/<int:doc_id>/invoice_suggestion')
