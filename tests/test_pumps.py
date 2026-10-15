@@ -3611,6 +3611,17 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(P.whole_dollars([{'unit_price': 250.0}, {'unit_price': 99.01}])[1]['unit_price'], 100.0)
         self.assertEqual(P.whole_dollars([{'unit_price': 250.0}])[0]['unit_price'], 250.0)
 
+    def test_send_quote_todo_links_the_jobber_quote(self):
+        """Sanctuary at Blue Heron (Oct 2026): "Send quote" opens our quote in Jobber, like "Send invoice"."""
+        conn = P._conn()
+        conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, status, web_uri) "
+                     "VALUES ('Q9196', 'quote', '9196', 'draft', 'https://secure.getjobber.com/quotes/9196')")
+        conn.commit()
+        c = P._with_quote_link(conn, {'id': 1, 'jobber': {'quote': {'id': 'Q9196', 'number': '9196'}}})
+        self.assertEqual(c['jobber']['quote']['uri'], 'https://secure.getjobber.com/quotes/9196')
+        self.assertEqual(P._with_quote_link(conn, {'id': 2, 'jobber': {}}), {'id': 2, 'jobber': {}})
+        conn.close()
+
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's
         usual vendor cost - it's the monthly visit, invoiced at the recurring job's $250, not $130."""

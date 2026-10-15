@@ -670,9 +670,10 @@ function box(title, items, render, cls, hint){
 // One to-do list, always on the left: what needs doing, most urgent first;
 // what is waiting on someone else folded underneath.
 // Jobber's page for an invoice: the link it gave us, else from its id ("gid://Jobber/Invoice/123").
-function jobberInvoiceUri(inv){
-  if (inv.uri) return inv.uri;
-  try { const n = atob(inv.id || '').split('/').pop(); return /^\d+$/.test(n) ? 'https://secure.getjobber.com/invoices/' + n : ''; } catch (e) { return ''; }
+function jobberInvoiceUri(inv){ return jobberUri(inv, 'invoices'); }
+function jobberUri(rec, kind){
+  if (rec.uri) return rec.uri;
+  try { const n = atob(rec.id || '').split('/').pop(); return /^\d+$/.test(n) ? `https://secure.getjobber.com/${kind}/` + n : ''; } catch (e) { return ''; }
 }
 // Client search boxes search as you type (a moment after the last key), no Search click needed.
 function liveSearch(fn){ clearTimeout(window._lsT); window._lsT = setTimeout(() => { const el = document.activeElement; if (el && el.value && el.value.trim().length >= 2) fn(); }, 350); }
@@ -729,6 +730,9 @@ async function loadToday(){
   // The drafted invoice in Jobber, to look over and send from there.
   const invoiceLink = c => { const inv = (c.jobber || {}).invoice || {}; const uri = jobberInvoiceUri(inv);
     return uri ? `<a class="btn s p" target="_blank" rel="noopener" href="${esc(uri)}">Open invoice${inv.number ? ' #' + esc(inv.number) : ''} in Jobber ↗</a>` : ''; };
+  // Our quote in Jobber, to look over and send from there.
+  const quoteLink = c => { const q = (c.jobber || {}).quote || {}; const uri = jobberUri(q, 'quotes');
+    return uri ? `<a class="btn s p" target="_blank" rel="noopener" href="${esc(uri)}">Open quote${q.number ? ' #' + esc(q.number) : ''} in Jobber ↗</a>` : ''; };
   const urgent = [], todo = [], waiting = [];
   q.issues.forEach(i => (i.kind === 'no_quote' ? waiting : urgent).push(todoItem(i.kind === 'no_quote' ? 'Quote after bill' : 'Fix', i.kind === 'no_quote' ? '' : 'r', esc(i.title || i.client_name || 'Item ' + i.case_id), esc(i.message), `openCase(${i.case_id})`,
     (i.kind === 'no_quote' ? `<button class="btn s p" onclick="billAnyway(${i.id})">Bill it +30%</button>` : '') + `<button class="btn s" onclick="resolveIssue(${i.id})">Resolved</button>`, i.todo_key)));
@@ -747,7 +751,7 @@ async function loadToday(){
       `<button class="btn s p" onclick="jobberAct('${esc(it.jobber_id)}', 'track')">＋ Track</button><button class="btn s" title="Not pump work - don't show it again" onclick="jobberAct('${esc(it.jobber_id)}', 'ignore')">Not ours</button>`, it.todo_key)); });
   q.quotes_to_draft.forEach(d => todo.push(todoItem('Draft quote', 'a', esc(d.client_name || d.file_name), `${esc(d.vendor)} quote ${d.doc_number ? '#' + esc(d.doc_number) + ' ' : ''}· ${money(d.subtotal ?? d.total)}${((d.jobber || {}).quote_pending || {}).reason ? ' · <b class="warn">' + esc(d.jobber.quote_pending.reason) + '</b>' : ''}`, `openCase(${d.case_id})`,
     `<button class="btn s p" onclick="draftQuote(${d.id})">Draft quote</button>${(((d.jobber || {}).quote_pending || {}).possible_duplicate || {}).number ? `<button class="btn s" onclick="linkQuoteNumber(${d.case_id}, '${esc(d.jobber.quote_pending.possible_duplicate.number)}')">Link #${esc(d.jobber.quote_pending.possible_duplicate.number)}</button>` : ''}`, d.todo_key)));
-  q.to_quote_client.forEach(c => todo.push(todoItem('Send quote', 'a', caseTitle(c), caseSub(c, 'send our quote to the client in Jobber - this goes away by itself once Jobber shows it sent') + followUp(c.follow_up), open(c), stepBtn(c, 'client_quote'), c.todo_key)));
+  q.to_quote_client.forEach(c => todo.push(todoItem('Send quote', 'a', caseTitle(c), caseSub(c, 'send our quote to the client in Jobber - this goes away by itself once Jobber shows it sent') + followUp(c.follow_up), open(c), quoteLink(c) + stepBtn(c, 'client_quote'), c.todo_key)));
   q.needs_scheduling.forEach(c => todo.push(todoItem('Schedule', 'a', caseTitle(c), caseSub(c, 'client approved - get it on ' + esc(c.vendor || 'Wettech') + "'s calendar" + (c.scheduled_for ? ' · for ' + esc(c.scheduled_for) : '')) + chaseLine(c), open(c),
     (c.chase ? `<button class="btn s p" onclick="event.stopPropagation();logFollow(${c.id})">📞 Log follow-up</button>` : '') + stepBtn(c, 'scheduled'), c.todo_key)));
   // Chase the vendor: jobs to get scheduled / done, and quotes, where nobody has heard back.
