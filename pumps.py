@@ -9474,6 +9474,11 @@ def sign_and_send_quote(case_id, actor, body=None, send=True):
         raise ValueError("The vendor's quote file is not on this server any more - upload it again")
     out = {'case_id': case_id, 'doc_id': doc['id']}
     dj = doc.get('jobber') or {}
+    if not send and dj.get('approved_path') and os.path.exists(dj['approved_path']):
+        # Download signed quote: already signed - hand back that copy, no second
+        # signature or Jobber note. The office emails it to the vendor itself.
+        out['signed'] = dj.get('approved_name') or _signed_name(doc.get('file_name'))
+        return out
     path, file_name = make_signed_copy(doc)
     dj = {**dj, 'approved_path': path, 'approved_name': file_name, 'approved_at': _now_text(), 'approved_by': APPROVER}
     dj.pop('approved_note_id', None)

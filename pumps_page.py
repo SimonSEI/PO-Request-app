@@ -486,7 +486,7 @@ function caseRow(c, extra){
 function todoRow(t){
   return `<div class="row"><div class="main"><div class="tt"><label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer"><input type="checkbox" onclick="event.preventDefault();askDone(event, () => todoDone(${t.id}, true, event))" style="margin-top:3px"><span>${esc(t.title)}</span></label></div>
       ${t.detail || (t.kind === 'manual' && t.due_on) ? `<div class="sub" style="margin-left:24px">${t.kind === 'manual' && t.due_on ? `<b class="${t.due_on < todayIso() ? 'bad' : 'warn'}">due ${esc(niceDay(t.due_on))}</b>${t.detail ? ' · ' : ''}` : ''}${esc(t.detail || '')}</div>` : ''}
-      ${t.kind === 'approved_quote' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${t.link.case_id ? `<button class="btn s p" onclick="signQuote(${t.link.case_id})">✍ Sign quote &amp; send to ${esc((t.title.match(/send it to (\S+)/) || [])[1] || 'the vendor')}</button><button class="btn s" onclick="quoteSent(${t.link.case_id})">I already sent it</button>` : ''}${t.link.doc_id ? `<a class="btn s" href="/pumps/api/docs/${t.link.doc_id}/file?version=original" target="_blank" rel="noopener">View quote</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}</div>` : ''}
+      ${t.kind === 'approved_quote' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${t.link.case_id ? `<button class="btn s p" onclick="signQuote(${t.link.case_id})">✍ Sign quote &amp; send to ${esc((t.title.match(/send it to (\S+)/) || [])[1] || 'the vendor')}</button><button class="btn s" onclick="downloadSigned(${t.link.case_id})" title="Signs it and downloads it - email it to the vendor yourself, then click I already sent it">⬇ Download signed quote</button><button class="btn s" onclick="quoteSent(${t.link.case_id})">I already sent it</button>` : ''}${t.link.doc_id ? `<a class="btn s" href="/pumps/api/docs/${t.link.doc_id}/file?version=original" target="_blank" rel="noopener">View quote</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}</div>` : ''}
       ${t.kind !== 'approved_quote' && (t.link.uri || t.link.case_id) ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${(t.link.uris || []).length > 1 ? t.link.uris.map(u => `<a class="btn s" href="${esc(u.uri)}" target="_blank" rel="noopener">Open ${esc(u.label)} ↗</a>`).join('') + `<button class="btn s" onclick='openAll(${JSON.stringify(t.link.uris.map(u => u.uri)).replace(/'/g, "&#39;")})'>Open both ↗</button>` : t.link.uri ? `<a class="btn s" href="${esc(t.link.uri)}" target="_blank" rel="noopener">Open in Jobber ↗</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}${t.link.scada_id ? `<button class="btn s" onclick="showTab('scada')">SCADA</button>` : ''}</div>` : ''}
       ${t.kind === 'diver_email' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="diverTodo('${esc(t.link.month || '')}')">Email ready - copy &amp; attach</button><a class="btn s" href="/pumps/api/dives/docx?month=${encodeURIComponent(t.link.month || '')}">⬇ Word list</a></div>` : ''}</div>
       <button class="btn s" title="Edit" onclick='todoEdit(${JSON.stringify({id: t.id, title: t.title, detail: t.detail || "", due_on: t.due_on || ""}).replace(/'/g, "&#39;")})'>✎</button>
@@ -1703,7 +1703,7 @@ async function signQuote(caseId){
   openModal(`Sign quote and send it to ${esc(e.name || e.to)}`, `<div class="note" style="margin-bottom:8px">Types <b>${esc(d.signed_as)}</b> on <b>${esc(d.file_name)}</b>, saves the signed quote on this job and on the Jobber quote, and emails it from the PO mailbox. When ${esc(e.name || 'they')} replies with a date, the app puts it on the job and in Jobber.${d.sent_at ? `<br><b class="warn">Already sent ${esc(d.sent_at)}.</b>` : ''}</div>
     <div class="note">To: <b>${esc(e.to || 'no email saved')}</b><br>Subject: ${esc(e.subject)}</div>
     <textarea id="sq_body" rows="9" style="width:100%;margin-top:8px">${esc(e.body)}</textarea>`,
-    `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn" onclick="signQuoteGo(${caseId}, false)">Only sign it</button><button class="btn p" id="sq_go" onclick="signQuoteGo(${caseId}, true)">✍ Sign &amp; send</button>`);
+    `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn" onclick="closeModal();downloadSigned(${caseId})">⬇ Just download it</button><button class="btn p" id="sq_go" onclick="signQuoteGo(${caseId}, true)">✍ Sign &amp; send</button>`);
 }
 async function signQuoteGo(caseId, send){
   const b = document.getElementById('sq_go'); if (b) { b.disabled = true; b.textContent = 'Sending…'; }
@@ -1712,6 +1712,15 @@ async function signQuoteGo(caseId, send){
   closeModal();
   toast(j.emailed ? `Signed and sent to ${j.emailed}` + (j.note_error ? ' (not on the Jobber quote: ' + j.note_error + ')' : j.jobber_note ? ' · saved on the Jobber quote' : '') : 'Signed - ' + j.signed);
   window.open('/pumps/api/docs/' + j.doc_id + '/file?version=approved&download=1');
+  loadToday(); if (curTab === 'jobs') loadJobs();
+}
+// Sign it (or reuse the signed copy) and download it, without emailing - for
+// when the office sends the signed quote to the vendor itself.
+async function downloadSigned(caseId){
+  const j = await api('/cases/' + caseId + '/sign_quote', {method:'POST', body:{send:false}});
+  if (!j.success) { toast(j.error, true); if (/upload/i.test(j.error || '')) openCase(caseId); return; }
+  window.open('/pumps/api/docs/' + j.doc_id + '/file?version=approved&download=1');
+  toast('Downloaded ' + j.signed + ' - once you have emailed it, click "I already sent it"');
   loadToday(); if (curTab === 'jobs') loadJobs();
 }
 async function jobberAct(id, action){ const j = await api('/jobber/items/' + encodeURIComponent(id), {method:'POST', body:{action}}); if (!j.success) { toast(j.error, true); return; } loadToday(); if (curTab === 'jobs') loadJobs(); if (action === 'track' && j.case_id) openCase(j.case_id); }

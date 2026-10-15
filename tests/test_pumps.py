@@ -2689,6 +2689,16 @@ class PumpsTest(unittest.TestCase):
             sent = []
             P.graph_send, saved_send = (lambda to, subject, html, atts=None, sender=None: sent.append((to, subject, html, atts))), P.graph_send
             try:
+                # Download signed quote: signed once, nothing emailed, to-do still open.
+                notes_before = len([v for qq, v in fake.calls if 'quoteCreateNote' in qq])
+                for _ in range(2):
+                    d = self.c.post(f'/pumps/api/cases/{cid}/sign_quote', json={'send': False}).get_json()
+                    self.assertTrue(d['signed'].endswith('SIGNED.pdf'), d)
+                self.assertEqual(sent, [])
+                self.assertEqual(len([v for qq, v in fake.calls if 'quoteCreateNote' in qq]), notes_before + 1)
+                self.assertIn('approved_quote', [t['kind'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']
+                                                 if t['link'].get('case_id') == cid])
+                self.assertEqual(self.c.get(f"/pumps/api/docs/{q['doc_id']}/file?version=approved").status_code, 200)
                 prev = self.c.get(f'/pumps/api/cases/{cid}/sign_quote').get_json()
                 self.assertIn(f'[P{cid}]', prev['email']['subject'])
                 self.assertIn('When can we expect it to be done?', prev['email']['body'])
