@@ -1377,7 +1377,7 @@ async function repPick(id){
   if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
   const loc = (rep.doc.site || '').toLowerCase();
   const props = Object.fromEntries((j.properties || []).map(p => [p.id, p.label]));
-  const score = x => (/pump|fountain/i.test(x.title) ? 3 : 0) + (loc && (x.title + ' ' + (props[x.property_id] || '')).toLowerCase().includes(loc) ? 2 : 0) + (x.type === 'recurring' && x.status !== 'archived' ? 2 : 0) + (['active','upcoming','today','late'].includes(x.status) ? 1 : 0);
+  const score = x => (x.type !== 'recurring' && x.status === 'archived' ? -9 : 0) + (/pump|fountain|w?e?t+e?ch|quarterly|monthly|maint|annual/i.test(x.title) ? 3 : 0) + (loc && (x.title + ' ' + (props[x.property_id] || '')).toLowerCase().includes(loc) ? 2 : 0) + (x.type === 'recurring' && x.status !== 'archived' ? 3 : 0) + (['active','upcoming','today','late'].includes(x.status) ? 1 : 0);
   const jobs = (j.jobs || []).slice().sort((a, b) => score(b) - score(a));
   const last = jobs.find(x => x.id === rep.last_job);
   rep.target = last ? {type:'job', id: last.id} : jobs.length && score(jobs[0]) >= 3 ? {type:'job', id: jobs[0].id} : {type:'client', id};
