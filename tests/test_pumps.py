@@ -3299,6 +3299,14 @@ class PumpsTest(unittest.TestCase):
         finally:
             P.jobber_status, P.invoice_client, P.recurring_jobs, P.job_detail = saved
         self.assertEqual(([li['unit_price'] for li in sugg['line_items']], sugg['job']['id']), ([195.0], 'JRW'))
+        # The bill's notes for the visit go on the line, without "As per quotation" or the report note.
+        self.assertEqual(sugg['line_items'][0]['description'],
+                         'Service to perform irrigation maintenance to ensure equipment is operating properly. '
+                         'OCTOBER 2026.')
+        self.assertEqual(P._with_bill_notes([{'name': 'MONTHLY PUMP PROGRAM', 'description': 'SITE LOCATION: Evergreen'}],
+                                            [{'description': 'Service to perform maintenance on irrigation system and '
+                                                             'VFD for OCTOBER 2026. Maintenance Report Attached!'}])[0]['description'],
+                         'SITE LOCATION: Evergreen\nService to perform maintenance on irrigation system and VFD for OCTOBER 2026.')
 
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's

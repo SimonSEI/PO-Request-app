@@ -4676,8 +4676,8 @@ def invoice_suggestion(doc, case=None, client_id=None):
         except JobberError:
             job = None
         if job:
-            sugg.update(bill_lines=sugg['line_items'], line_items=job['line_items'], client_id=client_id,
-                        markup_pct=0, recurring=True,
+            sugg.update(bill_lines=sugg['line_items'], line_items=_with_bill_notes(job['line_items'], sugg['line_items']),
+                        client_id=client_id, markup_pct=0, recurring=True,
                         job={k: job[k] for k in ('id', 'number', 'title', 'uri', 'total', 'status', 'type')})
             return sugg
     if jobber_status()['connected'] and not (json.loads(case.get('jobber') or '{}').get('job') or {}).get('id'):
@@ -4690,6 +4690,23 @@ def invoice_suggestion(doc, case=None, client_id=None):
             sugg.update(bill_lines=sugg['line_items'], line_items=job['line_items'], client_id=client_id,
                         job={k: job[k] for k in ('id', 'number', 'title', 'uri', 'total', 'status')})
     return sugg
+
+
+_REPORT_ATTACHED = re.compile(r'\s*\(?\b(?:maintenance\s+)?report\s+attached\b[!.)]*', re.I)
+
+
+def _with_bill_notes(job_lines, bill_lines):
+    """The recurring job's lines at its price, with the vendor's notes for the
+    visit on the first one ("Service to perform maintenance on irrigation system
+    and VFD for OCTOBER 2026." - Tuscany Point, Oct 2026), after the job's own
+    description when it has one."""
+    notes = ' '.join(dict.fromkeys(_REPORT_ATTACHED.sub('', (b.get('description') or '')).strip()
+                                   for b in bill_lines or [])).strip()
+    out = [dict(li) for li in job_lines or []]
+    if out and notes and notes not in (out[0].get('description') or ''):
+        own = (out[0].get('description') or '').strip()
+        out[0]['description'] = (f'{own}\n{notes}' if own else notes)[:2000]
+    return out
 
 
 def maint_visit_bill(doc, case=None):
