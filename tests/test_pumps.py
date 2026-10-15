@@ -296,7 +296,28 @@ class PumpsTest(unittest.TestCase):
         for pump in ('Pump #1', 'Pump #2', 'Pump #3', 'Pump #5'):
             self.assertIn(pump, text)
         self.assertNotIn('   IRRIGATION', '\n'.join(p.text for p in doc.paragraphs))
-        # Into the app and onto The Lake Club's job, with no one choosing anything.
+        # Waits on To do for the office's OK by default; nothing goes to Jobber by itself.
+        fake = FakeJobber()
+        P.jobber_gql = fake
+        P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN
+        try:
+            held = P.ingest_document('10-26  Held Report.docx', buf.getvalue(), source='email', actor='email scan',
+                                     email={'uid': 'held-1', 'from': 'simon@stahlman-england.com',
+                                            'subject': 'FW: Inv 29098', 'preview': ''})
+        finally:
+            P.JOBBER_STATIC_TOKEN = saved
+        self.assertFalse(P.AUTO_LOG_REPORTS)
+        self.assertFalse([v for q, v in fake.calls if 'jobCreateNote' in q], held)
+        queue = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertIn(held['doc_id'], [d['id'] for d in queue['reports_to_log']])
+        conn = P._conn()
+        conn.execute('DELETE FROM pump_docs WHERE id=?', (held['doc_id'],))
+        conn.execute('DELETE FROM pump_cases WHERE id=?', (held['case_id'],))
+        conn.commit()
+        conn.close()
+        # Switched on (PUMPS_AUTO_LOG_REPORTS=true): onto The Lake Club's job, with no one choosing anything.
+        P.AUTO_LOG_REPORTS = True
+        self.addCleanup(setattr, P, 'AUTO_LOG_REPORTS', False)
         fake = FakeJobber()
         P.jobber_gql = fake
         P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN

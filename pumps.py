@@ -110,7 +110,8 @@ AUTO_DRAFT_QUOTES = False
 # A rebranded service report is put on the site's pump job in Jobber as a
 # note ("October Pump Report" + the PDF, named as the vendor sent it) as soon as it arrives, when the
 # job is clear.
-AUTO_LOG_REPORTS = os.environ.get('PUMPS_AUTO_LOG_REPORTS', 'true').lower() in ('1', 'true', 'yes', 'on')
+# Reports wait for the office's OK (Approve report on To do) before they go in Jobber (Oct 2026).
+AUTO_LOG_REPORTS = os.environ.get('PUMPS_AUTO_LOG_REPORTS', 'false').lower() in ('1', 'true', 'yes', 'on')
 MATCH_TOLERANCE = float(os.environ.get('PUMPS_MATCH_TOLERANCE', '0.50') or 0.5)
 SCADA_DUE_SOON_DAYS = int(os.environ.get('PUMPS_SCADA_DUE_SOON_DAYS', '30') or 30)
 STALE_DAYS = int(os.environ.get('PUMPS_STALE_DAYS', '7') or 7)
