@@ -3705,6 +3705,23 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual((sent['jobId'], sent['visitIds']), ('J1450', ['V10']))
         self.assertEqual(r['invoice']['invoice_status'], 'draft')
 
+    def test_renamed_on_the_document_is_remembered_under_both_names(self):
+        """Oct 2026: the office renames Wettech's "Rosewood Irrigation Maintenance" to "Rosewood HOA" and picks
+        the client - Wettech's name is remembered too, so their next bill fills in by itself."""
+        rose = [{'id': 'CR', 'name': 'Rosewood HOA c/o Guardian', 'isLead': False, 'isArchived': False}]
+        P.jobber_gql = FakeJobber(clients=rose)
+        self.extracts['b-rose1.pdf'] = extraction('bill', '31601', client='Rosewood Irrigation Maintenance', subtotal=150)
+        b = self.upload('b-rose1.pdf')
+        r = self.c.patch(f"/pumps/api/docs/{b['doc_id']}", json={'client_name': 'Rosewood HOA'}).get_json()
+        self.assertEqual(r['doc']['orig_client_name'], 'Rosewood Irrigation Maintenance')
+        r = self.c.post(f"/pumps/api/docs/{b['doc_id']}/invoice",
+                        json={'client_id': 'CR', 'client_name': 'Rosewood HOA c/o Guardian'}).get_json()
+        self.assertTrue(r['success'], r)
+        names = {n['place']: n['client_id'] for n in self.c.get('/pumps/api/site-names').get_json()['site_names']}
+        self.assertEqual(names.get('Rosewood Irrigation Maintenance'), 'CR', names)
+        j = self.c.get('/pumps/api/jobber/clients?q=Rosewood%20Irrigation%20Maintenance').get_json()
+        self.assertEqual(j['pick']['id'], 'CR')
+
     def test_picking_a_client_is_remembered_for_the_vendors_name(self):
         """Wettech still writes "Lee Memorial"; the office picks Hodges Funeral Home once."""
         hodges = [{'id': 'CH', 'name': 'Hodges Funeral Home', 'isLead': False, 'isArchived': False}]

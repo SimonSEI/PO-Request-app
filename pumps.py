@@ -769,6 +769,12 @@ def init_db():
             c.execute(f"ALTER TABLE pump_cases ADD COLUMN {col} TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass
+    # orig_client_name: the name the vendor wrote, kept when the office renames it on the document -
+    # a pick is remembered under both, so the vendor's next document fills in too (Oct 2026).
+    try:
+        c.execute("ALTER TABLE pump_docs ADD COLUMN orig_client_name TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
     # parts_lead: how long the vendor said parts take ("2-3 weeks"); NULL = not looked yet, '' = none said.
     try:
         c.execute('ALTER TABLE pump_cases ADD COLUMN parts_lead TEXT')
@@ -4072,7 +4078,12 @@ def save_site_alias(place, area, client_id, client_name, property_id, property_l
 def remember_choice(doc, client_id, client_name='', property_id='', property_label='', actor='system'):
     """The office picked this Jobber client for a vendor's name (Wettech still
     writes "Lee Memorial" for what is now Hodges Funeral Home): remember it, so
-    every later quote, bill and report with that name goes there by itself."""
+    every later quote, bill and report with that name goes there by itself.
+    Renamed on the document: remembered under the vendor's name too."""
+    orig = (doc.get('orig_client_name') or '').strip()
+    if orig and orig != (doc.get('client_name') or '').strip():
+        remember_choice({**doc, 'client_name': orig, 'orig_client_name': ''}, client_id, client_name, property_id,
+                        property_label, actor)
     place = re.sub(r'\s+', ' ', (doc.get('client_name') or '').strip())[:80]
     if not place or not client_id:
         return None
@@ -7130,6 +7141,11 @@ def h_doc_update(actor, doc_id):
         if not row:
             return {'success': False, 'error': 'Not found'}, 404
         sets, vals = [], []
+        new_name = str(data.get('client_name') or '').strip()
+        if new_name and new_name != (row['client_name'] or '').strip() and (row['client_name'] or '').strip() \
+                and not (row['orig_client_name'] or '').strip():
+            sets.append('orig_client_name=?')
+            vals.append(row['client_name'].strip())
         for k in DOC_EDITABLE:
             if k in data and data[k] is not None:
                 v = str(data[k]).strip()
@@ -7463,7 +7479,12 @@ def h_doc_report_note(actor, doc_id):
 def remember_report_choice(doc, client_id, client_name='', job_id='', job_label='', actor='system'):
     """The client (and pump job) the office logged a report on, kept under the
     vendor's name for the site: the next report with that name goes to the
-    same place by itself, and the Log report window starts on it."""
+    same place by itself, and the Log report window starts on it. Renamed on
+    the document: remembered under the vendor's name too."""
+    orig = (doc.get('orig_client_name') or '').strip()
+    if orig and orig != (doc.get('client_name') or '').strip():
+        remember_report_choice({**doc, 'client_name': orig, 'orig_client_name': ''}, client_id, client_name, job_id,
+                               job_label, actor)
     place = re.sub(r'\s+', ' ', (doc.get('client_name') or '').strip())[:80]
     if not place or not client_id:
         return None
