@@ -225,6 +225,67 @@ def maintenance_bill(doc):
 _NO_QUOTE_STEPS = ('vendor_quote', 'client_quote', 'client_approved', 'bill_checked')
 
 
+# A bill that says more work needs a quote ("Bearings worn - quote to follow",
+# "Recommend replacing the check valve, will send a quote") puts that work on
+# the watchlist as its own item, waiting on the vendor's quote (Oct 2026).
+# Only what the vendor says is coming or needed - "As per quotation" or
+# "Quote #4512" on a bill is the quote already done.
+_QUOTE_NOUN = r'(?:quote|quotation|estimate|proposal)'
+_QUOTE_NEEDED = re.compile(
+    rf'\b{_QUOTE_NOUN}s?\s+(?:to\s+follow|will\s+follow|(?:will\s+be|to\s+be|being)\s+'
+    rf'(?:sent|provided|submitted|forwarded)|forthcoming|(?:is\s+)?(?:needed|required|necessary))\b'
+    rf'|\b(?:need|needs|needed|require|requires|required|request|requesting)\s+(?:an?\s+)?'
+    rf'(?:(?:new|separate|additional|another)\s+)?{_QUOTE_NOUN}\b'
+    rf"|\b(?:will|to|we'?ll|shall)\s+(?:send|provide|submit|forward|prepare|follow\s+up\s+with|get)\s+"
+    rf'(?:you\s+|over\s+)?(?:an?\s+|the\s+)?(?:(?:new|separate|additional)\s+)?{_QUOTE_NOUN}\b'
+    rf'|\b(?:will|to)\s+(?:re-?)?quote\b'
+    rf'|\brecommend\w*\b[^.\n]{{0,120}}\b{_QUOTE_NOUN}\b', re.I)
+
+
+def quote_needed_note(doc):
+    """The line of a vendor bill that says a quote is needed, or ''."""
+    if (doc or {}).get('kind') != 'bill':
+        return ''
+    items = doc.get('line_items')
+    if isinstance(items, str):
+        try:
+            items = json.loads(items or '[]')
+        except ValueError:
+            items = []
+    texts = [doc.get('description') or ''] + [f"{i.get('name') or ''} {i.get('description') or ''}"
+                                              for i in items or [] if isinstance(i, dict)]
+    texts.append(doc.get('text_excerpt') or '')
+    for text in texts:
+        for part in re.split(r'(?<=[.!?])\s+|\n+', text):
+            part = ' '.join(part.split())
+            if _QUOTE_NEEDED.search(part):
+                return part[:300]
+    return ''
+
+
+def _quote_needed_item(conn, doc, case_id, actor):
+    """Put the quote a bill asks for on the watchlist, once per bill. Returns the new item id or None."""
+    note = quote_needed_note(doc)
+    if not note or conn.execute("SELECT 1 FROM pump_events WHERE doc_id=? AND action='quote needed'",
+                                (doc['id'],)).fetchone():
+        return None
+    case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone())
+    client = doc.get('client_name') or case.get('client_name') or ''
+    vendor = doc.get('vendor') or case.get('vendor') or ''
+    num = f" #{doc['doc_number']}" if doc.get('doc_number') else ''
+    # No PO or W/O: those belong to the billed job, and a second item with them
+    # would stop documents matching by PO.
+    new_id = create_case(conn, {'title': (f'{client} - {note}' if client else note)[:160], 'category': 'repair',
+                                'client_name': client, 'site': doc.get('site') or case.get('site') or '',
+                                'vendor': vendor,
+                                'description': f"{note}\n(From {vendor or 'the vendor'}'s bill{num}.)",
+                                'opened_on': doc.get('doc_date') or _today().isoformat()}, actor, source='bill')
+    _event(conn, actor, 'quote needed', f"{vendor or 'The vendor'}'s bill{num} says: {note}",
+           case_id=new_id, doc_id=doc['id'])
+    _event(conn, actor, 'quote needed', f'Put on the watchlist as job {new_id}: {note}', case_id=case_id)
+    return new_id
+
+
 def _maintenance_needs_no_quote(conn, case_id, actor):
     """A maintenance bill on an item still waiting on a quote: it's maintenance,
     and the quote steps don't apply (unless a vendor quote is on the item)."""
@@ -2169,6 +2230,7 @@ def _file_on_case(conn, doc, case_id, how, actor):
         if not (steps.get('work_done') or {}).get('at') and not (steps.get('work_done') or {}).get('na'):
             _set_step(conn, case_id, 'work_done', at=date_, by=actor)
         _check_bill(conn, case_id, actor)
+        _quote_needed_item(conn, doc, case_id, actor)
     elif kind == 'report':
         _apply(conn, case_id, fill)
         steps = json.loads(conn.execute('SELECT steps FROM pump_cases WHERE id=?', (case_id,)).fetchone()[0])
@@ -4692,6 +4754,36 @@ def invoice_suggestion(doc, case=None, client_id=None):
     return sugg
 
 
+def bill_kind_note(doc, case=None):
+    """What a vendor bill is for, said on its Draft invoice to-do (Caymas, Oct
+    2026): "October maintenance · no quote", "Quoted work · quote #812", or
+    "No quote on file"."""
+    case = case or {}
+    steps = json.loads(case.get('steps') or '{}') if isinstance(case.get('steps'), str) else case.get('steps') or {}
+    quoted = bool((case.get('vendor_quote_number') or '').strip() or (steps.get('vendor_quote') or {}).get('at'))
+    if not quoted and (maintenance_bill(doc) or case.get('category') in ('maintenance', 'inspection')
+                       or maint_visit_bill(doc, case)):
+        items = doc.get('line_items')
+        if isinstance(items, str):
+            try:
+                items = json.loads(items or '[]')
+            except ValueError:
+                items = []
+        text = ' '.join([doc.get('description') or ''] + [f"{i.get('name') or ''} {i.get('description') or ''}"
+                                                          for i in items or [] if isinstance(i, dict)])
+        m = _SERVICE_MONTH.search(text)
+        try:
+            month = datetime.strptime(m.group(0)[:3], '%b').strftime('%B') if m else \
+                datetime.strptime((doc.get('doc_date') or '')[:10], '%Y-%m-%d').strftime('%B')
+        except ValueError:
+            month = ''
+        return f"{month + ' ' if month else ''}maintenance · no quote".capitalize()
+    if quoted:
+        num = (case.get('vendor_quote_number') or '').strip()
+        return f'Quoted work · quote #{num}' if num else 'Quoted work'
+    return 'No quote on file'
+
+
 _REPORT_ATTACHED = re.compile(r'\s*\(?\b(?:maintenance\s+)?report\s+attached\b[!.)]*', re.I)
 
 
@@ -5562,6 +5654,11 @@ def work_queue(conn):
         "SELECT d.* FROM pump_docs d JOIN pump_cases c ON c.id = d.case_id WHERE d.kind='bill' "
         "AND d.status != 'dismissed' AND (d.jobber IS NULL OR d.jobber NOT LIKE '%invoice_id%') "
         "AND c.status='open' AND COALESCE(json_extract(c.steps, '$.invoice_drafted.na'), 0) = 0 ORDER BY d.id")]
+    bill_cases = {r['id']: dict(r) for r in conn.execute(
+        f"SELECT * FROM pump_cases WHERE id IN ({','.join('?' * len(bills_to_draft))})",
+        [d['case_id'] for d in bills_to_draft])} if bills_to_draft else {}
+    for d in bills_to_draft:
+        d['bill_kind'] = bill_kind_note(d, bill_cases.get(d['case_id']))
     to_quote_ids = {c['id'] for c in by_stage.get('client_quote', []) if not (c['jobber'].get('quote') or {}).get('id')}
     quotes_to_draft = [d for d in (_doc_dict(r) for r in conn.execute(
         "SELECT * FROM pump_docs WHERE kind='quote' AND status != 'dismissed' "

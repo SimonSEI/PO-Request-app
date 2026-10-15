@@ -343,6 +343,72 @@ class PumpsTest(unittest.TestCase):
         self.assertTrue(steps['bill_checked'].get('at'))
         self.assertEqual([i for i in case['issues'] if not i['resolved_at']], [])
 
+    def test_bill_saying_a_quote_is_needed_puts_it_on_the_watchlist(self):
+        """A bill that says more work needs a quote ("bearings worn - quote to
+        follow") puts that work on the watchlist, waiting on the vendor's quote."""
+        ex = extraction('bill', '29950', po='PO9950', client='Heron Bay', subtotal=300)
+        ex['notes'] = 'Bearings on pump #2 are worn - quote to follow for replacement.'
+        self.extracts['b-qneed.pdf'] = ex
+        b = self.upload('b-qneed.pdf')
+        conn = P._conn()
+        try:
+            new = [dict(r) for r in conn.execute("SELECT * FROM pump_cases WHERE source='bill' AND client_name=?",
+                                                 ('Heron Bay',))]
+            billed = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (b['case_id'],)).fetchone())
+            # Filing the same bill again doesn't add a second one.
+            P.file_document(conn, b['doc_id'] if 'doc_id' in b else b['id'], 'Pumps')
+            again = conn.execute("SELECT COUNT(*) FROM pump_cases WHERE source='bill' AND client_name=?",
+                                 ('Heron Bay',)).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(len(new), 1)
+        job = new[0]
+        self.assertNotEqual(job['id'], billed['id'])
+        self.assertEqual(job['stage'], 'vendor_quote')
+        self.assertEqual(job['vendor'], 'Wettech')
+        self.assertIn('quote to follow', job['title'])
+        self.assertEqual(job['po_number'], '', "the billed job's PO stays with the billed job")
+        self.assertEqual(again, 1)
+        open_ids = [c['id'] for c in self.c.get('/pumps/api/cases?status=open').get_json()['cases']]
+        self.assertIn(job['id'], open_ids)
+        events = [e['action'] for e in self.case(b['case_id'])['events']]
+        self.assertIn('quote needed', events)
+
+    def test_bill_as_per_quotation_adds_nothing_to_the_watchlist(self):
+        self.extracts['b-qnone.pdf'] = extraction('bill', '29951', po='PO9951', client='Osprey Point', subtotal=300)
+        self.upload('b-qnone.pdf')
+        conn = P._conn()
+        try:
+            n = conn.execute("SELECT COUNT(*) FROM pump_cases WHERE source='bill' AND client_name='Osprey Point'"
+                             ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(n, 0)
+
+    def test_draft_invoice_todo_says_what_kind_of_bill_it_is(self):
+        """Caymas (Oct 2026): the Draft invoice to-do says what the bill is for -
+        the month's maintenance with no quote, quoted work, or no quote on file."""
+        maint = extraction('bill', '29132', po='PO9132', client='Caymas Irrigation', subtotal=125, tax=0, items=[
+            {'name': 'Maintenance', 'description': 'Service to perform irrigation pump maintenance OCTOBER 2026. '
+             'As per quotation.', 'quantity': 1, 'unit_price': 125, 'amount': 125, 'taxable': False,
+             'is_tax': False}])
+        maint['description'] = 'Irrigation pump maintenance'
+        self.extracts['b-kind-maint.pdf'] = maint
+        self.extracts['q-kind.pdf'] = extraction('quote', 'Q-9133', po='PO9133', client='Pelican Marsh', subtotal=800)
+        self.extracts['b-kind-quoted.pdf'] = extraction('bill', '29133', po='PO9133', client='Pelican Marsh',
+                                                        subtotal=800)
+        self.extracts['b-kind-none.pdf'] = extraction('bill', '29134', po='PO9134', client='Bay Colony', subtotal=400)
+        m = self.upload('b-kind-maint.pdf')
+        self.upload('q-kind.pdf')
+        q = self.upload('b-kind-quoted.pdf')
+        n = self.upload('b-kind-none.pdf')
+        bills = {d['id']: d for d in self.c.get('/pumps/api/summary').get_json()['queue']['bills_to_draft']}
+        self.assertEqual(bills[m['doc_id']]['bill_kind'], 'October maintenance · no quote')
+        self.assertEqual(bills[q['doc_id']]['bill_kind'], 'Quoted work · quote #Q-9133')
+        self.assertEqual(bills[n['doc_id']]['bill_kind'], 'No quote on file')
+        page = self.c.get('/pumps').get_data(as_text=True)
+        self.assertIn('See vendor invoice', page)
+
     def test_bill_over_quote_is_a_todo_to_check_with_the_vendor(self):
         """The client is invoiced what they approved; a bill that differs from
         Wettech's quote is a to-do to check with Tom, not a hold."""
