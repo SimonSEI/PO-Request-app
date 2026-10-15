@@ -342,7 +342,7 @@ class PumpsTest(unittest.TestCase):
 
     def test_bill_over_quote_is_a_todo_to_check_with_the_vendor(self):
         """The client is invoiced what they approved; a bill that differs from
-        Wettech's quote is a to-do to check with Tommy, not a hold."""
+        Wettech's quote is a to-do to check with Tom, not a hold."""
         self.extracts['q-0400.pdf'] = extraction('quote', 'Q-80', po='PO400', client='Heron Bay', subtotal=2000)
         self.extracts['b-0400.pdf'] = extraction('bill', '29200', po='PO 400', client='Heron Bay', subtotal=2250)
         self.upload('q-0400.pdf')
@@ -354,7 +354,7 @@ class PumpsTest(unittest.TestCase):
         todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
         t = [t for t in todos if t['link'].get('case_id') == b['case_id']]
         self.assertEqual(len(t), 1)
-        self.assertIn('Check with Tommy', t[0]['title'])
+        self.assertIn('Check with Tom', t[0]['title'])
         self.assertIn('$250.00 more than their quote $2,000.00', t[0]['detail'])
         self.assertIn('tomm@wettec.biz', t[0]['detail'])
 
@@ -1037,13 +1037,13 @@ class PumpsTest(unittest.TestCase):
         r = self.c.post(f"/pumps/api/undo/{acts[1]['id']}", json={}).get_json(); self.assertTrue(r['success'], r)
         self.assertEqual(self.c.get(f'/pumps/api/cases/{cid}').status_code, 404)
         # A to-do ticked by mistake comes back; Jobber drafts carry a warning.
-        todo = self.c.post('/pumps/api/todos', json={'title': 'Call Tommy'}).get_json()
-        tid = [t for t in todo['todos'] if t['title'] == 'Call Tommy'][0]['id']
+        todo = self.c.post('/pumps/api/todos', json={'title': 'Call Tom'}).get_json()
+        tid = [t for t in todo['todos'] if t['title'] == 'Call Tom'][0]['id']
         self.c.post(f'/pumps/api/todos/{tid}/done', json={'done': True})
         top = self.c.get('/pumps/api/undo').get_json()['actions'][0]
         self.c.post(f"/pumps/api/undo/{top['id']}", json={})
         open_titles = [t['title'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
-        self.assertIn('Call Tommy', open_titles)
+        self.assertIn('Call Tom', open_titles)
         self.assertIn('stays', P._undo_label('/pumps/api/docs/4/quote')[1])
         # A PATCH (the SCADA and job edit forms) is undoable too.
         j2 = self.c.post('/pumps/api/cases', json={'title': 'Patch me', 'client_name': 'Quail Run'}).get_json()
@@ -1358,7 +1358,7 @@ class PumpsTest(unittest.TestCase):
             return self.c.get(f'/pumps/api/cases/{cid}/vendor_email').get_json()['email']
         e = mail()
         self.assertEqual(e['to'], 'tomm@wettec.biz')
-        self.assertTrue(e['body'].startswith('Hi Tommy,'))
+        self.assertTrue(e['body'].startswith('Hi Tom,'))
         self.assertIn('assess', e['body'])
         self.assertIn('Visit: 2026-10-13', e['body'])
         self.c.patch(f'/pumps/api/cases/{cid}', json={'steps': {'assessment': '2026-10-13'}})
@@ -1375,7 +1375,7 @@ class PumpsTest(unittest.TestCase):
         try:
             self.assertEqual(sent, [])
             r = self.c.post(f'/pumps/api/cases/{cid}/vendor_email/send',
-                            json={'to': 'tomm@wettec.biz', 'subject': 'Quote please', 'body': 'Hi Tommy,\nQuote please.'})
+                            json={'to': 'tomm@wettec.biz', 'subject': 'Quote please', 'body': 'Hi Tom,\nQuote please.'})
             self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
             self.assertEqual(sent[0][:2], ('tomm@wettec.biz', 'Quote please'))
             self.assertIn('Quote please.', sent[0][2])
@@ -1868,7 +1868,7 @@ class PumpsTest(unittest.TestCase):
         case = self.case(cid)
         self.assertTrue({s['key']: s for s in case['step_list']}['client_approved'].get('at'))
         self.assertEqual(case['stage'], 'scheduled')
-        self.assertEqual(sent, ['Quote #9149 approved - Huntington Five: send it to Tommy'])
+        self.assertEqual(sent, ['Quote #9149 approved - Huntington Five: send it to Tom'])
         todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
         self.assertTrue(any(t['key'] == f'sign-quote:{cid}' for t in todos))
 
@@ -1927,6 +1927,52 @@ class PumpsTest(unittest.TestCase):
         self.c.patch(f'/pumps/api/cases/{cid}', json={'notes': 'Called the manager'})
         la = self.case(cid)['last_action']
         self.assertEqual(la['days'], 0, 'an edit is an action')
+
+    def test_quote_drafted_from_an_unfiled_document_gets_a_job(self):
+        """Homewood Suites (quote 9176, Oct 2026): drafted from a vendor quote that
+        was on no job, so nothing followed it. Drafting now files it on a job;
+        and those drafted before are filed once on start-up."""
+        self.extracts['q-0976.pdf'] = extraction('quote', 'Q-976', po='PO976', client='Lakeside Pines')
+        q = self.upload('q-0976.pdf')
+        conn = P._conn()
+        try:
+            conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (q['case_id'],))
+            conn.execute('UPDATE pump_docs SET case_id=NULL WHERE id=?', (q['doc_id'],))
+            conn.commit()
+        finally:
+            conn.close()
+        P.jobber_gql = FakeJobber()
+        r = self.draft(q['doc_id'], client_id='C1', property_id='P1')
+        self.assertTrue(r['success'], r)
+        doc = self.c.get(f"/pumps/api/docs/{q['doc_id']}").get_json()['doc']
+        self.assertTrue(doc['case_id'], 'filed on a job')
+        case = self.case(doc['case_id'])
+        self.assertEqual((case['status'], case['jobber']['quote']['number']), ('open', '812'))
+        # Drafted before this: filed on start-up, the quote linked.
+        conn = P._conn()
+        try:
+            conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (doc['case_id'],))
+            conn.execute('UPDATE pump_docs SET case_id=NULL WHERE id=?', (q['doc_id'],))
+            conn.execute("DELETE FROM pump_state WHERE key='file_quoted_docs'")
+            conn.commit()
+            P._file_quoted_docs(conn)
+            cid = conn.execute('SELECT case_id FROM pump_docs WHERE id=?', (q['doc_id'],)).fetchone()[0]
+        finally:
+            conn.close()
+        case = self.case(cid)
+        self.assertEqual((case['status'], case['jobber']['quote']['number']), ('open', '812'))
+
+    def test_short_job_names_to_skim(self):
+        """Oct 2026: the watchlist names a job "Client · work" in a few words."""
+        for title, client, short in (
+                ('Magnolia Cove Pressure Transducer - Furnish and install new 0-150 Pressure transducer, wire up, '
+                 'program and test', 'Magnolia Cove Pressure Transducer', 'Magnolia Cove · New 0-150 Pressure transducer'),
+                ('Proposal to inspect suction line', 'Carlisle (The Carlisle)', 'Carlisle · Inspect suction line'),
+                ('Proposal to check out #6 pump station', 'HUNTINGTON LAKES MASTER  ASSOCIATION  C/O Moore PM Services',
+                 'Huntington Lakes · Check out #6 pump station'),
+                ('Service call - Pump at the front lake is not running', 'Lely', 'Lely · Pump at the front lake'),
+                ('Repairs as discussed', 'Quail Run', 'Quail Run · Repairs as discussed')):
+            self.assertEqual(P.short_title({'title': title, 'client_name': client}), short)
 
     def test_homewood_optional_on_the_cost_line(self):
         """Wettech's Homewood Suites letter (Oct 14 2026): the option's work and
@@ -2637,9 +2683,9 @@ class PumpsTest(unittest.TestCase):
             self.assertTrue(r['approval']['todo'], r)
             todos = {t['kind']: t for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']
                      if t['link'].get('case_id') == cid}
-            self.assertEqual(todos['approved_quote']['title'], 'Sign the approved quote and send it to Tommy - Lakeside Pines')
+            self.assertEqual(todos['approved_quote']['title'], 'Sign the approved quote and send it to Tom - Lakeside Pines')
             self.assertEqual(todos['approved_quote']['link']['to'], 'tomm@wettec.biz')
-            # Sign quote: signed (a PDF quote is stamped), on the Jobber quote, emailed to Tommy.
+            # Sign quote: signed (a PDF quote is stamped), on the Jobber quote, emailed to Tom.
             sent = []
             P.graph_send, saved_send = (lambda to, subject, html, atts=None, sender=None: sent.append((to, subject, html, atts))), P.graph_send
             try:
@@ -2666,8 +2712,8 @@ class PumpsTest(unittest.TestCase):
             todos = {t['kind']: t for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']
                      if t['link'].get('case_id') == cid}
             self.assertNotIn('approved_quote', todos)
-            # Tommy answers with a date: on the item, and noted in Jobber.
-            rep = P.handle_signed_quote_reply('m77', 'Tommy <tomm@wettec.biz>', f'RE: {sent[0][1]}',
+            # Tom answers with a date: on the item, and noted in Jobber.
+            rep = P.handle_signed_quote_reply('m77', 'Tom <tomm@wettec.biz>', f'RE: {sent[0][1]}',
                                               'We can have it done by Oct 20th.\nFrom: PO <po@example.com>')
             self.assertEqual(rep['expect_by'][5:], '10-20', rep)
             case = self.c.get(f'/pumps/api/cases/{cid}').get_json()['case']
@@ -2682,7 +2728,7 @@ class PumpsTest(unittest.TestCase):
             inv = [v for qq, v in fake.calls if 'invoiceCreate' in qq][0]['input']
             self.assertEqual([(l['name'], l['unitPrice']) for l in inv['lineItems']], [('Service Proposal Amount', 1300)])
             todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
-            self.assertTrue(any(t['link'].get('case_id') == cid and t['title'].startswith('Check with Tommy') for t in todos))
+            self.assertTrue(any(t['link'].get('case_id') == cid and t['title'].startswith('Check with Tom') for t in todos))
         finally:
             P.JOBBER_STATIC_TOKEN = saved
 
@@ -2769,12 +2815,12 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(h['jobber']['recurring'][0]['id'], 'J77')
 
     def test_edit_a_todo_and_stale_todos_close_themselves(self):
-        todo = self.c.post('/pumps/api/todos', json={'title': 'Call Tommy'}).get_json()
-        tid = [t for t in todo['todos'] if t['title'] == 'Call Tommy'][0]['id']
-        r = self.c.post(f'/pumps/api/todos/{tid}/edit', json={'title': 'Call Tommy about Lely', 'due_on': '2026-10-20'})
+        todo = self.c.post('/pumps/api/todos', json={'title': 'Call Tom'}).get_json()
+        tid = [t for t in todo['todos'] if t['title'] == 'Call Tom'][0]['id']
+        r = self.c.post(f'/pumps/api/todos/{tid}/edit', json={'title': 'Call Tom about Lely', 'due_on': '2026-10-20'})
         self.assertEqual(r.status_code, 200)
         t = [t for t in self.c.get('/pumps/api/todos').get_json()['todos'] if t['id'] == tid][0]
-        self.assertEqual((t['title'], t['due_on']), ('Call Tommy about Lely', '2026-10-20'))
+        self.assertEqual((t['title'], t['due_on']), ('Call Tom about Lely', '2026-10-20'))
         self.assertEqual(self.c.post(f'/pumps/api/todos/{tid}/edit', json={'title': ''}).status_code, 400)
         # The county's WO/PO to-do goes once both are on the job.
         j = self.c.post('/pumps/api/cases', json={'title': 'Twin Lakes motor', 'client_name': 'SARASOTA COUNTY'}).get_json()
@@ -3148,7 +3194,7 @@ class PumpsTest(unittest.TestCase):
             self.assertEqual(case['jobber']['job']['number'], '14511')
             self.assertEqual([i for i in case['issues'] if not i['resolved_at']], [])
             todos = [t['title'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
-            self.assertIn("Check with Tommy - Wettech bill doesn't line up with job #14511", todos)
+            self.assertIn("Check with Tom - Wettech bill doesn't line up with job #14511", todos)
         finally:
             P.JOBBER_STATIC_TOKEN = saved
 
