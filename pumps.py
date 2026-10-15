@@ -1053,8 +1053,8 @@ def compare_amounts(case):
 
 
 def _refresh_case(conn, case_id):
-    row = conn.execute('SELECT steps, status, COALESCE(closed_by_hand, \'\') AS by_hand FROM pump_cases WHERE id=?',
-                       (case_id,)).fetchone()
+    row = conn.execute('SELECT steps, status, category, client_name, title, site, '
+                       'COALESCE(closed_by_hand, \'\') AS by_hand FROM pump_cases WHERE id=?', (case_id,)).fetchone()
     if not row:
         return
     if row['status'] == 'closed' and row['by_hand']:
@@ -1063,6 +1063,13 @@ def _refresh_case(conn, case_id):
         steps = json.loads(row['steps'] or '{}')
     except (TypeError, ValueError):
         steps = {}
+    if not all((steps.get(k) or {}).get('na') or (steps.get(k) or {}).get('at') for k in ('invoice_drafted', 'closed')) \
+            and report_only_account(conn, dict(row)):
+        # The account gets its report, not an invoice: done once the report is logged.
+        for k in ('invoice_drafted', 'closed'):
+            if not (steps.get(k) or {}).get('at'):
+                steps[k] = {'na': True, 'by': 'report only account'}
+        conn.execute('UPDATE pump_cases SET steps=? WHERE id=?', (json.dumps(steps), case_id))
     stage = _stage(steps, row['status'])
     status = row['status']
     closed_at = None
@@ -5499,7 +5506,7 @@ def work_queue(conn):
     bills_to_draft = [_doc_dict(r) for r in conn.execute(
         "SELECT d.* FROM pump_docs d JOIN pump_cases c ON c.id = d.case_id WHERE d.kind='bill' "
         "AND d.status != 'dismissed' AND (d.jobber IS NULL OR d.jobber NOT LIKE '%invoice_id%') "
-        "AND c.status='open' ORDER BY d.id")]
+        "AND c.status='open' AND COALESCE(json_extract(c.steps, '$.invoice_drafted.na'), 0) = 0 ORDER BY d.id")]
     to_quote_ids = {c['id'] for c in by_stage.get('client_quote', []) if not (c['jobber'].get('quote') or {}).get('id')}
     quotes_to_draft = [d for d in (_doc_dict(r) for r in conn.execute(
         "SELECT * FROM pump_docs WHERE kind='quote' AND status != 'dismissed' "
@@ -8335,6 +8342,31 @@ def _apply_master_vendors(c, now):
               "WHERE name='Wild Blue'", (now,))
 
 
+REPORT_ONLY_ACCOUNTS = ('Autumn Woods', 'The Reserve @ Estero', 'Wild Blue')
+
+
+def _apply_report_only(c, now):
+    """Once (Oct 15 2026, the office): Autumn Woods, The Reserve @ Estero and
+    Wild Blue get no pump maintenance invoice - only the report logged in Jobber."""
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('report_only_oct26', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    c.execute(f"UPDATE pump_maint_accounts SET report_only=1 WHERE name IN ({','.join('?' * len(REPORT_ONLY_ACCOUNTS))})",
+              REPORT_ONLY_ACCOUNTS)
+
+
+def report_only_account(conn, case):
+    """The account's name when a maintenance item is for an account that gets
+    only its report logged - no invoice to draft or send. '' otherwise."""
+    if (case or {}).get('category') not in ('maintenance', 'inspection'):
+        return ''
+    text = ' '.join(str(case.get(k) or '') for k in ('client_name', 'title', 'site'))
+    name = match_account(text, conn)
+    row = conn.execute('SELECT 1 FROM pump_maint_accounts WHERE name=? AND active=1 AND report_only=1',
+                       (name,)).fetchone() if name else None
+    return name if row else ''
+
+
 def _apply_repairs_by(c, now):
     """Once (Oct 2026): who does the pump repairs where it isn't Wettech, from
     the office's sheets - SiteOne at Hodges, Naples Electric at Warm Springs,
@@ -8474,6 +8506,11 @@ def init_account_tables(c):
             c.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass
+    try:
+        # report_only: the client gets the pump report logged in Jobber, never a maintenance invoice.
+        c.execute('ALTER TABLE pump_maint_accounts ADD COLUMN report_only INTEGER DEFAULT 0')
+    except sqlite3.OperationalError:
+        pass
     for col, decl in (('jobber_names', "TEXT DEFAULT ''"), ('complimentary', 'INTEGER DEFAULT 0'),
                       ('quote', "TEXT DEFAULT '{}'")):
         try:
@@ -8520,6 +8557,7 @@ def init_account_tables(c):
     _apply_master_list(c, now)
     _apply_repairs_by(c, now)
     _apply_master_vendors(c, now)
+    _apply_report_only(c, now)
     _apply_follow_ups(c, now)
     if not seeded('office_answers_oct26'):
         # What the office said (Oct 2026): Old Collier and Camas Willows are off
@@ -9913,6 +9951,8 @@ def auto_draft_invoice(doc_id, actor='Pumps (automatic)'):
         conn.close()
     if not doc or not case or doc['kind'] != 'bill' or (doc.get('jobber') or {}).get('invoice_id'):
         return None
+    if ((json.loads(case.get('steps') or '{}').get('invoice_drafted')) or {}).get('na'):
+        return None   # nothing to invoice (a report-only account, our own technician's job...)
     j = json.loads(case.get('jobber') or '{}')
     q = j.get('quote') or {}
     if (j.get('invoice') or {}).get('id'):
