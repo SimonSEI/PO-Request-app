@@ -4676,8 +4676,8 @@ def invoice_suggestion(doc, case=None, client_id=None):
         except JobberError:
             job = None
         if job:
-            sugg.update(bill_lines=sugg['line_items'], line_items=job['line_items'], client_id=client_id,
-                        markup_pct=0, recurring=True,
+            sugg.update(bill_lines=sugg['line_items'], line_items=_with_bill_notes(job['line_items'], sugg['line_items']),
+                        client_id=client_id, markup_pct=0, recurring=True,
                         job={k: job[k] for k in ('id', 'number', 'title', 'uri', 'total', 'status', 'type')})
             return sugg
     if jobber_status()['connected'] and not (json.loads(case.get('jobber') or '{}').get('job') or {}).get('id'):
@@ -4690,6 +4690,23 @@ def invoice_suggestion(doc, case=None, client_id=None):
             sugg.update(bill_lines=sugg['line_items'], line_items=job['line_items'], client_id=client_id,
                         job={k: job[k] for k in ('id', 'number', 'title', 'uri', 'total', 'status')})
     return sugg
+
+
+_REPORT_ATTACHED = re.compile(r'\s*\(?\b(?:maintenance\s+)?report\s+attached\b[!.)]*', re.I)
+
+
+def _with_bill_notes(job_lines, bill_lines):
+    """The recurring job's lines at its price, with the vendor's notes for the
+    visit on the first one ("Service to perform maintenance on irrigation system
+    and VFD for OCTOBER 2026." - Tuscany Point, Oct 2026), after the job's own
+    description when it has one."""
+    notes = ' '.join(dict.fromkeys(_REPORT_ATTACHED.sub('', (b.get('description') or '')).strip()
+                                   for b in bill_lines or [])).strip()
+    out = [dict(li) for li in job_lines or []]
+    if out and notes and notes not in (out[0].get('description') or ''):
+        own = (out[0].get('description') or '').strip()
+        out[0]['description'] = (f'{own}\n{notes}' if own else notes)[:2000]
+    return out
 
 
 def maint_visit_bill(doc, case=None):
@@ -6458,6 +6475,46 @@ def h_case_create(actor):
             _link_item(conn, data['jobber_item_id'], cid, actor)
         conn.commit()
         return {'case_id': cid, 'case': case_detail(conn, cid)}
+    finally:
+        conn.close()
+
+
+def move_case_to(conn, case_id, stage, actor):
+    """Bring a job that's out of step up to (or back to) a stage by hand
+    (Carlisle, Oct 2026: Wettech said the work was done while it still read
+    "send the quote to Tom"): every step before it is ticked done today, unless
+    done or not needed already; moving back un-ticks it and the steps after."""
+    if stage not in STEP_KEYS:
+        raise ValueError('Pick the step the job is at')
+    row = conn.execute('SELECT steps FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+    if not row:
+        return False
+    steps = _with_optional(json.loads(row['steps'] or '{}'))   # an optional step left off stays off
+    at = STEP_KEYS.index(stage)
+    today = _today().isoformat()
+    for k in STEP_KEYS[:at]:
+        if not (steps.get(k) or {}).get('at') and not (steps.get(k) or {}).get('na'):
+            _set_step(conn, case_id, k, at=today, by=f'{actor} (moved up)')
+    for k in STEP_KEYS[at:]:
+        if (steps.get(k) or {}).get('at'):
+            _set_step(conn, case_id, k, by=actor, na=False)
+    _refresh_case(conn, case_id)
+    label = dict(STEPS)[stage].format(vendor='the vendor')
+    _event(conn, actor, 'moved', f'Moved by hand to: {label}', case_id=case_id)
+    return True
+
+
+@api('/cases/<int:case_id>/move', methods=('POST',))
+def h_case_move(actor, case_id):
+    """Body: {"stage": step key} - the next step the job is waiting on."""
+    if actor == BOT:
+        return _office_only(actor, 'Moving a job to another step')
+    conn = _conn()
+    try:
+        if not move_case_to(conn, case_id, (_json().get('stage') or '').strip(), actor):
+            return {'success': False, 'error': 'Not found'}, 404
+        conn.commit()
+        return {'case': case_detail(conn, case_id)}
     finally:
         conn.close()
 
