@@ -6455,6 +6455,137 @@ def send_vendor_pay_email(case_id, actor, body=None):
     return rec
 
 
+# ── bills to pay ─────────────────────────────────────────────────────────────
+
+def bills_to_pay(conn):
+    """Every vendor bill not paid yet, by vendor (Oct 2026). A bill can be paid
+    once we've invoiced the client for it (our Jobber invoice exists - nearly
+    always), or a report-only account's month is over. The rest wait."""
+    groups = {}
+    for c in list_cases(conn, 'all'):
+        if c['status'] == 'cancelled' or c['vendor_paid_on']:
+            continue
+        pay = c['vendor_pay']
+        if not pay['state']:
+            continue   # no bill
+        inv = (c.get('jobber') or {}).get('invoice') or {}
+        invoiced = bool(inv.get('id') or (c.get('sei_invoice_number') or '').strip() or
+                        ((c.get('steps') or {}).get('invoice_drafted') or {}).get('at'))
+        bill = conn.execute("SELECT id, doc_number, doc_date, total, subtotal, file_name FROM pump_docs WHERE case_id=? "
+                            "AND kind='bill' AND status != 'dismissed' ORDER BY id DESC", (c['id'],)).fetchone()
+        number = c.get('vendor_bill_number') or (bill['doc_number'] if bill else '') or ''
+        amount = next((v for v in (c.get('vendor_bill_total'), c.get('vendor_bill_amount'),
+                                   bill['total'] if bill else None) if v is not None), None)
+        if pay.get('report_only'):
+            payable = pay['state'] == 'due'
+            why = 'report-only account - payable at the end of the month' + ('' if payable else f" ({pay.get('month_end')})")
+        else:
+            payable = invoiced or pay['state'] == 'due'
+            num = inv.get('number') or c.get('sei_invoice_number') or ''
+            why = (f"invoiced{' #' + num if num else ''}{' (' + inv['status'].replace('_', ' ') + ')' if inv.get('status') else ''}"
+                   if invoiced else 'not invoiced yet')
+        asked = _state_get(f'pay_email:{c["id"]}', conn=conn) or {}
+        vendor = c.get('vendor') or 'Wettech'
+        groups.setdefault(vendor, []).append({
+            'case_id': c['id'], 'title': c.get('title') or '', 'client_name': c.get('client_name') or '',
+            'bill_number': number, 'bill_date': (bill['doc_date'] if bill else '') or '', 'amount': amount,
+            'bill_doc_id': bill['id'] if bill else None, 'payable': payable, 'why': why,
+            'invoice_number': inv.get('number') or c.get('sei_invoice_number') or '',
+            'asked_at': asked.get('at', '') if asked.get('sent') else ''})
+    out = []
+    for vendor in sorted(groups, key=lambda v: (v != 'Wettech', v.lower())):
+        bills = sorted(groups[vendor], key=lambda b: (not b['payable'], b['bill_date'] or '', b['case_id']))
+        out.append({'vendor': vendor, 'bills': bills,
+                    'payable_total': round(sum(b['amount'] or 0 for b in bills if b['payable']), 2),
+                    'waiting_total': round(sum(b['amount'] or 0 for b in bills if not b['payable']), 2)})
+    return out
+
+
+@api('/bills_to_pay')
+def h_bills_to_pay(actor):
+    conn = _conn()
+    try:
+        return {'vendors': bills_to_pay(conn),
+                'christian': _app_setting(conn, 'christian_email', os.environ.get('CHRISTIAN_EMAIL', ''))}
+    finally:
+        conn.close()
+
+
+def bills_to_pay_email(conn, case_ids, signer=''):
+    """One email to Christian: the bills he can pay, by vendor, with each bill attached."""
+    picked = set(case_ids or [])
+    lines, atts_ids, total, n = ['Hi Christian,', '', 'These vendor bills can be paid - we have invoiced the clients:', ''], [], 0.0, 0
+    for g in bills_to_pay(conn):
+        bills = [b for b in g['bills'] if b['payable'] and (not picked or b['case_id'] in picked)]
+        if not bills:
+            continue
+        sub = round(sum(b['amount'] or 0 for b in bills), 2)
+        lines.append(f"{g['vendor']} - {len(bills)} bill{'s' if len(bills) > 1 else ''}, ${sub:,.2f}")
+        for b in bills:
+            lines.append(f"  • Invoice #{b['bill_number'] or '?'}"
+                         f"{' (' + b['bill_date'] + ')' if b['bill_date'] else ''} - "
+                         f"{'$%s' % format(b['amount'], ',.2f') if b['amount'] is not None else 'amount ?'} - "
+                         f"{b['client_name'] or b['title']}"
+                         f"{' - our invoice #' + b['invoice_number'] if b['invoice_number'] else ''}")
+            if b['bill_doc_id']:
+                atts_ids.append(b['bill_doc_id'])
+        lines.append('')
+        total += sub
+        n += len(bills)
+    if not n:
+        raise ValueError('No bills to pay are picked')
+    lines += [f'Total: ${total:,.2f} ({n} bill{"s" if n > 1 else ""}). The bills are attached.', '', 'Thank you,',
+              signer or 'Stahlman-England Irrigation']
+    return {'to': _app_setting(conn, 'christian_email', os.environ.get('CHRISTIAN_EMAIL', '')),
+            'subject': f'Vendor bills to pay - {n} bill{"s" if n > 1 else ""}, ${total:,.2f}',
+            'body': '\n'.join(lines), 'doc_ids': atts_ids, 'count': n, 'total': round(total, 2)}
+
+
+@api('/bills_to_pay/email', methods=('POST',))
+def h_bills_to_pay_email(actor):
+    """Body: {"case_ids": [...], "send": true}. Without send, the email to look over."""
+    import html as _html
+    if actor == BOT:
+        return _office_only(actor, 'Emailing Christian to pay vendor bills')
+    data = _json()
+    ids = [int(x) for x in (data.get('case_ids') or []) if str(x).isdigit()]
+    conn = _conn()
+    try:
+        e = bills_to_pay_email(conn, ids, actor)
+        files = [dict(r) for r in conn.execute(
+            f"SELECT file_name, file_path FROM pump_docs WHERE id IN ({','.join('?' * len(e['doc_ids'])) or 'NULL'})",
+            e['doc_ids'])]
+        cases = [b['case_id'] for g in bills_to_pay(conn) for b in g['bills'] if b['payable'] and (not ids or b['case_id'] in ids)]
+    finally:
+        conn.close()
+    if not data.get('send'):
+        return {'email': {k: e[k] for k in ('to', 'subject', 'body', 'count', 'total')}}
+    if not e['to']:
+        raise ValueError("No email address is saved for Christian - add it in the main app's Settings")
+    body = (data.get('body') or '').strip() or e['body']
+    html = '<div style="font-family:Arial,sans-serif;font-size:14px">' + '<br>'.join(
+        _html.escape(l).replace('  ', '&nbsp;&nbsp;') for l in body.split('\n')) + '</div>'
+    atts = []
+    for f in files:
+        if f['file_path'] and os.path.exists(f['file_path']):
+            with open(f['file_path'], 'rb') as fh:
+                atts.append({'@odata.type': '#microsoft.graph.fileAttachment', 'name': f['file_name'] or 'invoice.pdf',
+                             'contentType': 'application/pdf' if (f['file_name'] or '').lower().endswith('.pdf')
+                             else 'application/octet-stream', 'contentBytes': base64.b64encode(fh.read()).decode()})
+    graph_send(e['to'], e['subject'], html, atts or None)
+    rec = {'at': _now_text(), 'to': e['to'], 'by': actor, 'sent': True, 'batch': True}
+    conn = _conn()
+    try:
+        for cid in cases:
+            _state_set(f'pay_email:{cid}', rec, conn=conn)
+            _event(conn, actor, 'emailed Christian to pay the vendor', f"In the bills-to-pay email to {e['to']}",
+                   case_id=cid)
+        conn.commit()
+    finally:
+        conn.close()
+    return {'sent': e['count'], 'total': e['total'], 'to': e['to']}
+
+
 @api('/cases/<int:case_id>/pay_email/send', methods=('POST',))
 def h_pay_email_send(actor, case_id):
     if actor == BOT:
