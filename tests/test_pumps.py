@@ -3084,6 +3084,18 @@ class PumpsTest(unittest.TestCase):
             P.jobber_status, P.invoice_client, P.recurring_jobs, P.job_detail = saved
         self.assertEqual([li['unit_price'] for li in sugg['line_items']], [320.0])
         self.assertEqual(sugg['job']['id'], 'JR')
+        # Wettech's payment terms next to the P.O. box aren't a PO number.
+        self.extracts['b-enclave.pdf'] = {**ex, 'doc_number': '29140', 'client_name': 'Enclave @ Palmira',
+                                          'po_number': '1.5% Finance Chrg ov'}
+        e = self.upload('b-enclave.pdf')
+        self.assertEqual(self.case(e['case_id'])['po_number'], '')
+        self.assertEqual(P.clean_po('PO322'), 'PO322')
+        conn = P._conn()
+        conn.execute("UPDATE pump_cases SET po_number='1.5% Finance Chrg ov' WHERE id=?", (e['case_id'],))
+        conn.commit()
+        conn.close()
+        self.c.get('/pumps/api/summary')
+        self.assertEqual(self.case(e['case_id'])['po_number'], '')
         # A bill that names a quote still waits on it.
         self.assertFalse(P.maintenance_bill({'kind': 'bill', 'description': 'Pump maintenance repairs as per quote'}))
 

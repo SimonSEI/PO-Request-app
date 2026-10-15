@@ -232,6 +232,14 @@ def _maintenance_needs_no_quote(conn, case_id, actor):
     return True
 
 
+def fix_terms_as_po(conn):
+    """Items and documents whose PO was read from the payment terms."""
+    for table in ('pump_cases', 'pump_docs'):
+        for r in conn.execute(f"SELECT id, po_number FROM {table} WHERE po_number != ''").fetchall():
+            if not clean_po(r['po_number']):
+                conn.execute(f"UPDATE {table} SET po_number='' WHERE id=?", (r['id'],))
+
+
 def fix_maintenance_bills(conn, actor='Pumps'):
     """Open items waiting on a quote that only have a maintenance bill."""
     n = 0
@@ -1426,6 +1434,7 @@ Classify the document and pull out its fields:
 - doc_date: YYYY-MM-DD, or "".
 - po_number: our PO number only when the P.O. field holds a number or code (e.g. "PO322", "0322"). If the P.O.
   field holds a person's name, leave po_number "" and put the name in ordered_by.
+  Payment terms (e.g. "1.5% Finance Chrg over 30 days", "Net 30") are never a PO number.
 - wo_number: the vendor's work order (W/O) number, or "".
 - quote_reference: the vendor quote number a bill refers to, or "".
 - client_name: the client/community the work is for (not Stahlman-England) - on Wettech's letter-style quotes
@@ -1862,9 +1871,21 @@ def short_name(text, limit=60):
     return cut.rstrip(' -,') or first[:limit]
 
 
+# Wettech's invoice puts its payment terms ("1.5% Finance Chrg over 30 days")
+# next to the P.O. box (Oct 2026): that's not a PO number.
+_NOT_A_PO = re.compile(r'%|finance|charge|chrg|\bterms?\b|\bnet\s*\d|\bdue\b|\bdays?\b|receipt|\binterest\b', re.I)
+
+
+def clean_po(value):
+    """The PO number, or '' when what was read is the payment terms or other text."""
+    value = (value or '').strip()
+    return '' if not value or _NOT_A_PO.search(value) else value
+
+
 def _clean_extraction(x):
     x = dict(x or {})
     x['kind'] = x.get('kind') if x.get('kind') in ('quote', 'bill', 'report', 'other') else 'other'
+    x['po_number'] = clean_po(x.get('po_number'))
     x['doc_date'] = _iso_date(x.get('doc_date'))
     for k in ('subtotal', 'tax', 'total'):
         x[k] = _money(x.get(k))
@@ -5810,6 +5831,7 @@ def h_summary(actor):
     conn = _conn()
     try:
         close_stale_todos(conn)
+        fix_terms_as_po(conn)
         fix_maintenance_bills(conn)
         conn.commit()
         q = work_queue(conn)
