@@ -1367,9 +1367,14 @@ async function repPick(id){
   const jobs = (j.jobs || []).slice().sort((a, b) => score(b) - score(a));
   const last = jobs.find(x => x.id === rep.last_job);
   rep.target = last ? {type:'job', id: last.id} : jobs.length && score(jobs[0]) >= 3 ? {type:'job', id: jobs[0].id} : {type:'client', id};
-  box.innerHTML = jobs.map(x => `<label class="cand ${rep.target.id === x.id ? 'on' : ''}"><input type="radio" name="rt" ${rep.target.id === x.id ? 'checked' : ''} onchange="rep.target={type:'job',id:'${esc(x.id)}'}">
+  box.innerHTML = jobs.map(x => `<label class="cand ${rep.target.id === x.id ? 'on' : ''}"><input type="radio" name="rt" ${rep.target.id === x.id ? 'checked' : ''} onchange="repTarget(this, 'job', '${esc(x.id)}')">
       <div style="flex:1"><b>#${esc(x.number)} ${esc(x.title)}</b><div class="note">${esc(x.type)} · ${esc(x.status)} · ${esc(props[x.property_id] || '')}</div></div><a class="note" target="_blank" href="${esc(x.uri)}">↗</a></label>`).join('')
-    + `<label class="cand ${rep.target.type === 'client' ? 'on' : ''}"><input type="radio" name="rt" ${rep.target.type === 'client' ? 'checked' : ''} onchange="rep.target={type:'client',id:'${esc(id)}'}"><div><b>On the client</b> <span class="note">(no single pump job fits)</span></div></label>`;
+    + `<label class="cand ${rep.target.type === 'client' ? 'on' : ''}"><input type="radio" name="rt" ${rep.target.type === 'client' ? 'checked' : ''} onchange="repTarget(this, 'client', '${esc(id)}')"><div><b>On the client</b> <span class="note">(no single pump job fits)</span></div></label>`;
+}
+// The highlight follows the pick (Honda, Oct 2026: it stayed on the first job, so a click looked ignored).
+function repTarget(el, type, id){
+  rep.target = {type, id};
+  document.querySelectorAll('#rjobs .cand').forEach(c => c.classList.toggle('on', c.contains(el)));
 }
 async function sendReport(){
   if (!rep.target) { toast('Choose where the note goes.', true); return; }
