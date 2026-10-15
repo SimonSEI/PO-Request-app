@@ -242,8 +242,23 @@ _QUOTE_NEEDED = re.compile(
     rf'|\brecommend\w*\b[^.\n]{{0,120}}\b{_QUOTE_NOUN}\b', re.I)
 
 
+def _quote_needed_in(texts):
+    """The first sentence of the texts that says a quote is coming or needed, or ''."""
+    for text in texts:
+        for part in re.split(r'(?<=[.!?])\s+|\n+', text or ''):
+            part = ' '.join(part.split()).strip(' |')
+            if _QUOTE_NEEDED.search(part):
+                return part[:300]
+    return ''
+
+
 def quote_needed_note(doc):
-    """The line of a vendor bill that says a quote is needed, or ''."""
+    """The line of a vendor bill - or the comments of a pump report - that
+    says a quote is needed, or ''."""
+    if (doc or {}).get('kind') == 'report':
+        rf = doc.get('report_fields')
+        rf = json.loads(rf or '{}') if isinstance(rf, str) else (rf or {})
+        return rf.get('quote_needed') or _quote_needed_in([doc.get('text_excerpt') or ''])
     if (doc or {}).get('kind') != 'bill':
         return ''
     items = doc.get('line_items')
@@ -273,14 +288,22 @@ def _quote_needed_item(conn, doc, case_id, actor):
     client = doc.get('client_name') or case.get('client_name') or ''
     vendor = doc.get('vendor') or case.get('vendor') or ''
     num = f" #{doc['doc_number']}" if doc.get('doc_number') else ''
+    what = f"{vendor or 'the vendor'}'s {'pump report' if doc.get('kind') == 'report' else 'bill' + num}"
+    title = (f'{client} - {note}' if client else note)[:160]
+    same = conn.execute("SELECT id FROM pump_cases WHERE status='open' AND title=?", (title,)).fetchone()
+    if same:
+        # The bill and the report in one email both said it: one item.
+        _event(conn, actor, 'quote needed', f"{what[0].upper() + what[1:]} says it too: {note}",
+               case_id=same['id'], doc_id=doc['id'])
+        return None
     # No PO or W/O: those belong to the billed job, and a second item with them
     # would stop documents matching by PO.
-    new_id = create_case(conn, {'title': (f'{client} - {note}' if client else note)[:160], 'category': 'repair',
+    new_id = create_case(conn, {'title': title, 'category': 'repair',
                                 'client_name': client, 'site': doc.get('site') or case.get('site') or '',
                                 'vendor': vendor,
-                                'description': f"{note}\n(From {vendor or 'the vendor'}'s bill{num}.)",
+                                'description': f"{note}\n(From {what}.)",
                                 'opened_on': doc.get('doc_date') or _today().isoformat()}, actor, source='bill')
-    _event(conn, actor, 'quote needed', f"{vendor or 'The vendor'}'s bill{num} says: {note}",
+    _event(conn, actor, 'quote needed', f"{what[0].upper() + what[1:]} says: {note}",
            case_id=new_id, doc_id=doc['id'])
     _event(conn, actor, 'quote needed', f'Put on the watchlist as job {new_id}: {note}', case_id=case_id)
     return new_id
@@ -2285,6 +2308,7 @@ def _file_on_case(conn, doc, case_id, how, actor):
             _set_step(conn, case_id, 'work_done', at=date_, by=actor)
         if (steps.get('report_logged') or {}).get('na'):
             _set_step(conn, case_id, 'report_logged', by=actor, na=False)
+        _quote_needed_item(conn, doc, case_id, actor)
     _event(conn, actor, f'{kind} filed', f"{doc.get('file_name')} - matched by {how}", case_id=case_id, doc_id=doc_id)
     return case_id
 
@@ -2418,6 +2442,10 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
             except Exception as e:
                 review = f'Could not rebrand this report automatically: {e}'
                 report_fields = {**report_fields, 'lines': []}
+            # "Pump #4 check valve has a hole ... - quote to follow" in the comments (Lely, Oct 2026).
+            note = _quote_needed_in([text])
+            if note:
+                report_fields = {**report_fields, 'quote_needed': note}
         elif low.endswith('.doc'):
             rec['kind'] = kind_hint or 'report'
             review = 'Old .doc Word file - open it, save as .docx and upload it again to rebrand it.'

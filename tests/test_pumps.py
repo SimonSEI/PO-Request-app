@@ -3467,6 +3467,36 @@ class PumpsTest(unittest.TestCase):
         self.assertNotEqual(again['case_id'], repair, again)
         self.assertFalse((self.case(repair)['steps'].get('vendor_bill') or {}).get('at'))
 
+    def test_report_comment_saying_a_quote_is_coming_goes_on_the_watchlist(self):
+        """Lely's October report (Oct 2026): "Pump #4 check valve has a hole in the body ... - quote to follow" in
+        the comments. That work goes on the watchlist as its own job, waiting on Wettech's quote."""
+        from docx import Document
+        d = Document()
+        for t in ('Water Equipment Technologies of Southwest Florida LLC', 'IRRIGATION PUMP SYSTEM REPORT'):
+            d.add_paragraph(t)
+        t = d.add_table(rows=2, cols=4)
+        t.rows[0].cells[2].text, t.rows[0].cells[3].text = 'DATE', '10-7-2026'
+        for cell, text in zip(t.rows[1].cells, ('CUSTOMER', 'Lely', 'LOCATION', 'Pump station')):
+            cell.text = text
+        t = d.add_table(rows=1, cols=2)
+        t.rows[0].cells[0].text, t.rows[0].cells[1].text = '√', 'VERIFY PUMPS GO TO SLEEP/SHUT DOWN PROPERLY'
+        d.add_paragraph('COMMENTS:')
+        box = d.add_table(rows=1, cols=1)
+        box.rows[0].cells[0].text = ('Pump #4 check valve has a hole in the body of the check valve and a cooling fan '
+                                     'is bad in the first control panel – quote to follow')
+        buf = io.BytesIO()
+        d.save(buf)
+        res = P.ingest_document('10-26 Lely.docx', buf.getvalue(), source='email', actor='email scan',
+                                email={'uid': 'lely-1', 'from': 'office@wettec.biz', 'subject': 'Inv 29129'})
+        self.assertEqual(res['kind'], 'report', res)
+        cases = self.c.get('/pumps/api/cases?status=open').get_json()['cases']
+        quoted = [c for c in cases if 'check valve has a hole' in c['title']]
+        self.assertEqual(len(quoted), 1, [c['title'] for c in cases])
+        self.assertEqual((quoted[0]['category'], quoted[0]['stage']), ('repair', 'vendor_quote'))
+        self.assertEqual(quoted[0]['client_name'], 'Lely')
+        # A report that says nothing of a quote adds nothing.
+        self.assertEqual(P.quote_needed_note({'kind': 'report', 'report_fields': {}, 'text_excerpt': 'All good.'}), '')
+
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's
         usual vendor cost - it's the monthly visit, invoiced at the recurring job's $250, not $130."""
