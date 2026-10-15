@@ -4852,6 +4852,11 @@ def invoice_suggestion(doc, case=None, client_id=None):
         except JobberError:
             job = None
         if job:
+            # The month the visit was for, in the title: "Pump service - Honda of Ft Myers - October 2026".
+            y, m = bill_service_month(doc)
+            month = date(y, m, 1).strftime('%B %Y')
+            if month.lower() not in (sugg.get('subject') or '').lower():
+                sugg['subject'] = f"{sugg.get('subject') or 'Pump service'} - {month}"[:255]
             sugg.update(bill_lines=sugg['line_items'], line_items=_with_bill_notes(job['line_items'], sugg['line_items']),
                         client_id=client_id, markup_pct=0, recurring=True,
                         job={k: job[k] for k in ('id', 'number', 'title', 'uri', 'total', 'status', 'type')})

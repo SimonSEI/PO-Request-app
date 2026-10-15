@@ -421,8 +421,12 @@ function stepLabel(k, vendor){ const s = STEPS.find(x => x.key === k); return s 
 async function api(path, opts){
   opts = opts || {};
   if (opts.body && typeof opts.body !== 'string' && !(opts.body instanceof FormData)) { opts.headers = Object.assign({'Content-Type':'application/json'}, opts.headers || {}); opts.body = JSON.stringify(opts.body); }
-  const r = await fetch('/pumps/api' + path, opts);
-  let j = {}; try { j = await r.json(); } catch(e) { j = {success:false, error:'Server error ' + r.status}; }
+  // The app restarting for an update (a minute or so) drops requests: say so
+  // instead of leaving the button stuck (Honda, Oct 2026: "nothing happens").
+  const down = 'The app is restarting for an update - nothing was saved. Try again in a minute.';
+  let r;
+  try { r = await fetch('/pumps/api' + path, opts); } catch (e) { return {success: false, error: down, _status: 0}; }
+  let j = {}; try { j = await r.json(); } catch(e) { j = {success:false, error: [502, 503, 504].includes(r.status) ? down : 'Server error ' + r.status}; }
   j._status = r.status;
   return j;
 }
@@ -1212,6 +1216,7 @@ async function invForClient(id){
   const s = j.success && j.suggestion;
   if (!s || inv.client_id !== id) return;
   inv.job = s.job || null; inv.lines = s.line_items.map(x => Object.assign({}, x)); inv.bill_lines = s.bill_lines || inv.bill_lines;
+  const subj = document.getElementById('invSubject'); if (subj && s.subject) subj.value = s.subject;
   document.getElementById('jobMatchBox').innerHTML = jobMatchHtml(inv.job);
   drawLines();
 }
