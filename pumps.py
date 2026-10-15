@@ -3537,6 +3537,17 @@ def _with_invoice_link(conn, c):
     return {**c, 'jobber': {**(c.get('jobber') or {}), 'invoice': inv}} if inv else c
 
 
+def _with_quote_link(conn, c):
+    """A job whose quote is to send, with our Jobber quote's page to open (Send quote)."""
+    q = dict((c.get('jobber') or {}).get('quote') or {})
+    if q.get('id') and not q.get('uri'):
+        row = conn.execute("SELECT web_uri FROM pump_jobber_items WHERE jobber_id=? AND web_uri != ''",
+                           (q['id'],)).fetchone()
+        if row:
+            q['uri'] = row['web_uri']
+    return {**c, 'jobber': {**(c.get('jobber') or {}), 'quote': q}} if q else c
+
+
 def _follow_invoices(conn):
     """Keep each item's Jobber invoice status current. Once the office has sent
     the invoice from Jobber and everything else on the item is done, the item
@@ -5878,7 +5889,7 @@ def work_queue(conn):
         'scheduling_asked': by_stage.get('scheduling_asked', []),
         'waiting_assessment': by_stage.get('assessment', []),
         'waiting_vendor_quote': by_stage.get('vendor_quote', []),
-        'to_quote_client': by_stage.get('client_quote', []),
+        'to_quote_client': [_with_quote_link(conn, c) for c in by_stage.get('client_quote', [])],
         'waiting_approval': by_stage.get('client_approved', []),
         'waiting_work': by_stage.get('work_done', []),
         'waiting_bill': by_stage.get('vendor_bill', []),
