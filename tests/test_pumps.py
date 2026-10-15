@@ -2830,6 +2830,19 @@ class PumpsTest(unittest.TestCase):
         self.assertTrue(any('WO # and PO #' in x for x in titles()))
         self.c.post(f'/pumps/api/cases/{cid}', json={'po_number': '260904', 'wo_number': 'WO2143416'})
         self.assertFalse(any('WO # and PO #' in x for x in titles()))
+        # Quote converted to a job by hand in Jobber: the sync sees it, the to-do goes.
+        conn = P._conn()
+        conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps({'quote': {'id': 'Q9186', 'number': '9186'}}), cid))
+        P.add_todo(conn, f'quote-to-job:{cid}', P.quote_to_job_title('Magnolia Cove', '9186'), '', {'case_id': cid})
+        conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, status) VALUES ('Q9186', 'quote', '9186', 'approved')")
+        conn.commit()
+        conn.close()
+        self.assertIn('Convert quote for Magnolia Cove (#9186) to a job', titles())
+        conn = P._conn()
+        conn.execute("UPDATE pump_jobber_items SET status='converted' WHERE jobber_id='Q9186'")
+        conn.commit()
+        conn.close()
+        self.assertNotIn('Convert quote for Magnolia Cove (#9186) to a job', titles())
 
     def test_sync_finds_approved_quotes_whose_title_says_nothing(self):
         today = P._today().isoformat()
