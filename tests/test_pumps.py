@@ -3198,6 +3198,26 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(case['stage'], 'report_logged')
         drafts = self.c.get('/pumps/api/summary').get_json()['queue']['bills_to_draft']
         self.assertNotIn(b['case_id'], [d['case_id'] for d in drafts])
+        # Wettech is paid once the account's monthly is billed - from the end of the bill's month.
+        pay = case['vendor_pay']
+        self.assertTrue(pay['report_only'], pay)
+        saved = P._today
+        P._today = lambda: date.fromisoformat(pay['month_end']).replace(day=1)
+        try:
+            self.assertEqual(self.case(b['case_id'])['vendor_pay']['state'], 'unpaid')
+            q = self.c.get('/pumps/api/summary').get_json()['queue']
+            self.assertNotIn(b['case_id'], [c['id'] for c in q['vendor_bills_to_pay']])
+        finally:
+            P._today = saved
+        P._today = lambda: date.fromisoformat(pay['month_end'])
+        try:
+            q = self.c.get('/pumps/api/summary').get_json()['queue']
+            self.assertIn(b['case_id'], [c['id'] for c in q['vendor_bills_to_pay']])
+            conn = P._conn()
+            self.assertIn('monthly has been billed', P.vendor_pay_email(conn, b['case_id'])['body'])
+            conn.close()
+        finally:
+            P._today = saved
         # Anyone else's maintenance bill still gets invoiced.
         self.extracts['b-allura2.pdf'] = {**ex, 'doc_number': '29202', 'client_name': 'Allura'}
         a = self.upload('b-allura2.pdf')
@@ -3251,6 +3271,34 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual((j['pick']['id'], j['pick']['job_id']), ('C1', 'J1609'))
         t = P.resolve_report_target({'client_name': 'Brookside Lakes', 'site': 'Brookside Lakes'})
         self.assertEqual((t['type'], t['id']), ('job', 'J1609'))
+
+    def test_maintenance_bill_as_per_quotation_takes_the_picked_clients_job_price(self):
+        """Rosewood (Oct 2026): "Service to perform irrigation maintenance ... OCTOBER 2026. As per quotation."
+        is the month's visit under the contract, not quoted work - and once the office picks the client, the
+        invoice is that client's recurring job price, not $150 + 30%."""
+        desc = ('Service to perform irrigation maintenance to ensure equipment is operating properly. '
+                'OCTOBER 2026. As per quotation.')
+        bill = {'kind': 'bill', 'client_name': 'Rosewood Irrigation Maintenance', 'subtotal': 150.0,
+                'description': desc, 'line_items': [{'name': 'Rosewood Irrigation Maintenance', 'description': desc}]}
+        self.assertTrue(P.maintenance_bill(bill))
+        self.assertFalse(P.maintenance_bill({'kind': 'bill', 'description': 'Pump maintenance repairs as per quote'}))
+        self.assertFalse(P.maintenance_bill({'kind': 'bill', 'description': 'Maintenance OCTOBER 2026 per quote #812'}))
+        job = {'id': 'JRW', 'number': '1700', 'title': 'Quarterly Pump', 'uri': '', 'total': 195.0,
+               'status': 'active', 'type': 'recurring', 'instructions': '', 'property_label': '',
+               'line_items': [{'name': 'QUARTERLY PUMP PROGRAM', 'description': '', 'quantity': 1,
+                               'unit_price': 195.0, 'taxable': False}]}
+        saved = (P.jobber_status, P.invoice_client, P.recurring_jobs, P.job_detail)
+        P.jobber_status = lambda: {'connected': True}
+        P.invoice_client = lambda doc, case=None: None   # the app can't tell which Rosewood
+        P.recurring_jobs = lambda cid: [{'id': 'JRW', 'number': '1700', 'title': job['title'], 'status': 'active'}] \
+            if cid == 'CRW' else []
+        P.job_detail = lambda jid: job
+        try:
+            self.assertFalse(P.invoice_suggestion(bill, {}).get('job'))
+            sugg = P.invoice_suggestion(bill, {}, 'CRW')
+        finally:
+            P.jobber_status, P.invoice_client, P.recurring_jobs, P.job_detail = saved
+        self.assertEqual(([li['unit_price'] for li in sugg['line_items']], sugg['job']['id']), ([195.0], 'JRW'))
 
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's

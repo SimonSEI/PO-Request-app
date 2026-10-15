@@ -699,7 +699,7 @@ async function loadToday(){
   const urgent = [], todo = [], waiting = [];
   q.issues.forEach(i => (i.kind === 'no_quote' ? waiting : urgent).push(todoItem(i.kind === 'no_quote' ? 'Quote after bill' : 'Fix', i.kind === 'no_quote' ? '' : 'r', esc(i.title || i.client_name || 'Item ' + i.case_id), esc(i.message), `openCase(${i.case_id})`,
     (i.kind === 'no_quote' ? `<button class="btn s p" onclick="billAnyway(${i.id})">Bill it +30%</button>` : '') + `<button class="btn s" onclick="resolveIssue(${i.id})">Resolved</button>`, i.todo_key)));
-  q.vendor_bills_to_pay.forEach(c => urgent.push(todoItem('Pay ' + esc(c.vendor || 'Wettech'), 'r', caseTitle(c), `${esc(c.vendor || 'Wettech')} bill ${c.vendor_bill_number ? '#' + esc(c.vendor_bill_number) + ' · ' : ''}${money(c.vendor_bill_total ?? c.vendor_bill_amount)} · the client paid our invoice${c.sei_invoice_number ? ' #' + esc(c.sei_invoice_number) : ''}${(c.pay_email || {}).sent ? `<br><b class="ok">✓ Emailed Christian ${esc(c.pay_email.at.slice(0, 16))}</b>` : (c.pay_email || {}).error ? `<br><b class="bad">Email not sent: ${esc(c.pay_email.error)}</b>` : ''}`, open(c),
+  q.vendor_bills_to_pay.forEach(c => urgent.push(todoItem('Pay ' + esc(c.vendor || 'Wettech'), 'r', caseTitle(c), `${esc(c.vendor || 'Wettech')} bill ${c.vendor_bill_number ? '#' + esc(c.vendor_bill_number) + ' · ' : ''}${money(c.vendor_bill_total ?? c.vendor_bill_amount)} · ${(c.vendor_pay || {}).report_only ? 'end of month - their monthly is billed' : 'the client paid our invoice' + (c.sei_invoice_number ? ' #' + esc(c.sei_invoice_number) : '')}${(c.pay_email || {}).sent ? `<br><b class="ok">✓ Emailed Christian ${esc(c.pay_email.at.slice(0, 16))}</b>` : (c.pay_email || {}).error ? `<br><b class="bad">Email not sent: ${esc(c.pay_email.error)}</b>` : ''}`, open(c),
     `<button class="btn s p" onclick="sendPayEmail(${c.id}, this)">✉ ${(c.pay_email || {}).sent ? 'Send again' : 'Send email'}</button><button class="btn s" onclick="payEmail(${c.id})">Preview</button><button class="btn s" onclick="markVendorPaid(${c.id})">Mark paid</button>`, c.todo_key)));
   q.scada_attention.filter(s => s.state === 'overdue').forEach(s => urgent.push(todoItem('SCADA overdue', 'r', esc(s.client_name) + (s.site ? ' · ' + esc(s.site) : ''), 'Renewal overdue since ' + esc(s.next_due_on) + (s.state_note ? ' · ' + esc(s.state_note) : '') + followUp(s.follow_up), "showTab('scada')", '', s.todo_key)));
   q.bills_to_draft.forEach(d => { const ip = (d.jobber || {}).invoice_pending || {}; todo.push(todoItem('Draft invoice', 'a', esc(d.client_name || d.file_name), `${esc(d.vendor)} bill #${esc(d.doc_number)} · ${money(d.total)}${ip.reason ? ' · <b class="warn">' + esc(ip.reason) + '</b>' : ''}`, `openCase(${d.case_id})`,
@@ -1160,7 +1160,7 @@ async function draftInvoice(docId){
     ${(d.case_issues || []).map(i => `<div class="issue">⚠️ ${esc(i.message)}</div>`).join('')}
     <div class="note">From ${esc(d.vendor)} bill #${esc(d.doc_number)} - ${money(d.subtotal)} before tax, ${money(d.total)} total. One Service Proposal Amount line: the bill before tax${s.markup_pct ? ' plus ' + s.markup_pct + '%' : ''}; Jobber adds the client's tax.</div>
     <div><b>Jobber client</b><div class="toolbar" style="margin:6px 0"><input type="text" id="cq" value="${esc(d.client_name)}" style="flex:1"><button class="btn" onclick="findClients()">Search</button></div><div id="cands"><div class="note">Searching…</div></div></div>
-    ${s.job ? `<div class="safe" id="jobMatch">Matches Jobber job <a href="${esc(s.job.uri)}" target="_blank" rel="noopener"><b>#${esc(s.job.number)} ${esc(s.job.title)}</b> ↗</a> (${esc((s.job.status || '').replace(/_/g, ' '))}, ${money(s.job.total)}) - the invoice goes on that job at its price${s.job.type === 'recurring' ? ", and the job's visit for the bill's month is marked complete" : ''}. <button class="btn s" onclick="dropJobMatch()">Not this job - bill + 30%</button></div>` : ''}
+    <div id="jobMatchBox">${jobMatchHtml(s.job)}</div>
     <div class="note">The client you pick is remembered for "${esc(d.client_name)}", so next time it's filled in by itself.</div>
     <label class="note">Invoice subject<input type="text" id="invSubject" value="${esc(inv.subject)}" style="width:100%"></label>
     <div><b>Line items</b> <span class="note">(edit before creating)</span><table class="t" style="margin-top:6px"><thead><tr><th>Name</th><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th>Tax</th><th></th></tr></thead><tbody id="invLines"></tbody></table>
@@ -1168,6 +1168,19 @@ async function draftInvoice(docId){
       <div class="foot"><span id="invTotal"></span></div></div>`,
     `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" id="invGo" onclick="createInvoice()">Create draft in Jobber</button>`);
   drawLines(); findClients();
+}
+function jobMatchHtml(job){
+  return job ? `<div class="safe" id="jobMatch">Matches Jobber job <a href="${esc(job.uri)}" target="_blank" rel="noopener"><b>#${esc(job.number)} ${esc(job.title)}</b> ↗</a> (${esc((job.status || '').replace(/_/g, ' '))}, ${money(job.total)}) - the invoice goes on that job at its price${job.type === 'recurring' ? ", and the job's visit for the bill's month is marked complete" : ''}. <button class="btn s" onclick="dropJobMatch()">Not this job - bill + 30%</button></div>` : '';
+}
+// The client is picked: a maintenance bill takes that client's recurring job price (Rosewood, Oct 2026).
+async function invForClient(id){
+  if (inv.mode !== 'invoice' || inv.dropped || !id) return;
+  const j = await api('/docs/' + inv.doc.id + '/invoice_suggestion?client_id=' + encodeURIComponent(id));
+  const s = j.success && j.suggestion;
+  if (!s || inv.client_id !== id) return;
+  inv.job = s.job || null; inv.lines = s.line_items.map(x => Object.assign({}, x)); inv.bill_lines = s.bill_lines || inv.bill_lines;
+  document.getElementById('jobMatchBox').innerHTML = jobMatchHtml(inv.job);
+  drawLines();
 }
 function dropJobMatch(){ inv.job = null; inv.dropped = true; if (inv.bill_lines) inv.lines = inv.bill_lines.map(x => Object.assign({}, x)); const el = document.getElementById('jobMatch'); if (el) el.remove(); drawLines(); }
 function drawLines(){
@@ -1200,8 +1213,9 @@ async function findClients(){
      <a href="${esc(c.uri)}" target="_blank" onclick="event.stopPropagation()" class="note">Jobber ↗</a></div>`).join('') || '<div class="note">No clients found - try a shorter name.</div>';
   if (!j.pick && (j.candidates || []).length) box.insertAdjacentHTML('afterbegin', '<div class="note" style="margin-bottom:6px"><b>Choose the client</b> - more than one could match.</div>');
   if (inv.mode === 'quote') quoteProps();
+  if (inv.client_id && !inv.job) invForClient(inv.client_id);
 }
-function pickClient(el, id){ inv.client_id = id; document.querySelectorAll('#cands .cand').forEach(c => { c.classList.remove('on'); c.querySelector('input').checked = false; }); el.classList.add('on'); el.querySelector('input').checked = true; if (inv.mode === 'quote') quoteProps(); }
+function pickClient(el, id){ inv.client_id = id; document.querySelectorAll('#cands .cand').forEach(c => { c.classList.remove('on'); c.querySelector('input').checked = false; }); el.classList.add('on'); el.querySelector('input').checked = true; if (inv.mode === 'quote') quoteProps(); else invForClient(id); }
 // Jobber already has a quote/invoice for this client at this price.
 function confirmDuplicate(j){
   const d = j.possible_duplicate || {};

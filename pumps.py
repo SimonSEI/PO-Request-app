@@ -192,6 +192,18 @@ def _with_optional(steps):
 # is billed at the client's recurring job price - unless the bill names one.
 _MAINT_WORDS = re.compile(r'\bmaint(?:enance|\.)?\b', re.I)
 _QUOTE_WORDS = re.compile(r'\b(?:quote[sd]?|quotation|estimate|proposal)\b', re.I)
+# "... maintenance ... OCTOBER 2026. As per quotation." (Rosewood, Oct 2026): the
+# month's visit under the contract quote - Wettech's boilerplate, not quoted work.
+_SERVICE_MONTH = re.compile(r'\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?,?\s+20\d\d\b', re.I)
+_AS_PER_QUOTE = re.compile(r'\bas per (?:the |our |your )?(?:quote|quotation|proposal|contract)\b', re.I)
+
+
+def _names_a_quote(text):
+    """Whether a bill's text points at quoted work. "As per quotation" on a
+    bill for a named month is the maintenance contract, not a quote."""
+    if _SERVICE_MONTH.search(text or ''):
+        text = _AS_PER_QUOTE.sub('', text)
+    return bool(_QUOTE_WORDS.search(text or ''))
 
 
 def maintenance_bill(doc):
@@ -207,7 +219,7 @@ def maintenance_bill(doc):
     text = ' '.join([doc.get('description') or '', doc.get('proposal_title') or '', doc.get('quote_reference') or '',
                      doc.get('notes') or ''] + [f"{i.get('name') or ''} {i.get('description') or ''}"
                                                 for i in items or [] if isinstance(i, dict)])
-    return bool(_MAINT_WORDS.search(text)) and not _QUOTE_WORDS.search(text)
+    return bool(_MAINT_WORDS.search(text)) and not _names_a_quote(text)
 
 
 _NO_QUOTE_STEPS = ('vendor_quote', 'client_quote', 'client_approved', 'bill_checked')
@@ -1015,16 +1027,26 @@ def vendor_pay_state(case):
     has_bill = (case.get('vendor_bill_amount') is not None or case.get('vendor_bill_total') is not None
                 or bool(((case.get('steps') or {}).get('vendor_bill') or {}).get('at')))
     client_status = (((case.get('jobber') or {}).get('invoice') or {}).get('status') or '').lower()
+    # A report-only account (Wild Blue...) gets no invoice from us: its monthly
+    # is billed at the end of the month, so the bill is to pay from then.
+    steps = case.get('steps') or {}
+    report_only = ((steps.get('invoice_drafted') or {}).get('by') == 'report only account')
+    month_end = ''
+    if report_only:
+        came = _iso_date(((steps.get('vendor_bill') or {}).get('at') or '')[:10]) or (case.get('opened_on') or '')[:10]
+        if came:
+            d = date.fromisoformat(came)
+            month_end = (date(d.year + d.month // 12, d.month % 12 + 1, 1) - timedelta(days=1)).isoformat()
     if case.get('vendor_paid_on'):
         state = 'paid'
     elif not has_bill:
         state = ''
-    elif client_status == 'paid':
+    elif client_status == 'paid' or (month_end and _today().isoformat() >= month_end):
         state = 'due'
     else:
         state = 'unpaid'
     return {'state': state, 'paid_on': case.get('vendor_paid_on') or '', 'paid_by': case.get('vendor_paid_by') or '',
-            'client_invoice_status': client_status}
+            'client_invoice_status': client_status, 'report_only': report_only, 'month_end': month_end}
 
 
 def compare_amounts(case):
@@ -4630,7 +4652,7 @@ def link_jobber_quote(case_id, number, actor='system'):
         conn.close()
 
 
-def invoice_suggestion(doc, case=None):
+def invoice_suggestion(doc, case=None, client_id=None):
     """The invoice for a bill: when the bill matches the vendor's quote and
     the item has our client quote in Jobber, the client is invoiced what they
     were quoted (and approved). Otherwise the bill's lines plus any markup."""
@@ -4649,7 +4671,7 @@ def invoice_suggestion(doc, case=None):
                                          maintenance_bill(doc) or maint_visit_bill(doc, case)):
         # A maintenance visit: the client pays their recurring job's price, not the bill plus markup.
         try:
-            client_id = invoice_client(doc, case)
+            client_id = client_id or invoice_client(doc, case)
             job = recurring_job_price(doc, case, client_id) if client_id else None
         except JobberError:
             job = None
@@ -4660,7 +4682,7 @@ def invoice_suggestion(doc, case=None):
             return sugg
     if jobber_status()['connected'] and not (json.loads(case.get('jobber') or '{}').get('job') or {}).get('id'):
         try:
-            client_id = invoice_client(doc, case)
+            client_id = client_id or invoice_client(doc, case)
             job = find_matching_job(doc, client_id) if client_id else None
         except JobberError:
             job = None
@@ -4698,7 +4720,7 @@ def maint_visit_bill(doc, case=None):
             items = []
     words = ' '.join([doc.get('description') or '', doc.get('proposal_title') or '', doc.get('quote_reference') or ''] +
                      [f"{i.get('name') or ''} {i.get('description') or ''}" for i in items or [] if isinstance(i, dict)])
-    return not _QUOTE_WORDS.search(words)
+    return not _names_a_quote(words)
 
 
 def recurring_job_price(doc, case, client_id):
@@ -6021,7 +6043,9 @@ def vendor_pay_email(conn, case_id, signer=''):
              f"Please pay {vendor} invoice{' #' + number if number else ''}"
              f"{f' for ${amount:,.2f}' if amount is not None else ''}.", '',
              f'Job: {job}' + (f" (PO {c['po_number']})" if c.get('po_number') else ''),
-             f"The client has paid our Jobber invoice{' #' + our_no if our_no else ''}.", '',
+             (f"{client or 'The account'}'s monthly has been billed (end of month) - no separate invoice from us."
+              if c['vendor_pay'].get('report_only') else
+              f"The client has paid our Jobber invoice{' #' + our_no if our_no else ''}."), '',
              *([f'{vendor}\'s invoice is attached.', ''] if bill else []), 'Thank you,', signer]
     body = '\n'.join(lines).rstrip()
     return {'to': _app_setting(conn, 'christian_email', os.environ.get('CHRISTIAN_EMAIL', '')),
@@ -6214,6 +6238,22 @@ def h_docs(actor):
         return {'docs': [_doc_dict(r) for r in conn.execute(sql, args)]}
     finally:
         conn.close()
+
+
+@api('/docs/<int:doc_id>/invoice_suggestion')
+def h_doc_invoice_suggestion(actor, doc_id):
+    """The invoice for a bill once the office has picked the Jobber client: a
+    maintenance visit takes that client's recurring job price."""
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+        if not row:
+            return {'success': False, 'error': 'Not found'}, 404
+        d = _doc_dict(row)
+        case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (d['case_id'],)).fetchone()) if d['case_id'] else None
+    finally:
+        conn.close()
+    return {'suggestion': invoice_suggestion(d, case, request.args.get('client_id') or None)}
 
 
 @api('/docs/<int:doc_id>')
@@ -6735,7 +6775,7 @@ def h_doc_invoice(actor, doc_id):
             return {'success': False, 'needs_client': True, 'candidates': cands,
                     'error': 'More than one Jobber client could match - choose one.'}, 409
         client_id = pick['id']
-    sugg = invoice_suggestion(doc, case)
+    sugg = invoice_suggestion(doc, case, client_id)
     job_id = data.get('job_id')
     if job_id is None:
         job_id = (json.loads(case.get('jobber') or '{}').get('job') or {}).get('id') or \
