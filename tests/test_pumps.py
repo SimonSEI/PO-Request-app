@@ -3203,6 +3203,55 @@ class PumpsTest(unittest.TestCase):
         a = self.upload('b-allura2.pdf')
         self.assertFalse((self.case(a['case_id'])['steps'].get('invoice_drafted') or {}).get('na'))
 
+    def test_report_client_choices_are_clients_with_pump_work(self):
+        """Rosewood (Oct 2026): logging a report offered everyone with "Rosewood" in an address or note. Only
+        clients we do pump work for are offered, the rest behind "show all"."""
+        cands = [{'id': 'C1', 'name': 'Rosewood HOA c/o Guardian', 'score': 1.0, 'is_lead': False, 'address': '',
+                  'uri': '', 'matching_properties': []},
+                 {'id': 'C2', 'name': 'Ken Kessler', 'score': 0.95, 'is_lead': False, 'address': '301 Rosewood Court',
+                  'uri': '', 'matching_properties': []}]
+        conn = P._conn()
+        conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, status, client_id, category) "
+                     "VALUES ('J1', 'job', '77', 'active', 'C1', 'pump')")
+        conn.commit()
+        conn.close()
+        saved = P.search_clients
+        P.search_clients = lambda name, limit=8: [dict(c) for c in cands]
+        try:
+            j = self.c.get('/pumps/api/jobber/clients?pump=1&q=Rosewood').get_json()
+            self.assertEqual(([c['id'] for c in j['candidates']], j['hidden']), (['C1'], 1))
+            j = self.c.get('/pumps/api/jobber/clients?pump=1&all=1&q=Rosewood').get_json()
+            self.assertEqual([c['id'] for c in j['candidates']], ['C1', 'C2'])
+            # Other searches (bills, quotes) are unchanged.
+            j = self.c.get('/pumps/api/jobber/clients?q=Rosewood').get_json()
+            self.assertEqual(len(j['candidates']), 2)
+        finally:
+            P.search_clients = saved
+
+    def test_log_report_remembers_the_client_and_job(self):
+        """The client and pump job a report was logged on are remembered for the vendor's name: the next
+        Log report window starts on them, and the next report goes there by itself."""
+        conn = P._conn()
+        conn.execute("INSERT INTO pump_docs (kind, client_name, site, file_name, status) "
+                     "VALUES ('report', 'Brookside Lakes', 'Brookside Lakes', 'r.docx', 'filed')")
+        did = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        conn.commit()
+        conn.close()
+        saved = (P.log_report_to_jobber, P.search_clients)
+        P.log_report_to_jobber = lambda doc_id, t, tid, actor, msg=None: {'note_id': 'N1', 'note_attached_file': True}
+        P.search_clients = lambda name, limit=8: []
+        try:
+            r = self.c.post(f'/pumps/api/docs/{did}/report_note', json={
+                'target_type': 'job', 'target_id': 'J1609', 'client_id': 'C1', 'client_name': 'Brookside Lakes HOA',
+                'job_label': '#1609 Monthly Pump'})
+            self.assertEqual(r.status_code, 200, r.get_json())
+            j = self.c.get('/pumps/api/jobber/clients?pump=1&q=Brookside%20Lakes').get_json()
+        finally:
+            P.log_report_to_jobber, P.search_clients = saved
+        self.assertEqual((j['pick']['id'], j['pick']['job_id']), ('C1', 'J1609'))
+        t = P.resolve_report_target({'client_name': 'Brookside Lakes', 'site': 'Brookside Lakes'})
+        self.assertEqual((t['type'], t['id']), ('job', 'J1609'))
+
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's
         usual vendor cost - it's the monthly visit, invoiced at the recurring job's $250, not $130."""

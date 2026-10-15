@@ -1304,12 +1304,16 @@ async function logReport(docId){
     `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" id="repGo" onclick="sendReport()">Add note in Jobber</button>`);
   repClients();
 }
-async function repClients(){
+async function repClients(all){
   const box = document.getElementById('rcands');
   box.innerHTML = '<div class="note">Searching Jobber…</div>';
-  const j = await api('/jobber/clients?q=' + encodeURIComponent(document.getElementById('rq').value.trim()));
+  // Only clients we do pump work for, unless asked for everyone.
+  const j = await api('/jobber/clients?pump=1' + (all ? '&all=1' : '') + '&q=' + encodeURIComponent(document.getElementById('rq').value.trim()));
   if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
-  box.innerHTML = (j.candidates || []).map(c => `<div class="cand" data-id="${esc(c.id)}" onclick="repPick('${esc(c.id)}')"><input type="radio" name="rc"><div style="flex:1"><b>${esc(c.name)}</b><div class="note">${esc(c.address)}</div></div><span class="chip">${Math.round(c.score*100)}%</span></div>`).join('') || '<div class="note">No clients found.</div>';
+  box.innerHTML = ((j.candidates || []).map(c => `<div class="cand" data-id="${esc(c.id)}" onclick="repPick('${esc(c.id)}')"><input type="radio" name="rc"><div style="flex:1"><b>${esc(c.name)}</b><div class="note">${esc(c.address)}</div></div><span class="chip">${Math.round(c.score*100)}%</span></div>`).join('') || '<div class="note">No clients found.</div>')
+    + (j.hidden ? `<div class="note">${j.hidden} other client${j.hidden > 1 ? 's' : ''} with no pump work hidden · <a href="#" onclick="repClients(true); return false">show all</a></div>` : '');
+  // Last time's client (and job) for this name, picked again.
+  rep.last_job = (j.pick || {}).job_id || '';
   if (j.pick) repPick(j.pick.id);
 }
 async function repPick(id){
@@ -1323,7 +1327,8 @@ async function repPick(id){
   const props = Object.fromEntries((j.properties || []).map(p => [p.id, p.label]));
   const score = x => (/pump|fountain/i.test(x.title) ? 3 : 0) + (loc && (x.title + ' ' + (props[x.property_id] || '')).toLowerCase().includes(loc) ? 2 : 0) + (x.type === 'recurring' && x.status !== 'archived' ? 2 : 0) + (['active','upcoming','today','late'].includes(x.status) ? 1 : 0);
   const jobs = (j.jobs || []).slice().sort((a, b) => score(b) - score(a));
-  rep.target = jobs.length && score(jobs[0]) >= 3 ? {type:'job', id: jobs[0].id} : {type:'client', id};
+  const last = jobs.find(x => x.id === rep.last_job);
+  rep.target = last ? {type:'job', id: last.id} : jobs.length && score(jobs[0]) >= 3 ? {type:'job', id: jobs[0].id} : {type:'client', id};
   box.innerHTML = jobs.map(x => `<label class="cand ${rep.target.id === x.id ? 'on' : ''}"><input type="radio" name="rt" ${rep.target.id === x.id ? 'checked' : ''} onchange="rep.target={type:'job',id:'${esc(x.id)}'}">
       <div style="flex:1"><b>#${esc(x.number)} ${esc(x.title)}</b><div class="note">${esc(x.type)} · ${esc(x.status)} · ${esc(props[x.property_id] || '')}</div></div><a class="note" target="_blank" href="${esc(x.uri)}">↗</a></label>`).join('')
     + `<label class="cand ${rep.target.type === 'client' ? 'on' : ''}"><input type="radio" name="rt" ${rep.target.type === 'client' ? 'checked' : ''} onchange="rep.target={type:'client',id:'${esc(id)}'}"><div><b>On the client</b> <span class="note">(no single pump job fits)</span></div></label>`;
@@ -1331,7 +1336,9 @@ async function repPick(id){
 async function sendReport(){
   if (!rep.target) { toast('Choose where the note goes.', true); return; }
   const btn = document.getElementById('repGo'); btn.disabled = true;
-  const j = await api('/docs/' + rep.doc.id + '/report_note', {method:'POST', body:{target_type: rep.target.type, target_id: rep.target.id}});
+  const cand = document.querySelector('#rcands .cand.on b'), job = rep.target.type === 'job' && document.querySelector('#rjobs input:checked')?.closest('.cand')?.querySelector('b');
+  const j = await api('/docs/' + rep.doc.id + '/report_note', {method:'POST', body:{target_type: rep.target.type, target_id: rep.target.id,
+    client_id: rep.client_id, client_name: cand ? cand.textContent : '', job_label: job ? job.textContent : ''}});
   btn.disabled = false;
   if (!j.success) { toast(j.error, true); return; }
   closeModal(); toast('Report logged in Jobber' + (j.note.note_attached_file ? ' with the file attached.' : ' (with a link to the file).'));

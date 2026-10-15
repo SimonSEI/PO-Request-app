@@ -6349,10 +6349,36 @@ def h_jobber_clients(actor):
         mine = next((c for c in cands if c['id'] == a['client_id']), None) or \
             {'id': a['client_id'], 'name': a['client_name'], 'is_lead': False, 'uri': '', 'address': '',
              'matching_properties': []}
-        mine = {**mine, 'score': 1.0, 'remembered': f'You matched "{a["place"]}" to {a["client_name"]} before'}
+        mine = {**mine, 'score': 1.0, 'remembered': f'You matched "{a["place"]}" to {a["client_name"]} before',
+                'job_id': a.get('job_id') or ''}
         cands = [mine] + [c for c in cands if c['id'] != a['client_id']]
         return {'candidates': cands, 'pick': mine}
-    return {'candidates': cands, 'pick': pick_client(cands)}
+    hidden = 0
+    if request.args.get('pump') and not request.args.get('all'):
+        # A pump report (Rosewood, Oct 2026): only clients we do pump work for -
+        # not everyone whose address or contact has the word in it.
+        pumped = pump_client_ids()
+        keep = [c for c in cands if c['id'] in pumped]
+        if keep:
+            hidden, cands = len(cands) - len(keep), keep
+    return {'candidates': cands, 'pick': pick_client(cands), 'hidden': hidden}
+
+
+def pump_client_ids():
+    """Jobber clients we do pump work for: pump jobs, quotes or invoices synced
+    from Jobber, a pump account's client, or a client on one of our items."""
+    conn = _conn()
+    try:
+        ids = {r[0] for r in conn.execute("SELECT DISTINCT client_id FROM pump_jobber_items WHERE client_id != '' "
+                                          "AND COALESCE(ignored, 0)=0")}
+        ids |= {r[0] for r in conn.execute("SELECT jobber_client_id FROM pump_maint_accounts "
+                                           "WHERE COALESCE(jobber_client_id, '') != ''")}
+        ids |= {r[0] for r in conn.execute("SELECT jobber_client_id FROM pump_cases "
+                                           "WHERE COALESCE(jobber_client_id, '') != ''")}
+        ids |= {r[0] for r in conn.execute("SELECT client_id FROM pump_site_aliases WHERE COALESCE(client_id, '') != ''")}
+    finally:
+        conn.close()
+    return ids
 
 
 @api('/jobber/clients/<path:client_id>/jobs')
@@ -6884,7 +6910,38 @@ def h_doc_report_note(actor, doc_id):
         if not t.get('id'):
             return {'success': False, 'needs_target': True, 'error': t.pop('needs'), **t}, 409
         ttype, tid = t['type'], t['id']
-    return {'note': log_report_to_jobber(doc_id, ttype, tid, actor, data.get('message'))}
+    note = log_report_to_jobber(doc_id, ttype, tid, actor, data.get('message'))
+    if data.get('client_id'):
+        conn = _conn()
+        try:
+            doc = _doc_dict(conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone())
+        finally:
+            conn.close()
+        remember_report_choice(doc, data['client_id'], data.get('client_name') or '',
+                               tid if ttype == 'job' else '', data.get('job_label') or '', actor)
+    return {'note': note}
+
+
+def remember_report_choice(doc, client_id, client_name='', job_id='', job_label='', actor='system'):
+    """The client (and pump job) the office logged a report on, kept under the
+    vendor's name for the site: the next report with that name goes to the
+    same place by itself, and the Log report window starts on it."""
+    place = re.sub(r'\s+', ' ', (doc.get('client_name') or '').strip())[:80]
+    if not place or not client_id:
+        return None
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT * FROM pump_site_aliases WHERE place=? AND area=''", (place,)).fetchone()
+    finally:
+        conn.close()
+    a = dict(row) if row else None
+    if a and a['client_id'] == client_id and (a.get('job_id') or '') == (job_id or ''):
+        return None
+    same = bool(a and a['client_id'] == client_id)
+    save_site_alias(place, '', client_id, client_name or (a or {}).get('client_name') or '',
+                    a['property_id'] if same else '', a['property_label'] if same else '',
+                    f'Report logged by {actor} on {_today().isoformat()}', actor, job_id=job_id, job_label=job_label)
+    return place
 
 
 @api('/issues/<int:issue_id>/bill-anyway', methods=('POST',))
