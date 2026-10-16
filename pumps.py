@@ -9311,6 +9311,66 @@ def h_reports_archive(actor):
                      download_name=f'Pump reports - all - {_today().isoformat()}.zip')
 
 
+def vendor_quotes(conn, show='open', q=''):
+    """Every vendor quote on file (Oct 2026: a Quotes tab for all of Wettech's
+    quotes), newest first, with where it stands: our Jobber quote not made
+    yet, a draft to send, out to the client, approved - or done/cancelled."""
+    docs = [_doc_dict(r) for r in conn.execute(
+        "SELECT * FROM pump_docs WHERE kind='quote' AND status != 'dismissed' ORDER BY id DESC")]
+    ids = {d['case_id'] for d in docs if d.get('case_id')}
+    cases = {r['id']: dict(r) for r in conn.execute(
+        f"SELECT id, title, client_name, stage, status, jobber FROM pump_cases WHERE id IN ({','.join('?' * len(ids))})",
+        list(ids))} if ids else {}
+    q = (q or '').strip().lower()
+    out, counts = [], {}
+    for d in docs:
+        c = cases.get(d.get('case_id')) or {}
+        dj, cj = d.get('jobber') or {}, json.loads(c.get('jobber') or '{}')
+        ours = cj.get('quote') or {}
+        num = ours.get('number') or dj.get('quote_number') or ''
+        st = (ours.get('status') or dj.get('quote_status') or '').lower()
+        if c.get('status') == 'cancelled':
+            state = 'cancelled'
+        elif st in ('approved', 'converted') or (c.get('stage') not in (None, '', 'assessment', 'vendor_quote',
+                                                                         'client_quote', 'client_approved')
+                                                  and c.get('status') == 'open'):
+            state = 'approved'
+        elif c.get('status') == 'closed':
+            state = 'done'
+        elif st in ('awaiting_response', 'changes_requested'):
+            state = 'sent'
+        elif num:
+            state = 'draft'
+        else:
+            state = 'to_quote'
+        counts[state] = counts.get(state, 0) + 1
+        if show == 'open' and state not in ('to_quote', 'draft', 'sent'):
+            continue
+        if show not in ('open', 'all') and state != show:
+            continue
+        hay = f"{d.get('client_name')} {d.get('site')} {d.get('doc_number')} {d.get('description')} {c.get('title')} {num}"
+        if q and q not in hay.lower():
+            continue
+        out.append({'id': d['id'], 'date': d.get('doc_date') or (d.get('created_at') or '')[:10],
+                    'vendor': d.get('vendor') or 'Wettech', 'number': d.get('doc_number') or '',
+                    'client_name': d.get('client_name') or c.get('client_name') or '', 'site': d.get('site') or '',
+                    'what': ((d.get('description') or '').strip().splitlines() or [''])[0][:200],
+                    'subtotal': d.get('subtotal'), 'total': d.get('total'), 'file_name': d.get('file_name'),
+                    'case_id': d.get('case_id'), 'case_title': c.get('title') or '', 'state': state,
+                    'ours': {'number': num, 'status': st, 'uri': ours.get('uri') or dj.get('quote_uri') or ''}})
+    return {'quotes': out, 'counts': counts}
+
+
+@api('/vendor_quotes')
+def h_vendor_quotes(actor):
+    """?show=open|all|to_quote|draft|sent|approved|done|cancelled&q=..."""
+    conn = _conn()
+    try:
+        return vendor_quotes(conn, request.args.get('show') or 'open', request.args.get('q') or '')
+    finally:
+        conn.close()
+
+
 @api('/reports')
 def h_reports(actor):
     """Every service report, rebranded, by year: ?year=2026&q=..."""
