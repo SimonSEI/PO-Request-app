@@ -3844,6 +3844,49 @@ class PumpsTest(unittest.TestCase):
         self.c.patch(f"/pumps/api/cases/{b['case_id']}", json={'steps': {'closed': '2026-10-16'}})
         self.assertNotIn(b['case_id'], send())
 
+    def test_report_with_another_name_joins_its_bills_item(self):
+        """Char Co McGuire Pk (Oct 2026): the report's name didn't match the bill's "Sunshine Lake Park", so it
+        made an item of its own ("Waiting on bill") while the bill's item sat on "Log the report in Jobber".
+        Logged on the same Jobber job, the report joins the bill's item: one item, on Send invoice."""
+        self.extracts['b-sunj.pdf'] = extraction('bill', '39401', client='Sunshine Join Park', subtotal=150)
+        b = self.upload('b-sunj.pdf')
+        conn = P._conn()
+        row = conn.execute('SELECT steps, jobber FROM pump_cases WHERE id=?', (b['case_id'],)).fetchone()
+        steps = {**json.loads(row['steps'] or '{}'), **{k: {'at': '2026-10-16'} for k in
+                 ('vendor_quote', 'client_quote', 'client_approved', 'scheduled', 'work_done', 'vendor_bill',
+                  'bill_checked', 'invoice_drafted')}, 'report_logged': {}}
+        j = {**json.loads(row['jobber'] or '{}'), 'job': {'id': 'J541', 'number': '541'},
+             'invoice': {'id': 'I36870', 'number': '36870', 'status': 'draft'}}
+        conn.execute("UPDATE pump_cases SET steps=?, jobber=?, stage='report_logged' WHERE id=?",
+                     (json.dumps(steps), json.dumps(j), b['case_id']))
+        conn.commit()
+        conn.close()
+        rep = self.upload('10-26 Char Co McGuire Pk.docx', make_report(customer='Char Co McGuire Pk Join'))
+        self.assertNotEqual(rep['case_id'], b['case_id'], 'a different name: its own item at first')
+        conn = P._conn()
+        conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?',
+                     (json.dumps({'note_id': 'N1', 'note_target': 'job', 'note_target_id': 'J541'}), rep['doc_id']))
+        conn.commit()
+        conn.close()
+        q = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertEqual(self.case(rep['case_id'])['status'], 'cancelled')
+        c = self.case(b['case_id'])
+        self.assertIn(rep['doc_id'], [d['id'] for d in c['docs']])
+        self.assertTrue(c['steps']['report_logged'].get('at'))
+        self.assertIn(b['case_id'], [x['id'] for x in q['ready_to_close']])
+        listed = [x['id'] for k, v in q.items() if isinstance(v, list) for x in v if isinstance(x, dict) and 'stage' in x]
+        self.assertNotIn(rep['case_id'], listed)
+
+    def test_report_and_bill_in_one_email_share_an_item(self):
+        """The report and its bill came in one email: the report goes on the bill's item, whatever its name."""
+        self.extracts['b-mail.pdf'] = extraction('bill', '39402', client='Mailed Lake Park', subtotal=150)
+        b = P.ingest_document('b-mail.pdf', b'%PDF-1.4 fake b-mail', source='email', actor='email scan',
+                              email={'uid': 'one-mail-1', 'from': 'office@wettec.biz', 'subject': 'Inv 39402'})
+        r = P.ingest_document('10-26 Char Co Mail Pk.docx', make_report(customer='Char Co Mail Pk'), source='email',
+                              actor='email scan', email={'uid': 'one-mail-1', 'from': 'office@wettec.biz',
+                                                         'subject': 'Inv 39402'})
+        self.assertEqual(r['case_id'], b['case_id'], (r, b))
+
     def test_one_station_report_is_one_note(self):
         """Evergreen's North and South pumps are one job: a report naming two pumps that land on the same
         job (or none) stays one note."""

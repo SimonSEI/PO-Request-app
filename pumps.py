@@ -2202,6 +2202,87 @@ def _find_case_for(conn, doc, exclude=None):
     return None, ''
 
 
+def _same_email_case(conn, doc):
+    """The item a report's bill (or a bill's report) from the same email is on
+    (Char Co McGuire Pk, Oct 2026: the report's name didn't match the bill's
+    "Sunshine Lake Park" and made an item of its own). Only when the email's
+    other documents are on one item."""
+    other = {'report': 'bill', 'bill': 'report'}.get(doc.get('kind'))
+    if not other or not (doc.get('email_uid') or '').strip():
+        return None, ''
+    ids = {r[0] for r in conn.execute(
+        "SELECT d.case_id FROM pump_docs d JOIN pump_cases c ON c.id = d.case_id WHERE d.email_uid=? AND d.id != ? "
+        "AND d.kind=? AND d.status != 'dismissed' AND c.status='open'", (doc['email_uid'], doc['id'], other))}
+    return (ids.pop(), f'its {other} in the same email') if len(ids) == 1 else (None, '')
+
+
+def merge_report_items(conn, job_id, actor='system'):
+    """A report that made an item of its own, logged on the Jobber job of
+    another open item still waiting on its report (Char Co McGuire Pk, Oct
+    2026: the bill's item, Sunshine Lake Park, invoiced on job #541, sat on
+    "Report logged"): the report moves onto that item, ticks its step, and
+    the report's own item is closed as merged. Returns the item it went to."""
+    if not job_id:
+        return None
+    owners = {r['id'] for r in conn.execute("SELECT id, jobber FROM pump_cases WHERE status='open' AND jobber LIKE ?",
+                                            (f'%{job_id}%',))
+              if (json.loads(r['jobber'] or '{}').get('job') or {}).get('id') == job_id}
+    owners |= {r[0] for r in conn.execute(
+        "SELECT d.case_id FROM pump_docs d JOIN pump_cases c ON c.id = d.case_id WHERE d.kind='bill' "
+        "AND d.status != 'dismissed' AND c.status='open' AND json_extract(d.jobber, '$.job_id')=?", (job_id,))}
+    report_only, arrived = {}, {}
+    # (Its own item open, or already closed by hand - the report still counts for the bill's item.)
+    for r in conn.execute("SELECT d.id, d.case_id, d.created_at FROM pump_docs d JOIN pump_cases c ON c.id = d.case_id "
+                          "WHERE d.kind='report' AND d.status != 'dismissed' "
+                          "AND json_extract(d.jobber, '$.note_target_id')=?", (job_id,)).fetchall():
+        if not conn.execute("SELECT 1 FROM pump_docs WHERE case_id=? AND kind != 'report' AND status != 'dismissed'",
+                            (r['case_id'],)).fetchone():
+            report_only.setdefault(r['case_id'], []).append(r['id'])
+            arrived[r['id']] = (r['created_at'] or '')[:10]
+
+    def near(cid):
+        # This visit's bill: arrived within 20 days of the report (not last month's on a monthly job).
+        bills = [(b[0] or '')[:10] for b in conn.execute(
+            "SELECT created_at FROM pump_docs WHERE case_id=? AND kind='bill' AND status != 'dismissed'", (cid,))]
+        try:
+            return any(abs((date.fromisoformat(b) - date.fromisoformat(a)).days) <= 20
+                       for b in bills for a in arrived.values() if a and b)
+        except ValueError:
+            return False
+    waiting = []
+    for cid in owners - set(report_only):
+        row = conn.execute('SELECT steps FROM pump_cases WHERE id=?', (cid,)).fetchone()
+        st = json.loads(row['steps'] or '{}').get('report_logged') or {}
+        has_report = conn.execute("SELECT 1 FROM pump_docs WHERE case_id=? AND kind='report' AND status != 'dismissed'",
+                                  (cid,)).fetchone()
+        if not st.get('at') and not st.get('na') and not has_report and near(cid):
+            waiting.append(cid)
+    if len(waiting) != 1 or not report_only:
+        return None
+    owner = waiting[0]
+    for cid, doc_ids in report_only.items():
+        for did in doc_ids:
+            conn.execute('UPDATE pump_docs SET case_id=?, updated_at=? WHERE id=?', (owner, _now_text(), did))
+        conn.execute("UPDATE pump_cases SET status='cancelled', stage='cancelled', updated_at=? WHERE id=? "
+                     "AND status='open'", (_now_text(), cid))
+        conn.execute("UPDATE pump_issues SET resolved_at=?, resolved_by=?, resolution=? WHERE case_id=? "
+                     "AND resolved_at IS NULL", (_now_text(), actor, f'Merged into item #{owner}', cid))
+        _event(conn, actor, 'merged', f'The report is for item #{owner} (same Jobber job) - moved there', case_id=cid)
+        _event(conn, actor, 'merged', f"Item #{cid}'s report is this job's (same Jobber job) - moved here",
+               case_id=owner)
+    _set_step(conn, owner, 'report_logged', at=_today().isoformat(), by=actor)
+    return owner
+
+
+def merge_all_report_items(conn, actor='Pumps'):
+    """merge_report_items for every report-only item's logged job."""
+    jobs = {r[0] for r in conn.execute(
+        "SELECT json_extract(d.jobber, '$.note_target_id') FROM pump_docs d JOIN pump_cases c ON c.id = d.case_id "
+        "WHERE d.kind='report' AND d.status != 'dismissed' AND json_extract(d.jobber, '$.note_target')='job' "
+        "AND d.updated_at >= ?", ((_today() - timedelta(days=60)).isoformat(),)) if r[0]}
+    return [o for o in (merge_report_items(conn, j, actor) for j in sorted(jobs)) if o]
+
+
 def file_document(conn, doc_id, actor='system'):
     """Put a document on its item (finding or creating one) and do what that
     kind of document means for the item. Returns the item id."""
@@ -2209,7 +2290,9 @@ def file_document(conn, doc_id, actor='system'):
     kind = doc['kind']
     if kind == 'other' or doc['status'] == 'dismissed':
         return None
-    case_id, how = (doc['case_id'], 'already linked') if doc['case_id'] else _find_case_for(conn, doc)
+    case_id, how = (doc['case_id'], 'already linked') if doc['case_id'] else _same_email_case(conn, doc)
+    if not case_id:
+        case_id, how = _find_case_for(conn, doc)
     if not case_id:
         case_id = _new_case_for(conn, doc, actor)
         how = 'new item'
@@ -6095,6 +6178,8 @@ def log_report_to_jobber(doc_id, target_type, target_id, actor='system', message
                    (f"{sec['location']} page - " if sec else '') + f"note on {target_type}" +
                    (' with the file attached' if attached else ' (file linked, not attached)'),
                    case_id=doc['case_id'], doc_id=doc_id)
+            if target_type == 'job' and not sec:
+                merge_report_items(conn, target_id, actor)
         conn.commit()
         return {**ref, 'section': section, 'location': sec['location']} if sec else ref
     finally:
@@ -6258,6 +6343,8 @@ def _seed_homewood_follow_up(conn):
 
 
 def work_queue(conn):
+    # A report on an item of its own that belongs to a bill's item: joined first, so neither is a to-do.
+    merge_all_report_items(conn)
     cases = list_cases(conn, 'open')
     issues = [dict(r) for r in conn.execute('''SELECT i.*, c.title, c.client_name FROM pump_issues i
                                                LEFT JOIN pump_cases c ON c.id = i.case_id
@@ -6327,6 +6414,7 @@ def work_queue(conn):
         sc['follow_up'] = follow_up_for(conn, sc)
     new_requests = untracked_jobber_items(conn)
     stale = [c for c in cases if c['idle_days'] >= STALE_DAYS]
+
     follow_visits(conn)
     conn.commit()
     todos = [_todo_dict(r) for r in conn.execute("SELECT * FROM pump_todos WHERE done_at IS NULL AND kind != 'visit' "
@@ -7912,6 +8000,7 @@ def invoiced_on_job(doc, case, job, actor='system'):
         jj['job'] = {'id': job['id'], 'number': job.get('number'), 'uri': job.get('uri')}
         conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(jj), case['id']))
         resolve_issues(conn, case['id'], 'no_quote', actor, f"Invoiced on Jobber job #{job.get('number')}")
+        merge_report_items(conn, job['id'], actor)
         _set_step(conn, case['id'], 'bill_checked', at=_today().isoformat(), by=actor)
         _event(conn, actor, 'invoiced on matching job', f"Jobber job #{job.get('number')} {job.get('title')}",
                case_id=case['id'], doc_id=doc.get('id'))
