@@ -3887,6 +3887,39 @@ class PumpsTest(unittest.TestCase):
                                                          'subject': 'Inv 39402'})
         self.assertEqual(r['case_id'], b['case_id'], (r, b))
 
+    def test_quote_already_made_in_jobber_is_not_waiting_on_a_quote(self):
+        """Autumn Woods (Oct 2026): the report asked for a surge protector and flow meters, and the items said
+        "waiting on quote" - but quotes #9181, #9161 and #9159 were already out to the client. The quote for the
+        same work (and the same pump) is linked: waiting on the client, not on a quote."""
+        conn = P._conn()
+        for jid, num, title, status in (
+                ('QAW9181', '9181', 'Estimate to install a Surge Protector- Pump #2/Club House', 'awaiting_response'),
+                ('QAW9161', '9161', 'Estimate to install a Flow Meter - Pump #2/Club House', 'awaiting_response'),
+                ('QAW9159', '9159', 'Estimate to install a 4" Flow Meter- Pump #1', 'awaiting_response'),
+                ('QAW8677', '8677', 'Estimate to replace the 8" Orival Stainless Steel Filter', 'awaiting_response'),
+                ('QAW9047', '9047', 'Irrigation - ICC2 Controller & Decoder Installation', 'converted')):
+            conn.execute("INSERT OR REPLACE INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id, "
+                         "client_name, total, created_at, updated_at, web_uri) VALUES (?, 'quote', ?, ?, ?, 'CAWT', "
+                         "'AUTUMN TESTWOODS HOA COMMUNITY', 1000, '2026-10-09', '2026-10-14', '')",
+                         (jid, num, title, status))
+        mk = lambda title: P.create_case(conn, {'title': title, 'category': 'repair',
+                                                'client_name': 'Autumn Testwoods HOA Community',
+                                                'opened_on': '2026-10-16'}, 'tester')
+        surge = mk('Autumn Testwoods HOA Community - Quote needed for a surge protector at pump #2')
+        meter1 = mk('Autumn Testwoods HOA Community - Recommend a flow meter on Pump #1')
+        valve = mk('Autumn Testwoods HOA Community - Quote needed to replace the check valve')
+        conn.commit()
+        P.reconcile_quote_waits(conn)
+        conn.commit()
+        quote = lambda cid: (json.loads(conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (cid,)).fetchone()[0]
+                                        or '{}').get('quote') or {}).get('number')
+        self.assertEqual(quote(surge), '9181')
+        self.assertEqual(quote(meter1), '9159', 'pump #1, not the pump #2 meter')
+        self.assertIsNone(quote(valve), 'nothing in Jobber for a check valve - still waiting on a quote')
+        conn.close()
+        self.assertEqual(self.case(surge)['stage'], 'client_approved', 'quote out: waiting on the client')
+        self.assertEqual(self.case(valve)['stage'], 'vendor_quote')
+
     def test_one_station_report_is_one_note(self):
         """Evergreen's North and South pumps are one job: a report naming two pumps that land on the same
         job (or none) stays one note."""

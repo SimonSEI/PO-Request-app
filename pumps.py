@@ -308,6 +308,10 @@ def _quote_needed_item(conn, doc, case_id, actor):
     _event(conn, actor, 'quote needed', f"{what[0].upper() + what[1:]} says: {note}",
            case_id=new_id, doc_id=doc['id'])
     _event(conn, actor, 'quote needed', f'Put on the watchlist as job {new_id}: {note}', case_id=case_id)
+    # Already quoted in Jobber and waiting on the client: not "waiting on a quote".
+    it = pending_quote_for(conn, dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (new_id,)).fetchone()))
+    if it:
+        link_pending_quote(conn, new_id, it, actor)
     return new_id
 
 
@@ -3671,6 +3675,74 @@ REOPEN_DAYS = 60
 QUOTE_GONE_OUT = ('awaiting_response', 'changes_requested', 'approved', 'converted')
 
 
+# Words that say nothing about which work a quote is for.
+_WORK_STOP = {'estimate', 'needed', 'needs', 'recommend', 'recommended', 'recommends', 'replace', 'replacement',
+              'install', 'installation', 'new', 'quote', 'please', 'provide', 'should', 'would', 'also', 'club',
+              'house', 'clubhouse', 'station', 'irrigation', 'system', 'repair', 'repairs', 'report', 'comments'}
+PENDING_QUOTE = ('draft', 'awaiting_response', 'changes_requested')
+
+
+def _pump_nums(text):
+    """Pump numbers named in a text: "Pump #2", "pump 2", "PS 1" -> {'2', '1'}."""
+    return set(re.findall(r'\b(?:pump|ps|station)\s*#?\s*(\d{1,2})\b', (text or '').lower()))
+
+
+def pending_quote_for(conn, case):
+    """A quote already in Jobber for the work an item is waiting on a quote
+    for (Autumn Woods, Oct 2026: the report asked for a surge protector and
+    flow meters, and quotes #9181, #9161 and #9159 were already out to the
+    client): the client's one draft or sent quote, not yet approved, whose
+    title names the same work (and the same pump, when either names one).
+    None unless exactly one fits."""
+    j = case.get('jobber') if isinstance(case.get('jobber'), dict) else json.loads(case.get('jobber') or '{}')
+    name = case.get('client_name') or ''
+    cid_j = case.get('jobber_client_id') or (j.get('client') or {}).get('id') or ''
+    work = f"{case.get('title') or ''} {case.get('description') or ''}"
+    own = _match_words(name) | _match_words(case.get('site') or '')
+    want = {w for w in _match_words(work) - own if w not in _WORK_STOP}
+    if not want:
+        return None
+    nums = _pump_nums(work)
+    best, ties = [], 0
+    for it in conn.execute("SELECT * FROM pump_jobber_items WHERE kind='quote' AND COALESCE(ignored, 0)=0 "
+                           f"AND status IN ({','.join('?' * len(PENDING_QUOTE))})", PENDING_QUOTE):
+        it = dict(it)
+        if it.get('case_id') and it['case_id'] != case.get('id') and conn.execute(
+                "SELECT 1 FROM pump_cases WHERE id=? AND status != 'cancelled'", (it['case_id'],)).fetchone():
+            continue   # another item has it
+        same = (cid_j and it.get('client_id') == cid_j) or (
+            name and max(similarity(name, it.get('client_name') or ''),
+                         similarity(name, it.get('property_label') or '')) >= 0.85)
+        if not same:
+            continue
+        theirs = nums and _pump_nums(it.get('title') or '')
+        if theirs and not (theirs & nums):
+            continue   # "Pump #1" is not the "Pump #2" quote
+        shared = len(want & (_match_words(it.get('title') or '') - own))
+        if not shared:
+            continue
+        score = shared + (1 if theirs else 0)
+        if not best or score > best[0]:
+            best, ties = [score, it], 0
+        elif score == best[0]:
+            ties += 1
+    return best[1] if best and not ties else None
+
+
+def link_pending_quote(conn, case_id, it, actor):
+    """Put the quote already made on the item: no longer waiting on the vendor's
+    quote - on sending ours (a draft) or on the client's answer."""
+    _link_item(conn, it['jobber_id'], case_id, actor)
+    steps = json.loads(conn.execute('SELECT steps FROM pump_cases WHERE id=?', (case_id,)).fetchone()[0] or '{}')
+    for k in ('assessment', 'vendor_quote'):
+        if not (steps.get(k) or {}).get('at'):
+            _set_step(conn, case_id, k, by=actor, na=True)
+    if it['status'] != 'draft' and not (steps.get('client_quote') or {}).get('at'):
+        _set_step(conn, case_id, 'client_quote', at=(it.get('updated_at') or '')[:10] or _today().isoformat(), by=actor)
+    _event(conn, actor, 'quote already made', f"Jobber quote #{it['number']} \"{it['title']}\" is for this work "
+                                              f"({it['status'].replace('_', ' ')})", case_id=case_id)
+
+
 def reconcile_quote_waits(conn, actor='Jobber sync'):
     """A job still "waiting on quote" whose client has since been sent a quote
     in Jobber (Magnolia Cove, Oct 2026: "Quote is needed" kept waiting after
@@ -3684,6 +3756,12 @@ def reconcile_quote_waits(conn, actor='Jobber sync'):
     for c in rows:
         j = json.loads(c.get('jobber') or '{}')
         if any((j.get(k) or {}).get('id') for k in ('quote', 'job', 'invoice')):
+            continue
+        it = pending_quote_for(conn, c)
+        if it:
+            # The quote for this work is already made - it's waiting on the client, not on a quote.
+            link_pending_quote(conn, c['id'], it, actor)
+            done.append(('linked', c['id'], it['number']))
             continue
         name, cid_j = c.get('client_name') or '', c.get('jobber_client_id') or (j.get('client') or {}).get('id') or ''
         opened = c.get('opened_on') or (c.get('created_at') or '')[:10]
