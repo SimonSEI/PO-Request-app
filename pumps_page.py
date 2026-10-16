@@ -1026,6 +1026,30 @@ async function loadVQuotes(){
       <td><span class="chip ${cls}">${label}</span></td></tr>`; }).join('')}</tbody></table>`
     : '<div class="empty">No quotes here.</div>';
 }
+// Bills marked paid, to undo one by mistake - the last 60 days, or any found by the search.
+function billsPaidRender(paid, q){
+  const box = document.getElementById('billsPaidList');
+  const wasOpen = box.querySelector('details')?.open || !!q;
+  box.innerHTML = `<details ${wasOpen ? 'open' : ''}><summary class="grp" style="cursor:pointer">${q ? 'Paid bills matching the search' : 'Paid in the last 60 days'} (${paid.length}) - undo one marked paid by mistake</summary>
+    <div class="toolbar" style="margin:6px 0"><input type="text" id="billsPaidQ" value="${esc(q)}" placeholder="Search every paid bill: site, job, vendor or invoice #" oninput="liveSearch(billsPaidSearch)" onkeydown="if(event.key==='Enter'){event.preventDefault();clearTimeout(window._lsT);billsPaidSearch()}" style="flex:1"><button class="btn" onclick="clearTimeout(window._lsT);billsPaidSearch()">Search</button>${q ? `<button class="btn s" onclick="document.getElementById('billsPaidQ').value='';billsPaidSearch()">Clear</button>` : ''}</div>
+    ${paid.length ? `<table class="t"><thead><tr><th>Job</th><th>Vendor</th><th>Their invoice</th><th class="num">Amount</th><th>Paid</th><th></th></tr></thead><tbody>
+    ${paid.map(b => `<tr><td><a href="#" onclick="event.preventDefault();openCase(${b.case_id})">${esc(b.client_name || b.title)}</a><div class="note">${esc(b.title)}</div></td>
+      <td>${esc(b.vendor)}</td>
+      <td>${b.bill_doc_id ? `<a target="_blank" href="/pumps/api/docs/${b.bill_doc_id}/file">#${esc(b.bill_number || '?')}</a>` : '#' + esc(b.bill_number || '?')}</td>
+      <td class="num">${b.amount != null ? money(b.amount) : '?'}</td>
+      <td>${esc(b.paid_on)}${b.paid_by ? `<div class="note">by ${esc(b.paid_by)}</div>` : ''}</td>
+      <td><button class="btn s" title="Marked paid by mistake? Put it back on the list" onclick="billsUnpaid([${b.case_id}])">↶ Undo paid</button></td></tr>`).join('')}
+    </tbody></table>` : '<div class="note">No paid bill matches.</div>'}</details>`;
+  const inp = document.getElementById('billsPaidQ');
+  if (q && inp) { inp.focus(); inp.setSelectionRange(q.length, q.length); }
+}
+async function billsPaidSearch(){
+  const q = (document.getElementById('billsPaidQ') || {}).value?.trim() || '';
+  const j = await api('/bills_to_pay/paid_list?q=' + encodeURIComponent(q));
+  if (((document.getElementById('billsPaidQ') || {}).value || '').trim() !== q) return;   // still typing
+  if (!j.success) { toast(j.error, true); return; }
+  billsPaidRender(j.paid || [], q);
+}
 async function loadBills(){
   const j = await api('/bills_to_pay');
   const box = document.getElementById('billsList');
@@ -1041,16 +1065,7 @@ async function loadBills(){
       <td>${b.payable ? '<b class="ok">✓ Yes</b> - ' : 'Not yet - '}${esc(b.why)}${b.asked_at ? `<div class="note">✉ Emailed Christian ${esc(b.asked_at.slice(0, 10))}</div>` : ''}</td>
       <td>${b.payable ? '' : `<button class="btn s" title="Invoiced straight in Jobber? Tie that invoice to this job" onclick="linkInvoice(${b.case_id}).then(loadBills)">Link invoice</button> `}<button class="btn s" onclick="markVendorPaid(${b.case_id}).then(loadBills)">Mark paid</button></td></tr>`; }).join('')}
     </tbody></table>`).join('') || '<div class="empty">No vendor bills waiting to be paid. 🎉</div>';
-  const paid = j.paid || [];
-  document.getElementById('billsPaidList').innerHTML = paid.length ? `<details><summary class="grp" style="cursor:pointer">Paid in the last 60 days (${paid.length}) - undo one marked paid by mistake</summary>
-    <table class="t"><thead><tr><th>Job</th><th>Vendor</th><th>Their invoice</th><th class="num">Amount</th><th>Paid</th><th></th></tr></thead><tbody>
-    ${paid.map(b => `<tr><td><a href="#" onclick="event.preventDefault();openCase(${b.case_id})">${esc(b.client_name || b.title)}</a><div class="note">${esc(b.title)}</div></td>
-      <td>${esc(b.vendor)}</td>
-      <td>${b.bill_doc_id ? `<a target="_blank" href="/pumps/api/docs/${b.bill_doc_id}/file">#${esc(b.bill_number || '?')}</a>` : '#' + esc(b.bill_number || '?')}</td>
-      <td class="num">${b.amount != null ? money(b.amount) : '?'}</td>
-      <td>${esc(b.paid_on)}${b.paid_by ? `<div class="note">by ${esc(b.paid_by)}</div>` : ''}</td>
-      <td><button class="btn s" title="Marked paid by mistake? Put it back on the list" onclick="billsUnpaid([${b.case_id}])">↶ Undo paid</button></td></tr>`).join('')}
-    </tbody></table></details>` : '';
+  billsPaidRender(j.paid || [], '');
   setCount('n-bills', j.vendors.reduce((a, g) => a + g.bills.filter(b => b.payable && !b.asked_at).length, 0), false);
   billsInfo();
 }

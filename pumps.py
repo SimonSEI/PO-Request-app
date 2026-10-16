@@ -7234,10 +7234,12 @@ def bills_to_pay(conn):
     return out
 
 
-def bills_paid_recently(conn, days=60):
+def bills_paid_recently(conn, days=60, q=''):
     """Vendor bills marked paid in the last `days` days, newest first - so one
-    marked paid by mistake can be put back on the list."""
-    since = (_today() - timedelta(days=days)).isoformat()
+    marked paid by mistake can be put back on the list. q: search every paid
+    bill, any date, by site, job, vendor or invoice number."""
+    q = (q or '').strip().lower().lstrip('#')
+    since = '' if q else (_today() - timedelta(days=days)).isoformat()
     out = []
     for c in list_cases(conn, 'all'):
         paid = c.get('vendor_paid_on') or ''
@@ -7247,11 +7249,15 @@ def bills_paid_recently(conn, days=60):
                             "AND status != 'dismissed' ORDER BY id DESC", (c['id'],)).fetchone()
         amount = next((v for v in (c.get('vendor_bill_total'), c.get('vendor_bill_amount'),
                                    bill['total'] if bill else None) if v is not None), None)
-        out.append({'case_id': c['id'], 'vendor': c.get('vendor') or 'Wettech',
-                    'client_name': c.get('client_name') or '', 'title': c.get('title') or '',
-                    'bill_number': c.get('vendor_bill_number') or (bill['doc_number'] if bill else '') or '',
-                    'bill_doc_id': bill['id'] if bill else None, 'amount': amount,
-                    'paid_on': paid, 'paid_by': c.get('vendor_paid_by') or ''})
+        row = {'case_id': c['id'], 'vendor': c.get('vendor') or 'Wettech',
+               'client_name': c.get('client_name') or '', 'title': c.get('title') or '',
+               'bill_number': c.get('vendor_bill_number') or (bill['doc_number'] if bill else '') or '',
+               'bill_doc_id': bill['id'] if bill else None, 'amount': amount,
+               'paid_on': paid, 'paid_by': c.get('vendor_paid_by') or ''}
+        if q and q not in ' '.join(str(row[k]) for k in ('vendor', 'client_name', 'title', 'bill_number')).lower() + \
+                f" {c.get('sei_invoice_number') or ''} {c.get('site') or ''}".lower():
+            continue
+        out.append(row)
     return sorted(out, key=lambda b: (b['paid_on'], b['case_id']), reverse=True)
 
 
@@ -7323,6 +7329,16 @@ def h_doc_site_invoices(actor, doc_id):
     if not res:
         raise ValueError("This bill's report is for one pump station")
     return res
+
+
+@api('/bills_to_pay/paid_list')
+def h_bills_paid_list(actor):
+    """?q= - paid bills to undo: the last 60 days, or every one matching q."""
+    conn = _conn()
+    try:
+        return {'paid': bills_paid_recently(conn, q=request.args.get('q') or '')}
+    finally:
+        conn.close()
 
 
 @api('/bills_to_pay/unpaid', methods=('POST',))

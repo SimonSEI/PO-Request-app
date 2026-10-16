@@ -3936,6 +3936,20 @@ class PumpsTest(unittest.TestCase):
         q = self.upload('q-banyan.pdf')
         self.assertEqual(q['case_id'], waiting, (q, visit, waiting))
 
+    def test_search_paid_bills_to_undo(self):
+        """Oct 2026: a search on the undo list - every paid bill, any date, by site, vendor or invoice #."""
+        self.extracts['b-psq1.pdf'] = extraction('bill', '41101', client='Paidsearch Lakes', subtotal=200)
+        self.extracts['b-psq2.pdf'] = extraction('bill', '41102', client='Paidsearch Pines', subtotal=300)
+        a, b = self.upload('b-psq1.pdf'), self.upload('b-psq2.pdf')
+        self.c.post('/pumps/api/bills_to_pay/paid', json={'case_ids': [a['case_id']], 'paid_on': '2026-10-16'})
+        # Paid long ago: not in the last 60 days, but found by the search.
+        self.c.post('/pumps/api/bills_to_pay/paid', json={'case_ids': [b['case_id']], 'paid_on': '2025-01-10'})
+        found = lambda q='': [x['case_id'] for x in self.c.get(f'/pumps/api/bills_to_pay/paid_list?q={q}').get_json()['paid']]
+        self.assertIn(a['case_id'], found())
+        self.assertNotIn(b['case_id'], found(), 'older than 60 days')
+        self.assertEqual(found('paidsearch pines'), [b['case_id']])
+        self.assertEqual(found('%2341101'), [a['case_id']])
+
     def test_wettech_quotes_tab(self):
         """Oct 2026: a tab with every Wettech quote and where it stands - our Jobber quote not made yet, a draft,
         with the client, approved."""
