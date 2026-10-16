@@ -399,6 +399,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
     <select id="repYear" onchange="loadReports()"></select>
     <input type="text" id="repSearch" placeholder="Find a site…" oninput="clearTimeout(window._rq);window._rq=setTimeout(loadReports,300)" style="width:200px">
     <div class="sp"></div><span class="note" id="repInfo"></span>
+    <a class="btn s" href="/pumps/api/reports/archive.zip" title="Every pump report ever, in one zip: a folder per month, plus a spreadsheet index">⬇ Download all reports</a>
   </div>
   <div class="note" style="margin-bottom:10px">Every service report from Wettech, rebranded (our letterhead, no Wettech details, no technician, not "Stahlman England" as the customer), by month. Each one goes on the site's pump job in Jobber as "&lt;Month&gt; Pump Report" with the PDF, named as Wettech sent it.</div>
   <div id="repBody"></div>
