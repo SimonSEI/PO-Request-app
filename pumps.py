@@ -6464,6 +6464,19 @@ def _seed_homewood_follow_up(conn):
     conn.commit()
 
 
+def _waiting_on_work(c):
+    """An approved job nobody has to chase: the office said no follow-up is
+    needed, or gave a status since the approval - parts ordered, waiting on the
+    vendor, under way (Huntington #6, Oct 2026: "Parts ordered - should be
+    done today" still showed as Schedule)."""
+    if ((c.get('vendor_follow') or {}).get('off_stage') or '') == c.get('stage'):
+        return True
+    st = c.get('job_status') or {}
+    approved = (((c.get('steps') or {}).get('client_approved') or {}).get('at') or '')[:10]
+    return st.get('kind') in ('parts_ordered', 'waiting_vendor', 'scheduled', 'in_progress', 'on_hold') and \
+        (st.get('at') or '')[:10] >= approved
+
+
 def work_queue(conn):
     # A report on an item of its own that belongs to a bill's item: joined first, so neither is a to-do.
     merge_all_report_items(conn)
@@ -6480,7 +6493,7 @@ def work_queue(conn):
         state = (c.get('chase') or {}).get('state')
         if state == 'follow_up' and (c['stage'] != 'scheduled' or c['chase'].get('parts_wait')):
             chase.append(c)
-        elif state == 'waiting' and c['stage'] == 'scheduled':
+        elif c['stage'] == 'scheduled' and (state == 'waiting' or (not c.get('chase') and _waiting_on_work(c))):
             by_stage.setdefault('scheduling_asked', []).append(c)
         else:
             by_stage.setdefault(c['stage'], []).append(c)
@@ -7234,10 +7247,12 @@ def bills_to_pay(conn):
     return out
 
 
-def bills_paid_recently(conn, days=60):
+def bills_paid_recently(conn, days=60, q=''):
     """Vendor bills marked paid in the last `days` days, newest first - so one
-    marked paid by mistake can be put back on the list."""
-    since = (_today() - timedelta(days=days)).isoformat()
+    marked paid by mistake can be put back on the list. q: search every paid
+    bill, any date, by site, job, vendor or invoice number."""
+    q = (q or '').strip().lower().lstrip('#')
+    since = '' if q else (_today() - timedelta(days=days)).isoformat()
     out = []
     for c in list_cases(conn, 'all'):
         paid = c.get('vendor_paid_on') or ''
@@ -7247,11 +7262,15 @@ def bills_paid_recently(conn, days=60):
                             "AND status != 'dismissed' ORDER BY id DESC", (c['id'],)).fetchone()
         amount = next((v for v in (c.get('vendor_bill_total'), c.get('vendor_bill_amount'),
                                    bill['total'] if bill else None) if v is not None), None)
-        out.append({'case_id': c['id'], 'vendor': c.get('vendor') or 'Wettech',
-                    'client_name': c.get('client_name') or '', 'title': c.get('title') or '',
-                    'bill_number': c.get('vendor_bill_number') or (bill['doc_number'] if bill else '') or '',
-                    'bill_doc_id': bill['id'] if bill else None, 'amount': amount,
-                    'paid_on': paid, 'paid_by': c.get('vendor_paid_by') or ''})
+        row = {'case_id': c['id'], 'vendor': c.get('vendor') or 'Wettech',
+               'client_name': c.get('client_name') or '', 'title': c.get('title') or '',
+               'bill_number': c.get('vendor_bill_number') or (bill['doc_number'] if bill else '') or '',
+               'bill_doc_id': bill['id'] if bill else None, 'amount': amount,
+               'paid_on': paid, 'paid_by': c.get('vendor_paid_by') or ''}
+        if q and q not in ' '.join(str(row[k]) for k in ('vendor', 'client_name', 'title', 'bill_number')).lower() + \
+                f" {c.get('sei_invoice_number') or ''} {c.get('site') or ''}".lower():
+            continue
+        out.append(row)
     return sorted(out, key=lambda b: (b['paid_on'], b['case_id']), reverse=True)
 
 
@@ -7323,6 +7342,16 @@ def h_doc_site_invoices(actor, doc_id):
     if not res:
         raise ValueError("This bill's report is for one pump station")
     return res
+
+
+@api('/bills_to_pay/paid_list')
+def h_bills_paid_list(actor):
+    """?q= - paid bills to undo: the last 60 days, or every one matching q."""
+    conn = _conn()
+    try:
+        return {'paid': bills_paid_recently(conn, q=request.args.get('q') or '')}
+    finally:
+        conn.close()
 
 
 @api('/bills_to_pay/unpaid', methods=('POST',))
@@ -7821,12 +7850,14 @@ def set_job_status(conn, case_id, actor, kind, text='', on=''):
             _set_step(conn, case_id, 'scheduled', at=today, by=actor)
     elif kind == 'work_done' and not (c['steps'].get('work_done') or {}).get('at'):
         _set_step(conn, case_id, 'work_done', at=on or today, by=actor)
-    if on and kind in ('parts_ordered', 'waiting_vendor', 'scheduled') and CHASE_PHASES.get(c['stage']):
-        # Nobody needs to chase the vendor before the date they gave.
+    if kind in ('parts_ordered', 'waiting_vendor', 'scheduled') and CHASE_PHASES.get(c['stage']):
+        # Nobody needs to chase the vendor before the date they gave - or, with no
+        # date, for the usual few working days (then it's a follow-up again).
         conn.execute('UPDATE pump_cases SET vendor_follow=? WHERE id=?', (json.dumps(
             {'phase': CHASE_PHASES[c['stage']], 'at': _now_text(), 'by': actor or '',
              'who': _vendor_contact(c.get('vendor') or 'Wettech')[0], 'how': '',
-             'said': f"{JOB_STATUSES[kind]}{': ' + text if text else ''}", 'expect_by': on, 'check_on': ''}), case_id))
+             'said': f"{JOB_STATUSES[kind]}{': ' + text if text else ''}", 'expect_by': on,
+             'check_on': '' if on else _workdays_after(_today(), VENDOR_FOLLOW_DAYS).isoformat()}), case_id))
     when = {'parts_ordered': 'parts due', 'waiting_vendor': 'expected', 'scheduled': 'for',
             'work_done': 'on'}.get(kind, 'on')
     _event(conn, actor, 'status', ' · '.join(x for x in (JOB_STATUSES[kind], text,
