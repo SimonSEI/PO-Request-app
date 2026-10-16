@@ -1023,6 +1023,19 @@ def _filled_by_engine(ctx, table, f):
     return False
 
 
+def _container_value(f, v):
+    """A container field holds text (shown as text), or a file uploaded to this file:
+    {c: its id, name, mime, size}. Any other object (an address, a path) could make the
+    browser load something else, so it is refused."""
+    if not isinstance(v, dict):
+        return v
+    if not (type(v.get('c')) is int and v['c'] > 0):
+        raise ValueError(f'"{f["name"]}" can only hold a file inserted into it')
+    size = v.get('size')
+    return {'c': v['c'], 'name': str(v.get('name') or '')[:255], 'mime': str(v.get('mime') or '')[:255],
+            'size': size if type(size) is int and size >= 0 else 0}
+
+
 def _clean_data(ctx, table, data, tp, creating):
     if not isinstance(data, dict):
         raise ValueError('Record data must be an object')
@@ -1044,6 +1057,10 @@ def _clean_data(ctx, table, data, tp, creating):
             if not (acc == 'view' and creating):
                 raise PermissionError(f'You do not have permission to modify "{f["name"]}"')
         if not (v is None or isinstance(v, (str, int, float, list, dict))):
+            raise ValueError(f'"{f["name"]}" has a value of an unknown kind')
+        if f['type'] == 'container':
+            v = [_container_value(f, x) for x in v] if isinstance(v, list) else _container_value(f, v)
+        elif isinstance(v, dict) or (isinstance(v, list) and any(isinstance(x, (dict, list)) for x in v)):
             raise ValueError(f'"{f["name"]}" has a value of an unknown kind')
         out[k] = v
     if len(json.dumps(out)) > MAX_RECORD_BYTES:
@@ -2365,7 +2382,10 @@ def get_container(file_id, cid):
                          download_name=row['name'], max_age=0)
         # only the browser may keep it, and it asks again (so access is checked) before reusing it
         resp.headers['Cache-Control'] = 'private, no-cache'
-        resp.headers['Content-Security-Policy'] = "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'"
+        resp.headers['Content-Security-Policy'] = ("default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; "
+                                                   "frame-ancestors 'self'")
+        # an interactive PDF is shown in a frame on the FileMaker page; app.py keeps DENY otherwise
+        resp.headers['X-Frame-Options'] = 'SAMEORIGIN'
         return resp
     finally:
         conn.close()
@@ -2441,6 +2461,7 @@ def xlsx_build():
     if not isinstance(rows, list) or len(rows) > 200000:
         return _err('Nothing to save')
     import openpyxl
+    from openpyxl.cell import WriteOnlyCell
     from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE    # control characters Excel cannot store
     wb = openpyxl.Workbook(write_only=True)
     ws = wb.create_sheet(re.sub(r'[\[\]:*?/\\\x00-\x1f]', '', str(body.get('sheet') or 'Sheet1'))[:31] or 'Sheet1')
@@ -2459,8 +2480,17 @@ def xlsx_build():
                         v = datetime.strptime(v, '%Y-%m-%d %H:%M:%S')
                 except ValueError:
                     pass    # not a real number or date (2024-99-99): kept as text
-            out.append(v if isinstance(v, (int, float, date)) else
-                       ILLEGAL_CHARACTERS_RE.sub('', str(v if v is not None else ''))[:32000])
+            if isinstance(v, (int, float, date)):
+                out.append(v)
+                continue
+            s = ILLEGAL_CHARACTERS_RE.sub('', str(v if v is not None else ''))[:32000]
+            if s.startswith('='):
+                # openpyxl would store it as a live formula; FileMaker exports the text
+                cell = WriteOnlyCell(ws, value=s)
+                cell.data_type = 's'
+                out.append(cell)
+            else:
+                out.append(s)
         ws.append(out)
     buf = io.BytesIO()
     wb.save(buf)

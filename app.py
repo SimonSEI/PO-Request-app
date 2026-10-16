@@ -85,7 +85,7 @@ limiter = Limiter(
 @app.after_request
 def set_security_headers(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
-    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers.setdefault('X-Frame-Options', 'DENY')   # FileMaker's PDF containers allow their own page
     response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
     # A page may set its own policy (FileMaker's page allows web viewers); others get this one.

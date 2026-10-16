@@ -235,5 +235,17 @@ eq(v2('Bob', { pn: '2' }), '', 'unique number');
 eq(v2('Bob', { pn: '4111111111111112' }), '', 'unique 16-digit number compares every digit');
 eq(v2('Bob', { pn: '4111111111111111' }), '504', 'unique 16-digit number');
 
+// JSON keys are data: "__proto__" and "constructor" are ordinary keys and never reach Object.prototype
+eq(calc('JSONSetElement ( "{}" ; "__proto__.html" ; "<img src=x>" ; JSONString )'), '{"__proto__":{"html":"<img src=x>"}}', 'JSONSetElement __proto__ path is an own key');
+eq(({}).html, undefined, 'JSONSetElement does not pollute Object.prototype');
+eq(calc('JSONSetElement ( "{}" ; "[\\"__proto__\\"].yy" ; 1 ; JSONNumber )'), '{"__proto__":{"yy":1}}', 'bracket __proto__ path');
+eq(({}).yy, undefined, 'bracket path does not pollute Object.prototype');
+eq(calc('JSONSetElement ( "{}" ; "constructor.prototype.zz" ; 1 ; JSONNumber )'), '{"constructor":{"prototype":{"zz":1}}}', 'constructor.prototype path is data');
+eq(({}).zz, undefined, 'constructor path does not pollute Object.prototype');
+eq(calc('JSONDeleteElement ( "{}" ; "__proto__.hasOwnProperty" )'), '{}', 'JSONDeleteElement of an inherited key does nothing');
+eq(typeof Object.prototype.hasOwnProperty, 'function', 'JSONDeleteElement leaves Object.prototype alone');
+eq(calc('JSONGetElement ( "{}" ; "constructor" )'), '', 'JSONGetElement does not read inherited keys');
+eq(calc('JSONGetElement ( "{\\"__proto__\\":{\\"a\\":5}}" ; "__proto__.a" )'), '5', 'an own __proto__ key in JSON data is read');
+
 console.log(failures ? failures + ' failure(s), ' + passed + ' passed' : 'all ' + passed + ' engine checks pass');
 process.exit(failures ? 1 : 0);

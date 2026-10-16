@@ -955,7 +955,11 @@
     if (cur) outp.push(cur);
     return outp;
   }
-  function jget(root, path) { let v = root; for (const k of path) { if (v == null || typeof v !== 'object') return undefined; v = v[k]; } return v; }
+  // keys are data: only a value's own keys are read or written, so "__proto__" or "constructor"
+  // in a path is an ordinary key (as JSON.parse makes it) and never reaches Object.prototype
+  const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+  const put = (o, k, v) => { if (Array.isArray(o) && typeof k === 'number') o[k] = v; else Object.defineProperty(o, String(k), { value: v, writable: true, enumerable: true, configurable: true }); };
+  function jget(root, path) { let v = root; for (const k of path) { if (v == null || typeof v !== 'object' || !own(v, k)) return undefined; v = v[k]; } return v; }
   function jsonOut(v) {
     if (v === undefined || v === null) return '';
     if (typeof v === 'boolean') return v ? 1 : 0;
@@ -991,8 +995,8 @@
     for (let i = 0; i < path.length; i++) {
       let k = path[i];
       if (k === '+' && Array.isArray(o)) k = o.length;
-      if (i === path.length - 1) { o[k] = val; break; }
-      if (o[k] == null || typeof o[k] !== 'object') o[k] = (typeof path[i + 1] === 'number' || path[i + 1] === '+') ? [] : {};
+      if (i === path.length - 1) { put(o, k, val); break; }
+      if (!own(o, k) || o[k] == null || typeof o[k] !== 'object') put(o, k, (typeof path[i + 1] === 'number' || path[i + 1] === '+') ? [] : {});
       o = o[k];
     }
     return root;
@@ -1009,7 +1013,7 @@
   def('JSONDeleteElement', 'JSONDeleteElement ( json ; keyOrIndexOrPath )', 'JSON', ([j, p]) => {
     const r = jsonParse(j); if (r.err) return r.err;
     const path = jsonPath(p); const parent = jget(r.v, path.slice(0, -1)); const k = path[path.length - 1];
-    if (Array.isArray(parent) && typeof k === 'number') parent.splice(k, 1); else if (parent && typeof parent === 'object') delete parent[k];
+    if (Array.isArray(parent) && typeof k === 'number') parent.splice(k, 1); else if (parent && typeof parent === 'object' && own(parent, k)) delete parent[k];
     return JSON.stringify(r.v);
   });
   def('JSONFormatElements', 'JSONFormatElements ( json )', 'JSON', ([j]) => { const r = jsonParse(j); if (r.err) return r.err; return r.v === undefined ? '' : JSON.stringify(r.v, null, '\t'); });

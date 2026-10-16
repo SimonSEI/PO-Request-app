@@ -104,7 +104,8 @@ open the file.
   (layout, object and file), button actions, a debugger with breakpoints, and a Data Viewer.
   Insert From URL is fetched by the host, refuses private or local addresses (on every
   redirect too) and gives up after 30 seconds. Spaces in the URL are sent as `%20`.
-  `FileMaker.PerformScript` works from web viewer HTML.
+  `FileMaker.PerformScript` works from custom HTML in a web viewer whose "Allow JavaScript to
+  perform FileMaker scripts" option is on (off by default, as in FileMaker).
 - **Data in and out:** import from CSV, tab, Excel `.xlsx`, FileMaker XML and JSON (add,
   update in found set, update matching, or create a new table). Export to CSV, tab, Excel,
   FileMaker XML, JSON, HTML and merge. Save as Excel/PDF, and convert a spreadsheet into a

@@ -10,7 +10,7 @@
   function h(tag, attrs, ...kids) {
     const el = document.createElement(tag);
     if (attrs) {
-      for (const k in attrs) {
+      for (const k of Object.keys(attrs)) {
         const v = attrs[k];
         if (v == null || v === false) continue;
         if (k === 'class') el.className = v;
@@ -295,7 +295,7 @@
       const title = h('div', { class: 'fm-modal-title' }, h('span', { text: o.title || 'FileMaker' }));
       const content = h('div', { class: 'fm-modal-body' });
       if (o.body instanceof Node) content.appendChild(o.body);
-      else if (o.html != null) content.innerHTML = o.html;
+      else if (Object.prototype.hasOwnProperty.call(o, 'html') && o.html != null) content.innerHTML = o.html;
       else if (o.message != null) content.appendChild(h('div', { class: 'fm-msg' }, o.icon ? h('div', { class: 'fm-msg-icon', html: FM.icon(o.icon, 34) }) : null, h('div', { class: 'fm-msg-text', text: o.message })));
       const foot = h('div', { class: 'fm-modal-foot' });
       if (o.footLeft) foot.appendChild(h('div', { class: 'fm-foot-left' }, o.footLeft));
