@@ -2508,6 +2508,18 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
                 case_id = refile_document(conn, dup['id'], actor)
                 conn.commit()
                 return {'doc_id': dup['id'], 'case_id': case_id, 'kind': 'bill', 'review': '', 'refiled': True}
+            done_on = on and (json.loads(conn.execute('SELECT steps FROM pump_cases WHERE id=?', (dup['case_id'],))
+                                         .fetchone()[0] or '{}').get('work_done') or {}).get('at')
+            if prev['kind'] == 'quote' and on and (on['category'] in ('maintenance', 'inspection') or done_on) and \
+                    prev['status'] != 'dismissed' and not pj.get('quote_id'):
+                # A quote sent again that sits on the wrong item (Banyan Bay, Oct 2026: on the
+                # report's maintenance visit, not the item waiting on it): moved where it fits now.
+                best, _ = _find_case_for(conn, dict(conn.execute('SELECT * FROM pump_docs WHERE id=?',
+                                                                  (dup['id'],)).fetchone()))
+                if best and best != dup['case_id']:
+                    case_id = refile_document(conn, dup['id'], actor)
+                    conn.commit()
+                    return {'doc_id': dup['id'], 'case_id': case_id, 'kind': 'quote', 'review': '', 'refiled': True}
             if prev['kind'] in ('quote', 'bill') and prev['status'] != 'dismissed' and not edited and \
                     not pj.get('invoice_id') and (prev['kind'] == 'quote' or not pj.get('quote_id')):
                 # Sent again: read it again with today's reader (it may have

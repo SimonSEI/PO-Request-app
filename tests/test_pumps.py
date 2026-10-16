@@ -3936,6 +3936,28 @@ class PumpsTest(unittest.TestCase):
         q = self.upload('q-banyan.pdf')
         self.assertEqual(q['case_id'], waiting, (q, visit, waiting))
 
+    def test_resent_quote_moves_off_the_report_visit(self):
+        """Banyan Bay (Oct 2026): the quote landed on the report's maintenance visit; forwarding it again only
+        read it again, on the same wrong item. Sent again, it now moves to the item waiting on it."""
+        conn = P._conn()
+        visit = P.create_case(conn, {'title': 'Irrigation Pump System Report - Banyan Resend', 'category': 'maintenance',
+                                     'client_name': 'Banyan Resend', 'vendor': 'Wettech', 'opened_on': '2026-10-16'}, 'x')
+        P._set_step(conn, visit, 'work_done', at='2026-10-16')
+        conn.commit()
+        conn.close()
+        self.extracts['q-banyan-resend.pdf'] = extraction('quote', '', client='Banyan Resend', subtotal=1150)
+        q = self.upload('q-banyan-resend.pdf', case_id=visit)
+        self.assertEqual(q['case_id'], visit)
+        conn = P._conn()
+        waiting = P.create_case(conn, {'title': 'Banyan Resend - COMMENTS: Input line reactor bad', 'category': 'repair',
+                                       'client_name': 'Banyan Resend', 'vendor': 'Wettech', 'opened_on': '2026-10-16'}, 'x')
+        conn.commit()
+        conn.close()
+        again = self.upload('q-banyan-resend.pdf')
+        self.assertEqual(again['case_id'], waiting, again)
+        self.assertEqual(P._conn().execute('SELECT case_id FROM pump_docs WHERE id=?', (q['doc_id'],)).fetchone()[0],
+                         waiting)
+
     def test_jobber_sign_in_refused_shows_reconnect(self):
         """Oct 2026: with the disk full, Jobber's new sign-in couldn't be saved; the old one was refused (401) on
         every call while the page still said "connected", with no way to reconnect. A new sign-in that can't be
