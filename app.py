@@ -18,6 +18,7 @@ from email.mime.multipart import MIMEMultipart
 from markupsafe import Markup
 import imaplib
 import email
+import email.utils
 from email.parser import Parser
 from email.header import decode_header
 import base64
@@ -29,6 +30,7 @@ import bisect
 from collections import defaultdict
 import threading
 import requests as http_requests  # aliased to avoid conflict with flask.request
+import shared_mail  # PO mailbox helpers shared with the Pumps app
 
 # Microsoft Graph API (OAuth2)
 try:
@@ -245,14 +247,6 @@ CHRISTIAN_EMAIL = os.environ.get('CHRISTIAN_EMAIL', '')
 # Pumps App: shared secret for the OpenClaw autonomous-intake webhook
 # (/api/openclaw/pumps). Requests must send "Authorization: Bearer <key>".
 OPENCLAW_API_KEY = os.environ.get('OPENCLAW_API_KEY', '')
-
-# Work Orders App (Features Coming Soon): when a technician flags a work order
-# as needing a quote, the app can ping OpenClaw to draft a quote for the client.
-# This pipeline is fully wired but OFF by default ("ready to turn on") — set
-# WORKORDERS_OPENCLAW_QUOTES=true (and OPENCLAW_API_KEY + OPENCLAW_QUOTE_URL) to
-# activate it.
-WORKORDERS_OPENCLAW_QUOTES_ENABLED = os.environ.get('WORKORDERS_OPENCLAW_QUOTES', '').lower() in ('1', 'true', 'yes', 'on')
-OPENCLAW_QUOTE_URL = os.environ.get('OPENCLAW_QUOTE_URL', 'https://api.openclaw.ai/v1/quotes/draft')
 
 # IMAP configuration based on provider
 # Allow explicit override via env var, otherwise auto-detect
@@ -559,109 +553,10 @@ Return ONLY valid JSON, no explanation:
     return result
 
 
-def _fetch_emails_for_vi_scan(log_table='vendor_invoice_email_log', extensions=('.pdf',), since=None):
-    """
-    Fetch emails for vendor invoice scanning using a SEPARATE log table
-    (vendor_invoice_email_log) so it runs independently of the PO scanner.
-    Pass log_table='pump_email_scan_log' to dedupe against the Pumps scanner's
-    own history instead.
-    extensions: attachment types worth fetching the email for (Pumps also
-    wants Word reports). since: 'YYYY-MM-DD' - skip mail received before it.
-    Returns {'emails': [(uid, msg), ...], 'diagnostics': {...}, 'source': '...'}
-    """
-    if log_table not in ('vendor_invoice_email_log', 'pump_email_scan_log'):
-        raise ValueError(f'Unsupported scan log table: {log_table}')
-    if not PO_EMAIL_ADDRESS:
-        return {'emails': [], 'diagnostics': {'error': 'PO_EMAIL_ADDRESS not configured'}, 'source': 'none'}
-
-    # Load already-scanned UIDs from the scanner's own log
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute(f"SELECT email_uid FROM {log_table}")
-    scanned_uids = {r[0] for r in c.fetchall()}
-    conn.close()
-
-    emails_out = []
-    diagnostics = {'scanned_uids': len(scanned_uids)}
-    exts = tuple(e.lower() for e in extensions)
-    wants_pdf_type = '.pdf' in exts
-
-    def _wanted(name, ctype=''):
-        return (name or '').lower().endswith(exts) or (wants_pdf_type and ctype == 'application/pdf')
-
-    if MS_GRAPH_ENABLED:
-        try:
-            token = _get_graph_access_token()
-            headers = {'Authorization': f'Bearer {token}'}
-            url = f'https://graph.microsoft.com/v1.0/users/{PO_EMAIL_ADDRESS}/messages'
-            graph_filter = 'hasAttachments eq true'
-            if since:
-                # Graph wants the $orderby field (receivedDateTime) first in $filter.
-                graph_filter = f'receivedDateTime ge {since}T00:00:00Z and hasAttachments eq true'
-            params = {
-                '$filter': graph_filter,
-                '$top': 100,
-                '$select': 'id,subject,from,receivedDateTime,hasAttachments',
-                '$expand': 'attachments($select=id,name,contentType,size)',
-                '$orderby': 'receivedDateTime desc',
-            }
-            while url:
-                resp = http_requests.get(url, headers=headers, params=params, timeout=30)
-                resp.raise_for_status()
-                data = resp.json()
-                for msg_data in data.get('value', []):
-                    msg_id = msg_data['id']
-                    if msg_id in scanned_uids:
-                        continue
-                    atts = msg_data.get('attachments', [])
-                    if any(_wanted(a.get('name', ''), a.get('contentType', '')) for a in atts):
-                        emails_out.append((msg_id, msg_data))
-                url = data.get('@odata.nextLink')
-                params = None
-            diagnostics['source'] = 'graph_api'
-            diagnostics['found'] = len(emails_out)
-        except Exception as e:
-            diagnostics['error'] = str(e)
-            diagnostics['source'] = 'graph_api'
-    elif PO_EMAIL_PASSWORD:
-        try:
-            mail = imaplib.IMAP4_SSL(PO_EMAIL_IMAP_SERVER, PO_EMAIL_IMAP_PORT)
-            mail.login(PO_EMAIL_ADDRESS, PO_EMAIL_PASSWORD)
-            mail.select('INBOX')
-            if since:
-                imap_since = datetime.strptime(since, '%Y-%m-%d').strftime('%d-%b-%Y')
-                status, uid_data = mail.uid('search', None, 'SINCE', imap_since)
-            else:
-                status, uid_data = mail.uid('search', None, 'ALL')
-            if status == 'OK':
-                for uid in reversed(uid_data[0].split()):
-                    uid_str = uid.decode()
-                    if uid_str in scanned_uids:
-                        continue
-                    status2, msg_data = mail.uid('fetch', uid, '(RFC822)')
-                    if status2 == 'OK':
-                        msg = email.message_from_bytes(msg_data[0][1])
-                        # Only bother with emails that have the attachments we want
-                        has_pdf = any(
-                            (p.get_content_disposition() == 'attachment' or
-                             p.get_content_maintype() == 'application') and
-                            _wanted(p.get_filename() or '')
-                            for p in msg.walk()
-                        )
-                        if has_pdf:
-                            emails_out.append((uid_str, msg))
-            mail.close()
-            mail.logout()
-            diagnostics['source'] = 'imap'
-            diagnostics['found'] = len(emails_out)
-        except Exception as e:
-            diagnostics['error'] = str(e)
-            diagnostics['source'] = 'imap'
-    else:
-        diagnostics['error'] = 'No email credentials configured'
-        diagnostics['source'] = 'none'
-
-    return {'emails': emails_out, 'diagnostics': diagnostics, 'source': diagnostics.get('source', 'none')}
+def _fetch_emails_for_vi_scan(log_table='vendor_invoice_email_log', extensions=('.pdf',), since=None, plain_since=None):
+    """New emails for the vendor invoice (or Pumps) scanner - see shared_mail.fetch_scan_emails."""
+    return shared_mail.fetch_scan_emails(DB_PATH, log_table=log_table, extensions=extensions, since=since,
+                                         plain_since=plain_since)
 
 
 def lookup_jobber_invoices_for_sei_proposal(sei_proposal_number):
@@ -956,18 +851,7 @@ class GraphEmailMessage:
         return iter([])
 
 
-def _get_graph_access_token():
-    """Get OAuth2 access token using Client Credentials flow via MSAL"""
-    authority = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
-    app = msal.ConfidentialClientApplication(
-        MS_CLIENT_ID,
-        authority=authority,
-        client_credential=MS_CLIENT_SECRET,
-    )
-    result = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
-    if "access_token" in result:
-        return result["access_token"]
-    raise Exception(f"Graph auth failed: {result.get('error_description', result.get('error', 'Unknown'))}")
+_get_graph_access_token = shared_mail.graph_access_token
 
 
 def fetch_emails_from_graph():
@@ -1092,42 +976,7 @@ def fetch_emails_from_graph():
         return {'emails': [], 'diagnostics': diagnostics}
 
 
-def extract_attachments_from_graph_message(msg_id, token=None):
-    """
-    Download attachments from a Graph API message.
-    Returns list of (filename, file_content_bytes) tuples - same format as extract_attachments_from_email.
-    """
-    if token is None:
-        token = _get_graph_access_token()
-
-    headers = {'Authorization': f'Bearer {token}'}
-    url = f"https://graph.microsoft.com/v1.0/users/{PO_EMAIL_ADDRESS}/messages/{msg_id}/attachments"
-    response = http_requests.get(url, headers=headers)
-    response.raise_for_status()
-
-    attachments = []
-    for att in response.json().get('value', []):
-        if att.get('@odata.type') == '#microsoft.graph.fileAttachment':
-            filename = att.get('name', 'unnamed')
-            content_bytes = base64.b64decode(att['contentBytes'])
-            attachments.append((filename, content_bytes))
-            print(f"    📎 Downloaded attachment: {filename} ({len(content_bytes)} bytes)")
-        elif att.get('@odata.type') == '#microsoft.graph.itemAttachment':
-            # Forwarded email attachment - check for nested file attachments
-            item_att_url = f"{url}/{att['id']}?$expand=microsoft.graph.itemAttachment/item"
-            item_resp = http_requests.get(item_att_url, headers=headers)
-            if item_resp.ok:
-                item_data = item_resp.json()
-                nested_item = item_data.get('item', {})
-                if nested_item.get('attachments'):
-                    for nested_att in nested_item['attachments']:
-                        if nested_att.get('@odata.type') == '#microsoft.graph.fileAttachment':
-                            filename = nested_att.get('name', 'unnamed')
-                            content_bytes = base64.b64decode(nested_att['contentBytes'])
-                            attachments.append((filename, content_bytes))
-                            print(f"    📎 Downloaded nested attachment: {filename} ({len(content_bytes)} bytes)")
-
-    return attachments
+extract_attachments_from_graph_message = shared_mail.graph_attachments
 
 
 def fetch_emails():
@@ -1305,35 +1154,7 @@ def fetch_emails_from_imap():
         traceback.print_exc()
         return {'emails': [], 'diagnostics': diagnostics}
 
-def extract_attachments_from_email(msg):
-    """
-    Extract attachments from an email message
-    Returns list of (filename, file_content) tuples
-    """
-    attachments = []
-    try:
-        for part in msg.walk():
-            if part.get_content_disposition() == 'attachment':
-                filename = part.get_filename()
-                if filename:
-                    # Decode filename if needed
-                    if isinstance(filename, str):
-                        # Handle encoded-word format
-                        try:
-                            decoded_parts = decode_header(filename)
-                            filename = ''.join([part.decode(enc or 'utf-8') if isinstance(part, bytes) else part
-                                               for part, enc in decoded_parts])
-                        except:
-                            pass
-
-                    file_content = part.get_payload(decode=True)
-                    attachments.append((filename, file_content))
-                    print(f"  📎 Extracted attachment: {filename}")
-
-        return attachments
-    except Exception as e:
-        print(f"✗ Error extracting attachments: {e}")
-        return []
+extract_attachments_from_email = shared_mail.email_attachments
 
 def process_email_attachments(msg_uid, msg, attachments):
     """
@@ -2454,72 +2275,6 @@ def init_db():
                   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                   updated_at TEXT)''')
 
-    # ── Work Orders App (Features Coming Soon) ───────────────────────────────
-    # Communities the office sets up; each has its own property manager(s).
-    c.execute('''CREATE TABLE IF NOT EXISTS wo_communities (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  name TEXT NOT NULL,
-                  address TEXT DEFAULT '',
-                  city TEXT DEFAULT '',
-                  state TEXT DEFAULT '',
-                  zip TEXT DEFAULT '',
-                  center_lat REAL,
-                  center_lng REAL,
-                  notes TEXT DEFAULT '',
-                  active INTEGER DEFAULT 1,
-                  created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
-
-    # Property managers are users (role='property_manager'); this links each
-    # manager to one or more communities they oversee.
-    c.execute('''CREATE TABLE IF NOT EXISTS wo_pm_communities (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER NOT NULL,
-                  community_id INTEGER NOT NULL,
-                  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                  UNIQUE(user_id, community_id))''')
-
-    # Homeowner accounts for the public request portal — saved so they don't
-    # have to re-enter their name/email/phone on every request.
-    c.execute('''CREATE TABLE IF NOT EXISTS wo_homeowners (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  full_name TEXT NOT NULL,
-                  email TEXT UNIQUE NOT NULL,
-                  phone TEXT DEFAULT '',
-                  password TEXT NOT NULL,
-                  community_id INTEGER,
-                  address TEXT DEFAULT '',
-                  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                  last_login TEXT)''')
-
-    # The work orders themselves, including the map pin the homeowner drops.
-    c.execute('''CREATE TABLE IF NOT EXISTS wo_work_orders (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  homeowner_id INTEGER NOT NULL,
-                  community_id INTEGER,
-                  problem TEXT NOT NULL,
-                  category TEXT DEFAULT '',
-                  priority TEXT DEFAULT 'normal',
-                  status TEXT DEFAULT 'pending',
-                  pin_lat REAL,
-                  pin_lng REAL,
-                  pin_note TEXT DEFAULT '',
-                  tech_username TEXT,
-                  tech_notes TEXT DEFAULT '',
-                  quote_status TEXT DEFAULT '',
-                  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                  updated_at TEXT)''')
-
-    # Quote-draft requests handed to OpenClaw when a tech flags "needs quote".
-    c.execute('''CREATE TABLE IF NOT EXISTS wo_quote_requests (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  work_order_id INTEGER NOT NULL,
-                  status TEXT DEFAULT 'ready',
-                  draft_json TEXT,
-                  openclaw_result TEXT,
-                  error TEXT,
-                  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                  updated_at TEXT)''')
-
     conn.commit()
     conn.close()
     print("✓ Database initialized successfully")
@@ -3320,6 +3075,9 @@ def fuzzy_match_job():
 
 @app.errorhandler(CSRFError)
 def csrf_error(e):
+    if '/api/' in request.path:
+        # A page's save: a redirect to the login page reads as "Server error 200" there.
+        return jsonify({'success': False, 'error': 'This page was open too long - reload it and try again.'}), 400
     flash('Your session expired. Please try signing in again.')
     return redirect(url_for('login'))
 
@@ -3427,6 +3185,7 @@ def dashboard():
                                  cashflow_ok=_cashflow_allowed(),
                                  timeoff_ok=timeoff_allowed(),
                                  pumps_ok=pumps_allowed(),
+                                 receivables_ok=receivables_allowed(),
                                  filemaker_ok=filemaker_allowed())
 
 @app.route('/office_admin')
@@ -9155,6 +8914,10 @@ DASHBOARD_MENU_TEMPLATE = '''
         .soon-badge{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;
             background:#FEF3C7;color:#92400E;border:1px solid #FDE68A;padding:2px 8px;border-radius:100px;
             vertical-align:middle;margin-left:6px;}
+        .app-card.card-disabled{cursor:default;opacity:.7;}
+        .app-card.card-disabled:hover{transform:none;box-shadow:var(--shadow-md);border-color:var(--border);}
+        .app-card.card-disabled:hover::before{opacity:0;}
+        .app-card.card-disabled .card-cta{background:#E2E8F0;color:#64748B;box-shadow:none;cursor:not-allowed;}
 
         /* ── FOOTER ── */
         footer{margin-top:auto;text-align:center;padding:20px;
@@ -9254,12 +9017,12 @@ DASHBOARD_MENU_TEMPLATE = '''
         </a>
         {% endif %}
 
-        {% if role == 'property_manager' or role == 'technician' %}
-        <a class="app-card card-green" href="{{ url_for('workorders_app') }}">
-            <div class="card-icon-wrap">🛠️</div>
-            <div class="card-title">Work Orders</div>
-            <div class="card-desc">{% if role == 'technician' %}See pending homeowner work orders on a satellite map, add your notes, and close them out or request a quote.{% else %}Track every homeowner work order across your communities — see status, location pins, and technician notes in real time.{% endif %}</div>
-            <button class="card-cta">Open Work Orders →</button>
+        {% if receivables_ok %}
+        <a class="app-card card-blue" href="{{ url_for('receivables.page') }}">
+            <div class="card-icon-wrap">💵</div>
+            <div class="card-title">Receivables</div>
+            <div class="card-desc">Upload the QuickBooks A/R sheet: past-due follow-ups sent with invoices and install documents, replies read, retainage tracked by job, and lien deadlines with the Notice of Nonpayment.</div>
+            <button class="card-cta">Open Receivables →</button>
         </a>
         {% endif %}
 
@@ -9299,15 +9062,6 @@ DASHBOARD_MENU_TEMPLATE = '''
         </a>
         {% endif %}
 
-        {% if timeoff_ok %}
-        <a class="app-card card-amber" href="{{ url_for('timeoff.page') }}">
-            <div class="card-icon-wrap">🗓️</div>
-            <div class="card-title">Time-Off Log</div>
-            <div class="card-desc">Approve or deny technician time-off requests, see sick call-outs, and check who's off on any day.</div>
-            <button class="card-cta">Open Time-Off →</button>
-        </a>
-        {% endif %}
-
         {% if pumps_ok %}
         <a class="app-card card-teal" href="{{ url_for('pumps.page') }}">
             <div class="card-icon-wrap">⚙️</div>
@@ -9328,7 +9082,7 @@ DASHBOARD_MENU_TEMPLATE = '''
 
     </div>
 
-    {% if role == 'office' or filemaker_ok %}
+    {% if role == 'office' or timeoff_ok or filemaker_ok %}
     <details class="folder">
         <summary>
             <span class="folder-icon">📁</span>
@@ -9347,19 +9101,28 @@ DASHBOARD_MENU_TEMPLATE = '''
             {% endif %}
 
             {% if role == 'office' %}
-            <a class="app-card card-green" href="{{ url_for('workorders_app') }}">
-                <div class="card-icon-wrap">🛠️</div>
-                <div class="card-title">Work Orders <span class="soon-badge">Coming Soon</span></div>
-                <div class="card-desc">Homeowners submit requests and pin the problem on a satellite map; property managers track status across communities and techs close them out or trigger an OpenClaw quote.</div>
-                <button class="card-cta">Open Work Orders →</button>
-            </a>
-
             <a class="app-card card-teal" href="{{ url_for('installation') }}">
                 <div class="card-icon-wrap">🏗️</div>
                 <div class="card-title">Installation <span class="soon-badge">Coming Soon</span></div>
                 <div class="card-desc">Manage install jobs, site plans, crew scheduling, daily logs, and job costing all in one place.</div>
                 <button class="card-cta">Open Installation →</button>
             </a>
+
+            <div class="app-card card-green card-disabled" aria-disabled="true">
+                <div class="card-icon-wrap">🛠️</div>
+                <div class="card-title">Work Orders <span class="soon-badge">Coming Soon</span></div>
+                <div class="card-desc">Community work orders from the inbox: forwarded to the techs, listed on the Jobber work order visit, tech notes cleaned up, quotes started and the manager kept up to date.</div>
+                <button class="card-cta" type="button" disabled>Not available yet</button>
+            </div>
+            {% endif %}
+
+            {% if timeoff_ok %}
+            <div class="app-card card-amber card-disabled" aria-disabled="true">
+                <div class="card-icon-wrap">🗓️</div>
+                <div class="card-title">Time-Off Log <span class="soon-badge">Coming Soon</span></div>
+                <div class="card-desc">Approve or deny technician time-off requests, see sick call-outs, and check who's off on any day.</div>
+                <button class="card-cta" type="button" disabled>Not available yet</button>
+            </div>
             {% endif %}
 
         </div>
@@ -19305,6 +19068,17 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
         .btn-delete-community:hover {
             background: #c82333;
         }
+        .btn-archive-community, .btn-restore-community {
+            padding: 8px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .btn-archive-community { background: #F1F5F9; color: #334155; border: 1.5px solid #CBD5E1; }
+        .btn-archive-community:hover { background: #475569; color: #fff; border-color: #475569; }
+        .btn-restore-community { background: #DCFCE7; color: #166534; border: 1.5px solid #BBF7D0; }
+        .btn-restore-community:hover { background: #16A34A; color: #fff; border-color: #16A34A; }
         input[type="text"] {
             width: 100%;
             padding: 10px;
@@ -19943,6 +19717,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
             <button class="tab-button" onclick="switchTab('recent')">🕐 Recent Technician Activity</button>
             <button class="tab-button" onclick="switchTab('drafts')">📝 Active Drafts</button>
             <button class="tab-button" onclick="switchTab('trash')">🗑️ Deleted Entries</button>
+            <button class="tab-button" onclick="switchTab('archived')">📦 Archived Communities ({{ archived_communities|length }})</button>
         </div>
 
         <!-- Manage Communities Tab -->
@@ -20068,12 +19843,11 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                                 </div>
                                 {% if community.active %}
                                     <form method="POST" action="{{ url_for('community_billing_office') }}" style="display: inline;"
-                                          onsubmit="return confirm('Are you sure you want to deactivate this community?');">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                        <input type="hidden" name="action" value="delete">
+                                          onsubmit="return confirm('Archive this community? It will be hidden from technicians and moved to the Archived Communities tab. All of its data is kept and it can be restored at any time.');">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <input type="hidden" name="action" value="archive">
                                         <input type="hidden" name="community_id" value="{{ community.id }}">
-                                        <button type="submit" class="btn-delete-community">Deactivate</button>
+                                        <button type="submit" class="btn-archive-community">📦 Archive</button>
                                     </form>
                                 {% endif %}
                             </div>
@@ -20279,7 +20053,59 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
                 {% endfor %}
             {% else %}
                 <div class="no-results">
-                    <p>No communities yet. Create your first one above!</p>
+                    <p>No active communities. Create one above{% if archived_communities %} or restore one from the Archived Communities tab{% endif %}.</p>
+                </div>
+            {% endif %}
+        </div>
+
+        <!-- Archived Communities Tab -->
+        <div id="archived" class="tab-content">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="alert alert-{{ 'success' if category == 'success' else 'error' }}">
+                            {{ message }}
+                        </div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+            <p style="color:#666;font-size:13px;margin:0 0 15px;">Archived communities are hidden from technicians and from Review Submissions. Their clocks, addresses, pricing and past submissions are kept. Restore a community to make it active again.</p>
+            {% if archived_communities %}
+                <h3 style="color: #333; margin-bottom: 15px;">Archived Communities ({{ archived_communities|length }})</h3>
+                {% for community in archived_communities %}
+                    <div class="community-card">
+                        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; gap: 10px; flex-wrap: wrap;">
+                            <div class="community-info">
+                                <div class="community-name">{{ community.name }}</div>
+                                <div class="community-meta">
+                                    Created: {{ community.created_at|truncate(10) }}
+                                    <span style="color: #6c757d; font-weight: 600;">● Archived</span>
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                <form method="POST" action="{{ url_for('community_billing_office') }}" style="display: inline;">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <input type="hidden" name="action" value="unarchive">
+                                    <input type="hidden" name="return_tab" value="archived">
+                                    <input type="hidden" name="community_id" value="{{ community.id }}">
+                                    <button type="submit" class="btn-restore-community">↩ Restore</button>
+                                </form>
+                                <form method="POST" action="{{ url_for('community_billing_office') }}" style="display: inline;"
+                                      data-confirm="Permanently delete {{ community.name }}? This removes the community and ALL of its submissions, clocks, addresses and pricing. This CANNOT be undone."
+                                      onsubmit="return confirm(this.dataset.confirm);">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <input type="hidden" name="action" value="delete">
+                                    <input type="hidden" name="return_tab" value="archived">
+                                    <input type="hidden" name="community_id" value="{{ community.id }}">
+                                    <button type="submit" class="btn-delete-community">🗑 Delete Permanently</button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                {% endfor %}
+            {% else %}
+                <div class="no-results">
+                    <p>No archived communities.</p>
                 </div>
             {% endif %}
         </div>
@@ -20367,7 +20193,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
     </div>
 
     <script>
-        function switchTab(tabName) {
+        function switchTab(tabName, btn) {
             // Hide all tabs
             document.querySelectorAll('.tab-content').forEach(tab => {
                 tab.classList.remove('active');
@@ -20378,7 +20204,7 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
 
             // Show selected tab
             document.getElementById(tabName).classList.add('active');
-            event.target.classList.add('active');
+            (btn || event.target).classList.add('active');
 
             if (tabName === 'recent') loadRecentSubmissions();
             if (tabName === 'drafts') loadActiveDrafts();
@@ -23311,6 +23137,15 @@ COMMUNITY_BILLING_OFFICE_TEMPLATE = '''
          This runs after both script blocks so all functions are already defined, and after
          the DOM so all #comm-clocks-{id} elements already exist. -->
     <script>
+        {% if initial_tab %}
+        (function() {
+            var tab = {{ initial_tab|tojson }};
+            var btn = Array.prototype.find.call(document.querySelectorAll('.tab-button'), function(b) {
+                return (b.getAttribute('onclick') || '').indexOf("switchTab('" + tab + "')") !== -1;
+            });
+            if (btn && document.getElementById(tab)) switchTab(tab, btn);
+        })();
+        {% endif %}
         {% for community in all_communities %}
         {% if community.active and community.name != 'Verona Walk HOA' and community.num_clocks > 0 %}
         loadCommunityClockAddresses({{ community.id }});
@@ -25293,6 +25128,24 @@ def community_billing_office():
             except Exception as e:
                 flash(f'Error deleting community: {str(e)}', 'error')
 
+        elif action in ('archive', 'unarchive'):
+            community_id = request.form.get('community_id')
+            c.execute("SELECT name FROM communities WHERE id = ?", (community_id,))
+            community = c.fetchone()
+            if not community:
+                flash('Community not found', 'error')
+            else:
+                archiving = action == 'archive'
+                c.execute("UPDATE communities SET active = ? WHERE id = ?", (0 if archiving else 1, community_id))
+                conn.commit()
+                if archiving:
+                    flash(f'Community "{community[0]}" archived. Find it under the Archived Communities tab.', 'success')
+                else:
+                    flash(f'Community "{community[0]}" restored to active communities', 'success')
+
+        conn.close()
+        return redirect(url_for('community_billing_office', tab=request.form.get('return_tab') or None))
+
     # Get list of active communities only (with pricing status)
     c.execute("""
         SELECT c.id, c.name, c.created_at,
@@ -25312,13 +25165,17 @@ def community_billing_office():
         ORDER BY c.name
     """)
     all_communities = [{'id': row[0], 'name': row[1], 'created_at': row[2], 'active': row[3], 'num_clocks': row[4], 'has_pricing': bool(row[5])} for row in c.fetchall()]
+    archived_communities = [comm for comm in all_communities if not comm['active']]
+    all_communities = [comm for comm in all_communities if comm['active']]
 
     conn.close()
 
     return render_template_string(COMMUNITY_BILLING_OFFICE_TEMPLATE,
                                  username=session.get('username'),
                                  communities=communities,
-                                 all_communities=all_communities)
+                                 all_communities=all_communities,
+                                 archived_communities=archived_communities,
+                                 initial_tab=request.args.get('tab', ''))
 
 @app.route('/community_billing_office_data', methods=['POST'])
 def community_billing_office_data():
@@ -35448,1240 +35305,6 @@ def snowbirds_clients():
     return redirect(f"{SNOWBIRDS_CLIENTS_URL}/?sso={_snowbirds_ticket()}")
 
 
-# ============================================================
-# Work Orders App — homeowner requests, satellite map pins,
-# property-manager oversight, technician closeout + OpenClaw
-# quote drafting (Features Coming Soon)
-# ============================================================
-
-WO_STATUSES = ['pending', 'in_progress', 'needs_quote', 'completed']
-
-
-def _wo_office():
-    return 'username' in session and session.get('role') == 'office'
-
-
-def _wo_pm():
-    return 'username' in session and session.get('role') == 'property_manager'
-
-
-def _wo_tech():
-    return 'username' in session and session.get('role') == 'technician'
-
-
-def wo_pm_community_ids(user_id):
-    """Communities a property manager oversees."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT community_id FROM wo_pm_communities WHERE user_id=?", (user_id,))
-    ids = [r[0] for r in c.fetchall()]
-    conn.close()
-    return ids
-
-
-def wo_current_user_id():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT id FROM users WHERE username=?", (session.get('username'),))
-    row = c.fetchone()
-    conn.close()
-    return row[0] if row else None
-
-
-def wo_load_full(work_order_id):
-    """Load one work order joined with its homeowner + community as a dict."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''SELECT w.id, w.problem, w.category, w.priority, w.status,
-                        w.pin_lat, w.pin_lng, w.pin_note, w.tech_username, w.tech_notes,
-                        w.quote_status, w.created_at, w.updated_at,
-                        h.full_name, h.email, h.phone, h.address,
-                        c2.name, c2.center_lat, c2.center_lng,
-                        w.community_id, w.homeowner_id
-                 FROM wo_work_orders w
-                 LEFT JOIN wo_homeowners h ON h.id = w.homeowner_id
-                 LEFT JOIN wo_communities c2 ON c2.id = w.community_id
-                 WHERE w.id=?''', (work_order_id,))
-    r = c.fetchone()
-    conn.close()
-    if not r:
-        return None
-    keys = ['id', 'problem', 'category', 'priority', 'status', 'pin_lat', 'pin_lng',
-            'pin_note', 'tech_username', 'tech_notes', 'quote_status', 'created_at',
-            'updated_at', 'homeowner_name', 'homeowner_email', 'homeowner_phone',
-            'address', 'community_name', 'community_center_lat', 'community_center_lng',
-            'community_id', 'homeowner_id']
-    return dict(zip(keys, r))
-
-
-def wo_build_quote_payload(wo):
-    return {
-        'work_order_id': wo['id'],
-        'client': {
-            'name': wo.get('homeowner_name'),
-            'email': wo.get('homeowner_email'),
-            'phone': wo.get('homeowner_phone'),
-            'address': wo.get('address'),
-        },
-        'community': wo.get('community_name'),
-        'problem': wo.get('problem'),
-        'category': wo.get('category'),
-        'priority': wo.get('priority'),
-        'location': {'lat': wo.get('pin_lat'), 'lng': wo.get('pin_lng'), 'note': wo.get('pin_note')},
-        'technician_notes': wo.get('tech_notes'),
-    }
-
-
-def draft_workorder_quote_via_openclaw(wo):
-    """
-    Hand a work order to OpenClaw so it can draft a quote for the client.
-
-    WIRED BUT INACTIVE by default — gated behind WORKORDERS_OPENCLAW_QUOTES_ENABLED
-    ("ready to turn on"). Never raises; returns a result dict.
-    """
-    result = {'queued': False, 'detail': '', 'reference': ''}
-    if not WORKORDERS_OPENCLAW_QUOTES_ENABLED:
-        result['detail'] = ('OpenClaw quote drafting is wired up but not active. '
-                            'Set WORKORDERS_OPENCLAW_QUOTES=true (with OPENCLAW_API_KEY) to turn it on.')
-        return result
-    if not OPENCLAW_API_KEY:
-        result['detail'] = 'OPENCLAW_API_KEY not configured — cannot reach OpenClaw.'
-        return result
-    try:
-        resp = http_requests.post(
-            OPENCLAW_QUOTE_URL,
-            json=wo_build_quote_payload(wo),
-            headers={'Authorization': f'Bearer {OPENCLAW_API_KEY}', 'Content-Type': 'application/json'},
-            timeout=15)
-        resp.raise_for_status()
-        body = {}
-        try:
-            body = resp.json()
-        except Exception:
-            pass
-        result['queued'] = True
-        result['reference'] = str(body.get('id') or body.get('reference') or '')
-        result['detail'] = 'Quote draft requested from OpenClaw.'
-        print(f"  🤖 Work order #{wo['id']} sent to OpenClaw for a quote draft")
-    except Exception as e:
-        result['detail'] = f'OpenClaw request failed: {e}'
-        print(f"  ⚠ Work order OpenClaw quote error: {e}")
-    return result
-
-
-def process_workorder_quote_request(quote_id):
-    """Background pipeline: hand a flagged work order to OpenClaw for a quote draft."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    try:
-        c.execute("SELECT work_order_id FROM wo_quote_requests WHERE id=?", (quote_id,))
-        row = c.fetchone()
-        if not row:
-            return
-        wo = wo_load_full(row[0])
-        if not wo:
-            return
-        res = draft_workorder_quote_via_openclaw(wo)
-        status = 'requested' if res['queued'] else ('inactive' if not WORKORDERS_OPENCLAW_QUOTES_ENABLED else 'error')
-        wo_status = 'Quote requested from OpenClaw' if res['queued'] else ('Quote ready — OpenClaw not active yet' if not WORKORDERS_OPENCLAW_QUOTES_ENABLED else 'Quote request failed')
-        c.execute("""UPDATE wo_quote_requests SET status=?, draft_json=?, openclaw_result=?, updated_at=? WHERE id=?""",
-                  (status, json.dumps(wo_build_quote_payload(wo)), json.dumps(res), now, quote_id))
-        c.execute("UPDATE wo_work_orders SET quote_status=?, updated_at=? WHERE id=?",
-                  (wo_status, now, row[0]))
-        conn.commit()
-    except Exception as e:
-        print(f"  ✗ Work order quote request {quote_id} failed: {e}")
-        try:
-            c.execute("UPDATE wo_quote_requests SET status='error', error=?, updated_at=? WHERE id=?",
-                      (str(e), now, quote_id))
-            conn.commit()
-        except Exception:
-            pass
-    finally:
-        conn.close()
-
-
-# ── Shared front-end snippets ────────────────────────────────────────────────
-_WO_CSRF_JS = '''<meta name="csrf-token" content="{{ csrf_token() }}">
-<script>
-(function(){
-    var _t = document.cookie.split(';').map(function(c){return c.trim();})
-        .filter(function(c){return c.startsWith('csrf_token=');})
-        .map(function(c){return c.split('=')[1];})[0] || '';
-    var _f = window.fetch;
-    window.fetch = function(url, opts){
-        opts = opts || {};
-        if(!opts.method || opts.method.toUpperCase()==='GET' || opts.method.toUpperCase()==='HEAD') return _f.call(this,url,opts);
-        opts.headers = opts.headers || {};
-        if(opts.headers instanceof Headers){ if(!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken',_t); }
-        else { if(!opts.headers['X-CSRFToken']) opts.headers['X-CSRFToken']=_t; }
-        return _f.call(this,url,opts);
-    };
-})();
-</script>'''
-
-_WO_LEAFLET = '''<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>'''
-
-_WO_CSS = '''<style>
-* { margin:0; padding:0; box-sizing:border-box; }
-:root{ --brand:#2563EB; --brand-dark:#1D4ED8; --green:#059669; --amber:#D97706; --red:#DC2626;
-       --bg:#F1F5F9; --card:#FFFFFF; --border:#E2E8F0; --text:#0F172A; --muted:#64748B; }
-body{ font-family:'Inter',Arial,sans-serif; background:var(--bg); color:var(--text); }
-.wo-nav{ background:linear-gradient(135deg,#1D4ED8,#0B2C66); color:#fff; padding:14px 22px;
-         display:flex; align-items:center; justify-content:space-between; }
-.wo-nav .brand{ font-weight:700; font-size:18px; display:flex; align-items:center; gap:10px; }
-.wo-nav .right{ display:flex; align-items:center; gap:14px; font-size:14px; }
-.wo-nav a{ color:#fff; text-decoration:none; opacity:.9; } .wo-nav a:hover{ opacity:1; }
-.wo-chip{ background:rgba(255,255,255,.16); padding:5px 12px; border-radius:999px; font-size:13px; }
-.wrap{ max-width:1180px; margin:0 auto; padding:24px 18px 60px; }
-.tabs{ display:flex; gap:8px; margin:18px 0 22px; flex-wrap:wrap; }
-.tab{ background:#fff; border:1px solid var(--border); padding:9px 18px; border-radius:10px;
-      cursor:pointer; font-weight:600; font-size:14px; color:var(--muted); }
-.tab.active{ background:var(--brand); color:#fff; border-color:var(--brand); }
-.panel{ display:none; } .panel.active{ display:block; }
-.card{ background:var(--card); border:1px solid var(--border); border-radius:14px; padding:20px;
-       box-shadow:0 1px 3px rgba(0,0,0,.05); margin-bottom:18px; }
-.card h2{ font-size:16px; margin-bottom:14px; } .card h3{ font-size:14px; margin-bottom:8px; }
-.grid2{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }
-@media(max-width:760px){ .grid2{ grid-template-columns:1fr; } }
-label{ display:block; font-size:12px; font-weight:600; color:var(--muted); margin:0 0 5px; }
-input,select,textarea{ width:100%; padding:10px 12px; border:1px solid var(--border);
-       border-radius:9px; font-size:14px; font-family:inherit; margin-bottom:12px; }
-textarea{ min-height:90px; resize:vertical; }
-.btn{ background:var(--brand); color:#fff; border:none; padding:11px 18px; border-radius:9px;
-      font-weight:600; font-size:14px; cursor:pointer; }
-.btn:hover{ background:var(--brand-dark); } .btn.green{ background:var(--green); } .btn.amber{ background:var(--amber); }
-.btn.red{ background:var(--red); } .btn.ghost{ background:#fff; color:var(--text); border:1px solid var(--border); }
-.btn.sm{ padding:6px 12px; font-size:13px; }
-table{ width:100%; border-collapse:collapse; font-size:14px; }
-th,td{ text-align:left; padding:11px 10px; border-bottom:1px solid var(--border); vertical-align:top; }
-th{ font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
-.badge{ display:inline-block; padding:3px 10px; border-radius:999px; font-size:12px; font-weight:600; }
-.st-pending{ background:#FEF3C7; color:#92400E; } .st-in_progress{ background:#DBEAFE; color:#1E40AF; }
-.st-needs_quote{ background:#EDE9FE; color:#5B21B6; } .st-completed{ background:#D1FAE5; color:#065F46; }
-.map{ width:100%; height:360px; border-radius:12px; border:1px solid var(--border); }
-.map.sm{ height:240px; }
-.muted{ color:var(--muted); font-size:13px; } .right-align{ text-align:right; }
-.empty{ text-align:center; color:var(--muted); padding:34px; }
-.flash{ padding:10px 14px; border-radius:9px; margin-bottom:14px; font-size:14px; }
-.flash.ok{ background:#D1FAE5; color:#065F46; } .flash.err{ background:#FEE2E2; color:#991B1B; }
-.banner{ background:#EFF6FF; border:1px solid #BFDBFE; color:#1E40AF; padding:12px 16px;
-         border-radius:10px; font-size:13px; margin-bottom:18px; }
-.pill{ font-size:11px; font-weight:700; padding:2px 8px; border-radius:6px; background:#E2E8F0; color:#475569; }
-.row-actions{ display:flex; gap:6px; flex-wrap:wrap; }
-.modal-bg{ display:none; position:fixed; inset:0; background:rgba(15,23,42,.55); z-index:50; }
-.modal-bg.show{ display:flex; align-items:center; justify-content:center; }
-.modal{ background:#fff; border-radius:14px; padding:24px; width:min(560px,94vw); max-height:92vh; overflow:auto; }
-</style>'''
-
-
-def _wo_status_badge(s):
-    labels = {'pending': 'Pending', 'in_progress': 'In Progress',
-              'needs_quote': 'Needs Quote', 'completed': 'Completed'}
-    return labels.get(s, s or 'Pending')
-
-
-@app.template_filter('wo_status_label')
-def _wo_status_label_filter(s):
-    return _wo_status_badge(s)
-
-
-_WO_SAT_JS = '''
-function woMakeMap(elId, lat, lng, zoom){
-    var map = L.map(elId, {zoomControl:true, tap:false}).setView([lat, lng], zoom);
-    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-        {maxZoom:21, attribution:'Imagery © Esri'}).addTo(map);
-    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
-        {maxZoom:21, opacity:0.9}).addTo(map);
-    // Mobile browsers often lay the container out after JS runs (and again when
-    // the address bar shows/hides), leaving the map grey — re-measure a few times
-    // and on every resize / orientation change.
-    function fix(){ try{ map.invalidateSize(false); }catch(e){} }
-    [60, 250, 600, 1200, 2500].forEach(function(ms){ setTimeout(fix, ms); });
-    window.addEventListener('resize', fix);
-    window.addEventListener('orientationchange', function(){ setTimeout(fix, 350); });
-    map.whenReady(fix);
-    return map;
-}'''
-
-# ── Homeowner portal: sign in / create account ───────────────────────────────
-WO_PORTAL_TEMPLATE = '''<!DOCTYPE html><html><head>
-<title>Submit a Work Order</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-''' + _WO_CSRF_JS + _WO_LEAFLET + _WO_CSS + '''
-<style>
-.acc{ font-size:12px; color:var(--muted); margin:6px 0 0; }
-.acc b{ color:var(--text); }
-.namewrap{ position:relative; }
-.savedchip{ display:none; font-size:12px; color:#065F46; background:#D1FAE5; padding:3px 9px; border-radius:999px; margin-left:8px; }
-.home-tip{ background:#2563EB; color:#fff; border:none; font-weight:700; font-size:12px;
-    padding:5px 10px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.3); white-space:nowrap; }
-.home-tip:before{ border-top-color:#2563EB !important; }
-.home-ico{ font-size:30px; line-height:30px; text-align:center; filter:drop-shadow(0 2px 3px rgba(0,0,0,.4)); }
-.issue-ico{ font-size:30px; line-height:30px; font-weight:900; color:#DC2626; text-align:center;
-    text-shadow:0 0 3px #fff, 0 0 6px #fff, 0 2px 3px rgba(0,0,0,.5); }
-.issue-tip{ background:#DC2626; color:#fff; border:none; font-weight:700; font-size:12px;
-    padding:5px 10px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.3); white-space:nowrap; }
-.issue-tip:before{ border-top-color:#DC2626 !important; }
-</style></head>
-<body>
-<div class="wo-nav">
-  <div class="brand">🛠️ Work Order Portal</div>
-  <div class="right"><span class="wo-chip">Stahlman-England Irrigation</span></div>
-</div>
-<div class="wrap">
-  <h1 style="font-size:22px;margin-bottom:4px">Submit a Work Order</h1>
-  <p class="muted" style="margin-bottom:18px">Tell us what's wrong and pin the exact spot on your home. Just type your name — we'll remember your details for next time, no account needed.</p>
-
-  <div id="msg"></div>
-
-  <div class="card">
-    <h2>Your Information</h2>
-    <label>Your Name <span id="savedChip" class="savedchip">✓ Details remembered</span></label>
-    <div class="namewrap"><input id="p-name" placeholder="First and last name" autocomplete="name"
-        value="{{ homeowner.full_name if homeowner else '' }}"></div>
-    <div class="grid2">
-      <div><label>Email</label><input type="email" id="p-email" autocomplete="email"
-          value="{{ homeowner.email if homeowner else '' }}"></div>
-      <div><label>Phone</label><input id="p-phone" autocomplete="tel"
-          value="{{ homeowner.phone if homeowner else '' }}"></div>
-    </div>
-    <label>Community</label>
-    <select id="p-comm" onchange="onCommunity()"><option value="">— Select your community —</option>
-      {% for c in communities %}<option value="{{ c.id }}" {% if homeowner and homeowner.community_id==c.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select>
-    <label>Home Address</label><input id="p-addr" placeholder="123 Palm Ct"
-        value="{{ homeowner.address if homeowner else '' }}">
-  </div>
-
-  <div class="card">
-    <h2>The Problem</h2>
-    <label>What's wrong?</label>
-    <textarea id="p-problem" placeholder="Describe the issue (e.g. sprinkler head broken, flooding near driveway)"></textarea>
-    <div class="grid2">
-      <div><label>Category</label><select id="p-cat">
-        <option value="">General</option><option>Irrigation / Sprinkler</option>
-        <option>Landscaping</option><option>Lighting</option><option>Drainage / Flooding</option><option>Other</option></select></div>
-      <div><label>Priority</label><select id="p-pri"><option value="normal">Normal</option>
-        <option value="high">High / Urgent</option><option value="low">Low</option></select></div>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>Mark the Problem Spot</h2>
-    <p class="muted" style="margin-bottom:8px">We place a 📍 on your home from the address above. Now <b>tap the map to drop an ✗</b> on the exact spot where the problem is, so the technician knows right where to go.</p>
-    <p class="acc" id="accMsg"></p>
-    <div id="pmap" class="map" style="margin-top:8px"></div>
-    <input type="hidden" id="p-lat"><input type="hidden" id="p-lng">
-    <label style="margin-top:12px">Note about the location (optional)</label>
-    <input id="p-note" placeholder="e.g. back yard, left of the patio">
-    <div style="margin-top:16px"><button class="btn green" onclick="submitWO()">Submit Request</button></div>
-  </div>
-
-  {% if orders %}
-  <div class="card">
-    <h2>Your Recent Requests</h2>
-    <table><thead><tr><th>#</th><th>Problem</th><th>Status</th><th>Technician Notes</th><th>Submitted</th></tr></thead><tbody>
-      {% for o in orders %}<tr>
-        <td>#{{ o.id }}</td>
-        <td>{{ o.problem }}{% if o.category %}<br><span class="pill">{{ o.category }}</span>{% endif %}</td>
-        <td><span class="badge st-{{ o.status }}">{{ o.status|wo_status_label }}</span>
-            {% if o.quote_status %}<br><span class="muted">{{ o.quote_status }}</span>{% endif %}</td>
-        <td class="muted">{{ o.tech_notes or '—' }}</td>
-        <td class="muted">{{ o.created_at[:10] }}</td>
-      </tr>{% endfor %}
-    </tbody></table>
-  </div>
-  {% endif %}
-</div>
-
-<script>''' + _WO_SAT_JS + '''
-var COMM = { {% for c in communities %}{% if c.center_lat is not none and c.center_lng is not none %}"{{ c.id }}":[{{ c.center_lat }},{{ c.center_lng }}],{% endif %}{% endfor %} };
-var START = {% if homeowner and homeowner.center_lat is not none %}[{{ homeowner.center_lat }},{{ homeowner.center_lng }},18]{% else %}[27.95,-82.45,11]{% endif %};
-var pmap=null, homeMarker=null, issueMarker=null, homeLatLng=null, addrGeocoded='';
-
-function initMap(){
-  pmap = woMakeMap('pmap', START[0], START[1], START[2]);
-  pmap.on('click', function(e){ setIssue(e.latlng.lat, e.latlng.lng); });
-}
-// The ✗ the homeowner drops to mark exactly where the problem is.
-function setIssue(lat,lng){
-  document.getElementById('p-lat').value=lat; document.getElementById('p-lng').value=lng;
-  if(issueMarker){ issueMarker.setLatLng([lat,lng]); }
-  else {
-    var ico=L.divIcon({className:'', html:'<div class="issue-ico">✕</div>', iconSize:[30,30], iconAnchor:[15,15]});
-    issueMarker=L.marker([lat,lng],{icon:ico, draggable:true, zIndexOffset:1200}).addTo(pmap);
-    issueMarker.on('dragend',function(){ var ll=issueMarker.getLatLng();
-      document.getElementById('p-lat').value=ll.lat; document.getElementById('p-lng').value=ll.lng; });
-  }
-  setAcc('✕ marks where the problem is — tap again or drag the ✕ to adjust.');
-}
-function onCommunity(){
-  var id=document.getElementById('p-comm').value;
-  if(COMM[id] && !homeLatLng){ pmap.setView(COMM[id], 17); }
-}
-function setAcc(t){ document.getElementById('accMsg').innerHTML=t; }
-function currentCommunityName(){
-  var s=document.getElementById('p-comm');
-  return (s && s.value && s.selectedIndex>0) ? s.options[s.selectedIndex].text : '';
-}
-// Place a FIXED (non-movable) "This is your home" marker from the address.
-function dropHome(lat,lng){
-  homeLatLng=[lat,lng];
-  if(homeMarker){ homeMarker.setLatLng([lat,lng]); }
-  else {
-    var ico=L.divIcon({className:'', html:'<div class="home-ico">📍</div>', iconSize:[30,30], iconAnchor:[15,28]});
-    homeMarker=L.marker([lat,lng],{icon:ico, interactive:false, zIndexOffset:1000}).addTo(pmap);
-    homeMarker.bindTooltip('This is your home', {permanent:true, direction:'top', offset:[0,-26], className:'home-tip'}).openTooltip();
-  }
-  pmap.setView([lat,lng], 19);
-}
-// We show the home from the address entered — no GPS / location tracking.
-function geocodeAddress(addr, force){
-  addr=(addr||'').trim();
-  if(addr.length<4) return;
-  if(addr===addrGeocoded && !force) return;
-  addrGeocoded=addr;
-  var q=addr; var cn=currentCommunityName(); if(cn) q+=', '+cn;
-  setAcc('Finding your home from your address…');
-  fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&addressdetails=0&q='+encodeURIComponent(q),
-        {headers:{'Accept':'application/json'}})
-    .then(function(r){ return r.json(); })
-    .then(function(rows){
-      if(rows && rows.length){
-        dropHome(parseFloat(rows[0].lat), parseFloat(rows[0].lon));
-        setAcc('📍 Your home is marked from your address. Now <b>tap the map to drop an ✕</b> on the exact spot of the problem.');
-      } else {
-        setAcc('Couldn\\'t find that address automatically — check the address above, then tap the map to drop an ✕ on the problem.');
-      }
-    })
-    .catch(function(){ setAcc('Couldn\\'t look up the address — tap the map to drop an ✕ on the problem.'); });
-}
-async function submitWO(){
-  var name=document.getElementById('p-name').value.trim();
-  var problem=document.getElementById('p-problem').value.trim();
-  if(!name){ showMsg('err','Please enter your name.'); return; }
-  if(!problem){ showMsg('err','Please describe the problem.'); return; }
-  // The ✗ marks the problem; fall back to the home location if none was placed.
-  var lat=document.getElementById('p-lat').value, lng=document.getElementById('p-lng').value;
-  if(!lat && homeLatLng){ lat=homeLatLng[0]; lng=homeLatLng[1]; }
-  var r=await fetch('{{ url_for("wo_portal_submit") }}',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({full_name:name, email:document.getElementById('p-email').value,
-      phone:document.getElementById('p-phone').value, community_id:document.getElementById('p-comm').value,
-      address:document.getElementById('p-addr').value, problem:problem,
-      category:document.getElementById('p-cat').value, priority:document.getElementById('p-pri').value,
-      pin_lat:lat, pin_lng:lng,
-      pin_note:document.getElementById('p-note').value})});
-  var j=await r.json();
-  if(j.success){ sessionStorage.setItem('woThanks','1'); location.href='{{ url_for("wo_portal") }}'; }
-  else { showMsg('err', j.error||'Could not submit your request'); }
-}
-function showMsg(kind,t){ document.getElementById('msg').innerHTML='<div class="flash '+kind+'">'+t+'</div>'; window.scrollTo(0,0); }
-// As the homeowner types their name, fetch and fill their saved details.
-var lookupTimer=null;
-document.getElementById('p-name').addEventListener('input', function(){
-  clearTimeout(lookupTimer);
-  var name=this.value.trim();
-  document.getElementById('savedChip').style.display='none';
-  if(name.length<2) return;
-  lookupTimer=setTimeout(function(){
-    fetch('{{ url_for("wo_portal_lookup") }}?name='+encodeURIComponent(name)).then(r=>r.json()).then(j=>{
-      if(!j.found) return;
-      var h=j.homeowner;
-      function fill(id,v){ var el=document.getElementById(id); if(el && !el.value && v) el.value=v; }
-      fill('p-email',h.email); fill('p-phone',h.phone); fill('p-addr',h.address);
-      if(h.community_id){ var s=document.getElementById('p-comm'); if(!s.value){ s.value=String(h.community_id); onCommunity(); } }
-      document.getElementById('savedChip').style.display='inline-block';
-      // Auto-filled address → show their home from it (not GPS).
-      var a=document.getElementById('p-addr').value; if(a){ geocodeAddress(a); }
-    }).catch(function(){});
-  }, 350);
-});
-function woStart(){
-  if(pmap) return;
-  initMap();
-  // If we already have the homeowner's address (remembered), place the pin from
-  // it rather than tracking their phone's GPS.
-  var addr=document.getElementById('p-addr').value;
-  if(addr){ geocodeAddress(addr); }
-  // Geocode an address the homeowner types/edits when they leave the field.
-  document.getElementById('p-addr').addEventListener('blur', function(){ geocodeAddress(this.value); });
-  if(sessionStorage.getItem('woThanks')){ sessionStorage.removeItem('woThanks');
-    showMsg('ok','✅ Your work order was submitted! A technician will review it shortly. You can see its status below.'); }
-}
-// Run as soon as the DOM is ready (the 'load' event may already have fired on mobile).
-if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', woStart); }
-else { woStart(); }
-window.addEventListener('load', woStart);
-</script></body></html>'''
-
-
-# ── Shared staff detail-modal JS (office / pm / tech) ────────────────────────
-_WO_DETAIL_JS = '''
-var dmap=null;
-function woOpenDetail(id, editable){
-  document.getElementById('detailBg').classList.add('show');
-  document.getElementById('detailBody').innerHTML='<p class="muted">Loading…</p>';
-  fetch('/workorders/api/work_order/'+id).then(r=>r.json()).then(j=>{
-    if(!j.success){ document.getElementById('detailBody').innerHTML='<div class="flash err">'+(j.error||'Error')+'</div>'; return; }
-    var w=j.work_order;
-    var hasPin = w.pin_lat!=null && w.pin_lng!=null;
-    var html='';
-    html+='<h2 style="margin-bottom:6px">Work Order #'+w.id+' <span class="badge st-'+w.status+'">'+woLabel(w.status)+'</span></h2>';
-    html+='<p class="muted" style="margin-bottom:14px">'+(w.community_name||'—')+' · submitted '+(w.created_at||'').substring(0,16)+'</p>';
-    html+='<div class="grid2"><div><h3>Homeowner</h3><p>'+(w.homeowner_name||'')+'</p>'+
-          '<p class="muted">'+(w.homeowner_email||'')+'<br>'+(w.homeowner_phone||'')+'<br>'+(w.address||'')+'</p></div>'+
-          '<div><h3>Request</h3><p>'+(w.problem||'')+'</p>'+
-          (w.category?'<p><span class="pill">'+w.category+'</span></p>':'')+
-          (w.pin_note?'<p class="muted">Location note: '+w.pin_note+'</p>':'')+'</div></div>';
-    html+='<h3 style="margin-top:14px">Location</h3>';
-    if(hasPin){ html+='<div id="dmap" class="map sm"></div>'; }
-    else { html+='<p class="muted">No map pin was dropped for this request.</p>'; }
-    html+='<h3 style="margin-top:14px">Technician Notes</h3>';
-    if(editable){
-      html+='<textarea id="d-notes">'+(w.tech_notes||'')+'</textarea>';
-      if(w.quote_status){ html+='<div class="banner">Quote: '+w.quote_status+'</div>'; }
-      html+='<div class="row-actions" style="margin-top:6px">'+
-            '<button class="btn sm" data-act="in_progress" data-id="'+w.id+'">Mark In Progress</button>'+
-            '<button class="btn green sm" data-act="completed" data-id="'+w.id+'">Mark Completed</button>'+
-            '<button class="btn amber sm" data-act="quote" data-id="'+w.id+'">Needs Quote</button></div>';
-    } else {
-      html+='<p>'+(w.tech_notes||'<span class="muted">No notes yet.</span>')+'</p>';
-      if(w.quote_status){ html+='<div class="banner">Quote: '+w.quote_status+'</div>'; }
-    }
-    document.getElementById('detailBody').innerHTML=html;
-    document.querySelectorAll('#detailBody [data-act]').forEach(function(b){
-      b.addEventListener('click', function(){
-        var act=b.getAttribute('data-act'), wid=parseInt(b.getAttribute('data-id'),10);
-        if(act==='quote'){ woQuote(wid); } else { woAct(wid, act); }
-      });
-    });
-    if(hasPin){ dmap=woMakeMap('dmap', w.pin_lat, w.pin_lng, 19); L.marker([w.pin_lat,w.pin_lng]).addTo(dmap); }
-  });
-}
-function woCloseDetail(){ document.getElementById('detailBg').classList.remove('show'); dmap=null; }
-function woLabel(s){ return {pending:'Pending',in_progress:'In Progress',needs_quote:'Needs Quote',completed:'Completed'}[s]||s; }
-async function woAct(id, status){
-  var notes=(document.getElementById('d-notes')||{}).value||'';
-  var r=await fetch('/workorders/api/work_order/update',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({id:id, status:status, tech_notes:notes})});
-  var j=await r.json(); if(j.success){ location.reload(); } else { alert(j.error||'Error'); }
-}
-async function woQuote(id){
-  var notes=(document.getElementById('d-notes')||{}).value||'';
-  var r=await fetch('/workorders/api/work_order/update',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({id:id, request_quote:true, tech_notes:notes})});
-  var j=await r.json();
-  if(j.success){
-    var active=j.quote && j.quote.openclaw_active;
-    alert(active ? 'Quote request sent to OpenClaw to draft for the client.'
-                 : 'Work order flagged as Needs Quote. OpenClaw quote drafting is wired up and ready — it will draft automatically once the feature is turned on.');
-    location.reload();
-  } else { alert(j.error||'Error'); }
-}
-'''
-
-_WO_DETAIL_MODAL = '''<div class="modal-bg" id="detailBg"><div class="modal">
-  <div class="right-align"><button class="btn ghost sm" onclick="woCloseDetail()">Close ✕</button></div>
-  <div id="detailBody"></div>
-</div></div>'''
-
-
-# ── Office view ──────────────────────────────────────────────────────────────
-WORKORDERS_OFFICE_TEMPLATE = '''<!DOCTYPE html><html><head>
-<title>Work Orders — Office</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-''' + _WO_CSRF_JS + _WO_LEAFLET + _WO_CSS + '''</head>
-<body>
-<div class="wo-nav">
-  <div class="brand">🛠️ Work Orders <span class="pill">Office</span></div>
-  <div class="right"><a href="{{ url_for('dashboard') }}">← Dashboard</a>
-    <span class="wo-chip">{{ full_name }}</span><a href="{{ url_for('logout') }}">Sign Out</a></div>
-</div>
-<div class="wrap">
-  <div class="banner">Homeowner request portal: <a href="{{ portal_url }}" target="_blank">{{ portal_url }}</a>
-    &nbsp;·&nbsp; OpenClaw quote drafting:
-    <strong>{% if openclaw_active %}Active{% else %}Wired &amp; ready (turn on with WORKORDERS_OPENCLAW_QUOTES=true){% endif %}</strong></div>
-
-  <div class="tabs">
-    <div class="tab active" onclick="tab('wo')">Work Orders</div>
-    <div class="tab" onclick="tab('comm')">Communities</div>
-    <div class="tab" onclick="tab('pm')">Property Managers</div>
-  </div>
-
-  <div class="panel active" id="p-wo">
-    <div class="card">
-      <h2>All Work Orders
-        <span class="muted">— {{ counts.pending }} pending · {{ counts.in_progress }} in progress · {{ counts.needs_quote }} needs quote · {{ counts.completed }} completed</span></h2>
-      {% if work_orders %}
-      <table><thead><tr><th>#</th><th>Community</th><th>Homeowner</th><th>Problem</th><th>Status</th><th>Tech</th><th></th></tr></thead><tbody>
-      {% for w in work_orders %}<tr>
-        <td>#{{ w.id }}</td><td>{{ w.community_name or '—' }}</td><td>{{ w.homeowner_name or '—' }}</td>
-        <td>{{ w.problem[:60] }}{% if w.problem|length > 60 %}…{% endif %}</td>
-        <td><span class="badge st-{{ w.status }}">{{ w.status|wo_status_label }}</span></td>
-        <td class="muted">{{ w.tech_username or '—' }}</td>
-        <td><button class="btn ghost sm" onclick="woOpenDetail({{ w.id }}, false)">View</button></td>
-      </tr>{% endfor %}</tbody></table>
-      {% else %}<div class="empty">No work orders submitted yet.</div>{% endif %}
-    </div>
-  </div>
-
-  <div class="panel" id="p-comm">
-    <div class="card">
-      <h2 id="comm-form-title">Add Community</h2>
-      <div id="comm-msg"></div>
-      <input type="hidden" id="c-id">
-      <label>Community Name</label><input id="c-name">
-      <div class="grid2"><div><label>Address</label><input id="c-addr"></div><div><label>City</label><input id="c-city"></div></div>
-      <div class="grid2"><div><label>State</label><input id="c-state"></div><div><label>ZIP</label><input id="c-zip"></div></div>
-      <div class="grid2"><div><label>Map Center Latitude (optional)</label><input id="c-lat" placeholder="27.95"></div>
-        <div><label>Map Center Longitude (optional)</label><input id="c-lng" placeholder="-82.45"></div></div>
-      <label>Notes</label><input id="c-notes">
-      <button class="btn" onclick="saveComm()">Save Community</button>
-      <button class="btn ghost" onclick="resetComm()">Clear</button>
-    </div>
-    <div class="card">
-      <h2>Communities</h2>
-      {% if communities %}
-      <table><thead><tr><th>Name</th><th>Location</th><th></th></tr></thead><tbody>
-      {% for c in communities %}<tr>
-        <td>{{ c.name }}</td><td class="muted">{{ c.city }}{% if c.state %}, {{ c.state }}{% endif %}</td>
-        <td class="row-actions">
-          <button class="btn ghost sm" onclick='editComm({{ c|tojson }})'>Edit</button>
-          <button class="btn red sm" onclick="delComm({{ c.id }})">Delete</button></td>
-      </tr>{% endfor %}</tbody></table>
-      {% else %}<div class="empty">No communities yet.</div>{% endif %}
-    </div>
-  </div>
-
-  <div class="panel" id="p-pm">
-    <div class="card">
-      <h2 id="pm-form-title">Add Property Manager</h2>
-      <p class="muted" style="margin-bottom:12px">Property managers sign in to this same interface but only see the Work Orders app for their assigned communities.</p>
-      <div id="pm-msg"></div>
-      <input type="hidden" id="pm-id">
-      <div class="grid2"><div><label>Full Name</label><input id="pm-name"></div>
-        <div><label>Email</label><input type="email" id="pm-email"></div></div>
-      <div class="grid2"><div><label>Login Username</label><input id="pm-username"></div>
-        <div><label>Password</label><input type="password" id="pm-pass" placeholder="At least 6 characters"></div></div>
-      <label>Communities Managed</label>
-      <select id="pm-comms" multiple size="4">
-        {% for c in communities %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}</select>
-      <div style="margin-top:10px">
-        <button class="btn" onclick="savePM()">Save Property Manager</button>
-        <button class="btn ghost" onclick="resetPM()">Clear</button></div>
-    </div>
-    <div class="card">
-      <h2>Property Managers</h2>
-      {% if pms %}
-      <table><thead><tr><th>Name</th><th>Username</th><th>Communities</th><th></th></tr></thead><tbody>
-      {% for p in pms %}<tr>
-        <td>{{ p.full_name }}<br><span class="muted">{{ p.email }}</span></td>
-        <td>{{ p.username }}</td>
-        <td>{% for c in p.communities %}<span class="pill">{{ c.name }}</span> {% endfor %}{% if not p.communities %}<span class="muted">none</span>{% endif %}</td>
-        <td class="row-actions">
-          <button class="btn ghost sm" onclick='editPM({{ p|tojson }})'>Edit</button>
-          <button class="btn red sm" onclick="delPM({{ p.id }})">Delete</button></td>
-      </tr>{% endfor %}</tbody></table>
-      {% else %}<div class="empty">No property managers yet.</div>{% endif %}
-    </div>
-  </div>
-</div>
-''' + _WO_DETAIL_MODAL + '''
-<script>''' + _WO_SAT_JS + _WO_DETAIL_JS + '''
-function tab(w){
-  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active', ['wo','comm','pm'][i]===w));
-  ['wo','comm','pm'].forEach(p=>document.getElementById('p-'+p).classList.toggle('active', p===w));
-}
-// Communities
-function resetComm(){ ['c-id','c-name','c-addr','c-city','c-state','c-zip','c-lat','c-lng','c-notes'].forEach(i=>document.getElementById(i).value='');
-  document.getElementById('comm-form-title').textContent='Add Community'; document.getElementById('comm-msg').innerHTML=''; }
-function editComm(c){ tab('comm'); document.getElementById('c-id').value=c.id; document.getElementById('c-name').value=c.name||'';
-  document.getElementById('c-addr').value=c.address||''; document.getElementById('c-city').value=c.city||'';
-  document.getElementById('c-state').value=c.state||''; document.getElementById('c-zip').value=c.zip||'';
-  document.getElementById('c-lat').value=c.center_lat==null?'':c.center_lat; document.getElementById('c-lng').value=c.center_lng==null?'':c.center_lng;
-  document.getElementById('c-notes').value=c.notes||''; document.getElementById('comm-form-title').textContent='Edit Community'; }
-async function saveComm(){
-  var body={id:document.getElementById('c-id').value||null, name:document.getElementById('c-name').value,
-    address:document.getElementById('c-addr').value, city:document.getElementById('c-city').value,
-    state:document.getElementById('c-state').value, zip:document.getElementById('c-zip').value,
-    center_lat:document.getElementById('c-lat').value, center_lng:document.getElementById('c-lng').value,
-    notes:document.getElementById('c-notes').value};
-  var j=await (await fetch('{{ url_for("wo_community_save") }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
-  if(j.success){ location.reload(); } else { document.getElementById('comm-msg').innerHTML='<div class="flash err">'+(j.error||'Error')+'</div>'; }
-}
-async function delComm(id){ if(!confirm('Delete this community?')) return;
-  var j=await (await fetch('{{ url_for("wo_community_delete") }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})})).json();
-  if(j.success){ location.reload(); } else { alert(j.error||'Error'); } }
-// Property managers
-function resetPM(){ ['pm-id','pm-name','pm-email','pm-username','pm-pass'].forEach(i=>document.getElementById(i).value='');
-  Array.from(document.getElementById('pm-comms').options).forEach(o=>o.selected=false);
-  document.getElementById('pm-username').disabled=false;
-  document.getElementById('pm-form-title').textContent='Add Property Manager'; document.getElementById('pm-msg').innerHTML=''; }
-function editPM(p){ tab('pm'); document.getElementById('pm-id').value=p.id; document.getElementById('pm-name').value=p.full_name||'';
-  document.getElementById('pm-email').value=p.email||''; document.getElementById('pm-username').value=p.username||'';
-  document.getElementById('pm-username').disabled=true; document.getElementById('pm-pass').value='';
-  document.getElementById('pm-pass').placeholder='Leave blank to keep current password';
-  var ids=(p.communities||[]).map(c=>String(c.id));
-  Array.from(document.getElementById('pm-comms').options).forEach(o=>o.selected=ids.includes(o.value));
-  document.getElementById('pm-form-title').textContent='Edit Property Manager'; }
-async function savePM(){
-  var comms=Array.from(document.getElementById('pm-comms').selectedOptions).map(o=>o.value);
-  var body={id:document.getElementById('pm-id').value||null, full_name:document.getElementById('pm-name').value,
-    email:document.getElementById('pm-email').value, username:document.getElementById('pm-username').value,
-    password:document.getElementById('pm-pass').value, community_ids:comms};
-  var j=await (await fetch('{{ url_for("wo_pm_save") }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
-  if(j.success){ location.reload(); } else { document.getElementById('pm-msg').innerHTML='<div class="flash err">'+(j.error||'Error')+'</div>'; }
-}
-async function delPM(id){ if(!confirm('Delete this property manager account?')) return;
-  var j=await (await fetch('{{ url_for("wo_pm_delete") }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})})).json();
-  if(j.success){ location.reload(); } else { alert(j.error||'Error'); } }
-</script></body></html>'''
-
-
-# ── Property manager view ────────────────────────────────────────────────────
-WORKORDERS_PM_TEMPLATE = '''<!DOCTYPE html><html><head>
-<title>Work Orders</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-''' + _WO_CSRF_JS + _WO_LEAFLET + _WO_CSS + '''</head>
-<body>
-<div class="wo-nav">
-  <div class="brand">🛠️ Work Orders <span class="pill">Property Manager</span></div>
-  <div class="right"><span class="wo-chip">{{ full_name }}</span><a href="{{ url_for('logout') }}">Sign Out</a></div>
-</div>
-<div class="wrap">
-  <div class="card">
-    <h2>Work Order Status
-      <span class="muted">— {{ counts.pending }} pending · {{ counts.in_progress }} in progress · {{ counts.needs_quote }} needs quote · {{ counts.completed }} completed</span></h2>
-    <p class="muted" style="margin-bottom:12px">Communities you manage:
-      {% for c in communities %}<span class="pill">{{ c.name }}</span> {% endfor %}{% if not communities %}<span class="pill">none assigned</span>{% endif %}</p>
-    {% if work_orders %}
-    <div style="margin-bottom:10px"><select id="fStatus" onchange="filterRows()">
-      <option value="">All statuses</option><option value="pending">Pending</option>
-      <option value="in_progress">In Progress</option><option value="needs_quote">Needs Quote</option>
-      <option value="completed">Completed</option></select></div>
-    <table><thead><tr><th>#</th><th>Community</th><th>Homeowner</th><th>Problem</th><th>Status</th><th>Tech</th><th></th></tr></thead><tbody id="rows">
-    {% for w in work_orders %}<tr data-status="{{ w.status }}">
-      <td>#{{ w.id }}</td><td>{{ w.community_name or '—' }}</td><td>{{ w.homeowner_name or '—' }}</td>
-      <td>{{ w.problem[:60] }}{% if w.problem|length > 60 %}…{% endif %}</td>
-      <td><span class="badge st-{{ w.status }}">{{ w.status|wo_status_label }}</span></td>
-      <td class="muted">{{ w.tech_username or '—' }}</td>
-      <td><button class="btn ghost sm" onclick="woOpenDetail({{ w.id }}, false)">View</button></td>
-    </tr>{% endfor %}</tbody></table>
-    {% else %}<div class="empty">No work orders in your communities yet.</div>{% endif %}
-  </div>
-</div>
-''' + _WO_DETAIL_MODAL + '''
-<script>''' + _WO_SAT_JS + _WO_DETAIL_JS + '''
-function filterRows(){ var v=document.getElementById('fStatus').value;
-  document.querySelectorAll('#rows tr').forEach(r=>{ r.style.display=(!v||r.dataset.status===v)?'':'none'; }); }
-</script></body></html>'''
-
-
-# ── Technician view ──────────────────────────────────────────────────────────
-WORKORDERS_TECH_TEMPLATE = '''<!DOCTYPE html><html><head>
-<title>Work Orders — Technician</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-''' + _WO_CSRF_JS + _WO_LEAFLET + _WO_CSS + '''</head>
-<body>
-<div class="wo-nav">
-  <div class="brand">🛠️ Work Orders <span class="pill">Technician</span></div>
-  <div class="right"><a href="{{ url_for('dashboard') }}">← Dashboard</a>
-    <span class="wo-chip">{{ full_name }}</span><a href="{{ url_for('logout') }}">Sign Out</a></div>
-</div>
-<div class="wrap">
-  {% if not openclaw_active %}<div class="banner">Tip: flagging a work order as <strong>Needs Quote</strong> is ready to ping OpenClaw to draft a client quote. The integration is wired up and will activate once turned on.</div>{% endif %}
-  <div class="card">
-    <h2>Pending &amp; Active Work Orders
-      <span class="muted">— {{ counts.pending }} pending · {{ counts.in_progress }} in progress · {{ counts.needs_quote }} needs quote · {{ counts.completed }} completed</span></h2>
-    {% if work_orders %}
-    <table><thead><tr><th>#</th><th>Community</th><th>Homeowner</th><th>Problem</th><th>Priority</th><th>Status</th><th></th></tr></thead><tbody>
-    {% for w in work_orders %}<tr>
-      <td>#{{ w.id }}</td><td>{{ w.community_name or '—' }}</td><td>{{ w.homeowner_name or '—' }}</td>
-      <td>{{ w.problem[:60] }}{% if w.problem|length > 60 %}…{% endif %}</td>
-      <td>{% if w.priority=='high' %}<span class="pill" style="background:#FEE2E2;color:#991B1B">High</span>{% else %}{{ w.priority or 'normal' }}{% endif %}</td>
-      <td><span class="badge st-{{ w.status }}">{{ w.status|wo_status_label }}</span></td>
-      <td><button class="btn sm" onclick="woOpenDetail({{ w.id }}, true)">Open</button></td>
-    </tr>{% endfor %}</tbody></table>
-    {% else %}<div class="empty">No work orders right now.</div>{% endif %}
-  </div>
-</div>
-''' + _WO_DETAIL_MODAL + '''
-<script>''' + _WO_SAT_JS + _WO_DETAIL_JS + '''</script></body></html>'''
-
-
-# ── Entry point — dispatch by role ───────────────────────────────────────────
-@app.route('/workorders')
-def workorders_app():
-    if _wo_office():
-        return _workorders_office_view()
-    if _wo_pm():
-        return _workorders_pm_view()
-    if _wo_tech():
-        return _workorders_tech_view()
-    return redirect(url_for('login'))
-
-
-def _workorders_office_view():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT id, name, address, city, state, zip, notes, active, center_lat, center_lng FROM wo_communities ORDER BY name")
-    communities = [dict(zip(['id', 'name', 'address', 'city', 'state', 'zip', 'notes', 'active', 'center_lat', 'center_lng'], r)) for r in c.fetchall()]
-
-    c.execute("""SELECT u.id, u.username, u.full_name, u.email
-                 FROM users u WHERE u.role='property_manager' ORDER BY u.full_name""")
-    pms = []
-    for r in c.fetchall():
-        c.execute("""SELECT c2.id, c2.name FROM wo_pm_communities pc
-                     JOIN wo_communities c2 ON c2.id = pc.community_id WHERE pc.user_id=?""", (r[0],))
-        comms = [{'id': x[0], 'name': x[1]} for x in c.fetchall()]
-        pms.append({'id': r[0], 'username': r[1], 'full_name': r[2], 'email': r[3], 'communities': comms})
-
-    work_orders = _wo_query_work_orders(c, None)
-    conn.close()
-
-    counts = {s: sum(1 for w in work_orders if w['status'] == s) for s in WO_STATUSES}
-    return render_template_string(
-        WORKORDERS_OFFICE_TEMPLATE,
-        full_name=session.get('full_name', session.get('username', 'User')),
-        communities=communities, pms=pms, work_orders=work_orders, counts=counts,
-        portal_url=url_for('wo_portal', _external=True),
-        openclaw_active=WORKORDERS_OPENCLAW_QUOTES_ENABLED)
-
-
-def _workorders_pm_view():
-    user_id = wo_current_user_id()
-    comm_ids = wo_pm_community_ids(user_id)
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    work_orders = _wo_query_work_orders(c, comm_ids)
-    if comm_ids:
-        c.execute("SELECT id, name FROM wo_communities WHERE id IN (%s) ORDER BY name" %
-                  ','.join('?' * len(comm_ids)), comm_ids)
-        my_comms = [{'id': r[0], 'name': r[1]} for r in c.fetchall()]
-    else:
-        my_comms = []
-    conn.close()
-    counts = {s: sum(1 for w in work_orders if w['status'] == s) for s in WO_STATUSES}
-    return render_template_string(
-        WORKORDERS_PM_TEMPLATE,
-        full_name=session.get('full_name', session.get('username', 'User')),
-        work_orders=work_orders, communities=my_comms, counts=counts)
-
-
-def _workorders_tech_view():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    work_orders = _wo_query_work_orders(c, None)
-    conn.close()
-    counts = {s: sum(1 for w in work_orders if w['status'] == s) for s in WO_STATUSES}
-    return render_template_string(
-        WORKORDERS_TECH_TEMPLATE,
-        full_name=session.get('full_name', session.get('username', 'User')),
-        work_orders=work_orders, counts=counts,
-        openclaw_active=WORKORDERS_OPENCLAW_QUOTES_ENABLED)
-
-
-def _wo_query_work_orders(c, community_ids):
-    """Return work orders (optionally scoped to community_ids) as list of dicts."""
-    base = '''SELECT w.id, w.problem, w.category, w.priority, w.status, w.pin_lat, w.pin_lng,
-                     w.tech_username, w.tech_notes, w.quote_status, w.created_at,
-                     h.full_name, h.email, h.phone, h.address, c2.name
-              FROM wo_work_orders w
-              LEFT JOIN wo_homeowners h ON h.id = w.homeowner_id
-              LEFT JOIN wo_communities c2 ON c2.id = w.community_id'''
-    params = []
-    if community_ids is not None:
-        if not community_ids:
-            return []
-        base += " WHERE w.community_id IN (%s)" % ','.join('?' * len(community_ids))
-        params = list(community_ids)
-    base += " ORDER BY CASE w.status WHEN 'pending' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'needs_quote' THEN 2 ELSE 3 END, w.id DESC"
-    c.execute(base, params)
-    keys = ['id', 'problem', 'category', 'priority', 'status', 'pin_lat', 'pin_lng',
-            'tech_username', 'tech_notes', 'quote_status', 'created_at',
-            'homeowner_name', 'homeowner_email', 'homeowner_phone', 'address', 'community_name']
-    return [dict(zip(keys, r)) for r in c.fetchall()]
-
-
-# ── Office: community management ─────────────────────────────────────────────
-@app.route('/workorders/api/community/save', methods=['POST'])
-def wo_community_save():
-    if not _wo_office():
-        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
-    d = request.get_json(silent=True) or {}
-    name = (d.get('name') or '').strip()
-    if not name:
-        return jsonify({'success': False, 'error': 'Community name is required'}), 400
-
-    def _f(v):
-        try:
-            return float(v) if str(v).strip() != '' else None
-        except (ValueError, TypeError):
-            return None
-
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    if d.get('id'):
-        c.execute("""UPDATE wo_communities SET name=?, address=?, city=?, state=?, zip=?,
-                     notes=?, center_lat=?, center_lng=? WHERE id=?""",
-                  (name, d.get('address', ''), d.get('city', ''), d.get('state', ''),
-                   d.get('zip', ''), d.get('notes', ''), _f(d.get('center_lat')),
-                   _f(d.get('center_lng')), d['id']))
-        cid = d['id']
-    else:
-        c.execute("""INSERT INTO wo_communities (name, address, city, state, zip, notes, center_lat, center_lng)
-                     VALUES (?,?,?,?,?,?,?,?)""",
-                  (name, d.get('address', ''), d.get('city', ''), d.get('state', ''),
-                   d.get('zip', ''), d.get('notes', ''), _f(d.get('center_lat')), _f(d.get('center_lng'))))
-        cid = c.lastrowid
-    conn.commit()
-    conn.close()
-    return jsonify({'success': True, 'id': cid})
-
-
-@app.route('/workorders/api/community/delete', methods=['POST'])
-def wo_community_delete():
-    if not _wo_office():
-        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
-    cid = (request.get_json(silent=True) or {}).get('id')
-    if not cid:
-        return jsonify({'success': False, 'error': 'Missing id'}), 400
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM wo_work_orders WHERE community_id=?", (cid,))
-    if c.fetchone()[0] > 0:
-        conn.close()
-        return jsonify({'success': False, 'error': 'Cannot delete a community that still has work orders.'}), 400
-    c.execute("DELETE FROM wo_pm_communities WHERE community_id=?", (cid,))
-    c.execute("DELETE FROM wo_communities WHERE id=?", (cid,))
-    conn.commit()
-    conn.close()
-    return jsonify({'success': True})
-
-
-# ── Office: property-manager account management ──────────────────────────────
-@app.route('/workorders/api/pm/save', methods=['POST'])
-def wo_pm_save():
-    if not _wo_office():
-        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
-    d = request.get_json(silent=True) or {}
-    full_name = (d.get('full_name') or '').strip()
-    username = (d.get('username') or '').strip().lower()
-    email = (d.get('email') or '').strip()
-    password = (d.get('password') or '').strip()
-    community_ids = d.get('community_ids') or []
-
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    try:
-        if d.get('id'):
-            user_id = d['id']
-            c.execute("SELECT username FROM users WHERE id=? AND role='property_manager'", (user_id,))
-            if not c.fetchone():
-                return jsonify({'success': False, 'error': 'Property manager not found'}), 404
-            c.execute("UPDATE users SET full_name=?, email=? WHERE id=?", (full_name, email, user_id))
-            if password:
-                if len(password) < 6:
-                    return jsonify({'success': False, 'error': 'Password must be at least 6 characters'}), 400
-                c.execute("UPDATE users SET password=? WHERE id=?", (generate_password_hash(password), user_id))
-        else:
-            if not all([full_name, username, password]):
-                return jsonify({'success': False, 'error': 'Name, username and password are required'}), 400
-            if len(password) < 6:
-                return jsonify({'success': False, 'error': 'Password must be at least 6 characters'}), 400
-            c.execute("SELECT id FROM users WHERE LOWER(username)=?", (username,))
-            if c.fetchone():
-                return jsonify({'success': False, 'error': 'Username already exists'}), 400
-            c.execute("""INSERT INTO users (username, password, full_name, email, role, created_date)
-                         VALUES (?,?,?,?,'property_manager',?)""",
-                      (username, generate_password_hash(password), full_name, email,
-                       datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
-            user_id = c.lastrowid
-
-        # Reset community assignments
-        c.execute("DELETE FROM wo_pm_communities WHERE user_id=?", (user_id,))
-        for cid in community_ids:
-            try:
-                c.execute("INSERT OR IGNORE INTO wo_pm_communities (user_id, community_id) VALUES (?,?)",
-                          (user_id, int(cid)))
-            except (ValueError, TypeError):
-                pass
-        conn.commit()
-        return jsonify({'success': True, 'id': user_id})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-    finally:
-        conn.close()
-
-
-@app.route('/workorders/api/pm/delete', methods=['POST'])
-def wo_pm_delete():
-    if not _wo_office():
-        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
-    pid = (request.get_json(silent=True) or {}).get('id')
-    if not pid:
-        return jsonify({'success': False, 'error': 'Missing id'}), 400
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("DELETE FROM wo_pm_communities WHERE user_id=?", (pid,))
-    c.execute("DELETE FROM users WHERE id=? AND role='property_manager'", (pid,))
-    conn.commit()
-    conn.close()
-    return jsonify({'success': True})
-
-
-# ── Work order detail + technician/office actions ────────────────────────────
-def _wo_can_see(wo):
-    if _wo_office() or _wo_tech():
-        return True
-    if _wo_pm():
-        return wo['community_id'] in wo_pm_community_ids(wo_current_user_id())
-    return False
-
-
-@app.route('/workorders/api/work_order/<int:wo_id>', methods=['GET'])
-def wo_detail(wo_id):
-    if not (_wo_office() or _wo_pm() or _wo_tech()):
-        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
-    wo = wo_load_full(wo_id)
-    if not wo:
-        return jsonify({'success': False, 'error': 'Not found'}), 404
-    if not _wo_can_see(wo):
-        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
-    return jsonify({'success': True, 'work_order': wo})
-
-
-@app.route('/workorders/api/work_order/update', methods=['POST'])
-def wo_update():
-    """Technician (or office) closeout: notes, status, and quote requests."""
-    if not (_wo_tech() or _wo_office()):
-        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
-    d = request.get_json(silent=True) or {}
-    wo_id = d.get('id')
-    if not wo_id:
-        return jsonify({'success': False, 'error': 'Missing id'}), 400
-    wo = wo_load_full(wo_id)
-    if not wo:
-        return jsonify({'success': False, 'error': 'Not found'}), 404
-
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    new_status = d.get('status')
-    if new_status and new_status not in WO_STATUSES:
-        return jsonify({'success': False, 'error': 'Invalid status'}), 400
-    request_quote = bool(d.get('request_quote'))
-    if request_quote:
-        new_status = 'needs_quote'
-
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    sets, vals = [], []
-    if 'tech_notes' in d:
-        sets.append("tech_notes=?"); vals.append(d.get('tech_notes', ''))
-    if new_status:
-        sets.append("status=?"); vals.append(new_status)
-    sets.append("tech_username=?"); vals.append(session.get('username'))
-    sets.append("updated_at=?"); vals.append(now)
-    vals.append(wo_id)
-    c.execute(f"UPDATE wo_work_orders SET {', '.join(sets)} WHERE id=?", vals)
-    conn.commit()
-
-    quote_info = None
-    if request_quote:
-        c.execute("""INSERT INTO wo_quote_requests (work_order_id, status, created_at, updated_at)
-                     VALUES (?,?,?,?)""", (wo_id, 'ready', now, now))
-        quote_id = c.lastrowid
-        conn.commit()
-        conn.close()
-        # Fire the OpenClaw pipeline (no-op detail when the feature is turned off)
-        threading.Thread(target=process_workorder_quote_request, args=(quote_id,), daemon=True).start()
-        quote_info = {'quote_id': quote_id, 'openclaw_active': WORKORDERS_OPENCLAW_QUOTES_ENABLED}
-    else:
-        conn.close()
-    return jsonify({'success': True, 'quote': quote_info})
-
-
-# ── OpenClaw inbound webhook: receive a drafted quote result ─────────────────
-@app.route('/api/openclaw/workorders/quote', methods=['POST'])
-@csrf.exempt
-def openclaw_workorders_quote_webhook():
-    """
-    Optional inbound webhook so OpenClaw can post a drafted-quote result back
-    against a work order. Authenticated with the shared OPENCLAW_API_KEY.
-    Wired and ready; nothing calls it until the feature is turned on.
-    """
-    if not OPENCLAW_API_KEY:
-        return jsonify({'success': False, 'error': 'OpenClaw integration not configured'}), 503
-    auth = request.headers.get('Authorization', '')
-    if not hmac.compare_digest(auth, f'Bearer {OPENCLAW_API_KEY}'):
-        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-    d = request.get_json(silent=True) or {}
-    wo_id = d.get('work_order_id')
-    if not wo_id:
-        return jsonify({'success': False, 'error': 'Missing work_order_id'}), 400
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    label = d.get('quote_status') or 'Quote draft received from OpenClaw'
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("UPDATE wo_work_orders SET quote_status=?, updated_at=? WHERE id=?", (label, now, wo_id))
-    c.execute("""UPDATE wo_quote_requests SET status='drafted', openclaw_result=?, updated_at=?
-                 WHERE work_order_id=? AND id=(SELECT MAX(id) FROM wo_quote_requests WHERE work_order_id=?)""",
-              (json.dumps(d), now, wo_id, wo_id))
-    conn.commit()
-    conn.close()
-    return jsonify({'success': True})
-
-
-# ── Homeowner public portal ──────────────────────────────────────────────────
-def _wo_load_homeowner(hid):
-    """Load a homeowner + their community as a dict, or None."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""SELECT h.id, h.full_name, h.email, h.phone, h.address, h.community_id,
-                        c2.name, c2.center_lat, c2.center_lng
-                 FROM wo_homeowners h LEFT JOIN wo_communities c2 ON c2.id=h.community_id
-                 WHERE h.id=?""", (hid,))
-    r = c.fetchone()
-    conn.close()
-    if not r:
-        return None
-    return dict(zip(['id', 'full_name', 'email', 'phone', 'address', 'community_id',
-                     'community_name', 'center_lat', 'center_lng'], r))
-
-
-@app.route('/workorders/portal')
-def wo_portal():
-    """Homeowner request portal — no sign-in. We remember details by name."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT id, name, center_lat, center_lng FROM wo_communities WHERE active=1 ORDER BY name")
-    communities = [{'id': r[0], 'name': r[1], 'center_lat': r[2], 'center_lng': r[3]} for r in c.fetchall()]
-    conn.close()
-
-    # Pre-fill from the last person who used this device, if we know them.
-    homeowner = None
-    orders = []
-    hid = session.get('wo_homeowner_id')
-    if hid:
-        homeowner = _wo_load_homeowner(hid)
-        if homeowner:
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            c.execute("""SELECT id, problem, category, priority, status, quote_status, tech_notes, created_at
-                         FROM wo_work_orders WHERE homeowner_id=? ORDER BY id DESC LIMIT 25""", (hid,))
-            keys = ['id', 'problem', 'category', 'priority', 'status', 'quote_status', 'tech_notes', 'created_at']
-            orders = [dict(zip(keys, r)) for r in c.fetchall()]
-            conn.close()
-        else:
-            session.pop('wo_homeowner_id', None)
-    return render_template_string(WO_PORTAL_TEMPLATE, communities=communities,
-                                  homeowner=homeowner, orders=orders)
-
-
-@app.route('/workorders/portal/lookup')
-def wo_portal_lookup():
-    """As a homeowner types their name, return their saved details so they
-    never have to re-enter email/phone/community/address."""
-    name = (request.args.get('name') or '').strip()
-    if len(name) < 2:
-        return jsonify({'found': False})
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""SELECT id, full_name, email, phone, community_id, address
-                 FROM wo_homeowners WHERE LOWER(full_name)=LOWER(?) ORDER BY last_login DESC, id DESC LIMIT 1""",
-              (name,))
-    r = c.fetchone()
-    conn.close()
-    if not r:
-        return jsonify({'found': False})
-    return jsonify({'found': True, 'homeowner': dict(zip(
-        ['id', 'full_name', 'email', 'phone', 'community_id', 'address'], r))})
-
-
-@app.route('/workorders/portal/api/submit', methods=['POST'])
-@limiter.limit("20 per minute")
-def wo_portal_submit():
-    """Create a work order, remembering the homeowner's details by name/email."""
-    d = request.get_json(silent=True) or {}
-    full_name = (d.get('full_name') or '').strip()
-    problem = (d.get('problem') or '').strip()
-    if not full_name:
-        return jsonify({'success': False, 'error': 'Please enter your name'}), 400
-    if not problem:
-        return jsonify({'success': False, 'error': 'Please describe the problem'}), 400
-
-    email = (d.get('email') or '').strip().lower()
-    phone = (d.get('phone') or '').strip()
-    address = (d.get('address') or '').strip()
-    community_id = d.get('community_id')
-    try:
-        community_id = int(community_id) if community_id else None
-    except (ValueError, TypeError):
-        community_id = None
-
-    def _f(v):
-        try:
-            return float(v) if str(v).strip() != '' else None
-        except (ValueError, TypeError):
-            return None
-
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
-    # Find an existing record by email, otherwise by name — then keep it current.
-    hid = None
-    if email:
-        c.execute("SELECT id FROM wo_homeowners WHERE email=?", (email,))
-        row = c.fetchone()
-        if row:
-            hid = row[0]
-    if hid is None:
-        c.execute("SELECT id FROM wo_homeowners WHERE LOWER(full_name)=LOWER(?) ORDER BY id DESC LIMIT 1", (full_name,))
-        row = c.fetchone()
-        if row:
-            hid = row[0]
-
-    if hid is not None:
-        c.execute("""UPDATE wo_homeowners SET full_name=?, email=COALESCE(NULLIF(?, ''), email),
-                     phone=COALESCE(NULLIF(?, ''), phone),
-                     community_id=COALESCE(?, community_id),
-                     address=COALESCE(NULLIF(?, ''), address), last_login=? WHERE id=?""",
-                  (full_name, email, phone, community_id, address, now, hid))
-    else:
-        c.execute("""INSERT INTO wo_homeowners (full_name, email, phone, password, community_id, address, created_at, last_login)
-                     VALUES (?,?,?,?,?,?,?,?)""",
-                  (full_name, email, phone, '', community_id, address, now, now))
-        hid = c.lastrowid
-
-    # Use the homeowner's saved community when they didn't pick one this time.
-    if community_id is None:
-        c.execute("SELECT community_id FROM wo_homeowners WHERE id=?", (hid,))
-        row = c.fetchone()
-        community_id = row[0] if row else None
-
-    c.execute("""INSERT INTO wo_work_orders
-                 (homeowner_id, community_id, problem, category, priority, status,
-                  pin_lat, pin_lng, pin_note, created_at, updated_at)
-                 VALUES (?,?,?,?,?,'pending',?,?,?,?,?)""",
-              (hid, community_id, problem, d.get('category', ''), d.get('priority', 'normal'),
-               _f(d.get('pin_lat')), _f(d.get('pin_lng')), d.get('pin_note', ''), now, now))
-    wo_id = c.lastrowid
-    conn.commit()
-    conn.close()
-
-    # Remember this person on this device so the form is pre-filled next time.
-    session['wo_homeowner_id'] = hid
-    session['wo_homeowner_name'] = full_name
-    return jsonify({'success': True, 'id': wo_id})
-
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # CASH FLOW & AR
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -40625,21 +39248,84 @@ def _hash_plaintext_passwords():
 
 _hash_plaintext_passwords()
 init_cashflow_db()
-# Time-Off Log (technician time off and call-outs) lives in timeoff.py.
+# Time-Off Log (technician time off and call-outs) lives in timeoff.py. It is parked under
+# "Features Coming Soon": the tile shows but nothing is registered, so /timeoff and
+# /api/time-off* return 404. Set this to True to switch it back on.
+TIMEOFF_ENABLED = False
 from timeoff import init_timeoff, timeoff_allowed
-init_timeoff(app, csrf, DB_PATH)
+if TIMEOFF_ENABLED:
+    init_timeoff(app, csrf, DB_PATH)
 
 # Pumps (pump/diver/filter/SCADA work from request to invoice) lives in pumps.py.
+# With PUMPS_URL set it runs as its own Railway service (pumps_server.py, see
+# PUMPS_SERVICE.md), so a Pumps update doesn't redeploy this app: /pumps here
+# signs the person in there, and Receivables gets the Jobber token from it.
+# Without PUMPS_URL it runs inside this app, as it always has.
 from pumps import init_pumps, pumps_allowed
-init_pumps(app, csrf, DB_PATH, data_dir=DATA_DIR, secret_key=app.secret_key, website_url=WEBSITE_URL,
-           email_enabled=PO_EMAIL_MONITORING_ENABLED, fetch_emails=_fetch_emails_for_vi_scan,
-           graph_attachments=extract_attachments_from_graph_message,
-           email_attachments=extract_attachments_from_email, log_activity=log_activity,
-           scheduler_available=SCHEDULER_AVAILABLE)
+import pumps_link
+PUMPS_URL = os.environ.get('PUMPS_URL', '').rstrip('/')
+PUMPS_INTERNAL_URL = os.environ.get('PUMPS_INTERNAL_URL', '').rstrip('/')
+PUMPS_SHARED_SECRET = os.environ.get('PUMPS_SHARED_SECRET', '')
+if PUMPS_URL and not PUMPS_SHARED_SECRET:
+    print('⚠ PUMPS_URL is set but PUMPS_SHARED_SECRET is not - Pumps stays inside this app')
+    PUMPS_URL = ''
+if PUMPS_URL and not PUMPS_INTERNAL_URL:
+    print('⚠ PUMPS_INTERNAL_URL is not set - Receivables cannot reach Jobber through Pumps')
+_pumps_jobber = pumps_link.JobberLink(PUMPS_INTERNAL_URL or PUMPS_URL, PUMPS_SHARED_SECRET)
+if PUMPS_URL:
+    print(f'✓ Pumps runs as its own service: {PUMPS_URL}')
+
+    from urllib.parse import urlencode
+    from flask import Blueprint
+    # Named 'pumps' / 'page' like the real Pumps page, so url_for('pumps.page') still works here.
+    _pumps_handoff_bp = Blueprint('pumps', __name__)
+
+    def _pumps_handoff(rest=''):
+        if not pumps_allowed():
+            return redirect(url_for('login'))
+        ticket = pumps_link.make_ticket(PUMPS_SHARED_SECRET, session['username'], session.get('role', ''),
+                                        session.get('full_name') or '')
+        nxt = '/pumps' + ('/' + rest if rest else '')
+        return redirect(f'{PUMPS_URL}/pumps/sso?' + urlencode({'t': ticket, 'next': nxt}))
+
+    _pumps_handoff_bp.add_url_rule('/pumps', 'page', _pumps_handoff)
+    _pumps_handoff_bp.add_url_rule('/pumps/<path:rest>', 'handoff', _pumps_handoff)
+    app.register_blueprint(_pumps_handoff_bp)
+
+
+@app.route('/internal/pumps-export')
+def pumps_export():
+    """The switch-over: the Pumps service fetches its data from here once
+    (pumps_link.import_bundle). Private network and shared secret only, and
+    only once Pumps has stopped running here. This app's copy is left as is."""
+    if not request.host.split(':')[0].endswith('.railway.internal'):
+        return 'Not found', 404
+    if not pumps_link.secret_ok(PUMPS_SHARED_SECRET, request.headers.get('X-Pumps-Secret')):
+        return 'Unauthorized', 401
+    if not PUMPS_URL:
+        return 'Pumps still runs in the Office App - set PUMPS_URL here first', 409
+    import shutil
+    import tempfile
+    out = os.path.join(tempfile.mkdtemp(prefix='pumps_export_'), 'pumps_export.zip')
+    manifest = pumps_link.export_bundle(DB_PATH, DATA_DIR, out)
+    print(f"✓ Pumps export: {sum(manifest['tables'].values())} rows, {len(manifest['files'])} files")
+    resp = send_file(out, mimetype='application/zip', as_attachment=True, download_name='pumps_export.zip')
+    resp.call_on_close(lambda: shutil.rmtree(os.path.dirname(out), ignore_errors=True))
+    return resp
+
+
+if not PUMPS_URL:
+    init_pumps(app, csrf, DB_PATH, data_dir=DATA_DIR, secret_key=app.secret_key, website_url=WEBSITE_URL,
+               email_enabled=PO_EMAIL_MONITORING_ENABLED, fetch_emails=_fetch_emails_for_vi_scan,
+               graph_attachments=extract_attachments_from_graph_message,
+               email_attachments=extract_attachments_from_email, log_activity=log_activity,
+               scheduler_available=SCHEDULER_AVAILABLE,
+               graph_token=_get_graph_access_token if MS_GRAPH_ENABLED else None, mail_from=PO_EMAIL_ADDRESS)
 
 # FileMaker (a FileMaker Pro-style database builder, Features Coming Soon) lives in filemaker.py.
 from filemaker import init_filemaker, filemaker_allowed
 init_filemaker(app, csrf, DB_PATH, data_dir=DATA_DIR, log_activity=log_activity)
+
 if not CASHFLOW_ENABLED:
     # Switched off: forget any Jobber or QuickBooks sign-in, so neither the
     # database nor a downloaded backup holds a working key to either account.
@@ -40647,6 +39333,20 @@ if not CASHFLOW_ENABLED:
         if _cf_state(_k):
             _cf_save_state(_k, {})
             print(f"✓ Cash flow is off: cleared stored {_k.split('_')[0]} sign-in")
+
+# Receivables (QuickBooks A/R follow-ups, retainage, lien deadlines) lives in receivables.py.
+# Mail goes through the Microsoft 365 app; Jobber is read through the Pumps app's connection.
+import pumps as _pumps
+from receivables import init_receivables, receivables_allowed
+init_receivables(app, DB_PATH, data_dir=DATA_DIR, get_setting=get_setting, set_setting=set_setting,
+                 graph_token=_get_graph_access_token, graph_enabled=MS_GRAPH_ENABLED,
+                 jobber_token=_pumps_jobber.token if PUMPS_URL else _pumps._access_token,
+                 jobber_version=_pumps.JOBBER_API_VERSION,
+                 jobber_connected=(_pumps_jobber.connected if PUMPS_URL else
+                                   lambda: _pumps.jobber_status()['connected']),
+                 anthropic_client=(anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+                                   if ANTHROPIC_AVAILABLE and ANTHROPIC_API_KEY else None),
+                 scheduler_cls=BackgroundScheduler if SCHEDULER_AVAILABLE else None, website_url=WEBSITE_URL)
 
 # Set up background scheduler for automatic email checking
 if SCHEDULER_AVAILABLE and PO_EMAIL_MONITORING_ENABLED:

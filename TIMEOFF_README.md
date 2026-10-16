@@ -1,5 +1,10 @@
 # Time-Off Log
 
+> **Switched off for now.** The tile sits in "Features Coming Soon" on the dashboard and can't
+> be opened; `/timeoff` and the `/api/time-off` endpoints return 404. To turn it back on, set
+> `TIMEOFF_ENABLED = True` in `app.py` and move the tile back into the main grid. Existing
+> records in `timeoff_requests` and `timeoff_audit` are untouched.
+
 A new app tile in The Office App for technician time-off requests and sick call-outs.
 Beatriz approves or denies requests; OpenClaw (the AI scheduling assistant) adds them and
 reads them through an API.
