@@ -5287,10 +5287,17 @@ def duplicate_jobber_invoices(conn, days=30):
     rows = [dict(r) for r in conn.execute(
         "SELECT * FROM pump_jobber_items WHERE kind='invoice' AND total IS NOT NULL AND client_id != '' "
         "AND status NOT IN ('voided', 'bad_debt') ORDER BY client_id, created_at")]
+    # One bill's stations, each invoiced on its own job (The Carlisle's Entrance and Exit), are not duplicates.
+    together = []
+    for r in conn.execute("SELECT jobber FROM pump_docs WHERE kind='bill' AND jobber LIKE '%site_invoices%'"):
+        dj = json.loads(r['jobber'] or '{}')
+        together.append({x for x in [dj.get('invoice_id')] + [x.get('invoice_id') for x in dj.get('site_invoices') or []] if x})
     found = []
     for i, a in enumerate(rows):
         for b in rows[i + 1:]:
             if b['client_id'] != a['client_id'] or abs((a['total'] or 0) - (b['total'] or 0)) > 0.5:
+                continue
+            if any(a['jobber_id'] in t and b['jobber_id'] in t for t in together):
                 continue
             try:
                 gap = abs((datetime.strptime(b['created_at'][:10], '%Y-%m-%d') -
@@ -5458,11 +5465,12 @@ def _invoice_visit_field():
 
 
 def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', actor='system', force=False,
-                         visit_ids=None):
+                         visit_ids=None, extra=False, ignore_ids=(), site=''):
     """Create the invoice in Jobber as a DRAFT. Nothing is sent: the only
     mutation used is invoiceCreate, and check_mutation_allowed() refuses any
     other. If Jobber ever hands back a status other than draft, an issue is
-    raised so someone looks at it."""
+    raised so someone looks at it. extra: another station's invoice for a bill
+    already invoiced once (see draft_site_invoices) - kept beside the first."""
     conn = _conn()
     try:
         row = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
@@ -5471,13 +5479,13 @@ def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', a
         doc = _doc_dict(row)
         if doc['kind'] != 'bill':
             raise ValueError('Only a bill can be turned into an invoice')
-        if (doc.get('jobber') or {}).get('invoice_id'):
+        if (doc.get('jobber') or {}).get('invoice_id') and not extra:
             raise ValueError(f"Already drafted as Jobber invoice #{doc['jobber'].get('invoice_number')}")
         if not client_id:
             raise ValueError('Choose the Jobber client first')
         items = _jobber_lines(line_items, 'invoice')
         if not force:
-            dup = existing_jobber_record('invoice', client_id, items)
+            dup = existing_jobber_record('invoice', client_id, items, ignore_ids=tuple(ignore_ids))
             if dup:
                 raise PossibleDuplicate('invoice', dup)
         due = invoice_due_details()
@@ -5507,9 +5515,31 @@ def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', a
         ref = {'invoice_id': inv.get('id'), 'invoice_number': str(inv.get('invoiceNumber') or ''),
                'invoice_status': status, 'invoice_uri': inv.get('jobberWebUri'), 'client_id': client_id,
                'job_id': job_id, 'drafted_by': actor, 'drafted_at': _now_text()}
+        if site:
+            ref['site'] = site
+        dj = doc.get('jobber') or {}
+        dj = {**dj, 'site_invoices': (dj.get('site_invoices') or []) + [ref]} if extra else {**dj, **ref}
         conn.execute('UPDATE pump_docs SET jobber=?, status=?, updated_at=? WHERE id=?',
-                     (json.dumps({**(doc.get('jobber') or {}), **ref}), 'done', _now_text(), doc_id))
+                     (json.dumps(dj), 'done', _now_text(), doc_id))
         total = round(sum(i['quantity'] * i['unitPrice'] for i in items), 2)
+        if doc.get('case_id') and extra:
+            cid = doc['case_id']
+            case = conn.execute('SELECT jobber, amount FROM pump_cases WHERE id=?', (cid,)).fetchone()
+            j = json.loads(case['jobber'] or '{}')
+            j['site_invoices'] = (j.get('site_invoices') or []) + [
+                {'id': inv.get('id'), 'number': ref['invoice_number'], 'uri': ref['invoice_uri'], 'status': status,
+                 'site': site, 'job_id': job_id}]
+            conn.execute('UPDATE pump_cases SET jobber=?, amount=?, updated_at=? WHERE id=?',
+                         (json.dumps(j), round((case['amount'] or 0) + total, 2), _now_text(), cid))
+            _event(conn, actor, 'draft invoice created',
+                   f"{site + ': ' if site else ''}Jobber invoice #{ref['invoice_number']} ({status or 'status unknown'}) - "
+                   f"${total:,.2f}", case_id=cid, doc_id=doc_id)
+            if status and status != 'draft':
+                open_issue(conn, cid, 'not_draft',
+                           f"Jobber reports invoice #{ref['invoice_number']} as '{status}', not draft. "
+                           'Open it in Jobber and check it has not gone to the client.', doc_id=doc_id)
+            conn.commit()
+            return {**ref, 'total': total}
         if doc.get('case_id'):
             cid = doc['case_id']
             case = conn.execute('SELECT jobber, sei_invoice_number FROM pump_cases WHERE id=?', (cid,)).fetchone()
@@ -5567,10 +5597,16 @@ def _check_signed(doc_id, version, exp, sig):
     return hmac.compare_digest(good, sig)
 
 
-def report_note_text(doc):
+def report_note_text(doc, section=None):
     rf = doc.get('report_fields') or {}
     # Only ever the rebranded report's lines - never the sub's original.
     raw = rf.get('lines') if rf.get('from_branded') else []
+    if section is not None and raw:
+        secs = report_sections(doc)
+        if 0 <= section < len(secs):
+            raw = secs[section]['lines']
+            rf = {**rf, 'title': f"{rf.get('title') or 'Report'} - {secs[section]['location']}",
+                  'date': secs[section]['date'] or rf.get('date')}
     lines = [l for l in (raw or []) if l and not re.match(r'^(STAHLMAN|Installation •|Landscape Drainage)', l)]
     head = f"Pump report - {rf.get('title') or 'Report'}" + (f" - {rf.get('date')}" if rf.get('date') else '')
     body = '\n'.join(lines[:60])
@@ -5687,6 +5723,9 @@ def auto_log_report(doc_id, actor='Pumps (automatic)'):
     if not doc['has_branded']:
         return _note_pending(doc, "The report couldn't be rebranded, so it wasn't put in Jobber by itself.", actor)
     try:
+        sites = section_targets(doc, case)
+        if sites:
+            return log_sections(doc, sites, actor)
         t = resolve_report_target(doc, case)
         if t.get('id'):
             return {**log_report_to_jobber(doc_id, t['type'], t['id'], actor), 'target': t['label'], 'how': t['how']}
@@ -5709,10 +5748,268 @@ def _note_pending(doc, reason, actor):
     return {'pending': reason}
 
 
-def log_report_to_jobber(doc_id, target_type, target_id, actor='system', message=None):
+# ── Two pump stations in one report ──────────────────────────────────────────
+# The Carlisle (Greenscapes, Oct 2026): Wettech sends one report with a page
+# for the Entrance pump and one for the Exit pump. Each station has its own
+# recurring job in Jobber (#3249 Entrance, #3250 Exit), so each page is its own
+# note on its own job, and the bill is invoiced once per job.
+
+_LOC_ROW = re.compile(r'\bLOCATION\b\s*[·:|]\s*([^·|]+)', re.I)
+_DATE_ROW = re.compile(r'\bDATE\b\s*[·:|]\s*(\d{1,4}[-/.]\d{1,2}[-/.]\d{2,4})', re.I)
+_REPORT_HEAD = re.compile(r'^(STAHLMAN|Installation •|Landscape Drainage|Water Equipment Tech|.*\bREPORT\s*$)', re.I)
+# Words that say nothing about which station ("North Pump", "Pump Station").
+_STATION_WORDS = {'pump', 'pumps', 'station', 'the', 'and', 'site', 'irrigation', 'main', 'system'}
+
+
+def report_sections(doc):
+    """A report's pages, one per pump station: [{'location', 'date', 'lines'}],
+    in order. [] when the report is for one station."""
+    rf = doc.get('report_fields') or {}
+    lines = rf.get('lines') or (doc.get('text_excerpt') or '').replace(' | ', ' · ').split('\n')
+    secs, pre = [], []
+    for line in lines or []:
+        m = _LOC_ROW.search(line or '')
+        if not (m and m.group(1).strip()):
+            (secs[-1]['lines'] if secs else pre).append(line)
+            continue
+        if secs:
+            # The next page's letterhead, title and date came before its LOCATION row.
+            prev = secs[-1]['lines']
+            k = next((i for i in range(len(prev) - 1, 0, -1) if re.search(r'\bREPORT\s*$', prev[i] or '', re.I)), None)
+            if k is not None:
+                while k > 1 and _REPORT_HEAD.match(prev[k - 1] or ''):
+                    k -= 1
+                pre, secs[-1]['lines'] = prev[k:], prev[:k]
+        secs.append({'location': m.group(1).strip(), 'date': '', 'lines': pre + [line]})
+        pre = []
+    for sec in secs:
+        d = next((_DATE_ROW.search(l or '') for l in sec['lines'] if _DATE_ROW.search(l or '')), None)
+        sec['date'] = d.group(1) if d else ''
+    if len({sec['location'].lower() for sec in secs}) < 2:
+        return []
+    return secs
+
+
+def _section_pdf(branded_path, location):
+    """The pages of the rebranded report's PDF for one station, as PDF bytes;
+    None when the PDF can't be split by station."""
+    path = _branded_pdf_path(branded_path)
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        from PyPDF2 import PdfReader, PdfWriter
+        reader = PdfReader(path)
+        want = re.sub(r'\s+', ' ', location).strip().lower()
+        keep, on = [], False
+        for page in reader.pages:
+            text = re.sub(r'\s+', ' ', page.extract_text() or '')
+            m = re.search(r'\bLOCATION\b\s*:?\s*(.+)', text, re.I)
+            if m:
+                on = m.group(1).strip().lower().startswith(want)
+            if on:
+                keep.append(page)
+        if not keep or len(keep) == len(reader.pages):
+            return None
+        writer = PdfWriter()
+        for page in keep:
+            writer.add_page(page)
+        buf = io.BytesIO()
+        writer.write(buf)
+        return buf.getvalue()
+    except Exception as e:
+        print(f'  ⚠ Pumps: could not split {os.path.basename(path)} by station: {e}')
+        return None
+
+
+def station_job(jobs, site, location):
+    """The live recurring job for one station of a site: its title or property
+    names the station ("Entrance" -> "The Carlisle Naples- Pump #2 Entrance")
+    and the site. None unless exactly one fits."""
+    loc = [w for w in re.findall(r'[a-z0-9#]+', (location or '').lower()) if len(w) > 2 and w not in _STATION_WORDS]
+    where = [w for w in re.findall(r'[a-z0-9]+', (site or '').lower()) if len(w) > 3 and w not in _STATION_WORDS]
+    if not loc:
+        return None
+    live = [j for j in jobs if j.get('type') == 'recurring' and j.get('status') != 'archived']
+    text = lambda j: f"{j.get('title') or ''} {j.get('property_label') or ''}".lower()
+    at_site = [j for j in live if not where or any(w in text(j) for w in where)]
+    hit = [j for j in at_site if any(re.search(rf'(?<![a-z0-9]){re.escape(w)}(?![a-z0-9])', text(j)) for w in loc)]
+    return hit[0] if len(hit) == 1 else None
+
+
+def section_targets(doc, case=None):
+    """For a report covering more than one station, each page's job:
+    [{'section', 'location', 'job'}] (job None when no single job fits). None
+    when the report is one station's, or its pages don't land on different jobs
+    (Evergreen's North and South pumps are one job) - it's logged as one note."""
+    secs = report_sections(doc)
+    if not secs:
+        return None
+    case = case or {}
+    j = case.get('jobber') if isinstance(case.get('jobber'), dict) else json.loads(case.get('jobber') or '{}')
+    alias = match_site_alias(doc, case)
+    client_id = (alias or {}).get('client_id') or (j.get('client') or {}).get('id') or case.get('jobber_client_id')
+    if not client_id:
+        pick = pick_client(search_clients(doc.get('client_name') or case.get('client_name') or ''))
+        client_id = pick['id'] if pick else None
+    if not client_id:
+        return None
+    jobs = recurring_jobs(client_id)
+    site = (doc.get('report_fields') or {}).get('customer') or doc.get('client_name') or case.get('client_name') or ''
+    out = [{'section': i, 'location': sec['location'], 'date': sec['date'], 'client_id': client_id,
+            'job': station_job(jobs, site, sec['location'])} for i, sec in enumerate(secs)]
+    if len({t['job']['id'] for t in out if t['job']}) < 2:
+        return None
+    return out
+
+
+def log_sections(doc, sites, actor):
+    """Each station's page as its own note on its own job. A page whose job
+    isn't clear waits for a person, said on the report."""
+    done = (doc.get('jobber') or {}).get('sections') or {}
+    logged, waiting = [], []
+    for t in sites:
+        if str(t['section']) in done:
+            continue
+        if not t['job']:
+            waiting.append(t['location'])
+            continue
+        ref = log_report_to_jobber(doc['id'], 'job', t['job']['id'], actor, section=t['section'])
+        logged.append({**ref, 'target': f"#{t['job'].get('number')} {t['job'].get('title')}"})
+    out = {'sections': logged}
+    if waiting:
+        conn = _conn()
+        try:
+            doc = _doc_dict(conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc['id'],)).fetchone())
+        finally:
+            conn.close()
+        out.update(_note_pending(doc, f"No clear Jobber job for the {' and '.join(waiting)} page - choose it "
+                                      '(Log in Jobber).', actor))
+    if logged and doc.get('case_id'):
+        # The bill came first: its other station's invoice now that the report says there are two.
+        conn = _conn()
+        try:
+            bills = [r['id'] for r in conn.execute("SELECT id FROM pump_docs WHERE case_id=? AND kind='bill' AND "
+                                                   "status != 'dismissed' AND jobber LIKE '%invoice_id%'",
+                                                   (doc['case_id'],))]
+        finally:
+            conn.close()
+        for bid in bills:
+            if AUTO_DRAFT_INVOICES:
+                try:
+                    draft_site_invoices(bid, actor)
+                except (JobberError, ValueError) as e:
+                    print(f'  ⚠ Pumps: second station invoice for bill {bid} not drafted: {e}')
+    return out
+
+
+def _site_report(conn, doc, case):
+    """The report that came with a bill: on its item, else the same site's report within 45 days."""
+    rows = []
+    if (case or {}).get('id'):
+        rows = conn.execute("SELECT * FROM pump_docs WHERE case_id=? AND kind='report' AND status != 'dismissed' "
+                            'ORDER BY id DESC', (case['id'],)).fetchall()
+    if not rows and doc.get('client_name'):
+        since = ((_iso_date(doc.get('doc_date')) and date.fromisoformat(_iso_date(doc.get('doc_date')))) or _today()) \
+            - timedelta(days=45)
+        rows = conn.execute("SELECT * FROM pump_docs WHERE kind='report' AND status != 'dismissed' AND client_name=? "
+                            'AND created_at >= ? ORDER BY id DESC', (doc['client_name'], since.isoformat())).fetchall()
+    for r in rows:
+        d = _doc_dict(r)
+        if report_sections(d):
+            return d
+    return None
+
+
+def bill_sites(doc, case=None):
+    """The stations a bill covers, each with its own recurring job:
+    [{'location', 'job_id'}], from the report that came with it - the jobs its
+    pages were logged on, else the ones found now. [] for one station."""
+    conn = _conn()
+    try:
+        rep = _site_report(conn, doc, case)
+    finally:
+        conn.close()
+    if not rep:
+        return []
+    done = (rep.get('jobber') or {}).get('sections') or {}
+    secs = report_sections(rep)
+    if len(done) == len(secs) and all(v.get('note_target') == 'job' for v in done.values()) and \
+            len({v['note_target_id'] for v in done.values()}) >= 2:
+        return [{'location': secs[int(k)]['location'], 'job_id': v['note_target_id']} for k, v in sorted(done.items())]
+    sites = section_targets(rep, case) or []
+    return [{'location': t['location'], 'job_id': t['job']['id']} for t in sites if t['job']]
+
+
+def draft_site_invoices(doc_id, actor='system'):
+    """One draft invoice per station's job for a bill covering two (The
+    Carlisle: Entrance #3249 and Exit #3250), each at its job's price. Drafts
+    only the ones not made yet - the first may already be there. None when the
+    bill is for one station."""
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+        doc = _doc_dict(row) if row else None
+        case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (doc['case_id'],)).fetchone()) \
+            if doc and doc.get('case_id') else {}
+    finally:
+        conn.close()
+    if not doc or doc['kind'] != 'bill':
+        raise ValueError('Not a bill')
+    sites = bill_sites(doc, case)
+    if len(sites) < 2:
+        return None
+    J = doc.get('jobber') or {}
+    have = {x['job_id'] for x in J.get('site_invoices') or []} | ({J.get('job_id')} if J.get('invoice_id') else set())
+    made = [x for x in [J.get('invoice_id')] + [x['invoice_id'] for x in J.get('site_invoices') or []] if x]
+    client_id = invoice_client(doc, case)
+    if not client_id:
+        raise ValueError('Choose the Jobber client first')
+    y, m = bill_service_month(doc)
+    month = date(y, m, 1).strftime('%B %Y')
+    where = case.get('client_name') or doc.get('client_name') or ''
+    bill_lines = suggest_invoice(doc, case).get('line_items') or []
+    out = []
+    for site in sites:
+        if site['job_id'] in have:
+            continue
+        job = job_detail(site['job_id'])
+        if not job.get('line_items'):
+            out.append({'location': site['location'], 'pending': f"Job #{job.get('number')} has no price in Jobber"})
+            continue
+        lines = whole_dollars(_with_bill_notes(job['line_items'], bill_lines))
+        subject = f"Pump service - {where} - {site['location']} - {month}"[:255]
+        visit = complete_visit_for_bill(doc, case, job, actor)
+        first = not (doc.get('jobber') or {}).get('invoice_id') and not out
+        res = create_draft_invoice(doc_id, client_id, lines, subject, job['id'], actor, visit_ids=_visit_ids(visit),
+                                   extra=not first, ignore_ids=tuple(made), site=site['location'])
+        if first:
+            invoiced_on_job(doc, case, {**job, 'type': 'recurring'}, actor)
+            doc['jobber'] = {**(doc.get('jobber') or {}), 'invoice_id': res.get('invoice_id')}
+        made.append(res.get('invoice_id'))
+        have.add(job['id'])
+        out.append({**res, 'location': site['location'], 'job': {k: job.get(k) for k in ('id', 'number', 'title', 'uri')}})
+    return {'invoices': out}
+
+
+def site_invoices_left(doc, case=None):
+    """The stations of a bill already invoiced once that still need their own invoice."""
+    J = doc.get('jobber') or {}
+    if doc.get('kind') != 'bill' or not J.get('invoice_id'):
+        return []
+    try:
+        sites = bill_sites(doc, case)
+    except JobberError:
+        return []
+    have = {x['job_id'] for x in J.get('site_invoices') or []} | {J.get('job_id')}
+    return [s for s in sites if s['job_id'] not in have] if len(sites) >= 2 else []
+
+
+def log_report_to_jobber(doc_id, target_type, target_id, actor='system', message=None, section=None):
     """Add the report as a note on the pump's job (or the client). Tries to
     attach the rebranded file; if Jobber will not take the attachment, the note
-    is saved with a link to the file in this app instead."""
+    is saved with a link to the file in this app instead. section: one pump
+    station's page of a report covering two (The Carlisle's Entrance and Exit) -
+    its own note, with only its page, on its own job."""
     if target_type not in NOTE_MUTATION:
         raise ValueError('Note target must be job, client, request or quote')
     conn = _conn()
@@ -5724,7 +6021,17 @@ def log_report_to_jobber(doc_id, target_type, target_id, actor='system', message
         if doc['kind'] != 'report':
             raise ValueError('Only a report can be logged as a note')
         mutation, id_arg, input_type, field = NOTE_MUTATION[target_type]
-        text = message or report_note_title(doc)
+        sec = None
+        if section is not None:
+            secs = report_sections(doc)
+            if not 0 <= section < len(secs):
+                raise ValueError('This report has no such page')
+            sec = secs[section]
+            rf = doc.get('report_fields') or {}
+            text = message or f"{report_note_title({**doc, 'report_fields': {**rf, 'date': sec['date'] or rf.get('date')}})}" \
+                              f" - {sec['location']}"
+        else:
+            text = message or report_note_title(doc)
         q = (f'mutation PumpsReportNote($id: EncodedId!, $input: {input_type}!) {{ {mutation}({id_arg}: $id, '
              f'input: $input) {{ {field} {{ id }} userErrors {{ message path }} }} }}')
         # The PDF, as the office attaches them; the Word file when there is no PDF.
@@ -5734,6 +6041,10 @@ def log_report_to_jobber(doc_id, target_type, target_id, actor='system', message
         # Named as the vendor sent it ("10-26  Spanish Wells"), only the extension changes. Jobber
         # takes the name from the link, so it goes on the end of it.
         fname = _vendor_file_name(doc['file_name'], '.pdf' if has_pdf else '.docx')
+        if sec and has_pdf and _section_pdf(row['branded_path'], sec['location']):
+            # Only this station's page.
+            version = f'section{section}'
+            fname = _vendor_file_name(doc['file_name'], f" - {sec['location']}.pdf")
         url = _signed_file_url(doc_id, version, days=7, name=fname)
         attached = False
         data = None
@@ -5749,7 +6060,7 @@ def log_report_to_jobber(doc_id, target_type, target_id, actor='system', message
                 data = None
         if not attached:
             # No file on the note: put the (rebranded) report's text and a link in it.
-            data = jobber_gql(q, {'id': target_id, 'input': {'message': f'{text}\n\n{report_note_text(doc)}'
+            data = jobber_gql(q, {'id': target_id, 'input': {'message': f'{text}\n\n{report_note_text(doc, section)}'
                                                                         if not message else text}})
         payload = data.get(mutation) or {}
         errs = payload.get('userErrors') or []
@@ -5760,20 +6071,32 @@ def log_report_to_jobber(doc_id, target_type, target_id, actor='system', message
                'note_attached_file': attached, 'note_title': text, 'note_pdf': has_pdf, 'logged_by': actor,
                'logged_at': _now_text()}
         j = {k: v for k, v in (doc.get('jobber') or {}).items() if k != 'note_pending'}
+        if sec:
+            j['sections'] = {**(j.get('sections') or {}), str(section): {**ref, 'location': sec['location']}}
+            if len(j['sections']) < len(report_sections(doc)):
+                # The other station's note still to go.
+                conn.execute('UPDATE pump_docs SET jobber=?, updated_at=? WHERE id=?', (json.dumps(j), _now_text(), doc_id))
+                if doc.get('case_id'):
+                    _event(conn, actor, 'report logged in Jobber', f"{sec['location']} page - note on {target_type}",
+                           case_id=doc['case_id'], doc_id=doc_id)
+                conn.commit()
+                return {**ref, 'section': section, 'location': sec['location']}
+            ref = {**ref, 'note_id': next(iter(j['sections'].values()))['note_id']}
         conn.execute('UPDATE pump_docs SET jobber=?, status=?, updated_at=? WHERE id=?',
                      (json.dumps({**j, **ref}), 'done', _now_text(), doc_id))
         if doc.get('case_id'):
             _set_step(conn, doc['case_id'], 'report_logged', at=_today().isoformat(), by=actor)
-            if target_type == 'job':
+            if target_type == 'job' and not sec:
                 case = conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (doc['case_id'],)).fetchone()
                 j = json.loads(case['jobber'] or '{}')
                 j.setdefault('job', {'id': target_id})
                 conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(j), doc['case_id']))
             _event(conn, actor, 'report logged in Jobber',
-                   f"note on {target_type}" + (' with the file attached' if attached else ' (file linked, not attached)'),
+                   (f"{sec['location']} page - " if sec else '') + f"note on {target_type}" +
+                   (' with the file attached' if attached else ' (file linked, not attached)'),
                    case_id=doc['case_id'], doc_id=doc_id)
         conn.commit()
-        return ref
+        return {**ref, 'section': section, 'location': sec['location']} if sec else ref
     finally:
         conn.close()
 
@@ -5953,6 +6276,20 @@ def work_queue(conn):
         else:
             by_stage.setdefault(c['stage'], []).append(c)
     chase.sort(key=lambda c: (c['chase']['check_on'], c['id']))
+    # A drafted invoice not sent yet is always "Send invoice", whatever step the job is on (Sunshine Lake
+    # Park, Oct 2026: its job sat on "Report logged", which has no list, so draft #36869 showed nowhere).
+    for st in [k for k in by_stage if k not in ('closed', 'done')]:
+        stay = []
+        for c in by_stage[st]:
+            inv = (c.get('jobber') or {}).get('invoice') or {}
+            drafted = ((c.get('steps') or {}).get('invoice_drafted') or {}).get('at')
+            sent = ((c.get('steps') or {}).get('closed') or {}).get('at')
+            if (inv.get('id') or (drafted and c.get('sei_invoice_number'))) and (inv.get('status') or 'draft') == 'draft' \
+                    and not sent:
+                by_stage.setdefault('closed', []).append(c)
+            else:
+                stay.append(c)
+        by_stage[st] = stay
     review_docs = [_doc_dict(r) for r in conn.execute(
         "SELECT * FROM pump_docs WHERE status IN ('review','new') OR (case_id IS NULL AND status != 'dismissed') "
         "ORDER BY id DESC")]
@@ -6767,6 +7104,17 @@ def h_bills_paid(actor):
     return {'marked': len(done), 'case_ids': done}
 
 
+@api('/docs/<int:doc_id>/site_invoices', methods=('POST',))
+def h_doc_site_invoices(actor, doc_id):
+    """Draft the invoice for each station of the bill that doesn't have one yet."""
+    if actor == BOT:
+        return _office_only(actor, 'Drafting invoices')
+    res = draft_site_invoices(doc_id, actor)
+    if not res:
+        raise ValueError("This bill's report is for one pump station")
+    return res
+
+
 @api('/bills_to_pay/unpaid', methods=('POST',))
 def h_bills_unpaid(actor):
     """Body: {"case_ids": [...]} - undo: these bills were marked paid by mistake, back on the list."""
@@ -6932,10 +7280,15 @@ def h_doc(actor, doc_id):
         case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (d['case_id'],)).fetchone()) if d['case_id'] else None
         if d['kind'] == 'bill':
             d['invoice_suggestion'] = invoice_suggestion(d, case)
+            d['site_invoices_left'] = site_invoices_left(d, case) if jobber_status()['connected'] else []
             acct = account_info(conn, case) if case else None
             d['account_note'], d['account_name'] = (acct or {}).get('notes') or '', (acct or {}).get('name') or ''
         if d['kind'] == 'quote':
             d['quote_suggestion'] = suggest_quote(d, case)
+        if d['kind'] == 'report':
+            done = (d.get('jobber') or {}).get('sections') or {}
+            d['sections'] = [{'section': i, 'location': x['location'], 'date': x['date'],
+                              'logged': bool(done.get(str(i)))} for i, x in enumerate(report_sections(d))]
         if case:
             d['case_issues'] = [dict(r) for r in conn.execute(
                 'SELECT id, kind, message FROM pump_issues WHERE case_id=? AND resolved_at IS NULL', (case['id'],))]
@@ -6958,6 +7311,16 @@ def _send_doc_file(doc_id, version):
         conn.close()
     if not row:
         return {'success': False, 'error': 'Not found'}, 404
+    m = re.fullmatch(r'section(\d{1,2})', version or '')
+    if m:
+        # One pump station's page of a two-station report.
+        secs = report_sections(_doc_dict(row))
+        i = int(m.group(1))
+        pdf = _section_pdf(row['branded_path'], secs[i]['location']) if i < len(secs) else None
+        if not pdf:
+            return {'success': False, 'error': 'No such page'}, 404
+        return send_file(io.BytesIO(pdf), mimetype='application/pdf', as_attachment=request.args.get('download') == '1',
+                         download_name=_vendor_file_name(row['file_name'], f" - {secs[i]['location']}.pdf"))
     if version == 'branded_pdf':
         path = _branded_pdf_path(row['branded_path'])
         if row['branded_path'] and not os.path.exists(path):
@@ -7708,6 +8071,8 @@ def h_doc_report_note(actor, doc_id):
     report's customer and location when there is one clear answer."""
     data = _json()
     ttype, tid = data.get('target_type'), data.get('target_id')
+    section = data.get('section')
+    section = int(section) if str(section).isdigit() else None
     if not (ttype and tid):
         conn = _conn()
         try:
@@ -7719,7 +8084,11 @@ def h_doc_report_note(actor, doc_id):
         if not t.get('id'):
             return {'success': False, 'needs_target': True, 'error': t.pop('needs'), **t}, 409
         ttype, tid = t['type'], t['id']
-    note = log_report_to_jobber(doc_id, ttype, tid, actor, data.get('message'))
+    note = log_report_to_jobber(doc_id, ttype, tid, actor, data.get('message'), **({'section': section}
+                                                                                 if section is not None else {}))
+    if section is not None:
+        # One station's page: the job isn't remembered for the whole site.
+        tid, ttype = '', 'client'
     if data.get('client_id'):
         conn = _conn()
         try:
@@ -10922,6 +11291,10 @@ def auto_draft_invoice(doc_id, actor='Pumps (automatic)'):
     if not q.get('id'):
         # No quote of ours on the item: invoice the client's Jobber job this bill matches, at the job's price.
         try:
+            # Two stations, two recurring jobs (The Carlisle): an invoice on each.
+            sites = draft_site_invoices(doc_id, actor)
+            if sites:
+                return sites
             sugg = invoice_suggestion(doc, case)
             if not sugg.get('job'):
                 return None
@@ -11849,7 +12222,8 @@ def page():
 @bp.route('/pumps/f/<int:doc_id>/<version>/<int:exp>/<sig>/<path:name>')
 def signed_file(doc_id, version, exp, sig, name=''):
     """Short-lived link Jobber uses to fetch a report it is attaching to a note."""
-    if version not in ('branded', 'branded_pdf', 'original', 'approved') or not _check_signed(doc_id, version, exp, sig):
+    if not (version in ('branded', 'branded_pdf', 'original', 'approved') or re.fullmatch(r'section\d{1,2}', version)) \
+            or not _check_signed(doc_id, version, exp, sig):
         return 'Link expired', 403
     out = _send_doc_file(doc_id, version)
     if isinstance(out, tuple):

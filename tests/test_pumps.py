@@ -3719,6 +3719,149 @@ class PumpsTest(unittest.TestCase):
                          'South Pump - FLOW METER READINGS 113401552 GALLONS')
         self.assertEqual(sugg['line_items'][0]['unit_price'], 250.0)
 
+    def test_two_station_report_two_notes_and_two_invoices(self):
+        """The Carlisle (Greenscapes, Oct 2026): one Wettech report with an Entrance page and an Exit page.
+        Each station has its own recurring job (#3249 Entrance, #3250 Exit): each page is its own note on its
+        own job, and the bill is invoiced once on each job."""
+        from docx import Document
+        d = Document()
+        for loc, when, extra in (('Entrance', '10-2-2026', 'CHECK HYDRO-PNEUMATIC TANKS'),
+                                 ('Exit', '10-14-2026', 'GREASE MOTOR BEARINGS')):
+            for t in ('Water Equipment Technologies of Southwest Florida LLC', 'IRRIGATION PUMP SYSTEM REPORT'):
+                d.add_paragraph(t)
+            t = d.add_table(rows=2, cols=4)
+            t.rows[0].cells[2].text, t.rows[0].cells[3].text = 'DATE', when
+            for cell, text in zip(t.rows[1].cells, ('CUSTOMER', 'The Carlisle Naples', 'LOCATION', loc)):
+                cell.text = text
+            t = d.add_table(rows=1, cols=2)
+            t.rows[0].cells[0].text, t.rows[0].cells[1].text = '√', extra
+        d.add_paragraph('COMMENTS: Repaired suction pipe')
+        buf = io.BytesIO()
+        d.save(buf)
+        rep = P.ingest_document('10-26 The Carlisle Naples.docx', buf.getvalue(), source='email', actor='email scan',
+                                email={'uid': 'carl-1', 'from': 'office@wettec.biz', 'subject': 'Inv 29204'})
+        self.assertEqual(rep['kind'], 'report', rep)
+        doc = self.c.get(f"/pumps/api/docs/{rep['doc_id']}").get_json()['doc']
+        secs = P.report_sections(doc)
+        self.assertEqual([(s['location'], s['date']) for s in secs], [('Entrance', '10-2-2026'), ('Exit', '10-14-2026')])
+        self.assertTrue(any('HYDRO' in l for l in secs[0]['lines']))
+        self.assertFalse(any('GREASE' in l or 'suction' in l for l in secs[0]['lines']))
+        self.assertTrue(any('suction' in l for l in secs[1]['lines']))
+        self.assertTrue(any('10-14-2026' in l for l in secs[1]['lines']), "the Exit page's own date row")
+        self.assertEqual([s['location'] for s in doc['sections']], ['Entrance', 'Exit'])
+        jobs = [{'id': 'J3249', 'number': 3249, 'title': 'Quarterly Pump 300.00', 'status': 'requires_invoicing',
+                 'type': 'recurring', 'property_label': '6495 Carlisle Court, The Carlisle Naples- Pump #2 Entrance'},
+                {'id': 'J3250', 'number': 3250, 'title': 'Quarterly Pump 300.00', 'status': 'upcoming',
+                 'type': 'recurring', 'property_label': '6945 Carlisle Court, The Carlisle Naples- Pump #1 Exit'},
+                {'id': 'J9', 'number': 9, 'title': 'Quarterly Pump', 'status': 'active', 'type': 'recurring',
+                 'property_label': '1 Other Way, Main Entrance Villas'}]
+
+        class Jobber(FakeJobber):
+            n = 0
+
+            def __call__(self, query, variables=None):
+                if 'invoiceCreate(' in query or 'invoiceCreate ' in query or 'mutation PumpsInvoice' in query:
+                    pass
+                out = super().__call__(query, variables)
+                if 'invoiceCreate' in out:
+                    Jobber.n += 1
+                    out['invoiceCreate']['invoice'].update(id=f'INV{Jobber.n}', invoiceNumber=36900 + Jobber.n)
+                if 'jobCreateNote' in out:
+                    out['jobCreateNote']['jobNote']['id'] = f"NOTE-{variables['id']}"
+                return out
+        fake = Jobber()
+        # Remembered from the last time the office logged it - with the job it picked then (the Exit's).
+        P.save_site_alias('The Carlisle Naples', '', 'CG', 'Greenscapes', '', '', 'test', 'tester', job_id='J3250',
+                          job_label='#3250 Quarterly Pump 300.00')
+        saved = (P.jobber_gql, P.jobber_status, P.recurring_jobs, P.job_detail, P.client_records, P.complete_visit_for_bill)
+        P.jobber_gql, P.jobber_status = fake, (lambda: {'connected': True})
+        P.recurring_jobs = lambda cid: jobs
+        P.job_detail = lambda jid: {**next(j for j in jobs if j['id'] == jid), 'uri': '', 'instructions': '',
+                                    'line_items': [{'name': 'Quarterly Pump', 'description': '', 'quantity': 1,
+                                                    'unit_price': 300.0, 'taxable': False}]}
+        P.client_records = lambda cid, kind: []
+        P.complete_visit_for_bill = lambda doc, case, job, actor='system': None
+        try:
+            res = P.auto_log_report(rep['doc_id'])
+            self.assertEqual(len(res['sections']), 2, res)
+            # (The fake refuses attachments, so each note is retried without the file.)
+            notes = [v for q, v in fake.calls if 'jobCreateNote' in q and 'attachments' not in v['input']]
+            self.assertEqual([v['id'] for v in notes], ['J3249', 'J3250'])
+            tried = [v for q, v in fake.calls if 'jobCreateNote' in q and 'attachments' in v['input']]
+            self.assertTrue(all(' - ' in t['input']['attachments'][0]['fileName'] for t in tried) or not tried)
+            self.assertTrue(notes[0]['input']['message'].startswith('October Pump Report - Entrance'))
+            self.assertTrue(notes[1]['input']['message'].startswith('October Pump Report - Exit'))
+            self.assertIn('Repaired suction pipe', notes[1]['input']['message'])
+            self.assertNotIn('suction', notes[0]['input']['message'])
+            row = P._conn().execute('SELECT status, jobber FROM pump_docs WHERE id=?', (rep['doc_id'],)).fetchone()
+            self.assertEqual(row['status'], 'done')
+            self.assertEqual(set(json.loads(row['jobber'])['sections']), {'0', '1'})
+            # The bill: an invoice on each station's job.
+            self.extracts['b-carl.pdf'] = extraction('bill', '29204', client='The Carlisle Naples', subtotal=400)
+            b = self.upload('b-carl.pdf')   # drafted by itself as it comes in
+            again = P.draft_site_invoices(b['doc_id'], 'tester')
+        finally:
+            (P.jobber_gql, P.jobber_status, P.recurring_jobs, P.job_detail, P.client_records,
+             P.complete_visit_for_bill) = saved
+        self.assertEqual(again, {'invoices': []}, 'both made - nothing drafted twice')
+        made = [v['input'] for q, v in fake.calls if 'invoiceCreate' in q and 'Note' not in q]
+        self.assertEqual([m['jobId'] for m in made], ['J3249', 'J3250'])
+        self.assertIn('Entrance', made[0]['subject'])
+        self.assertIn('Exit', made[1]['subject'])
+        bj = json.loads(P._conn().execute('SELECT jobber FROM pump_docs WHERE id=?', (b['doc_id'],)).fetchone()['jobber'])
+        self.assertEqual(bj['invoice_id'], 'INV1')
+        self.assertEqual([x['invoice_id'] for x in bj['site_invoices']], ['INV2'])
+        # Not flagged as duplicates of each other.
+        conn = P._conn()
+        for i in (1, 2):
+            conn.execute("INSERT OR REPLACE INTO pump_jobber_items (jobber_id, kind, number, status, total, client_id, "
+                         "client_name, created_at) VALUES (?, 'invoice', ?, 'draft', 300, 'CG', 'Greenscapes', ?)",
+                         (f'INV{i}', str(36900 + i), P._today().isoformat()))
+        self.assertFalse([k for k in P.duplicate_jobber_invoices(conn) if 'INV1' in k and 'INV2' in k])
+        conn.rollback()
+        conn.close()
+
+    def test_draft_invoice_not_sent_is_a_send_invoice_todo(self):
+        """Sunshine Lake Park (Oct 2026): invoice #36869 drafted, but the job sat on "Report logged" (the report
+        went in on another item), so the draft wasn't on the To do list at all."""
+        self.extracts['b-sun.pdf'] = extraction('bill', '39301', client='Sunshine Lake Park Tests', subtotal=100)
+        b = self.upload('b-sun.pdf')
+        conn = P._conn()
+        row = conn.execute('SELECT steps, jobber FROM pump_cases WHERE id=?', (b['case_id'],)).fetchone()
+        steps = {**json.loads(row['steps'] or '{}'), **{k: {'at': '2026-10-16'} for k in
+                 ('vendor_quote', 'client_quote', 'client_approved', 'scheduled', 'work_done', 'vendor_bill',
+                  'bill_checked', 'invoice_drafted')}, 'report_logged': {}}
+        j = {**json.loads(row['jobber'] or '{}'), 'invoice': {'id': 'I36869', 'number': '36869', 'status': 'draft',
+                                                              'uri': 'https://secure.getjobber.com/invoices/36869'}}
+        conn.execute("UPDATE pump_cases SET steps=?, jobber=?, sei_invoice_number=?, stage='report_logged' WHERE id=?",
+                     (json.dumps(steps), json.dumps(j), '36869', b['case_id']))
+        conn.commit()
+        conn.close()
+        self.assertEqual(self.case(b['case_id'])['stage'], 'report_logged')
+        send = lambda: [c['id'] for c in self.c.get('/pumps/api/summary').get_json()['queue']['ready_to_close']]
+        self.assertIn(b['case_id'], send())
+        # Sent from Jobber: off the list.
+        self.c.patch(f"/pumps/api/cases/{b['case_id']}", json={'steps': {'closed': '2026-10-16'}})
+        self.assertNotIn(b['case_id'], send())
+
+    def test_one_station_report_is_one_note(self):
+        """Evergreen's North and South pumps are one job: a report naming two pumps that land on the same
+        job (or none) stays one note."""
+        doc = {'report_fields': {'lines': ['IRRIGATION PUMP SYSTEM REPORT', 'DATE · 10-2-2026',
+                                           'CUSTOMER · Evergreen · LOCATION · North Pump', '√ · CHECK',
+                                           'IRRIGATION PUMP SYSTEM REPORT', 'DATE · 10-2-2026',
+                                           'CUSTOMER · Evergreen · LOCATION · South Pump']}, 'client_name': 'Evergreen'}
+        self.assertEqual(len(P.report_sections(doc)), 2)
+        saved = (P.recurring_jobs, P.match_site_alias)
+        P.recurring_jobs = lambda cid: [{'id': 'J1450', 'title': 'Monthly Pump 250', 'status': 'active',
+                                         'type': 'recurring', 'property_label': 'Evergreen of Manatee County'}]
+        P.match_site_alias = lambda doc, case=None, conn=None: {'client_id': 'CE'}
+        try:
+            self.assertIsNone(P.section_targets(doc, {}))
+        finally:
+            P.recurring_jobs, P.match_site_alias = saved
+        self.assertEqual(P.report_sections({'report_fields': {'lines': ['CUSTOMER · X · LOCATION · Pump']}}), [])
+
     def test_link_an_invoice_made_straight_in_jobber(self):
         """Enclave @ Palmira (Oct 2026): invoiced straight in Jobber, the app still said "not invoiced yet".
         Linking the invoice number ties it to the job: Draft invoice done, payable on Bills to pay."""
