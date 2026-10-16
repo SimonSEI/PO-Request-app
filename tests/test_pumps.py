@@ -4027,6 +4027,10 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual([x['number'] for x in got('unpaid')], ['41302'])
         self.assertEqual([x['number'] for x in got('all', '%2341301')], ['41301'])
         self.assertEqual(len(got('all', 'wettech')) >= 2, True)
+        # The job page: at a glance, with the vendor invoice one click away (or "Find it").
+        page = self.c.get('/pumps').get_data(as_text=True)
+        self.assertIn('function glanceHtml', page)
+        self.assertIn('Find it in Vendor invoices', page)
 
     def test_resent_quote_moves_off_the_report_visit(self):
         """Banyan Bay (Oct 2026): the quote landed on the report's maintenance visit; forwarding it again only

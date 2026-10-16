@@ -262,6 +262,11 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 .pl .ev .ln{display:inline-block;width:10px;height:3px;border-radius:2px;flex:none;transform:translateY(-3px);}
 @media (max-width:640px){.fields{grid-template-columns:1fr;}.money{grid-template-columns:1fr;}.top{padding:0 12px;gap:8px;}.top .t>div,.top .r .who{display:none;}.top .r{gap:6px;min-width:0;overflow-x:auto;}.top .r .btn{padding:6px 10px;}
   .strip{padding:10px 16px;}.layout{padding:12px 12px 20px;gap:12px;}.panel{padding:12px;}.tabs{padding:0 8px;}.drawer .bd{padding:14px 12px 30px;}}
+details.fold > summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary h4 { margin: 0; }
+details.fold > summary h4::before { content: '▸ '; color: var(--muted, #888); }
+details.fold[open] > summary h4::before { content: '▾ '; }
 </style>
 <script>
 (function(){
@@ -862,8 +867,6 @@ function renderCase(){
   const c = curCase, v = c.vendor || 'Wettech';
   const J = c.jobber || {};
   const jl = ['request','quote','job','invoice'].filter(k => J[k]).map(k => `<a href="${esc(J[k].uri || '#')}" target="_blank" rel="noopener" class="chip b">${k} ${esc(J[k].number || '')}${J[k].status ? ' · ' + esc(J[k].status) : ''}</a>`).join(' ');
-  const cmp = c.compare || {};
-  const cmpText = {match: `✓ Bill matches the quote (${money(cmp.bill)})`, over: `Bill is ${money(Math.abs(cmp.diff))} MORE than the quote`, under: `Bill is ${money(Math.abs(cmp.diff))} less than the quote`, no_quote: 'Bill arrived with no quote on file'}[cmp.state];
   const steps = c.step_list.map(s => {
     const done = !!s.at, na = !!s.na, cur = c.stage === s.key;
     return `<div class="step ${done ? 'done' : ''} ${na ? 'na' : ''} ${cur ? 'cur' : ''}">
@@ -895,9 +898,10 @@ function renderCase(){
     <div style="display:flex;gap:6px;align-items:flex-start"><button class="btn" onclick="closeDrawer()">✕</button></div></div>
   <div class="bd">
     ${c.vendor_pay.state === 'due' ? `<div class="sec"><div class="issue">💸 Our client has paid the Jobber invoice - ${esc(v)}'s bill needs to be paid.<button class="btn s p" onclick="markVendorPaid(${c.id})">Mark ${esc(v)} paid</button></div></div>` : ''}
-    ${c.account && c.account.notes ? `<div class="sec"><div class="note" style="background:var(--violet-bg);color:var(--violet);padding:10px 12px;border-radius:10px;white-space:pre-line"><b>📋 ${esc(c.account.name)}</b> (from the account sheet)${c.account.repairs_by ? ' · repairs by <b>' + esc(c.account.repairs_by) + '</b>' : ''}\n${esc(c.account.notes)}</div></div>` : ''}
+    ${c.account && c.account.notes ? `<div class="sec"><div class="note" style="background:var(--violet-bg);color:var(--violet);padding:8px 12px;border-radius:10px;white-space:pre-line"><b>📋 ${esc(c.account.name)}:</b> ${c.account.repairs_by ? 'repairs by <b>' + esc(c.account.repairs_by) + '</b> · ' : ''}${esc(c.account.notes)}</div></div>` : ''}
     ${issues ? `<div class="sec"><h4>Issues</h4><div style="display:flex;flex-direction:column;gap:8px">${issues}</div></div>` : ''}
-    <div class="sec"><h4>Next</h4><div style="display:flex;gap:8px;flex-wrap:wrap">
+    ${glanceHtml(c)}
+    <div class="sec"><div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn ${['assessment','vendor_quote','scheduled','vendor_bill'].includes(c.stage) ? 'p' : ''}" onclick="vendorEmail(${c.id})">✉️ ${esc(({assessment: 'Ask ' + v + ' to assess', vendor_quote: 'Ask ' + v + ' for the quote', scheduled: 'Ask ' + v + ' to schedule', vendor_bill: 'Ask ' + v + ' for the invoice'})[c.stage] || 'Email ' + v)}</button>
       ${c.chase ? `<button class="btn ${c.chase.state === 'follow_up' ? 'p' : ''}" onclick="logFollow(${c.id})">📞 Log follow-up</button>` : ''}
       ${c.chase && c.chase.parts_wait && !c.chase.last_at ? `<button class="btn" onclick="quoteSent(${c.id})">📤 Approved quote sent to ${esc(c.chase.who || c.vendor || 'the vendor')}</button>` : ''}
@@ -907,18 +911,11 @@ function renderCase(){
       <button class="btn" onclick="addNote()">✎ Add note</button>
       ${c.status === 'open' ? `<button class="btn p" onclick="caseDone(${c.id})">✓ Mark done</button><button class="btn danger" onclick="caseRemove(${c.id})">✕ Remove</button>` : `<button class="btn" onclick="caseReopen(${c.id})">↺ Reopen</button>`}
     </div></div>
-    ${statusSec(c)}
-    ${c.chase ? `<div class="sec"><div class="note" style="padding:10px 12px;border-radius:10px;background:${c.chase.state === 'follow_up' ? 'var(--amber-bg)' : 'var(--violet-bg)'}"><b>${c.chase.phase === 'job' ? 'Job' : 'Quote'} - waiting on ${esc(v)}</b>${chaseLine(c)}${c.chase.last_at ? `<br><span class="note">Last asked ${esc(niceDay(c.chase.last_at))}${c.chase.how ? ' by ' + esc(c.chase.how) : ''}${c.chase.by ? ' · ' + esc(c.chase.by) : ''}</span>` : ''}</div></div>` : ''}
-    <div class="sec"><h4>Journey</h4>${journeyHtml(c)}</div>
-    <div class="sec"><h4>Checklist <select class="s" onchange="moveCase(this)" title="Out of step? Bring the job up to where it really is - the steps before are ticked done today." style="float:right;padding:2px 4px;font-size:11px;font-weight:400"><option value="">Move to…</option>${c.step_list.filter(s => !s.na).map(s => `<option value="${s.key}">${esc(s.label)}</option>`).join('')}</select></h4><div class="steps">${steps}</div></div>
-    <div class="sec"><h4>Quote vs bill</h4><div class="money">
-      <div class="m"><div class="k">${esc(v)} quote ${c.vendor_quote_number ? '#' + esc(c.vendor_quote_number) : ''}</div><div class="v">${money(c.vendor_quote_amount ?? c.vendor_quote_total) || '—'}</div>${c.vendor_quote_total != null && c.vendor_quote_amount != null ? `<div class="note">${money(c.vendor_quote_total)} with tax</div>` : ''}</div>
-      <div class="m"><div class="k">${esc(v)} bill ${c.vendor_bill_number ? '#' + esc(c.vendor_bill_number) : ''}</div><div class="v">${money(c.vendor_bill_amount ?? c.vendor_bill_total) || '—'}</div>${c.vendor_bill_total != null && c.vendor_bill_amount != null ? `<div class="note">${money(c.vendor_bill_total)} with tax</div>` : ''}</div>
-      <div class="m"><div class="k">Our invoice ${c.sei_invoice_number ? '#' + esc(c.sei_invoice_number) : ''}</div><div class="v">${money(c.amount) || '—'}</div>${c.vendor_pay.client_invoice_status ? `<div class="note">${c.vendor_pay.client_invoice_status === 'paid' ? '<b class="ok">Paid by client</b>' : 'Jobber: ' + esc(c.vendor_pay.client_invoice_status.replace(/_/g, ' '))}</div>` : ''}</div>
-      <div class="m"><div class="k">${esc(v)} bill paid?</div>${vendorPayHtml(c)}</div>
-    </div>${cmpText ? `<div class="cmp ${esc(cmp.state)}">${cmpText}</div>` : ''}</div>
     <div class="sec"><h4>Documents</h4><div class="docs">${docs}</div></div>
-    <div class="sec"><h4>Details</h4><div class="fields">
+    ${statusSec(c)}
+    <details class="sec fold"><summary><h4>History</h4> <span class="note">everything that has happened, oldest first</span></summary>${journeyHtml(c, 'history')}</details>
+    <details class="sec fold"><summary><h4>Edit steps</h4> <span class="note">tick or untick a step, or move the job along</span></summary><div style="margin:8px 0"><select class="s" onchange="moveCase(this)" title="Out of step? Bring the job up to where it really is - the steps before are ticked done today." style="padding:2px 4px;font-size:12px"><option value="">Move to…</option>${c.step_list.filter(s => !s.na).map(s => `<option value="${s.key}">${esc(s.label)}</option>`).join('')}</select></div><div class="steps">${steps}</div></details>
+    <details class="sec fold"><summary><h4>Edit details</h4> <span class="note">names, numbers, amounts, notes, Jobber links</span></summary><div class="fields" style="margin-top:8px">
       ${f('title','Title','text',1)}
       <label>Kind of work<select data-f="category">${CATS.map(x => `<option ${x === c.category ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
       ${f('po_number','PO #')}${f('client_name','Client')}${f('site','Pump / location')}${f('vendor','Vendor')}${f('approved_by','Approved by')}
@@ -929,7 +926,7 @@ function renderCase(){
       ${f('jobber_request_made','Jobber request made')}${f('opened_on','Opened','date')}
       ${f('description','Description of work','area',1)}${f('notes','Notes','area',1)}
       <label class="w">Jobber ${jl || '<span class="note">nothing linked - Track it from the Jobber tab</span>'} <a href="#" onclick="event.preventDefault();linkQuote(${c.id})">${J.quote ? 'Use a different Jobber quote…' : 'Link a Jobber quote…'}</a> · <a href="#" onclick="event.preventDefault();linkInvoice(${c.id})">${J.invoice ? 'Use a different Jobber invoice…' : 'Link a Jobber invoice…'}</a></label>
-    </div><div style="margin-top:10px"><button class="btn p" onclick="saveCaseFields()">Save details</button></div></div>
+    </div><div style="margin-top:10px"><button class="btn p" onclick="saveCaseFields()">Save details</button></div></details>
   </div>`;
 }
 // The job's journey: where it is on its steps, and everything that has
@@ -942,7 +939,7 @@ const JOURNEY_ICONS = [
   [/followed up/, '📞', 'b'], [/service visit|schedule/, '📅', 'b'], [/report/, '📋', 'b'], [/marked done|closed/, '🏁', 'g'], [/reopened/, '↺', 'a'], [/cancelled|removed/, '✕', 'r'],
 ];
 function journeyIcon(action){ const a = (action || '').toLowerCase(); for (const [re, ic, cls] of JOURNEY_ICONS) if (re.test(a)) return [ic, cls]; return ['•', '']; }
-function journeyHtml(c){
+function journeyHtml(c, part){
   const steps = c.step_list.filter(s => !s.na);
   const curIdx = steps.findIndex(s => s.key === c.stage);
   const track = `<div class="track">${steps.map((s, i) => { const st = s.at ? 'done' : (i === curIdx ? 'cur' : '');
@@ -971,7 +968,8 @@ function journeyHtml(c){
     const head = d !== lastDay ? `<div class="day">${esc(d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric', year:'numeric'}) : 'No date')}</div>` : '';
     lastDay = d;
     return head + `<div class="it"><div class="ic ${i.cls}">${i.ic}</div><div class="tx"><b>${esc(i.title)}</b>${t ? ` <span class="note">${esc(t)}</span>` : ''}${i.sub ? `<div class="m">${esc(i.sub)}</div>` : ''}${i.html || ''}</div></div>`; }).join('');
-  return track + `<div class="tl">${tl || '<div class="note">Nothing yet.</div>'}</div>`;
+  const hist = `<div class="tl">${tl || '<div class="note">Nothing yet.</div>'}</div>`;
+  return part === 'track' ? track : part === 'history' ? hist : track + hist;
 }
 function vendorPayHtml(c){
   const p = c.vendor_pay || {};
@@ -1274,15 +1272,53 @@ function saveCaseFields(){
 const JOB_STATUSES = [['parts_ordered', 'Parts ordered'], ['waiting_vendor', 'Waiting on the vendor'], ['client_notified', 'Client notified'], ['scheduled', 'Scheduled'], ['in_progress', 'Work under way'], ['work_done', 'Work done'], ['on_hold', 'On hold'], ['note', 'Note']];
 function statusSec(c){
   const hist = (c.events || []).filter(e => e.action === 'status');
-  return `<div class="sec"><h4>Status</h4>
-    ${statusLine(c) ? `<div style="margin-bottom:8px">${statusLine(c)}</div>` : '<div class="note" style="margin-bottom:8px">No status updates yet.</div>'}
-    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+  return `<details class="sec fold"><summary><h4>Status update</h4>${statusLine(c) ? ` <span class="note">${statusLine(c)}</span>` : ' <span class="note">none yet - add one</span>'}</summary>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px">
       <select id="js_kind" onchange="jsKind()">${JOB_STATUSES.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select>
       <input type="date" id="js_on" title="When the parts are due / the day it is scheduled">
       <span id="js_weeks" style="display:flex;gap:4px">${[1, 2, 3, 4].map(w => `<button class="btn s" onclick="jsWeeks(${w})">${w} wk${w > 1 ? 's' : ''}</button>`).join('')}</span>
       <input type="text" id="js_text" placeholder="Note - e.g. motor ordered from Wettech, client told by email" style="flex:1;min-width:200px">
       <button class="btn p" onclick="jsAdd(${c.id})">＋ Add update</button></div>
-    ${hist.length ? `<div style="margin-top:8px">${hist.map(e => `<div class="note">${esc(niceDay(d10(e.at)))} · ${esc(e.actor || '')} · ${esc(e.detail)}</div>`).join('')}</div>` : ''}</div>`;
+    ${hist.length ? `<div style="margin-top:8px">${hist.map(e => `<div class="note">${esc(niceDay(d10(e.at)))} · ${esc(e.actor || '')} · ${esc(e.detail)}</div>`).join('')}</div>` : ''}</details>`;
+}
+// The job at a glance: where it stands, and the vendor's quote and invoice, our
+// invoice and whether the vendor is paid - each one click away.
+function glanceHtml(c){
+  const v = c.vendor || 'Wettech', J = c.jobber || {};
+  const live = (c.docs || []).filter(d => d.status !== 'dismissed');
+  const last = k => live.filter(d => d.kind === k).sort((a, b) => b.id - a.id)[0];
+  const q = last('quote'), b = last('bill');
+  const card = (k, main, sub) => `<div class="m"><div class="k">${k}</div><div class="v">${main}</div>${sub ? `<div class="note">${sub}</div>` : ''}</div>`;
+  const fileLink = (d, label) => `<a target="_blank" href="/pumps/api/docs/${d.id}/file">${label} ↗</a>`;
+  const qAmt = money(c.vendor_quote_amount ?? c.vendor_quote_total ?? (q || {}).subtotal ?? (q || {}).total);
+  const bAmt = money(c.vendor_bill_amount ?? c.vendor_bill_total ?? (b || {}).subtotal ?? (b || {}).total);
+  const qNum = c.vendor_quote_number || (q || {}).doc_number || '', bNum = c.vendor_bill_number || (b || {}).doc_number || '';
+  const ourQ = J.quote ? `our quote <a target="_blank" href="${esc(jobberUri(J.quote, 'quotes') || '#')}">#${esc(J.quote.number || '')}</a>${J.quote.status ? ' · ' + esc(J.quote.status.replace(/_/g, ' ')) : ''}` : '';
+  const quoteCard = card(`${esc(v)} quote`, qAmt || (q || qNum ? '—' : 'None yet'),
+    [q ? fileLink(q, qNum ? '#' + esc(qNum) : 'Open the quote') : (qNum ? '#' + esc(qNum) : ''), ourQ].filter(Boolean).join('<br>'));
+  const findBtn = `<a href="#" onclick="event.preventDefault();findVendorInvoice(${JSON.stringify(c.client_name || c.title || '').replace(/"/g, '&quot;')})">Find it in Vendor invoices</a>`;
+  const billCard = card(`${esc(v)} invoice`, bAmt || (b || bNum ? '—' : 'Not in yet'),
+    b ? fileLink(b, bNum ? '#' + esc(bNum) : 'Open the invoice') + (b.doc_date ? ' · ' + esc(b.doc_date) : '') : (bNum ? '#' + esc(bNum) + '<br>' : '') + findBtn);
+  const inv = J.invoice || {}, invUri = jobberInvoiceUri(inv);
+  const invNo = inv.number || c.sei_invoice_number;
+  const ourInv = c.amount != null ? money(c.amount) : (invNo ? '—' : 'Not yet');
+  const invSub = [invNo ? (invUri ? `<a target="_blank" href="${esc(invUri)}">#${esc(invNo)} ↗</a>` : '#' + esc(invNo)) : '',c.vendor_pay.client_invoice_status ? (c.vendor_pay.client_invoice_status === 'paid' ? '<b class="ok">paid by client</b>' : esc(c.vendor_pay.client_invoice_status.replace(/_/g, ' '))) : '',
+    ...(J.site_invoices || []).map(x => `${esc(x.site || '')} <a target="_blank" href="${esc(x.uri || '#')}">#${esc(x.number)}</a>`)].filter(Boolean).join(' · ');
+  const cmp = c.compare || {};
+  const cmpText = {match: `✓ Bill matches the quote (${money(cmp.bill)})`, over: `Bill is ${money(Math.abs(cmp.diff))} MORE than the quote`, under: `Bill is ${money(Math.abs(cmp.diff))} less than the quote`, no_quote: 'Bill arrived with no quote on file'}[cmp.state];
+  return `<div class="sec"><div style="font-size:15px;margin-bottom:8px"><b>${esc(stageText(c))}</b></div>
+    ${c.chase ? `<div class="note" style="margin-bottom:8px">${chaseLine(c).replace(/^<br>/, '')}</div>` : ''}
+    <div class="money">${quoteCard}${billCard}${card('Our invoice', ourInv, invSub)}${`<div class="m"><div class="k">${esc(v)} paid?</div>${vendorPayHtml(c)}</div>`}</div>
+    ${cmpText ? `<div class="cmp ${esc(cmp.state)}">${cmpText}</div>` : ''}
+    <div style="margin-top:10px">${journeyHtml(c, 'track')}</div></div>`;
+}
+// The related vendor invoice, from a job: the Vendor invoices tab, searched for its site.
+function findVendorInvoice(name){
+  document.getElementById('drawerWrap').classList.add('hide'); curCase = null;
+  showTab('vinvoices');
+  document.getElementById('viShow').value = 'all';
+  document.getElementById('viSearch').value = name || '';
+  loadVInvoices();
 }
 function jsKind(){ const k = document.getElementById('js_kind').value; document.getElementById('js_weeks').style.display = ['parts_ordered', 'waiting_vendor', 'scheduled'].includes(k) ? 'flex' : 'none'; }
 function jsWeeks(w){ const d = new Date(); d.setDate(d.getDate() + 7 * w); document.getElementById('js_on').value = d.toISOString().slice(0, 10); const t = document.getElementById('js_text'); if (!t.value) t.value = w + ' week' + (w > 1 ? 's' : '') + ' out'; }
