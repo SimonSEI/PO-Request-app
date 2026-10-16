@@ -728,7 +728,10 @@ async function loadToday(){
   updateScanInfo(j.scan);
   const open = c => `openCase(${c.id})`;
   // ✓ Done on a to-do ticks that step on its job, so the watchlist moves on with it.
-  const stepBtn = (c, step) => `<button class="btn s" title="Done - tick it on the job" onclick="askDone(event, () => stepDone(${c.id}, '${step}', event))">✓ Done</button>`;
+  const stepBtn = (c, step, label) => `<button class="btn s" title="Done - tick it on the job" onclick="askDone(event, () => stepDone(${c.id}, '${step}', event))">✓ ${label || 'Done'}</button>`;
+  // A follow-up that's sorted: tick the step the job was waiting on (Huntington: it's scheduled).
+  const nextBtn = c => { const l = {assessment: 'Visit done', vendor_quote: 'Quote in', scheduled: 'Scheduled', work_done: 'Work done', vendor_bill: 'Bill in'}[c.stage];
+    return l ? stepBtn(c, c.stage, l) : ''; };
   // The drafted invoice in Jobber, to look over and send from there.
   const invoiceLink = c => { const inv = (c.jobber || {}).invoice || {}; const uri = jobberInvoiceUri(inv);
     return uri ? `<a class="btn s p" target="_blank" rel="noopener" href="${esc(uri)}">Open invoice${inv.number ? ' #' + esc(inv.number) : ''} in Jobber ↗</a>` : ''; };
@@ -759,7 +762,7 @@ async function loadToday(){
   // Chase the vendor: jobs to get scheduled / done, and quotes, where nobody has heard back.
   (q.vendor_follow_ups || []).forEach(c => { const ch = c.chase, late = ch.expect_by && ch.expect_by < todayIso();
     todo.push(todoItem('Follow up · ' + (ch.parts_wait ? 'parts' : ch.phase === 'job' ? 'job' : 'quote'), late ? 'r' : 'a', caseTitle(c), caseSub(c, esc(stageText(c))) + chaseLine(c),
-      open(c), `<button class="btn s p" onclick="event.stopPropagation();logFollow(${c.id})">📞 Log follow-up</button><button class="btn s" onclick="event.stopPropagation();vendorEmail(${c.id})">✉ Email</button>`, c.todo_key)); });
+      open(c), `<button class="btn s p" onclick="event.stopPropagation();logFollow(${c.id})">📞 Log follow-up</button><button class="btn s" onclick="event.stopPropagation();vendorEmail(${c.id})">✉ Email</button>` + nextBtn(c), c.todo_key)); });
   q.ready_to_close.forEach(c => todo.push(todoItem('Send invoice', 'a', caseTitle(c), caseSub(c, 'send the invoice from Jobber' + (c.sei_invoice_number ? ' · #' + esc(c.sei_invoice_number) : '')) + followUp(c.follow_up), open(c), invoiceLink(c) + stepBtn(c, 'closed'), c.todo_key)));
   q.reports_to_log.forEach(d => todo.push(todoItem('Log report', 'b', esc(d.client_name || d.file_name), `${esc((d.report_fields||{}).title || 'Report')} · ${esc(d.doc_date)}${((d.jobber || {}).note_pending || {}).reason ? '<br><b class="warn">Not logged by itself: ' + esc(d.jobber.note_pending.reason) + '</b>' : ''}`, d.case_id ? `openCase(${d.case_id})` : `openDoc(${d.id})`,
     `<button class="btn s" onclick="logReport(${d.id})">Log in Jobber</button><button class="btn s" title="Already in Jobber - tick it on the job" onclick="askDone(event, () => reportDone(${d.id}, event))">✓ Done</button>`, d.todo_key)));
