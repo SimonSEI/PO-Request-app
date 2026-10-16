@@ -284,6 +284,8 @@ def _quote_needed_item(conn, doc, case_id, actor):
     if not note or conn.execute("SELECT 1 FROM pump_events WHERE doc_id=? AND action='quote needed'",
                                 (doc['id'],)).fetchone():
         return None
+    if beatrice_site(doc.get('client_name'), doc.get('site')):
+        return None   # Wettech quotes those to Beatrice - nothing to track
     case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone())
     client = doc.get('client_name') or case.get('client_name') or ''
     vendor = doc.get('vendor') or case.get('vendor') or ''
@@ -2298,6 +2300,8 @@ def file_document(conn, doc_id, actor='system'):
     kind = doc['kind']
     if kind == 'other' or doc['status'] == 'dismissed':
         return None
+    if kind == 'quote' and not doc['case_id'] and beatrice_site(doc.get('client_name'), doc.get('site')):
+        return quote_to_beatrice(conn, doc, actor)
     case_id, how = (doc['case_id'], 'already linked') if doc['case_id'] else _same_email_case(conn, doc)
     if not case_id:
         case_id, how = _find_case_for(conn, doc)
@@ -3611,6 +3615,9 @@ def untracked_jobber_items(conn, others=False):
             and not (r['kind'] == 'job' and r['job_type'] == 'recurring')
             and not (r['kind'] == 'quote' and r['status'] != 'approved')]
     names = _account_names(conn)
+    # Quotes for Beatrice's sites are never tracked here.
+    rows = [r for r in rows if not (r['kind'] == 'quote' and
+                                    beatrice_site(r.get('client_name'), r.get('property_label'), r.get('title')))]
     return [r for r in rows if on_account_sheets(conn, r, names) != others]
 
 
@@ -9360,7 +9367,9 @@ def vendor_quotes(conn, show='open', q=''):
         ours = cj.get('quote') or {}
         num = ours.get('number') or dj.get('quote_number') or ''
         st = (ours.get('status') or dj.get('quote_status') or '').lower()
-        if c.get('status') == 'cancelled':
+        if not c and beatrice_site(d.get('client_name'), d.get('site')):
+            state = 'beatrice'
+        elif c.get('status') == 'cancelled':
             state = 'cancelled'
         elif st in ('approved', 'converted') or (c.get('stage') not in (None, '', 'assessment', 'vendor_quote',
                                                                          'client_quote', 'client_approved')
@@ -9375,7 +9384,7 @@ def vendor_quotes(conn, show='open', q=''):
         else:
             state = 'to_quote'
         counts[state] = counts.get(state, 0) + 1
-        if show == 'open' and state not in ('to_quote', 'draft', 'sent'):
+        if show == 'open' and state not in ('to_quote', 'draft', 'sent', 'beatrice'):
             continue
         if show not in ('open', 'all') and state != show:
             continue
@@ -9937,6 +9946,52 @@ def _apply_master_vendors(c, now):
 
 
 REPORT_ONLY_ACCOUNTS = ('Autumn Woods', 'The Reserve @ Estero', 'Wild Blue')
+# Sites whose Wettech quotes go straight to Beatrice (the office, Oct 2026):
+# never tracked here - no item, no Jobber quote, just "Send Wettech quote to Beatrice".
+BEATRICE_SITES = ('Wild Blue', 'Autumn Woods')
+BEATRICE = 'Beatrice'
+
+
+def beatrice_site(*texts):
+    """The Beatrice site a document or Jobber record is for, or ''."""
+    hay = ' '.join(t or '' for t in texts)
+    return next((s for s in BEATRICE_SITES if fuzzy_has(s, hay)), '')
+
+
+def quote_to_beatrice(conn, doc, actor):
+    """A vendor quote for a Beatrice site: a to-do to send it to her, and nothing tracked."""
+    site = beatrice_site(doc.get('client_name'), doc.get('site'))
+    num = f" #{doc['doc_number']}" if doc.get('doc_number') else ''
+    price = doc.get('subtotal') if doc.get('subtotal') is not None else doc.get('total')
+    add_todo(conn, f"beatrice:{doc['id']}",
+             f"Send {doc.get('vendor') or 'Wettech'} quote{num} to {BEATRICE} - {doc.get('client_name') or site}",
+             ' · '.join(x for x in (((doc.get('description') or '').strip().splitlines() or [''])[0][:300],
+                                     money_text(price) if price is not None else '',
+                                     f"{site} quotes go to {BEATRICE} - not tracked here") if x),
+             {'uri': f"/pumps/api/docs/{doc['id']}/file", 'label': 'Open the quote'})
+    conn.execute("UPDATE pump_docs SET status='done', updated_at=? WHERE id=?", (_now_text(), doc['id']))
+    _event(conn, actor, 'quote for Beatrice', f"{doc.get('file_name')} - {site} quotes go to {BEATRICE}",
+           doc_id=doc['id'])
+    return None
+
+
+def _stop_tracking_beatrice(c, now):
+    """Once (Oct 16 2026): items already open for a Beatrice site that only wait
+    on a quote are closed - those quotes go to Beatrice."""
+    if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pump_cases'").fetchone():
+        return
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('beatrice_untrack_oct26', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    for cid, title, client, site in c.execute(
+            "SELECT id, title, client_name, site FROM pump_cases WHERE status='open' "
+            "AND stage IN ('assessment', 'vendor_quote', 'client_quote', 'client_approved')").fetchall():
+        where = beatrice_site(client, site, title)
+        if where:
+            c.execute("UPDATE pump_cases SET status='cancelled', stage='cancelled', updated_at=? WHERE id=?",
+                      (_now_text(), cid))
+            c.execute('INSERT INTO pump_events (case_id, doc_id, at, actor, action, detail) VALUES (?,?,?,?,?,?)',
+                      (cid, None, _now_text(), 'Pumps', 'cancelled', f'{where} quotes go to {BEATRICE} - not tracked'))
 
 
 def _apply_report_only(c, now):
@@ -10192,6 +10247,7 @@ def init_account_tables(c):
     _undo_watercrest_mismatch(c, now)
     _fix_quote_needed_dates(c, now)
     _apply_follow_ups(c, now)
+    _stop_tracking_beatrice(c, now)
     if not seeded('office_answers_oct26'):
         # What the office said (Oct 2026): Old Collier and Camas Willows are off
         # SCADA; Autumn Woods (we pay) and Reserve at Estero (in their monthly)
