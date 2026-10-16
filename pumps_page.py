@@ -387,6 +387,8 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 <div class="panel hide" id="p-bills">
   <div class="toolbar">
     <button class="btn p" id="billsGo" onclick="billsEmail()">✉ Email Christian</button>
+    <button class="btn s" onclick="billsAll(null, null, true)">Select all</button><button class="btn s" onclick="billsAll(null, null, false)">Select none</button>
+    <span class="note">Shift-click to tick a run of bills</span>
     <div class="sp"></div><span class="note" id="billsInfo"></span>
   </div>
   <div class="note" style="margin-bottom:10px">Every vendor bill not paid yet, by vendor. A bill can be paid once we've invoiced the client for it; ticked ones go in one email to Christian, with the bills attached. Mark each paid when it is.</div>
@@ -978,9 +980,9 @@ async function loadBills(){
   if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
   let n = 0, total = 0;
   box.innerHTML = j.vendors.map(g => `<div class="grp">${esc(g.vendor)} · ${money(g.payable_total)} to pay${g.waiting_total ? ' · ' + money(g.waiting_total) + ' waiting' : ''}</div>
-    <table class="t"><thead><tr><th></th><th>Job</th><th>Their invoice</th><th class="num">Amount</th><th>Can it be paid?</th><th></th></tr></thead><tbody>
+    <table class="t"><thead><tr><th><input type="checkbox" title="Tick all of ${esc(g.vendor)}'s payable bills" onchange="billsAll(this, '${esc(g.vendor)}')"></th><th>Job</th><th>Their invoice</th><th class="num">Amount</th><th>Can it be paid?</th><th></th></tr></thead><tbody>
     ${g.bills.map(b => { if (b.payable) { n++; total += b.amount || 0; }
-      return `<tr class="${b.payable ? '' : 'note'}"><td>${b.payable ? `<input type="checkbox" class="billPick" value="${b.case_id}" ${b.asked_at ? '' : 'checked'} onchange="billsInfo()">` : ''}</td>
+      return `<tr class="${b.payable ? '' : 'note'}"><td>${b.payable ? `<input type="checkbox" class="billPick" data-vendor="${esc(g.vendor)}" value="${b.case_id}" ${b.asked_at ? '' : 'checked'} onclick="billsClick(event, this)">` : ''}</td>
       <td><a href="#" onclick="event.preventDefault();openCase(${b.case_id})">${esc(b.client_name || b.title)}</a><div class="note">${esc(b.title)}</div></td>
       <td>${b.bill_doc_id ? `<a target="_blank" href="/pumps/api/docs/${b.bill_doc_id}/file">#${esc(b.bill_number || '?')}</a>` : '#' + esc(b.bill_number || '?')}<div class="note">${esc(b.bill_date)}</div></td>
       <td class="num">${b.amount != null ? money(b.amount) : '?'}</td>
@@ -988,6 +990,23 @@ async function loadBills(){
       <td>${b.payable ? '' : `<button class="btn s" title="Invoiced straight in Jobber? Tie that invoice to this job" onclick="linkInvoice(${b.case_id}).then(loadBills)">Link invoice</button> `}<button class="btn s" onclick="markVendorPaid(${b.case_id}).then(loadBills)">Mark paid</button></td></tr>`; }).join('')}
     </tbody></table>`).join('') || '<div class="empty">No vendor bills waiting to be paid. 🎉</div>';
   setCount('n-bills', j.vendors.reduce((a, g) => a + g.bills.filter(b => b.payable && !b.asked_at).length, 0), false);
+  billsInfo();
+}
+// Tick every payable bill (or one vendor's, from its header box), or none.
+function billsAll(box, vendor, on){
+  const val = box ? box.checked : on;
+  document.querySelectorAll('.billPick').forEach(x => { if (!vendor || x.dataset.vendor === vendor) x.checked = val; });
+  billsInfo();
+}
+// Shift-click: every bill between the last one clicked and this one takes this one's tick.
+let billsLast = null;
+function billsClick(ev, el){
+  const all = [...document.querySelectorAll('.billPick')];
+  if (ev.shiftKey && billsLast !== null && all.includes(billsLast)) {
+    const [a, b] = [all.indexOf(billsLast), all.indexOf(el)].sort((x, y) => x - y);
+    all.slice(a, b + 1).forEach(x => x.checked = el.checked);
+  }
+  billsLast = el;
   billsInfo();
 }
 function billsPicked(){ return [...document.querySelectorAll('.billPick:checked')].map(x => +x.value); }
