@@ -54,6 +54,15 @@ NEVER_ROLES = ('technician', 'property_manager')
 # Optional: exactly these usernames (comma-separated), whatever their role.
 FILEMAKER_USERS = {u.strip().lower() for u in os.environ.get('FILEMAKER_USERS', '').split(',') if u.strip()}
 
+# ── time zone ────────────────────────────────────────────────────────────────
+# The users' own: dates and times the host enters itself are in it, as the ones the
+# browser enters are in the browser's (optional FILEMAKER_TZ, e.g. America/Chicago).
+try:
+    from zoneinfo import ZoneInfo
+    FILEMAKER_TZ = ZoneInfo(os.environ.get('FILEMAKER_TZ') or 'America/New_York')
+except Exception:
+    FILEMAKER_TZ = None
+
 # ── limits ───────────────────────────────────────────────────────────────────
 MAX_SCHEMA_BYTES = 8 * 1024 * 1024
 MAX_RECORD_BYTES = 1024 * 1024
@@ -62,6 +71,8 @@ MAX_CONTAINER_BYTES = 25 * 1024 * 1024
 MAX_FETCH_BYTES = 5 * 1024 * 1024
 MAX_FILE_CONTAINER_BYTES = 1024 * 1024 * 1024
 MAX_XLSX_CELLS = 2000000
+MAX_XLSX_UNZIPPED = 100 * 1024 * 1024   # bytes an imported workbook may unpack to
+MAX_XLSX_TEXT = 50 * 1024 * 1024        # characters of cell text it may hold in all
 FETCH_DEADLINE = 30       # seconds an Insert From URL may take in all, redirects included
 CONTAINER_GRACE = 2 * 86400   # an uploaded file no record refers to is deleted after this long
 SESSION_TTL = 90          # seconds without a poll before a session counts as gone
@@ -975,7 +986,7 @@ def _auto_value(ctx, f, creating):
             ((f.get('options') or {}).get('storage') or {}).get('global'):
         return None
     kind = ae.get('modification') or (ae.get('creation') if creating else None)
-    now = datetime.now()
+    now = datetime.now(FILEMAKER_TZ)
     if kind in ('date', 'time', 'timestamp'):
         return now.strftime({'date': '%Y-%m-%d', 'time': '%H:%M:%S', 'timestamp': '%Y-%m-%d %H:%M:%S'}[kind])
     if kind in ('account', 'name'):
@@ -994,6 +1005,24 @@ def _auto_enter(ctx, table, tp, data, creating):
                 data[f['id']] = v
 
 
+def _filled_by_engine(ctx, table, f):
+    """Does the engine fill this field in a new record: an auto-enter calculation,
+    lookup or last-visited value, or the match field a portal sets when it creates the
+    related record (a relationship that allows creating records on that side)?"""
+    ae = (f.get('options') or {}).get('autoEnter') or {}
+    if ae.get('calc') or ae.get('lastVisited') or (isinstance(ae.get('lookup'), dict) and ae['lookup'].get('to')):
+        return True
+    tos = {to['id']: to.get('table') for to in ctx.schema['tableOccurrences']}
+    for r in ctx.schema['relationships']:
+        for side in ('left', 'right'):
+            if tos.get(r.get(side)) == table['id'] and isinstance(r.get(side + 'Opts'), dict) and \
+                    r[side + 'Opts'].get('create') and \
+                    any(isinstance(p, dict) and p.get(side + 'Field') == f['id'] and p.get('op') == '='
+                        for p in (r.get('predicates') if isinstance(r.get('predicates'), list) else [])):
+                return True
+    return False
+
+
 def _clean_data(ctx, table, data, tp, creating):
     if not isinstance(data, dict):
         raise ValueError('Record data must be an object')
@@ -1005,12 +1034,15 @@ def _clean_data(ctx, table, data, tp, creating):
         if not f or f['type'] in ('summary', 'calculation'):
             continue
         acc = field_access(tp, k)
-        # a field the account may only view never takes the client's value, not even in a
-        # new record; the host enters its auto-enter value itself (_auto_enter)
-        if acc != 'modify' and ((acc == 'view' and creating) or _auto_value(ctx, f, creating) is not None):
-            continue
         if acc != 'modify':
-            raise PermissionError(f'You do not have permission to modify "{f["name"]}"')
+            # a field the account may only view takes no value typed by it, not even in a new
+            # record: the host enters its auto-enter value itself (_auto_enter), and a new
+            # record keeps only the values the engine works out for it (_filled_by_engine)
+            if _auto_value(ctx, f, creating) is not None or \
+                    (acc == 'view' and creating and not _filled_by_engine(ctx, table, f)):
+                continue
+            if not (acc == 'view' and creating):
+                raise PermissionError(f'You do not have permission to modify "{f["name"]}"')
         if not (v is None or isinstance(v, (str, int, float, list, dict))):
             raise ValueError(f'"{f["name"]}" has a value of an unknown kind')
         out[k] = v
@@ -1053,9 +1085,13 @@ def _lock_holder(conn, ctx, key):
 
 def _op_int(v):
     try:
-        return int(v or 0)
-    except (TypeError, ValueError):
+        n = int(v or 0)
+    except (TypeError, ValueError, OverflowError):      # OverflowError: Infinity
+        n = None
+    # SQLite cannot even look up an integer beyond 64 bits
+    if n is None or not -2 ** 63 <= n < 2 ** 63:
         raise ValueError(f'"{str(v)[:20]}" is not a record id or modification count')
+    return n
 
 
 def _op_create(ctx, op):
@@ -1833,7 +1869,7 @@ def lock(file_id):
     if (g := _guard()):
         return g
     key = str(_body().get('key') or '')
-    if not re.fullmatch(r'(rec:\d+|schema|security|layout:[\w-]+|script:[\w-]+|valueList:[\w-]+)', key):
+    if not re.fullmatch(r'(rec:\d{1,18}|schema|security|layout:[\w-]+|script:[\w-]+|valueList:[\w-]+)', key):
         return _err('Unknown lock')
     conn = _conn()
     try:
@@ -1911,7 +1947,7 @@ def changes(file_id):
     if (g := _guard()):
         return g
     try:
-        since = int(request.args.get('since') or 0)
+        since = _op_int(request.args.get('since'))
     except ValueError:
         since = 0
     conn = _conn()
@@ -2040,7 +2076,7 @@ def save_accounts(file_id):
         now = _now_text()
         for op in ops:
             kind = op.get('op')
-            aid = op.get('id') if isinstance(op.get('id'), int) else None
+            aid = op.get('id') if isinstance(op.get('id'), int) and -2 ** 63 <= op['id'] < 2 ** 63 else None
             if not aid and op.get('match'):
                 r = conn.execute("SELECT id FROM fm_accounts WHERE file_id=? AND name=? COLLATE NOCASE",
                                  (file_id, str(op['match']))).fetchone()
@@ -2240,10 +2276,11 @@ def _container_visible(conn, ctxs, crow):
 def _check_container_refs(ctx, data, old=None):
     """A record may only be given a container this session can already see (one it
     uploaded, or one in a record it can view), so a guessed id cannot be used to read
-    someone else's file through a record of one's own."""
-    before = set().union(*_container_refs(old or {}).values())
-    for ids in _container_refs(data).values():
-        for cid in ids - before:
+    someone else's file through a record of one's own. Only a field that already held
+    the id keeps it unchecked: copied from a "no access" field to another, it is not."""
+    before = _container_refs(old or {})
+    for k, ids in _container_refs(data).items():
+        for cid in ids - before.get(k, set()):
             crow = ctx.conn.execute("SELECT * FROM fm_containers WHERE id=? AND file_id=?",
                                     (cid, ctx.file_id)).fetchone()
             if not crow or not _container_visible(ctx.conn, [ctx], crow):
@@ -2360,20 +2397,29 @@ def xlsx_parse():
         return _err('Choose a file')
     try:
         import openpyxl
-        wb = openpyxl.load_workbook(io.BytesIO(up.read(30 * 1024 * 1024)), read_only=True, data_only=True)
+        import zipfile
+        raw = io.BytesIO(up.read(30 * 1024 * 1024))
+        # a few MB of zip can unpack to GBs (the sizes it declares are what zipfile reads)
+        if sum(i.file_size for i in zipfile.ZipFile(raw).infolist()) > MAX_XLSX_UNZIPPED:
+            return _err(f'That workbook is too large to import ({MAX_XLSX_UNZIPPED // 1024 // 1024} MB unpacked '
+                        f'at most)')
+        wb = openpyxl.load_workbook(raw, read_only=True, data_only=True)
     except Exception:
         return _err('That file could not be read as an Excel workbook (.xlsx)')
-    sheets, cells = [], 0
+    sheets, cells, text = [], 0, 0
     for ws in wb.worksheets:
         # The size a workbook declares is not trusted (openpyxl would pad every row out
-        # to it), and the rows, padded to the widest one, may hold MAX_XLSX_CELLS in all.
+        # to it), and the rows, padded to the widest one, may hold MAX_XLSX_CELLS in all,
+        # with MAX_XLSX_TEXT characters (one shared string may fill any number of cells).
         ws.reset_dimensions()
         rows, width = [], 0
         for row in ws.iter_rows(values_only=True):
             rows.append([_cell_text(v) for v in row])
             width = max(width, len(row))
-            if cells + width * len(rows) > MAX_XLSX_CELLS:
-                return _err(f'That workbook is too large to import ({MAX_XLSX_CELLS:,} cells at most)')
+            text += sum(map(len, rows[-1]))
+            if cells + width * len(rows) > MAX_XLSX_CELLS or text > MAX_XLSX_TEXT:
+                return _err(f'That workbook is too large to import ({MAX_XLSX_CELLS:,} cells and '
+                            f'{MAX_XLSX_TEXT // 1024 // 1024} MB of text at most)')
             if len(rows) >= 100000:
                 break
         while rows and not any(rows[-1]):
@@ -2506,22 +2552,27 @@ class _PublicAdapter(HTTPAdapter):
 
 
 def _check_fetch_url(url):
-    """http(s) only, with nothing that makes URL parsers disagree about the host:
-    urlparse reads 'http://127.0.0.1\\@example.com/' as example.com, urllib3 (which
-    makes the connection) as 127.0.0.1."""
+    """The URL to request: http(s) only, with nothing that makes URL parsers disagree
+    about the host: urlparse reads 'http://127.0.0.1\\@example.com/' as example.com,
+    urllib3 (which makes the connection) as 127.0.0.1. Spaces are sent as %20, as
+    FileMaker encodes the address itself ("...?q=" & City with City "New York")."""
+    url = url.replace(' ', '%20')
     if _URL_REFUSED.search(url):
-        raise ValueError('The URL has a space, backslash or control character in it (encode it with '
-                         'GetAsURLEncoded)')
+        raise ValueError('The URL has a backslash, control character or unusual space in it (encode it '
+                         'with GetAsURLEncoded)')
     u = urlparse(url)
     if u.scheme not in ('http', 'https') or not u.hostname:
         raise ValueError('Only http:// and https:// addresses are supported')
     try:
         host = urllib3.util.parse_url(url).host or ''
-        want = u.hostname.encode('idna').decode('ascii')
+        # the host urlparse found, encoded (IDNA) by urllib3 just as the original is
+        want = urllib3.util.parse_url(f'{u.scheme}://' + (f'[{u.hostname}]' if ':' in u.hostname
+                                                          else u.hostname)).host or ''
     except (urllib3.exceptions.LocationParseError, UnicodeError):
         raise ValueError('That URL is not valid')
-    if host.strip('[]').lower() != want.lower():
+    if host.lower() != want.lower():
         raise ValueError('That URL is not valid')
+    return url
 
 
 def _shut_sockets(socks):
@@ -2550,7 +2601,7 @@ def _fetch(url, method, headers, data):
     s.mount('https://', _PublicAdapter())
     try:
         for _ in range(5):
-            _check_fetch_url(url)
+            url = _check_fetch_url(url)
             r = s.request(method, url, headers=headers, data=data if method != 'GET' else None,
                           timeout=20, allow_redirects=False, stream=True)
             if r.is_redirect and r.headers.get('Location'):

@@ -19,7 +19,9 @@ import threading
 import time
 import unittest
 import zipfile
+from datetime import datetime, timedelta, timezone
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -58,9 +60,9 @@ def custom_set(pid, tables, **extra):
 ALL = {'view': 'yes', 'edit': 'yes', 'create': 'yes', 'delete': 'yes'}
 
 
-def serve(reply):
-    """A tiny HTTP server on 127.0.0.1 for the Insert From URL tests. Returns
-    (port, requests seen); each request is answered by reply(conn)."""
+def serve(reply, tls=None):
+    """A tiny HTTP server on 127.0.0.1 for the Insert From URL tests (https with a
+    tls_context()). Returns (port, requests seen); each request is answered by reply(conn)."""
     srv = socket.socket()
     srv.bind(('127.0.0.1', 0))
     srv.listen(5)
@@ -72,8 +74,13 @@ def serve(reply):
                 c, _ = srv.accept()
             except OSError:
                 return
+            c.settimeout(5)
+            if tls:
+                try:
+                    c = tls.wrap_socket(c, server_side=True)
+                except OSError:
+                    continue
             with c:
-                c.settimeout(5)
                 req = b''
                 while b'\r\n\r\n' not in req:
                     chunk = c.recv(4096)
@@ -91,6 +98,35 @@ def serve(reply):
 
 def ok_reply(c):
     c.sendall(b'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 6\r\nConnection: close\r\n\r\nSECRET')
+
+
+def tls_context():
+    """A server TLS context for 127.0.0.1, and the path of its self-signed certificate
+    (the test CA a client must trust)."""
+    import ipaddress
+    import ssl
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'filemaker test')])
+    now = datetime.now(timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+            .serial_number(x509.random_serial_number()).not_valid_before(now - timedelta(days=1))
+            .not_valid_after(now + timedelta(days=1))
+            .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address('127.0.0.1'))]), False)
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), True)
+            .sign(key, hashes.SHA256()))
+    cert_path, key_path = os.path.join(TMP, 'tls-cert.pem'), os.path.join(TMP, 'tls-key.pem')
+    with open(cert_path, 'wb') as fh:
+        fh.write(cert.public_bytes(serialization.Encoding.PEM))
+    with open(key_path, 'wb') as fh:
+        fh.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                   serialization.NoEncryption()))
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(cert_path, key_path)
+    return ctx, cert_path
 
 
 CONTACTS = {'id': 'T1', 'name': 'Contacts', 'fields': [
@@ -514,19 +550,25 @@ class FileMakerHostTests(unittest.TestCase):
         table = json.loads(json.dumps(CONTACTS))
         table['fields'] += [{'id': 'F6', 'name': 'Created By', 'type': 'text', 'options': {'autoEnter': {'creation': 'account'}}},
                             {'id': 'F7', 'name': 'Approved', 'type': 'text'},
-                            {'id': 'F8', 'name': 'Modified By', 'type': 'text', 'options': {'autoEnter': {'modification': 'account'}}}]
+                            {'id': 'F8', 'name': 'Modified By', 'type': 'text', 'options': {'autoEnter': {'modification': 'account'}}},
+                            {'id': 'F9', 'name': 'Created', 'type': 'timestamp', 'options': {'autoEnter': {'creation': 'timestamp'}}}]
         fid = self.make_file('Audit', schema=schema_with([table]))
         tok = self.open(fid).get_json()['token']
-        self.add_pset(fid, tok, custom_set('P_clerk', {'T1': dict(ALL, fields={'F6': 'view', 'F7': 'view', 'F8': 'view'})}))
+        self.add_pset(fid, tok, custom_set('P_clerk', {'T1': dict(ALL, fields={'F6': 'view', 'F7': 'view', 'F8': 'view', 'F9': 'view'})}))
         self.add_account(fid, tok, 'sam', 'pw', 'P_clerk')
         other = self.client('office2')
         st = self.open(fid, other, account='sam', password='pw').get_json()['token']
         url = f'/filemaker/api/files/{fid}/records'
-        forged = {'F6': 'Admin', 'F7': 'APPROVED', 'F8': 'Admin'}
-        r = self.call('POST', url, st, {'ops': [{'op': 'create', 'table': 'T1', 'data': dict(forged, F2='x')}]}, c=other)
+        forged = {'F6': 'Admin', 'F7': 'APPROVED', 'F8': 'Admin', 'F9': '2000-01-01 00:00:00'}
+        # (its dates and times are in the users' time zone, FILEMAKER_TZ, as the browser's are, not the server's)
+        tz = ZoneInfo('Pacific/Kiritimati')
+        with mock.patch.object(FMH, 'FILEMAKER_TZ', tz):
+            r = self.call('POST', url, st, {'ops': [{'op': 'create', 'table': 'T1', 'data': dict(forged, F2='x')}]}, c=other)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         d = r.get_json()['results'][0]['record']['d']
         self.assertEqual((d['F2'], d['F6'], d.get('F7'), d['F8']), ('x', 'sam', None, 'sam'), 'the host enters auto-enter values itself')
+        created = datetime.strptime(d['F9'], '%Y-%m-%d %H:%M:%S')
+        self.assertLess(abs((created - datetime.now(tz).replace(tzinfo=None)).total_seconds()), 120)
         # a pending (New Record) record committed later
         rid = self.call('POST', url, st, {'ops': [{'op': 'create', 'table': 'T1', 'data': {}, 'pending': True}]}, c=other).get_json()['results'][0]['id']
         r = self.call('POST', url, st, {'ops': [{'op': 'update', 'id': rid, 'data': dict(forged, F2='y'), 'commit': True}]}, c=other)
@@ -536,6 +578,40 @@ class FileMakerHostTests(unittest.TestCase):
         self.assertEqual(self.call('POST', url, st, {'ops': [{'op': 'update', 'id': rid, 'data': {'F7': 'APPROVED'}}]}, c=other).status_code, 403)
         r = self.call('POST', url, st, {'ops': [{'op': 'update', 'id': rid, 'data': {'F2': 'z', 'F8': 'forged'}}]}, c=other)
         self.assertEqual(r.get_json()['results'][0]['record']['d']['F8'], 'sam')
+
+    def test_new_records_keep_view_only_values_the_engine_works_out(self):
+        invoices = {'id': 'T1', 'name': 'Invoices', 'fields': [
+            {'id': 'F1', 'name': 'id', 'type': 'text', 'options': {'autoEnter': {'calc': 'Get ( UUID )'}}},
+            {'id': 'F2', 'name': 'Customer', 'type': 'text'}, {'id': 'F3', 'name': 'Approved', 'type': 'text'}]}
+        lines = {'id': 'T2', 'name': 'Lines', 'fields': [
+            {'id': 'G1', 'name': 'invoice_id', 'type': 'text'}, {'id': 'G2', 'name': 'Item', 'type': 'text'},
+            {'id': 'G3', 'name': 'customer_key', 'type': 'text'}]}
+        rels = [{'id': 'R1', 'left': 'O_T1', 'right': 'O_T2', 'predicates': [{'leftField': 'F1', 'op': '=', 'rightField': 'G1'}],
+                 'rightOpts': {'create': True}},
+                # matches on a view-only field too, but creates no records there
+                {'id': 'R2', 'left': 'O_T1', 'right': 'O_T2', 'predicates': [{'leftField': 'F2', 'op': '=', 'rightField': 'G3'}]}]
+        fid = self.make_file('Portal', schema=schema_with([invoices, lines], relationships=rels))
+        tok = self.open(fid).get_json()['token']
+        self.add_pset(fid, tok, custom_set('P_clerk', {'T1': dict(ALL, fields={'F1': 'view', 'F3': 'view'}),
+                                                       'T2': dict(ALL, fields={'G1': 'view', 'G3': 'view'})}))
+        self.add_account(fid, tok, 'clerk', 'pw', 'P_clerk')
+        other = self.client('office2')
+        st = self.open(fid, other, account='clerk', password='pw').get_json()['token']
+        url = f'/filemaker/api/files/{fid}/records'
+
+        def new_record(table, data):
+            # as the engine does it: a pending record, committed with its values
+            rid = self.call('POST', url, st, {'ops': [{'op': 'create', 'table': table, 'data': {}, 'pending': True}]}, c=other).get_json()['results'][0]['id']
+            r = self.call('POST', url, st, {'ops': [{'op': 'update', 'id': rid, 'data': data, 'commit': True}]}, c=other)
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            return rid, r.get_json()['results'][0]['record']['d']
+        inv, d = new_record('T1', {'F1': 'uuid-1', 'F2': 'ACME', 'F3': 'APPROVED'})
+        self.assertEqual(d, {'F1': 'uuid-1', 'F2': 'ACME'}, 'the auto-enter calculation is kept, a typed value is not')
+        _, d = new_record('T2', {'G1': 'uuid-1', 'G2': 'Widget', 'G3': 'ACME'})
+        self.assertEqual(d, {'G1': 'uuid-1', 'G2': 'Widget'}, 'the portal match field is kept')
+        # once the record exists, the field is the account's to view only
+        r = self.call('POST', url, st, {'ops': [{'op': 'update', 'id': inv, 'data': {'F1': 'other'}}]}, c=other)
+        self.assertEqual(r.status_code, 403)
 
     def test_concurrent_schema_saves_keep_both_changes(self):
         fid = self.make_file('Race')
@@ -643,9 +719,15 @@ class FileMakerHostTests(unittest.TestCase):
                            ('schema', {'ops': [{'op': 'upsert', 'coll': 'layouts', 'item': [1]}]}),
                            ('schema', {'ops': [{'op': 'section', 'name': 'database', 'value': [1]}]}), ('schema', {'ops': [], 'serials': [1]}),
                            ('accounts', {'ops': ['x']}), ('accounts', {'ops': [{'op': 'add', 'name': 'x', 'privilegeSet': ['PS_READ']}]}),
-                           ('fetch', {'url': 'https://example.com/', 'headers': [1]})):
+                           ('fetch', {'url': 'https://example.com/', 'headers': [1]}),
+                           # numbers SQLite cannot hold (JSON Infinity, or beyond 64 bits)
+                           ('records', {'ops': [{'op': 'update', 'id': float('inf'), 'data': {}}]}),
+                           ('records', {'ops': [{'op': 'update', 'id': 10 ** 23, 'data': {}}]}), ('records', {'ops': [{'op': 'delete', 'id': 10 ** 23}]}),
+                           ('records', {'ops': [{'op': 'update', 'id': rid, 'data': {}, 'mc': -10 ** 23}]}),
+                           ('lock', {'key': 'rec:99999999999999999999999'}), ('accounts', {'ops': [{'op': 'update', 'id': 10 ** 23, 'name': 'x'}]})):
             r = self.call('POST', f'/filemaker/api/files/{fid}/{path}', tok, body)
             self.assertIn(r.status_code, (400, 404), (path, body))
+        self.assertEqual(self.call('GET', f'/filemaker/api/files/{fid}/changes?since=99999999999999999999999', tok).status_code, 200)
         self.assertEqual(self.call('POST', f'/filemaker/api/files/{fid}/unlock', tok, {'keys': 5}).status_code, 200)
         r = self.c.post('/filemaker/api/xlsx/build', json={'rows': [['2024-99-99', '1' * 5000, 'a\x01b']], 'types': ['date', 'number', 'text']})
         self.assertEqual(r.status_code, 200)
@@ -653,7 +735,7 @@ class FileMakerHostTests(unittest.TestCase):
     # ── containers ─────────────────────────────────────────────────────────
     def container_file(self, name):
         contacts = json.loads(json.dumps(CONTACTS))
-        contacts['fields'].append({'id': 'F6', 'name': 'Photo', 'type': 'container'})
+        contacts['fields'] += [{'id': 'F6', 'name': 'Photo', 'type': 'container'}, {'id': 'F7', 'name': 'Attachment', 'type': 'container'}]
         secret = {'id': 'T2', 'name': 'Secret', 'fields': [{'id': 'G1', 'name': 'Scan', 'type': 'container'}]}
         return self.make_file(name, schema=schema_with([contacts, secret]))
 
@@ -671,6 +753,7 @@ class FileMakerHostTests(unittest.TestCase):
                                                  {'op': 'create', 'table': 'T1', 'data': {'F2': 'p', 'F3': 'pat', 'F6': theirs}},
                                                  {'op': 'create', 'table': 'T1', 'data': {'F2': 's', 'F3': 'sam', 'F6': mine}}]})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        sams = r.get_json()['results'][2]['id']
         other = self.client('office2')
         st = self.open(fid, other, account='sam', password='pw').get_json()['token']
 
@@ -691,8 +774,15 @@ class FileMakerHostTests(unittest.TestCase):
         self.assertEqual(get(other, secret).status_code, 403)
         # a "no access" field hides the file even in a record the account can view
         third = self.client('office3')
-        self.open(fid, third, account='nopic', password='pw')
+        nt = self.open(fid, third, account='nopic', password='pw').get_json()['token']
         self.assertEqual(get(third, mine).status_code, 403)
+        # nor can it be copied from that field into one the account may modify, in the same record
+        r = self.call('POST', url, nt, {'ops': [{'op': 'update', 'id': sams, 'data': {'F7': mine}}]}, c=third)
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(get(third, mine).status_code, 403)
+        # a field keeps the id it already holds
+        r = self.call('POST', url, nt, {'ops': [{'op': 'update', 'id': sams, 'data': {'F2': 'renamed'}}]}, c=third)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
     def test_container_uploads_need_a_field_to_put_them_in_and_orphans_are_removed(self):
         fid = self.container_file('Uploads')
@@ -737,6 +827,26 @@ class FileMakerHostTests(unittest.TestCase):
         self.assertEqual(r.status_code, 400)
         self.assertIn('too large', r.get_json()['error'])
 
+    def test_xlsx_bytes_are_limited_not_only_cells(self):
+        ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+
+        def parse(cells):
+            sheet = f'<worksheet {ns}><sheetData><row r="1">' + ''.join(
+                f'<c r="{chr(65 + i)}1" t="inlineStr"><is><t>{t}</t></is></c>' for i, t in enumerate(cells)) + '</row></sheetData></worksheet>'
+            return self.c.post('/filemaker/api/xlsx/parse', data={'file': (io.BytesIO(self.xlsx_with_sheet(sheet)), 'x.xlsx')},
+                               content_type='multipart/form-data')
+        # a megabyte of one letter zips to about a kilobyte: what it unpacks to is what counts
+        with mock.patch.object(FMH, 'MAX_XLSX_UNZIPPED', 512 * 1024):
+            r = parse(['A' * 1024 * 1024])
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('too large', r.get_json()['error'])
+        # and the text of all the cells together (a shared string may be in every cell)
+        with mock.patch.object(FMH, 'MAX_XLSX_TEXT', 1000):
+            self.assertEqual(parse(['b' * 400] * 2).status_code, 200)
+            r = parse(['b' * 400] * 3)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('too large', r.get_json()['error'])
+
     # ── Insert From URL ─────────────────────────────────────────────────────
     def fetch(self, fid, tok, url):
         return self.call('POST', f'/filemaker/api/files/{fid}/fetch', tok, {'url': url})
@@ -750,8 +860,8 @@ class FileMakerHostTests(unittest.TestCase):
         real = socket.getaddrinfo
         # example.com resolves to a public address here, so only the URL check can stop these
         with mock.patch('socket.getaddrinfo', lambda host, *a, **k: real('93.184.216.34' if host == 'example.com' else host, *a, **k)):
-            for url in (f'http://127.0.0.1:{port}\\@example.com/', f'http://127.0.0.1:{port} @example.com/', f'http://127.0.0.1:{port}\t@example.com/',
-                        f'http://[::ffff:127.0.0.1]:{port}/'):
+            for url in (f'http://127.0.0.1:{port}\\@example.com/', f'http://127.0.0.1:{port}\t@example.com/',
+                        f'http://127.0.0.1:{port} @example.com/', f'http://[::ffff:127.0.0.1]:{port}/'):
                 r = self.fetch(fid, tok, url)
                 self.assertEqual(r.status_code, 400, url)
         self.assertEqual(seen, [])
@@ -805,14 +915,40 @@ class FileMakerHostTests(unittest.TestCase):
             for _ in range(10):
                 c.sendall(b'a')
                 time.sleep(0.4)
-        srv, seen = serve(trickle)
+        tls, ca = tls_context()
+
+        class TrustingSession(FMH.http_requests.Session):
+            def __init__(self):
+                super().__init__()
+                self.verify = ca      # the test CA
+        # https too: the socket it reads through is a wrapped copy of the one connected
+        for scheme in ('http', 'https'):
+            srv, seen = serve(trickle, tls if scheme == 'https' else None)
+            self.addCleanup(srv.close)
+            started = time.time()
+            with mock.patch.object(FMH, '_public_ip', lambda a: a == '127.0.0.1'), mock.patch.object(FMH, 'FETCH_DEADLINE', 1), \
+                    mock.patch.object(FMH.http_requests, 'Session', TrustingSession):
+                r = self.fetch(fid, tok, f'{scheme}://127.0.0.1:{srv.getsockname()[1]}/')
+            self.assertEqual(r.status_code, 400, scheme)
+            self.assertIn('too long', r.get_json()['error'])
+            self.assertEqual(len(seen), 1, scheme)
+            self.assertLess(time.time() - started, 3, scheme)
+
+    def test_fetch_sends_spaces_encoded_and_international_names(self):
+        fid = self.make_file('FetchSpace')
+        tok = self.open(fid).get_json()['token']
+        srv, seen = serve(ok_reply)
         self.addCleanup(srv.close)
-        started = time.time()
-        with mock.patch.object(FMH, '_public_ip', lambda a: a == '127.0.0.1'), mock.patch.object(FMH, 'FETCH_DEADLINE', 1):
-            r = self.fetch(fid, tok, f'http://127.0.0.1:{srv.getsockname()[1]}/')
-        self.assertEqual(r.status_code, 400)
-        self.assertIn('too long', r.get_json()['error'])
-        self.assertLess(time.time() - started, 3)
+        # "...?q=" & City with City "New York": FileMaker encodes the address itself
+        with mock.patch.object(FMH, '_public_ip', lambda a: a == '127.0.0.1'):
+            r = self.fetch(fid, tok, f'http://127.0.0.1:{srv.getsockname()[1]}/search?q=New York')
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertTrue(seen[0].startswith('GET /search?q=New%20York HTTP/1.1'), seen[0])
+        # a space before an @ is then part of the user name, for urllib3 as for urlparse
+        self.assertEqual(FMH.urlparse(FMH._check_fetch_url('http://127.0.0.1:80 @example.com/')).hostname, 'example.com')
+        # names are compared after IDNA encoding the way urllib3 does it (ß is not "ss")
+        for url in ('https://straße.de/', 'https://faß.de/x', 'https://bücher.de/'):
+            self.assertEqual(FMH._check_fetch_url(url), url)
 
     def test_fetch_with_an_unknown_charset_is_read_as_utf8(self):
         fid = self.make_file('FetchCharset')
