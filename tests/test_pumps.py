@@ -2662,8 +2662,10 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(case['vendor_quote_amount'], 1200.0)
         self.assertTrue({s['key']: s for s in case['step_list']}['vendor_quote'].get('at'),
                         'an amount in the sheet ticks the step')
-        self.c.patch(f'/pumps/api/cases/{cid}', json={'steps': {'vendor_quote': '2026-10-01', 'client_quote': 'na',
-                                                                'client_approved': '2026-10-02'}})
+        # Approved today: dates fixed in the past would turn into a follow-up as the days go by.
+        today = P._today().isoformat()
+        self.c.patch(f'/pumps/api/cases/{cid}', json={'steps': {'vendor_quote': today, 'client_quote': 'na',
+                                                                'client_approved': today}})
         case = self.case(cid)
         self.assertEqual(case['stage'], 'scheduled')
         self.assertIn('mailto:', case['schedule_email'])
