@@ -3497,6 +3497,16 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(len(quoted), 1, [c['title'] for c in cases])
         self.assertEqual((quoted[0]['category'], quoted[0]['stage']), ('repair', 'vendor_quote'))
         self.assertEqual(quoted[0]['client_name'], 'Lely')
+        # Waiting since the report came in, not since the date on it (Anna's Place: "8 days" for a day-old item).
+        self.assertEqual(quoted[0]['opened_on'], P._today().isoformat())
+        conn = P._conn()
+        conn.execute("UPDATE pump_cases SET opened_on='2026-10-07' WHERE id=?", (quoted[0]['id'],))
+        conn.execute("DELETE FROM pump_state WHERE key='quote_needed_dates_oct26'")
+        P._fix_quote_needed_dates(conn.cursor(), P._now_text())
+        conn.commit()
+        fixed = conn.execute('SELECT opened_on, created_at FROM pump_cases WHERE id=?', (quoted[0]['id'],)).fetchone()
+        conn.close()
+        self.assertEqual(fixed['opened_on'], fixed['created_at'][:10])
         # A report that says nothing of a quote adds nothing.
         self.assertEqual(P.quote_needed_note({'kind': 'report', 'report_fields': {}, 'text_excerpt': 'All good.'}), '')
 

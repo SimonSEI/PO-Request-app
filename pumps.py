@@ -302,7 +302,9 @@ def _quote_needed_item(conn, doc, case_id, actor):
                                 'client_name': client, 'site': doc.get('site') or case.get('site') or '',
                                 'vendor': vendor,
                                 'description': f"{note}\n(From {what}.)",
-                                'opened_on': doc.get('doc_date') or _today().isoformat()}, actor, source='bill')
+                                # Waiting since we learned of it, not since the date on the vendor's
+                                # paper (Anna's Place, Oct 2026: a day-old item read "8 days").
+                                'opened_on': _today().isoformat()}, actor, source='bill')
     _event(conn, actor, 'quote needed', f"{what[0].upper() + what[1:]} says: {note}",
            case_id=new_id, doc_id=doc['id'])
     _event(conn, actor, 'quote needed', f'Put on the watchlist as job {new_id}: {note}', case_id=case_id)
@@ -9166,6 +9168,18 @@ def _undo_watercrest_mismatch(c, now):
                 {k: v for k, v in j.items() if not k.startswith('note_') and k not in ('logged_by', 'logged_at')}), r[0]))
 
 
+def _fix_quote_needed_dates(c, now):
+    """Once (Oct 16 2026): "quote needed" items made from a bill or report were
+    dated from the vendor's paper; count them from the day they were made."""
+    if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pump_cases'").fetchone():
+        return
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('quote_needed_dates_oct26', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    c.execute("UPDATE pump_cases SET opened_on=substr(created_at, 1, 10) WHERE source='bill' "
+              "AND COALESCE(created_at, '') != '' AND opened_on < substr(created_at, 1, 10)")
+
+
 def report_only_account(conn, case):
     """The account's name when a maintenance item is for an account that gets
     only its report logged - no invoice to draft or send. '' otherwise."""
@@ -9370,6 +9384,7 @@ def init_account_tables(c):
     _apply_master_vendors(c, now)
     _apply_report_only(c, now)
     _undo_watercrest_mismatch(c, now)
+    _fix_quote_needed_dates(c, now)
     _apply_follow_ups(c, now)
     if not seeded('office_answers_oct26'):
         # What the office said (Oct 2026): Old Collier and Camas Willows are off
