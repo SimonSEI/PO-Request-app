@@ -394,6 +394,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   </div>
   <div class="note" style="margin-bottom:10px">Every vendor bill not paid yet, by vendor. A bill can be paid once we've invoiced the client for it; ticked ones go in one email to Christian, with the bills attached. Mark each paid when it is.</div>
   <div id="billsList"><div class="empty">Loading…</div></div>
+  <div id="billsPaidList" style="margin-top:16px"></div>
 </div>
 <div class="panel hide" id="p-reports">
   <div class="toolbar">
@@ -1002,6 +1003,16 @@ async function loadBills(){
       <td>${b.payable ? '<b class="ok">✓ Yes</b> - ' : 'Not yet - '}${esc(b.why)}${b.asked_at ? `<div class="note">✉ Emailed Christian ${esc(b.asked_at.slice(0, 10))}</div>` : ''}</td>
       <td>${b.payable ? '' : `<button class="btn s" title="Invoiced straight in Jobber? Tie that invoice to this job" onclick="linkInvoice(${b.case_id}).then(loadBills)">Link invoice</button> `}<button class="btn s" onclick="markVendorPaid(${b.case_id}).then(loadBills)">Mark paid</button></td></tr>`; }).join('')}
     </tbody></table>`).join('') || '<div class="empty">No vendor bills waiting to be paid. 🎉</div>';
+  const paid = j.paid || [];
+  document.getElementById('billsPaidList').innerHTML = paid.length ? `<details><summary class="grp" style="cursor:pointer">Paid in the last 60 days (${paid.length}) - undo one marked paid by mistake</summary>
+    <table class="t"><thead><tr><th>Job</th><th>Vendor</th><th>Their invoice</th><th class="num">Amount</th><th>Paid</th><th></th></tr></thead><tbody>
+    ${paid.map(b => `<tr><td><a href="#" onclick="event.preventDefault();openCase(${b.case_id})">${esc(b.client_name || b.title)}</a><div class="note">${esc(b.title)}</div></td>
+      <td>${esc(b.vendor)}</td>
+      <td>${b.bill_doc_id ? `<a target="_blank" href="/pumps/api/docs/${b.bill_doc_id}/file">#${esc(b.bill_number || '?')}</a>` : '#' + esc(b.bill_number || '?')}</td>
+      <td class="num">${b.amount != null ? money(b.amount) : '?'}</td>
+      <td>${esc(b.paid_on)}${b.paid_by ? `<div class="note">by ${esc(b.paid_by)}</div>` : ''}</td>
+      <td><button class="btn s" title="Marked paid by mistake? Put it back on the list" onclick="billsUnpaid([${b.case_id}])">↶ Undo paid</button></td></tr>`).join('')}
+    </tbody></table></details>` : '';
   setCount('n-bills', j.vendors.reduce((a, g) => a + g.bills.filter(b => b.payable && !b.asked_at).length, 0), false);
   billsInfo();
 }
@@ -1038,7 +1049,21 @@ async function billsMarkPaid(){
   if (!d) return;
   const j = await api('/bills_to_pay/paid', {method:'POST', body:{case_ids: ids, paid_on: d}});
   if (!j.success) { toast(j.error, true); return; }
-  toast(`Marked ${j.marked} bill${j.marked > 1 ? 's' : ''} paid.`); loadBills(); loadToday();
+  undoToast(`Marked ${j.marked} bill${j.marked > 1 ? 's' : ''} paid.`, () => billsUnpaid(j.case_ids)); loadBills(); loadToday();
+}
+// Marked paid by mistake: back on the list.
+async function billsUnpaid(ids){
+  const j = await api('/bills_to_pay/unpaid', {method:'POST', body:{case_ids: ids}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast(`Put ${j.unmarked} bill${j.unmarked > 1 ? 's' : ''} back as not paid.`); loadBills(); loadToday();
+}
+// A toast with an Undo button, up for 10 seconds.
+function undoToast(msg, undo){
+  const d = document.createElement('div'); d.className = 'toast';
+  d.append(msg + ' ');
+  const b = document.createElement('button'); b.className = 'btn s'; b.textContent = 'Undo';
+  b.onclick = () => { d.remove(); undo(); };
+  d.append(b); document.body.appendChild(d); setTimeout(() => d.remove(), 10000);
 }
 async function billsEmail(){
   const ids = billsPicked();
