@@ -41,7 +41,7 @@ MS_GRAPH_ENABLED = bool(MS_TENANT_ID and MS_CLIENT_ID and MS_CLIENT_SECRET and M
 
 MONITORING_ENABLED = bool(PO_EMAIL_ADDRESS and PO_EMAIL_PASSWORD) or (MS_GRAPH_ENABLED and bool(PO_EMAIL_ADDRESS))
 
-SCAN_LOG_TABLES = ('vendor_invoice_email_log', 'pump_email_scan_log')
+SCAN_LOG_TABLES = ('vendor_invoice_email_log', 'pump_email_scan_log', 'vib_email_log')
 
 
 def graph_access_token():
@@ -63,7 +63,7 @@ def fetch_scan_emails(db_path, log_table='vendor_invoice_email_log', extensions=
     """
     Fetch emails for a scanner that keeps its own log table, so it runs
     independently of the PO scanner. log_table is the scanner's history
-    (vendor_invoice_email_log or pump_email_scan_log) in the database at db_path.
+    (vendor_invoice_email_log, pump_email_scan_log or vib_email_log) in the database at db_path.
     extensions: attachment types worth fetching the email for (Pumps also
     wants Word reports). since: 'YYYY-MM-DD' - skip mail received before it.
     plain_since: 'YYYY-MM-DD' - also return emails with no wanted attachment
