@@ -5868,15 +5868,33 @@ def note_sub_quote_on_invoice(case_id, invoice_id, job_id='', client_id='', invo
     return None
 
 
+_FILE_MONTH = re.compile(r'^\s*(\d{1,2})\s*[-_.]\s*(\d{2})(?!\d)')
+
+
+def report_month_date(doc):
+    """The day a report is for. Wettech names each report by its month -
+    "10-26 Sopra Luxury Living.docx" is October 2026 - and that wins over a
+    date inside that disagrees (Sopra, Oct 2026: the form still said July, and
+    the note went in as "July Pump Report")."""
+    rf = doc.get('report_fields') or {}
+    when = _iso_date(rf.get('date')) or doc.get('doc_date') or ''
+    m = _FILE_MONTH.match(os.path.basename(doc.get('file_name') or ''))
+    if m and 1 <= int(m.group(1)) <= 12:
+        ym = f'20{m.group(2)}-{int(m.group(1)):02d}'
+        if when[:7] != ym:
+            return f'{ym}-01'
+    return when
+
+
 def report_note_title(doc):
     """"October Pump Report": the month of the visit, as the office titles them."""
-    rf = doc.get('report_fields') or {}
-    when = _iso_date(rf.get('date')) or doc.get('doc_date') or _today().isoformat()
+    when = report_month_date(doc) or _today().isoformat()
     try:
         month = datetime.strptime(when[:10], '%Y-%m-%d').strftime('%B')
     except ValueError:
         month = _today().strftime('%B')
-    what = 'Fountain Report' if re.search(r'fountain', rf.get('title') or '', re.I) else 'Pump Report'
+    what = 'Fountain Report' if re.search(r'fountain', (doc.get('report_fields') or {}).get('title') or '', re.I) \
+        else 'Pump Report'
     return f'{month} {what}'
 
 
@@ -9293,8 +9311,7 @@ def h_dives_docx(actor):
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _report_date(d):
-    rf = d.get('report_fields') or {}
-    return _iso_date(rf.get('date')) or d.get('doc_date') or (d.get('created_at') or '')[:10]
+    return report_month_date(d) or (d.get('created_at') or '')[:10]
 
 
 def reports_archive(fileobj):
