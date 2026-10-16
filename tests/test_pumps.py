@@ -3920,6 +3920,22 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(self.case(surge)['stage'], 'client_approved', 'quote out: waiting on the client')
         self.assertEqual(self.case(valve)['stage'], 'vendor_quote')
 
+    def test_quote_goes_on_the_item_waiting_for_it_not_the_report_visit(self):
+        """Banyan Bay (Oct 2026): the report made a maintenance item (the visit, done) and, from its comments, an
+        item waiting on a quote. Wettech's quote then went on the older report item, not the one waiting on it."""
+        conn = P._conn()
+        visit = P.create_case(conn, {'title': 'Irrigation Pump System Report - Banyan Testbay', 'category': 'maintenance',
+                                     'client_name': 'Banyan Testbay', 'vendor': 'Wettech', 'opened_on': '2026-10-16'}, 'x')
+        P._set_step(conn, visit, 'work_done', at='2026-10-16')
+        waiting = P.create_case(conn, {'title': 'Banyan Testbay - COMMENTS: Input line reactor bad', 'category': 'repair',
+                                       'client_name': 'Banyan Testbay', 'site': 'Banyan Testbay', 'vendor': 'Wettech',
+                                       'opened_on': '2026-10-16'}, 'x')
+        conn.commit()
+        conn.close()
+        self.extracts['q-banyan.pdf'] = extraction('quote', '', client='Banyan Testbay', subtotal=1150)
+        q = self.upload('q-banyan.pdf')
+        self.assertEqual(q['case_id'], waiting, (q, visit, waiting))
+
     def test_one_station_report_is_one_note(self):
         """Evergreen's North and South pumps are one job: a report naming two pumps that land on the same
         job (or none) stays one note."""

@@ -2199,6 +2199,10 @@ def _find_case_for(conn, doc, exclude=None):
             score -= 0.5
         if kind == 'quote' and 'vendor_quote' in done:
             score -= 0.3
+        if kind == 'quote' and (r.get('category') in ('maintenance', 'inspection') or 'work_done' in done):
+            # Banyan Bay (Oct 2026): the quote for what the report found went on the report's own
+            # maintenance visit (done, and the older item) instead of the item waiting on that quote.
+            score -= 0.15
         if score > best_score:
             best, best_score = r, score
     if best and best_score >= 0.85:
