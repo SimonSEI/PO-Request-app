@@ -745,7 +745,8 @@ async function loadToday(){
     return l ? `<input type="checkbox" title="Tick: ${l}" style="margin-right:6px" onclick="event.preventDefault();event.stopPropagation();askDone(event, () => stepDone(${c.id}, '${c.stage}', event))">` : ''; };
   // The drafted invoice in Jobber, to look over and send from there.
   const invoiceLink = c => { const inv = (c.jobber || {}).invoice || {}; const uri = jobberInvoiceUri(inv);
-    return uri ? `<a class="btn s p" target="_blank" rel="noopener" href="${esc(uri)}">Open invoice${inv.number ? ' #' + esc(inv.number) : ''} in Jobber ↗</a>` : ''; };
+    return (uri ? `<a class="btn s p" target="_blank" rel="noopener" href="${esc(uri)}">Open invoice${inv.number ? ' #' + esc(inv.number) : ''} in Jobber ↗</a>` : '')
+      + ((c.jobber || {}).site_invoices || []).filter(x => x.uri).map(x => `<a class="btn s p" target="_blank" rel="noopener" href="${esc(x.uri)}">Open ${esc(x.site || '')} invoice #${esc(x.number)} ↗</a>`).join(''); };
   // Our quote in Jobber, to look over and send from there.
   const quoteLink = c => { const q = (c.jobber || {}).quote || {}; const uri = jobberUri(q, 'quotes');
     return uri ? `<a class="btn s p" target="_blank" rel="noopener" href="${esc(uri)}">Open quote${q.number ? ' #' + esc(q.number) : ''} in Jobber ↗</a>` : ''; };
@@ -926,6 +927,7 @@ function journeyHtml(c){
         + (d.has_branded ? `<a class="btn s" target="_blank" href="/pumps/api/docs/${d.id}/file?version=branded_pdf">Our report PDF</a>` : '')
         + (J.quote_id ? `<a class="chip g" target="_blank" href="${esc(J.quote_uri || '#')}">our Jobber quote #${esc(J.quote_number)}</a>` : '')
         + (J.invoice_id ? `<a class="chip g" target="_blank" href="${esc(J.invoice_uri || '#')}">our Jobber invoice #${esc(J.invoice_number)}</a>` : '')
+        + (J.site_invoices || []).map(x => `<a class="chip g" target="_blank" href="${esc(x.invoice_uri || '#')}">${esc(x.site)} invoice #${esc(x.invoice_number)}</a>`).join('')
         + `<button class="btn s" onclick="openDoc(${d.id})">Details</button></div>`}); });
   (c.events || []).forEach(e => { if (/^(updated|read again|document edited|document received)$/.test(e.action)) return;
     const [ic, cls] = journeyIcon(e.action);
@@ -1267,6 +1269,9 @@ async function openDoc(id){
   const bi = d.branded_info || {};
   openModal(`${d.kind === 'other' ? 'Document' : d.kind[0].toUpperCase() + d.kind.slice(1)} - ${esc(d.file_name)}`, `
     ${d.review_reason ? `<div class="issue">${esc(d.review_reason)}</div>` : ''}
+    ${(d.site_invoices_left || []).length ? `<div class="issue">🧾 This bill covers more than one pump station - each has its own job and its own invoice. Still to draft: <b>${esc(d.site_invoices_left.map(x => x.location).join(', '))}</b> <button class="btn s p" onclick="siteInvoices(${d.id})">Draft ${d.site_invoices_left.length > 1 ? 'them' : 'it'}</button></div>` : ''}
+    ${((d.jobber || {}).site_invoices || []).length ? `<div class="note">Invoiced per station: ${[d.jobber].concat(d.jobber.site_invoices).map(x => `<a class="chip g" target="_blank" href="${esc(x.invoice_uri || '#')}">${esc(x.site || 'first')} #${esc(x.invoice_number)}</a>`).join(' ')}</div>` : ''}
+    ${(d.sections || []).length > 1 ? `<div class="note">One page per pump station - each goes on its own job: ${d.sections.map(x => `<b>${esc(x.location)}</b> ${x.logged ? '✓ logged' : '(not logged yet)'}`).join(' · ')}</div>` : ''}
     <div class="note">From ${esc(d.email_from || d.source)} ${d.email_subject ? '· "' + esc(d.email_subject) + '"' : ''} · read by ${esc(d.extracted_by || '—')}</div>
     <div class="fields">
       <label>Kind<select data-d="kind">${['quote','bill','report','other'].map(x => `<option ${x === d.kind ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
@@ -1284,6 +1289,16 @@ async function openDoc(id){
      ${(d.kind === 'quote' || d.kind === 'bill') && d.status !== 'dismissed' ? `<button class="btn" title="Read the file again with today's reader (e.g. two prices read as one)" onclick="readAgain(${d.id})">↻ Read again</button>` : ''}
      ${d.status !== 'dismissed' ? `<button class="btn danger" onclick="saveDoc(${d.id}, {status:'dismissed'})">Dismiss</button>` : ''}
      <button class="btn p" onclick="saveDocForm(${d.id})">Save &amp; file</button>`);
+}
+// A bill for two pump stations (The Carlisle): the other station's invoice, on its own job.
+async function siteInvoices(id){
+  const j = await api('/docs/' + id + '/site_invoices', {method:'POST', body:{}});
+  if (!j.success) { toast(j.error, true); return; }
+  const made = (j.invoices || []).filter(x => x.invoice_number);
+  const left = (j.invoices || []).filter(x => x.pending);
+  toast(made.length ? `Drafted ${made.map(x => x.location + ' #' + x.invoice_number).join(', ')} in Jobber - review and send.` : 'Nothing to draft.', !made.length);
+  left.forEach(x => toast(x.location + ': ' + x.pending, true));
+  closeModal(); loadToday();
 }
 function saveDocForm(id){
   const data = {file: true};
@@ -1516,30 +1531,49 @@ async function repPick(id){
   box.innerHTML = 'Loading jobs…';
   const j = await api('/jobber/clients/' + encodeURIComponent(id) + '/jobs');
   if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
-  const loc = (rep.doc.site || '').toLowerCase();
   const props = Object.fromEntries((j.properties || []).map(p => [p.id, p.label]));
-  const score = x => (x.type !== 'recurring' && x.status === 'archived' ? -9 : 0) + (/pump|fountain|w?e?t+e?ch|quarterly|monthly|maint|annual/i.test(x.title) ? 3 : 0) + (loc && (x.title + ' ' + (props[x.property_id] || '')).toLowerCase().includes(loc) ? 2 : 0) + (x.type === 'recurring' && x.status !== 'archived' ? 3 : 0) + (['active','upcoming','today','late'].includes(x.status) ? 1 : 0);
-  const jobs = (j.jobs || []).slice().sort((a, b) => score(b) - score(a));
-  const last = jobs.find(x => x.id === rep.last_job);
-  rep.target = last ? {type:'job', id: last.id} : jobs.length && score(jobs[0]) >= 3 ? {type:'job', id: jobs[0].id} : {type:'client', id};
-  box.innerHTML = jobs.map(x => `<label class="cand ${rep.target.id === x.id ? 'on' : ''}"><input type="radio" name="rt" ${rep.target.id === x.id ? 'checked' : ''} onchange="repTarget(this, 'job', '${esc(x.id)}')">
+  // A report with a page per pump station (The Carlisle: Entrance and Exit): a note per page, each on its own job.
+  const groups = (rep.doc.sections || []).length > 1 ? rep.doc.sections.filter(g => !g.logged) : [{section: null, location: rep.doc.site || ''}];
+  rep.targets = {};
+  box.innerHTML = groups.map((g, gi) => {
+    const loc = (g.location || '').toLowerCase();
+    const words = loc.split(/[^a-z0-9#]+/).filter(w => w.length > 2 && !['pump','pumps','station','the'].includes(w));
+    const fits = x => { const t = (x.title + ' ' + (props[x.property_id] || '')).toLowerCase(); return g.section === null ? (loc && t.includes(loc)) : words.some(w => t.includes(w)); };
+    const score = x => (x.type !== 'recurring' && x.status === 'archived' ? -9 : 0) + (/pump|fountain|w?e?t+e?ch|quarterly|monthly|maint|annual/i.test(x.title) ? 3 : 0) + (fits(x) ? 2 : 0) + (x.type === 'recurring' && x.status !== 'archived' ? 3 : 0) + (['active','upcoming','today','late'].includes(x.status) ? 1 : 0);
+    const jobs = (j.jobs || []).slice().sort((a, b) => score(b) - score(a));
+    const last = g.section === null && jobs.find(x => x.id === rep.last_job);
+    const t = last ? {type:'job', id: last.id} : jobs.length && score(jobs[0]) >= 3 ? {type:'job', id: jobs[0].id} : {type:'client', id};
+    rep.targets[gi] = {...t, section: g.section};
+    return (g.section !== null ? `<div class="grp" style="margin-top:8px">${esc(g.location)} page${g.date ? ' · ' + esc(g.date) : ''}</div>` : '')
+      + jobs.map(x => `<label class="cand ${t.id === x.id ? 'on' : ''}"><input type="radio" name="rt${gi}" ${t.id === x.id ? 'checked' : ''} onchange="repTarget(this, 'job', '${esc(x.id)}', ${gi})">
       <div style="flex:1"><b>#${esc(x.number)} ${esc(x.title)}</b><div class="note">${esc(x.type)} · ${esc(x.status)} · ${esc(props[x.property_id] || '')}</div></div><a class="note" target="_blank" href="${esc(x.uri)}">↗</a></label>`).join('')
-    + `<label class="cand ${rep.target.type === 'client' ? 'on' : ''}"><input type="radio" name="rt" ${rep.target.type === 'client' ? 'checked' : ''} onchange="repTarget(this, 'client', '${esc(id)}')"><div><b>On the client</b> <span class="note">(no single pump job fits)</span></div></label>`;
+      + `<label class="cand ${t.type === 'client' ? 'on' : ''}"><input type="radio" name="rt${gi}" ${t.type === 'client' ? 'checked' : ''} onchange="repTarget(this, 'client', '${esc(id)}', ${gi})"><div><b>On the client</b> <span class="note">(no single pump job fits)</span></div></label>`;
+  }).join('');
+  rep.target = rep.targets[0];
 }
 // The highlight follows the pick (Honda, Oct 2026: it stayed on the first job, so a click looked ignored).
-function repTarget(el, type, id){
-  rep.target = {type, id};
-  document.querySelectorAll('#rjobs .cand').forEach(c => c.classList.toggle('on', c.contains(el)));
+function repTarget(el, type, id, gi){
+  gi = gi || 0;
+  rep.targets[gi] = {...rep.targets[gi], type, id};
+  rep.target = rep.targets[0];
+  document.querySelectorAll(`#rjobs input[name="rt${gi}"]`).forEach(i => i.closest('.cand').classList.toggle('on', i === el));
 }
 async function sendReport(){
   if (!rep.target) { toast('Choose where the note goes.', true); return; }
   const btn = document.getElementById('repGo'); btn.disabled = true;
-  const cand = document.querySelector('#rcands .cand.on b'), job = rep.target.type === 'job' && document.querySelector('#rjobs input:checked')?.closest('.cand')?.querySelector('b');
-  const j = await api('/docs/' + rep.doc.id + '/report_note', {method:'POST', body:{target_type: rep.target.type, target_id: rep.target.id,
-    client_id: rep.client_id, client_name: cand ? cand.textContent : '', job_label: job ? job.textContent : ''}});
+  const cand = document.querySelector('#rcands .cand.on b');
+  let j = null;
+  // One note per station's page when the report has more than one.
+  for (const [gi, t] of Object.entries(rep.targets || {0: rep.target})) {
+    const job = t.type === 'job' && document.querySelector(`#rjobs input[name="rt${gi}"]:checked`)?.closest('.cand')?.querySelector('b');
+    j = await api('/docs/' + rep.doc.id + '/report_note', {method:'POST', body:{target_type: t.type, target_id: t.id, section: t.section,
+      client_id: rep.client_id, client_name: cand ? cand.textContent : '', job_label: job ? job.textContent : ''}});
+    if (!j.success) break;
+  }
   btn.disabled = false;
   if (!j.success) { toast(j.error, true); return; }
-  closeModal(); toast('Report logged in Jobber' + (j.note.note_attached_file ? ' with the file attached.' : ' (with a link to the file).'));
+  const n = Object.keys(rep.targets || {}).length;
+  closeModal(); toast((n > 1 ? `Report logged in Jobber - ${n} notes, one per pump station` : 'Report logged in Jobber') + (j.note.note_attached_file ? ' with the file attached.' : ' (with a link to the file).'));
   if (rep.doc.case_id) openCase(rep.doc.case_id); else loadToday();
 }
 
