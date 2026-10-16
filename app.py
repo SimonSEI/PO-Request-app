@@ -87,14 +87,16 @@ limiter = Limiter(
 @app.after_request
 def set_security_headers(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
-    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers.setdefault('X-Frame-Options', 'DENY')   # FileMaker's PDF containers allow their own page
     response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-    response.headers['Content-Security-Policy'] = (
-        "default-src 'self'; script-src 'self' 'unsafe-inline'; "
-        "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
-        "font-src 'self' data:; connect-src 'self'"
-    )
+    # A page may set its own policy (FileMaker's page allows web viewers); others get this one.
+    if 'Content-Security-Policy' not in response.headers:
+        response.headers['Content-Security-Policy'] = (
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+            "font-src 'self' data:; connect-src 'self'"
+        )
     # Inject CSRF token into a readable cookie for JS to pick up
     response.set_cookie('csrf_token', generate_csrf(), samesite='Lax',
                         secure=app.config.get('SESSION_COOKIE_SECURE', True),
@@ -3183,7 +3185,8 @@ def dashboard():
                                  cashflow_ok=_cashflow_allowed(),
                                  timeoff_ok=timeoff_allowed(),
                                  pumps_ok=pumps_allowed(),
-                                 receivables_ok=receivables_allowed())
+                                 receivables_ok=receivables_allowed(),
+                                 filemaker_ok=filemaker_allowed())
 
 @app.route('/office_admin')
 def office_admin():
@@ -9079,7 +9082,7 @@ DASHBOARD_MENU_TEMPLATE = '''
 
     </div>
 
-    {% if role == 'office' or timeoff_ok %}
+    {% if role == 'office' or timeoff_ok or filemaker_ok %}
     <details class="folder">
         <summary>
             <span class="folder-icon">📁</span>
@@ -9087,6 +9090,15 @@ DASHBOARD_MENU_TEMPLATE = '''
             <span class="folder-hint">Preview features in development</span>
         </summary>
         <div class="cards-grid folder-grid">
+
+            {% if filemaker_ok %}
+            <a class="app-card card-purple" href="{{ url_for('filemaker.page') }}">
+                <div class="card-icon-wrap">🗄️</div>
+                <div class="card-title">FileMaker <span class="soon-badge">Coming Soon</span></div>
+                <div class="card-desc">Build your own database apps: tables, relationships, layouts, scripts, finds, reports and charts, shared live with the office. An independent recreation of FileMaker Pro.</div>
+                <button class="card-cta">Open FileMaker →</button>
+            </a>
+            {% endif %}
 
             {% if role == 'office' %}
             <a class="app-card card-teal" href="{{ url_for('installation') }}">
@@ -39309,6 +39321,11 @@ if not PUMPS_URL:
                email_attachments=extract_attachments_from_email, log_activity=log_activity,
                scheduler_available=SCHEDULER_AVAILABLE,
                graph_token=_get_graph_access_token if MS_GRAPH_ENABLED else None, mail_from=PO_EMAIL_ADDRESS)
+
+# FileMaker (a FileMaker Pro-style database builder, Features Coming Soon) lives in filemaker.py.
+from filemaker import init_filemaker, filemaker_allowed
+init_filemaker(app, csrf, DB_PATH, data_dir=DATA_DIR, log_activity=log_activity)
+
 if not CASHFLOW_ENABLED:
     # Switched off: forget any Jobber or QuickBooks sign-in, so neither the
     # database nor a downloaded backup holds a working key to either account.
