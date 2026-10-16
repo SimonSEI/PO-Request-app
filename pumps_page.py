@@ -319,7 +319,8 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   <div class="tab" data-tab="accounts">Accounts</div>
   <div class="tab" data-tab="reports">Reports</div>
   <div class="tab" data-tab="bills">Bills to pay <span class="n" id="n-bills"></span></div>
-  <div class="tab" data-tab="vquotes">Wettech quotes <span class="n" id="n-vquotes"></span></div>
+  <div class="tab" data-tab="vquotes">Quotes <span class="n" id="n-vquotes"></span></div>
+  <div class="tab" data-tab="vinvoices">Vendor invoices</div>
 </div>
 
 <!-- JOBS -->
@@ -404,11 +405,24 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
       <option value="draft">Draft - to send</option><option value="sent">With the client</option>
       <option value="approved">Approved</option><option value="done">Done</option><option value="cancelled">Cancelled</option>
       <option value="all">All</option></select>
-    <input type="text" id="vqSearch" placeholder="Find a site, quote #, work…" oninput="clearTimeout(window._vq);window._vq=setTimeout(loadVQuotes,300)" style="width:240px">
+    <select id="vqSort" onchange="loadVQuotes()" title="Sort"><option value="az">Site A-Z</option><option value="new">Newest first</option><option value="vendor">Vendor A-Z</option></select>
+    <input type="text" id="vqSearch" placeholder="Search vendor, quote #, site, work…" oninput="clearTimeout(window._vq);window._vq=setTimeout(loadVQuotes,300)" style="width:240px">
     <div class="sp"></div><span class="note" id="vqInfo"></span>
   </div>
-  <div class="note" style="margin-bottom:10px">Every quote from Wettech (and other vendors), newest first, with our Jobber quote for it and where it stands.</div>
+  <div class="note" style="margin-bottom:10px">Every vendor quote, with our Jobber quote for it and where it stands.</div>
   <div id="vqList"><div class="empty">Loading…</div></div>
+</div>
+<div class="panel hide" id="p-vinvoices">
+  <div class="toolbar">
+    <select id="viShow" onchange="loadVInvoices()">
+      <option value="all">All</option><option value="unpaid">Not paid yet</option><option value="not_invoiced">Not invoiced to the client</option>
+      <option value="invoiced">Invoiced, not paid</option><option value="paid">Paid</option><option value="cancelled">Cancelled</option></select>
+    <select id="viSort" onchange="loadVInvoices()" title="Sort"><option value="az">Site A-Z</option><option value="new">Newest first</option><option value="vendor">Vendor A-Z</option></select>
+    <input type="text" id="viSearch" placeholder="Search vendor, invoice #, site, work…" oninput="clearTimeout(window._vi);window._vi=setTimeout(loadVInvoices,300)" style="width:240px">
+    <div class="sp"></div><span class="note" id="viInfo"></span>
+  </div>
+  <div class="note" style="margin-bottom:10px">Every vendor invoice on file, with our invoice to the client and whether the vendor is paid.</div>
+  <div id="viList"><div class="empty">Loading…</div></div>
 </div>
 <div class="panel hide" id="p-reports">
   <div class="toolbar">
@@ -508,7 +522,7 @@ function showTab(name){
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === name));
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('hide', p.id !== 'p-' + name));
   if (name === 'jobs') loadJobs(); else if (name === 'scada') loadScada();
-  else if (name === 'accounts') loadAccounts(); else if (name === 'reports') loadReports(); else if (name === 'bills') loadBills(); else if (name === 'vquotes') loadVQuotes();
+  else if (name === 'accounts') loadAccounts(); else if (name === 'reports') loadReports(); else if (name === 'bills') loadBills(); else if (name === 'vquotes') loadVQuotes(); else if (name === 'vinvoices') loadVInvoices();
   history.replaceState(null, '', '#' + name);
 }
 
@@ -1012,17 +1026,17 @@ const VQ_STATE = {to_quote: ['r', 'Our quote not made'], draft: ['a', 'Draft - s
   approved: ['g', 'Approved'], done: ['', 'Done'], cancelled: ['', 'Cancelled'], beatrice: ['a', 'Goes to Beatrice']};
 async function loadVQuotes(){
   const show = document.getElementById('vqShow').value, q = document.getElementById('vqSearch').value.trim();
-  const j = await api('/vendor_quotes?show=' + show + '&q=' + encodeURIComponent(q));
+  const j = await api('/vendor_quotes?show=' + show + '&sort=' + document.getElementById('vqSort').value + '&q=' + encodeURIComponent(q));
   if (document.getElementById('vqSearch').value.trim() !== q) return;   // still typing
   const box = document.getElementById('vqList');
   if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
   const c = j.counts || {};
   setCount('n-vquotes', (c.to_quote || 0) + (c.draft || 0), false);
   document.getElementById('vqInfo').textContent = `${c.to_quote || 0} to quote · ${c.draft || 0} drafts · ${c.sent || 0} with the client · ${c.approved || 0} approved`;
-  box.innerHTML = j.quotes.length ? `<table class="t"><thead><tr><th>Date</th><th>Site</th><th>Their quote</th><th class="num">Price</th><th>Our Jobber quote</th><th>Where it stands</th></tr></thead><tbody>
+  box.innerHTML = j.quotes.length ? `<table class="t"><thead><tr><th>Site</th><th>Date</th><th>Their quote</th><th class="num">Price</th><th>Our Jobber quote</th><th>Where it stands</th></tr></thead><tbody>
     ${j.quotes.map(x => { const [cls, label] = VQ_STATE[x.state] || ['', x.state];
-      return `<tr><td>${esc(x.date)}</td>
-      <td>${x.case_id ? `<a href="#" onclick="event.preventDefault();openCase(${x.case_id})">${esc(x.client_name || x.case_title)}</a>` : esc(x.client_name)}${x.site ? `<div class="note">${esc(x.site)}</div>` : ''}<div class="note">${esc(x.what)}</div></td>
+      return `<tr><td>${x.case_id ? `<a href="#" onclick="event.preventDefault();openCase(${x.case_id})">${esc(x.client_name || x.case_title)}</a>` : esc(x.client_name)}${x.site ? `<div class="note">${esc(x.site)}</div>` : ''}<div class="note">${esc(x.what)}</div></td>
+      <td>${esc(x.date)}</td>
       <td><a target="_blank" href="/pumps/api/docs/${x.id}/file">${esc(x.vendor)}${x.number ? ' #' + esc(x.number) : ''}</a></td>
       <td class="num">${money(x.subtotal ?? x.total)}</td>
       <td>${x.ours.number ? (x.ours.uri ? `<a target="_blank" href="${esc(x.ours.uri)}">#${esc(x.ours.number)} ↗</a>` : '#' + esc(x.ours.number)) + `<div class="note">${esc((x.ours.status || '').replace('_', ' '))}</div>` : '<span class="note">-</span>'}</td>
@@ -1052,6 +1066,27 @@ async function billsPaidSearch(){
   if (((document.getElementById('billsPaidQ') || {}).value || '').trim() !== q) return;   // still typing
   if (!j.success) { toast(j.error, true); return; }
   billsPaidRender(j.paid || [], q);
+}
+// ── Vendor invoices ────────────────────────────────────
+const VI_STATE = {not_invoiced: ['r', 'Not invoiced to the client'], invoiced: ['b', 'Invoiced - vendor not paid'],
+  paid: ['g', 'Paid'], cancelled: ['', 'Cancelled']};
+async function loadVInvoices(){
+  const show = document.getElementById('viShow').value, q = document.getElementById('viSearch').value.trim();
+  const j = await api('/vendor_invoices?show=' + show + '&sort=' + document.getElementById('viSort').value + '&q=' + encodeURIComponent(q));
+  if (document.getElementById('viSearch').value.trim() !== q) return;   // still typing
+  const box = document.getElementById('viList');
+  if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
+  const c = j.counts || {};
+  document.getElementById('viInfo').textContent = `${j.invoices.length} shown · ${c.not_invoiced || 0} not invoiced · ${c.invoiced || 0} invoiced, unpaid · ${c.paid || 0} paid`;
+  box.innerHTML = j.invoices.length ? `<table class="t"><thead><tr><th>Site</th><th>Date</th><th>Their invoice</th><th class="num">Amount</th><th>Our invoice</th><th>Where it stands</th></tr></thead><tbody>
+    ${j.invoices.map(x => { const [cls, label] = VI_STATE[x.state] || ['', x.state];
+      return `<tr><td>${x.case_id ? `<a href="#" onclick="event.preventDefault();openCase(${x.case_id})">${esc(x.client_name || x.case_title)}</a>` : esc(x.client_name)}${x.site ? `<div class="note">${esc(x.site)}</div>` : ''}<div class="note">${esc(x.what)}</div></td>
+      <td>${esc(x.date)}</td>
+      <td><a target="_blank" href="/pumps/api/docs/${x.id}/file">${esc(x.vendor)}${x.number ? ' #' + esc(x.number) : ''}</a></td>
+      <td class="num">${money(x.total ?? x.subtotal)}</td>
+      <td>${x.ours.number ? (x.ours.uri ? `<a target="_blank" href="${esc(x.ours.uri)}">#${esc(x.ours.number)} ↗</a>` : '#' + esc(x.ours.number)) + (x.ours.status ? `<div class="note">${esc(x.ours.status.replace('_', ' '))}</div>` : '') : '<span class="note">-</span>'}</td>
+      <td><span class="chip ${cls}">${label}</span>${x.paid_on ? `<div class="note">paid ${esc(x.paid_on)}</div>` : ''}</td></tr>`; }).join('')}</tbody></table>`
+    : '<div class="empty">No vendor invoices here.</div>';
 }
 async function loadBills(){
   const j = await api('/bills_to_pay');

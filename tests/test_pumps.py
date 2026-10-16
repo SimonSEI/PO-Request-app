@@ -3992,7 +3992,31 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual((rows['41002']['state'], rows['41002']['ours']['number']), ('sent', '9300'))
         self.assertEqual(list(got('sent', 'Quotetab')), ['41002'])
         self.assertEqual(list(got('all', 'Quotetab Lakes')), ['41001'])
-        self.assertIn('Wettech quotes', self.c.get('/pumps').get_data(as_text=True))
+        page = self.c.get('/pumps').get_data(as_text=True)
+        self.assertIn('data-tab="vquotes">Quotes', page)
+        self.assertIn('Vendor invoices', page)
+        # A-Z by site by default; search by vendor or quote number.
+        names = [x['client_name'] for x in self.c.get('/pumps/api/vendor_quotes?show=all&q=quotetab').get_json()['quotes']]
+        self.assertEqual(names, sorted(names, key=str.lower))
+        self.assertEqual(list(got('all', '%2341002')), ['41002'])
+        self.assertIn('41001', got('all', 'wettech'))
+
+    def test_vendor_invoices_tab(self):
+        """Oct 2026: every vendor invoice in its own tab - A-Z by site, searchable by vendor or invoice #."""
+        self.extracts['b-vi1.pdf'] = extraction('bill', '41301', client='Invtab Pines', subtotal=300)
+        self.extracts['b-vi2.pdf'] = extraction('bill', '41302', client='Invtab Acres', subtotal=200)
+        a, b = self.upload('b-vi1.pdf'), self.upload('b-vi2.pdf')
+        self.c.patch(f"/pumps/api/cases/{a['case_id']}", json={'sei_invoice_number': '37101'})
+        self.c.post('/pumps/api/bills_to_pay/paid', json={'case_ids': [a['case_id']], 'paid_on': '2026-10-16'})
+        got = lambda show='all', q='invtab': self.c.get(f'/pumps/api/vendor_invoices?show={show}&q={q}').get_json()['invoices']
+        rows = got()
+        self.assertEqual([x['client_name'] for x in rows], ['Invtab Acres', 'Invtab Pines'], 'A-Z by site')
+        st = {x['number']: x for x in rows}
+        self.assertEqual((st['41301']['state'], st['41301']['ours']['number']), ('paid', '37101'))
+        self.assertEqual(st['41302']['state'], 'not_invoiced')
+        self.assertEqual([x['number'] for x in got('unpaid')], ['41302'])
+        self.assertEqual([x['number'] for x in got('all', '%2341301')], ['41301'])
+        self.assertEqual(len(got('all', 'wettech')) >= 2, True)
 
     def test_resent_quote_moves_off_the_report_visit(self):
         """Banyan Bay (Oct 2026): the quote landed on the report's maintenance visit; forwarding it again only
