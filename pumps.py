@@ -5831,6 +5831,8 @@ def vendor_chase(case, today=None):
     today = today or _today()
     vendor = case.get('vendor') or 'Wettech'
     f = case.get('vendor_follow') or {}
+    if f.get('off_stage') and f['off_stage'] == case.get('stage'):
+        return None   # the office said no follow-up is needed at this step
     if f.get('phase') != phase:
         f = {}   # what they said was about the quote; the job has moved on
     expect = _iso_date(f.get('expect_by'))
@@ -7077,6 +7079,30 @@ def move_case_to(conn, case_id, stage, actor):
     label = dict(STEPS)[stage].format(vendor='the vendor')
     _event(conn, actor, 'moved', f'Moved by hand to: {label}', case_id=case_id)
     return True
+
+
+@api('/cases/<int:case_id>/follow_up_off', methods=('POST',))
+def h_follow_up_off(actor, case_id):
+    """No follow-up with the vendor needed at the job's current step: off the
+    list until the job moves to another step. {"on": true} undoes it."""
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT stage, vendor_follow FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+        if not row:
+            return {'success': False, 'error': 'Not found'}, 404
+        f = json.loads(row['vendor_follow'] or '{}')
+        if _json().get('on'):
+            f.pop('off_stage', None)
+        else:
+            f['off_stage'] = row['stage']
+        conn.execute('UPDATE pump_cases SET vendor_follow=?, updated_at=? WHERE id=?',
+                     (json.dumps(f), _now_text(), case_id))
+        _event(conn, actor, 'follow-up turned back on' if _json().get('on') else 'no follow-up needed',
+               f"At: {row['stage']}", case_id=case_id)
+        conn.commit()
+        return {}
+    finally:
+        conn.close()
 
 
 @api('/cases/<int:case_id>/move', methods=('POST',))

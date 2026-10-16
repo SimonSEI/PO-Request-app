@@ -3742,6 +3742,23 @@ class PumpsTest(unittest.TestCase):
         self.assertIn('Zip Lakes', index)
         self.assertIn('Zip Pines', index)
 
+    def test_follow_up_not_needed(self):
+        """Huntington (Oct 2026): a follow-up the office knows isn't needed comes off the list - until the
+        job moves on to another step."""
+        j = self.c.post('/pumps/api/cases', json={'title': 'Check out pump station', 'client_name': 'Followup Lakes'}).get_json()
+        cid = j.get('case_id') or j['case']['id']
+        self.c.patch(f'/pumps/api/cases/{cid}', json={'steps': {'vendor_quote': '2026-09-01', 'client_quote': 'na',
+                                                                'client_approved': '2026-09-01'}})
+        ids = lambda: [c['id'] for c in self.c.get('/pumps/api/summary').get_json()['queue']['vendor_follow_ups']]
+        self.assertIn(cid, ids(), 'approved six weeks ago, nothing heard: follow up')
+        r = self.c.post(f'/pumps/api/cases/{cid}/follow_up_off').get_json()
+        self.assertTrue(r['success'], r)
+        self.assertNotIn(cid, ids())
+        # Moves on to waiting on the work: followed again from there.
+        self.c.patch(f'/pumps/api/cases/{cid}', json={'steps': {'scheduled': '2026-09-02'}})
+        self.assertEqual(self.case(cid)['stage'], 'work_done')
+        self.assertIsNotNone(P.vendor_chase(self.case(cid)))
+
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's
         usual vendor cost - it's the monthly visit, invoiced at the recurring job's $250, not $130."""
