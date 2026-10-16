@@ -4110,10 +4110,30 @@ class PumpsTest(unittest.TestCase):
         r = self.c.post(f'/pumps/api/cases/{cid}/follow_up_off').get_json()
         self.assertTrue(r['success'], r)
         self.assertNotIn(cid, ids())
+        # Huntington #6: not a "Schedule" to-do either - it waits (on the Waiting list).
+        q = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertNotIn(cid, [c['id'] for c in q['needs_scheduling']])
+        self.assertIn(cid, [c['id'] for c in q['scheduling_asked']])
         # Moves on to waiting on the work: followed again from there.
         self.c.patch(f'/pumps/api/cases/{cid}', json={'steps': {'scheduled': '2026-09-02'}})
         self.assertEqual(self.case(cid)['stage'], 'work_done')
         self.assertIsNotNone(P.vendor_chase(self.case(cid)))
+
+    def test_parts_ordered_without_a_date_waits(self):
+        """Huntington #6 (Oct 2026): "Parts ordered - should be done today", no date given, still showed as a
+        Schedule to-do. A status like that waits a few working days, then it's a follow-up again."""
+        j = self.c.post('/pumps/api/cases', json={'title': 'Check out #6 pump station', 'client_name': 'Partswait Lakes'}).get_json()
+        cid = j.get('case_id') or j['case']['id']
+        self.c.patch(f'/pumps/api/cases/{cid}', json={'steps': {'vendor_quote': '2026-09-01', 'client_quote': 'na',
+                                                                'client_approved': '2026-09-01'}})
+        r = self.c.post(f'/pumps/api/cases/{cid}/status', json={'kind': 'parts_ordered', 'text': 'Should be done today'}).get_json()
+        self.assertTrue(r['success'], r)
+        q = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertNotIn(cid, [c['id'] for c in q['needs_scheduling']])
+        self.assertNotIn(cid, [c['id'] for c in q['vendor_follow_ups']])
+        self.assertIn(cid, [c['id'] for c in q['scheduling_asked']])
+        later = P.vendor_chase(self.case(cid), today=P._today() + P.timedelta(days=7))
+        self.assertEqual(later['state'], 'follow_up', 'a week on and not done: follow up')
 
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's

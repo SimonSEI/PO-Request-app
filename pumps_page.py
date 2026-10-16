@@ -798,7 +798,10 @@ async function loadToday(){
   const logBtn = c => c.chase ? `<button class="btn s" onclick="event.stopPropagation();logFollow(${c.id})">📞 Log</button>` : '';
   (q.waiting_assessment || []).forEach(c => waiting.push(todoItem(v(c) + ' visit', '', caseTitle(c), caseSub(c, ((c.steps || {}).assessment || {}).due ? 'visit ' + esc(c.steps.assessment.due) : 'visit not booked') + chaseLine(c), open(c), logBtn(c), c.todo_key)));
   q.waiting_vendor_quote.forEach(c => waiting.push(todoItem(v(c) + ' quote', '', caseTitle(c), caseSub(c) + chaseLine(c), open(c), logBtn(c), c.todo_key)));
-  (q.scheduling_asked || []).forEach(c => { const ch = c.chase || {}, p = ch.parts; waiting.push(todoItem(ch.parts_wait ? 'Parts' : 'Schedule', '', caseTitle(c), caseSub(c, ch.parts_wait ? `client approved - waiting on ${v(c)}'s parts` + (p ? ` (${esc(p)})` : '') : 'client approved - asked ' + v(c) + ' for a date') + chaseLine(c), open(c), logBtn(c), c.todo_key)); });
+  (q.scheduling_asked || []).forEach(c => { const ch = c.chase || {}, p = ch.parts;
+    // No follow-up needed (or a status since the approval): just waiting on the vendor to do it.
+    if (!c.chase) { waiting.push(todoItem('Waiting', '', caseTitle(c), caseSub(c, `client approved - waiting on ${v(c)} to do the work`), open(c), logBtn(c), c.todo_key)); return; }
+    waiting.push(todoItem(ch.parts_wait ? 'Parts' : 'Schedule', '', caseTitle(c), caseSub(c, ch.parts_wait ? `client approved - waiting on ${v(c)}'s parts` + (p ? ` (${esc(p)})` : '') : 'client approved - asked ' + v(c) + ' for a date') + chaseLine(c), open(c), logBtn(c), c.todo_key)); });
   q.waiting_approval.forEach(c => waiting.push(todoItem('Client approval', '', caseTitle(c), caseSub(c) + followUp(c.follow_up), open(c), '', c.todo_key)));
   q.waiting_work.forEach(c => waiting.push(todoItem('Work', '', caseTitle(c), caseSub(c, c.scheduled_for ? 'scheduled ' + esc(c.scheduled_for) : '') + chaseLine(c), open(c), logBtn(c), c.todo_key)));
   (q.waiting_visits || []).forEach(t => { const l = t.link || {}, left = (l.vendors || []).filter(x => !(l.reported || []).includes(x));
