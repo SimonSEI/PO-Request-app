@@ -3031,22 +3031,42 @@ def _fernet():
     return Fernet(base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest()))
 
 
+# The newest Jobber tokens this process holds. Jobber's refresh token is good
+# for one use: a new one that couldn't be saved (Oct 2026: the disk was full)
+# is lost, and Jobber refuses the old one from then on. Kept here too, the app
+# goes on working until the save succeeds.
+_TOKEN_MEMO = {}
+
+
 def _tokens():
     raw = _state_get('jobber_tokens_enc')
-    if not raw:
-        return {}
-    try:
-        return json.loads(_fernet().decrypt(raw.encode()).decode())
-    except Exception:
-        return {}
+    saved = {}
+    if raw:
+        try:
+            saved = json.loads(_fernet().decrypt(raw.encode()).decode())
+        except Exception:
+            saved = {}
+    if _TOKEN_MEMO.get('refresh_token') and saved.get('refresh_token') and \
+            float(_TOKEN_MEMO.get('obtained_at') or 0) > float(saved.get('obtained_at') or 0):
+        return dict(_TOKEN_MEMO)
+    return saved
 
 
 def _save_tokens(tok):
-    _state_set('jobber_tokens_enc', _fernet().encrypt(json.dumps(tok).encode()).decode() if tok else '')
+    _TOKEN_MEMO.clear()
+    _TOKEN_MEMO.update(tok or {})
+    try:
+        _state_set('jobber_tokens_enc', _fernet().encrypt(json.dumps(tok).encode()).decode() if tok else '')
+    except Exception as e:
+        print(f'  ❌ Pumps: could not save the Jobber sign-in ({e}) - kept in memory until it can be')
 
 
 def jobber_status():
     tok = _tokens()
+    if tok.get('broken'):
+        # Jobber refused the saved sign-in: it has to be connected again.
+        return {'connected': False, 'how': 'oauth', 'broken': tok['broken'], 'at': tok.get('broken_at'),
+                'can_connect': bool(JOBBER_CLIENT_ID and JOBBER_CLIENT_SECRET)}
     if tok.get('refresh_token'):
         return {'connected': True, 'how': 'oauth', 'by': tok.get('connected_by'), 'at': tok.get('connected_at'),
                 'can_connect': True}
@@ -3079,8 +3099,16 @@ def _access_token(force=False):
         age = time.time() - float(tok.get('obtained_at') or 0)
         # force: Jobber said the token was refused - unless another thread
         # (the sync runs several calls at once) refreshed it a moment ago.
+        if tok.get('broken'):
+            raise JobberError('Jobber needs reconnecting - click Reconnect Jobber at the top of Pumps')
         if (force and age > 30) or age > 55 * 60:
-            new = _token_request({'grant_type': 'refresh_token', 'refresh_token': tok['refresh_token']})
+            try:
+                new = _token_request({'grant_type': 'refresh_token', 'refresh_token': tok['refresh_token']})
+            except JobberError as e:
+                if re.search(r'HTTP 40[01]\b', str(e)):
+                    # The refresh token itself was refused: no retry will fix it - only reconnecting.
+                    _save_tokens({**tok, 'broken': str(e), 'broken_at': _now_text()})
+                raise
             tok.update(access_token=new['access_token'], obtained_at=time.time(),
                        refresh_token=new.get('refresh_token') or tok['refresh_token'])
             _save_tokens(tok)

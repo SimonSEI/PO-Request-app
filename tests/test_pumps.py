@@ -3936,6 +3936,43 @@ class PumpsTest(unittest.TestCase):
         q = self.upload('q-banyan.pdf')
         self.assertEqual(q['case_id'], waiting, (q, visit, waiting))
 
+    def test_jobber_sign_in_refused_shows_reconnect(self):
+        """Oct 2026: with the disk full, Jobber's new sign-in couldn't be saved; the old one was refused (401) on
+        every call while the page still said "connected", with no way to reconnect. A new sign-in that can't be
+        saved is kept in memory, and a refused one shows Reconnect Jobber."""
+        saved = (P._token_request, P._state_set, P._tokens(), P.JOBBER_CLIENT_ID, P.JOBBER_CLIENT_SECRET)
+        P.JOBBER_CLIENT_ID, P.JOBBER_CLIENT_SECRET = 'cid', 'secret'
+        try:
+            P._save_tokens({'access_token': 'A1', 'refresh_token': 'R1', 'obtained_at': 0})
+            # The save fails (disk full): the new tokens still win.
+            P._token_request = lambda f: {'access_token': 'A2', 'refresh_token': 'R2'}
+
+            def full(*a, **k):
+                raise P.sqlite3.OperationalError('database or disk is full')
+            P._state_set = full
+            self.assertEqual(P._access_token(), 'A2')
+            P._state_set = saved[1]
+            self.assertEqual(P._tokens()['refresh_token'], 'R2')
+            # Jobber refuses the sign-in: Reconnect, and no more tries.
+            P._save_tokens({'access_token': 'A2', 'refresh_token': 'R2', 'obtained_at': 0})
+
+            def refused(f):
+                raise P.JobberError('Jobber refused the sign-in (HTTP 401): no detail')
+            P._token_request = refused
+            with self.assertRaises(P.JobberError):
+                P._access_token()
+            st = P.jobber_status()
+            self.assertFalse(st['connected'])
+            self.assertIn('401', st['broken'])
+            self.assertIn('Reconnect Jobber', self.c.get('/pumps').get_data(as_text=True))
+            with self.assertRaises(P.JobberError) as e:
+                P._access_token()
+            self.assertIn('reconnecting', str(e.exception))
+        finally:
+            P._token_request, P._state_set = saved[0], saved[1]
+            P._save_tokens(saved[2])
+            P.JOBBER_CLIENT_ID, P.JOBBER_CLIENT_SECRET = saved[3], saved[4]
+
     def test_one_station_report_is_one_note(self):
         """Evergreen's North and South pumps are one job: a report naming two pumps that land on the same
         job (or none) stays one note."""
