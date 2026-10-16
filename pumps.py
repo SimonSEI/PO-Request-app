@@ -8596,6 +8596,58 @@ def _report_date(d):
     return _iso_date(rf.get('date')) or d.get('doc_date') or (d.get('created_at') or '')[:10]
 
 
+def reports_archive(fileobj):
+    """Every pump report ever, in one zip (Oct 2026): our rebranded PDF (else the
+    rebranded Word file, else the vendor's original under "not rebranded/"),
+    in a folder per month, plus index.csv listing them all. Returns the count."""
+    import csv
+    conn = _conn()
+    try:
+        docs = [{**_doc_dict(r), 'file_path': r['file_path'], 'branded_path': r['branded_path']}   # paths kept
+                for r in conn.execute("SELECT * FROM pump_docs WHERE kind='report' AND status != 'dismissed' ORDER BY id")]
+    finally:
+        conn.close()
+    index, used, n = io.StringIO(), set(), 0
+    w = csv.writer(index)
+    w.writerow(['Date', 'Site', 'Location', 'Title', 'File in this zip', 'Logged in Jobber', 'Original file name'])
+    with zipfile.ZipFile(fileobj, 'w', zipfile.ZIP_DEFLATED) as z:
+        for d in sorted(docs, key=lambda d: (_report_date(d) or '', d['id'])):
+            pdf = _branded_pdf_path(d.get('branded_path') or '')
+            for path, ext, folder in ((pdf, '.pdf', ''), (d.get('branded_path'), '.docx', ''),
+                                      (d.get('file_path'), os.path.splitext(d.get('file_name') or '')[1] or '.docx',
+                                       'not rebranded/')):
+                if path and os.path.exists(path):
+                    break
+            else:
+                continue
+            when = _report_date(d) or ''
+            base = re.sub(r'[\\/:*?"<>|]+', '-', _vendor_file_name(d.get('file_name'), '')).strip() or f'report {d["id"]}'
+            name = f"{folder}{when[:7] or 'undated'}/{base}{ext}"
+            k = 2
+            while name in used:
+                name = f"{folder}{when[:7] or 'undated'}/{base} ({k}){ext}"
+                k += 1
+            used.add(name)
+            z.write(path, name)
+            n += 1
+            w.writerow([when, d.get('client_name') or '', d.get('site') or '',
+                        (d.get('report_fields') or {}).get('title') or 'Report', name,
+                        'yes' if (d.get('jobber') or {}).get('note_id') else 'no', d.get('file_name') or ''])
+        z.writestr('index.csv', index.getvalue())
+    return n
+
+
+@api('/reports/archive.zip')
+def h_reports_archive(actor):
+    """Download every pump report ever, in one zip."""
+    import tempfile
+    f = tempfile.TemporaryFile()
+    reports_archive(f)
+    f.seek(0)
+    return send_file(f, mimetype='application/zip', as_attachment=True,
+                     download_name=f'Pump reports - all - {_today().isoformat()}.zip')
+
+
 @api('/reports')
 def h_reports(actor):
     """Every service report, rebranded, by year: ?year=2026&q=..."""

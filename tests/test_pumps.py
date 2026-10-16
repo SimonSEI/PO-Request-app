@@ -3715,6 +3715,33 @@ class PumpsTest(unittest.TestCase):
         drafts = self.c.get('/pumps/api/summary').get_json()['queue']['bills_to_draft']
         self.assertNotIn(b['doc_id'], [d['id'] for d in drafts])
 
+    def test_download_every_pump_report_in_one_zip(self):
+        """Oct 2026: every pump report ever, in one zip - a folder per month and an index."""
+        from docx import Document
+        import zipfile as _zip
+        for name, when in (('10-26 Zip Lakes.docx', '10-7-2026'), ('9-26 Zip Pines.docx', '9-9-2026')):
+            d = Document()
+            for t in ('Water Equipment Technologies of Southwest Florida LLC', 'IRRIGATION PUMP SYSTEM REPORT'):
+                d.add_paragraph(t)
+            t = d.add_table(rows=2, cols=4)
+            t.rows[0].cells[2].text, t.rows[0].cells[3].text = 'DATE', when
+            for cell, text in zip(t.rows[1].cells, ('CUSTOMER', 'Stahlman England', 'LOCATION', 'Pump')):
+                cell.text = text
+            buf = io.BytesIO()
+            d.save(buf)
+            P.ingest_document(name, buf.getvalue(), source='email', actor='email scan',
+                              email={'uid': name, 'from': 'office@wettec.biz', 'subject': 'Inv'})
+        r = self.c.get('/pumps/api/reports/archive.zip')
+        self.assertEqual(r.status_code, 200)
+        z = _zip.ZipFile(io.BytesIO(r.data))
+        names = z.namelist()
+        self.assertIn('index.csv', names)
+        self.assertTrue(any(n.startswith('2026-10/10-26 Zip Lakes.') for n in names), names)
+        self.assertTrue(any(n.startswith('2026-09/9-26 Zip Pines.') for n in names), names)
+        index = z.read('index.csv').decode()
+        self.assertIn('Zip Lakes', index)
+        self.assertIn('Zip Pines', index)
+
     def test_maintenance_accounts_usual_bill_is_the_monthly_visit(self):
         """Evergreen (Oct 2026): Wettech's $100 bill says nothing of maintenance, but $100 is the account's
         usual vendor cost - it's the monthly visit, invoiced at the recurring job's $250, not $130."""
