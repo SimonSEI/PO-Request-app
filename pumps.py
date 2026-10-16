@@ -6727,6 +6727,25 @@ def bills_to_pay_email(conn, case_ids, signer=''):
             'body': '\n'.join(lines), 'doc_ids': atts_ids, 'count': n, 'total': round(total, 2)}
 
 
+@api('/bills_to_pay/paid', methods=('POST',))
+def h_bills_paid(actor):
+    """Body: {"case_ids": [...], "paid_on": "YYYY-MM-DD"} - the vendor's bills on these jobs are paid."""
+    if actor == BOT:
+        return _office_only(actor, 'Marking vendor bills paid')
+    data = _json()
+    when = _iso_date(data.get('paid_on') or '') or _today().isoformat()
+    ids = [int(x) for x in (data.get('case_ids') or []) if str(x).isdigit()]
+    if not ids:
+        raise ValueError('Tick the bills that are paid')
+    conn = _conn()
+    try:
+        n = sum(1 for cid in ids if update_case(conn, cid, {'vendor_paid_on': when}, actor))
+        conn.commit()
+    finally:
+        conn.close()
+    return {'marked': n}
+
+
 @api('/bills_to_pay/email', methods=('POST',))
 def h_bills_to_pay_email(actor):
     """Body: {"case_ids": [...], "send": true}. Without send, the email to look over."""

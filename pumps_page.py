@@ -387,6 +387,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 <div class="panel hide" id="p-bills">
   <div class="toolbar">
     <button class="btn p" id="billsGo" onclick="billsEmail()">✉ Email Christian</button>
+    <button class="btn" id="billsPaid" onclick="billsMarkPaid()">✓ Mark selected paid</button>
     <button class="btn s" onclick="billsAll(null, null, true)">Select all</button><button class="btn s" onclick="billsAll(null, null, false)">Select none</button>
     <span class="note">Shift-click to tick a run of bills</span>
     <div class="sp"></div><span class="note" id="billsInfo"></span>
@@ -994,7 +995,7 @@ async function loadBills(){
   box.innerHTML = j.vendors.map(g => `<div class="grp">${esc(g.vendor)} · ${money(g.payable_total)} to pay${g.waiting_total ? ' · ' + money(g.waiting_total) + ' waiting' : ''}</div>
     <table class="t"><thead><tr><th><input type="checkbox" title="Tick all of ${esc(g.vendor)}'s payable bills" onchange="billsAll(this, '${esc(g.vendor)}')"></th><th>Job</th><th>Their invoice</th><th class="num">Amount</th><th>Can it be paid?</th><th></th></tr></thead><tbody>
     ${g.bills.map(b => { if (b.payable) { n++; total += b.amount || 0; }
-      return `<tr class="${b.payable ? '' : 'note'}"><td>${b.payable ? `<input type="checkbox" class="billPick" data-vendor="${esc(g.vendor)}" value="${b.case_id}" ${b.asked_at ? '' : 'checked'} onclick="billsClick(event, this)">` : ''}</td>
+      return `<tr class="${b.payable ? '' : 'note'}"><td><input type="checkbox" class="billPick" data-vendor="${esc(g.vendor)}" data-payable="${b.payable ? 1 : 0}" value="${b.case_id}" ${b.payable && !b.asked_at ? 'checked' : ''} onclick="billsClick(event, this)"></td>
       <td><a href="#" onclick="event.preventDefault();openCase(${b.case_id})">${esc(b.client_name || b.title)}</a><div class="note">${esc(b.title)}</div></td>
       <td>${b.bill_doc_id ? `<a target="_blank" href="/pumps/api/docs/${b.bill_doc_id}/file">#${esc(b.bill_number || '?')}</a>` : '#' + esc(b.bill_number || '?')}<div class="note">${esc(b.bill_date)}</div></td>
       <td class="num">${b.amount != null ? money(b.amount) : '?'}</td>
@@ -1021,11 +1022,23 @@ function billsClick(ev, el){
   billsLast = el;
   billsInfo();
 }
-function billsPicked(){ return [...document.querySelectorAll('.billPick:checked')].map(x => +x.value); }
+// Ticked bills; for Christian only the ones that can be paid (invoiced).
+function billsPicked(any){ return [...document.querySelectorAll('.billPick:checked')].filter(x => any || x.dataset.payable === '1').map(x => +x.value); }
 function billsInfo(){
-  const ids = billsPicked();
-  document.getElementById('billsInfo').textContent = ids.length ? `${ids.length} ticked for Christian` : 'Tick the bills to send';
-  document.getElementById('billsGo').disabled = !ids.length;
+  const all = billsPicked(true), pay = billsPicked();
+  document.getElementById('billsInfo').textContent = all.length ? `${all.length} ticked` + (pay.length !== all.length ? ` · ${pay.length} can go to Christian` : '') : 'Tick the bills';
+  document.getElementById('billsGo').disabled = !pay.length;
+  document.getElementById('billsPaid').disabled = !all.length;
+}
+// Paid already (or paid now): every ticked bill off the list at once.
+async function billsMarkPaid(){
+  const ids = billsPicked(true);
+  if (!ids.length) { toast('Tick the bills that are paid.', true); return; }
+  const d = prompt(`Mark ${ids.length} bill${ids.length > 1 ? 's' : ''} paid. Date paid (YYYY-MM-DD):`, new Date().toISOString().slice(0, 10));
+  if (!d) return;
+  const j = await api('/bills_to_pay/paid', {method:'POST', body:{case_ids: ids, paid_on: d}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast(`Marked ${j.marked} bill${j.marked > 1 ? 's' : ''} paid.`); loadBills(); loadToday();
 }
 async function billsEmail(){
   const ids = billsPicked();

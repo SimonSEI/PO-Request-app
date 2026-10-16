@@ -3609,6 +3609,20 @@ class PumpsTest(unittest.TestCase):
         left = {b['case_id'] for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for b in g['bills']}
         self.assertNotIn(b1['case_id'], left)
 
+    def test_mark_selected_bills_paid(self):
+        """Oct 2026: tick bills on the Bills to pay tab and mark them all paid in one click."""
+        self.extracts['b-paid1.pdf'] = extraction('bill', '40011', client='Paid Lakes HOA', subtotal=500)
+        self.extracts['b-paid2.pdf'] = extraction('bill', '40012', client='Paid Pines HOA', subtotal=300)
+        b1, b2 = self.upload('b-paid1.pdf'), self.upload('b-paid2.pdf')
+        r = self.c.post('/pumps/api/bills_to_pay/paid', json={'case_ids': [b1['case_id'], b2['case_id']],
+                                                              'paid_on': '2026-10-16'}).get_json()
+        self.assertEqual(r['marked'], 2, r)
+        left = {b['case_id'] for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for b in g['bills']}
+        self.assertFalse({b1['case_id'], b2['case_id']} & left)
+        case = self.c.get(f"/pumps/api/cases/{b1['case_id']}").get_json()
+        self.assertEqual((case.get('case') or case).get('vendor_paid_on'), '2026-10-16')
+        self.assertFalse(self.c.post('/pumps/api/bills_to_pay/paid', json={'case_ids': []}).get_json().get('success', True))
+
     def test_our_invoices_are_in_whole_dollars(self):
         """Carlisle (Oct 2026): $1,506.69 on our invoice - rounded up to the dollar, no cents."""
         bill = {'kind': 'bill', 'client_name': 'Carlisle', 'subtotal': 1158.99, 'description': 'Field service to check '
