@@ -4001,6 +4001,16 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(list(got('all', '%2341002')), ['41002'])
         self.assertIn('41001', got('all', 'wettech'))
 
+    def test_report_month_comes_from_the_file_name(self):
+        """Sopra Luxury Living (Oct 2026): "10-26 Sopra Luxury Living.docx" went into Jobber as "July Pump Report"
+        - the form inside still said July. Wettech names each report by its month: that wins."""
+        doc = {'file_name': '10-26 Sopra Luxury Living.docx', 'report_fields': {'date': '7-14-2026', 'title': 'IRRIGATION PUMP SYSTEM REPORT'}}
+        self.assertEqual(P.report_note_title(doc), 'October Pump Report')
+        self.assertEqual(P._report_date(doc)[:7], '2026-10')
+        self.assertEqual(P.report_month_date({**doc, 'report_fields': {'date': '10-2-2026'}}), '2026-10-02')
+        self.assertEqual(P.report_note_title({'file_name': 'Pump report.docx', 'report_fields': {'date': '7-14-2026'}}),
+                         'July Pump Report', 'no month in the name: the date inside')
+
     def test_vendor_invoices_tab(self):
         """Oct 2026: every vendor invoice in its own tab - A-Z by site, searchable by vendor or invoice #."""
         self.extracts['b-vi1.pdf'] = extraction('bill', '41301', client='Invtab Pines', subtotal=300)
