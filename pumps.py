@@ -9349,7 +9349,7 @@ def h_reports_archive(actor):
                      download_name=f'Pump reports - all - {_today().isoformat()}.zip')
 
 
-def vendor_quotes(conn, show='open', q=''):
+def vendor_quotes(conn, show='open', q='', sort='az'):
     """Every vendor quote on file (Oct 2026: a Quotes tab for all of Wettech's
     quotes), newest first, with where it stands: our Jobber quote not made
     yet, a draft to send, out to the client, approved - or done/cancelled."""
@@ -9388,7 +9388,8 @@ def vendor_quotes(conn, show='open', q=''):
             continue
         if show not in ('open', 'all') and state != show:
             continue
-        hay = f"{d.get('client_name')} {d.get('site')} {d.get('doc_number')} {d.get('description')} {c.get('title')} {num}"
+        hay = f"{d.get('vendor')} {d.get('client_name')} {d.get('site')} {d.get('doc_number')} #{d.get('doc_number')} " \
+              f"{d.get('description')} {c.get('title')} {num} #{num}"
         if q and q not in hay.lower():
             continue
         out.append({'id': d['id'], 'date': d.get('doc_date') or (d.get('created_at') or '')[:10],
@@ -9398,7 +9399,74 @@ def vendor_quotes(conn, show='open', q=''):
                     'subtotal': d.get('subtotal'), 'total': d.get('total'), 'file_name': d.get('file_name'),
                     'case_id': d.get('case_id'), 'case_title': c.get('title') or '', 'state': state,
                     'ours': {'number': num, 'status': st, 'uri': ours.get('uri') or dj.get('quote_uri') or ''}})
+    _sort_docs(out, sort)
     return {'quotes': out, 'counts': counts}
+
+
+def _sort_docs(rows, sort):
+    """A-Z by site (the default), newest first, or by vendor."""
+    if sort == 'new':
+        rows.sort(key=lambda r: (r.get('date') or '', r['id']), reverse=True)
+    elif sort == 'vendor':
+        rows.sort(key=lambda r: ((r.get('vendor') or '').lower(), (r.get('client_name') or '').lower(), r.get('date') or ''))
+    else:
+        rows.sort(key=lambda r: ((r.get('client_name') or r.get('case_title') or '~').lower(), r.get('date') or ''))
+
+
+def vendor_invoices(conn, show='all', q='', sort='az'):
+    """Every vendor bill on file (Oct 2026: its own tab): the site, their
+    invoice # and amount, our invoice to the client, and whether it's paid."""
+    docs = [_doc_dict(r) for r in conn.execute(
+        "SELECT * FROM pump_docs WHERE kind='bill' AND status != 'dismissed' ORDER BY id DESC")]
+    ids = {d['case_id'] for d in docs if d.get('case_id')}
+    cases = {r['id']: dict(r) for r in conn.execute(
+        f"SELECT id, title, client_name, status, jobber, sei_invoice_number, vendor_paid_on, vendor_paid_by "
+        f"FROM pump_cases WHERE id IN ({','.join('?' * len(ids))})", list(ids))} if ids else {}
+    q = (q or '').strip().lower()
+    out, counts = [], {}
+    for d in docs:
+        c = cases.get(d.get('case_id')) or {}
+        dj, cj = d.get('jobber') or {}, json.loads(c.get('jobber') or '{}')
+        inv = cj.get('invoice') or {}
+        ours = inv.get('number') or dj.get('invoice_number') or c.get('sei_invoice_number') or ''
+        if c.get('vendor_paid_on'):
+            state = 'paid'
+        elif c.get('status') == 'cancelled':
+            state = 'cancelled'
+        elif ours:
+            state = 'invoiced'
+        else:
+            state = 'not_invoiced'
+        counts[state] = counts.get(state, 0) + 1
+        if show == 'unpaid' and state not in ('invoiced', 'not_invoiced'):
+            continue
+        if show not in ('all', 'unpaid') and state != show:
+            continue
+        hay = f"{d.get('vendor')} {d.get('client_name')} {d.get('site')} {d.get('doc_number')} #{d.get('doc_number')} " \
+              f"{d.get('description')} {c.get('title')} {ours} #{ours}"
+        if q and q not in hay.lower():
+            continue
+        out.append({'id': d['id'], 'date': d.get('doc_date') or (d.get('created_at') or '')[:10],
+                    'vendor': d.get('vendor') or 'Wettech', 'number': d.get('doc_number') or '',
+                    'client_name': d.get('client_name') or c.get('client_name') or '', 'site': d.get('site') or '',
+                    'what': ((d.get('description') or '').strip().splitlines() or [''])[0][:200],
+                    'subtotal': d.get('subtotal'), 'total': d.get('total'), 'case_id': d.get('case_id'),
+                    'case_title': c.get('title') or '', 'state': state, 'paid_on': c.get('vendor_paid_on') or '',
+                    'ours': {'number': ours, 'status': (inv.get('status') or dj.get('invoice_status') or '').lower(),
+                             'uri': inv.get('uri') or dj.get('invoice_uri') or ''}})
+    _sort_docs(out, sort)
+    return {'invoices': out, 'counts': counts}
+
+
+@api('/vendor_invoices')
+def h_vendor_invoices(actor):
+    """?show=all|unpaid|not_invoiced|invoiced|paid|cancelled&q=...&sort=az|new|vendor"""
+    conn = _conn()
+    try:
+        return vendor_invoices(conn, request.args.get('show') or 'all', request.args.get('q') or '',
+                               request.args.get('sort') or 'az')
+    finally:
+        conn.close()
 
 
 @api('/vendor_quotes')
@@ -9406,7 +9474,8 @@ def h_vendor_quotes(actor):
     """?show=open|all|to_quote|draft|sent|approved|done|cancelled&q=..."""
     conn = _conn()
     try:
-        return vendor_quotes(conn, request.args.get('show') or 'open', request.args.get('q') or '')
+        return vendor_quotes(conn, request.args.get('show') or 'open', request.args.get('q') or '',
+                             request.args.get('sort') or 'az')
     finally:
         conn.close()
 
