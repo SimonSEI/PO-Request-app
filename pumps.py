@@ -6687,11 +6687,32 @@ def bills_to_pay(conn):
     return out
 
 
+def bills_paid_recently(conn, days=60):
+    """Vendor bills marked paid in the last `days` days, newest first - so one
+    marked paid by mistake can be put back on the list."""
+    since = (_today() - timedelta(days=days)).isoformat()
+    out = []
+    for c in list_cases(conn, 'all'):
+        paid = c.get('vendor_paid_on') or ''
+        if not paid or paid < since or not c['vendor_pay']['state']:
+            continue
+        bill = conn.execute("SELECT id, doc_number, total FROM pump_docs WHERE case_id=? AND kind='bill' "
+                            "AND status != 'dismissed' ORDER BY id DESC", (c['id'],)).fetchone()
+        amount = next((v for v in (c.get('vendor_bill_total'), c.get('vendor_bill_amount'),
+                                   bill['total'] if bill else None) if v is not None), None)
+        out.append({'case_id': c['id'], 'vendor': c.get('vendor') or 'Wettech',
+                    'client_name': c.get('client_name') or '', 'title': c.get('title') or '',
+                    'bill_number': c.get('vendor_bill_number') or (bill['doc_number'] if bill else '') or '',
+                    'bill_doc_id': bill['id'] if bill else None, 'amount': amount,
+                    'paid_on': paid, 'paid_by': c.get('vendor_paid_by') or ''})
+    return sorted(out, key=lambda b: (b['paid_on'], b['case_id']), reverse=True)
+
+
 @api('/bills_to_pay')
 def h_bills_to_pay(actor):
     conn = _conn()
     try:
-        return {'vendors': bills_to_pay(conn),
+        return {'vendors': bills_to_pay(conn), 'paid': bills_paid_recently(conn),
                 'christian': _app_setting(conn, 'christian_email', os.environ.get('CHRISTIAN_EMAIL', ''))}
     finally:
         conn.close()
@@ -6739,11 +6760,28 @@ def h_bills_paid(actor):
         raise ValueError('Tick the bills that are paid')
     conn = _conn()
     try:
-        n = sum(1 for cid in ids if update_case(conn, cid, {'vendor_paid_on': when}, actor))
+        done = [cid for cid in ids if update_case(conn, cid, {'vendor_paid_on': when}, actor)]
         conn.commit()
     finally:
         conn.close()
-    return {'marked': n}
+    return {'marked': len(done), 'case_ids': done}
+
+
+@api('/bills_to_pay/unpaid', methods=('POST',))
+def h_bills_unpaid(actor):
+    """Body: {"case_ids": [...]} - undo: these bills were marked paid by mistake, back on the list."""
+    if actor == BOT:
+        return _office_only(actor, 'Undoing vendor bills marked paid')
+    ids = [int(x) for x in (_json().get('case_ids') or []) if str(x).isdigit()]
+    if not ids:
+        raise ValueError('Pick the bills to put back')
+    conn = _conn()
+    try:
+        n = sum(1 for cid in ids if update_case(conn, cid, {'vendor_paid_on': ''}, actor))
+        conn.commit()
+    finally:
+        conn.close()
+    return {'unmarked': n}
 
 
 @api('/bills_to_pay/email', methods=('POST',))

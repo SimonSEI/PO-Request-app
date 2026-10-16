@@ -3622,6 +3622,18 @@ class PumpsTest(unittest.TestCase):
         case = self.c.get(f"/pumps/api/cases/{b1['case_id']}").get_json()
         self.assertEqual((case.get('case') or case).get('vendor_paid_on'), '2026-10-16')
         self.assertFalse(self.c.post('/pumps/api/bills_to_pay/paid', json={'case_ids': []}).get_json().get('success', True))
+        # Marked paid by mistake: it's in the recently paid list, and Undo puts it back.
+        j = self.c.get('/pumps/api/bills_to_pay').get_json()
+        paid = {b['case_id']: b for b in j['paid']}
+        self.assertEqual(paid[b2['case_id']]['bill_number'], '40012')
+        self.assertEqual(sorted(r['case_ids']), sorted([b1['case_id'], b2['case_id']]))
+        u = self.c.post('/pumps/api/bills_to_pay/unpaid', json={'case_ids': [b2['case_id']]}).get_json()
+        self.assertEqual(u['unmarked'], 1, u)
+        j = self.c.get('/pumps/api/bills_to_pay').get_json()
+        left = {b['case_id'] for g in j['vendors'] for b in g['bills']}
+        self.assertIn(b2['case_id'], left)
+        self.assertNotIn(b1['case_id'], left)
+        self.assertNotIn(b2['case_id'], {b['case_id'] for b in j['paid']})
 
     def test_our_invoices_are_in_whole_dollars(self):
         """Carlisle (Oct 2026): $1,506.69 on our invoice - rounded up to the dollar, no cents."""
