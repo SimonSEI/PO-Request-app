@@ -556,6 +556,11 @@ async function undoAction(id){
   if (await runUndo(id)) showUndo();
 }
 function openAll(uris){ const blocked = uris.filter(u => { const w = window.open(u, '_blank'); if (w) w.opener = null; return !w; }).length; if (blocked) toast('Your browser blocked a tab - allow pop-ups for this site, or use the buttons one at a time.', true); }
+async function followUpOff(id){
+  if (!confirm("No follow-up needed at this step?\n\nIt comes off the list until the job moves on.")) return;
+  const j = await api('/cases/' + id + '/follow_up_off', {method:'POST'});
+  if (!j.success) { toast(j.error, true); return; } toast('No follow-up needed - off the list.'); loadToday();
+}
 async function stepDone(caseId, step, ev){
   const j = await api('/cases/' + caseId, {method:'PATCH', body:{steps: {[step]: new Date().toISOString().slice(0, 10)}}});
   if (!j.success) { toast(j.error || 'Not saved', true); return; } celebrate(ev); loadToday();
@@ -733,6 +738,9 @@ async function loadToday(){
   // A follow-up that's sorted: tick the step the job was waiting on (Huntington: it's scheduled).
   const nextBtn = c => { const l = {assessment: 'Visit done', vendor_quote: 'Quote in', scheduled: 'Scheduled', work_done: 'Work done', vendor_bill: 'Bill in'}[c.stage];
     return l ? stepBtn(c, c.stage, l) : ''; };
+  // The same, as a tick box in front of the title, like your own to-dos.
+  const nextBox = c => { const l = {assessment: 'visit done', vendor_quote: 'quote in', scheduled: 'scheduled', work_done: 'work done', vendor_bill: 'bill in'}[c.stage];
+    return l ? `<input type="checkbox" title="Tick: ${l}" style="margin-right:6px" onclick="event.preventDefault();event.stopPropagation();askDone(event, () => stepDone(${c.id}, '${c.stage}', event))">` : ''; };
   // The drafted invoice in Jobber, to look over and send from there.
   const invoiceLink = c => { const inv = (c.jobber || {}).invoice || {}; const uri = jobberInvoiceUri(inv);
     return uri ? `<a class="btn s p" target="_blank" rel="noopener" href="${esc(uri)}">Open invoice${inv.number ? ' #' + esc(inv.number) : ''} in Jobber ↗</a>` : ''; };
@@ -762,8 +770,8 @@ async function loadToday(){
     (c.chase ? `<button class="btn s p" onclick="event.stopPropagation();logFollow(${c.id})">📞 Log follow-up</button>` : '') + stepBtn(c, 'scheduled'), c.todo_key)));
   // Chase the vendor: jobs to get scheduled / done, and quotes, where nobody has heard back.
   (q.vendor_follow_ups || []).forEach(c => { const ch = c.chase, late = ch.expect_by && ch.expect_by < todayIso();
-    todo.push(todoItem('Follow up · ' + (ch.parts_wait ? 'parts' : ch.phase === 'job' ? 'job' : 'quote'), late ? 'r' : 'a', caseTitle(c), caseSub(c, esc(stageText(c))) + chaseLine(c),
-      open(c), `<button class="btn s p" onclick="event.stopPropagation();logFollow(${c.id})">📞 Log follow-up</button><button class="btn s" onclick="event.stopPropagation();vendorEmail(${c.id})">✉ Email</button>` + nextBtn(c), c.todo_key)); });
+    todo.push(todoItem('Follow up · ' + (ch.parts_wait ? 'parts' : ch.phase === 'job' ? 'job' : 'quote'), late ? 'r' : 'a', nextBox(c) + caseTitle(c), caseSub(c, esc(stageText(c))) + chaseLine(c),
+      open(c), `<button class="btn s p" onclick="event.stopPropagation();logFollow(${c.id})">📞 Log follow-up</button><button class="btn s" onclick="event.stopPropagation();vendorEmail(${c.id})">✉ Email</button>` + nextBtn(c) + `<button class="btn s" title="No follow-up needed at this step - off the list until the job moves on" onclick="event.stopPropagation();followUpOff(${c.id})">Not needed</button>`, c.todo_key)); });
   q.ready_to_close.forEach(c => todo.push(todoItem('Send invoice', 'a', caseTitle(c), caseSub(c, 'send the invoice from Jobber' + (c.sei_invoice_number ? ' · #' + esc(c.sei_invoice_number) : '')) + followUp(c.follow_up), open(c), invoiceLink(c) + stepBtn(c, 'closed'), c.todo_key)));
   q.reports_to_log.forEach(d => todo.push(todoItem('Log report', 'b', esc(d.client_name || d.file_name), `${esc((d.report_fields||{}).title || 'Report')} · ${esc(d.doc_date)}${((d.jobber || {}).note_pending || {}).reason ? '<br><b class="warn">Not logged by itself: ' + esc(d.jobber.note_pending.reason) + '</b>' : ''}`, d.case_id ? `openCase(${d.case_id})` : `openDoc(${d.id})`,
     `<button class="btn s" onclick="logReport(${d.id})">Log in Jobber</button><button class="btn s" title="Already in Jobber - tick it on the job" onclick="askDone(event, () => reportDone(${d.id}, event))">✓ Done</button>`, d.todo_key)));
