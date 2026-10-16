@@ -913,10 +913,10 @@ class PumpsTest(unittest.TestCase):
             P.JOBBER_STATIC_TOKEN = saved
 
     def test_letter_with_two_prices_is_one_quote_with_a_line_each(self):
-        """Autumn Woods 2 (Oct 9 2026): a flow meter and a surge arrestor, each
+        """Oakmont Woods 2 (was Autumn Woods 2) (Oct 9 2026): a flow meter and a surge arrestor, each
         with its own "Your Cost" - ONE job and ONE quote with two lines."""
         self.texts['autumn2.pdf'] = (
-            "October 9, 2026\nStahlman England\nAttn: Beatriz\nRE: Autumn Woods 2\n"
+            "October 9, 2026\nStahlman England\nAttn: Beatriz\nRE: Oakmont Woods 2\n"
             "After preforming maintenance we found the following issues that should be addressed, We are pleased "
             "to quote on the following services and materials\n"
             "Item #1 ... Field service to furnish and install new 4 inch flow meter in place of flow meter that is "
@@ -951,11 +951,11 @@ class PumpsTest(unittest.TestCase):
         self.assertFalse(any(l.get('optional') for l in lines))
 
     def test_letter_split_before_oct_9_is_one_quote_again(self):
-        """Autumn Woods 2 came in while letters were split: the doc kept the
+        """Oakmont Woods 2 (was Autumn Woods 2) came in while letters were split: the doc kept the
         flow meter and a copy made a job for the surge arrestor. Read again,
         it is one quote with both lines and the copy's job is cancelled."""
         self.texts['autumn2b.pdf'] = (
-            "October 9, 2026\nStahlman England\nRE: Autumn Woods 2\n"
+            "October 9, 2026\nStahlman England\nRE: Oakmont Woods 2\n"
             "We are pleased to quote on the following services and materials\n"
             "Item #1 ... Field service to furnish and install new 4 inch flow meter\n"
             "                Your Cost ---------------- $ 2757.32\n"
@@ -3935,6 +3935,28 @@ class PumpsTest(unittest.TestCase):
         self.extracts['q-banyan.pdf'] = extraction('quote', '', client='Banyan Testbay', subtotal=1150)
         q = self.upload('q-banyan.pdf')
         self.assertEqual(q['case_id'], waiting, (q, visit, waiting))
+
+    def test_wild_blue_and_autumn_woods_quotes_go_to_beatrice(self):
+        """Oct 2026: never track a Wild Blue or Autumn Woods quote - Wettech's quote is a to-do "Send Wettech
+        quote to Beatrice", with no item and no Jobber quote; Jobber quotes for them aren't offered to track."""
+        self.extracts['q-wildblue.pdf'] = extraction('quote', '41201', client='Wild Blue', subtotal=2400)
+        q = self.upload('q-wildblue.pdf')
+        self.assertFalse(q.get('case_id'), q)
+        todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
+        t = next(t for t in todos if t['title'].startswith('Send Wettech quote #41201 to Beatrice'))
+        self.assertIn(f"/pumps/api/docs/{q['doc_id']}/file", t['link']['uri'])
+        vq = {x['number']: x for x in self.c.get('/pumps/api/vendor_quotes').get_json()['quotes']}
+        self.assertEqual(vq['41201']['state'], 'beatrice')
+        conn = P._conn()
+        conn.execute("INSERT OR REPLACE INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id, "
+                     "client_name, created_at, updated_at) VALUES ('QBEA1', 'quote', '9400', 'Estimate - flow meter', "
+                     "'approved', 'CAW', 'AUTUMN WOODS HOA COMMUNITY', ?, ?)", (P._today().isoformat(), P._today().isoformat()))
+        conn.commit()
+        self.assertNotIn('QBEA1', [r['jobber_id'] for r in P.untracked_jobber_items(conn)])
+        self.assertNotIn('QBEA1', [r['jobber_id'] for r in P.untracked_jobber_items(conn, others=True)])
+        conn.close()
+        self.assertEqual(P.beatrice_site('Autumn Woods Reserve at Estero'), 'Autumn Woods')
+        self.assertEqual(P.beatrice_site('Huntington Lakes'), '')
 
     def test_search_paid_bills_to_undo(self):
         """Oct 2026: a search on the undo list - every paid bill, any date, by site, vendor or invoice #."""
