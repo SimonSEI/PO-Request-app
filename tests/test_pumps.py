@@ -3936,6 +3936,28 @@ class PumpsTest(unittest.TestCase):
         q = self.upload('q-banyan.pdf')
         self.assertEqual(q['case_id'], waiting, (q, visit, waiting))
 
+    def test_wettech_quotes_tab(self):
+        """Oct 2026: a tab with every Wettech quote and where it stands - our Jobber quote not made yet, a draft,
+        with the client, approved."""
+        self.extracts['q-vq1.pdf'] = extraction('quote', '41001', client='Quotetab Lakes', subtotal=900)
+        self.extracts['q-vq2.pdf'] = extraction('quote', '41002', client='Quotetab Pines', subtotal=500)
+        a, b = self.upload('q-vq1.pdf'), self.upload('q-vq2.pdf')
+        conn = P._conn()
+        row = conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (b['case_id'],)).fetchone()
+        j = {**json.loads(row['jobber'] or '{}'), 'quote': {'id': 'QT1', 'number': '9300', 'status': 'awaiting_response',
+                                                           'uri': 'https://secure.getjobber.com/quotes/9300'}}
+        conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(j), b['case_id']))
+        conn.commit()
+        conn.close()
+        got = lambda show='open', q='': {x['number']: x for x in
+                                         self.c.get(f'/pumps/api/vendor_quotes?show={show}&q={q}').get_json()['quotes']}
+        rows = got()
+        self.assertEqual(rows['41001']['state'], 'to_quote')
+        self.assertEqual((rows['41002']['state'], rows['41002']['ours']['number']), ('sent', '9300'))
+        self.assertEqual(list(got('sent', 'Quotetab')), ['41002'])
+        self.assertEqual(list(got('all', 'Quotetab Lakes')), ['41001'])
+        self.assertIn('Wettech quotes', self.c.get('/pumps').get_data(as_text=True))
+
     def test_resent_quote_moves_off_the_report_visit(self):
         """Banyan Bay (Oct 2026): the quote landed on the report's maintenance visit; forwarding it again only
         read it again, on the same wrong item. Sent again, it now moves to the item waiting on it."""

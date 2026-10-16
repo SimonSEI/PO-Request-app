@@ -319,6 +319,7 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   <div class="tab" data-tab="accounts">Accounts</div>
   <div class="tab" data-tab="reports">Reports</div>
   <div class="tab" data-tab="bills">Bills to pay <span class="n" id="n-bills"></span></div>
+  <div class="tab" data-tab="vquotes">Wettech quotes <span class="n" id="n-vquotes"></span></div>
 </div>
 
 <!-- JOBS -->
@@ -395,6 +396,19 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
   <div class="note" style="margin-bottom:10px">Every vendor bill not paid yet, by vendor. A bill can be paid once we've invoiced the client for it; ticked ones go in one email to Christian, with the bills attached. Mark each paid when it is.</div>
   <div id="billsList"><div class="empty">Loading…</div></div>
   <div id="billsPaidList" style="margin-top:16px"></div>
+</div>
+<div class="panel hide" id="p-vquotes">
+  <div class="toolbar">
+    <select id="vqShow" onchange="loadVQuotes()">
+      <option value="open">Open (to quote, draft, with the client)</option><option value="to_quote">Our quote not made</option>
+      <option value="draft">Draft - to send</option><option value="sent">With the client</option>
+      <option value="approved">Approved</option><option value="done">Done</option><option value="cancelled">Cancelled</option>
+      <option value="all">All</option></select>
+    <input type="text" id="vqSearch" placeholder="Find a site, quote #, work…" oninput="clearTimeout(window._vq);window._vq=setTimeout(loadVQuotes,300)" style="width:240px">
+    <div class="sp"></div><span class="note" id="vqInfo"></span>
+  </div>
+  <div class="note" style="margin-bottom:10px">Every quote from Wettech (and other vendors), newest first, with our Jobber quote for it and where it stands.</div>
+  <div id="vqList"><div class="empty">Loading…</div></div>
 </div>
 <div class="panel hide" id="p-reports">
   <div class="toolbar">
@@ -494,7 +508,7 @@ function showTab(name){
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === name));
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('hide', p.id !== 'p-' + name));
   if (name === 'jobs') loadJobs(); else if (name === 'scada') loadScada();
-  else if (name === 'accounts') loadAccounts(); else if (name === 'reports') loadReports(); else if (name === 'bills') loadBills();
+  else if (name === 'accounts') loadAccounts(); else if (name === 'reports') loadReports(); else if (name === 'bills') loadBills(); else if (name === 'vquotes') loadVQuotes();
   history.replaceState(null, '', '#' + name);
 }
 
@@ -990,6 +1004,28 @@ async function sendPayEmail(id, btn){
   closeModal(); loadToday();
 }
 // ── bills to pay ──────────────────────────────────────
+// ── Wettech quotes ─────────────────────────────────────
+const VQ_STATE = {to_quote: ['r', 'Our quote not made'], draft: ['a', 'Draft - send it'], sent: ['b', 'With the client'],
+  approved: ['g', 'Approved'], done: ['', 'Done'], cancelled: ['', 'Cancelled']};
+async function loadVQuotes(){
+  const show = document.getElementById('vqShow').value, q = document.getElementById('vqSearch').value.trim();
+  const j = await api('/vendor_quotes?show=' + show + '&q=' + encodeURIComponent(q));
+  if (document.getElementById('vqSearch').value.trim() !== q) return;   // still typing
+  const box = document.getElementById('vqList');
+  if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
+  const c = j.counts || {};
+  setCount('n-vquotes', (c.to_quote || 0) + (c.draft || 0), false);
+  document.getElementById('vqInfo').textContent = `${c.to_quote || 0} to quote · ${c.draft || 0} drafts · ${c.sent || 0} with the client · ${c.approved || 0} approved`;
+  box.innerHTML = j.quotes.length ? `<table class="t"><thead><tr><th>Date</th><th>Site</th><th>Their quote</th><th class="num">Price</th><th>Our Jobber quote</th><th>Where it stands</th></tr></thead><tbody>
+    ${j.quotes.map(x => { const [cls, label] = VQ_STATE[x.state] || ['', x.state];
+      return `<tr><td>${esc(x.date)}</td>
+      <td>${x.case_id ? `<a href="#" onclick="event.preventDefault();openCase(${x.case_id})">${esc(x.client_name || x.case_title)}</a>` : esc(x.client_name)}${x.site ? `<div class="note">${esc(x.site)}</div>` : ''}<div class="note">${esc(x.what)}</div></td>
+      <td><a target="_blank" href="/pumps/api/docs/${x.id}/file">${esc(x.vendor)}${x.number ? ' #' + esc(x.number) : ''}</a></td>
+      <td class="num">${money(x.subtotal ?? x.total)}</td>
+      <td>${x.ours.number ? (x.ours.uri ? `<a target="_blank" href="${esc(x.ours.uri)}">#${esc(x.ours.number)} ↗</a>` : '#' + esc(x.ours.number)) + `<div class="note">${esc((x.ours.status || '').replace('_', ' '))}</div>` : '<span class="note">-</span>'}</td>
+      <td><span class="chip ${cls}">${label}</span></td></tr>`; }).join('')}</tbody></table>`
+    : '<div class="empty">No quotes here.</div>';
+}
 async function loadBills(){
   const j = await api('/bills_to_pay');
   const box = document.getElementById('billsList');
