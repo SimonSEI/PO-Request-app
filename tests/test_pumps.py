@@ -4097,6 +4097,37 @@ class PumpsTest(unittest.TestCase):
         q = self.c.get('/pumps/api/summary').get_json()['queue']
         self.assertFalse(any('functioning' in t['title'] for t in q['todos']))
 
+    def test_gulfshore_label_with_a_typo(self):
+        """Sanctuary @ Blue Heron #2500 (Oct 2026): Jordan wrote "Sanctruary @ Blue Heron" with "Blue Heron
+        (Sanctuary)" above Bill to - the account all the same, and on our October pump service invoice."""
+        name = 'Invoice_2500_from_Gulfshore_Yacht_Service_LLC.pdf'
+        self.texts[name] = ('INVOICE\nGulfshore Yacht Service LLC gulfshore@example.com\n'
+                            '100 Example Dr +1 (239) 555-0100\nNaples, FL 34120 example.com\nBlue Heron (Sanctuary)\n'
+                            'Bill to Ship to\nStahlman-England Stahlman-England\n706 Haven Drive 706 Haven Drive\n'
+                            'Invoice details\nInvoice date: 10/16/2026\n'
+                            '# Date Product or service Description Qty Rate Amount\n'
+                            '1. 10/15/2026 Filter cleaning Sanctruary @ Blue Heron. Filter is in 3 $100.00 $300.00\n'
+                            'good physical condition and seems to\nbe functioning properly\nTotal $300.00\n')
+        saved = (P.jobber_status, P.search_clients, P.client_records, P.invoices_named, P._claude_extract)
+        P._claude_extract = lambda *a, **k: None
+        P.jobber_status = lambda: {'connected': True}
+        P.search_clients = lambda q: [{'id': 'CSBH', 'name': 'SANCTUARY AT BLUE HERON', 'score': 1.0, 'is_lead': False}]
+        P.client_records = lambda cid, kind: [{'id': 'ISBH', 'number': '36861', 'status': 'awaiting_payment',
+                                               'total': 550.0, 'created': '2026-10-15', 'uri': ''}] if cid == 'CSBH' else []
+        P.invoices_named = lambda *a, **k: []
+        try:
+            r = P.ingest_document(name, b'%PDF-1.4 gulf 2500', source='email', actor='email scan',
+                                  email={'uid': 'gs-2500', 'from': 'gulfshore@example.com',
+                                         'subject': 'New payment request from Gulfshore Yacht Service LLC'})
+            P.check_all_diver_bills()
+        finally:
+            P.jobber_status, P.search_clients, P.client_records, P.invoices_named, P._claude_extract = saved
+        c = self.case(r['case_id'])
+        self.assertEqual(c['client_name'], 'Sanctuary @ Blue Heron')
+        self.assertEqual((c['vendor_bill_number'], c['sei_invoice_number']), ('2500', '36861'))
+        bills = {b['case_id']: b for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for b in g['bills']}
+        self.assertTrue(bills[r['case_id']]['payable'])
+
     def test_gulfshore_label_matched_like_a_pump_bill(self):
         """Caymas #2501 (Oct 2026): Jordan writes "Caymas", Jobber has "Caymas c/o Icon Management" and there's
         no account by that name. Found the way a pump bill's client is (the Jobber client search); once the
