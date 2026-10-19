@@ -1896,6 +1896,7 @@ async function serviceQuote(name, kind){
     <label class="note">Quote title<input type="text" id="sqTitle" value="${esc(j.title)}" style="width:100%"></label>
     <label class="note">Line<input type="text" id="sqLine" value="${esc(li.name)}" style="width:100%"></label>
     <label class="note">Description<textarea id="sqDesc" rows="9" style="width:100%">${esc(li.description)}</textarea></label>
+    ${kind === 'irrigation' ? `<div class="${j.zones ? 'note' : 'issue'}" style="margin-top:6px">${j.zones ? `${j.zones} zones (from the account's notes) × ${money(j.per_zone)} per zone = <b>${money(j.zones * j.per_zone)}</b> a month.` : `Number of zones undetermined - nothing in the account's notes says how many. Price it by hand (${money(j.per_zone)} per zone a month).`}</div>` : ''}
     <label class="note">Price per ${kind === 'scada' ? 'year' : kind === 'irrigation' ? 'month' : 'visit'} ($)<input type="number" id="sqPrice" value="${li.unit_price ?? ''}" placeholder="price" style="width:160px"></label>`,
     `${kind === 'irrigation' ? `<button class="btn" style="margin-right:auto" title="Jobber didn't show it, but we do manage their irrigation" onclick="irrigationManaged(${JSON.stringify(name).replace(/"/g, '&quot;')}, true)">We already manage it</button>` : ''}<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" id="sqGo" onclick="serviceQuoteGo()">Create draft in Jobber</button>`);
   sqClients();   // already searched - the match ticked, the rest a click away

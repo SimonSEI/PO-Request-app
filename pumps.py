@@ -12417,6 +12417,28 @@ SERVICE_QUOTES = {
     'irrigation': {'label': 'Irrigation maintenance', 'title': 'Monthly Irrigation Maintenance Program',
                    'line': 'MONTHLY IRRIGATION PROGRAM'},
 }
+# What we charge a month per irrigation zone (the office, Oct 2026).
+IRRIGATION_PER_ZONE = float(os.environ.get('PUMPS_IRRIGATION_PER_ZONE', '15') or 15)
+_ZONES = re.compile(r'(\d{1,3})\s*(?:irrigation\s+|sprinkler\s+)?zones?\b|\bzones?\s*(?:count)?\s*[:#=-]?\s*(\d{1,3})\b', re.I)
+
+
+def account_zones(a):
+    """The number of irrigation zones written anywhere in an account's notes, or None."""
+    texts = []
+    for k in ('pump', 'lake', 'scada'):
+        x = a.get(k) or {}
+        texts += [str(x.get(f) or '') for f in ('notes', 'equipment', 'size', 'address', 'location')]
+    for t in texts:
+        for m in _ZONES.finditer(t):
+            # "Zone 9 & 11 renovation" names zones - a count reads "24 zones" or "zones: 24".
+            n = int(m.group(1) or m.group(2))
+            if m.group(2) and re.search(r'\bzone\s+\d', m.group(0), re.I) and not re.search(r'[:#=]', m.group(0)):
+                continue
+            if 0 < n < 1000:
+                return n
+    return None
+
+
 # A recurring job in Jobber that's ours for the pumps, lake or SCADA - not the irrigation itself.
 _NOT_IRRIGATION = re.compile(r'\b(?:pumps?|fountains?|filters?|lakes?|divers?|scada|wells?|vfd|aerat\w*)\b', re.I)
 
@@ -12502,7 +12524,10 @@ def service_quote_draft(conn, name, kind):
     elif kind == 'filter':
         desc = FILTER_PROGRAM_TEXT
     elif kind == 'irrigation':
-        desc = IRRIGATION_PROGRAM_TEXT
+        zones = account_zones(a)
+        desc = IRRIGATION_PROGRAM_TEXT + (
+            f'\n\nNumber of zones: {zones} at ${IRRIGATION_PER_ZONE:,.2f} per zone per month.' if zones
+            else '\n\nNumber of zones undetermined.')
     else:
         y = _today().year
         desc = SCADA_QUOTE_TEXT.format(y1=y, y2=y + 1).replace('Renewal of Annual', 'Annual')
@@ -12520,9 +12545,14 @@ def service_quote_draft(conn, name, kind):
             props = []
     prop = props[0] if len(props) == 1 else next(
         (x for x in props if place_score(_core_name(name), x['label']) >= 0.99), None)
+    price = t.get('price')
+    zones = account_zones(a) if kind == 'irrigation' else None
+    if zones:
+        price = round(zones * IRRIGATION_PER_ZONE, 2)
     return {'account': name, 'kind': kind, 'label': t['label'], 'title': t['title'],
+            'zones': zones, 'per_zone': IRRIGATION_PER_ZONE if kind == 'irrigation' else None,
             'line_items': [{'name': t['line'], 'description': desc, 'quantity': 1,
-                            'unit_price': t.get('price'), 'taxable': False}],
+                            'unit_price': price, 'taxable': False}],
             'client': client, 'properties': props, 'property_id': (prop or {}).get('id') or ''}
 
 
