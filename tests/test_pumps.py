@@ -4230,6 +4230,61 @@ class PumpsTest(unittest.TestCase):
             P.jobber_gql = saved
         self.assertEqual([r['number'] for r in got], ['36834'])
 
+    def test_gulfshore_anna_s_place(self):
+        """Anna's Place #2491 (Oct 2026): no label in the note, "Ana's Place" twice on the Bill to line; Jobber's client is
+        "INC ANA'S PLACE HOMEOWNER'S ASSOCIATION" and our invoice "Pump service - Anna's Place". Found by the invoice's
+        subject; and when one isn't found, linked by hand from the to-do - done, closed, remembered."""
+        name = 'Invoice_2491_from_Gulfshore_Yacht_Service_LLC.pdf'
+        text = ('INVOICE\nGulfshore Yacht Service LLC gulfshore@example.com\n100 Example Dr +1 (239) 555-0100\n'
+                "Naples, FL 34120 example.com\nBill to Ship to\nAna's Place Ana's Place\nStahlman-England Stahlman-England\n"
+                '5897 Ashford lane 5897 Ashford lane\nNaples, FL Naples, FL\nInvoice details\nInvoice date: 10/16/2026\n'
+                '# Date Product or service Description Qty Rate Amount\n'
+                '1. 10/15/2026 Filter cleaning Filter is in good physical condition and 1 $125.00 $125.00\n'
+                'seems to be functioning properly\nTotal $125.00\n')
+        x = P._regex_extract(text, 'gulfshore@example.com', '', name)
+        self.assertEqual((x['client_name'], x['doc_number'], x['total']), ("Ana's Place", '2491', 125.0))
+        conn = P._conn()
+        try:
+            self.assertEqual(P.diver_client(conn, {'client_name': "Ana's Place", 'site': ''})[0], "Anna's Place")
+        finally:
+            conn.close()
+        nodes = [{'id': 'I36839', 'invoiceNumber': 36839, 'subject': "Pump service - Anna's Place", 'invoiceStatus': 'awaiting_payment',
+                  'createdAt': '2026-10-15T19:10:38Z', 'jobberWebUri': '', 'amounts': {'total': 400},
+                  'client': {'id': 'CANA', 'name': "INC ANA'S PLACE HOMEOWNER'S ASSOCIATION"}},
+                 {'id': 'I1', 'invoiceNumber': 1, 'subject': "Pump service - Ann's Pond", 'invoiceStatus': 'awaiting_payment',
+                  'createdAt': '2026-10-15T19:10:38Z', 'jobberWebUri': '', 'amounts': {'total': 1}, 'client': {'id': 'C1', 'name': 'Other'}}]
+        saved = P.jobber_gql
+        P.jobber_gql = lambda q, v=None: {'invoices': {'nodes': nodes}}
+        try:
+            got = P.invoices_named("Anna's Place", '2026-10-05', '2026-11-29', None, labels=("Ana's Place", ''))
+        finally:
+            P.jobber_gql = saved
+        self.assertEqual([r['number'] for r in got], ['36839'])
+        # Not found by itself: the to-do links it by hand.
+        self.texts[name] = text
+        saved = (P.jobber_status, P.invoice_client, P.client_records, P.invoices_named, P._claude_extract, P.find_invoice_by_number)
+        P._claude_extract = lambda *a, **k: None
+        P.jobber_status = lambda: {'connected': True}
+        P.invoice_client = lambda doc, case=None: None
+        P.client_records = lambda cid, kind: []
+        P.invoices_named = lambda *a, **k: []
+        P.find_invoice_by_number = lambda n: {'id': 'I36839', 'invoiceNumber': 36839, 'invoiceStatus': 'awaiting_payment',
+                                              'amounts': {'total': 400}, 'client': {'id': 'CANA', 'name': "INC ANA'S PLACE"}}
+        try:
+            r = P.ingest_document(name, b'%PDF-1.4 gulf 2491', source='email', actor='email scan',
+                                  email={'uid': 'gs-2491', 'from': 'gulfshore@example.com', 'subject': 'Gulfshore invoice'})
+            todo = lambda: [t for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']
+                            if t['key'] == f"gulfshore-unbilled:{r['doc_id']}"]
+            self.assertTrue(todo())
+            j = self.c.post(f"/pumps/api/cases/{r['case_id']}/jobber_invoice", json={'number': '36839'}).get_json()
+            self.assertTrue(j['success'], j)
+        finally:
+            (P.jobber_status, P.invoice_client, P.client_records, P.invoices_named, P._claude_extract,
+             P.find_invoice_by_number) = saved
+        self.assertFalse(todo())
+        self.assertEqual(self.case(r['case_id'])['status'], 'closed')
+        self.assertEqual((P.match_site_alias({'client_name': "Ana's Place"}) or {}).get('client_id'), 'CANA')
+
     def test_gulfshore_label_matched_like_a_pump_bill(self):
         """Caymas #2501 (Oct 2026): Jordan writes "Caymas", Jobber has "Caymas c/o Icon Management" and there's
         no account by that name. Found the way a pump bill's client is (the Jobber client search); once the
