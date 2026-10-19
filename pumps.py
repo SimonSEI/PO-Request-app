@@ -1137,9 +1137,12 @@ def vendor_pay_state(case):
     has_bill = (case.get('vendor_bill_amount') is not None or case.get('vendor_bill_total') is not None
                 or bool(((case.get('steps') or {}).get('vendor_bill') or {}).get('at')))
     client_status = (((case.get('jobber') or {}).get('invoice') or {}).get('status') or '').lower()
-    # A report-only account (Wild Blue...) gets no invoice from us: its monthly
-    # is billed at the end of the month, so the bill is to pay from then.
+    # A report-only account (Wild Blue...) gets no invoice from us: billed through
+    # its monthly contract, so the bill is to pay once the next monthly job (the
+    # account's recurring Jobber job's visit after the bill) is completed (the
+    # office, Oct 19 2026 - it was the month's end). check_report_only_bills sets it.
     steps = case.get('steps') or {}
+    monthly = (case.get('jobber') or {}).get('monthly_visit') or {}
     report_only = ((steps.get('invoice_drafted') or {}).get('by') == 'report only account')
     month_end = ''
     if report_only:
@@ -1151,12 +1154,13 @@ def vendor_pay_state(case):
         state = 'paid'
     elif not has_bill:
         state = ''
-    elif client_status == 'paid' or (month_end and _today().isoformat() >= month_end):
+    elif client_status == 'paid' or (report_only and monthly.get('completed_on')):
         state = 'due'
     else:
         state = 'unpaid'
     return {'state': state, 'paid_on': case.get('vendor_paid_on') or '', 'paid_by': case.get('vendor_paid_by') or '',
-            'client_invoice_status': client_status, 'report_only': report_only, 'month_end': month_end}
+            'client_invoice_status': client_status, 'report_only': report_only, 'month_end': month_end,
+            'monthly_visit': monthly}
 
 
 def compare_amounts(case):
@@ -2545,6 +2549,60 @@ def reread_diver_bill(conn, case_id, actor='Pumps'):
     return True
 
 
+def check_report_only_bills(actor='Jobber sync'):
+    """Bills for report-only accounts (The Reserve @ Estero, Autumn Woods, Wild Blue)
+    waiting on the next monthly job: the account's recurring Jobber job's first visit
+    on or after the bill's date - payable once it's completed."""
+    conn = _conn()
+    try:
+        waiting = []
+        for c in list_cases(conn, 'all'):
+            pay = c['vendor_pay']
+            if pay.get('report_only') and pay['state'] == 'unpaid' and c['status'] != 'cancelled':
+                name = report_only_account(conn, c)
+                row = conn.execute('SELECT jobber_job_id, jobber_job_label FROM pump_maint_accounts WHERE name=?',
+                                   (name,)).fetchone() if name else None
+                came = (((c.get('steps') or {}).get('vendor_bill') or {}).get('at') or c.get('opened_on') or '')[:10]
+                waiting.append((c['id'], row['jobber_job_id'] if row else '', came))
+    finally:
+        conn.close()
+    visits_of, done = {}, []
+    for cid, job_id, came in waiting:
+        note, mv = '', {}
+        if not job_id:
+            note = "the account's monthly job isn't linked to Jobber (Accounts tab)"
+        else:
+            try:
+                if job_id not in visits_of:
+                    visits_of[job_id] = job_visits(job_id)
+                nxt = next((v for v in visits_of[job_id] if v['date'] >= came), None)
+                if nxt:
+                    mv = {'date': nxt['date'], 'visit_id': nxt['id']}
+                    if nxt['completed']:
+                        mv['completed_on'] = _today().isoformat()
+                else:
+                    note = 'no visit on the monthly job after the bill yet'
+            except JobberError as e:
+                note = f'Jobber: {e}'
+        if note:
+            mv['note'] = note
+        conn = _conn()
+        try:
+            row = conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (cid,)).fetchone()
+            j = json.loads(row['jobber'] or '{}')
+            if j.get('monthly_visit') != mv:
+                j['monthly_visit'] = mv
+                conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(j), cid))
+                if mv.get('completed_on'):
+                    _event(conn, actor, 'pay vendor', f"The monthly job's visit of {mv['date']} is done - "
+                                                      "the vendor's bill can be paid", case_id=cid)
+                    done.append(cid)
+                conn.commit()
+        finally:
+            conn.close()
+    return done
+
+
 def check_all_diver_bills(actor='Jobber sync'):
     """Every Gulfshore bill not billed out yet: looked for again (the invoice may be made later)."""
     conn = _conn()
@@ -3856,6 +3914,10 @@ def _sync_jobber(full=False, actor='system'):
                 check_all_diver_bills()
             except Exception as e:
                 status['errors'].append(f'Gulfshore bills: {e}')
+            try:
+                check_report_only_bills()
+            except Exception as e:
+                status['errors'].append(f'Report-only bills: {e}')
             status['errors'] += refresh_client_contacts(conn)
             conn.commit()
             try:
@@ -7468,7 +7530,7 @@ def vendor_pay_email(conn, case_id, signer=''):
              f"Please pay {vendor} invoice{' #' + number if number else ''}"
              f"{f' for ${amount:,.2f}' if amount is not None else ''}.", '',
              f'Job: {job}' + (f" (PO {c['po_number']})" if c.get('po_number') else ''),
-             (f"{client or 'The account'}'s monthly has been billed (end of month) - no separate invoice from us."
+             (f"{client or 'The account'}'s next monthly job is completed (billed through its monthly contract) - no separate invoice from us."
               if c['vendor_pay'].get('report_only') else
               f"The client has paid our Jobber invoice{' #' + our_no if our_no else ''}."), '',
              *([f'{vendor}\'s invoice is attached.', ''] if bill else []), 'Thank you,', signer]
@@ -7724,7 +7786,11 @@ def bills_to_pay(conn):
                                    bill['total'] if bill else None) if v is not None), None)
         if pay.get('report_only'):
             payable = pay['state'] == 'due'
-            why = 'report-only account - payable at the end of the month' + ('' if payable else f" ({pay.get('month_end')})")
+            mv = pay.get('monthly_visit') or {}
+            why = (f"report-only account - the monthly job's visit of {mv['date']} is done" if payable and mv.get('completed_on')
+                   else 'report-only account - payable once the next monthly job is completed'
+                   + (f" (visit {mv['date']})" if mv.get('date') else '')
+                   + (f" - {mv['note']}" if mv.get('note') else ''))
         else:
             payable = invoiced or pay['state'] == 'due'
             num = inv.get('number') or c.get('sei_invoice_number') or ''
