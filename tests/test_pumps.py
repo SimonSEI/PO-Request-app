@@ -4090,7 +4090,7 @@ class PumpsTest(unittest.TestCase):
         P.jobber_status = lambda: {'connected': True}
         P.invoice_client = lambda doc, case=None: 'CMF'
         P.client_records = lambda cid, kind: []
-        P.invoices_named = lambda name, lo, hi, client_id=None: []
+        P.invoices_named = lambda name, lo, hi, client_id=None, labels=(): []
         try:
             r = P.ingest_document('Invoice_2497_from_Gulfshore_Yacht_Service_LLC.pdf', b'%PDF-1.4 gulf 2497',
                                   source='email', actor='email scan',
@@ -4107,7 +4107,7 @@ class PumpsTest(unittest.TestCase):
             self.assertEqual(vi['2497']['state'], 'not_invoiced')
             # The pump service invoice is made (#36870 wasn't in the client's own list - found by name): billed
             # out, Christian's to pay, the to-do done.
-            P.invoices_named = lambda name, lo, hi, client_id=None: [
+            P.invoices_named = lambda name, lo, hi, client_id=None, labels=(): [
                 {'id': 'IMF', 'number': '37555', 'status': 'awaiting_payment', 'total': 450.0,
                  'created': '2026-10-17', 'uri': ''}] if 'Magnolia' in name and lo <= '2026-10-17' <= hi else []
             P.check_all_diver_bills()
@@ -4151,7 +4151,7 @@ class PumpsTest(unittest.TestCase):
         P.invoice_client = lambda doc, case=None: 'CBC' if 'Barrington' in (case or {}).get('client_name', '') else None
         P.client_records = lambda cid, kind: [{'id': 'IBC', 'number': '36816', 'status': 'awaiting_payment',
                                                'total': 450.0, 'created': '2026-10-15', 'uri': ''}] if cid == 'CBC' else []
-        P.invoices_named = lambda name, lo, hi, client_id=None: []
+        P.invoices_named = lambda name, lo, hi, client_id=None, labels=(): []
         try:
             r = P.ingest_document(name, b'%PDF-1.4 gulf 2498', source='email', actor='email scan',
                                   email={'uid': 'gs-2498', 'from': 'gulfshoreyachts@gmail.com',
@@ -4202,6 +4202,33 @@ class PumpsTest(unittest.TestCase):
         self.assertNotIn(r['case_id'], [x['id'] for x in q['ready_to_close']])
         bills = {b['case_id']: b for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for b in g['bills']}
         self.assertTrue(bills[r['case_id']]['payable'])
+
+    def test_gulfshore_lake_account_and_invoice_by_label(self):
+        """Falling Waters II #2495 (Oct 2026): filed on the pump account "Falling Waters II - Watercrest", looked for
+        under the wrong client, and #36834 to "FALLING WATERS II AT FALLING WATERS c/o GUARDIAN" passed over. The lake
+        account by Jordan's label; an invoice whose client starts with his label counts - not Magnolia Falls @
+        Falling Waters'."""
+        self.assertTrue(P._names_with('FALLING WATERS II AT FALLING WATERS c/o GUARDIAN PROPERTY MANAGEMENT', 'Falling Waters II'))
+        self.assertFalse(P._names_with('Magnolia Falls @ Falling Waters C/O Sandcastle', 'Falling Waters II'))
+        self.assertFalse(P._names_with('FALLING WATERS III', 'Falling Waters II'))
+        conn = P._conn()
+        try:
+            self.assertEqual(P.diver_client(conn, {'client_name': 'Falling Waters II', 'site': ''})[0], 'Falling Waters II')
+        finally:
+            conn.close()
+        nodes = [{'id': 'I36834', 'invoiceNumber': 36834, 'invoiceStatus': 'awaiting_payment', 'createdAt': '2026-10-15T15:00:00Z',
+                  'jobberWebUri': '', 'amounts': {'total': 315}, 'client': {'id': 'CFW2', 'name': 'FALLING WATERS II AT FALLING '
+                                                                             'WATERS c/o GUARDIAN PROPERTY MANAGEMENT'}},
+                 {'id': 'I36870', 'invoiceNumber': 36870, 'invoiceStatus': 'awaiting_payment', 'createdAt': '2026-10-16T15:00:00Z',
+                  'jobberWebUri': '', 'amounts': {'total': 450}, 'client': {'id': 'CMF', 'name': 'Magnolia Falls @ Falling Waters'}}]
+        saved = P.jobber_gql
+        P.jobber_gql = lambda q, v=None: {'invoices': {'nodes': nodes}}
+        try:
+            got = P.invoices_named('Falling Waters II - Watercrest', '2026-10-05', '2026-11-29', 'CWATERCREST',
+                                   labels=('Falling Waters II', ''))
+        finally:
+            P.jobber_gql = saved
+        self.assertEqual([r['number'] for r in got], ['36834'])
 
     def test_gulfshore_label_matched_like_a_pump_bill(self):
         """Caymas #2501 (Oct 2026): Jordan writes "Caymas", Jobber has "Caymas c/o Icon Management" and there's

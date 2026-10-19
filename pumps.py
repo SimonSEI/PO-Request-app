@@ -2327,6 +2327,13 @@ def diver_client(conn, doc):
     if alias:
         acct = next((n for n in names if _same_account(n, alias['client_name'] or '')), None)
         return acct or alias['client_name'] or doc.get('client_name') or '', alias['client_id']
+    # Jordan cleans lake filters: a lake account by his label first - "Falling Waters II", not the pump
+    # account "Falling Waters II - Watercrest" (#2495, Oct 2026).
+    lakes = [r[0] for r in conn.execute('SELECT name FROM pump_dive_sites')]
+    for label in (doc.get('client_name'), doc.get('site')):
+        hit = next((n for n in lakes if label and _core_name(n).lower() == _core_name(label).lower()), None)
+        if hit:
+            return hit, None
     for label in (doc.get('client_name'), doc.get('site')):
         acct = site_account(label, conn) if label else None
         if acct:
@@ -2390,7 +2397,8 @@ def check_diver_billed(case_id, actor='Pumps'):
                 recs = [r for r in client_records(client_id, 'invoice') if r['status'] not in ('voided', 'bad_debt')
                         and lo <= (r['created'] or '') <= hi]
                 if not recs:
-                    recs = invoices_named(case.get('client_name') or doc.get('client_name') or '', lo, hi, client_id)
+                    recs = invoices_named(case.get('client_name') or doc.get('client_name') or '', lo, hi, client_id,
+                                          labels=(doc.get('client_name'), doc.get('site')))
                 found = sorted(recs, key=lambda r: abs((date.fromisoformat(r['created']) - when).days))[0] if recs else None
         except (JobberError, ValueError) as e:
             err = str(e)
@@ -2443,19 +2451,37 @@ def check_diver_billed(case_id, actor='Pumps'):
     return {'billed': bool(found), 'invoice': found, 'error': err}
 
 
-def invoices_named(name, lo, hi, client_id=None):
-    """Jobber invoices found by searching the account's name, created between lo
-    and hi: the pump service invoice when the client's own list didn't have it
-    (Magnolia Falls #36870, Oct 2026). The client's, when we know which client."""
-    core = _core_name(name)
-    if len(core) < 4:
-        return []
-    data = jobber_gql('query($q: String) { invoices(first: 20, searchTerm: $q) { nodes { id invoiceNumber '
-                      'invoiceStatus createdAt jobberWebUri amounts { total } client { id name } } } }', {'q': core})
+def _names_with(client_name, label):
+    """The Jobber client's name starts with the site label, whole words: "FALLING WATERS II AT
+    FALLING WATERS c/o GUARDIAN" for Jordan's "Falling Waters II" - not "Magnolia Falls @
+    Falling Waters", nor "Falling Waters III"."""
+    norm = lambda x: ' '.join(re.findall(r'[a-z0-9]+', (x or '').lower().replace('@', ' at ')))
+    a, b = norm(client_name), norm(label)
+    return len(b) >= 4 and (a == b or a.startswith(b + ' '))
+
+
+def invoices_named(name, lo, hi, client_id=None, labels=()):
+    """Jobber invoices found by searching the account's name (and the vendor's labels),
+    created between lo and hi: the pump service invoice when the client's own list didn't
+    have it (Magnolia Falls #36870, Oct 2026). The client's, when we know which client, or
+    one whose name starts with a label (Falling Waters II #36834)."""
+    terms = []
+    for t in [_core_name(name)] + [l for l in labels if l]:
+        if len(t or '') >= 4 and t.lower() not in [x.lower() for x in terms]:
+            terms.append(t)
+    nodes = []
+    for t in terms:
+        data = jobber_gql('query($q: String) { invoices(first: 20, searchTerm: $q) { nodes { id invoiceNumber '
+                          'invoiceStatus createdAt jobberWebUri amounts { total } client { id name } } } }', {'q': t})
+        nodes += [n for n in ((data.get('invoices') or {}).get('nodes') or []) if n['id'] not in [m['id'] for m in nodes]]
     out = []
-    for n in ((data.get('invoices') or {}).get('nodes') or []):
+    for n in nodes:
         c = n.get('client') or {}
-        if client_id and c.get('id') != client_id and not _same_account(c.get('name') or '', name):
+        if client_id and c.get('id') != client_id and not _same_account(c.get('name') or '', name) \
+                and not any(_names_with(c.get('name'), l) for l in labels if l):
+            continue
+        if not client_id and not _same_account(c.get('name') or '', name) \
+                and not any(_names_with(c.get('name'), l) for l in labels if l):
             continue
         created, status = (n.get('createdAt') or '')[:10], (n.get('invoiceStatus') or '').lower()
         if lo <= created <= hi and status not in ('voided', 'bad_debt'):
@@ -2474,8 +2500,10 @@ def reread_diver_bill(conn, case_id, actor='Pumps'):
                        "ORDER BY id DESC", (case_id,)).fetchone()
     if not case or not row or row['extracted_by'] != 'regex':
         return False
-    names = _account_names(conn) + [a['name'] for a in accounts(conn)]
-    if case.get('client_name') and any(_same_account(n, case['client_name']) for n in names):
+    # Once per bill: a client set by hand afterwards stays.
+    conn.execute('INSERT OR IGNORE INTO pump_state (key, value) VALUES (?, ?)',
+                 (f"diver_reread:{row['id']}", json.dumps(_now_text())))
+    if conn.execute('SELECT changes()').fetchone()[0] != 1:
         return False
     try:
         with open(row['file_path'], 'rb') as f:
