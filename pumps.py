@@ -7595,7 +7595,14 @@ def diver_invoice_linked(case_id, inv, actor):
                          (_now_text(), actor, f"gulfshore-unbilled:{doc['id']}"))
         if (inv.get('status') or 'draft') not in ('draft', 'voided', 'bad_debt'):
             _set_step(conn, case_id, 'closed', at=_today().isoformat(), by=actor)
-        client_id = (json.loads(case['jobber'] or '{}').get('client') or {}).get('id')
+        # The invoice's own client - not one the item was wrongly tied to before (Water Crest for Falling Waters II).
+        got = conn.execute("SELECT client_id, client_name FROM pump_jobber_items WHERE jobber_id=?", (inv.get('id'),)).fetchone()
+        client_id = (got['client_id'] if got else '') or (json.loads(case['jobber'] or '{}').get('client') or {}).get('id')
+        if got and got['client_id']:
+            j = json.loads(case['jobber'] or '{}')
+            j['client'] = {'id': got['client_id'], 'name': got['client_name'] or ''}
+            conn.execute('UPDATE pump_cases SET jobber=?, jobber_client_id=? WHERE id=?',
+                         (json.dumps(j), got['client_id'], case_id))
         conn.commit()
     finally:
         conn.close()
