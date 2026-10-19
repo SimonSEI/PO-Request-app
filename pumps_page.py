@@ -272,6 +272,13 @@ details.fold[open] > summary h4::before { content: '▾ '; }
 .svc.off { background: #f3f4f6; color: #6b7280; border: 1px dashed #cbd5e1; cursor: pointer; }
 .svc.off:hover { background: #e5e7eb; color: #111827; border-style: solid; }
 .svc.none { background: #f3f4f6; color: #c0c4cc; border: 1px solid #e5e7eb; }
+.ct { margin-bottom: 6px; font-size: 12px; }
+.ct.off { opacity: .55; text-decoration: line-through; }
+.ct .strip { display: flex; flex-wrap: nowrap; gap: 2px; margin-top: 3px; }
+.ct .mo { width: 16px; height: 16px; border-radius: 4px; font-size: 10px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #e5e7eb; color: #9ca3af; cursor: pointer; text-decoration: none; }
+.ct .mo.b { background: #16a34a; border-color: #16a34a; color: #fff; }
+.ct .mo.late { border-color: #dc2626; color: #dc2626; background: #fef2f2; }
+.ct .mo.gap { color: #9ca3af; }
 </style>
 <script>
 (function(){
@@ -374,13 +381,13 @@ details.fold[open] > summary h4::before { content: '▾ '; }
   <div class="toolbar">
     <span id="acInfo" class="note"></span><div class="sp"></div>
     <input type="text" id="acSearch" placeholder="Find an account…" oninput="drawAccounts()" style="width:180px">
-    <select id="acShow" onchange="drawAccounts()"><option value="active">Active</option><option value="due">Due this month</option><option value="pump">Has pump maintenance</option><option value="lake">Has filter cleaning</option><option value="scada">Has SCADA</option><option value="no_pump">No pump maintenance</option><option value="no_filter">No filter cleaning</option><option value="no_scada">No SCADA</option><option value="no_irrigation">We don't manage irrigation</option><option value="former">Former</option><option value="">All</option></select>
+    <select id="acShow" onchange="drawAccounts()"><option value="active">Active</option><option value="due">Due this month</option><option value="pump">Has pump maintenance</option><option value="lake">Has filter cleaning</option><option value="scada">Has SCADA</option><option value="no_pump">No pump maintenance</option><option value="no_filter">No filter cleaning</option><option value="no_scada">No SCADA</option><option value="no_irrigation">We don't manage irrigation</option><option value="contract">Has a maintenance contract</option><option value="behind">Contract months not billed</option><option value="former">Former</option><option value="">All</option></select>
     <button class="btn" onclick="maintEdit(0)">＋ Pump account</button>
     <button class="btn" onclick="editDiveSite()">＋ Lake site</button>
     <button class="btn" title="Look in Jobber for each account's irrigation maintenance job (it's also checked once a day)" onclick="irrigationCheck()">↻ Check Jobber for irrigation</button>
   </div>
   <div class="note" style="margin-bottom:10px"><span class="svc on">Pump</span> <span class="svc on">Filter</span> <span class="svc on">SCADA</span> <span class="svc on">Irrigation</span> green = the account has it (Irrigation: we manage it - from their Jobber jobs) &nbsp;·&nbsp; <span class="svc off">＋ Pump</span> grey = it doesn't - click it to draft a quote in Jobber. Click the account name for its page.</div>
-  <div class="scroll"><table class="t"><thead><tr><th>Account</th><th>Pump · Filter · SCADA · Irrigation</th><th>Next due</th><th>Where</th></tr></thead><tbody id="acBody"></tbody></table></div>
+  <div class="scroll"><table class="t"><thead><tr><th>Account</th><th>Pump · Filter · SCADA · Irrigation</th><th>Contract (billed this year)</th><th>Next due</th><th>Where</th></tr></thead><tbody id="acBody"></tbody></table></div>
   <details style="margin-top:22px"><summary style="cursor:pointer;font-size:14px;font-weight:600">Monthly email to the diver</summary>
   <div class="toolbar"><span id="diveInfo" class="note"></span><div class="sp"></div>
     <button class="btn" onclick="diverTodo(diveMonth())">Email ready to copy</button>
@@ -1861,10 +1868,30 @@ async function refreshAccounts(){
 // Pump maintenance, filter cleaning (the lake diver) and SCADA: green when the
 // account has it, grey when it doesn't - click a grey one to quote it.
 const SVC = [['pump', 'Pump'], ['filter', 'Filter'], ['scada', 'SCADA'], ['irrigation', 'Irrigation']];
+// The maintenance contracts we bill (the 2026 Monthly Billing Checklist): each
+// line's amount, status and a Jan-Dec strip - green billed, red a month gone by
+// unbilled (monthly ones). Click a month to tick it billed or not.
+function contractCell(a){
+  const cs = a.contracts || [];
+  if (!cs.length) return '<span class="note">—</span>';
+  const now = new Date().getMonth() + 1;
+  return cs.map(c => {
+    const off = c.status !== 'active';
+    const strip = MSHORT.map((m, i) => { const n = i + 1, b = (c.months || []).includes(n), late = (c.unbilled || []).includes(n);
+      return `<span class="mo ${b ? 'b' : late ? 'late' : n < now ? 'gap' : ''}" title="${m} ${c.year}: ${b ? 'billed - click to untick' : 'not billed - click to tick billed'}" onclick="contractMonth(${c.id}, ${n}, ${!b})">${m[0]}</span>`; }).join('');
+    return `<div class="ct ${off ? 'off' : ''}"><b>${esc(c.line || 'Contract')}</b> · ${c.amount != null ? money(c.amount) : 'TBD'}${c.frequency && c.frequency !== 'monthly' ? ' ' + esc(c.frequency) : c.amount != null ? '/mo' : ''}
+      ${off ? '<span class="chip">cancelled</span>' : c.frequency !== 'monthly' ? '' : (c.unbilled || []).length ? `<span class="chip r" title="Months gone by with no bill ticked">${c.unbilled.length} not billed</span>` : '<span class="chip g">up to date</span>'}
+      <div class="strip">${strip}</div></div>`; }).join('');
+}
+async function contractMonth(id, month, billed){
+  const j = await api('/contracts/' + id, {method:'POST', body:{month, billed}});
+  if (!j.success) { toast(j.error, true); return; }
+  refreshAccounts();
+}
 function hasSvc(a, k){
   if (k === 'pump') return !!(a.pump && a.pump.active);
   if (k === 'filter') return !!(a.lake && a.lake.active !== 0);
-  if (k === 'irrigation') return !!(a.irrigation && a.irrigation.managed);
+  if (k === 'irrigation') return !!((a.irrigation && a.irrigation.managed) || (a.contracts || []).some(c => c.status === 'active' && c.irrigation));
   return !!(a.scada && a.scada.active);
 }
 function svcBadges(a){
@@ -1873,7 +1900,7 @@ function svcBadges(a){
     if (hasSvc(a, k)) {
       const tip = k === 'scada' ? (a.scada.complimentary ? 'SCADA - included / complimentary' : 'SCADA - renews ' + (a.scada.next_due_on || '?'))
         : k === 'pump' ? 'Pump maintenance' + (a.pump.jobber_client_id ? ' · linked to Jobber: ' + (a.pump.jobber_client_name || '') : '')
-        : k === 'irrigation' ? 'We manage their irrigation' + (a.irrigation.job ? ' - Jobber job ' + a.irrigation.job : a.irrigation.how === 'office' ? ' (set by the office)' : '') : 'Filter cleaning (diver)';
+        : k === 'irrigation' ? 'We manage their irrigation' + ((a.contracts || []).some(c => c.status === 'active' && c.irrigation) ? ' - maintenance contract' : (a.irrigation || {}).job ? ' - Jobber job ' + a.irrigation.job : (a.irrigation || {}).how === 'office' ? ' (set by the office)' : '') : 'Filter cleaning (diver)';
       return `<span class="svc on" title="${esc(tip)}">${label}${k === 'scada' && a.scada.complimentary ? ' (incl.)' : ''}</span>`;
     }
     const why = k === 'irrigation' && !(a.irrigation || {}).checked_at ? 'Not checked in Jobber yet' : 'No ' + label.toLowerCase();
@@ -1953,10 +1980,12 @@ function drawAccounts(){
   const due = a => (a.pump && a.pump.due_this_month) || (a.lake && a.lake.due_this_month && a.lake.needs_dive);
   const ok = a => !show ? true : show === 'active' ? a.active : show === 'former' ? !a.active : show === 'due' ? a.active && due(a) :
     show === 'pump' ? hasSvc(a, 'pump') : show === 'lake' ? hasSvc(a, 'filter') : show === 'scada' ? hasSvc(a, 'scada') :
-    show === 'no_pump' ? a.active && !hasSvc(a, 'pump') : show === 'no_filter' ? a.active && !hasSvc(a, 'filter') : show === 'no_scada' ? a.active && !hasSvc(a, 'scada') : show === 'no_irrigation' ? a.active && !hasSvc(a, 'irrigation') : true;
-  const rows = AC.accounts.filter(a => ok(a) && (!q || JSON.stringify([a.name, a.pump && a.pump.address, a.lake && a.lake.address]).toLowerCase().includes(q)));
+    show === 'no_pump' ? a.active && !hasSvc(a, 'pump') : show === 'no_filter' ? a.active && !hasSvc(a, 'filter') : show === 'no_scada' ? a.active && !hasSvc(a, 'scada') : show === 'no_irrigation' ? a.active && !hasSvc(a, 'irrigation') :
+    show === 'contract' ? (a.contracts || []).some(c => c.status === 'active') : show === 'behind' ? (a.contracts || []).some(c => (c.unbilled || []).length) : true;
+  const rows = AC.accounts.filter(a => ok(a) && (!q || JSON.stringify([a.name, a.pump && a.pump.address, a.lake && a.lake.address, (a.contracts || []).map(c => c.account + ' ' + c.line)]).toLowerCase().includes(q)));
   const act = AC.accounts.filter(a => a.active);
-  document.getElementById('acInfo').innerHTML = `${act.length} active accounts · ${act.filter(a => a.pump && a.pump.active).length} pump · ${act.filter(a => a.lake && a.lake.active !== 0).length} lake · <b>${act.filter(due).length} due in ${esc(AC.month)}</b>`;
+  const cons = AC.accounts.flatMap(a => (a.contracts || []).filter(c => c.status === 'active'));
+  document.getElementById('acInfo').innerHTML = `${act.length} active accounts · ${act.filter(a => a.pump && a.pump.active).length} pump · ${act.filter(a => a.lake && a.lake.active !== 0).length} lake · ${cons.length} contract lines (${money(cons.reduce((t, c) => t + (c.frequency === 'monthly' ? c.amount || 0 : 0), 0))}/mo)${cons.some(c => (c.unbilled || []).length) ? ` · <b class="bad">${cons.filter(c => (c.unbilled || []).length).length} with months not billed</b>` : ''} · <b>${act.filter(due).length} due in ${esc(AC.month)}</b>`;
   const st = {overdue:'r', due_soon:'a', current:'g', inactive:'', unknown:''};
   const nextDue = a => { const out = [], now = new Date().getMonth() + 1;
     const next = (ms, every) => { if (every) return 'this month'; const m = (ms || '').split(',').filter(Boolean).map(Number); if (!m.length) return '';
@@ -1969,8 +1998,9 @@ function drawAccounts(){
     const on = svcBadges(a);
     return `<tr class="click" onclick="openAccount(${JSON.stringify(a.name).replace(/"/g, '&quot;')})"><td><b>${esc(a.name)}</b>${!a.active ? ' <span class="chip">former</span>' : ''}${vis ? `<div class="note">✓ Client approved ${esc((vis.link || {}).since || '')}</div>` : ''}</td>
     <td style="white-space:nowrap">${on || '<span class="note">—</span>'}</td>
+    <td onclick="event.stopPropagation()" style="min-width:250px">${contractCell(a)}</td>
     <td>${nextDue(a).map(x => /overdue/.test(x) ? `<b class="bad">${esc(x)}</b>` : /this month/.test(x) ? `<b>${esc(x)}</b>` : esc(x)).join('<br>') || '<span class="note">—</span>'}</td>
-    <td class="note">${esc((p && p.address) || (l && l.address) || '')}</td></tr>`; }).join('') || '<tr><td colspan="4" class="empty">None.</td></tr>';
+    <td class="note">${esc((p && p.address) || (l && l.address) || '')}</td></tr>`; }).join('') || '<tr><td colspan="5" class="empty">None.</td></tr>';
 }
 // The client called: ready for their maintenance. The lake comes off hold for
 // the diver list and the visit waits under "Waiting on others" until the

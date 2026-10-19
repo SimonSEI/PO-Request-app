@@ -10065,6 +10065,81 @@ def quote_to_beatrice(conn, doc, actor):
     return None
 
 
+# The 2026 Monthly Billing Checklist, as scanned (Oct 2026): account, line,
+# monthly amount (None = TBD, billed as used), how often, status, months ticked.
+CONTRACT_CHECKLIST_2026 = [
+    ('Amberly Village', 'Monthly maintenance', 500.00, 'monthly', 'active', [1, 2, 3, 6]),
+    ('Amberly Village', 'Parts', None, 'as used', 'active', []),
+    ('Autumn Woods', 'Monthly maintenance', 3605.00, 'monthly', 'active', [1, 2, 3, 4, 6]),
+    ('Autumn Woods', 'Parts', None, 'as used', 'active', [4, 6]),
+    ('Barefoot Beach', 'Monthly maintenance', 1600.00, 'monthly', 'cancelled', []),
+    ('Clubside at the Strand', 'Monthly maintenance', 850.00, 'monthly', 'active', [1, 2, 3, 6]),
+    ('Center Links', 'Monthly maintenance', 495.00, 'monthly', 'active', [6]),
+    ('Germain Toyota', 'Monthly maintenance', 500.00, 'monthly', 'active', [6]),
+    ('Germain Lincoln', 'Monthly maintenance', 300.00, 'monthly', 'active', [6]),
+    ('Green Tree', 'Monthly maintenance', 750.00, 'monthly', 'active', [1, 2, 3, 6]),
+    ('Hemingway', 'Monthly maintenance', 1200.00, 'monthly', 'active', [1, 2, 3, 6]),
+    ('Heritage Stations', 'Monthly maintenance', 1080.00, 'monthly', 'cancelled', []),
+    ('Heron Glen', 'Bi-monthly maintenance', 510.00, 'bi-monthly', 'active', []),
+    ('Hodges Funeral Home', 'Quarterly maintenance', 3252.00, 'quarterly', 'active', [1]),
+    ('Huntington Lakes #3', 'Monthly maintenance', 400.00, 'monthly', 'active', [6]),
+    ('Huntington Lakes #5', 'Monthly maintenance', 400.00, 'monthly', 'active', [4, 6]),
+    ('Huntington Lakes Master', 'Monthly maintenance', 1850.00, 'monthly', 'active', [1, 2, 3, 6]),
+    ('Isle Verde', 'Monthly maintenance', 680.00, 'monthly', 'active', [6]),
+    ('Miromar Design', 'Monthly maintenance', 175.00, 'monthly', 'active', [1, 2, 3, 6]),
+    ('Miromar Outlets', 'Monthly maintenance', 950.00, 'monthly', 'active', [6]),
+    ('Miromar Outlets', 'Koi pond', 127.00, 'monthly', 'active', [1, 2, 3, 4, 6]),
+    ('Morton Grove', 'Monthly maintenance ($575)', 575.00, 'monthly', 'active', [1, 2, 6]),
+    ('Morton Grove', 'Monthly maintenance ($150)', 150.00, 'monthly', 'active', [1, 2, 3, 6]),
+    ('Pine Air Lakes', 'Irrigation', 600.00, 'monthly', 'active', [1, 2, 3, 4, 6]),
+    ('Pine Air Lakes', 'Landscape', 4708.33, 'monthly', 'active', [1, 2, 3, 4, 6]),
+    ('Pine Air Lakes', 'Trash', 250.00, 'monthly', 'active', [1, 2, 3, 4, 6]),
+    ('Pinnacle at the Strand', 'Monthly maintenance', 600.00, 'monthly', 'active', [6]),
+    ('Raymond Lutgert', 'Monthly maintenance', 350.00, 'monthly', 'active', [4, 6]),
+    ('The Lake Club', 'Monthly maintenance', 1950.00, 'monthly', 'active', [1, 2, 3, 4, 6]),
+    ('The Lake Club', 'Parts', None, 'as used', 'active', [1, 2, 3, 4, 6]),
+    ('The Reserve @ Estero', 'Monthly maintenance', 6920.83, 'monthly', 'active', [1, 2, 3, 4, 6]),
+    ('The Reserve @ Estero', 'Parts', None, 'as used', 'active', [1, 2, 3, 4, 6]),
+    ('Tuscany Point', 'Monthly maintenance', 2100.00, 'monthly', 'active', [1, 2, 3, 6]),
+    ('Tuscany Point', 'Parts', None, 'as used', 'active', [1, 2, 3, 6]),
+    ('University Village Shops, LLC', 'Monthly maintenance', 324.00, 'monthly', 'active', [4, 6]),
+    ('Verona Walk', 'Common', 4560.00, 'monthly', 'active', [6]),
+    ('Verona Walk', 'Residential', 6840.00, 'monthly', 'active', [6]),
+    ('Westminster', 'Monthly maintenance', 980.00, 'monthly', 'active', [1, 2, 3, 6]),
+]
+# Contract lines that aren't the irrigation itself.
+_NOT_IRRIGATION_LINE = re.compile(r'\b(?:parts|landscape|land|trash|koi)\b', re.I)
+
+
+def _seed_contracts(c, now):
+    """Once (Oct 19 2026): the 2026 Monthly Billing Checklist the office scanned."""
+    if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pump_contracts'").fetchone():
+        return
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('contracts_checklist_2026', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    for account, line, amount, freq, status, months in CONTRACT_CHECKLIST_2026:
+        c.execute('INSERT INTO pump_contracts (account, line, amount, frequency, status, billed, notes, updated_by, '
+                  'updated_at) VALUES (?,?,?,?,?,?,?,?,?)',
+                  (account, line, amount, freq, status, json.dumps({'2026': months}),
+                   'From the 2026 Monthly Billing Checklist (scanned Oct 2026)', 'Pumps', now))
+
+
+def contract_dict(r, today=None):
+    """A contract line with where its billing stands this year: the months billed
+    and, for a monthly one, the months before this one that weren't."""
+    today = today or _today()
+    d = dict(r)
+    billed = json.loads(d.get('billed') or '{}')
+    year = str(today.year)
+    d['year'] = year
+    d['months'] = sorted(int(m) for m in billed.get(year, []))
+    d['unbilled'] = [m for m in range(1, today.month) if m not in d['months']] \
+        if d['status'] == 'active' and d['frequency'] == 'monthly' else []
+    d['irrigation'] = not _NOT_IRRIGATION_LINE.search(d.get('line') or '')
+    return d
+
+
 def _spell_beatriz(c, now):
     """Once (Oct 19 2026): it's Beatriz, not Beatrice - the to-dos already made say so too."""
     if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pump_todos'").fetchone():
@@ -10249,6 +10324,20 @@ def init_account_tables(c):
                   case_id INTEGER,
                   updated_by TEXT DEFAULT '',
                   updated_at TEXT)''')
+    # Maintenance contracts we bill each month (the office's 2026 Monthly Billing
+    # Checklist): one row per line - "Autumn Woods M/M $3,605", "Autumn Woods
+    # parts" - with the months billed ({"2026": [1, 2, 3]}).
+    c.execute('''CREATE TABLE IF NOT EXISTS pump_contracts (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  account TEXT NOT NULL,
+                  line TEXT DEFAULT '',
+                  amount REAL,
+                  frequency TEXT DEFAULT 'monthly',
+                  status TEXT DEFAULT 'active',
+                  billed TEXT DEFAULT '{}',
+                  notes TEXT DEFAULT '',
+                  updated_by TEXT DEFAULT '',
+                  updated_at TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS pump_maint_accounts (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   name TEXT NOT NULL,
@@ -10349,6 +10438,7 @@ def init_account_tables(c):
     _fix_quote_needed_dates(c, now)
     _apply_follow_ups(c, now)
     _stop_tracking_beatrice(c, now)
+    _seed_contracts(c, now)
     _spell_beatriz(c, now)
     if not seeded('office_answers_oct26'):
         # What the office said (Oct 2026): Old Collier and Camas Willows are off
@@ -12285,8 +12375,70 @@ def accounts(conn):
         a['scada'] = s
         a['active'] = bool((a['pump'] and a['pump'].get('active')) or (a['lake'] and (a['lake'].get('active') if
                                                                                        a['lake'].get('active') is not None else 1)))
+    # The maintenance contracts we bill: on their account, or an account of their own.
+    try:
+        rows = [contract_dict(r) for r in conn.execute('SELECT * FROM pump_contracts ORDER BY account, id')]
+    except sqlite3.OperationalError:
+        rows = []
+    for a in out:
+        a['contracts'] = []
+    known = list(out)
+    for r in rows:
+        # The same name, else an existing account that's clearly it - a name from the
+        # checklist only ever joins itself ("Huntington Lakes #3" isn't "#5").
+        a = next((x for x in out if x['name'] == r['account']), None) or \
+            next((x for x in known if _same_account(x['name'], r['account']) and
+                  not re.search(r'#\s*\d', r['account'] + x['name'])), None)
+        if not a:
+            a = {'name': r['account'], 'pump': None, 'lake': None, 'scada': None, 'active': False, 'contracts': []}
+            out.append(a)
+        a['contracts'].append(r)
+    for a in out:
+        if any(r['status'] == 'active' for r in a['contracts']):
+            a['active'] = True
     out.sort(key=lambda a: a['name'].lower())
     return out
+
+
+@api('/contracts/<int:cid>', methods=('POST',))
+def h_contract_update(actor, cid):
+    """Body: {"month": 1-12, "billed": true|false, "year"?} ticks a month billed, or
+    {"status": "active"|"cancelled"}, {"amount"}, {"notes"}."""
+    d = _json()
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_contracts WHERE id=?', (cid,)).fetchone()
+        if not row:
+            return {'success': False, 'error': 'Not found'}, 404
+        sets, vals = [], []
+        if 'month' in d:
+            m = int(d['month'])
+            if not 1 <= m <= 12:
+                raise ValueError('Month 1-12')
+            billed = json.loads(row['billed'] or '{}')
+            year = str(d.get('year') or _today().year)
+            ms = set(int(x) for x in billed.get(year, []))
+            ms.add(m) if d.get('billed', True) else ms.discard(m)
+            billed[year] = sorted(ms)
+            sets.append('billed=?')
+            vals.append(json.dumps(billed))
+        if d.get('status') in ('active', 'cancelled'):
+            sets.append('status=?')
+            vals.append(d['status'])
+        if 'amount' in d:
+            sets.append('amount=?')
+            vals.append(_money(d['amount']))
+        if 'notes' in d:
+            sets.append('notes=?')
+            vals.append(str(d['notes'])[:1000])
+        if not sets:
+            raise ValueError('Nothing to change')
+        conn.execute(f"UPDATE pump_contracts SET {', '.join(sets)}, updated_by=?, updated_at=? WHERE id=?",
+                     (*vals, actor, _now_text(), cid))
+        conn.commit()
+        return {'contract': contract_dict(conn.execute('SELECT * FROM pump_contracts WHERE id=?', (cid,)).fetchone())}
+    finally:
+        conn.close()
 
 
 def account_ready(conn, name, actor='system'):
