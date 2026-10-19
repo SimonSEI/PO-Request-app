@@ -8,6 +8,7 @@ is replaced by a fake that records every request, and documents are "read"
 from canned text. All names below are made up.
 """
 import atexit
+import inspect
 import io
 import json
 import os
@@ -4014,10 +4015,11 @@ class PumpsTest(unittest.TestCase):
                                 'quantity': 1, 'unit_price': 125, 'amount': 125, 'taxable': False, 'is_tax': False}])
         ex.update(vendor='Gulfshore', doc_date='2026-10-16', description='Filter cleaning')
         self.extracts['Invoice_2497_from_Gulfshore_Yacht_Service_LLC.pdf'] = ex
-        saved = (P.jobber_status, P.invoice_client, P.client_records)
+        saved = (P.jobber_status, P.invoice_client, P.client_records, P.invoices_named)
         P.jobber_status = lambda: {'connected': True}
         P.invoice_client = lambda doc, case=None: 'CMF'
         P.client_records = lambda cid, kind: []
+        P.invoices_named = lambda name, lo, hi, client_id=None: []
         try:
             r = P.ingest_document('Invoice_2497_from_Gulfshore_Yacht_Service_LLC.pdf', b'%PDF-1.4 gulf 2497',
                                   source='email', actor='email scan',
@@ -4032,17 +4034,47 @@ class PumpsTest(unittest.TestCase):
             self.assertTrue(any(t['title'].startswith('Gulfshore invoice #2497') and 'not billed out' in t['title'] for t in q['todos']))
             vi = {x['number']: x for x in self.c.get('/pumps/api/vendor_invoices?q=2497').get_json()['invoices']}
             self.assertEqual(vi['2497']['state'], 'not_invoiced')
-            # The pump service invoice is made: billed out, Christian's to pay, the to-do done.
-            P.client_records = lambda cid, kind: [{'id': 'IMF', 'number': '37555', 'status': 'draft', 'total': 450.0,
-                                                   'created': '2026-10-17', 'uri': ''}]
+            # The pump service invoice is made (#36870 wasn't in the client's own list - found by name): billed
+            # out, Christian's to pay, the to-do done.
+            P.invoices_named = lambda name, lo, hi, client_id=None: [
+                {'id': 'IMF', 'number': '37555', 'status': 'awaiting_payment', 'total': 450.0,
+                 'created': '2026-10-17', 'uri': ''}] if 'Magnolia' in name and lo <= '2026-10-17' <= hi else []
             P.check_all_diver_bills()
         finally:
-            P.jobber_status, P.invoice_client, P.client_records = saved
+            P.jobber_status, P.invoice_client, P.client_records, P.invoices_named = saved
         q = self.c.get('/pumps/api/summary').get_json()['queue']
         self.assertFalse(any(t['title'].startswith('Gulfshore invoice #2497') for t in q['todos']))
         bills = {b['case_id']: b for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for b in g['bills']}
         self.assertTrue(bills[r['case_id']]['payable'], bills[r['case_id']])
         self.assertEqual(self.case(r['case_id'])['sei_invoice_number'], '37555')
+
+    def test_jobber_query_too_big_for_the_points_limit(self):
+        """Oct 2026: the sync's "Jobber kept refusing" errors were queries costing more than Jobber's whole
+        points bucket - never run however long it waits. Said plainly; a merely busy bucket is waited out."""
+        class R:
+            status_code = 200
+            def __init__(self, out): self.out = out
+            def json(self): return self.out
+        def throttled(need, avail):
+            return R({'errors': [{'message': 'Throttled', 'extensions': {'code': 'THROTTLED'}}],
+                      'extensions': {'cost': {'requestedQueryCost': need, 'throttleStatus': {
+                          'maximumAvailable': 10000, 'currentlyAvailable': avail, 'restoreRate': 500}}}})
+        calls, waits, gql = [], [], self._orig[2]    # the real one: other tests leave a fake behind
+        saved = (P.http_requests.post, P._access_token, P.time.sleep)
+        P._access_token = lambda force=False: 'tok'
+        P.time.sleep = waits.append
+        try:
+            P.http_requests.post = lambda *a, **k: calls.append(1) or throttled(26000, 10000)
+            with self.assertRaisesRegex(P.JobberError, 'this big'):
+                gql('query { invoices { nodes { id } } }')
+            self.assertEqual(len(calls), 1, 'not retried')
+            replies = [throttled(3000, 500), R({'data': {'ok': 1}})]
+            P.http_requests.post = lambda *a, **k: replies.pop(0)
+            self.assertEqual(gql('query { ok }'), {'ok': 1})
+            self.assertEqual(waits, [6.0], 'waited for the bucket to refill')
+        finally:
+            P.http_requests.post, P._access_token, P.time.sleep = saved
+        self.assertIn('lineItems(first: 10)', inspect.getsource(P.scan_scada_invoices))
 
     def test_download_the_accounts_shown_as_a_sheet(self):
         """Oct 2026: download a sheet of the accounts shown - whatever is selected, in that order."""
