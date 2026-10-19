@@ -387,7 +387,8 @@ details.fold[open] > summary h4::before { content: '▾ '; }
     <button class="btn" onclick="editDiveSite()">＋ Lake site</button>
     <button class="btn" title="Look in Jobber for each account's irrigation maintenance job (it's also checked once a day)" onclick="irrigationCheck()">↻ Check Jobber for irrigation</button>
   </div>
-  <div class="note" style="margin-bottom:10px"><span class="svc on">Pump</span> <span class="svc on">Filter</span> <span class="svc on">SCADA</span> <span class="svc on">Irrigation</span> green = the account has it (Irrigation: we manage it - from their Jobber jobs) &nbsp;·&nbsp; <span class="svc off">＋ Pump</span> grey = it doesn't - click it to draft a quote in Jobber. Click the account name for its page.</div>
+  <div style="margin-bottom:10px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b class="note">Show:</b><span id="svcPicks"></span>
+    <span class="note">click to show only accounts with what's ticked &nbsp;·&nbsp; in the list, <span class="svc on" style="cursor:default">green</span> = they have it, <span class="svc off" style="cursor:default">＋ grey</span> = they don't - click it to draft a quote in Jobber</span></div>
   <div class="scroll"><table class="t"><thead><tr><th>Account</th><th>Pump · Filter · SCADA · Irrigation</th><th>Contract (billed this year)</th><th>Next due</th><th>Where</th></tr></thead><tbody id="acBody"></tbody></table></div>
   <details style="margin-top:22px"><summary style="cursor:pointer;font-size:14px;font-weight:600">Monthly email to the diver</summary>
   <div class="toolbar"><span id="diveInfo" class="note"></span><div class="sp"></div>
@@ -1872,6 +1873,17 @@ async function refreshAccounts(){
 // Pump maintenance, filter cleaning (the lake diver) and SCADA: green when the
 // account has it, grey when it doesn't - click a grey one to quote it.
 const SVC = [['pump', 'Pump'], ['filter', 'Filter'], ['scada', 'SCADA'], ['irrigation', 'Irrigation']];
+// The Show: chips - each one ticked or not; the list keeps the accounts with any ticked service.
+let SVC_ON = (() => { try { const v = JSON.parse(localStorage.getItem('acSvc') || 'null'); if (Array.isArray(v)) return new Set(v); } catch (e) {} return new Set(SVC.map(x => x[0])); })();
+function drawSvcPicks(){
+  const box = document.getElementById('svcPicks'); if (!box) return;
+  box.innerHTML = SVC.map(([k, label]) => `<span class="svc ${SVC_ON.has(k) ? 'on' : 'off'}" style="cursor:pointer;margin-right:4px" title="${SVC_ON.has(k) ? 'Click to hide' : 'Click to show'} accounts with ${label.toLowerCase()}" onclick="svcToggle('${k}')">${SVC_ON.has(k) ? '✓ ' : ''}${label}</span>`).join('');
+}
+function svcToggle(k){
+  SVC_ON.has(k) ? SVC_ON.delete(k) : SVC_ON.add(k);
+  try { localStorage.setItem('acSvc', JSON.stringify([...SVC_ON])); } catch (e) {}
+  drawAccounts();
+}
 // The maintenance contracts we bill (the 2026 Monthly Billing Checklist): each
 // line's amount, status and a Jan-Dec strip - green billed, red a month gone by
 // unbilled (monthly ones). Click a month to tick it billed or not.
@@ -1986,7 +1998,9 @@ function drawAccounts(){
     show === 'pump' ? hasSvc(a, 'pump') : show === 'lake' ? hasSvc(a, 'filter') : show === 'scada' ? hasSvc(a, 'scada') :
     show === 'no_pump' ? a.active && !hasSvc(a, 'pump') : show === 'no_filter' ? a.active && !hasSvc(a, 'filter') : show === 'no_scada' ? a.active && !hasSvc(a, 'scada') : show === 'no_irrigation' ? a.active && !hasSvc(a, 'irrigation') :
     show === 'contract' ? (a.contracts || []).some(c => c.status === 'active') : show === 'behind' ? (a.contracts || []).some(c => (c.unbilled || []).length) : true;
-  const rows = AC.accounts.filter(a => ok(a) && (!q || JSON.stringify([a.name, a.pump && a.pump.address, a.lake && a.lake.address, (a.contracts || []).map(c => c.account + ' ' + c.line)]).toLowerCase().includes(q)));
+  drawSvcPicks();
+  const allSvc = SVC_ON.size === SVC.length;
+  const rows = AC.accounts.filter(a => ok(a) && (allSvc || [...SVC_ON].some(k => hasSvc(a, k))) && (!q || JSON.stringify([a.name, a.pump && a.pump.address, a.lake && a.lake.address, (a.contracts || []).map(c => c.account + ' ' + c.line)]).toLowerCase().includes(q)));
   const act = AC.accounts.filter(a => a.active);
   const cons = AC.accounts.flatMap(a => (a.contracts || []).filter(c => c.status === 'active'));
   document.getElementById('acInfo').innerHTML = `${act.length} active accounts · ${act.filter(a => a.pump && a.pump.active).length} pump · ${act.filter(a => a.lake && a.lake.active !== 0).length} lake · ${cons.length} contract lines (${money(cons.reduce((t, c) => t + (c.frequency === 'monthly' ? c.amount || 0 : 0), 0))}/mo)${cons.some(c => (c.unbilled || []).length) ? ` · <b class="bad">${cons.filter(c => (c.unbilled || []).length).length} with months not billed</b>` : ''} · <b>${act.filter(due).length} due in ${esc(AC.month)}</b>`;
