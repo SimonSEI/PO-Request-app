@@ -554,7 +554,7 @@ Return ONLY valid JSON, no explanation:
 
 
 def _fetch_emails_for_vi_scan(log_table='vendor_invoice_email_log', extensions=('.pdf',), since=None, plain_since=None):
-    """New emails for the vendor invoice (or Pumps) scanner - see shared_mail.fetch_scan_emails."""
+    """New emails for a PO@ scanner (vendor invoices, Pumps) - see shared_mail.fetch_scan_emails."""
     return shared_mail.fetch_scan_emails(DB_PATH, log_table=log_table, extensions=extensions, since=since,
                                          plain_since=plain_since)
 
@@ -3186,7 +3186,8 @@ def dashboard():
                                  timeoff_ok=timeoff_allowed(),
                                  pumps_ok=pumps_allowed(),
                                  receivables_ok=receivables_allowed(),
-                                 filemaker_ok=filemaker_allowed())
+                                 filemaker_ok=filemaker_allowed(),
+                                 vendor_invoices_ok=vendor_invoices_allowed())
 
 @app.route('/office_admin')
 def office_admin():
@@ -9082,7 +9083,7 @@ DASHBOARD_MENU_TEMPLATE = '''
 
     </div>
 
-    {% if role == 'office' or timeoff_ok or filemaker_ok %}
+    {% if role == 'office' or timeoff_ok or filemaker_ok or vendor_invoices_ok %}
     <details class="folder">
         <summary>
             <span class="folder-icon">📁</span>
@@ -9114,6 +9115,15 @@ DASHBOARD_MENU_TEMPLATE = '''
                 <div class="card-desc">Community work orders from the inbox: forwarded to the techs, listed on the Jobber work order visit, tech notes cleaned up, quotes started and the manager kept up to date.</div>
                 <button class="card-cta" type="button" disabled>Not available yet</button>
             </div>
+            {% endif %}
+
+            {% if vendor_invoices_ok %}
+            <a class="app-card card-purple" href="{{ url_for('vendor_invoices.page') }}">
+                <div class="card-icon-wrap">🧾</div>
+                <div class="card-title">Vendor Invoices <span class="soon-badge">Coming Soon</span></div>
+                <div class="card-desc">The vendor invoice sheet for every non-pump sub contractor: invoices from PO@ waiting to be entered, each one linked to its Jobber invoice, and Christian emailed when it's paid or when an invoice never gets entered.</div>
+                <button class="card-cta">Open Vendor Invoices →</button>
+            </a>
             {% endif %}
 
             {% if timeoff_ok %}
@@ -39347,6 +39357,21 @@ init_receivables(app, DB_PATH, data_dir=DATA_DIR, get_setting=get_setting, set_s
                  anthropic_client=(anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                                    if ANTHROPIC_AVAILABLE and ANTHROPIC_API_KEY else None),
                  scheduler_cls=BackgroundScheduler if SCHEDULER_AVAILABLE else None, website_url=WEBSITE_URL)
+
+# Vendor Invoices (the CURRENT VENDOR INVOICES workbook for non-pump vendors) lives in vendor_invoices.py.
+# It reads PO@ with its own scan log, emails Christian through the Microsoft 365 app and reads Jobber
+# through the Pumps app's connection. Listed under "Features Coming Soon" on the dashboard.
+from vendor_invoices import init_vendor_invoices, vendor_invoices_allowed
+init_vendor_invoices(app, DB_PATH, data_dir=DATA_DIR, get_christian_email=get_christian_email,
+                     set_christian_email=lambda e: set_setting('christian_email', e or CHRISTIAN_EMAIL),
+                     graph_token=_get_graph_access_token, graph_enabled=MS_GRAPH_ENABLED, mail_from=PO_EMAIL_ADDRESS,
+                     fetch_emails=_fetch_emails_for_vi_scan, graph_attachments=extract_attachments_from_graph_message,
+                     email_attachments=extract_attachments_from_email, extract_fields=extract_vendor_invoice_from_text,
+                     jobber_token=_pumps_jobber.token if PUMPS_URL else _pumps._access_token,
+                     jobber_version=_pumps.JOBBER_API_VERSION,
+                     jobber_connected=(_pumps_jobber.connected if PUMPS_URL else
+                                       lambda: _pumps.jobber_status()['connected']),
+                     scheduler_cls=BackgroundScheduler if SCHEDULER_AVAILABLE else None, website_url=WEBSITE_URL)
 
 # Set up background scheduler for automatic email checking
 if SCHEDULER_AVAILABLE and PO_EMAIL_MONITORING_ENABLED:
