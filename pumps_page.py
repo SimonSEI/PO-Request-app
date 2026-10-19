@@ -267,6 +267,11 @@ details.fold > summary::-webkit-details-marker { display: none; }
 details.fold > summary h4 { margin: 0; }
 details.fold > summary h4::before { content: '▸ '; color: var(--muted, #888); }
 details.fold[open] > summary h4::before { content: '▾ '; }
+.svc { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; margin: 1px 0; white-space: nowrap; }
+.svc.on { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
+.svc.off { background: #f3f4f6; color: #6b7280; border: 1px dashed #cbd5e1; cursor: pointer; }
+.svc.off:hover { background: #e5e7eb; color: #111827; border-style: solid; }
+.svc.none { background: #f3f4f6; color: #c0c4cc; border: 1px solid #e5e7eb; }
 </style>
 <script>
 (function(){
@@ -369,12 +374,12 @@ details.fold[open] > summary h4::before { content: '▾ '; }
   <div class="toolbar">
     <span id="acInfo" class="note"></span><div class="sp"></div>
     <input type="text" id="acSearch" placeholder="Find an account…" oninput="drawAccounts()" style="width:180px">
-    <select id="acShow" onchange="drawAccounts()"><option value="active">Active</option><option value="due">Due this month</option><option value="pump">Pump (Wettech)</option><option value="lake">Lake / diver (Gulfshore)</option><option value="scada">On SCADA</option><option value="former">Former</option><option value="">All</option></select>
+    <select id="acShow" onchange="drawAccounts()"><option value="active">Active</option><option value="due">Due this month</option><option value="pump">Has pump maintenance</option><option value="lake">Has filter cleaning</option><option value="scada">Has SCADA</option><option value="no_pump">No pump maintenance</option><option value="no_filter">No filter cleaning</option><option value="no_scada">No SCADA</option><option value="former">Former</option><option value="">All</option></select>
     <button class="btn" onclick="maintEdit(0)">＋ Pump account</button>
     <button class="btn" onclick="editDiveSite()">＋ Lake site</button>
   </div>
-  <div class="note" style="margin-bottom:10px">Click an account for its page: its pump (Wettech, Tom), lake and diver (Gulfshore, Jordan) and SCADA setup with Edit, every to-do and job it has had, its reports and signed quotes, and its Jobber links.</div>
-  <div class="scroll"><table class="t"><thead><tr><th>Account</th><th>On</th><th>Next due</th><th>Where</th></tr></thead><tbody id="acBody"></tbody></table></div>
+  <div class="note" style="margin-bottom:10px"><span class="svc on">Pump</span> <span class="svc on">Filter</span> <span class="svc on">SCADA</span> green = the account has it &nbsp;·&nbsp; <span class="svc off">＋ Pump</span> grey = it doesn't - click it to draft a quote in Jobber. Click the account name for its page.</div>
+  <div class="scroll"><table class="t"><thead><tr><th>Account</th><th>Pump · Filter · SCADA</th><th>Next due</th><th>Where</th></tr></thead><tbody id="acBody"></tbody></table></div>
   <details style="margin-top:22px"><summary style="cursor:pointer;font-size:14px;font-weight:600">Monthly email to the diver</summary>
   <div class="toolbar"><span id="diveInfo" class="note"></span><div class="sp"></div>
     <button class="btn" onclick="diverTodo(diveMonth())">Email ready to copy</button>
@@ -1852,13 +1857,80 @@ async function refreshAccounts(){
   if (!a.success) { document.getElementById('acBody').innerHTML = `<tr><td colspan="4" class="empty">${esc(a.error)}</td></tr>`; return; }
   AC = a; if (m.success) MT = m; drawAccounts();
 }
+// Pump maintenance, filter cleaning (the lake diver) and SCADA: green when the
+// account has it, grey when it doesn't - click a grey one to quote it.
+const SVC = [['pump', 'Pump'], ['filter', 'Filter'], ['scada', 'SCADA']];
+function hasSvc(a, k){
+  if (k === 'pump') return !!(a.pump && a.pump.active);
+  if (k === 'filter') return !!(a.lake && a.lake.active !== 0);
+  return !!(a.scada && a.scada.active);
+}
+function svcBadges(a){
+  const nm = JSON.stringify(a.name).replace(/"/g, '&quot;');
+  return SVC.map(([k, label]) => {
+    if (hasSvc(a, k)) {
+      const tip = k === 'scada' ? (a.scada.complimentary ? 'SCADA - included / complimentary' : 'SCADA - renews ' + (a.scada.next_due_on || '?'))
+        : k === 'pump' ? 'Pump maintenance' + (a.pump.jobber_client_id ? ' · linked to Jobber: ' + (a.pump.jobber_client_name || '') : '') : 'Filter cleaning (diver)';
+      return `<span class="svc on" title="${esc(tip)}">${label}${k === 'scada' && a.scada.complimentary ? ' (incl.)' : ''}</span>`;
+    }
+    return a.active ? `<span class="svc off" title="No ${label.toLowerCase()} - click to draft a quote in Jobber" onclick="event.stopPropagation();serviceQuote(${nm}, '${k}')">＋ ${label}</span>` : `<span class="svc none">${label}</span>`;
+  }).join(' ');
+}
+// Draft a quote for a service the account doesn't have - worded like the office's past Jobber quotes.
+let SQ = null;
+async function serviceQuote(name, kind){
+  if (!JOBBER_OK) { toast('Connect Jobber first (top of the page).', true); return; }
+  const j = await api('/accounts/service_quote?name=' + encodeURIComponent(name) + '&kind=' + kind);
+  if (!j.success) { toast(j.error, true); return; }
+  SQ = j;
+  const li = j.line_items[0];
+  openModal(`Quote ${esc(j.label)} - ${esc(name)}`, `
+    <div class="safe">This creates a DRAFT quote in Jobber. Nothing is sent - look it over in Jobber and send it from there.</div>
+    <label class="note">Jobber client<div class="toolbar" style="margin:4px 0"><input type="text" id="sqQ" value="${esc((j.client || {}).name || name)}" style="flex:1" oninput="liveSearch(sqClients)"><button class="btn" onclick="sqClients()">Search</button></div></label>
+    <div id="sqCands">${j.client ? `<div class="cand on"><input type="radio" checked><div><b>${esc(j.client.name || '')}</b></div></div>` : '<div class="note">Search for the client.</div>'}</div>
+    <label class="note">Property<select id="sqProp" style="width:100%">${sqProps(j.properties, j.property_id)}</select></label>
+    <label class="note">Quote title<input type="text" id="sqTitle" value="${esc(j.title)}" style="width:100%"></label>
+    <label class="note">Line<input type="text" id="sqLine" value="${esc(li.name)}" style="width:100%"></label>
+    <label class="note">Description<textarea id="sqDesc" rows="9" style="width:100%">${esc(li.description)}</textarea></label>
+    <label class="note">Price per ${kind === 'scada' ? 'year' : 'visit'} ($)<input type="number" id="sqPrice" value="${li.unit_price ?? ''}" placeholder="price" style="width:160px"></label>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" id="sqGo" onclick="serviceQuoteGo()">Create draft in Jobber</button>`);
+}
+function sqProps(props, pick){ return (props || []).length ? props.map(p => `<option value="${esc(p.id)}" ${p.id === pick ? 'selected' : ''}>${esc(p.label)}</option>`).join('') : '<option value="">(pick the client first)</option>'; }
+async function sqClients(){
+  const q = document.getElementById('sqQ').value.trim(), box = document.getElementById('sqCands');
+  box.innerHTML = '<div class="note">Searching Jobber…</div>';
+  const j = await api('/jobber/clients?all=1&q=' + encodeURIComponent(q));
+  if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
+  box.innerHTML = (j.candidates || []).map(c => `<div class="cand" data-id="${esc(c.id)}" onclick="sqPick('${esc(c.id)}', ${JSON.stringify(c.name).replace(/"/g, '&quot;')})"><input type="radio" name="sqc"><div style="flex:1"><b>${esc(c.name)}</b><div class="note">${esc(c.address || '')}</div></div></div>`).join('') || '<div class="note">No clients found.</div>';
+}
+async function sqPick(id, name){
+  SQ.client = {id, name};
+  document.querySelectorAll('#sqCands .cand').forEach(c => { const on = c.dataset.id === id; c.classList.toggle('on', on); c.querySelector('input').checked = on; });
+  const j = await api('/jobber/clients/' + encodeURIComponent(id) + '/jobs');
+  SQ.properties = (j.properties || []);
+  document.getElementById('sqProp').innerHTML = sqProps(SQ.properties, SQ.properties.length === 1 ? SQ.properties[0].id : '');
+}
+async function serviceQuoteGo(){
+  const v = id => document.getElementById(id).value;
+  if (!SQ.client || !SQ.client.id) { toast('Choose the Jobber client.', true); return; }
+  if (!v('sqPrice')) { toast('Put a price on the quote.', true); return; }
+  const btn = document.getElementById('sqGo'); btn.disabled = true;
+  const j = await api('/accounts/service_quote', {method:'POST', body:{name: SQ.account, kind: SQ.kind, client_id: SQ.client.id, property_id: v('sqProp'), title: v('sqTitle'),
+    line_items: [{name: v('sqLine'), description: v('sqDesc'), quantity: 1, unit_price: parseFloat(v('sqPrice')), taxable: false}]}});
+  btn.disabled = false;
+  if (!j.success) { toast(j.error, true); return; }
+  closeModal(); toast(`Draft quote #${j.quote.number} made in Jobber - on your To do list to send.`);
+  if (j.quote.uri) window.open(j.quote.uri, '_blank');
+  loadToday();
+}
 function lakeSched(l){ return l.months ? (l.months === '1,4,7,10' ? 'Jan, Apr, Jul, Oct' : l.months.split(',').map(m => MSHORT[m - 1]).join(', ')) : 'Every month'; }
 function drawAccounts(){
   if (!AC) return;
   const show = document.getElementById('acShow').value, q = document.getElementById('acSearch').value.trim().toLowerCase();
   const due = a => (a.pump && a.pump.due_this_month) || (a.lake && a.lake.due_this_month && a.lake.needs_dive);
   const ok = a => !show ? true : show === 'active' ? a.active : show === 'former' ? !a.active : show === 'due' ? a.active && due(a) :
-    show === 'pump' ? a.pump && a.pump.active : show === 'lake' ? a.lake && a.lake.active !== 0 : show === 'scada' ? a.scada && a.scada.active : true;
+    show === 'pump' ? hasSvc(a, 'pump') : show === 'lake' ? hasSvc(a, 'filter') : show === 'scada' ? hasSvc(a, 'scada') :
+    show === 'no_pump' ? a.active && !hasSvc(a, 'pump') : show === 'no_filter' ? a.active && !hasSvc(a, 'filter') : show === 'no_scada' ? a.active && !hasSvc(a, 'scada') : true;
   const rows = AC.accounts.filter(a => ok(a) && (!q || JSON.stringify([a.name, a.pump && a.pump.address, a.lake && a.lake.address]).toLowerCase().includes(q)));
   const act = AC.accounts.filter(a => a.active);
   document.getElementById('acInfo').innerHTML = `${act.length} active accounts · ${act.filter(a => a.pump && a.pump.active).length} pump · ${act.filter(a => a.lake && a.lake.active !== 0).length} lake · <b>${act.filter(due).length} due in ${esc(AC.month)}</b>`;
@@ -1868,13 +1940,13 @@ function drawAccounts(){
       const n = m.find(x => x >= now) || m[0]; return n === now ? 'this month' : MSHORT[n - 1]; };
     if (a.pump && a.pump.active) out.push('Pump ' + (a.pump.due_this_month ? 'this month' : next(a.pump.months, a.pump.monthly)));
     if (a.lake && a.lake.active !== 0 && a.lake.needs_dive) out.push('Diver ' + (a.lake.status === 'hold' ? 'on hold' : next(a.lake.months, !a.lake.months)));
-    if (a.scada && a.scada.active && !a.scada.complimentary) out.push('SCADA ' + (a.scada.next_due_on || ''));
+    if (a.scada && a.scada.active && !a.scada.complimentary) out.push((a.scada.state === 'overdue' ? 'SCADA renewal overdue ' : 'SCADA renews ') + (a.scada.next_due_on || ''));
     return out; };
   document.getElementById('acBody').innerHTML = rows.map(a => { const p = a.pump, l = a.lake, s = a.scada, vis = a.visit;
-    const on = [p && p.active ? `<span class="chip" title="${p.jobber_client_id ? 'Linked to Jobber: ' + esc(p.jobber_client_name || '') : 'Not linked to Jobber yet'}">pump${p.jobber_client_id ? ' 🔗' : ''}</span>` : '', l && l.active !== 0 ? `<span class="chip">${l.needs_dive ? 'lake · diver' : 'lake'}</span>` : '', s && s.active ? `<span class="chip ${s.complimentary ? '' : (st[s.state] || '')}">SCADA${s.state === 'overdue' ? ' overdue' : ''}</span>` : ''].join(' ');
+    const on = svcBadges(a);
     return `<tr class="click" onclick="openAccount(${JSON.stringify(a.name).replace(/"/g, '&quot;')})"><td><b>${esc(a.name)}</b>${!a.active ? ' <span class="chip">former</span>' : ''}${vis ? `<div class="note">✓ Client approved ${esc((vis.link || {}).since || '')}</div>` : ''}</td>
-    <td>${on || '<span class="note">—</span>'}</td>
-    <td>${nextDue(a).map(x => /this month|overdue/.test(x) ? `<b>${esc(x)}</b>` : esc(x)).join('<br>') || '<span class="note">—</span>'}</td>
+    <td style="white-space:nowrap">${on || '<span class="note">—</span>'}</td>
+    <td>${nextDue(a).map(x => /overdue/.test(x) ? `<b class="bad">${esc(x)}</b>` : /this month/.test(x) ? `<b>${esc(x)}</b>` : esc(x)).join('<br>') || '<span class="note">—</span>'}</td>
     <td class="note">${esc((p && p.address) || (l && l.address) || '')}</td></tr>`; }).join('') || '<tr><td colspan="4" class="empty">None.</td></tr>';
 }
 // The client called: ready for their maintenance. The lake comes off hold for
