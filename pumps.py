@@ -285,7 +285,7 @@ def _quote_needed_item(conn, doc, case_id, actor):
                                 (doc['id'],)).fetchone():
         return None
     if beatrice_site(doc.get('client_name'), doc.get('site')):
-        return None   # Wettech quotes those to Beatrice - nothing to track
+        return None   # Wettech quotes those to Beatriz - nothing to track
     case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone())
     client = doc.get('client_name') or case.get('client_name') or ''
     vendor = doc.get('vendor') or case.get('vendor') or ''
@@ -3615,7 +3615,7 @@ def untracked_jobber_items(conn, others=False):
             and not (r['kind'] == 'job' and r['job_type'] == 'recurring')
             and not (r['kind'] == 'quote' and r['status'] != 'approved')]
     names = _account_names(conn)
-    # Quotes for Beatrice's sites are never tracked here.
+    # Quotes for Beatriz's sites are never tracked here.
     rows = [r for r in rows if not (r['kind'] == 'quote' and
                                     beatrice_site(r.get('client_name'), r.get('property_label'), r.get('title')))]
     return [r for r in rows if on_account_sheets(conn, r, names) != others]
@@ -10032,20 +10032,20 @@ def _apply_master_vendors(c, now):
 
 
 REPORT_ONLY_ACCOUNTS = ('Autumn Woods', 'The Reserve @ Estero', 'Wild Blue')
-# Sites whose Wettech quotes go straight to Beatrice (the office, Oct 2026):
-# never tracked here - no item, no Jobber quote, just "Send Wettech quote to Beatrice".
+# Sites whose Wettech quotes go straight to Beatriz (the office, Oct 2026):
+# never tracked here - no item, no Jobber quote, just "Send Wettech quote to Beatriz".
 BEATRICE_SITES = ('Wild Blue', 'Autumn Woods')
-BEATRICE = 'Beatrice'
+BEATRICE = 'Beatriz'
 
 
 def beatrice_site(*texts):
-    """The Beatrice site a document or Jobber record is for, or ''."""
+    """The Beatriz site a document or Jobber record is for, or ''."""
     hay = ' '.join(t or '' for t in texts)
     return next((s for s in BEATRICE_SITES if fuzzy_has(s, hay)), '')
 
 
 def quote_to_beatrice(conn, doc, actor):
-    """A vendor quote for a Beatrice site: a to-do to send it to her, and nothing tracked."""
+    """A vendor quote for a Beatriz site: a to-do to send it to her, and nothing tracked."""
     site = beatrice_site(doc.get('client_name'), doc.get('site'))
     num = f" #{doc['doc_number']}" if doc.get('doc_number') else ''
     price = doc.get('subtotal') if doc.get('subtotal') is not None else doc.get('total')
@@ -10056,14 +10056,25 @@ def quote_to_beatrice(conn, doc, actor):
                                      f"{site} quotes go to {BEATRICE} - not tracked here") if x),
              {'uri': f"/pumps/api/docs/{doc['id']}/file", 'label': 'Open the quote'})
     conn.execute("UPDATE pump_docs SET status='done', updated_at=? WHERE id=?", (_now_text(), doc['id']))
-    _event(conn, actor, 'quote for Beatrice', f"{doc.get('file_name')} - {site} quotes go to {BEATRICE}",
+    _event(conn, actor, 'quote for Beatriz', f"{doc.get('file_name')} - {site} quotes go to {BEATRICE}",
            doc_id=doc['id'])
     return None
 
 
+def _spell_beatriz(c, now):
+    """Once (Oct 19 2026): it's Beatriz, not Beatrice - the to-dos already made say so too."""
+    if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pump_todos'").fetchone():
+        return
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('beatriz_spelling_oct26', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    c.execute("UPDATE pump_todos SET title=REPLACE(title, 'Beatrice', 'Beatriz'), "
+              "detail=REPLACE(detail, 'Beatrice', 'Beatriz') WHERE key LIKE 'beatrice:%'")
+
+
 def _stop_tracking_beatrice(c, now):
-    """Once (Oct 16 2026): items already open for a Beatrice site that only wait
-    on a quote are closed - those quotes go to Beatrice."""
+    """Once (Oct 16 2026): items already open for a Beatriz site that only wait
+    on a quote are closed - those quotes go to Beatriz."""
     if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pump_cases'").fetchone():
         return
     c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('beatrice_untrack_oct26', ?)", (json.dumps(now),))
@@ -10334,6 +10345,7 @@ def init_account_tables(c):
     _fix_quote_needed_dates(c, now)
     _apply_follow_ups(c, now)
     _stop_tracking_beatrice(c, now)
+    _spell_beatriz(c, now)
     if not seeded('office_answers_oct26'):
         # What the office said (Oct 2026): Old Collier and Camas Willows are off
         # SCADA; Autumn Woods (we pay) and Reserve at Estero (in their monthly)
