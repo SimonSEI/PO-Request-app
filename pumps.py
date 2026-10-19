@@ -12761,6 +12761,74 @@ def h_service_quote_create(actor):
                       'total': total}}
 
 
+@bp.route('/pumps/api/accounts/export.xlsx', methods=['POST'])
+def accounts_export():
+    """The Accounts list as a spreadsheet - just the accounts on screen, in that order.
+    Body: {"names": [...], "title": "what was selected"}."""
+    if not pumps_allowed():
+        return jsonify({'success': False, 'error': 'Sign in'}), 401
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+    d = request.get_json(silent=True) or {}
+    names = [str(n) for n in d.get('names') or []]
+    conn = _conn()
+    try:
+        by = {a['name']: a for a in accounts(conn)}
+        irr = {n: irrigation_state(conn, n) for n in names}
+    finally:
+        conn.close()
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'Accounts'
+    title = (d.get('title') or 'Accounts')[:200]
+    ws.append([f'Accounts - {title} - {_today().strftime("%b %d, %Y")}'])
+    ws['A1'].font = Font(bold=True, size=13)
+    heads = ['Account', 'Pump', 'Filter', 'SCADA', 'Irrigation', 'Contract type', 'Contract $/mo', 'Schedule / next due',
+             'Address', 'Jobber client', 'Notes']
+    ws.append(heads)
+    for cell in ws[2]:
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill('solid', fgColor='BDD7EE')
+    yes = lambda v: 'Yes' if v else ''
+    for n in names:
+        a = by.get(n)
+        if not a:
+            continue
+        p, l, sc = a.get('pump') or {}, a.get('lake') or {}, a.get('scada') or {}
+        cons = [c for c in a.get('contracts') or [] if c['status'] == 'active']
+        freq = {c['frequency'] for c in cons}
+        ctype = ('Monthly' if 'monthly' in freq else 'Bi-monthly' if 'bi-monthly' in freq else 'Quarterly'
+                 if 'quarterly' in freq else 'Parts / as used' if cons else
+                 'Cancelled' if a.get('contracts') else '')
+        has_irr = (irr.get(n) or {}).get('managed') or any(c.get('irrigation') for c in cons)
+        sched = []
+        if p.get('active'):
+            sched.append('Pump: ' + ('monthly' if p.get('monthly') else (p.get('months') or '')))
+        if l and (l.get('active') if l.get('active') is not None else 1):
+            sched.append('Diver: ' + (l.get('months') or 'yearly'))
+        if sc.get('active'):
+            sched.append('SCADA: ' + ('complimentary' if sc.get('complimentary') else f"renews {sc.get('next_due_on') or '?'}"))
+        ws.append([n, yes(p.get('active')), yes(l and (l.get('active') if l.get('active') is not None else 1)),
+                   ('Yes (incl.)' if sc.get('complimentary') else 'Yes') if sc.get('active') else '',
+                   'Yes' if has_irr else '', ctype,
+                   round(sum(c['amount'] or 0 for c in cons if c['frequency'] == 'monthly'), 2) or None,
+                   '; '.join(x for x in sched if x), p.get('address') or l.get('address') or '',
+                   p.get('jobber_client_name') or '', ' | '.join(x for x in (p.get('notes'), l.get('notes')) if x)])
+    for col, w in zip('ABCDEFGHIJK', (34, 7, 7, 12, 10, 16, 14, 40, 40, 30, 60)):
+        ws.column_dimensions[col].width = w
+    for row in ws.iter_rows(min_row=3):
+        row[6].number_format = '$#,##0.00'
+        for c in row:
+            c.alignment = Alignment(vertical='top', wrap_text=c.column in (8, 9, 11))
+    ws.freeze_panes = 'A3'
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    safe = re.sub(r'[^A-Za-z0-9 _-]+', '', title).strip().replace(' ', '_')[:60] or 'all'
+    return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                     as_attachment=True, download_name=f'Accounts_{safe}_{_today().isoformat()}.xlsx')
+
+
 @api('/accounts/irrigation', methods=('POST',))
 def h_account_irrigation(actor):
     """Body: {"name", "managed": true|false} - the office says whether we manage the account's irrigation."""
