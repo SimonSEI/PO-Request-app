@@ -796,8 +796,10 @@ async function loadToday(){
   const urgent = [], todo = [], waiting = [];
   q.issues.forEach(i => (i.kind === 'no_quote' ? waiting : urgent).push(todoItem(i.kind === 'no_quote' ? 'Quote after bill' : 'Fix', i.kind === 'no_quote' ? '' : 'r', esc(i.title || i.client_name || 'Item ' + i.case_id), esc(i.message), `openCase(${i.case_id})`,
     (i.kind === 'no_quote' ? `<button class="btn s p" onclick="billAnyway(${i.id})">Bill it +30%</button>` : '') + `<button class="btn s" onclick="resolveIssue(${i.id})">Resolved</button>`, i.todo_key)));
-  q.vendor_bills_to_pay.forEach(c => urgent.push(todoItem('Pay ' + esc(c.vendor || 'Wettech'), 'r', caseTitle(c), `${esc(c.vendor || 'Wettech')} bill ${c.vendor_bill_number ? '#' + esc(c.vendor_bill_number) + ' · ' : ''}${money(c.vendor_bill_total ?? c.vendor_bill_amount)} · ${(c.vendor_pay || {}).report_only ? 'end of month - their monthly is billed' : 'the client paid our invoice' + (c.sei_invoice_number ? ' #' + esc(c.sei_invoice_number) : '')}${(c.pay_email || {}).sent ? `<br><b class="ok">✓ Emailed Christian ${esc(c.pay_email.at.slice(0, 16))}</b>` : (c.pay_email || {}).error ? `<br><b class="bad">Email not sent: ${esc(c.pay_email.error)}</b>` : ''}`, open(c),
-    `<button class="btn s p" onclick="sendPayEmail(${c.id}, this)">✉ ${(c.pay_email || {}).sent ? 'Send again' : 'Send email'}</button><button class="btn s" onclick="payEmail(${c.id})">Preview</button><button class="btn s" onclick="markVendorPaid(${c.id})">Mark paid</button>`, c.todo_key)));
+  // One to-do for every bill that can be paid (Oct 2026): preview the one email to Christian from here.
+  if (q.bills_to_pay_count) urgent.push(todoItem('Pay vendors', 'r', `${q.bills_to_pay_count} vendor bill${q.bills_to_pay_count > 1 ? 's' : ''} can be paid`,
+    'Email Christian to pay them - sending marks them paid', "showTab('bills')",
+    `<button class="btn s p" onclick="billsEmail([])">✉ Preview email to Christian</button><button class="btn s" onclick="showTab('bills')">See the bills</button>`));
   q.scada_attention.filter(s => s.state === 'overdue').forEach(s => urgent.push(todoItem('SCADA overdue', 'r', esc(s.client_name) + (s.site ? ' · ' + esc(s.site) : ''), 'Renewal overdue since ' + esc(s.next_due_on) + (s.state_note ? ' · ' + esc(s.state_note) : '') + followUp(s.follow_up), "showTab('scada')", '', s.todo_key)));
   q.bills_to_draft.forEach(d => { const ip = (d.jobber || {}).invoice_pending || {}; todo.push(todoItem('Draft invoice', 'a', esc(d.client_name || d.file_name), `${d.account_note ? '<b class="warn">📌 ' + esc(d.account_note) + '</b><br>' : ''}${esc(d.vendor)} bill #${esc(d.doc_number)} · ${money(d.total)}${d.bill_kind ? ' · <b>' + esc(d.bill_kind) + '</b>' : ''}${ip.reason ? ' · <b class="warn">' + esc(ip.reason) + '</b>' : ''}`, `openCase(${d.case_id})`,
     `<button class="btn s p" onclick="draftInvoice(${d.id})">Draft invoice</button>${d.case_id ? `<button class="btn s" title="Already drafted in Jobber - tick it on the job" onclick="askDone(event, () => stepDone(${d.case_id}, 'invoice_drafted', event))">✓ Done</button>` : ''}<a class="btn s" target="_blank" rel="noopener" href="/pumps/api/docs/${d.id}/file?version=original">See vendor invoice</a>${(ip.possible_duplicate || {}).uri ? `<a class="btn s" target="_blank" rel="noopener" href="${esc(ip.possible_duplicate.uri)}">Open #${esc(ip.possible_duplicate.number)} ↗</a>` : ''}`, d.todo_key)); });
@@ -1055,14 +1057,15 @@ async function loadVQuotes(){
 function billsPaidRender(paid, q){
   const box = document.getElementById('billsPaidList');
   const wasOpen = box.querySelector('details')?.open || !!q;
-  box.innerHTML = `<details ${wasOpen ? 'open' : ''}><summary class="grp" style="cursor:pointer">${q ? 'Paid bills matching the search' : 'Paid in the last 60 days'} (${paid.length}) - undo one marked paid by mistake</summary>
+  box.innerHTML = `<details ${wasOpen ? 'open' : ''}><summary class="grp" style="cursor:pointer">Old vendor bills - ${q ? 'paid bills matching the search' : 'paid in the last 60 days'} (${paid.length})</summary>
+    <div class="note">Paid - or emailed to Christian, which marks them paid. Search to find older ones; ↶ Undo paid puts one back on the list.</div>
     <div class="toolbar" style="margin:6px 0"><input type="text" id="billsPaidQ" value="${esc(q)}" placeholder="Search every paid bill: site, job, vendor or invoice #" oninput="liveSearch(billsPaidSearch)" onkeydown="if(event.key==='Enter'){event.preventDefault();clearTimeout(window._lsT);billsPaidSearch()}" style="flex:1"><button class="btn" onclick="clearTimeout(window._lsT);billsPaidSearch()">Search</button>${q ? `<button class="btn s" onclick="document.getElementById('billsPaidQ').value='';billsPaidSearch()">Clear</button>` : ''}</div>
     ${paid.length ? `<table class="t"><thead><tr><th>Job</th><th>Vendor</th><th>Their invoice</th><th class="num">Amount</th><th>Paid</th><th></th></tr></thead><tbody>
     ${paid.map(b => `<tr><td><a href="#" onclick="event.preventDefault();openCase(${b.case_id})">${esc(b.client_name || b.title)}</a><div class="note">${esc(b.title)}</div></td>
       <td>${esc(b.vendor)}</td>
       <td>${b.bill_doc_id ? `<a target="_blank" href="/pumps/api/docs/${b.bill_doc_id}/file">#${esc(b.bill_number || '?')}</a>` : '#' + esc(b.bill_number || '?')}</td>
       <td class="num">${b.amount != null ? money(b.amount) : '?'}</td>
-      <td>${esc(b.paid_on)}${b.paid_by ? `<div class="note">by ${esc(b.paid_by)}</div>` : ''}</td>
+      <td>${esc(b.paid_on)}${b.emailed_at ? `<div class="note">✉ emailed Christian ${esc(b.emailed_at)}</div>` : b.paid_by ? `<div class="note">by ${esc(b.paid_by)}</div>` : ''}</td>
       <td><button class="btn s" title="Marked paid by mistake? Put it back on the list" onclick="billsUnpaid([${b.case_id}])">↶ Undo paid</button></td></tr>`).join('')}
     </tbody></table>` : '<div class="note">No paid bill matches.</div>'}</details>`;
   const inp = document.getElementById('billsPaidQ');
@@ -1164,9 +1167,11 @@ function undoToast(msg, undo){
   b.onclick = () => { d.remove(); undo(); };
   d.append(b); document.body.appendChild(d); setTimeout(() => d.remove(), 10000);
 }
-async function billsEmail(){
-  const ids = billsPicked();
-  if (!ids.length) { toast('Tick the bills to send.', true); return; }
+// ids: the ticked bills on the tab; [] = every bill that can be paid (the Home to-do).
+async function billsEmail(ids){
+  ids = ids || billsPicked();
+  if (!ids.length && !arguments.length) { toast('Tick the bills to send.', true); return; }
+  window._billIds = ids;
   const j = await api('/bills_to_pay/email', {method:'POST', body:{case_ids: ids}});
   if (!j.success) { toast(j.error, true); return; }
   const e = j.email;
@@ -1177,10 +1182,13 @@ async function billsEmail(){
 }
 async function billsSend(){
   const btn = document.getElementById('billsSend'); btn.disabled = true; btn.textContent = 'Sending…';
-  const j = await api('/bills_to_pay/email', {method:'POST', body:{case_ids: billsPicked(), send: true, body: document.getElementById('billsBody').value}});
+  const j = await api('/bills_to_pay/email', {method:'POST', body:{case_ids: window._billIds || billsPicked(), send: true, body: document.getElementById('billsBody').value}});
   btn.disabled = false; btn.textContent = 'Send to Christian';
   if (!j.success) { toast(j.error, true); return; }
-  closeModal(); toast(`Emailed Christian: ${j.sent} bill${j.sent > 1 ? 's' : ''}, ${money(j.total)}.`); loadBills();
+  closeModal(); loadBills(); loadToday();
+  const ids = j.case_ids || [];
+  undoToast(`Emailed Christian: ${j.sent} bill${j.sent > 1 ? 's' : ''}, ${money(j.total)} - marked paid, in Old vendor bills.`,
+            () => billsUnpaid(ids));
 }
 // Invoiced straight in Jobber (Enclave @ Palmira): tie that invoice to the job.
 // A service call booked in Jobber: followed from its job - the start of the work, no quote.

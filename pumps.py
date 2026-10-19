@@ -7606,6 +7606,8 @@ def send_vendor_pay_email(case_id, actor, body=None):
     try:
         _event(conn, actor, 'could not email Christian' if error else 'emailed Christian to pay the vendor',
                error or f"To {e['to']}: {e['subject']}", case_id=case_id)
+        if not error:
+            update_case(conn, case_id, {'vendor_paid_on': _today().isoformat()}, actor)
         conn.commit()
     finally:
         conn.close()
@@ -7677,7 +7679,8 @@ def bills_paid_recently(conn, days=60, q=''):
                'client_name': c.get('client_name') or '', 'title': c.get('title') or '',
                'bill_number': c.get('vendor_bill_number') or (bill['doc_number'] if bill else '') or '',
                'bill_doc_id': bill['id'] if bill else None, 'amount': amount,
-               'paid_on': paid, 'paid_by': c.get('vendor_paid_by') or ''}
+               'paid_on': paid, 'paid_by': c.get('vendor_paid_by') or '',
+               'emailed_at': ((_state_get(f"pay_email:{c['id']}", conn=conn) or {}).get('at') or '')[:10]}
         if q and q not in ' '.join(str(row[k]) for k in ('vendor', 'client_name', 'title', 'bill_number')).lower() + \
                 f" {c.get('sei_invoice_number') or ''} {c.get('site') or ''}".lower():
             continue
@@ -7821,10 +7824,12 @@ def h_bills_to_pay_email(actor):
             _state_set(f'pay_email:{cid}', rec, conn=conn)
             _event(conn, actor, 'emailed Christian to pay the vendor', f"In the bills-to-pay email to {e['to']}",
                    case_id=cid)
+            # Sent to Christian = paid as far as the office goes (Oct 2026): off the list, into Old vendor bills.
+            update_case(conn, cid, {'vendor_paid_on': _today().isoformat()}, actor)
         conn.commit()
     finally:
         conn.close()
-    return {'sent': e['count'], 'total': e['total'], 'to': e['to']}
+    return {'sent': e['count'], 'total': e['total'], 'to': e['to'], 'case_ids': cases}
 
 
 @api('/cases/<int:case_id>/pay_email/send', methods=('POST',))
@@ -10597,6 +10602,30 @@ def _spell_beatriz(c, now):
               "detail=REPLACE(detail, 'Beatrice', 'Beatriz') WHERE key LIKE 'beatrice:%'")
 
 
+def _paid_once_emailed(c, now):
+    """Once (Oct 19 2026, the office): every bill already emailed to Christian is
+    paid - dated the day it was emailed - and goes to Old vendor bills."""
+    if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pump_cases'").fetchone():
+        return
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('paid_once_emailed_oct26', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    for key, value in c.execute("SELECT key, value FROM pump_state WHERE key LIKE 'pay_email:%'").fetchall():
+        try:
+            rec, cid = json.loads(value or '{}'), int(key.split(':', 1)[1])
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(rec, dict) or not rec.get('sent'):
+            continue
+        c.execute("UPDATE pump_cases SET vendor_paid_on=?, vendor_paid_by=?, updated_at=? "
+                  "WHERE id=? AND COALESCE(vendor_paid_on, '')=''",
+                  ((rec.get('at') or now)[:10], rec.get('by') or 'Pumps', _now_text(), cid))
+        if c.rowcount:
+            c.execute('INSERT INTO pump_events (case_id, doc_id, at, actor, action, detail) VALUES (?,?,?,?,?,?)',
+                      (cid, None, _now_text(), 'Pumps', 'vendor paid',
+                       f"Emailed to Christian {(rec.get('at') or '')[:10]} - marked paid"))
+
+
 def _stop_tracking_beatrice(c, now):
     """Once (Oct 16 2026): items already open for a Beatriz site that only wait
     on a quote are closed - those quotes go to Beatriz."""
@@ -10884,6 +10913,7 @@ def init_account_tables(c):
     _fix_quote_needed_dates(c, now)
     _apply_follow_ups(c, now)
     _stop_tracking_beatrice(c, now)
+    _paid_once_emailed(c, now)
     _seed_contracts(c, now)
     _spell_beatriz(c, now)
     if not seeded('office_answers_oct26'):
