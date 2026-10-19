@@ -4003,6 +4003,19 @@ class PumpsTest(unittest.TestCase):
             d = self.c.get(f"/pumps/api/accounts/service_quote?name={a['name']}&kind=irrigation").get_json()
             self.assertEqual(d['title'], 'Monthly Irrigation Maintenance Program')
             self.assertIn('Moth balls', d['line_items'][0]['description'])
+            # Priced by the zone: the count from the account's notes x $15 a zone - or said to be unknown.
+            if a.get('pump'):
+                conn.execute("UPDATE pump_maint_accounts SET notes='' WHERE name=?", (a['pump']['name'],))
+                conn.commit()
+                d = self.c.get(f"/pumps/api/accounts/service_quote?name={a['name']}&kind=irrigation").get_json()
+                self.assertIn('Number of zones undetermined.', d['line_items'][0]['description'])
+                self.assertIsNone(d['line_items'][0]['unit_price'])
+                conn.execute("UPDATE pump_maint_accounts SET notes='Clubhouse - 24 zones, 2 controllers' WHERE name=?",
+                             (a['pump']['name'],))
+                conn.commit()
+                d = self.c.get(f"/pumps/api/accounts/service_quote?name={a['name']}&kind=irrigation").get_json()
+                self.assertEqual((d['zones'], d['line_items'][0]['unit_price']), (24, 360.0))
+                self.assertIn('Number of zones: 24 at $15.00 per zone per month.', d['line_items'][0]['description'])
         finally:
             P.recurring_jobs, P.search_clients, P.pick_client, P.jobber_status, P.client_jobs = saved
             conn.close()
