@@ -3489,7 +3489,7 @@ def check_mutation_allowed(query):
 def jobber_gql(query, variables=None):
     check_mutation_allowed(query)
     force, reason = False, 'signed out or rate limited'
-    for _ in range(6):
+    for _ in range(10):
         token = _access_token(force)
         r = http_requests.post(JOBBER_GQL, timeout=60, json={'query': query, 'variables': variables or {}},
                                headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json',
@@ -3500,6 +3500,11 @@ def jobber_gql(query, variables=None):
         if r.status_code == 429:
             time.sleep(20)
             reason = 'rate limited'
+            continue
+        if r.status_code in (502, 503, 504):
+            # Jobber's own server timed out (504 on the "pump" quote search, Oct 19 2026): a pause, then again.
+            time.sleep(10)
+            reason = f'Jobber API HTTP {r.status_code}'
             continue
         if r.status_code >= 400:
             raise JobberError(f'Jobber API HTTP {r.status_code}')
@@ -3552,7 +3557,7 @@ def _gql_tolerant(make_query, spec, variables, required=()):
     raise JobberError('Too many unknown fields')
 
 
-JOBBER_PARALLEL = 4   # Jobber calls at once during a sync
+JOBBER_PARALLEL = 2   # Jobber calls at once during a sync (4 kept tripping its rate limit, Oct 2026)
 _ADDR = ('address', ['street1', 'street2', 'city'])
 SYNC_SPECS = {
     'requests': (['id', 'title', 'requestStatus', 'createdAt', 'updatedAt', 'jobberWebUri',
