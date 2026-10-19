@@ -3291,26 +3291,35 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(case['stage'], 'report_logged')
         drafts = self.c.get('/pumps/api/summary').get_json()['queue']['bills_to_draft']
         self.assertNotIn(b['case_id'], [d['case_id'] for d in drafts])
-        # Wettech is paid once the account's monthly is billed - from the end of the bill's month.
+        # Wettech is paid once the next monthly job is completed (the office, Oct 19 2026): the account's recurring
+        # Jobber job's first visit on or after the bill.
         pay = case['vendor_pay']
         self.assertTrue(pay['report_only'], pay)
-        saved = P._today
-        P._today = lambda: date.fromisoformat(pay['month_end']).replace(day=1)
+        came = case['steps']['vendor_bill']['at']
+        conn = P._conn()
+        conn.execute("UPDATE pump_maint_accounts SET jobber_job_id='JWB' WHERE name='Wild Blue'")
+        conn.commit()
+        conn.close()
+        visits = [{'id': 'V0', 'title': '', 'date': '2000-01-01', 'completed': True},
+                  {'id': 'V1', 'title': '', 'date': came, 'completed': False}]
+        saved = P.job_visits
+        P.job_visits = lambda job_id, pages=6: visits if job_id == 'JWB' else []
         try:
-            self.assertEqual(self.case(b['case_id'])['vendor_pay']['state'], 'unpaid')
-            q = self.c.get('/pumps/api/summary').get_json()['queue']
-            self.assertNotIn(b['case_id'], [c['id'] for c in q['vendor_bills_to_pay']])
+            P.check_report_only_bills()
+            self.assertEqual(self.case(b['case_id'])['vendor_pay']['state'], 'unpaid', 'the next visit is not done')
+            row = {x['case_id']: x for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for x in g['bills']}
+            self.assertIn('once the next monthly job is completed', row[b['case_id']]['why'])
+            visits[1]['completed'] = True
+            P.check_report_only_bills()
         finally:
-            P._today = saved
-        P._today = lambda: date.fromisoformat(pay['month_end'])
-        try:
-            q = self.c.get('/pumps/api/summary').get_json()['queue']
-            self.assertIn(b['case_id'], [c['id'] for c in q['vendor_bills_to_pay']])
-            conn = P._conn()
-            self.assertIn('monthly has been billed', P.vendor_pay_email(conn, b['case_id'])['body'])
-            conn.close()
-        finally:
-            P._today = saved
+            P.job_visits = saved
+        q = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertIn(b['case_id'], [c['id'] for c in q['vendor_bills_to_pay']])
+        row = {x['case_id']: x for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for x in g['bills']}
+        self.assertTrue(row[b['case_id']]['payable'])
+        conn = P._conn()
+        self.assertIn('monthly job', P.vendor_pay_email(conn, b['case_id'])['body'])
+        conn.close()
         # Anyone else's maintenance bill still gets invoiced.
         self.extracts['b-allura2.pdf'] = {**ex, 'doc_number': '29202', 'client_name': 'Allura'}
         a = self.upload('b-allura2.pdf')
