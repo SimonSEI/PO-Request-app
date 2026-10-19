@@ -1732,7 +1732,7 @@ def _note_claude(problem):
         pass
 
 
-def _regex_extract(text, sender='', subject=''):
+def _regex_extract(text, sender='', subject='', filename=''):
     """A rough reading for when Claude is unavailable, tuned to Wettech's
     invoice layout. Anything read this way is marked for review."""
     head = (text or '')[:600].lower()
@@ -1808,6 +1808,38 @@ def _regex_extract(text, sender='', subject=''):
     # "Reserve at Estero - Lee County" names the county for tax: drop it.
     out['client_name'] = re.sub(r'\s*[-–]\s*(Lee|Collier|Charlotte|Sarasota|Hendry|Manatee)\s+County\s*$', '',
                                 out['client_name'] or '', flags=re.I)
+    if re.match(r'\s*gulf\s*shore', out['vendor'] or '', re.I):
+        _gulfshore_fields(text, subject, filename, out)
+    return out
+
+
+_US_DATE = re.compile(r'\b(\d{1,2}/\d{1,2}/\d{2,4})\b')
+
+
+def _gulfshore_fields(text, subject, filename, out, conn=None):
+    """Jordan's QuickBooks invoices (Gulfshore Yacht Service): the number from
+    "Invoice_2498_from_..." or the email, the invoice date, and the client -
+    the account the invoice names, else the "Bill to" line. Not the work note
+    wrapped under the line item ("condition and seems to be functioning",
+    Rosewood #2498, Oct 2026). A client it can't place is left blank."""
+    m = (re.search(r'invoice[_\s#:no.]*?(\d{3,})', filename or '', re.I)
+         or re.search(r'invoice\s*(?:#|no\.?|number)?\s*:?\s*(\d{3,})', f'{subject or ""}\n{text}', re.I))
+    if m:
+        out['doc_number'] = m.group(1)
+    m = re.search(r'(?:invoice\s+)?date\b\s*:?\s*' + _US_DATE.pattern, text, re.I) or _US_DATE.search(text)
+    if m:
+        out['doc_date'] = _iso_date(m.group(1)) or out.get('doc_date') or ''
+    m = re.search(r'\b(?:total|balance\s+due|amount\s+due)\b\s*:?\s*\$?\s*([\d,]+\.\d{2})', text, re.I)
+    if m and out.get('total') is None:
+        out['total'] = _money(m.group(1))
+    acct = match_account(text, conn)
+    if not acct:
+        m = re.search(r'\bbill\s+to\b\s*:?\s*([^\n]*)\n?\s*([^\n]*)', text, re.I)
+        line = m and (m.group(1).strip() or m.group(2).strip())
+        acct = line if line and not re.search(r'\d+\.\d{2}|\bfilter\b|condition|functioning', line, re.I) else ''
+    out['client_name'] = (acct or '')[:120]
+    if out.get('total') is not None and out.get('subtotal') is None:
+        out['subtotal'] = out['total'] if not out.get('tax') else round(out['total'] - out['tax'], 2)
     return out
 
 
@@ -2266,7 +2298,9 @@ def check_diver_billed(case_id, actor='Pumps'):
     finally:
         conn.close()
     found, err = None, ''
-    if jobber_status()['connected']:
+    if not (client_id or case.get('client_name') or doc.get('client_name')):
+        pass                    # whose it is isn't known: the to-do asks
+    elif jobber_status()['connected']:
         try:
             client_id = client_id or invoice_client(doc, case)
             if client_id:
@@ -2299,10 +2333,20 @@ def check_diver_billed(case_id, actor='Pumps'):
                                               "Christian can pay it", case_id=case_id, doc_id=doc['id'])
         else:
             amt = doc.get('total') if doc.get('total') is not None else doc.get('subtotal')
-            add_todo(conn, key, f"Gulfshore invoice{num} - {case.get('client_name') or doc.get('client_name')}: not billed out yet",
-                     f"Jordan's {money_text(amt) if amt is not None else ''} filter cleaning on {doc.get('doc_date') or '?'} "
-                     f"isn't on a Jobber invoice to the client yet{' (' + err + ')' if err else ''}. Bill it with the pump "
-                     "service - then it goes to Christian to pay.", {'case_id': case_id})
+            who = case.get('client_name') or doc.get('client_name')
+            if who:
+                title = f"Gulfshore invoice{num} - {who}: not billed out yet"
+                detail = (f"Jordan's {money_text(amt) if amt is not None else ''} filter cleaning on "
+                          f"{doc.get('doc_date') or '?'} isn't on a Jobber invoice to the client yet"
+                          f"{' (' + err + ')' if err else ''}. Bill it with the pump service - then it goes to "
+                          "Christian to pay.")
+            else:
+                title = f"Gulfshore invoice{num}: which client is it for?"
+                detail = ("The bill was read without Claude and the client couldn't be told from it. Open the job "
+                          "and set the client - then it's checked against Jobber.")
+            add_todo(conn, key, title, detail, {'case_id': case_id})
+            conn.execute('UPDATE pump_todos SET title=?, detail=? WHERE key=? AND done_at IS NULL',
+                         (title[:300], detail[:2000], key))
         conn.commit()
     finally:
         conn.close()
@@ -2331,12 +2375,51 @@ def invoices_named(name, lo, hi, client_id=None):
     return out
 
 
+def reread_diver_bill(conn, case_id, actor='Pumps'):
+    """A Gulfshore bill the basic reader got wrong (the client a line of Jordan's
+    note, no number or date - Rosewood #2498, Oct 2026): read again from the
+    stored file and the item put right. True when something changed."""
+    case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone() or {})
+    row = conn.execute("SELECT * FROM pump_docs WHERE case_id=? AND kind='bill' AND status != 'dismissed' "
+                       "ORDER BY id DESC", (case_id,)).fetchone()
+    if not case or not row or row['extracted_by'] != 'regex':
+        return False
+    names = _account_names(conn) + [a['name'] for a in accounts(conn)]
+    if case.get('client_name') and any(_same_account(n, case['client_name']) for n in names):
+        return False
+    try:
+        with open(row['file_path'], 'rb') as f:
+            text = extract_text(row['file_name'], f.read())
+    except (OSError, TypeError):
+        return False
+    x = _gulfshore_fields(text, row['email_subject'] or '', row['file_name'], {
+        'doc_number': row['doc_number'], 'doc_date': row['doc_date'], 'total': row['total'],
+        'subtotal': row['subtotal'], 'tax': row['tax'], 'client_name': ''}, conn)
+    if (x['client_name'], x['doc_number'], x['doc_date']) == (case['client_name'], row['doc_number'], row['doc_date']):
+        return False
+    acct = next((n for n in names if x['client_name'] and _same_account(n, x['client_name'])), None) or x['client_name']
+    conn.execute('UPDATE pump_docs SET client_name=?, doc_number=?, doc_date=?, total=COALESCE(total, ?), '
+                 'subtotal=COALESCE(subtotal, ?), updated_at=? WHERE id=?',
+                 (x['client_name'], x['doc_number'], x['doc_date'], x['total'], x['subtotal'], _now_text(), row['id']))
+    num = f" #{x['doc_number']}" if x['doc_number'] else ''
+    conn.execute('UPDATE pump_cases SET client_name=?, title=?, vendor_bill_number=? WHERE id=?',
+                 (acct, f"{acct or 'Lake'} - lake filter cleaning (Gulfshore{num})"[:160], x['doc_number'], case_id))
+    for k in ('scheduled', 'work_done', 'vendor_bill'):
+        if x['doc_date']:
+            _set_step(conn, case_id, k, at=x['doc_date'], by=actor)
+    _event(conn, actor, 'read again', f"Gulfshore{num}: {acct or 'client not found'}", case_id=case_id, doc_id=row['id'])
+    return True
+
+
 def check_all_diver_bills(actor='Jobber sync'):
     """Every Gulfshore bill not billed out yet: looked for again (the invoice may be made later)."""
     conn = _conn()
     try:
         ids = [r[0] for r in conn.execute("SELECT id FROM pump_cases WHERE status='open' AND category='diver' "
                                           "AND vendor='Gulfshore' AND COALESCE(json_extract(jobber, '$.invoice.id'), '')=''")]
+        for i in ids:
+            reread_diver_bill(conn, i, actor)
+        conn.commit()
     finally:
         conn.close()
     return [check_diver_billed(i, actor) for i in ids]
@@ -2722,7 +2805,7 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
             if x:
                 extracted_by = 'claude'
             else:
-                x = _regex_extract(text, sender, subject)
+                x = _regex_extract(text, sender, subject, filename)
                 extracted_by = 'regex'
                 if USE_CLAUDE:
                     # Claude is meant to read it but failed: read again later.
@@ -2900,7 +2983,8 @@ def read_doc_again(doc_id, actor='system'):
             raise ValueError('No text could be read (a scanned image?) - enter the details by hand.')
         x = _claude_extract(text, doc['email_from'] or '', doc['email_subject'] or '', doc['file_name'])
         how = 'claude' if x else 'regex'
-        x = _clean_extraction(x or _regex_extract(text, doc['email_from'] or '', doc['email_subject'] or ''))
+        x = _clean_extraction(x or _regex_extract(text, doc['email_from'] or '', doc['email_subject'] or '',
+                                                  doc['file_name']))
         x['kind'] = doc['kind']
         full = x = _letter_prices(text, x)
         dj = doc.get('jobber') or {}
