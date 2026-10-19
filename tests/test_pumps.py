@@ -3628,6 +3628,31 @@ class PumpsTest(unittest.TestCase):
         self.assertTrue(old[b1['case_id']]['emailed_at'])
         self.assertIn(b2['case_id'], {b['case_id'] for g in j['vendors'] for b in g['bills']}, 'not sent: still to pay')
 
+    def test_big_bill_waits_for_the_client_to_pay(self):
+        """The office (Oct 2026): a vendor bill over $1,500 isn't good to pay until our Jobber invoice shows paid -
+        invoiced isn't enough. Smaller ones still go once invoiced."""
+        self.extracts['b-big1.pdf'] = extraction('bill', '40041', client='Big Lakes HOA', subtotal=1679.35, tax=100.76)
+        self.extracts['b-small1.pdf'] = extraction('bill', '40042', client='Small Pines HOA', subtotal=500)
+        big, small = self.upload('b-big1.pdf'), self.upload('b-small1.pdf')
+        for b, num in ((big, '37101'), (small, '37102')):
+            conn = P._conn()
+            conn.execute('UPDATE pump_cases SET jobber=?, sei_invoice_number=? WHERE id=?',
+                         (json.dumps({'invoice': {'id': 'I' + num, 'number': num, 'status': 'awaiting_payment'}}), num,
+                          b['case_id']))
+            conn.commit()
+            conn.close()
+        row = lambda b: {x['case_id']: x for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors']
+                         for x in g['bills']}[b['case_id']]
+        self.assertFalse(row(big)['payable'])
+        self.assertIn('paid once the client pays our invoice #37101', row(big)['why'])
+        self.assertTrue(row(small)['payable'])
+        conn = P._conn()
+        conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?',
+                     (json.dumps({'invoice': {'id': 'I37101', 'number': '37101', 'status': 'paid'}}), big['case_id']))
+        conn.commit()
+        conn.close()
+        self.assertTrue(row(big)['payable'], 'the client paid')
+
     def test_ok_a_bill_to_pay_now(self):
         """Wild Blue (Oct 2026): report-only, billed through the monthly irrigation contract - no invoice to link,
         and it shouldn't wait for the month's end. OK it by hand: payable, and in the email to Christian."""

@@ -7890,6 +7890,9 @@ def send_vendor_pay_email(case_id, actor, body=None):
 
 # ── bills to pay ─────────────────────────────────────────────────────────────
 
+BIG_BILL = 1500.0   # a vendor bill over this waits for the client to pay our invoice
+
+
 def bills_to_pay(conn):
     """Every vendor bill not paid yet, by vendor (Oct 2026). A bill can be paid
     once we've invoiced the client for it (our Jobber invoice exists - nearly
@@ -7921,6 +7924,12 @@ def bills_to_pay(conn):
             num = inv.get('number') or c.get('sei_invoice_number') or ''
             why = (f"invoiced{' #' + num if num else ''}{' (' + inv['status'].replace('_', ' ') + ')' if inv.get('status') else ''}"
                    if invoiced else 'not invoiced yet')
+            if amount is not None and amount > BIG_BILL and pay['client_invoice_status'] != 'paid':
+                # Over $1,500 (the office, Oct 2026): paid only once the client has paid our invoice.
+                payable = False
+                why = (f"over {money_text(BIG_BILL)} - paid once the client pays our invoice"
+                       f"{' #' + num if num else ''}{' (' + inv['status'].replace('_', ' ') + ')' if inv.get('status') else ''}"
+                       if invoiced else f"over {money_text(BIG_BILL)} - not invoiced yet")
         ok = _state_get(f"pay_ok:{c['id']}", conn=conn) or {}
         if ok and not payable:
             # OK'd by hand (Wild Blue, Oct 2026: billed through the monthly irrigation contract - no invoice to link).
