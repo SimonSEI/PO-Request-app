@@ -2733,7 +2733,9 @@ PAGE = r'''<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="csrf-token" content="{{ csrf_token() }}">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237A2BD8'/%3E%3Cpath d='M9 8h14v4H13v3h8v4h-8v6H9z' fill='white'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="{{ url_for('filemaker.static', filename='fm.css') }}?v={{ v }}">
+{% for css in ['fm.css', 'fm-ui-chrome.css', 'fm-ui-design.css', 'fm-ui-mdb.css', 'fm-ui-ws.css'] %}
+<link rel="stylesheet" href="{{ url_for('filemaker.static', filename=css) }}?v={{ v }}">
+{% endfor %}
 </head>
 <body>
 <div id="fm-root"></div>

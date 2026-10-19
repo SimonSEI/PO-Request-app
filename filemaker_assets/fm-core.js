@@ -516,6 +516,8 @@
     return '<svg class="fm-ic ' + (extra || '') + '" width="' + (size || 18) + '" height="' + (size || 18) + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="' + d + '"/></svg>';
   };
   FM.iconNames = Object.keys(P);
+  // each part of the app may register its own icons (24×24 path data, stroked like the rest)
+  FM.addIcons = icons => { Object.assign(P, icons); FM.iconNames = Object.keys(P); };
   FM.iconEl = (name, size) => { const s = h('span', { class: 'fm-icwrap', html: FM.icon(name, size) }); return s; };
 
   // ═══════════════════════════════════════════════════════════════════════
