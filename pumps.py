@@ -3682,6 +3682,10 @@ def _sync_recent_quotes(seen):
                                                       for li in ((n.get('lineItems') or {}).get('nodes') or [])])
             if TITLE_PATTERNS['pump'].search(text) or _VENDOR_WORDS.search(text):
                 return True
+            # One of our accounts, and about pump equipment - not every quote they get: The Reserve @ Estero's
+            # valve boxes and gate valve (#8443, Oct 2026) were irrigation work for Install.
+            if not _PUMP_HINTS.search(text):
+                return False
             c = n.get('client') or {}
             return _tracked_account(conn, {'client_id': c.get('id'), 'client_name': c.get('name'),
                                            'property_label': _prop_label(n.get('property'))})
@@ -7643,12 +7647,17 @@ def bills_to_pay(conn):
             num = inv.get('number') or c.get('sei_invoice_number') or ''
             why = (f"invoiced{' #' + num if num else ''}{' (' + inv['status'].replace('_', ' ') + ')' if inv.get('status') else ''}"
                    if invoiced else 'not invoiced yet')
+        ok = _state_get(f"pay_ok:{c['id']}", conn=conn) or {}
+        if ok and not payable:
+            # OK'd by hand (Wild Blue, Oct 2026: billed through the monthly irrigation contract - no invoice to link).
+            payable = True
+            why = f"OK'd to pay now by {ok.get('by') or 'the office'} ({(ok.get('at') or '')[:10]}) - {why}"
         asked = _state_get(f'pay_email:{c["id"]}', conn=conn) or {}
         vendor = c.get('vendor') or 'Wettech'
         groups.setdefault(vendor, []).append({
             'case_id': c['id'], 'title': c.get('title') or '', 'client_name': c.get('client_name') or '',
             'bill_number': number, 'bill_date': (bill['doc_date'] if bill else '') or '', 'amount': amount,
-            'bill_doc_id': bill['id'] if bill else None, 'payable': payable, 'why': why,
+            'bill_doc_id': bill['id'] if bill else None, 'payable': payable, 'why': why, 'pay_ok': bool(ok),
             'invoice_number': inv.get('number') or c.get('sei_invoice_number') or '',
             'asked_at': asked.get('at', '') if asked.get('sent') else ''})
     out = []
@@ -7756,6 +7765,31 @@ def h_doc_site_invoices(actor, doc_id):
     if not res:
         raise ValueError("This bill's report is for one pump station")
     return res
+
+
+@api('/bills_to_pay/pay_ok', methods=('POST',))
+def h_bills_pay_ok(actor):
+    """Body: {"case_ids": [...], "undo": false} - these bills can be paid now, though nothing
+    says so yet (billed through a monthly contract, so no invoice to link)."""
+    if actor == BOT:
+        return _office_only(actor, 'OKing vendor bills to pay')
+    data = _json()
+    ids = [int(x) for x in (data.get('case_ids') or []) if str(x).isdigit()]
+    if not ids:
+        raise ValueError('Pick the bills')
+    conn = _conn()
+    try:
+        for cid in ids:
+            if data.get('undo'):
+                conn.execute('DELETE FROM pump_state WHERE key=?', (f'pay_ok:{cid}',))
+            else:
+                _state_set(f'pay_ok:{cid}', {'at': _now_text(), 'by': actor}, conn=conn)
+            _event(conn, actor, 'vendor bill not OKd to pay' if data.get('undo') else 'vendor bill OKd to pay',
+                   'put back to wait' if data.get('undo') else 'OK to pay now - no invoice to wait on', case_id=cid)
+        conn.commit()
+    finally:
+        conn.close()
+    return {'case_ids': ids}
 
 
 @api('/bills_to_pay/paid_list')
@@ -10626,6 +10660,30 @@ def _paid_once_emailed(c, now):
                        f"Emailed to Christian {(rec.get('at') or '')[:10]} - marked paid"))
 
 
+def _drop_irrigation_quotes(c, now):
+    """Once (Oct 19 2026, the office): items the sync made from a Jobber quote that is
+    irrigation field work, not pumps (The Reserve @ Estero #8443, valve boxes and
+    a gate valve): cancelled, the quote ignored, its to-do done."""
+    if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pump_jobber_items'").fetchone():
+        return
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('drop_irrigation_quotes_oct26', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    for jid, cid, title in c.execute(
+            "SELECT i.jobber_id, i.case_id, COALESCE(i.title, '') FROM pump_jobber_items i "
+            "JOIN pump_cases p ON p.id = i.case_id WHERE i.kind='quote' AND p.status='open' "
+            "AND NOT EXISTS (SELECT 1 FROM pump_docs d WHERE d.case_id = p.id AND d.status != 'dismissed')").fetchall():
+        if not _IRRIGATION_ONLY.search(title) or TITLE_PATTERNS['pump'].search(title) or _PUMP_HINTS.search(title) \
+                or _VENDOR_WORDS.search(title):
+            continue
+        c.execute("UPDATE pump_cases SET status='cancelled', stage='cancelled', updated_at=? WHERE id=?", (_now_text(), cid))
+        c.execute('UPDATE pump_jobber_items SET case_id=NULL, ignored=1 WHERE jobber_id=?', (jid,))
+        c.execute("UPDATE pump_todos SET done_at=?, done_by='Pumps' WHERE key LIKE ? AND done_at IS NULL",
+                  (_now_text(), f'%:{cid}'))
+        c.execute('INSERT INTO pump_events (case_id, doc_id, at, actor, action, detail) VALUES (?,?,?,?,?,?)',
+                  (cid, None, _now_text(), 'Pumps', 'cancelled', f'"{title}" is irrigation work, not pumps - not followed'))
+
+
 def _stop_tracking_beatrice(c, now):
     """Once (Oct 16 2026): items already open for a Beatriz site that only wait
     on a quote are closed - those quotes go to Beatriz."""
@@ -10914,6 +10972,7 @@ def init_account_tables(c):
     _apply_follow_ups(c, now)
     _stop_tracking_beatrice(c, now)
     _paid_once_emailed(c, now)
+    _drop_irrigation_quotes(c, now)
     _seed_contracts(c, now)
     _spell_beatriz(c, now)
     if not seeded('office_answers_oct26'):
@@ -12194,6 +12253,13 @@ def auto_track_approved(conn, actor='Jobber sync'):
     return out
 
 
+# Pump equipment named without the word pump: "inspect suction line", "replace the float switch".
+_PUMP_HINTS = re.compile(r'\bsuction\b|\bdischarge\b|\bimpeller|\bmotors?\b|\bfloat\b|\bintake\b|'
+                         r'pressure\s+(?:tank|switch|transducer)|pump\s*station|\bstation\b|\bfilters?\b|'
+                         r'\bscreens?\b|\bscada\b|\bdivers?\b|\bwet\s*well|\bstarter\b|\bvfd\b|\baerat', re.I)
+# Irrigation field work - valve boxes, heads, sod - that isn't ours (#8443).
+_IRRIGATION_ONLY = re.compile(r'valve\s+box|sprinkler|\bsod\b|spray\s+heads?|\brotors?\b|\bdrip\b|'
+                              r'\bheads?\b|\bzones?\b|landscap', re.I)
 _VENDOR_WORDS = re.compile(r'\bwe?t+e?ch\b|\bwater\s+equipment\s+tech|\bgulfshore\b', re.I)
 
 
