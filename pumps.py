@@ -285,7 +285,7 @@ def _quote_needed_item(conn, doc, case_id, actor):
                                 (doc['id'],)).fetchone():
         return None
     if beatrice_site(doc.get('client_name'), doc.get('site')):
-        return None   # Wettech quotes those to Beatrice - nothing to track
+        return None   # Wettech quotes those to Beatriz - nothing to track
     case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone())
     client = doc.get('client_name') or case.get('client_name') or ''
     vendor = doc.get('vendor') or case.get('vendor') or ''
@@ -3466,6 +3466,10 @@ def _sync_jobber(full=False, actor='system'):
             close_stale_todos(conn)
             rebuild_scada(conn)
             conn.commit()
+            try:
+                check_all_irrigation()
+            except Exception as e:
+                status['errors'].append(f'Irrigation check: {e}')
             status['errors'] += refresh_client_contacts(conn)
             conn.commit()
             try:
@@ -3615,7 +3619,7 @@ def untracked_jobber_items(conn, others=False):
             and not (r['kind'] == 'job' and r['job_type'] == 'recurring')
             and not (r['kind'] == 'quote' and r['status'] != 'approved')]
     names = _account_names(conn)
-    # Quotes for Beatrice's sites are never tracked here.
+    # Quotes for Beatriz's sites are never tracked here.
     rows = [r for r in rows if not (r['kind'] == 'quote' and
                                     beatrice_site(r.get('client_name'), r.get('property_label'), r.get('title')))]
     return [r for r in rows if on_account_sheets(conn, r, names) != others]
@@ -10032,20 +10036,20 @@ def _apply_master_vendors(c, now):
 
 
 REPORT_ONLY_ACCOUNTS = ('Autumn Woods', 'The Reserve @ Estero', 'Wild Blue')
-# Sites whose Wettech quotes go straight to Beatrice (the office, Oct 2026):
-# never tracked here - no item, no Jobber quote, just "Send Wettech quote to Beatrice".
+# Sites whose Wettech quotes go straight to Beatriz (the office, Oct 2026):
+# never tracked here - no item, no Jobber quote, just "Send Wettech quote to Beatriz".
 BEATRICE_SITES = ('Wild Blue', 'Autumn Woods')
-BEATRICE = 'Beatrice'
+BEATRICE = 'Beatriz'
 
 
 def beatrice_site(*texts):
-    """The Beatrice site a document or Jobber record is for, or ''."""
+    """The Beatriz site a document or Jobber record is for, or ''."""
     hay = ' '.join(t or '' for t in texts)
     return next((s for s in BEATRICE_SITES if fuzzy_has(s, hay)), '')
 
 
 def quote_to_beatrice(conn, doc, actor):
-    """A vendor quote for a Beatrice site: a to-do to send it to her, and nothing tracked."""
+    """A vendor quote for a Beatriz site: a to-do to send it to her, and nothing tracked."""
     site = beatrice_site(doc.get('client_name'), doc.get('site'))
     num = f" #{doc['doc_number']}" if doc.get('doc_number') else ''
     price = doc.get('subtotal') if doc.get('subtotal') is not None else doc.get('total')
@@ -10056,14 +10060,100 @@ def quote_to_beatrice(conn, doc, actor):
                                      f"{site} quotes go to {BEATRICE} - not tracked here") if x),
              {'uri': f"/pumps/api/docs/{doc['id']}/file", 'label': 'Open the quote'})
     conn.execute("UPDATE pump_docs SET status='done', updated_at=? WHERE id=?", (_now_text(), doc['id']))
-    _event(conn, actor, 'quote for Beatrice', f"{doc.get('file_name')} - {site} quotes go to {BEATRICE}",
+    _event(conn, actor, 'quote for Beatriz', f"{doc.get('file_name')} - {site} quotes go to {BEATRICE}",
            doc_id=doc['id'])
     return None
 
 
+# The 2026 Monthly Billing Checklist, as scanned (Oct 2026): account, line,
+# monthly amount (None = TBD, billed as used), how often, status, months ticked.
+CONTRACT_CHECKLIST_2026 = [
+    ('Amberly Village', 'Monthly maintenance', 500.00, 'monthly', 'active', [1, 2, 3, 6]),
+    ('Amberly Village', 'Parts', None, 'as used', 'active', []),
+    ('Autumn Woods', 'Monthly maintenance', 3605.00, 'monthly', 'active', [1, 2, 3, 4, 6]),
+    ('Autumn Woods', 'Parts', None, 'as used', 'active', [4, 6]),
+    ('Barefoot Beach', 'Monthly maintenance', 1600.00, 'monthly', 'cancelled', []),
+    ('Clubside at the Strand', 'Monthly maintenance', 850.00, 'monthly', 'active', [1, 2, 3, 6]),
+    ('Center Links', 'Monthly maintenance', 495.00, 'monthly', 'active', [6]),
+    ('Germain Toyota', 'Monthly maintenance', 500.00, 'monthly', 'active', [6]),
+    ('Germain Lincoln', 'Monthly maintenance', 300.00, 'monthly', 'active', [6]),
+    ('Green Tree', 'Monthly maintenance', 750.00, 'monthly', 'active', [1, 2, 3, 6]),
+    ('Hemingway', 'Monthly maintenance', 1200.00, 'monthly', 'active', [1, 2, 3, 6]),
+    ('Heritage Stations', 'Monthly maintenance', 1080.00, 'monthly', 'cancelled', []),
+    ('Heron Glen', 'Bi-monthly maintenance', 510.00, 'bi-monthly', 'active', []),
+    ('Hodges Funeral Home', 'Quarterly maintenance', 3252.00, 'quarterly', 'active', [1]),
+    ('Huntington Lakes #3', 'Monthly maintenance', 400.00, 'monthly', 'active', [6]),
+    ('Huntington Lakes #5', 'Monthly maintenance', 400.00, 'monthly', 'active', [4, 6]),
+    ('Huntington Lakes Master', 'Monthly maintenance', 1850.00, 'monthly', 'active', [1, 2, 3, 6]),
+    ('Isle Verde', 'Monthly maintenance', 680.00, 'monthly', 'active', [6]),
+    ('Miromar Design', 'Monthly maintenance', 175.00, 'monthly', 'active', [1, 2, 3, 6]),
+    ('Miromar Outlets', 'Monthly maintenance', 950.00, 'monthly', 'active', [6]),
+    ('Miromar Outlets', 'Koi pond', 127.00, 'monthly', 'active', [1, 2, 3, 4, 6]),
+    ('Morton Grove', 'Monthly maintenance ($575)', 575.00, 'monthly', 'active', [1, 2, 6]),
+    ('Morton Grove', 'Monthly maintenance ($150)', 150.00, 'monthly', 'active', [1, 2, 3, 6]),
+    ('Pine Air Lakes', 'Irrigation', 600.00, 'monthly', 'active', [1, 2, 3, 4, 6]),
+    ('Pine Air Lakes', 'Landscape', 4708.33, 'monthly', 'active', [1, 2, 3, 4, 6]),
+    ('Pine Air Lakes', 'Trash', 250.00, 'monthly', 'active', [1, 2, 3, 4, 6]),
+    ('Pinnacle at the Strand', 'Monthly maintenance', 600.00, 'monthly', 'active', [6]),
+    ('Raymond Lutgert', 'Monthly maintenance', 350.00, 'monthly', 'active', [4, 6]),
+    ('The Lake Club', 'Monthly maintenance', 1950.00, 'monthly', 'active', [1, 2, 3, 4, 6]),
+    ('The Lake Club', 'Parts', None, 'as used', 'active', [1, 2, 3, 4, 6]),
+    ('The Reserve @ Estero', 'Monthly maintenance', 6920.83, 'monthly', 'active', [1, 2, 3, 4, 6]),
+    ('The Reserve @ Estero', 'Parts', None, 'as used', 'active', [1, 2, 3, 4, 6]),
+    ('Tuscany Point', 'Monthly maintenance', 2100.00, 'monthly', 'active', [1, 2, 3, 6]),
+    ('Tuscany Point', 'Parts', None, 'as used', 'active', [1, 2, 3, 6]),
+    ('University Village Shops, LLC', 'Monthly maintenance', 324.00, 'monthly', 'active', [4, 6]),
+    ('Verona Walk', 'Common', 4560.00, 'monthly', 'active', [6]),
+    ('Verona Walk', 'Residential', 6840.00, 'monthly', 'active', [6]),
+    ('Westminster', 'Monthly maintenance', 980.00, 'monthly', 'active', [1, 2, 3, 6]),
+]
+# Contract lines that aren't the irrigation itself.
+_NOT_IRRIGATION_LINE = re.compile(r'\b(?:parts|landscape|land|trash|koi)\b', re.I)
+
+
+def _seed_contracts(c, now):
+    """Once (Oct 19 2026): the 2026 Monthly Billing Checklist the office scanned."""
+    if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pump_contracts'").fetchone():
+        return
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('contracts_checklist_2026', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    for account, line, amount, freq, status, months in CONTRACT_CHECKLIST_2026:
+        c.execute('INSERT INTO pump_contracts (account, line, amount, frequency, status, billed, notes, updated_by, '
+                  'updated_at) VALUES (?,?,?,?,?,?,?,?,?)',
+                  (account, line, amount, freq, status, json.dumps({'2026': months}),
+                   'From the 2026 Monthly Billing Checklist (scanned Oct 2026)', 'Pumps', now))
+
+
+def contract_dict(r, today=None):
+    """A contract line with where its billing stands this year: the months billed
+    and, for a monthly one, the months before this one that weren't."""
+    today = today or _today()
+    d = dict(r)
+    billed = json.loads(d.get('billed') or '{}')
+    year = str(today.year)
+    d['year'] = year
+    d['months'] = sorted(int(m) for m in billed.get(year, []))
+    d['unbilled'] = [m for m in range(1, today.month) if m not in d['months']] \
+        if d['status'] == 'active' and d['frequency'] == 'monthly' else []
+    d['irrigation'] = not _NOT_IRRIGATION_LINE.search(d.get('line') or '')
+    return d
+
+
+def _spell_beatriz(c, now):
+    """Once (Oct 19 2026): it's Beatriz, not Beatrice - the to-dos already made say so too."""
+    if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pump_todos'").fetchone():
+        return
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('beatriz_spelling_oct26', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    c.execute("UPDATE pump_todos SET title=REPLACE(title, 'Beatrice', 'Beatriz'), "
+              "detail=REPLACE(detail, 'Beatrice', 'Beatriz') WHERE key LIKE 'beatrice:%'")
+
+
 def _stop_tracking_beatrice(c, now):
-    """Once (Oct 16 2026): items already open for a Beatrice site that only wait
-    on a quote are closed - those quotes go to Beatrice."""
+    """Once (Oct 16 2026): items already open for a Beatriz site that only wait
+    on a quote are closed - those quotes go to Beatriz."""
     if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pump_cases'").fetchone():
         return
     c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('beatrice_untrack_oct26', ?)", (json.dumps(now),))
@@ -10234,6 +10324,20 @@ def init_account_tables(c):
                   case_id INTEGER,
                   updated_by TEXT DEFAULT '',
                   updated_at TEXT)''')
+    # Maintenance contracts we bill each month (the office's 2026 Monthly Billing
+    # Checklist): one row per line - "Autumn Woods M/M $3,605", "Autumn Woods
+    # parts" - with the months billed ({"2026": [1, 2, 3]}).
+    c.execute('''CREATE TABLE IF NOT EXISTS pump_contracts (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  account TEXT NOT NULL,
+                  line TEXT DEFAULT '',
+                  amount REAL,
+                  frequency TEXT DEFAULT 'monthly',
+                  status TEXT DEFAULT 'active',
+                  billed TEXT DEFAULT '{}',
+                  notes TEXT DEFAULT '',
+                  updated_by TEXT DEFAULT '',
+                  updated_at TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS pump_maint_accounts (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   name TEXT NOT NULL,
@@ -10334,6 +10438,8 @@ def init_account_tables(c):
     _fix_quote_needed_dates(c, now)
     _apply_follow_ups(c, now)
     _stop_tracking_beatrice(c, now)
+    _seed_contracts(c, now)
+    _spell_beatriz(c, now)
     if not seeded('office_answers_oct26'):
         # What the office said (Oct 2026): Old Collier and Camas Willows are off
         # SCADA; Autumn Woods (we pay) and Reserve at Estero (in their monthly)
@@ -12269,8 +12375,70 @@ def accounts(conn):
         a['scada'] = s
         a['active'] = bool((a['pump'] and a['pump'].get('active')) or (a['lake'] and (a['lake'].get('active') if
                                                                                        a['lake'].get('active') is not None else 1)))
+    # The maintenance contracts we bill: on their account, or an account of their own.
+    try:
+        rows = [contract_dict(r) for r in conn.execute('SELECT * FROM pump_contracts ORDER BY account, id')]
+    except sqlite3.OperationalError:
+        rows = []
+    for a in out:
+        a['contracts'] = []
+    known = list(out)
+    for r in rows:
+        # The same name, else an existing account that's clearly it - a name from the
+        # checklist only ever joins itself ("Huntington Lakes #3" isn't "#5").
+        a = next((x for x in out if x['name'] == r['account']), None) or \
+            next((x for x in known if _same_account(x['name'], r['account']) and
+                  not re.search(r'#\s*\d', r['account'] + x['name'])), None)
+        if not a:
+            a = {'name': r['account'], 'pump': None, 'lake': None, 'scada': None, 'active': False, 'contracts': []}
+            out.append(a)
+        a['contracts'].append(r)
+    for a in out:
+        if any(r['status'] == 'active' for r in a['contracts']):
+            a['active'] = True
     out.sort(key=lambda a: a['name'].lower())
     return out
+
+
+@api('/contracts/<int:cid>', methods=('POST',))
+def h_contract_update(actor, cid):
+    """Body: {"month": 1-12, "billed": true|false, "year"?} ticks a month billed, or
+    {"status": "active"|"cancelled"}, {"amount"}, {"notes"}."""
+    d = _json()
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_contracts WHERE id=?', (cid,)).fetchone()
+        if not row:
+            return {'success': False, 'error': 'Not found'}, 404
+        sets, vals = [], []
+        if 'month' in d:
+            m = int(d['month'])
+            if not 1 <= m <= 12:
+                raise ValueError('Month 1-12')
+            billed = json.loads(row['billed'] or '{}')
+            year = str(d.get('year') or _today().year)
+            ms = set(int(x) for x in billed.get(year, []))
+            ms.add(m) if d.get('billed', True) else ms.discard(m)
+            billed[year] = sorted(ms)
+            sets.append('billed=?')
+            vals.append(json.dumps(billed))
+        if d.get('status') in ('active', 'cancelled'):
+            sets.append('status=?')
+            vals.append(d['status'])
+        if 'amount' in d:
+            sets.append('amount=?')
+            vals.append(_money(d['amount']))
+        if 'notes' in d:
+            sets.append('notes=?')
+            vals.append(str(d['notes'])[:1000])
+        if not sets:
+            raise ValueError('Nothing to change')
+        conn.execute(f"UPDATE pump_contracts SET {', '.join(sets)}, updated_by=?, updated_at=? WHERE id=?",
+                     (*vals, actor, _now_text(), cid))
+        conn.commit()
+        return {'contract': contract_dict(conn.execute('SELECT * FROM pump_contracts WHERE id=?', (cid,)).fetchone())}
+    finally:
+        conn.close()
 
 
 def account_ready(conn, name, actor='system'):
@@ -12355,6 +12523,7 @@ def h_accounts(actor):
             "SELECT * FROM pump_todos WHERE kind='visit' AND done_at IS NULL")}
         for a in rows:
             a['visit'] = visits.get(a['name'])
+            a['irrigation'] = irrigation_state(conn, a['name'])
             for k in ('pump', 'lake'):
                 x = a[k]
                 if x:
@@ -12364,6 +12533,325 @@ def h_accounts(actor):
         return {'accounts': rows, 'month': _today().strftime('%B')}
     finally:
         conn.close()
+
+
+# ── quoting an account for a service it doesn't have ────────────────────────
+# Worded like the office's own Jobber quotes (Oct 2026): Turn Leaf #8746
+# "Quarterly Pump Maintenance", Coconut Landing #9162 "SCADA Annual Cellular
+# subscription", Morton Grove #8903 / #7026 "Quarterly Filter Cleaning".
+PUMP_PROGRAM_TEXT = (
+    'We are pleased to offer this proposal for the irrigation controls and VFD maintenance at your facility'
+    '{stations}.\nThe following breakdown of work to be performed with each visit to ensure the equipment is '
+    'operating properly.\n\n•\tCheck and record incoming voltage\n•\tCheck and record amperage of motors\n'
+    '•\tCheck and record hour meter readings\n•\tCheck and record flow meter readings\n•\tCheck motor starter '
+    'conditions\n•\tVisually inspect all wires for heat damage\n•\tCheck all control devices for proper operation\n'
+    '•\tDrain and clean control lines\n•\tVisually inspect all switches & indicator lights for proper operation\n'
+    '•\tCheck pipes and fittings for leaks\n•\tCheck motors for excessive heat\n•\tGrease motor bearings\n'
+    '•\tCheck for excessive vibration\n•\tCheck mechanical seals for leaks\n•\tCheck control valves and clean wye '
+    'strainers and tubing\n•\tCheck gauges and valves\n•\tManually flush any filters\n•\tCheck hydro-pneumatic '
+    'tanks for proper air pressure')
+IRRIGATION_PROGRAM_TEXT = (
+    '1. Maintenance checklist:\n  •\tCheck all sprinklers and adjust if needed.\n  •\tClean any clogged nozzles as needed.\n'
+    '  •\tSeasonal time clock adjustments. (city and county restrictions apply.)\n  •\tCheck, adjust and replace all '
+    'valves, solenoids & controllers as needed.\n  •\tMoth balls are placed in all clocks as a preventative measure.\n'
+    '  •\tDetailed summary of all findings. (ie: dry spots, dying plants, unhealthy landscape.)\n  •\tPosted sign in '
+    'sheet- inside time clock initialed by technician each month.\n2. No charge for any additional service calls ($95.00) '
+    'for monthly maintenance customers.\n3. Extra charge for major parts only.(valves, solenoids, sprinkler heads, elec. '
+    'problems etc.)\n4. Customer may terminate contract at any time.')
+FILTER_PROGRAM_TEXT = ('We are pleased to quote you the following quarterly filter cleaning services:\n\n'
+                       'Quarterly certified diver to inspect and thoroughly clean out lake filter and remove any debris.')
+SERVICE_QUOTES = {
+    'pump': {'label': 'Pump maintenance', 'title': 'Quarterly Pump Maintenance', 'line': 'QUARTERLY PUMP PROGRAM'},
+    'filter': {'label': 'Filter cleaning', 'title': 'Quarterly Filter Cleaning', 'line': 'PROPOSAL AMOUNT SERVICE'},
+    'scada': {'label': 'SCADA', 'title': 'Estimate for SCADA Annual Cellular subscription', 'line': 'PUMP SERVICE',
+              'price': 600.0},
+    # Monthly Irrigation Maintenance Program (Jobber #6824).
+    'irrigation': {'label': 'Irrigation maintenance', 'title': 'Monthly Irrigation Maintenance Program',
+                   'line': 'MONTHLY IRRIGATION PROGRAM'},
+}
+# What we charge a month per irrigation zone (the office, Oct 2026).
+IRRIGATION_PER_ZONE = float(os.environ.get('PUMPS_IRRIGATION_PER_ZONE', '15') or 15)
+_ZONES = re.compile(r'(\d{1,3})\s*(?:irrigation\s+|sprinkler\s+)?zones?\b|\bzones?\s*(?:count)?\s*[:#=-]?\s*(\d{1,3})\b', re.I)
+
+
+def account_zones(a):
+    """The number of irrigation zones written anywhere in an account's notes, or None."""
+    texts = []
+    for k in ('pump', 'lake', 'scada'):
+        x = a.get(k) or {}
+        texts += [str(x.get(f) or '') for f in ('notes', 'equipment', 'size', 'address', 'location')]
+    for t in texts:
+        for m in _ZONES.finditer(t):
+            # "Zone 9 & 11 renovation" names zones - a count reads "24 zones" or "zones: 24".
+            n = int(m.group(1) or m.group(2))
+            if m.group(2) and re.search(r'\bzone\s+\d', m.group(0), re.I) and not re.search(r'[:#=]', m.group(0)):
+                continue
+            if 0 < n < 1000:
+                return n
+    return None
+
+
+# A recurring job in Jobber that's ours for the pumps, lake or SCADA - not the irrigation itself.
+_NOT_IRRIGATION = re.compile(r'\b(?:pumps?|fountains?|filters?|lakes?|divers?|scada|wells?|vfd|aerat\w*)\b', re.I)
+
+
+def irrigation_state(conn, name):
+    """Whether we manage an account's irrigation: {'managed', 'job', 'how', 'checked_at'} or {} (not checked)."""
+    return _state_get(f'irrigation:{name}', conn=conn) or {}
+
+
+def check_irrigation(conn, a):
+    """Look in Jobber: a live recurring job at the account's site that isn't a pump,
+    lake or SCADA job ("Monthly 6920.83", "Monthly Irrigation Program") means we
+    manage its irrigation. A choice the office made by hand is kept."""
+    name = a['name']
+    was = irrigation_state(conn, name)
+    if was.get('how') == 'office':
+        return was
+    p = a.get('pump') or {}
+    cid = p.get('jobber_client_id')
+    if not cid:
+        pick = pick_client(search_clients(name))
+        cid = pick['id'] if pick else None
+    if not cid:
+        out = {'managed': False, 'job': '', 'how': 'no Jobber client found', 'checked_at': _now_text()}
+    else:
+        every = recurring_jobs(cid)
+        jobs = [j for j in every if j.get('status') != 'archived' and not _NOT_IRRIGATION.search(j.get('title') or '')]
+        labels = {j.get('property_label') or '' for j in every}
+        if len(labels) > 1:
+            # A big client (a management company): only the jobs at this account's site.
+            core = _core_name(name)
+            addr = (p.get('address') or (a.get('lake') or {}).get('address') or '').lower()
+            num = re.match(r'\s*(\d+)', addr)
+            jobs = [j for j in jobs if place_score(core, j.get('property_label') or '') >= 0.6 or
+                    (num and num.group(1) in (j.get('property_label') or ''))]
+        j = jobs[0] if jobs else None
+        out = {'managed': bool(j), 'job': f"#{j.get('number')} {j.get('title')}".strip() if j else '',
+               'how': 'Jobber', 'checked_at': _now_text()}
+    _state_set(f'irrigation:{name}', out, conn=conn)
+    return out
+
+
+def check_all_irrigation(force=False):
+    """Once a day (with the Jobber sync), or on asking: which accounts' irrigation we manage."""
+    conn = _conn()
+    try:
+        last = _state_get('irrigation_checked_at', conn=conn) or ''
+        if not force and last[:10] == _today().isoformat():
+            return 0
+        n = 0
+        for a in accounts(conn):
+            if not a.get('active'):
+                continue
+            try:
+                check_irrigation(conn, a)
+                n += 1
+            except JobberError as e:
+                print(f"  ⚠ Pumps: irrigation check for {a['name']}: {e}")
+            conn.commit()
+        _state_set('irrigation_checked_at', _now_text(), conn=conn)
+        conn.commit()
+        return n
+    finally:
+        conn.close()
+
+
+def service_quote_draft(conn, name, kind):
+    """What a quote for a service an account doesn't have would say, and the
+    Jobber client and property it would go to (the account's, else the clear
+    match by name)."""
+    if kind not in SERVICE_QUOTES:
+        raise ValueError('Pick pump, filter, SCADA or irrigation')
+    a = next((x for x in accounts(conn) if x['name'] == name), None)
+    if not a:
+        raise ValueError('No such account')
+    t = SERVICE_QUOTES[kind]
+    p = a.get('pump') or {}
+    n = len(re.findall(r'pump', p.get('equipment') or p.get('size') or '', re.I))
+    m = re.search(r'(\d+)\s*pump', f"{p.get('equipment') or ''} {p.get('size') or ''}", re.I)
+    count = int(m.group(1)) if m else n
+    if kind == 'pump':
+        desc = PUMP_PROGRAM_TEXT.format(stations=f' for ({count}) pump stations' if count > 1 else '')
+    elif kind == 'filter':
+        desc = FILTER_PROGRAM_TEXT
+    elif kind == 'irrigation':
+        zones = account_zones(a)
+        desc = IRRIGATION_PROGRAM_TEXT + (
+            f'\n\nNumber of zones: {zones} at ${IRRIGATION_PER_ZONE:,.2f} per zone per month.' if zones
+            else '\n\nNumber of zones undetermined.')
+    else:
+        y = _today().year
+        desc = SCADA_QUOTE_TEXT.format(y1=y, y2=y + 1).replace('Renewal of Annual', 'Annual')
+    client = {'id': p.get('jobber_client_id'), 'name': p.get('jobber_client_name')} if p.get('jobber_client_id') else None
+    if not client and jobber_status()['connected']:
+        try:
+            client = pick_client(search_clients(name))
+        except JobberError:
+            client = None
+    props = []
+    if client and client.get('id') and jobber_status()['connected']:
+        try:
+            props = client_jobs(client['id'])['properties']
+        except JobberError:
+            props = []
+    prop = props[0] if len(props) == 1 else next(
+        (x for x in props if place_score(_core_name(name), x['label']) >= 0.99), None)
+    price = t.get('price')
+    zones = account_zones(a) if kind == 'irrigation' else None
+    if zones:
+        price = round(zones * IRRIGATION_PER_ZONE, 2)
+    return {'account': name, 'kind': kind, 'label': t['label'], 'title': t['title'],
+            'zones': zones, 'per_zone': IRRIGATION_PER_ZONE if kind == 'irrigation' else None,
+            'line_items': [{'name': t['line'], 'description': desc, 'quantity': 1,
+                            'unit_price': price, 'taxable': False}],
+            'client': client, 'properties': props, 'property_id': (prop or {}).get('id') or ''}
+
+
+@api('/accounts/service_quote')
+def h_service_quote_draft(actor):
+    """?name=<account>&kind=pump|filter|scada - the quote to draft, to look over."""
+    conn = _conn()
+    try:
+        return service_quote_draft(conn, request.args.get('name') or '', request.args.get('kind') or '')
+    finally:
+        conn.close()
+
+
+@api('/accounts/service_quote', methods=('POST',))
+def h_service_quote_create(actor):
+    """Body: {name, kind, client_id, property_id, title, line_items} - a DRAFT quote in Jobber
+    for a service the account doesn't have, and a to-do to send it."""
+    if actor == BOT:
+        return _office_only(actor, 'Drafting quotes')
+    d = _json()
+    kind = d.get('kind')
+    if kind not in SERVICE_QUOTES:
+        raise ValueError('Pick pump, filter or SCADA')
+    if not d.get('client_id'):
+        raise ValueError('Choose the Jobber client first')
+    if not d.get('property_id'):
+        raise ValueError("Choose the client's property first")
+    lines = [li for li in d.get('line_items') or [] if (li.get('name') or li.get('description'))]
+    if not lines or any(_money(li.get('unit_price')) is None for li in lines):
+        raise ValueError('Put a price on the quote')
+    if not jobber_status()['connected']:
+        raise ValueError('Connect Jobber first')
+    items = _jobber_lines(lines, 'quote')
+    data = gql_with_lines(QUOTE_CREATE, {'attributes': {
+        'clientId': d['client_id'], 'propertyId': d['property_id'],
+        'title': (d.get('title') or SERVICE_QUOTES[kind]['title'])[:255], 'lineItems': items}}, 'attributes')
+    payload = data.get('quoteCreate') or {}
+    if payload.get('userErrors'):
+        raise JobberError('Jobber: ' + '; '.join(e.get('message', '?') for e in payload['userErrors']))
+    q = payload.get('quote') or {}
+    num, uri = str(q.get('quoteNumber') or ''), q.get('jobberWebUri') or ''
+    total = round(sum(i['quantity'] * i['unitPrice'] for i in items), 2)
+    conn = _conn()
+    try:
+        add_todo(conn, f"service-quote:{q.get('id')}",
+                 f"Send the {SERVICE_QUOTES[kind]['label'] if kind == 'scada' else SERVICE_QUOTES[kind]['label'].lower()} "
+                 f"quote #{num} - {d.get('name') or ''}",
+                 f"Drafted in Jobber at ${total:,.2f} from the Accounts tab.", {'uri': uri, 'label': 'Open the quote in Jobber'})
+        _event(conn, actor, 'service quote drafted', f"{d.get('name')}: {SERVICE_QUOTES[kind]['label']} quote #{num} ${total:,.2f}")
+        conn.commit()
+    finally:
+        conn.close()
+    return {'quote': {'id': q.get('id'), 'number': num, 'uri': uri, 'status': (q.get('quoteStatus') or '').lower(),
+                      'total': total}}
+
+
+@bp.route('/pumps/api/accounts/export.xlsx', methods=['POST'])
+def accounts_export():
+    """The Accounts list as a spreadsheet - just the accounts on screen, in that order.
+    Body: {"names": [...], "title": "what was selected"}."""
+    if not pumps_allowed():
+        return jsonify({'success': False, 'error': 'Sign in'}), 401
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+    d = request.get_json(silent=True) or {}
+    names = [str(n) for n in d.get('names') or []]
+    conn = _conn()
+    try:
+        by = {a['name']: a for a in accounts(conn)}
+        irr = {n: irrigation_state(conn, n) for n in names}
+    finally:
+        conn.close()
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'Accounts'
+    title = (d.get('title') or 'Accounts')[:200]
+    ws.append([f'Accounts - {title} - {_today().strftime("%b %d, %Y")}'])
+    ws['A1'].font = Font(bold=True, size=13)
+    heads = ['Account', 'Pump', 'Filter', 'SCADA', 'Irrigation', 'Contract type', 'Contract $/mo', 'Schedule / next due',
+             'Address', 'Jobber client', 'Notes']
+    ws.append(heads)
+    for cell in ws[2]:
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill('solid', fgColor='BDD7EE')
+    yes = lambda v: 'Yes' if v else ''
+    for n in names:
+        a = by.get(n)
+        if not a:
+            continue
+        p, l, sc = a.get('pump') or {}, a.get('lake') or {}, a.get('scada') or {}
+        cons = [c for c in a.get('contracts') or [] if c['status'] == 'active']
+        freq = {c['frequency'] for c in cons}
+        ctype = ('Monthly' if 'monthly' in freq else 'Bi-monthly' if 'bi-monthly' in freq else 'Quarterly'
+                 if 'quarterly' in freq else 'Parts / as used' if cons else
+                 'Cancelled' if a.get('contracts') else '')
+        has_irr = (irr.get(n) or {}).get('managed') or any(c.get('irrigation') for c in cons)
+        sched = []
+        if p.get('active'):
+            sched.append('Pump: ' + ('monthly' if p.get('monthly') else (p.get('months') or '')))
+        if l and (l.get('active') if l.get('active') is not None else 1):
+            sched.append('Diver: ' + (l.get('months') or 'yearly'))
+        if sc.get('active'):
+            sched.append('SCADA: ' + ('complimentary' if sc.get('complimentary') else f"renews {sc.get('next_due_on') or '?'}"))
+        ws.append([n, yes(p.get('active')), yes(l and (l.get('active') if l.get('active') is not None else 1)),
+                   ('Yes (incl.)' if sc.get('complimentary') else 'Yes') if sc.get('active') else '',
+                   'Yes' if has_irr else '', ctype,
+                   round(sum(c['amount'] or 0 for c in cons if c['frequency'] == 'monthly'), 2) or None,
+                   '; '.join(x for x in sched if x), p.get('address') or l.get('address') or '',
+                   p.get('jobber_client_name') or '', ' | '.join(x for x in (p.get('notes'), l.get('notes')) if x)])
+    for col, w in zip('ABCDEFGHIJK', (34, 7, 7, 12, 10, 16, 14, 40, 40, 30, 60)):
+        ws.column_dimensions[col].width = w
+    for row in ws.iter_rows(min_row=3):
+        row[6].number_format = '$#,##0.00'
+        for c in row:
+            c.alignment = Alignment(vertical='top', wrap_text=c.column in (8, 9, 11))
+    ws.freeze_panes = 'A3'
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    safe = re.sub(r'[^A-Za-z0-9 _-]+', '', title).strip().replace(' ', '_')[:60] or 'all'
+    return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                     as_attachment=True, download_name=f'Accounts_{safe}_{_today().isoformat()}.xlsx')
+
+
+@api('/accounts/irrigation', methods=('POST',))
+def h_account_irrigation(actor):
+    """Body: {"name", "managed": true|false} - the office says whether we manage the account's irrigation."""
+    d = _json()
+    if not d.get('name'):
+        raise ValueError('Which account?')
+    conn = _conn()
+    try:
+        out = {'managed': bool(d.get('managed')), 'job': '', 'how': 'office', 'by': actor, 'checked_at': _now_text()}
+        _state_set(f"irrigation:{d['name']}", out, conn=conn)
+        conn.commit()
+        return {'irrigation': out}
+    finally:
+        conn.close()
+
+
+@api('/accounts/irrigation/check', methods=('POST',))
+def h_account_irrigation_check(actor):
+    """Look in Jobber now for every account (in the background - it takes a minute)."""
+    if not jobber_status()['connected']:
+        raise ValueError('Connect Jobber first')
+    threading.Thread(target=_safe(check_all_irrigation), args=(True,), daemon=True).start()
+    return {'started': True}
 
 
 # ── an account's history: every to-do and job the client has had ────────────

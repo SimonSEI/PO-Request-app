@@ -3936,14 +3936,137 @@ class PumpsTest(unittest.TestCase):
         q = self.upload('q-banyan.pdf')
         self.assertEqual(q['case_id'], waiting, (q, visit, waiting))
 
+    def test_quote_a_service_an_account_does_not_have(self):
+        """Oct 2026: on Accounts, a grey Pump / Filter / SCADA means the account doesn't have it - click to draft
+        the quote in Jobber, worded like the office's past quotes (Turn Leaf #8746, Coconut Landing #9162,
+        Morton Grove #8903)."""
+        name = next(a['name'] for a in self.c.get('/pumps/api/accounts').get_json()['accounts']
+                    if a['active'] and not (a.get('scada') or {}).get('active'))
+        saved = (P.jobber_status, P.search_clients, P.pick_client, P.client_jobs, P.jobber_gql)
+        P.jobber_status = lambda: {'connected': True}
+        P.search_clients = lambda n, limit=8: [{'id': 'CX', 'name': name}]
+        P.pick_client = lambda c: c[0] if c else None
+        P.client_jobs = lambda cid: {'properties': [{'id': 'PX', 'label': '1 Lake Way'}], 'jobs': []}
+        fake = FakeJobber()
+        P.jobber_gql = fake
+        try:
+            d = self.c.get(f'/pumps/api/accounts/service_quote?name={name}&kind=scada').get_json()
+            self.assertTrue(d['success'], d)
+            self.assertEqual((d['client']['id'], d['property_id']), ('CX', 'PX'))
+            self.assertEqual(d['line_items'][0]['unit_price'], 600.0)
+            self.assertIn('SCADA', d['line_items'][0]['description'])
+            p = self.c.get(f'/pumps/api/accounts/service_quote?name={name}&kind=pump').get_json()
+            self.assertIn('Grease motor bearings', p['line_items'][0]['description'])
+            self.assertEqual(p['title'], 'Quarterly Pump Maintenance')
+            f = self.c.get(f'/pumps/api/accounts/service_quote?name={name}&kind=filter').get_json()
+            self.assertIn('certified diver', f['line_items'][0]['description'])
+            no_price = self.c.post('/pumps/api/accounts/service_quote', json={
+                'name': name, 'kind': 'filter', 'client_id': 'CX', 'property_id': 'PX',
+                'line_items': [{'name': 'X', 'description': 'Y', 'quantity': 1}]}).get_json()
+            self.assertFalse(no_price['success'])
+            r = self.c.post('/pumps/api/accounts/service_quote', json={
+                'name': name, 'kind': 'scada', 'client_id': 'CX', 'property_id': 'PX', 'title': d['title'],
+                'line_items': d['line_items']}).get_json()
+            self.assertTrue(r['success'], r)
+            self.assertEqual(r['quote']['number'], '812')
+            made = [v for q, v in fake.calls if 'quoteCreate(' in q][-1]['attributes']
+            self.assertEqual((made['clientId'], made['propertyId']), ('CX', 'PX'))
+        finally:
+            P.jobber_status, P.search_clients, P.pick_client, P.client_jobs, P.jobber_gql = saved
+        todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
+        self.assertTrue(any(t['title'].startswith('Send the SCADA quote #812') for t in todos))
+
+    def test_download_the_accounts_shown_as_a_sheet(self):
+        """Oct 2026: download a sheet of the accounts shown - whatever is selected, in that order."""
+        import openpyxl
+        accs = self.c.get('/pumps/api/accounts').get_json()['accounts']
+        names = [a['name'] for a in accs if (a.get('scada') or {}).get('active') and a['name'] != 'Autumn Woods'][:3] + ['Autumn Woods']
+        r = self.c.post('/pumps/api/accounts/export.xlsx', json={'names': names, 'title': 'Has SCADA'})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('Has_SCADA', r.headers['Content-Disposition'])
+        ws = openpyxl.load_workbook(io.BytesIO(r.data)).active
+        self.assertIn('Has SCADA', ws['A1'].value)
+        self.assertEqual([c.value for c in ws[2]][:5], ['Account', 'Pump', 'Filter', 'SCADA', 'Irrigation'])
+        rows = {row[0].value: [c.value for c in row] for row in ws.iter_rows(min_row=3)}
+        self.assertEqual(list(rows), names)
+        self.assertEqual(rows['Autumn Woods'][5], 'Monthly')
+        self.assertEqual(rows['Autumn Woods'][6], 3605.0)
+        self.assertEqual(rows['Autumn Woods'][4], 'Yes')
+
+    def test_billing_checklist_contracts_on_accounts(self):
+        """Oct 2026: the 2026 Monthly Billing Checklist on Accounts - every name an account (joined to the one
+        already there), each line's amount and status, the months billed, and months gone by unbilled."""
+        accs = {a['name']: a for a in self.c.get('/pumps/api/accounts').get_json()['accounts']}
+        aw = accs['Autumn Woods']
+        mm = next(c for c in aw['contracts'] if c['line'] == 'Monthly maintenance')
+        self.assertEqual((mm['amount'], mm['status']), (3605.0, 'active'))
+        self.assertTrue(aw['pump'], 'joined to the Autumn Woods account already there')
+        on = {c['account'] for a in accs.values() for c in a.get('contracts') or []}
+        self.assertEqual(on, {row[0] for row in P.CONTRACT_CHECKLIST_2026}, 'every name on the checklist is on Accounts')
+        self.assertTrue(any(c['line'] == 'Residential' for c in accs['VeronaWalk HOA']['contracts']))
+        self.assertNotIn('Huntington Lakes #5', [c['account'] for c in accs['Huntington Lakes #3']['contracts']])
+        bb = accs['Barefoot Beach']['contracts'][0]
+        self.assertEqual((bb['status'], bb['unbilled']), ('cancelled', []))
+        # Tick a month billed: off the "not billed" list.
+        if P._today().year == 2026 and P._today().month > 5:
+            self.assertIn(5, mm['unbilled'])
+            r = self.c.post(f"/pumps/api/contracts/{mm['id']}", json={'month': 5, 'billed': True}).get_json()
+            self.assertTrue(r['success'], r)
+            self.assertIn(5, r['contract']['months'])
+            self.assertNotIn(5, r['contract']['unbilled'])
+
+    def test_irrigation_we_manage_comes_from_jobber(self):
+        """Oct 2026: Accounts shows whether we manage the irrigation too - a live recurring job at the site
+        that isn't a pump/lake/SCADA job ("Monthly 6920.83") - and quotes it when we don't (Jobber #6824)."""
+        conn = P._conn()
+        a = next(x for x in P.accounts(conn) if x['active'])
+        saved = (P.recurring_jobs, P.search_clients, P.pick_client, P.jobber_status, P.client_jobs)
+        P.search_clients = lambda n, limit=8: [{'id': 'CI', 'name': a['name']}]
+        P.pick_client = lambda c: c[0] if c else None
+        try:
+            P.recurring_jobs = lambda cid: [{'id': 'J1', 'number': 13130, 'title': 'Monthly 6920.83', 'status': 'upcoming', 'property_label': ''},
+                                            {'id': 'J2', 'number': 3249, 'title': 'Quarterly Pump 300.00', 'status': 'upcoming', 'property_label': ''}]
+            st = P.check_irrigation(conn, a)
+            self.assertTrue(st['managed'], st)
+            self.assertIn('Monthly 6920.83', st['job'])
+            P.recurring_jobs = lambda cid: [{'id': 'J2', 'number': 3249, 'title': 'Quarterly Pump 300.00', 'status': 'upcoming', 'property_label': ''}]
+            self.assertFalse(P.check_irrigation(conn, a)['managed'], 'only the pump job')
+            conn.commit()
+            acc = next(x for x in self.c.get('/pumps/api/accounts').get_json()['accounts'] if x['name'] == a['name'])
+            self.assertFalse(acc['irrigation']['managed'])
+            # The office says we do: kept, even after Jobber is checked again.
+            self.c.post('/pumps/api/accounts/irrigation', json={'name': a['name'], 'managed': True})
+            self.assertTrue(P.check_irrigation(conn, a)['managed'])
+            P.jobber_status = lambda: {'connected': True}
+            P.client_jobs = lambda cid: {'properties': [{'id': 'PI', 'label': 'x'}], 'jobs': []}
+            d = self.c.get(f"/pumps/api/accounts/service_quote?name={a['name']}&kind=irrigation").get_json()
+            self.assertEqual(d['title'], 'Monthly Irrigation Maintenance Program')
+            self.assertIn('Moth balls', d['line_items'][0]['description'])
+            # Priced by the zone: the count from the account's notes x $15 a zone - or said to be unknown.
+            if a.get('pump'):
+                conn.execute("UPDATE pump_maint_accounts SET notes='' WHERE name=?", (a['pump']['name'],))
+                conn.commit()
+                d = self.c.get(f"/pumps/api/accounts/service_quote?name={a['name']}&kind=irrigation").get_json()
+                self.assertIn('Number of zones undetermined.', d['line_items'][0]['description'])
+                self.assertIsNone(d['line_items'][0]['unit_price'])
+                conn.execute("UPDATE pump_maint_accounts SET notes='Clubhouse - 24 zones, 2 controllers' WHERE name=?",
+                             (a['pump']['name'],))
+                conn.commit()
+                d = self.c.get(f"/pumps/api/accounts/service_quote?name={a['name']}&kind=irrigation").get_json()
+                self.assertEqual((d['zones'], d['line_items'][0]['unit_price']), (24, 360.0))
+                self.assertIn('Number of zones: 24 at $15.00 per zone per month.', d['line_items'][0]['description'])
+        finally:
+            P.recurring_jobs, P.search_clients, P.pick_client, P.jobber_status, P.client_jobs = saved
+            conn.close()
+
     def test_wild_blue_and_autumn_woods_quotes_go_to_beatrice(self):
         """Oct 2026: never track a Wild Blue or Autumn Woods quote - Wettech's quote is a to-do "Send Wettech
-        quote to Beatrice", with no item and no Jobber quote; Jobber quotes for them aren't offered to track."""
+        quote to Beatriz", with no item and no Jobber quote; Jobber quotes for them aren't offered to track."""
         self.extracts['q-wildblue.pdf'] = extraction('quote', '41201', client='Wild Blue', subtotal=2400)
         q = self.upload('q-wildblue.pdf')
         self.assertFalse(q.get('case_id'), q)
         todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
-        t = next(t for t in todos if t['title'].startswith('Send Wettech quote #41201 to Beatrice'))
+        t = next(t for t in todos if t['title'].startswith('Send Wettech quote #41201 to Beatriz'))
         self.assertIn(f"/pumps/api/docs/{q['doc_id']}/file", t['link']['uri'])
         vq = {x['number']: x for x in self.c.get('/pumps/api/vendor_quotes').get_json()['quotes']}
         self.assertEqual(vq['41201']['state'], 'beatrice')

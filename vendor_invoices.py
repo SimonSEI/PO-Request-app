@@ -1403,12 +1403,22 @@ def alert_not_inputted(force=False):
 
 
 def run_cycle():
-    """Every hour: read PO@, check linked Jobber invoices for payment, then chase invoices nobody entered."""
-    for step in (scan_inbox, check_jobber_paid, alert_not_inputted):
+    """Every hour: read PO@, check linked Jobber invoices for payment, then chase invoices nobody entered.
+    Each gunicorn worker schedules this; a file lock lets only one run it at a time."""
+    import fcntl
+    with open(os.path.join(_cfg.get('data_dir') or '.', '.vendor_invoices_cycle.lock'), 'w') as fh:
         try:
-            step()
-        except Exception as e:
-            print(f'⚠ Vendor Invoices {step.__name__}: {e}')
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return
+        try:
+            for step in (scan_inbox, check_jobber_paid, alert_not_inputted):
+                try:
+                    step()
+                except Exception as e:
+                    print(f'⚠ Vendor Invoices {step.__name__}: {e}')
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
