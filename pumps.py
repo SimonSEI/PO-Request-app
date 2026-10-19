@@ -2274,6 +2274,8 @@ def check_diver_billed(case_id, actor='Pumps'):
                 lo, hi = (when - timedelta(days=10)).isoformat(), (when + timedelta(days=45)).isoformat()
                 recs = [r for r in client_records(client_id, 'invoice') if r['status'] not in ('voided', 'bad_debt')
                         and lo <= (r['created'] or '') <= hi]
+                if not recs:
+                    recs = invoices_named(case.get('client_name') or doc.get('client_name') or '', lo, hi, client_id)
                 found = sorted(recs, key=lambda r: abs((date.fromisoformat(r['created']) - when).days))[0] if recs else None
         except (JobberError, ValueError) as e:
             err = str(e)
@@ -2305,6 +2307,28 @@ def check_diver_billed(case_id, actor='Pumps'):
     finally:
         conn.close()
     return {'billed': bool(found), 'invoice': found, 'error': err}
+
+
+def invoices_named(name, lo, hi, client_id=None):
+    """Jobber invoices found by searching the account's name, created between lo
+    and hi: the pump service invoice when the client's own list didn't have it
+    (Magnolia Falls #36870, Oct 2026). The client's, when we know which client."""
+    core = _core_name(name)
+    if len(core) < 4:
+        return []
+    data = jobber_gql('query($q: String) { invoices(first: 20, searchTerm: $q) { nodes { id invoiceNumber '
+                      'invoiceStatus createdAt jobberWebUri amounts { total } client { id name } } } }', {'q': core})
+    out = []
+    for n in ((data.get('invoices') or {}).get('nodes') or []):
+        c = n.get('client') or {}
+        if client_id and c.get('id') != client_id and not _same_account(c.get('name') or '', name):
+            continue
+        created, status = (n.get('createdAt') or '')[:10], (n.get('invoiceStatus') or '').lower()
+        if lo <= created <= hi and status not in ('voided', 'bad_debt'):
+            out.append({'id': n['id'], 'number': str(n.get('invoiceNumber') or ''), 'status': status,
+                        'total': _money((n.get('amounts') or {}).get('total')), 'created': created,
+                        'uri': n.get('jobberWebUri')})
+    return out
 
 
 def check_all_diver_bills(actor='Jobber sync'):
@@ -3283,17 +3307,18 @@ def check_mutation_allowed(query):
 
 def jobber_gql(query, variables=None):
     check_mutation_allowed(query)
-    force = False
-    for _ in range(5):
+    force, reason = False, 'signed out or rate limited'
+    for _ in range(6):
         token = _access_token(force)
         r = http_requests.post(JOBBER_GQL, timeout=60, json={'query': query, 'variables': variables or {}},
                                headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json',
                                         'X-JOBBER-GRAPHQL-VERSION': JOBBER_API_VERSION})
         if r.status_code == 401 and _tokens().get('refresh_token'):
-            force = True
+            force, reason = True, 'signed out'
             continue
         if r.status_code == 429:
             time.sleep(20)
+            reason = 'rate limited'
             continue
         if r.status_code >= 400:
             raise JobberError(f'Jobber API HTTP {r.status_code}')
@@ -3301,11 +3326,20 @@ def jobber_gql(query, variables=None):
         errors = out.get('errors') or []
         if errors:
             if any((e.get('extensions') or {}).get('code') == 'THROTTLED' for e in errors):
-                time.sleep(15)
+                # Jobber's points bucket: wait as long as it takes to refill for this query. One
+                # costing more than the whole bucket never runs (SCADA invoices, Oct 2026).
+                cost = (out.get('extensions') or {}).get('cost') or {}
+                need, ts = cost.get('requestedQueryCost') or 0, cost.get('throttleStatus') or {}
+                if need and ts.get('maximumAvailable') and need > ts['maximumAvailable']:
+                    raise JobberError(f"Jobber won't run a query this big ({need} points, "
+                                      f"{ts['maximumAvailable']} allowed)")
+                short = need - (ts.get('currentlyAvailable') or 0)
+                time.sleep(min(30, max(2, short / (ts.get('restoreRate') or 500) + 1)) if need else 15)
+                reason = 'rate limited'
                 continue
             raise JobberError(' | '.join(e.get('message', '?') for e in errors))
         return out.get('data') or {}
-    raise JobberError('Jobber kept refusing the request (signed out or rate limited)')
+    raise JobberError(f'Jobber kept refusing the request ({reason})')
 
 
 def _render(spec):
@@ -3458,7 +3492,7 @@ def _sync_recent_quotes(seen):
     errors, kept = [], {}
     spec = ['id', 'quoteNumber', 'title', 'quoteStatus', 'createdAt', 'updatedAt', 'jobberWebUri',
             ('amounts', ['total']), ('client', ['id', 'name', 'isCompany']), ('property', ['id', _ADDR]),
-            ('lineItems', [('nodes', ['name', 'description'])])]
+            ('lineItems(first: 10)', [('nodes', ['name', 'description'])])]
     since = (_today() - timedelta(days=RECENT_QUOTE_DAYS)).isoformat()
     conn = _conn()
     try:
@@ -10869,7 +10903,7 @@ def _fmt_money(inv):
 def scan_scada_invoices(conn, days=430):
     """Read the last ~14 months of Jobber invoices for SCADA renewals."""
     since = (_today() - timedelta(days=days)).isoformat()
-    lines = 'lineItems { nodes { name description } }'
+    lines = 'lineItems(first: 10) { nodes { name description } }'   # all of them: past Jobber's points limit
     fields = (f'id invoiceNumber invoiceStatus issuedDate createdAt jobberWebUri amounts {{ total }} '
               f'client {{ id name }} {lines}')
     filt = '(first: 50, after: $after, filter: { issuedDate: { after: $since } })'
