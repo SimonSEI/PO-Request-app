@@ -4053,20 +4053,28 @@ class PumpsTest(unittest.TestCase):
         ("condition and seems to be functioning") with no number or date, so the invoice that went out was never
         found. Number from the file name, the date, the account the bill names; one already filed is put right."""
         name = 'Invoice_2498_from_Gulfshore_Yacht_Service_LLC.pdf'
-        text = ('Gulfshore Yacht Service LLC\n1200 Marina Dr\nNaples, FL 34102\nInvoice\nBill to\n'
-                'Barrington Cove HOA\nInvoice details\nInvoice no.: 2498\nTerms: Net 30\n'
-                'Invoice date: 10/15/2026\nDue date: 11/14/2026\n'
-                '#  Date  Product or service  Description  Qty  Rate  Amount\n'
-                '1.  Filter cleaning  Filter is in good physical  1  $125.00  $125.00\n'
-                'condition and seems to be functioning\nTotal  $125.00\n')
+        # Jordan's QuickBooks layout: the site on the line above "Bill to" (us) or on the Bill to line itself,
+        # his own label at the start of the note, the number only in the file name.
+        text = ('INVOICE\nGulfshore Yacht Service LLC gulfshore@example.com\n100 Example Dr +1 (239) 555-0100\n'
+                'Naples, FL 34120 example.com\nBill to Ship to\nBarrington, Somewhere Barrington, Somewhere\n'
+                '1 Example Way 1 Example Way\nInvoice details\nInvoice date: 10/16/2026\n'
+                '# Date Product or service Description Qty Rate Amount\n'
+                '1. 10/15/2026 Filter cleaning Barrington. Filter is in good physical 2 $62.50 $125.00\n'
+                'condition and seems to be functioning\nproperly\nTotal $125.00\nWays to pay\n')
         x = P._regex_extract(text, 'gulfshoreyachts@gmail.com', 'New payment request from Gulfshore Yacht Service LLC', name)
         self.assertEqual((x['doc_number'], x['doc_date'], x['total']), ('2498', '2026-10-15', 125.0))
-        self.assertIn('Barrington Cove', x['client_name'])
+        self.assertIn('Barrington Cove', x['client_name'], 'Jordan\'s "Barrington" is the Barrington Cove account')
+        self.assertEqual([(i['quantity'], i['unit_price'], i['amount']) for i in x['line_items']], [(2.0, 62.5, 125.0)])
+        self.assertTrue(x['line_items'][0]['description'].endswith('functioning properly'))
+        above = text.replace('Naples, FL 34120 example.com\n', 'Naples, FL 34120 example.com\nBanyan Bay\n').replace(
+            'Barrington, Somewhere Barrington, Somewhere', 'Stahlman-England Stahlman-England').replace(
+            'cleaning Barrington.', 'cleaning Banyan Bay.')
+        self.assertEqual(P._regex_extract(above, 'gulfshore@example.com', '', name)['client_name'], 'Banyan Bay')
         # Filed before the fix with the note as the client: read again on the next check, the to-do put right.
         self.texts[name] = text
         saved = (P.jobber_status, P.invoice_client, P.client_records, P.invoices_named, P._regex_extract)
         P._regex_extract = lambda t, sender='', subject='', filename='': {
-            **saved[4](t.replace('Bill to\nBarrington Cove HOA\n', ''), sender, subject, ''),
+            **saved[4](t, sender, subject, ''),
             'client_name': 'condition and seems to be functioning', 'doc_number': '', 'doc_date': ''}
         P.jobber_status = lambda: {'connected': True}
         P.invoice_client = lambda doc, case=None: 'CBC' if 'Barrington' in (case or {}).get('client_name', '') else None
