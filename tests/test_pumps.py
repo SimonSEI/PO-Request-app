@@ -3976,6 +3976,37 @@ class PumpsTest(unittest.TestCase):
         todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
         self.assertTrue(any(t['title'].startswith('Send the SCADA quote #812') for t in todos))
 
+    def test_irrigation_we_manage_comes_from_jobber(self):
+        """Oct 2026: Accounts shows whether we manage the irrigation too - a live recurring job at the site
+        that isn't a pump/lake/SCADA job ("Monthly 6920.83") - and quotes it when we don't (Jobber #6824)."""
+        conn = P._conn()
+        a = next(x for x in P.accounts(conn) if x['active'])
+        saved = (P.recurring_jobs, P.search_clients, P.pick_client, P.jobber_status, P.client_jobs)
+        P.search_clients = lambda n, limit=8: [{'id': 'CI', 'name': a['name']}]
+        P.pick_client = lambda c: c[0] if c else None
+        try:
+            P.recurring_jobs = lambda cid: [{'id': 'J1', 'number': 13130, 'title': 'Monthly 6920.83', 'status': 'upcoming', 'property_label': ''},
+                                            {'id': 'J2', 'number': 3249, 'title': 'Quarterly Pump 300.00', 'status': 'upcoming', 'property_label': ''}]
+            st = P.check_irrigation(conn, a)
+            self.assertTrue(st['managed'], st)
+            self.assertIn('Monthly 6920.83', st['job'])
+            P.recurring_jobs = lambda cid: [{'id': 'J2', 'number': 3249, 'title': 'Quarterly Pump 300.00', 'status': 'upcoming', 'property_label': ''}]
+            self.assertFalse(P.check_irrigation(conn, a)['managed'], 'only the pump job')
+            conn.commit()
+            acc = next(x for x in self.c.get('/pumps/api/accounts').get_json()['accounts'] if x['name'] == a['name'])
+            self.assertFalse(acc['irrigation']['managed'])
+            # The office says we do: kept, even after Jobber is checked again.
+            self.c.post('/pumps/api/accounts/irrigation', json={'name': a['name'], 'managed': True})
+            self.assertTrue(P.check_irrigation(conn, a)['managed'])
+            P.jobber_status = lambda: {'connected': True}
+            P.client_jobs = lambda cid: {'properties': [{'id': 'PI', 'label': 'x'}], 'jobs': []}
+            d = self.c.get(f"/pumps/api/accounts/service_quote?name={a['name']}&kind=irrigation").get_json()
+            self.assertEqual(d['title'], 'Monthly Irrigation Maintenance Program')
+            self.assertIn('Moth balls', d['line_items'][0]['description'])
+        finally:
+            P.recurring_jobs, P.search_clients, P.pick_client, P.jobber_status, P.client_jobs = saved
+            conn.close()
+
     def test_wild_blue_and_autumn_woods_quotes_go_to_beatrice(self):
         """Oct 2026: never track a Wild Blue or Autumn Woods quote - Wettech's quote is a to-do "Send Wettech
         quote to Beatriz", with no item and no Jobber quote; Jobber quotes for them aren't offered to track."""

@@ -3466,6 +3466,10 @@ def _sync_jobber(full=False, actor='system'):
             close_stale_todos(conn)
             rebuild_scada(conn)
             conn.commit()
+            try:
+                check_all_irrigation()
+            except Exception as e:
+                status['errors'].append(f'Irrigation check: {e}')
             status['errors'] += refresh_client_contacts(conn)
             conn.commit()
             try:
@@ -12367,6 +12371,7 @@ def h_accounts(actor):
             "SELECT * FROM pump_todos WHERE kind='visit' AND done_at IS NULL")}
         for a in rows:
             a['visit'] = visits.get(a['name'])
+            a['irrigation'] = irrigation_state(conn, a['name'])
             for k in ('pump', 'lake'):
                 x = a[k]
                 if x:
@@ -12393,6 +12398,14 @@ PUMP_PROGRAM_TEXT = (
     '•\tCheck for excessive vibration\n•\tCheck mechanical seals for leaks\n•\tCheck control valves and clean wye '
     'strainers and tubing\n•\tCheck gauges and valves\n•\tManually flush any filters\n•\tCheck hydro-pneumatic '
     'tanks for proper air pressure')
+IRRIGATION_PROGRAM_TEXT = (
+    '1. Maintenance checklist:\n  •\tCheck all sprinklers and adjust if needed.\n  •\tClean any clogged nozzles as needed.\n'
+    '  •\tSeasonal time clock adjustments. (city and county restrictions apply.)\n  •\tCheck, adjust and replace all '
+    'valves, solenoids & controllers as needed.\n  •\tMoth balls are placed in all clocks as a preventative measure.\n'
+    '  •\tDetailed summary of all findings. (ie: dry spots, dying plants, unhealthy landscape.)\n  •\tPosted sign in '
+    'sheet- inside time clock initialed by technician each month.\n2. No charge for any additional service calls ($95.00) '
+    'for monthly maintenance customers.\n3. Extra charge for major parts only.(valves, solenoids, sprinkler heads, elec. '
+    'problems etc.)\n4. Customer may terminate contract at any time.')
 FILTER_PROGRAM_TEXT = ('We are pleased to quote you the following quarterly filter cleaning services:\n\n'
                        'Quarterly certified diver to inspect and thoroughly clean out lake filter and remove any debris.')
 SERVICE_QUOTES = {
@@ -12400,7 +12413,74 @@ SERVICE_QUOTES = {
     'filter': {'label': 'Filter cleaning', 'title': 'Quarterly Filter Cleaning', 'line': 'PROPOSAL AMOUNT SERVICE'},
     'scada': {'label': 'SCADA', 'title': 'Estimate for SCADA Annual Cellular subscription', 'line': 'PUMP SERVICE',
               'price': 600.0},
+    # Monthly Irrigation Maintenance Program (Jobber #6824).
+    'irrigation': {'label': 'Irrigation maintenance', 'title': 'Monthly Irrigation Maintenance Program',
+                   'line': 'MONTHLY IRRIGATION PROGRAM'},
 }
+# A recurring job in Jobber that's ours for the pumps, lake or SCADA - not the irrigation itself.
+_NOT_IRRIGATION = re.compile(r'\b(?:pumps?|fountains?|filters?|lakes?|divers?|scada|wells?|vfd|aerat\w*)\b', re.I)
+
+
+def irrigation_state(conn, name):
+    """Whether we manage an account's irrigation: {'managed', 'job', 'how', 'checked_at'} or {} (not checked)."""
+    return _state_get(f'irrigation:{name}', conn=conn) or {}
+
+
+def check_irrigation(conn, a):
+    """Look in Jobber: a live recurring job at the account's site that isn't a pump,
+    lake or SCADA job ("Monthly 6920.83", "Monthly Irrigation Program") means we
+    manage its irrigation. A choice the office made by hand is kept."""
+    name = a['name']
+    was = irrigation_state(conn, name)
+    if was.get('how') == 'office':
+        return was
+    p = a.get('pump') or {}
+    cid = p.get('jobber_client_id')
+    if not cid:
+        pick = pick_client(search_clients(name))
+        cid = pick['id'] if pick else None
+    if not cid:
+        out = {'managed': False, 'job': '', 'how': 'no Jobber client found', 'checked_at': _now_text()}
+    else:
+        every = recurring_jobs(cid)
+        jobs = [j for j in every if j.get('status') != 'archived' and not _NOT_IRRIGATION.search(j.get('title') or '')]
+        labels = {j.get('property_label') or '' for j in every}
+        if len(labels) > 1:
+            # A big client (a management company): only the jobs at this account's site.
+            core = _core_name(name)
+            addr = (p.get('address') or (a.get('lake') or {}).get('address') or '').lower()
+            num = re.match(r'\s*(\d+)', addr)
+            jobs = [j for j in jobs if place_score(core, j.get('property_label') or '') >= 0.6 or
+                    (num and num.group(1) in (j.get('property_label') or ''))]
+        j = jobs[0] if jobs else None
+        out = {'managed': bool(j), 'job': f"#{j.get('number')} {j.get('title')}".strip() if j else '',
+               'how': 'Jobber', 'checked_at': _now_text()}
+    _state_set(f'irrigation:{name}', out, conn=conn)
+    return out
+
+
+def check_all_irrigation(force=False):
+    """Once a day (with the Jobber sync), or on asking: which accounts' irrigation we manage."""
+    conn = _conn()
+    try:
+        last = _state_get('irrigation_checked_at', conn=conn) or ''
+        if not force and last[:10] == _today().isoformat():
+            return 0
+        n = 0
+        for a in accounts(conn):
+            if not a.get('active'):
+                continue
+            try:
+                check_irrigation(conn, a)
+                n += 1
+            except JobberError as e:
+                print(f"  ⚠ Pumps: irrigation check for {a['name']}: {e}")
+            conn.commit()
+        _state_set('irrigation_checked_at', _now_text(), conn=conn)
+        conn.commit()
+        return n
+    finally:
+        conn.close()
 
 
 def service_quote_draft(conn, name, kind):
@@ -12408,7 +12488,7 @@ def service_quote_draft(conn, name, kind):
     Jobber client and property it would go to (the account's, else the clear
     match by name)."""
     if kind not in SERVICE_QUOTES:
-        raise ValueError('Pick pump, filter or SCADA')
+        raise ValueError('Pick pump, filter, SCADA or irrigation')
     a = next((x for x in accounts(conn) if x['name'] == name), None)
     if not a:
         raise ValueError('No such account')
@@ -12421,6 +12501,8 @@ def service_quote_draft(conn, name, kind):
         desc = PUMP_PROGRAM_TEXT.format(stations=f' for ({count}) pump stations' if count > 1 else '')
     elif kind == 'filter':
         desc = FILTER_PROGRAM_TEXT
+    elif kind == 'irrigation':
+        desc = IRRIGATION_PROGRAM_TEXT
     else:
         y = _today().year
         desc = SCADA_QUOTE_TEXT.format(y1=y, y2=y + 1).replace('Renewal of Annual', 'Annual')
@@ -12495,6 +12577,31 @@ def h_service_quote_create(actor):
         conn.close()
     return {'quote': {'id': q.get('id'), 'number': num, 'uri': uri, 'status': (q.get('quoteStatus') or '').lower(),
                       'total': total}}
+
+
+@api('/accounts/irrigation', methods=('POST',))
+def h_account_irrigation(actor):
+    """Body: {"name", "managed": true|false} - the office says whether we manage the account's irrigation."""
+    d = _json()
+    if not d.get('name'):
+        raise ValueError('Which account?')
+    conn = _conn()
+    try:
+        out = {'managed': bool(d.get('managed')), 'job': '', 'how': 'office', 'by': actor, 'checked_at': _now_text()}
+        _state_set(f"irrigation:{d['name']}", out, conn=conn)
+        conn.commit()
+        return {'irrigation': out}
+    finally:
+        conn.close()
+
+
+@api('/accounts/irrigation/check', methods=('POST',))
+def h_account_irrigation_check(actor):
+    """Look in Jobber now for every account (in the background - it takes a minute)."""
+    if not jobber_status()['connected']:
+        raise ValueError('Connect Jobber first')
+    threading.Thread(target=_safe(check_all_irrigation), args=(True,), daemon=True).start()
+    return {'started': True}
 
 
 # ── an account's history: every to-do and job the client has had ────────────
