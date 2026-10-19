@@ -1883,9 +1883,12 @@ def _gulfshore_fields(text, subject, filename, out, conn=None):
         out['subtotal'] = out['total'] if not out.get('tax') else round(out['total'] - out['tax'], 2)
     # Where the site is named, Jordan's own label first.
     named = []
-    if first:
-        lead = first.group(2).split('.')[0]
-        named.append(re.sub(r'^\s*(?:lake\s+)?filter\s+clean(?:ing|ed)?\s*', '', lead, flags=re.I).strip())
+    if first and '.' in first.group(2):
+        # "Filter cleaning Rosewood. Filter is ..." - his label ends with a full stop; with none
+        # ("Filter cleaning Filter is in good ...", Ana's Place #2491) there's no label to take.
+        lead = re.sub(r'^\s*(?:lake\s+)?filter\s+clean(?:ing|ed)?\s*', '', first.group(2).split('.')[0], flags=re.I).strip()
+        if lead and len(lead.split()) <= 6 and not re.search(r'\bfilter\s+is\b|condition|functioning', lead, re.I):
+            named.append(lead)
     k = next((n for n, l in enumerate(lines) if re.match(r'^bill\s+to\b', l, re.I)), None)
     if k is not None:
         above = lines[k - 1] if k else ''
@@ -2330,10 +2333,15 @@ def diver_client(conn, doc):
     # Jordan cleans lake filters: a lake account by his label first - "Falling Waters II", not the pump
     # account "Falling Waters II - Watercrest" (#2495, Oct 2026).
     lakes = [r[0] for r in conn.execute('SELECT name FROM pump_dive_sites')]
+    norm = lambda x: ' '.join(re.findall(r'[a-z0-9]+', _core_name(x or '').lower()))
     for label in (doc.get('client_name'), doc.get('site')):
-        hit = next((n for n in lakes if label and _core_name(n).lower() == _core_name(label).lower()), None)
+        hit = next((n for n in lakes if label and norm(n) == norm(label)), None)
         if hit:
             return hit, None
+        # Spelled a letter off ("Ana's Place" for Anna's Place, #2491): the one lake that close.
+        close = [n for n in lakes if label and difflib.SequenceMatcher(None, norm(n), norm(label)).ratio() >= 0.9]
+        if len(close) == 1:
+            return close[0], None
     for label in (doc.get('client_name'), doc.get('site')):
         acct = site_account(label, conn) if label else None
         if acct:
@@ -2456,8 +2464,14 @@ def _names_with(client_name, label):
     FALLING WATERS c/o GUARDIAN" for Jordan's "Falling Waters II" - not "Magnolia Falls @
     Falling Waters", nor "Falling Waters III"."""
     norm = lambda x: ' '.join(re.findall(r'[a-z0-9]+', (x or '').lower().replace('@', ' at ')))
-    a, b = norm(client_name), norm(label)
+    a, b = re.sub(r'^(?:inc|the)\s+', '', norm(client_name)), re.sub(r'^(?:inc|the)\s+', '', norm(label))
     return len(b) >= 4 and (a == b or a.startswith(b + ' '))
+
+
+def _subject_site(subject):
+    """The site our pump service invoice is for: "Pump service - Anna's Place - October 2026" -> "Anna's Place"."""
+    m = re.match(r'\s*pump\s+(?:service|maintenance)\s*[-–:]\s*(.+?)(?:\s+[-–]\s+.*)?$', subject or '', re.I)
+    return m.group(1).strip() if m else ''
 
 
 def invoices_named(name, lo, hi, client_id=None, labels=()):
@@ -2465,23 +2479,23 @@ def invoices_named(name, lo, hi, client_id=None, labels=()):
     created between lo and hi: the pump service invoice when the client's own list didn't
     have it (Magnolia Falls #36870, Oct 2026). The client's, when we know which client, or
     one whose name starts with a label (Falling Waters II #36834)."""
+    labels = [l for l in labels if l] + [_core_name(name)]
     terms = []
-    for t in [_core_name(name)] + [l for l in labels if l]:
+    for t in labels:
         if len(t or '') >= 4 and t.lower() not in [x.lower() for x in terms]:
             terms.append(t)
     nodes = []
     for t in terms:
-        data = jobber_gql('query($q: String) { invoices(first: 20, searchTerm: $q) { nodes { id invoiceNumber '
+        data = jobber_gql('query($q: String) { invoices(first: 20, searchTerm: $q) { nodes { id invoiceNumber subject '
                           'invoiceStatus createdAt jobberWebUri amounts { total } client { id name } } } }', {'q': t})
         nodes += [n for n in ((data.get('invoices') or {}).get('nodes') or []) if n['id'] not in [m['id'] for m in nodes]]
     out = []
     for n in nodes:
         c = n.get('client') or {}
-        if client_id and c.get('id') != client_id and not _same_account(c.get('name') or '', name) \
-                and not any(_names_with(c.get('name'), l) for l in labels if l):
-            continue
-        if not client_id and not _same_account(c.get('name') or '', name) \
-                and not any(_names_with(c.get('name'), l) for l in labels if l):
+        site = _subject_site(n.get('subject'))
+        named = _same_account(c.get('name') or '', name) or any(_names_with(c.get('name'), l) for l in labels) \
+            or bool(site and any(_names_with(site, l) and _names_with(l, site) for l in labels))
+        if not named and not (client_id and c.get('id') == client_id):
             continue
         created, status = (n.get('createdAt') or '')[:10], (n.get('invoiceStatus') or '').lower()
         if lo <= created <= hi and status not in ('voided', 'bad_debt'):
@@ -7560,7 +7574,36 @@ def h_link_jobber_job(actor, case_id):
 def h_link_jobber_invoice(actor, case_id):
     if actor == BOT:
         return _office_only(actor, 'Linking a Jobber invoice')
-    return {'invoice': link_jobber_invoice(case_id, _json().get('number'), actor)}
+    inv = link_jobber_invoice(case_id, _json().get('number'), actor)
+    diver_invoice_linked(case_id, inv, actor)
+    return {'invoice': inv}
+
+
+def diver_invoice_linked(case_id, inv, actor):
+    """Linked by hand to a Gulfshore item (Anna's Place, Oct 2026 - the app didn't find it): the "not billed
+    out" to-do done, closed when the invoice has gone out, and Jordan's label remembered for that client."""
+    conn = _conn()
+    try:
+        case = conn.execute("SELECT * FROM pump_cases WHERE id=? AND category='diver' AND vendor='Gulfshore'",
+                            (case_id,)).fetchone()
+        if not case:
+            return
+        doc = conn.execute("SELECT * FROM pump_docs WHERE case_id=? AND kind='bill' AND status != 'dismissed' "
+                           'ORDER BY id DESC', (case_id,)).fetchone()
+        if doc:
+            conn.execute('UPDATE pump_todos SET done_at=?, done_by=? WHERE key=? AND done_at IS NULL',
+                         (_now_text(), actor, f"gulfshore-unbilled:{doc['id']}"))
+        if (inv.get('status') or 'draft') not in ('draft', 'voided', 'bad_debt'):
+            _set_step(conn, case_id, 'closed', at=_today().isoformat(), by=actor)
+        client_id = (json.loads(case['jobber'] or '{}').get('client') or {}).get('id')
+        conn.commit()
+    finally:
+        conn.close()
+    if doc and client_id and doc['client_name']:
+        try:
+            remember_choice(_doc_dict(doc), client_id, actor=actor)
+        except (JobberError, ValueError):
+            pass
 
 
 @api('/cases/<int:case_id>/vendor_email')
