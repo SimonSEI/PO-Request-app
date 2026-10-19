@@ -3976,6 +3976,23 @@ class PumpsTest(unittest.TestCase):
         todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
         self.assertTrue(any(t['title'].startswith('Send the SCADA quote #812') for t in todos))
 
+    def test_download_the_accounts_shown_as_a_sheet(self):
+        """Oct 2026: download a sheet of the accounts shown - whatever is selected, in that order."""
+        import openpyxl
+        accs = self.c.get('/pumps/api/accounts').get_json()['accounts']
+        names = [a['name'] for a in accs if (a.get('scada') or {}).get('active') and a['name'] != 'Autumn Woods'][:3] + ['Autumn Woods']
+        r = self.c.post('/pumps/api/accounts/export.xlsx', json={'names': names, 'title': 'Has SCADA'})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('Has_SCADA', r.headers['Content-Disposition'])
+        ws = openpyxl.load_workbook(io.BytesIO(r.data)).active
+        self.assertIn('Has SCADA', ws['A1'].value)
+        self.assertEqual([c.value for c in ws[2]][:5], ['Account', 'Pump', 'Filter', 'SCADA', 'Irrigation'])
+        rows = {row[0].value: [c.value for c in row] for row in ws.iter_rows(min_row=3)}
+        self.assertEqual(list(rows), names)
+        self.assertEqual(rows['Autumn Woods'][5], 'Monthly')
+        self.assertEqual(rows['Autumn Woods'][6], 3605.0)
+        self.assertEqual(rows['Autumn Woods'][4], 'Yes')
+
     def test_billing_checklist_contracts_on_accounts(self):
         """Oct 2026: the 2026 Monthly Billing Checklist on Accounts - every name an account (joined to the one
         already there), each line's amount and status, the months billed, and months gone by unbilled."""

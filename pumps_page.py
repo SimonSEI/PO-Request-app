@@ -379,6 +379,7 @@ details.fold[open] > summary h4::before { content: '▾ '; }
     <button class="btn" onclick="maintEdit(0)">＋ Pump account</button>
     <button class="btn" onclick="editDiveSite()">＋ Lake site</button>
     <button class="btn" title="Look in Jobber for each account's irrigation maintenance job (it's also checked once a day)" onclick="irrigationCheck()">↻ Check Jobber for irrigation</button>
+    <button class="btn" title="An Excel sheet of the accounts shown - the filter, Show chips, search and sort you have now" onclick="accountsSheet()">⬇ Download sheet</button>
   </div>
   <div style="margin-bottom:10px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b class="note">Show:</b><span id="svcPicks"></span>
     <span class="note">click to show only accounts with what's ticked &nbsp;·&nbsp; in the list, <span class="svc on" style="cursor:default">green</span> = they have it, <span class="svc off" style="cursor:default">＋ grey</span> = they don't - click it to draft a quote in Jobber</span></div>
@@ -1877,6 +1878,19 @@ function svcToggle(k){
   try { localStorage.setItem('acSvc', JSON.stringify([...SVC_ON])); } catch (e) {}
   drawAccounts();
 }
+// The accounts on screen, as a spreadsheet.
+let AC_ROWS = [];
+async function accountsSheet(){
+  if (!AC_ROWS.length) { toast('No accounts shown to download.', true); return; }
+  const sel = document.getElementById('acShow'), sort = document.getElementById('acSort'), q = document.getElementById('acSearch').value.trim();
+  const title = [sel.options[sel.selectedIndex].text, SVC_ON.size < SVC.length ? 'with ' + SVC.filter(x => SVC_ON.has(x[0])).map(x => x[1]).join(' or ') : '', q ? `"${q}"` : '', sort.options[sort.selectedIndex].text.replace('Sort: ', 'by ')].filter(Boolean).join(' - ');
+  const r = await fetch('/pumps/api/accounts/export.xlsx', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({names: AC_ROWS.map(a => a.name), title})});
+  if (!r.ok) { toast('Could not make the sheet (' + r.status + ')', true); return; }
+  const blob = await r.blob(), url = URL.createObjectURL(blob), a = document.createElement('a');
+  a.href = url; a.download = ((r.headers.get('Content-Disposition') || '').match(/filename="?([^";]+)/) || [])[1] || 'Accounts.xlsx';
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 5000);
+  toast(`Downloaded ${AC_ROWS.length} accounts.`);
+}
 function hasSvc(a, k){
   if (k === 'pump') return !!(a.pump && a.pump.active);
   if (k === 'filter') return !!(a.lake && a.lake.active !== 0);
@@ -1989,6 +2003,7 @@ function drawAccounts(){
   const monthly = a => (a.contracts || []).filter(c => c.status === 'active').reduce((t, c) => t + (c.amount || 0), 0);
   rows.sort((x, y) => sort === 'type' ? (contractType(x)[0] - contractType(y)[0]) || x.name.localeCompare(y.name)
     : sort === 'amount' ? (monthly(y) - monthly(x)) || x.name.localeCompare(y.name) : x.name.localeCompare(y.name));
+  AC_ROWS = rows;
   let lastType = null;
   document.getElementById('acBody').innerHTML = rows.map(a => { const p = a.pump, l = a.lake, s = a.scada, vis = a.visit;
     const t = contractType(a), head = sort === 'type' && t[1] !== lastType ? `<tr><td colspan="4" class="grp" style="padding-top:12px">${esc(t[1])} <span class="note">(${rows.filter(x => contractType(x)[1] === t[1]).length})</span></td></tr>` : '';
