@@ -3978,12 +3978,12 @@ class PumpsTest(unittest.TestCase):
 
     def test_wild_blue_and_autumn_woods_quotes_go_to_beatrice(self):
         """Oct 2026: never track a Wild Blue or Autumn Woods quote - Wettech's quote is a to-do "Send Wettech
-        quote to Beatrice", with no item and no Jobber quote; Jobber quotes for them aren't offered to track."""
+        quote to Beatriz", with no item and no Jobber quote; Jobber quotes for them aren't offered to track."""
         self.extracts['q-wildblue.pdf'] = extraction('quote', '41201', client='Wild Blue', subtotal=2400)
         q = self.upload('q-wildblue.pdf')
         self.assertFalse(q.get('case_id'), q)
         todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
-        t = next(t for t in todos if t['title'].startswith('Send Wettech quote #41201 to Beatrice'))
+        t = next(t for t in todos if t['title'].startswith('Send Wettech quote #41201 to Beatriz'))
         self.assertIn(f"/pumps/api/docs/{q['doc_id']}/file", t['link']['uri'])
         vq = {x['number']: x for x in self.c.get('/pumps/api/vendor_quotes').get_json()['quotes']}
         self.assertEqual(vq['41201']['state'], 'beatrice')

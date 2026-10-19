@@ -1026,7 +1026,7 @@ async function sendPayEmail(id, btn){
 // ── bills to pay ──────────────────────────────────────
 // ── Wettech quotes ─────────────────────────────────────
 const VQ_STATE = {to_quote: ['r', 'Our quote not made'], draft: ['a', 'Draft - send it'], sent: ['b', 'With the client'],
-  approved: ['g', 'Approved'], done: ['', 'Done'], cancelled: ['', 'Cancelled'], beatrice: ['a', 'Goes to Beatrice']};
+  approved: ['g', 'Approved'], done: ['', 'Done'], cancelled: ['', 'Cancelled'], beatrice: ['a', 'Goes to Beatriz']};
 async function loadVQuotes(){
   const show = document.getElementById('vqShow').value, q = document.getElementById('vqSearch').value.trim();
   const j = await api('/vendor_quotes?show=' + show + '&sort=' + document.getElementById('vqSort').value + '&q=' + encodeURIComponent(q));
