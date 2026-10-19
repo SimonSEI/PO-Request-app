@@ -272,13 +272,6 @@ details.fold[open] > summary h4::before { content: '▾ '; }
 .svc.off { background: #f3f4f6; color: #6b7280; border: 1px dashed #cbd5e1; cursor: pointer; }
 .svc.off:hover { background: #e5e7eb; color: #111827; border-style: solid; }
 .svc.none { background: #f3f4f6; color: #c0c4cc; border: 1px solid #e5e7eb; }
-.ct { margin-bottom: 6px; font-size: 12px; }
-.ct.off { opacity: .55; text-decoration: line-through; }
-.ct .strip { display: flex; flex-wrap: nowrap; gap: 2px; margin-top: 3px; }
-.ct .mo { width: 16px; height: 16px; border-radius: 4px; font-size: 10px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #e5e7eb; color: #9ca3af; cursor: pointer; text-decoration: none; }
-.ct .mo.b { background: #16a34a; border-color: #16a34a; color: #fff; }
-.ct .mo.late { border-color: #dc2626; color: #dc2626; background: #fef2f2; }
-.ct .mo.gap { color: #9ca3af; }
 </style>
 <script>
 (function(){
@@ -381,15 +374,15 @@ details.fold[open] > summary h4::before { content: '▾ '; }
   <div class="toolbar">
     <span id="acInfo" class="note"></span><div class="sp"></div>
     <input type="text" id="acSearch" placeholder="Find an account…" oninput="drawAccounts()" style="width:180px">
-    <select id="acShow" onchange="drawAccounts()"><option value="active">Active</option><option value="due">Due this month</option><option value="pump">Has pump maintenance</option><option value="lake">Has filter cleaning</option><option value="scada">Has SCADA</option><option value="no_pump">No pump maintenance</option><option value="no_filter">No filter cleaning</option><option value="no_scada">No SCADA</option><option value="no_irrigation">We don't manage irrigation</option><option value="contract">Has a maintenance contract</option><option value="behind">Contract months not billed</option><option value="former">Former</option><option value="">All</option></select>
-    <select id="acSort" onchange="try{localStorage.setItem('acSort', this.value)}catch(e){};drawAccounts()" title="Sort the accounts"><option value="name">Sort: Name A-Z</option><option value="type">Sort: Contract type</option><option value="amount">Sort: Contract $ (high to low)</option><option value="behind">Sort: Months not billed</option></select>
+    <select id="acShow" onchange="drawAccounts()"><option value="active">Active</option><option value="due">Due this month</option><option value="pump">Has pump maintenance</option><option value="lake">Has filter cleaning</option><option value="scada">Has SCADA</option><option value="no_pump">No pump maintenance</option><option value="no_filter">No filter cleaning</option><option value="no_scada">No SCADA</option><option value="no_irrigation">We don't manage irrigation</option><option value="contract">Has a maintenance contract</option><option value="former">Former</option><option value="">All</option></select>
+    <select id="acSort" onchange="try{localStorage.setItem('acSort', this.value)}catch(e){};drawAccounts()" title="Sort the accounts"><option value="name">Sort: Name A-Z</option><option value="type">Sort: Contract type</option><option value="amount">Sort: Contract $ (high to low)</option></select>
     <button class="btn" onclick="maintEdit(0)">＋ Pump account</button>
     <button class="btn" onclick="editDiveSite()">＋ Lake site</button>
     <button class="btn" title="Look in Jobber for each account's irrigation maintenance job (it's also checked once a day)" onclick="irrigationCheck()">↻ Check Jobber for irrigation</button>
   </div>
   <div style="margin-bottom:10px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b class="note">Show:</b><span id="svcPicks"></span>
     <span class="note">click to show only accounts with what's ticked &nbsp;·&nbsp; in the list, <span class="svc on" style="cursor:default">green</span> = they have it, <span class="svc off" style="cursor:default">＋ grey</span> = they don't - click it to draft a quote in Jobber</span></div>
-  <div class="scroll"><table class="t"><thead><tr><th>Account</th><th>Pump · Filter · SCADA · Irrigation</th><th>Contract (billed this year)</th><th>Next due</th><th>Where</th></tr></thead><tbody id="acBody"></tbody></table></div>
+  <div class="scroll"><table class="t"><thead><tr><th>Account</th><th>Pump · Filter · SCADA · Irrigation</th><th>Next due</th><th>Where</th></tr></thead><tbody id="acBody"></tbody></table></div>
   <details style="margin-top:22px"><summary style="cursor:pointer;font-size:14px;font-weight:600">Monthly email to the diver</summary>
   <div class="toolbar"><span id="diveInfo" class="note"></span><div class="sp"></div>
     <button class="btn" onclick="diverTodo(diveMonth())">Email ready to copy</button>
@@ -1884,26 +1877,6 @@ function svcToggle(k){
   try { localStorage.setItem('acSvc', JSON.stringify([...SVC_ON])); } catch (e) {}
   drawAccounts();
 }
-// The maintenance contracts we bill (the 2026 Monthly Billing Checklist): each
-// line's amount, status and a Jan-Dec strip - green billed, red a month gone by
-// unbilled (monthly ones). Click a month to tick it billed or not.
-function contractCell(a){
-  const cs = a.contracts || [];
-  if (!cs.length) return '<span class="note">—</span>';
-  const now = new Date().getMonth() + 1;
-  return cs.map(c => {
-    const off = c.status !== 'active';
-    const strip = MSHORT.map((m, i) => { const n = i + 1, b = (c.months || []).includes(n), late = (c.unbilled || []).includes(n);
-      return `<span class="mo ${b ? 'b' : late ? 'late' : n < now ? 'gap' : ''}" title="${m} ${c.year}: ${b ? 'billed - click to untick' : 'not billed - click to tick billed'}" onclick="contractMonth(${c.id}, ${n}, ${!b})">${m[0]}</span>`; }).join('');
-    return `<div class="ct ${off ? 'off' : ''}"><b>${esc(c.line || 'Contract')}</b> · ${c.amount != null ? money(c.amount) : 'TBD'}${c.frequency && c.frequency !== 'monthly' ? ' ' + esc(c.frequency) : c.amount != null ? '/mo' : ''}
-      ${off ? '<span class="chip">cancelled</span>' : c.frequency !== 'monthly' ? '' : (c.unbilled || []).length ? `<span class="chip r" title="Months gone by with no bill ticked">${c.unbilled.length} not billed</span>` : '<span class="chip g">up to date</span>'}
-      <div class="strip">${strip}</div></div>`; }).join('');
-}
-async function contractMonth(id, month, billed){
-  const j = await api('/contracts/' + id, {method:'POST', body:{month, billed}});
-  if (!j.success) { toast(j.error, true); return; }
-  refreshAccounts();
-}
 function hasSvc(a, k){
   if (k === 'pump') return !!(a.pump && a.pump.active);
   if (k === 'filter') return !!(a.lake && a.lake.active !== 0);
@@ -1997,13 +1970,13 @@ function drawAccounts(){
   const ok = a => !show ? true : show === 'active' ? a.active : show === 'former' ? !a.active : show === 'due' ? a.active && due(a) :
     show === 'pump' ? hasSvc(a, 'pump') : show === 'lake' ? hasSvc(a, 'filter') : show === 'scada' ? hasSvc(a, 'scada') :
     show === 'no_pump' ? a.active && !hasSvc(a, 'pump') : show === 'no_filter' ? a.active && !hasSvc(a, 'filter') : show === 'no_scada' ? a.active && !hasSvc(a, 'scada') : show === 'no_irrigation' ? a.active && !hasSvc(a, 'irrigation') :
-    show === 'contract' ? (a.contracts || []).some(c => c.status === 'active') : show === 'behind' ? (a.contracts || []).some(c => (c.unbilled || []).length) : true;
+    show === 'contract' ? (a.contracts || []).some(c => c.status === 'active') : true;
   drawSvcPicks();
   const allSvc = SVC_ON.size === SVC.length;
   const rows = AC.accounts.filter(a => ok(a) && (allSvc || [...SVC_ON].some(k => hasSvc(a, k))) && (!q || JSON.stringify([a.name, a.pump && a.pump.address, a.lake && a.lake.address, (a.contracts || []).map(c => c.account + ' ' + c.line)]).toLowerCase().includes(q)));
   const act = AC.accounts.filter(a => a.active);
   const cons = AC.accounts.flatMap(a => (a.contracts || []).filter(c => c.status === 'active'));
-  document.getElementById('acInfo').innerHTML = `${act.length} active accounts · ${act.filter(a => a.pump && a.pump.active).length} pump · ${act.filter(a => a.lake && a.lake.active !== 0).length} lake · ${cons.length} contract lines (${money(cons.reduce((t, c) => t + (c.frequency === 'monthly' ? c.amount || 0 : 0), 0))}/mo)${cons.some(c => (c.unbilled || []).length) ? ` · <b class="bad">${cons.filter(c => (c.unbilled || []).length).length} with months not billed</b>` : ''} · <b>${act.filter(due).length} due in ${esc(AC.month)}</b>`;
+  document.getElementById('acInfo').innerHTML = `${act.length} active accounts · ${act.filter(a => a.pump && a.pump.active).length} pump · ${act.filter(a => a.lake && a.lake.active !== 0).length} lake · ${new Set(cons.map(c => c.account)).size} maintenance contracts (${money(cons.reduce((t, c) => t + (c.frequency === 'monthly' ? c.amount || 0 : 0), 0))}/mo) · <b>${act.filter(due).length} due in ${esc(AC.month)}</b>`;
   const st = {overdue:'r', due_soon:'a', current:'g', inactive:'', unknown:''};
   const nextDue = a => { const out = [], now = new Date().getMonth() + 1;
     const next = (ms, every) => { if (every) return 'this month'; const m = (ms || '').split(',').filter(Boolean).map(Number); if (!m.length) return '';
@@ -2014,21 +1987,18 @@ function drawAccounts(){
     return out; };
   const sort = document.getElementById('acSort').value;
   const monthly = a => (a.contracts || []).filter(c => c.status === 'active').reduce((t, c) => t + (c.amount || 0), 0);
-  const behind = a => Math.max(0, ...(a.contracts || []).map(c => (c.unbilled || []).length));
   rows.sort((x, y) => sort === 'type' ? (contractType(x)[0] - contractType(y)[0]) || x.name.localeCompare(y.name)
-    : sort === 'amount' ? (monthly(y) - monthly(x)) || x.name.localeCompare(y.name)
-    : sort === 'behind' ? (behind(y) - behind(x)) || x.name.localeCompare(y.name) : x.name.localeCompare(y.name));
+    : sort === 'amount' ? (monthly(y) - monthly(x)) || x.name.localeCompare(y.name) : x.name.localeCompare(y.name));
   let lastType = null;
   document.getElementById('acBody').innerHTML = rows.map(a => { const p = a.pump, l = a.lake, s = a.scada, vis = a.visit;
-    const t = contractType(a), head = sort === 'type' && t[1] !== lastType ? `<tr><td colspan="5" class="grp" style="padding-top:12px">${esc(t[1])} <span class="note">(${rows.filter(x => contractType(x)[1] === t[1]).length})</span></td></tr>` : '';
+    const t = contractType(a), head = sort === 'type' && t[1] !== lastType ? `<tr><td colspan="4" class="grp" style="padding-top:12px">${esc(t[1])} <span class="note">(${rows.filter(x => contractType(x)[1] === t[1]).length})</span></td></tr>` : '';
     lastType = t[1];
-    return head + rowHtml(a, p, l, s, vis, nextDue); }).join('') || '<tr><td colspan="5" class="empty">None.</td></tr>';
+    return head + rowHtml(a, p, l, s, vis, nextDue); }).join('') || '<tr><td colspan="4" class="empty">None.</td></tr>';
 }
 function rowHtml(a, p, l, s, vis, nextDue){
     const on = svcBadges(a);
     return `<tr class="click" onclick="openAccount(${JSON.stringify(a.name).replace(/"/g, '&quot;')})"><td><b>${esc(a.name)}</b>${!a.active ? ' <span class="chip">former</span>' : ''}${vis ? `<div class="note">✓ Client approved ${esc((vis.link || {}).since || '')}</div>` : ''}</td>
     <td style="white-space:nowrap">${on || '<span class="note">—</span>'}</td>
-    <td onclick="event.stopPropagation()" style="min-width:250px">${contractCell(a)}</td>
     <td>${nextDue(a).map(x => /overdue/.test(x) ? `<b class="bad">${esc(x)}</b>` : /this month/.test(x) ? `<b>${esc(x)}</b>` : esc(x)).join('<br>') || '<span class="note">—</span>'}</td>
     <td class="note">${esc((p && p.address) || (l && l.address) || '')}</td></tr>`;
 }
