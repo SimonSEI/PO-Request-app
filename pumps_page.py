@@ -294,6 +294,7 @@ details.fold[open] > summary h4::before { content: '▾ '; }
   <div class="t"><span class="logo"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.7c3.6 4.3 6 7.7 6 10.8a6 6 0 0 1-12 0c0-3.1 2.4-6.5 6-10.8z"/><path d="M9.2 14.2a2.9 2.9 0 0 0 2.8 2.6"/></svg></span><div>Pumps<small>Pumps, lakes &amp; SCADA</small></div></div>
   <div class="r">
     <button class="btn p" onclick="newCase()">＋ New item</button>
+    <button class="btn" title="Follow a service call booked in Jobber - it's the start of the work, no quote" onclick="addServiceCall()">＋ Service call</button>
     <span class="who" data-i="{{ (full_name or '?')[:1]|upper }}">{{ full_name }}</span>
     <button class="btn" onclick="showUndo()" title="Undo a recent change (Ctrl+Z / ⌘Z undoes your last one)">↶ Undo</button>
     <a class="btn" href="{{ url_for('dashboard') }}">← Dashboard</a>
@@ -934,7 +935,7 @@ function renderCase(){
       ${f('sei_invoice_number','Our (Jobber) invoice #')}${f('amount','Our invoice $','number')}
       ${f('jobber_request_made','Jobber request made')}${f('opened_on','Opened','date')}
       ${f('description','Description of work','area',1)}${f('notes','Notes','area',1)}
-      <label class="w">Jobber ${jl || '<span class="note">nothing linked - Track it from the Jobber tab</span>'} <a href="#" onclick="event.preventDefault();linkQuote(${c.id})">${J.quote ? 'Use a different Jobber quote…' : 'Link a Jobber quote…'}</a> · <a href="#" onclick="event.preventDefault();linkInvoice(${c.id})">${J.invoice ? 'Use a different Jobber invoice…' : 'Link a Jobber invoice…'}</a></label>
+      <label class="w">Jobber ${jl || '<span class="note">nothing linked - Track it from the Jobber tab</span>'} <a href="#" onclick="event.preventDefault();linkQuote(${c.id})">${J.quote ? 'Use a different Jobber quote…' : 'Link a Jobber quote…'}</a> · <a href="#" onclick="event.preventDefault();linkInvoice(${c.id})">${J.invoice ? 'Use a different Jobber invoice…' : 'Link a Jobber invoice…'}</a> · <a href="#" onclick="event.preventDefault();linkJob(${c.id})">${J.job ? 'Use a different Jobber job…' : 'Link a Jobber job (service call)…'}</a></label>
     </div><div style="margin-top:10px"><button class="btn p" onclick="saveCaseFields()">Save details</button></div></details>
   </div>`;
 }
@@ -1182,6 +1183,24 @@ async function billsSend(){
   closeModal(); toast(`Emailed Christian: ${j.sent} bill${j.sent > 1 ? 's' : ''}, ${money(j.total)}.`); loadBills();
 }
 // Invoiced straight in Jobber (Enclave @ Palmira): tie that invoice to the job.
+// A service call booked in Jobber: followed from its job - the start of the work, no quote.
+async function addServiceCall(){
+  const n = prompt('Jobber job number of the service call (e.g. 14592):', '');
+  if (!n || !n.trim()) return;
+  const j = await api('/service_call', {method:'POST', body:{number: n.trim()}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast(j.already ? 'Already followed here - opening it.' : 'Service call followed - it starts at the work, no quote.');
+  loadToday(); openCase(j.case_id);
+}
+async function linkJob(id){
+  const n = prompt('Jobber job number for this item (e.g. 14592):', '');
+  if (!n || !n.trim()) return;
+  const sc = confirm('Is it a service call that starts the work?\n\nOK = yes: no quote needed, scheduled for the job\'s day.\nCancel = just link the job.');
+  const j = await api('/cases/' + id + '/jobber_job', {method:'POST', body:{number: n.trim(), service_call: sc}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast(`Linked Jobber job #${j.job.number}${sc ? ' - a service call, no quote' : ''}.`);
+  openCase(id); loadToday();
+}
 async function linkInvoice(id){
   const n = prompt('Jobber invoice number for this job (e.g. 36806):', '');
   if (!n || !n.trim()) return;
