@@ -3976,6 +3976,28 @@ class PumpsTest(unittest.TestCase):
         todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
         self.assertTrue(any(t['title'].startswith('Send the SCADA quote #812') for t in todos))
 
+    def test_billing_checklist_contracts_on_accounts(self):
+        """Oct 2026: the 2026 Monthly Billing Checklist on Accounts - every name an account (joined to the one
+        already there), each line's amount and status, the months billed, and months gone by unbilled."""
+        accs = {a['name']: a for a in self.c.get('/pumps/api/accounts').get_json()['accounts']}
+        aw = accs['Autumn Woods']
+        mm = next(c for c in aw['contracts'] if c['line'] == 'Monthly maintenance')
+        self.assertEqual((mm['amount'], mm['status']), (3605.0, 'active'))
+        self.assertTrue(aw['pump'], 'joined to the Autumn Woods account already there')
+        on = {c['account'] for a in accs.values() for c in a.get('contracts') or []}
+        self.assertEqual(on, {row[0] for row in P.CONTRACT_CHECKLIST_2026}, 'every name on the checklist is on Accounts')
+        self.assertTrue(any(c['line'] == 'Residential' for c in accs['VeronaWalk HOA']['contracts']))
+        self.assertNotIn('Huntington Lakes #5', [c['account'] for c in accs['Huntington Lakes #3']['contracts']])
+        bb = accs['Barefoot Beach']['contracts'][0]
+        self.assertEqual((bb['status'], bb['unbilled']), ('cancelled', []))
+        # Tick a month billed: off the "not billed" list.
+        if P._today().year == 2026 and P._today().month > 5:
+            self.assertIn(5, mm['unbilled'])
+            r = self.c.post(f"/pumps/api/contracts/{mm['id']}", json={'month': 5, 'billed': True}).get_json()
+            self.assertTrue(r['success'], r)
+            self.assertIn(5, r['contract']['months'])
+            self.assertNotIn(5, r['contract']['unbilled'])
+
     def test_irrigation_we_manage_comes_from_jobber(self):
         """Oct 2026: Accounts shows whether we manage the irrigation too - a live recurring job at the site
         that isn't a pump/lake/SCADA job ("Monthly 6920.83") - and quotes it when we don't (Jobber #6824)."""
