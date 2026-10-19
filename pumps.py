@@ -2249,6 +2249,81 @@ def _clean_extraction(x):
 
 # ── filing a document against an item ────────────────────────────────────────
 
+def _station_nums(text):
+    """Pump station numbers in a text: "pump station #6", "#6 pump station", "Huntington #6" -> {'6'}."""
+    return {m.group(1) or m.group(2) for m in re.finditer(
+        r'#\s*(\d{1,2})\b|\b(?:pump|ps|station)\s*(?:station\s*)?(?:no\.?\s*|#\s*)?(\d{1,2})\b', text or '', re.I)}
+
+
+def _bill_by_quote_or_station(doc, rows):
+    """A vendor bill's item when its name alone doesn't say (Huntington Lakes #29218, Oct 2026:
+    "Huntington Lakes" vs the item "Huntington #6 - Check out #6 pump station", with #3 and #5
+    open too): one item at the same site, still waiting on its bill, whose vendor quote is the
+    bill's amount - or, failing that, the one for the same pump station. (id, how) or None."""
+    site = name_tokens(doc.get('client_name'))
+    if not site:
+        return None
+    lines = doc.get('line_items') or []
+    if isinstance(lines, str):
+        try:
+            lines = json.loads(lines)
+        except ValueError:
+            lines = []
+    text = ' '.join(str(doc.get(k) or '') for k in ('client_name', 'description')) + ' ' + ' '.join(
+        f"{i.get('name') or ''} {i.get('description') or ''}" for i in lines if isinstance(i, dict))
+    cands = []
+    for r in rows:
+        steps = json.loads(r.get('steps') or '{}')
+        if (steps.get('vendor_bill') or {}).get('at') or r.get('category') in ('maintenance', 'inspection', 'diver'):
+            continue
+        # The site's most telling word ("huntington", not "lakes") is the item's.
+        if max(sorted(site), key=len) in name_tokens(f"{r.get('client_name') or ''} {r.get('title') or ''} {r.get('site') or ''}"):
+            cands.append(r)
+    amounts = [a for a in (doc.get('total'), doc.get('subtotal')) if a is not None]
+    same = [r for r in cands if any(q is not None and abs(q - a) <= 1 for q in (r.get('vendor_quote_total'),
+                                                                                  r.get('vendor_quote_amount'))
+                                    for a in amounts)]
+    if len(same) == 1:
+        return same[0]['id'], f"its quote's amount ({same[0].get('title') or same[0].get('client_name')})"
+    nums = _station_nums(text)
+    if len(nums) == 1:
+        same = [r for r in cands if _station_nums(f"{r.get('client_name') or ''} {r.get('title') or ''} "
+                                                   f"{r.get('site') or ''}") == nums]
+        if len(same) == 1:
+            return same[0]['id'], f"pump station #{next(iter(nums))} ({same[0].get('title') or same[0].get('client_name')})"
+    return None
+
+
+def move_early_bills(conn, actor='Pumps'):
+    """A bill that made an item of its own as "came before its quote" when its job was open all
+    along (Huntington #29218 -> "Huntington #6 - Check out #6 pump station", Oct 2026): moved to
+    that job by its quote's amount or pump station, and the empty item cancelled."""
+    moved = []
+    for iss in conn.execute("SELECT DISTINCT case_id FROM pump_issues WHERE kind='no_quote' AND resolved_at IS NULL").fetchall():
+        cid = iss[0]
+        docs = conn.execute("SELECT * FROM pump_docs WHERE case_id=? AND status != 'dismissed'", (cid,)).fetchall()
+        if len(docs) != 1 or docs[0]['kind'] != 'bill' or (_doc_dict(docs[0]).get('jobber') or {}).get('invoice_id'):
+            continue
+        case = conn.execute("SELECT * FROM pump_cases WHERE id=? AND status='open'", (cid,)).fetchone()
+        if not case or json.loads(case['jobber'] or '{}').get('quote'):
+            continue
+        rows = [dict(r) for r in conn.execute("SELECT * FROM pump_cases WHERE status='open' AND id != ?", (cid,))]
+        doc = _doc_dict(docs[0])
+        if not _bill_by_quote_or_station(doc, rows):
+            continue
+        new = refile_document(conn, doc['id'], actor)
+        if not conn.execute("SELECT 1 FROM pump_docs WHERE case_id=? AND status != 'dismissed'", (cid,)).fetchone():
+            conn.execute("UPDATE pump_cases SET status='cancelled', stage='cancelled', updated_at=? WHERE id=?",
+                         (_now_text(), cid))
+            conn.execute("UPDATE pump_issues SET resolved_at=?, resolved_by=?, resolution=? WHERE case_id=? "
+                         "AND resolved_at IS NULL", (_now_text(), actor, 'The bill went on its job', cid))
+            _event(conn, actor, 'cancelled', "The bill was for a job already open - moved there", case_id=cid)
+        moved.append((doc['id'], new))
+    if moved:
+        conn.commit()
+    return moved
+
+
 def _find_case_for(conn, doc, exclude=None):
     """Best open item for a document, with how it was matched; (None, '') if none."""
     po = po_key(doc.get('po_number'))
@@ -2271,6 +2346,9 @@ def _find_case_for(conn, doc, exclude=None):
     if not name:
         return None, ''
     kind = doc.get('kind')
+    hit = _bill_by_quote_or_station(doc, rows) if kind == 'bill' and not maintenance_bill(doc) else None
+    if hit:
+        return hit
     # A maintenance visit's bill or report (Lely, Oct 2026: the quarterly bill
     # went on the 10" valve repair waiting on its quote) only goes on a
     # maintenance item by name - otherwise it gets its own.
@@ -6959,6 +7037,7 @@ def _waiting_on_work(c):
 def work_queue(conn):
     # A report on an item of its own that belongs to a bill's item: joined first, so neither is a to-do.
     merge_all_report_items(conn)
+    move_early_bills(conn)
     cases = list_cases(conn, 'open')
     issues = [dict(r) for r in conn.execute('''SELECT i.*, c.title, c.client_name FROM pump_issues i
                                                LEFT JOIN pump_cases c ON c.id = i.case_id

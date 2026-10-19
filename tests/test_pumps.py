@@ -4239,6 +4239,65 @@ class PumpsTest(unittest.TestCase):
             P.jobber_gql = saved
         self.assertEqual([r['number'] for r in got], ['36834'])
 
+    def test_bill_finds_its_job_by_quote_amount_or_station(self):
+        """Huntington Lakes #29218 (Oct 2026): "Huntington Lakes - Collier County", $1,679.35 + tax = $1,780.11 for a control box
+        on pump station #6 - an item of its own ("came before its quote") while "Huntington #6 - Check out #6 pump station"
+        held Wettech's $1,780.11 quote, with #5 open too. Its job by the quote's amount, else the station; one already
+        filed on its own is moved and the empty item cancelled."""
+        conn = P._conn()
+        try:
+            five = P.create_case(conn, {'title': 'Check out #5 pump station', 'client_name': 'Oakbrook #5'}, 'test')
+            six = P.create_case(conn, {'title': 'Check out #6 pump station', 'client_name': 'Oakbrook #6'}, 'test')
+            P._apply(conn, six, {'vendor_quote_amount': 1679.35, 'vendor_quote_total': 1780.11})
+            P._set_step(conn, six, 'vendor_quote', at='2026-10-01', by='test')
+            conn.commit()
+        finally:
+            conn.close()
+        items = [{'name': 'Control box', 'description': 'Furnished and installed new 10 HP deluxe control box on Oakbrook '
+                  'Lakes pump station #6, wired up and tested. As per quotation.', 'quantity': 1, 'unit_price': 1679.35,
+                  'amount': 1679.35, 'taxable': True, 'is_tax': False}]
+        ex = extraction('bill', '29218', client='Oakbrook Lakes - Collier County', subtotal=1679.35, tax=100.76, items=items)
+        ex['description'] = items[0]['description']
+        self.extracts['b-hl6.pdf'] = ex
+        b = self.upload('b-hl6.pdf')
+        self.assertEqual(b['case_id'], six, 'its quote is the bill')
+        # No quote amount to go by: the pump station.
+        conn = P._conn()
+        try:
+            rows = [dict(r) for r in conn.execute("SELECT * FROM pump_cases WHERE status='open' AND id IN (?, ?)", (five, six))]
+            conn.execute("UPDATE pump_cases SET steps=json_remove(steps, '$.vendor_bill') WHERE id=?", (six,))
+            rows = [dict(r) for r in conn.execute("SELECT * FROM pump_cases WHERE status='open' AND id IN (?, ?)", (five, six))]
+            for r in rows:
+                r['vendor_quote_total'] = r['vendor_quote_amount'] = None
+            got = P._bill_by_quote_or_station({**ex, 'total': 999.0, 'subtotal': 999.0}, rows)
+        finally:
+            conn.close()
+        self.assertEqual(got[0], six)
+        self.assertIn('station #6', got[1])
+        # Filed on its own before: moved to its job by itself, the empty item cancelled.
+        self.extracts['b-hl5.pdf'] = {**ex, 'doc_number': '29219', 'subtotal': 500.0, 'tax': 30.0, 'total': 530.0,
+                                      'line_items': [{**items[0], 'description': 'Replaced float on pump station #5',
+                                                      'amount': 500.0, 'unit_price': 500.0}],
+                                      'description': 'Replaced float on pump station #5'}
+        conn = P._conn()
+        conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (five,))
+        conn.commit()
+        conn.close()
+        b5 = self.upload('b-hl5.pdf')
+        alone = b5['case_id']
+        self.assertNotIn(alone, (five, six))
+        conn = P._conn()
+        conn.execute("UPDATE pump_cases SET status='open' WHERE id=?", (five,))
+        conn.commit()
+        conn.close()
+        self.c.get('/pumps/api/summary')
+        self.assertEqual(self.case(alone)['status'], 'cancelled')
+        conn = P._conn()
+        try:
+            self.assertEqual(conn.execute('SELECT case_id FROM pump_docs WHERE id=?', (b5['doc_id'],)).fetchone()[0], five)
+        finally:
+            conn.close()
+
     def test_gulfshore_anna_s_place(self):
         """Anna's Place #2491 (Oct 2026): no label in the note, "Ana's Place" twice on the Bill to line; Jobber's client is
         "INC ANA'S PLACE HOMEOWNER'S ASSOCIATION" and our invoice "Pump service - Anna's Place". Found by the invoice's
