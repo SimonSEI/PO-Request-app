@@ -4261,6 +4261,11 @@ class PumpsTest(unittest.TestCase):
             P.http_requests.post = lambda *a, **k: replies.pop(0)
             self.assertEqual(gql('query { ok }'), {'ok': 1})
             self.assertEqual(waits, [6.0], 'waited for the bucket to refill')
+            # Jobber's server timing out (HTTP 504): a pause and again, not an error at once.
+            class Gateway: status_code = 504
+            replies = [Gateway(), R({'data': {'ok': 2}})]
+            P.http_requests.post = lambda *a, **k: replies.pop(0)
+            self.assertEqual(gql('query { ok }'), {'ok': 2})
         finally:
             P.http_requests.post, P._access_token, P.time.sleep = saved
         self.assertIn('lineItems(first: 10)', inspect.getsource(P.scan_scada_invoices))
