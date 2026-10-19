@@ -1813,33 +1813,101 @@ def _regex_extract(text, sender='', subject='', filename=''):
     return out
 
 
+def site_account(label, conn=None):
+    """The account a site label means: one the label names in full, else the one
+    account whose name holds the label ("Rosewood" -> "Rosewood HOA", "Magnolia
+    Falls" -> "Magnolia Falls @ Falling Waters"). None when it's not one, or
+    several could be."""
+    own = conn is None
+    conn = conn or _conn()
+    try:
+        names = _account_names(conn)
+        names += [a['name'] for a in accounts(conn) if a['name'] not in names]
+        hit = match_account(label, conn, names)
+        if hit:
+            return hit
+        if len(label.strip()) < 4:
+            return None
+        cands = {n for n in names if fuzzy_has(label.strip(), _core_name(n))}
+        if len({_core_name(n).lower() for n in cands}) == 1:
+            return min(cands, key=len)
+        return None
+    finally:
+        if own:
+            conn.close()
+
+
 _US_DATE = re.compile(r'\b(\d{1,2}/\d{1,2}/\d{2,4})\b')
 
 
 def _gulfshore_fields(text, subject, filename, out, conn=None):
-    """Jordan's QuickBooks invoices (Gulfshore Yacht Service): the number from
-    "Invoice_2498_from_..." or the email, the invoice date, and the client -
-    the account the invoice names, else the "Bill to" line. Not the work note
-    wrapped under the line item ("condition and seems to be functioning",
-    Rosewood #2498, Oct 2026). A client it can't place is left blank."""
+    """Jordan's QuickBooks invoices (Gulfshore Yacht Service), read by code: the
+    number from the file name ("Invoice_2498_from_...") - it isn't in the
+    text - the day of the cleaning on the line, the line itself, and the site:
+    Jordan's "Rosewood." at the start of the description, the line above "Bill
+    to" ("Caymas"), or the Bill to line when it isn't us ("Rosewood, Falling
+    Waters" twice, Bill to and Ship to). Never the wrapped note ("condition and
+    seems to be functioning", #2498, Oct 2026). The account it names when there
+    is one; a site it can't find is left blank."""
     m = (re.search(r'invoice[_\s#:no.]*?(\d{3,})', filename or '', re.I)
-         or re.search(r'invoice\s*(?:#|no\.?|number)?\s*:?\s*(\d{3,})', f'{subject or ""}\n{text}', re.I))
+         or re.search(r'invoice\s*(?:#|no\.?|number)\s*:?\s*(\d{3,})', f'{subject or ""}\n{text}', re.I))
     if m:
         out['doc_number'] = m.group(1)
-    m = re.search(r'(?:invoice\s+)?date\b\s*:?\s*' + _US_DATE.pattern, text, re.I) or _US_DATE.search(text)
+    lines = [l.strip() for l in (text or '').splitlines()]
+    rows = [re.match(r'^\d+\.\s+(?:(\d{1,2}/\d{1,2}/\d{2,4})\s+)?(.+?)\s+(\d+(?:\.\d+)?)\s+\$?([\d,]+\.\d{2})'
+                     r'\s+\$?([\d,]+\.\d{2})\s*$', l) for l in lines]
+    items, first = [], None
+    for k, m in enumerate(rows):
+        if not m:
+            continue
+        first = first or m
+        desc = m.group(2)
+        for n in range(k + 1, len(lines)):   # the note wraps onto the lines below
+            l = lines[n]
+            if not l or rows[n] or re.match(r'^(total|ways to pay|balance|amount due)\b', l, re.I):
+                break
+            desc += ' ' + l
+        items.append({'name': short_name(desc), 'description': desc, 'quantity': float(m.group(3)),
+                      'unit_price': _money(m.group(4)), 'amount': _money(m.group(5)), 'taxable': False, 'is_tax': False})
+    if items:
+        out['line_items'] = items
+        out['description'] = items[0]['description'][:300]
+    m = (first and first.group(1) and _US_DATE.search(first.group(1))) or \
+        re.search(r'invoice\s+date\b\s*:?\s*' + _US_DATE.pattern, text, re.I) or _US_DATE.search(text)
     if m:
         out['doc_date'] = _iso_date(m.group(1)) or out.get('doc_date') or ''
-    m = re.search(r'\b(?:total|balance\s+due|amount\s+due)\b\s*:?\s*\$?\s*([\d,]+\.\d{2})', text, re.I)
-    if m and out.get('total') is None:
+    m = re.search(r'^\s*(?:total|balance\s+due|amount\s+due)\b\s*:?\s*\$?\s*([\d,]+\.\d{2})', text, re.I | re.M)
+    if m:
         out['total'] = _money(m.group(1))
-    acct = match_account(text, conn)
-    if not acct:
-        m = re.search(r'\bbill\s+to\b\s*:?\s*([^\n]*)\n?\s*([^\n]*)', text, re.I)
-        line = m and (m.group(1).strip() or m.group(2).strip())
-        acct = line if line and not re.search(r'\d+\.\d{2}|\bfilter\b|condition|functioning', line, re.I) else ''
-    out['client_name'] = (acct or '')[:120]
-    if out.get('total') is not None and out.get('subtotal') is None:
+    if out.get('total') is not None:
         out['subtotal'] = out['total'] if not out.get('tax') else round(out['total'] - out['tax'], 2)
+    # Where the site is named, Jordan's own label first.
+    named = []
+    if first:
+        lead = first.group(2).split('.')[0]
+        named.append(re.sub(r'^\s*(?:lake\s+)?filter\s+clean(?:ing|ed)?\s*', '', lead, flags=re.I).strip())
+    k = next((n for n, l in enumerate(lines) if re.match(r'^bill\s+to\b', l, re.I)), None)
+    if k is not None:
+        above = lines[k - 1] if k else ''
+        if above and not re.search(r'\d{5}|\S@\S|\.com\b|\(\d{3}\)|^invoice$', above, re.I):
+            named.append(above)
+        below = lines[k + 1] if k + 1 < len(lines) else ''
+        half = below[:len(below) // 2].strip()
+        if half and half == below[len(below) - len(half):].strip():
+            below = half             # the Bill to and Ship to columns side by side
+        if below and not re.search(r'stahlman', below, re.I):
+            named.append(below)
+    named = [n for n in named if len(n) >= 3]
+    acct = None
+    for n in named:
+        try:
+            acct = site_account(n, conn)
+        except Exception:
+            acct = None
+        if acct:
+            break
+    out['client_name'] = (acct or (named[0] if named else ''))[:120]
+    out['site'] = out.get('site') or (named[0] if named else '')
     return out
 
 
