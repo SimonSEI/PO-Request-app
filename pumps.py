@@ -12366,6 +12366,125 @@ def h_accounts(actor):
         conn.close()
 
 
+# ── quoting an account for a service it doesn't have ────────────────────────
+# Worded like the office's own Jobber quotes (Oct 2026): Turn Leaf #8746
+# "Quarterly Pump Maintenance", Coconut Landing #9162 "SCADA Annual Cellular
+# subscription", Morton Grove #8903 / #7026 "Quarterly Filter Cleaning".
+PUMP_PROGRAM_TEXT = (
+    'We are pleased to offer this proposal for the irrigation controls and VFD maintenance at your facility'
+    '{stations}.\nThe following breakdown of work to be performed with each visit to ensure the equipment is '
+    'operating properly.\n\n•\tCheck and record incoming voltage\n•\tCheck and record amperage of motors\n'
+    '•\tCheck and record hour meter readings\n•\tCheck and record flow meter readings\n•\tCheck motor starter '
+    'conditions\n•\tVisually inspect all wires for heat damage\n•\tCheck all control devices for proper operation\n'
+    '•\tDrain and clean control lines\n•\tVisually inspect all switches & indicator lights for proper operation\n'
+    '•\tCheck pipes and fittings for leaks\n•\tCheck motors for excessive heat\n•\tGrease motor bearings\n'
+    '•\tCheck for excessive vibration\n•\tCheck mechanical seals for leaks\n•\tCheck control valves and clean wye '
+    'strainers and tubing\n•\tCheck gauges and valves\n•\tManually flush any filters\n•\tCheck hydro-pneumatic '
+    'tanks for proper air pressure')
+FILTER_PROGRAM_TEXT = ('We are pleased to quote you the following quarterly filter cleaning services:\n\n'
+                       'Quarterly certified diver to inspect and thoroughly clean out lake filter and remove any debris.')
+SERVICE_QUOTES = {
+    'pump': {'label': 'Pump maintenance', 'title': 'Quarterly Pump Maintenance', 'line': 'QUARTERLY PUMP PROGRAM'},
+    'filter': {'label': 'Filter cleaning', 'title': 'Quarterly Filter Cleaning', 'line': 'PROPOSAL AMOUNT SERVICE'},
+    'scada': {'label': 'SCADA', 'title': 'Estimate for SCADA Annual Cellular subscription', 'line': 'PUMP SERVICE',
+              'price': 600.0},
+}
+
+
+def service_quote_draft(conn, name, kind):
+    """What a quote for a service an account doesn't have would say, and the
+    Jobber client and property it would go to (the account's, else the clear
+    match by name)."""
+    if kind not in SERVICE_QUOTES:
+        raise ValueError('Pick pump, filter or SCADA')
+    a = next((x for x in accounts(conn) if x['name'] == name), None)
+    if not a:
+        raise ValueError('No such account')
+    t = SERVICE_QUOTES[kind]
+    p = a.get('pump') or {}
+    n = len(re.findall(r'pump', p.get('equipment') or p.get('size') or '', re.I))
+    m = re.search(r'(\d+)\s*pump', f"{p.get('equipment') or ''} {p.get('size') or ''}", re.I)
+    count = int(m.group(1)) if m else n
+    if kind == 'pump':
+        desc = PUMP_PROGRAM_TEXT.format(stations=f' for ({count}) pump stations' if count > 1 else '')
+    elif kind == 'filter':
+        desc = FILTER_PROGRAM_TEXT
+    else:
+        y = _today().year
+        desc = SCADA_QUOTE_TEXT.format(y1=y, y2=y + 1).replace('Renewal of Annual', 'Annual')
+    client = {'id': p.get('jobber_client_id'), 'name': p.get('jobber_client_name')} if p.get('jobber_client_id') else None
+    if not client and jobber_status()['connected']:
+        try:
+            client = pick_client(search_clients(name))
+        except JobberError:
+            client = None
+    props = []
+    if client and client.get('id') and jobber_status()['connected']:
+        try:
+            props = client_jobs(client['id'])['properties']
+        except JobberError:
+            props = []
+    prop = props[0] if len(props) == 1 else next(
+        (x for x in props if place_score(_core_name(name), x['label']) >= 0.99), None)
+    return {'account': name, 'kind': kind, 'label': t['label'], 'title': t['title'],
+            'line_items': [{'name': t['line'], 'description': desc, 'quantity': 1,
+                            'unit_price': t.get('price'), 'taxable': False}],
+            'client': client, 'properties': props, 'property_id': (prop or {}).get('id') or ''}
+
+
+@api('/accounts/service_quote')
+def h_service_quote_draft(actor):
+    """?name=<account>&kind=pump|filter|scada - the quote to draft, to look over."""
+    conn = _conn()
+    try:
+        return service_quote_draft(conn, request.args.get('name') or '', request.args.get('kind') or '')
+    finally:
+        conn.close()
+
+
+@api('/accounts/service_quote', methods=('POST',))
+def h_service_quote_create(actor):
+    """Body: {name, kind, client_id, property_id, title, line_items} - a DRAFT quote in Jobber
+    for a service the account doesn't have, and a to-do to send it."""
+    if actor == BOT:
+        return _office_only(actor, 'Drafting quotes')
+    d = _json()
+    kind = d.get('kind')
+    if kind not in SERVICE_QUOTES:
+        raise ValueError('Pick pump, filter or SCADA')
+    if not d.get('client_id'):
+        raise ValueError('Choose the Jobber client first')
+    if not d.get('property_id'):
+        raise ValueError("Choose the client's property first")
+    lines = [li for li in d.get('line_items') or [] if (li.get('name') or li.get('description'))]
+    if not lines or any(_money(li.get('unit_price')) is None for li in lines):
+        raise ValueError('Put a price on the quote')
+    if not jobber_status()['connected']:
+        raise ValueError('Connect Jobber first')
+    items = _jobber_lines(lines, 'quote')
+    data = gql_with_lines(QUOTE_CREATE, {'attributes': {
+        'clientId': d['client_id'], 'propertyId': d['property_id'],
+        'title': (d.get('title') or SERVICE_QUOTES[kind]['title'])[:255], 'lineItems': items}}, 'attributes')
+    payload = data.get('quoteCreate') or {}
+    if payload.get('userErrors'):
+        raise JobberError('Jobber: ' + '; '.join(e.get('message', '?') for e in payload['userErrors']))
+    q = payload.get('quote') or {}
+    num, uri = str(q.get('quoteNumber') or ''), q.get('jobberWebUri') or ''
+    total = round(sum(i['quantity'] * i['unitPrice'] for i in items), 2)
+    conn = _conn()
+    try:
+        add_todo(conn, f"service-quote:{q.get('id')}",
+                 f"Send the {SERVICE_QUOTES[kind]['label'] if kind == 'scada' else SERVICE_QUOTES[kind]['label'].lower()} "
+                 f"quote #{num} - {d.get('name') or ''}",
+                 f"Drafted in Jobber at ${total:,.2f} from the Accounts tab.", {'uri': uri, 'label': 'Open the quote in Jobber'})
+        _event(conn, actor, 'service quote drafted', f"{d.get('name')}: {SERVICE_QUOTES[kind]['label']} quote #{num} ${total:,.2f}")
+        conn.commit()
+    finally:
+        conn.close()
+    return {'quote': {'id': q.get('id'), 'number': num, 'uri': uri, 'status': (q.get('quoteStatus') or '').lower(),
+                      'total': total}}
+
+
 # ── an account's history: every to-do and job the client has had ────────────
 
 def _account_aliases(a):
