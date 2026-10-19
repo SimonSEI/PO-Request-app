@@ -382,6 +382,7 @@ details.fold[open] > summary h4::before { content: '▾ '; }
     <span id="acInfo" class="note"></span><div class="sp"></div>
     <input type="text" id="acSearch" placeholder="Find an account…" oninput="drawAccounts()" style="width:180px">
     <select id="acShow" onchange="drawAccounts()"><option value="active">Active</option><option value="due">Due this month</option><option value="pump">Has pump maintenance</option><option value="lake">Has filter cleaning</option><option value="scada">Has SCADA</option><option value="no_pump">No pump maintenance</option><option value="no_filter">No filter cleaning</option><option value="no_scada">No SCADA</option><option value="no_irrigation">We don't manage irrigation</option><option value="contract">Has a maintenance contract</option><option value="behind">Contract months not billed</option><option value="former">Former</option><option value="">All</option></select>
+    <select id="acSort" onchange="try{localStorage.setItem('acSort', this.value)}catch(e){};drawAccounts()" title="Sort the accounts"><option value="name">Sort: Name A-Z</option><option value="type">Sort: Contract type</option><option value="amount">Sort: Contract $ (high to low)</option><option value="behind">Sort: Months not billed</option></select>
     <button class="btn" onclick="maintEdit(0)">＋ Pump account</button>
     <button class="btn" onclick="editDiveSite()">＋ Lake site</button>
     <button class="btn" title="Look in Jobber for each account's irrigation maintenance job (it's also checked once a day)" onclick="irrigationCheck()">↻ Check Jobber for irrigation</button>
@@ -1859,7 +1860,10 @@ async function scadaAdd(){ const v = x => document.getElementById(x).value; cons
 // ── Jobber ────────────────────────────────────────────
 // ── accounts ──────────────────────────────────────
 let AC = null;
-async function loadAccounts(){ await refreshAccounts(); loadDivers(); loadSiteNames(); }
+async function loadAccounts(){
+  try { const v = localStorage.getItem('acSort'); if (v) document.getElementById('acSort').value = v; } catch (e) {}
+  await refreshAccounts(); loadDivers(); loadSiteNames();
+}
 async function refreshAccounts(){
   const [a, m] = await Promise.all([api('/accounts'), api('/maint')]);
   if (!a.success) { document.getElementById('acBody').innerHTML = `<tr><td colspan="4" class="empty">${esc(a.error)}</td></tr>`; return; }
@@ -1994,13 +1998,36 @@ function drawAccounts(){
     if (a.lake && a.lake.active !== 0 && a.lake.needs_dive) out.push('Diver ' + (a.lake.status === 'hold' ? 'on hold' : next(a.lake.months, !a.lake.months)));
     if (a.scada && a.scada.active && !a.scada.complimentary) out.push((a.scada.state === 'overdue' ? 'SCADA renewal overdue ' : 'SCADA renews ') + (a.scada.next_due_on || ''));
     return out; };
+  const sort = document.getElementById('acSort').value;
+  const monthly = a => (a.contracts || []).filter(c => c.status === 'active').reduce((t, c) => t + (c.amount || 0), 0);
+  const behind = a => Math.max(0, ...(a.contracts || []).map(c => (c.unbilled || []).length));
+  rows.sort((x, y) => sort === 'type' ? (contractType(x)[0] - contractType(y)[0]) || x.name.localeCompare(y.name)
+    : sort === 'amount' ? (monthly(y) - monthly(x)) || x.name.localeCompare(y.name)
+    : sort === 'behind' ? (behind(y) - behind(x)) || x.name.localeCompare(y.name) : x.name.localeCompare(y.name));
+  let lastType = null;
   document.getElementById('acBody').innerHTML = rows.map(a => { const p = a.pump, l = a.lake, s = a.scada, vis = a.visit;
+    const t = contractType(a), head = sort === 'type' && t[1] !== lastType ? `<tr><td colspan="5" class="grp" style="padding-top:12px">${esc(t[1])} <span class="note">(${rows.filter(x => contractType(x)[1] === t[1]).length})</span></td></tr>` : '';
+    lastType = t[1];
+    return head + rowHtml(a, p, l, s, vis, nextDue); }).join('') || '<tr><td colspan="5" class="empty">None.</td></tr>';
+}
+function rowHtml(a, p, l, s, vis, nextDue){
     const on = svcBadges(a);
     return `<tr class="click" onclick="openAccount(${JSON.stringify(a.name).replace(/"/g, '&quot;')})"><td><b>${esc(a.name)}</b>${!a.active ? ' <span class="chip">former</span>' : ''}${vis ? `<div class="note">✓ Client approved ${esc((vis.link || {}).since || '')}</div>` : ''}</td>
     <td style="white-space:nowrap">${on || '<span class="note">—</span>'}</td>
     <td onclick="event.stopPropagation()" style="min-width:250px">${contractCell(a)}</td>
     <td>${nextDue(a).map(x => /overdue/.test(x) ? `<b class="bad">${esc(x)}</b>` : /this month/.test(x) ? `<b>${esc(x)}</b>` : esc(x)).join('<br>') || '<span class="note">—</span>'}</td>
-    <td class="note">${esc((p && p.address) || (l && l.address) || '')}</td></tr>`; }).join('') || '<tr><td colspan="5" class="empty">None.</td></tr>';
+    <td class="note">${esc((p && p.address) || (l && l.address) || '')}</td></tr>`;
+}
+// An account's kind of contract, for sorting and grouping: [order, label].
+function contractType(a){
+  const cs = a.contracts || [], act = cs.filter(c => c.status === 'active');
+  if (!cs.length) return [9, 'No maintenance contract'];
+  if (!act.length) return [8, 'Cancelled contracts'];
+  const f = new Set(act.map(c => c.frequency));
+  if (f.has('monthly')) return [1, 'Monthly maintenance'];
+  if (f.has('bi-monthly')) return [2, 'Bi-monthly maintenance'];
+  if (f.has('quarterly')) return [3, 'Quarterly maintenance'];
+  return [4, 'Parts / as used only'];
 }
 // The client called: ready for their maintenance. The lake comes off hold for
 // the diver list and the visit waits under "Waiting on others" until the
