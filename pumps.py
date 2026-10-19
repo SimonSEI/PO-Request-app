@@ -2212,6 +2212,112 @@ def _find_case_for(conn, doc, exclude=None):
     return None, ''
 
 
+# ── Gulfshore (Jordan, the diver): lake filter cleaning bills ────────────────
+# Billed to the client with the pump service on the account's recurring job, so
+# there's no quote and no invoice of their own: the bill is logged, and once our
+# Jobber invoice to the client for that visit exists it's Christian's to pay. If
+# it isn't billed out yet, the office is told (Magnolia Falls #2497, Oct 2026).
+
+def is_diver_bill(doc):
+    return (doc or {}).get('kind') == 'bill' and re.match(r'\s*gulf\s*shore', (doc or {}).get('vendor') or '', re.I) is not None
+
+
+def file_diver_bill(conn, doc, actor):
+    """A Gulfshore bill on an item of its own: the visit done, nothing to quote or check."""
+    client = doc.get('client_name') or ''
+    names = [a['name'] for a in accounts(conn)]
+    acct = next((n for n in names if _same_account(n, client)), None)
+    num = f" #{doc['doc_number']}" if doc.get('doc_number') else ''
+    when = doc.get('doc_date') or _today().isoformat()
+    cid = create_case(conn, {'title': f"{acct or client or 'Lake'} - lake filter cleaning (Gulfshore{num})"[:160],
+                             'category': 'diver', 'client_name': acct or client, 'site': doc.get('site') or '',
+                             'vendor': 'Gulfshore', 'description': (doc.get('description') or '').strip()[:1000],
+                             'opened_on': when}, actor, source='bill')
+    conn.execute("UPDATE pump_docs SET case_id=?, status=CASE WHEN status='new' THEN 'filed' ELSE status END, "
+                 "updated_at=? WHERE id=?", (cid, _now_text(), doc['id']))
+    _apply(conn, cid, {'vendor_bill_number': doc.get('doc_number') or '', 'vendor_bill_amount': doc.get('subtotal'),
+                       'vendor_bill_total': doc.get('total')})
+    for k in ('assessment', 'vendor_quote', 'client_quote', 'client_approved', 'bill_checked', 'report_logged'):
+        _set_step(conn, cid, k, by=actor, na=True)
+    for k in ('scheduled', 'work_done', 'vendor_bill'):
+        _set_step(conn, cid, k, at=when, by=actor)
+    _event(conn, actor, 'bill filed', f"{doc.get('file_name')} - Gulfshore filter cleaning, billed with the pump service",
+           case_id=cid, doc_id=doc['id'])
+    return cid
+
+
+def check_diver_billed(case_id, actor='Pumps'):
+    """Has the client been invoiced for the Gulfshore visit? Our Jobber invoice to them
+    from around the service date (the pump service, filter cleaning included):
+    linked, and the bill is Christian's to pay. If not: a to-do saying it isn't billed out."""
+    conn = _conn()
+    try:
+        case = conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+        doc = conn.execute("SELECT * FROM pump_docs WHERE case_id=? AND kind='bill' AND status != 'dismissed' "
+                           'ORDER BY id DESC', (case_id,)).fetchone()
+        if not case or not doc:
+            return None
+        case, doc = dict(case), _doc_dict(doc)
+        j = json.loads(case.get('jobber') or '{}')
+        if (j.get('invoice') or {}).get('id'):
+            return {'billed': True, 'invoice': j['invoice']}
+        acct = next((a for a in accounts(conn) if a['name'] == case.get('client_name')), None) or {}
+        client_id = case.get('jobber_client_id') or ((acct.get('pump') or {}).get('jobber_client_id'))
+    finally:
+        conn.close()
+    found, err = None, ''
+    if jobber_status()['connected']:
+        try:
+            client_id = client_id or invoice_client(doc, case)
+            if client_id:
+                when = date.fromisoformat(_iso_date(doc.get('doc_date')) or _today().isoformat())
+                lo, hi = (when - timedelta(days=10)).isoformat(), (when + timedelta(days=45)).isoformat()
+                recs = [r for r in client_records(client_id, 'invoice') if r['status'] not in ('voided', 'bad_debt')
+                        and lo <= (r['created'] or '') <= hi]
+                found = sorted(recs, key=lambda r: abs((date.fromisoformat(r['created']) - when).days))[0] if recs else None
+        except (JobberError, ValueError) as e:
+            err = str(e)
+    else:
+        err = 'Jobber is not connected'
+    num = f" #{doc['doc_number']}" if doc.get('doc_number') else ''
+    key = f"gulfshore-unbilled:{doc['id']}"
+    conn = _conn()
+    try:
+        if found:
+            j['invoice'] = {'id': found['id'], 'number': found['number'], 'uri': found.get('uri') or '',
+                            'status': found['status'], 'total': found.get('total')}
+            if client_id:
+                j.setdefault('client', {'id': client_id})
+            conn.execute('UPDATE pump_cases SET jobber=?, sei_invoice_number=?, jobber_client_id=COALESCE(NULLIF('
+                         "jobber_client_id, ''), ?) WHERE id=?", (json.dumps(j), found['number'], client_id or '', case_id))
+            _set_step(conn, case_id, 'invoice_drafted', at=_today().isoformat(), by=actor)
+            conn.execute('UPDATE pump_todos SET done_at=?, done_by=? WHERE key=? AND done_at IS NULL',
+                         (_now_text(), actor, key))
+            _event(conn, actor, 'billed out', f"Gulfshore{num} is on our Jobber invoice #{found['number']} to the client - "
+                                              "Christian can pay it", case_id=case_id, doc_id=doc['id'])
+        else:
+            amt = doc.get('total') if doc.get('total') is not None else doc.get('subtotal')
+            add_todo(conn, key, f"Gulfshore invoice{num} - {case.get('client_name') or doc.get('client_name')}: not billed out yet",
+                     f"Jordan's {money_text(amt) if amt is not None else ''} filter cleaning on {doc.get('doc_date') or '?'} "
+                     f"isn't on a Jobber invoice to the client yet{' (' + err + ')' if err else ''}. Bill it with the pump "
+                     "service - then it goes to Christian to pay.", {'case_id': case_id})
+        conn.commit()
+    finally:
+        conn.close()
+    return {'billed': bool(found), 'invoice': found, 'error': err}
+
+
+def check_all_diver_bills(actor='Jobber sync'):
+    """Every Gulfshore bill not billed out yet: looked for again (the invoice may be made later)."""
+    conn = _conn()
+    try:
+        ids = [r[0] for r in conn.execute("SELECT id FROM pump_cases WHERE status='open' AND category='diver' "
+                                          "AND vendor='Gulfshore' AND COALESCE(json_extract(jobber, '$.invoice.id'), '')=''")]
+    finally:
+        conn.close()
+    return [check_diver_billed(i, actor) for i in ids]
+
+
 def _same_email_case(conn, doc):
     """The item a report's bill (or a bill's report) from the same email is on
     (Char Co McGuire Pk, Oct 2026: the report's name didn't match the bill's
@@ -2302,6 +2408,8 @@ def file_document(conn, doc_id, actor='system'):
         return None
     if kind == 'quote' and not doc['case_id'] and beatrice_site(doc.get('client_name'), doc.get('site')):
         return quote_to_beatrice(conn, doc, actor)
+    if not doc['case_id'] and is_diver_bill(doc):
+        return file_diver_bill(conn, doc, actor)
     case_id, how = (doc['case_id'], 'already linked') if doc['case_id'] else _same_email_case(conn, doc)
     if not case_id:
         case_id, how = _find_case_for(conn, doc)
@@ -2453,7 +2561,15 @@ def ingest_document(filename, data, source='upload', email=None, kind_hint=None,
         # once more) that isn't in Jobber yet is tried again.
         res['auto_note'] = auto_log_report(res['doc_id'])
     if res.get('kind') == 'bill' and res.get('case_id') and not res.get('review'):
-        res['auto_invoice'] = auto_draft_invoice(res['doc_id'])
+        conn = _conn()
+        try:
+            cat = conn.execute('SELECT category, vendor FROM pump_cases WHERE id=?', (res['case_id'],)).fetchone()
+        finally:
+            conn.close()
+        if cat and cat['category'] == 'diver' and cat['vendor'] == 'Gulfshore':
+            res['billed_out'] = check_diver_billed(res['case_id'])
+        else:
+            res['auto_invoice'] = auto_draft_invoice(res['doc_id'])
     return res
 
 
@@ -3470,6 +3586,10 @@ def _sync_jobber(full=False, actor='system'):
                 check_all_irrigation()
             except Exception as e:
                 status['errors'].append(f'Irrigation check: {e}')
+            try:
+                check_all_diver_bills()
+            except Exception as e:
+                status['errors'].append(f'Gulfshore bills: {e}')
             status['errors'] += refresh_client_contacts(conn)
             conn.commit()
             try:
@@ -3486,6 +3606,8 @@ def _sync_jobber(full=False, actor='system'):
                 status['errors'].append(f'Approved quote (item {cid}): {e}')
         status.update(state='done', finished_at=_now_text(), items=len(seen), linked=linked,
                       seconds=round(time.time() - t0))
+        for e in status['errors'][:20]:
+            print(f'  ⚠ Pumps Jobber sync: {e}')
         _state_set('jobber_sync', status)
         return status
 
@@ -6548,6 +6670,7 @@ def work_queue(conn):
         "SELECT d.* FROM pump_docs d JOIN pump_cases c ON c.id = d.case_id WHERE d.kind='bill' "
         "AND d.status != 'dismissed' AND (d.jobber IS NULL OR d.jobber NOT LIKE '%invoice_id%') "
         "AND c.status='open' AND COALESCE(json_extract(c.steps, '$.invoice_drafted.na'), 0) = 0 "
+        "AND NOT (c.category='diver' AND c.vendor='Gulfshore') "
         "AND COALESCE(json_extract(c.steps, '$.invoice_drafted.at'), '') = '' ORDER BY d.id")]
     bill_cases = {r['id']: dict(r) for r in conn.execute(
         f"SELECT * FROM pump_cases WHERE id IN ({','.join('?' * len(bills_to_draft))})",
@@ -7135,6 +7258,50 @@ def h_link_jobber_quote(actor, case_id):
     if not jobber_status()['connected']:
         raise ValueError('Connect Jobber first')
     return {'quote': link_jobber_quote(case_id, _json().get('number'), actor)}
+
+
+@api('/service_call', methods=('POST',))
+def h_service_call(actor):
+    """Body: {"number": Jobber job #} - follow a service call booked in Jobber: an item
+    that starts at the work (no quote), linked to the job."""
+    if actor == BOT:
+        return _office_only(actor, 'Adding a service call')
+    it = find_job_by_number(_json().get('number'))
+    if not it:
+        raise ValueError("Jobber has no job with that number")
+    conn = _conn()
+    try:
+        if it.get('case_id') and conn.execute("SELECT 1 FROM pump_cases WHERE id=? AND status != 'cancelled'",
+                                              (it['case_id'],)).fetchone():
+            return {'case_id': it['case_id'], 'already': True}
+        cid = track_jobber_item(conn, it, actor, service_call=True)
+        conn.commit()
+        return {'case_id': cid}
+    finally:
+        conn.close()
+
+
+@api('/cases/<int:case_id>/jobber_job', methods=('POST',))
+def h_link_jobber_job(actor, case_id):
+    """Body: {"number", "service_call": bool} - tie a Jobber job to this item; a service call
+    is the start of the work (no quote)."""
+    if actor == BOT:
+        return _office_only(actor, 'Linking a Jobber job')
+    d = _json()
+    it = find_job_by_number(d.get('number'))
+    if not it:
+        raise ValueError("Jobber has no job with that number")
+    conn = _conn()
+    try:
+        if not conn.execute('SELECT 1 FROM pump_cases WHERE id=?', (case_id,)).fetchone():
+            return {'success': False, 'error': 'Not found'}, 404
+        _link_item(conn, it['jobber_id'], case_id, actor)
+        if d.get('service_call'):
+            service_call_steps(conn, case_id, it, actor)
+        conn.commit()
+        return {'job': {'number': it['number'], 'title': it['title'], 'uri': it.get('web_uri') or ''}}
+    finally:
+        conn.close()
 
 
 @api('/cases/<int:case_id>/jobber_invoice', methods=('POST',))
@@ -8490,7 +8657,67 @@ def account_for_jobber(conn, it):
     return match_account(' '.join(x for x in (it.get('property_label'), it.get('client_name')) if x), conn) or ''
 
 
-def track_jobber_item(conn, it, actor):
+_SERVICE_CALL = re.compile(r'\bservice\s*call\b', re.I)
+
+
+def service_call_steps(conn, cid, it, actor):
+    """A service call is the start of the work, not a quote (Woodmere #14592, Oct
+    2026): no quote steps, approved when it was booked, scheduled for its day."""
+    steps = json.loads(conn.execute('SELECT steps FROM pump_cases WHERE id=?', (cid,)).fetchone()[0] or '{}')
+    for k in ('assessment', 'vendor_quote', 'client_quote'):
+        if not (steps.get(k) or {}).get('at'):
+            _set_step(conn, cid, k, by=actor, na=True)
+    booked = (it.get('created_at') or '')[:10] or _today().isoformat()
+    if not (steps.get('client_approved') or {}).get('at'):
+        _set_step(conn, cid, 'client_approved', at=booked, by=actor)
+    if not (steps.get('scheduled') or {}).get('at'):
+        _set_step(conn, cid, 'scheduled', at=(it.get('start_at') or '')[:10] or booked, by=actor)
+    if it.get('start_at'):
+        conn.execute("UPDATE pump_cases SET scheduled_for=? WHERE id=? AND COALESCE(scheduled_for, '')=''",
+                     (it['start_at'][:10], cid))
+    _event(conn, actor, 'service call', f"Jobber job #{it.get('number') or ''} {it.get('title') or ''} - the start of "
+                                        'the work, no quote', case_id=cid)
+
+
+def find_job_by_number(number):
+    """A Jobber job by its number (e.g. 14592): from the sync, else from Jobber (kept in the sync's list)."""
+    number = str(number or '').strip().lstrip('#')
+    if not number.isdigit():
+        raise ValueError('Type the Jobber job number, e.g. 14592')
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT * FROM pump_jobber_items WHERE kind='job' AND number=?", (number,)).fetchone()
+        if row:
+            return dict(row)
+        def make(fields):
+            return f'query($q: String!) {{ jobs(searchTerm: $q, first: 20) {{ nodes {{ {fields} }} }} }}'
+        spec = ['id', 'jobNumber', 'title', 'jobStatus', 'jobType', 'createdAt', 'startAt', 'completedAt', 'jobberWebUri',
+                'total', ('client', ['id', 'name']), ('property', ['id', _ADDR])]
+        data, _ = _gql_tolerant(make, spec, {'q': number}, required=('id', 'jobNumber'))
+        n = next((x for x in (data.get('jobs') or {}).get('nodes') or [] if str(x.get('jobNumber') or '') == number), None)
+        if not n:
+            return None
+        it = {'jobber_id': n['id'], 'kind': 'job', 'number': number, 'title': n.get('title') or '',
+              'status': (n.get('jobStatus') or '').lower(), 'job_type': (n.get('jobType') or '').lower(),
+              'client_id': (n.get('client') or {}).get('id') or '', 'client_name': (n.get('client') or {}).get('name') or '',
+              'property_id': (n.get('property') or {}).get('id') or '', 'property_label': _prop_label(n.get('property')),
+              'total': _money(n.get('total')), 'created_at': (n.get('createdAt') or '')[:19].replace('T', ' '),
+              'updated_at': _now_text(), 'start_at': (n.get('startAt') or '')[:10], 'completed_at': (n.get('completedAt') or '')[:10],
+              'web_uri': n.get('jobberWebUri') or '', 'category': 'pump', 'po_number': po_from_title(n.get('title') or '')}
+        conn.execute('INSERT OR IGNORE INTO pump_jobber_items (jobber_id, kind, number, title, status, job_type, client_id, '
+                     'client_name, property_id, property_label, total, created_at, updated_at, start_at, completed_at, '
+                     'web_uri, category, po_number, synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                     (it['jobber_id'], 'job', number, it['title'], it['status'], it['job_type'], it['client_id'],
+                      it['client_name'], it['property_id'], it['property_label'], it['total'], it['created_at'],
+                      it['updated_at'], it['start_at'], it['completed_at'], it['web_uri'], 'pump', it['po_number'],
+                      _now_text()))
+        conn.commit()
+        return dict(conn.execute('SELECT * FROM pump_jobber_items WHERE jobber_id=?', (it['jobber_id'],)).fetchone())
+    finally:
+        conn.close()
+
+
+def track_jobber_item(conn, it, actor, service_call=None):
     """Make an item here from a Jobber record and link the record to it."""
     cat = {'scada': 'scada', 'diver': 'diver', 'filter': 'filter'}.get(it['category'], 'repair')
     if it['kind'] == 'job' and re.search(r'maint|quarter|monthly|annual', it['title'] or '', re.I):
@@ -8511,7 +8738,11 @@ def track_jobber_item(conn, it, actor):
     if it['kind'] == 'quote' and it['status'] == 'approved':
         _set_step(conn, cid, 'client_quote', at=(it['created_at'] or '')[:10] or None, by=actor)
         _set_step(conn, cid, 'client_approved', at=(it['updated_at'] or '')[:10] or None, by=actor)
-    if it['kind'] == 'job' and (it['completed_at'] or it['status'] == 'requires_invoicing'):
+    if it['kind'] == 'job' and (service_call or (service_call is None and _SERVICE_CALL.search(it['title'] or ''))):
+        service_call_steps(conn, cid, dict(it), actor)
+        if it['completed_at'] or it['status'] == 'requires_invoicing':
+            _set_step(conn, cid, 'work_done', at=(it['completed_at'] or it['updated_at'] or '')[:10] or None, by=actor)
+    elif it['kind'] == 'job' and (it['completed_at'] or it['status'] == 'requires_invoicing'):
         _set_step(conn, cid, 'client_approved', at=(it['created_at'] or '')[:10] or None, by=actor)
         _set_step(conn, cid, 'work_done', at=(it['completed_at'] or it['updated_at'] or '')[:10] or None,
                   by=actor)
@@ -11832,6 +12063,8 @@ def auto_draft_invoice(doc_id, actor='Pumps (automatic)'):
         conn.close()
     if not doc or not case or doc['kind'] != 'bill' or (doc.get('jobber') or {}).get('invoice_id'):
         return None
+    if is_diver_bill(doc):
+        return None   # billed with the pump service - see check_diver_billed
     if ((json.loads(case.get('steps') or '{}').get('invoice_drafted')) or {}).get('na'):
         return None   # nothing to invoice (a report-only account, our own technician's job...)
     j = json.loads(case.get('jobber') or '{}')
