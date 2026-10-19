@@ -4355,6 +4355,52 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(r['case_id'], five)
         self.assertEqual(self.case(alone['case_id'])['status'], 'cancelled', 'the item it made by itself goes')
 
+    def test_billed_duplicate_merges_into_its_job(self):
+        """Huntington #5 (Oct 2026): bill #29219 made an item of its own and our invoice #36888 was drafted from it, while
+        "Huntington #5 - Check out #5 pump station" (quote #9149, job #14584) sat on "Waiting on Wettech to do the work".
+        The bill, the invoice and its steps go onto that job; the bill's item is cancelled as merged."""
+        conn = P._conn()
+        try:
+            job = P.create_case(conn, {'title': 'Check out #5 pump station', 'client_name': 'Ashgrove #5'}, 'test',
+                                source='jobber')
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?',
+                         (json.dumps({'quote': {'id': 'QAG5', 'number': '99149'}, 'job': {'id': 'JAG5', 'number': '94584'}}), job))
+            conn.execute("UPDATE pump_cases SET status='cancelled', updated_at='2000-01-01' WHERE id=?", (job,))
+            conn.commit()
+        finally:
+            conn.close()
+        items = [{'name': 'Control box', 'description': 'Field service to check out Ashgrove Lakes pump station #5. Installed '
+                  'new 7.5 HP deluxe control box.', 'quantity': 1, 'unit_price': 1344.72, 'amount': 1344.72,
+                  'taxable': True, 'is_tax': False}]
+        ex = extraction('bill', '29419', client='Ashgrove Lakes - Collier County', subtotal=1344.72, tax=80.68, items=items)
+        ex['description'] = items[0]['description']
+        self.extracts['b-ag5.pdf'] = ex
+        b = self.upload('b-ag5.pdf')
+        dup = b['case_id']
+        self.assertNotEqual(dup, job)
+        conn = P._conn()
+        try:
+            conn.execute('UPDATE pump_cases SET jobber=?, sei_invoice_number=? WHERE id=?',
+                         (json.dumps({'invoice': {'id': 'I36888', 'number': '36888', 'status': 'awaiting_payment'}}), '36888', dup))
+            conn.execute("UPDATE pump_docs SET jobber=? WHERE id=?", (json.dumps({'invoice_id': 'I36888'}), b['doc_id']))
+            P._set_step(conn, dup, 'invoice_drafted', at='2026-10-19', by='test')
+            conn.execute("UPDATE pump_cases SET status='open' WHERE id=?", (job,))
+            conn.commit()
+        finally:
+            conn.close()
+        self.c.get('/pumps/api/summary')
+        self.assertEqual(self.case(dup)['status'], 'cancelled')
+        c = self.case(job)
+        self.assertEqual((c['sei_invoice_number'], c['vendor_bill_number']), ('36888', '29419'))
+        self.assertTrue(c['steps']['vendor_bill'].get('at'))
+        self.assertTrue(c['steps']['invoice_drafted'].get('at'))
+        self.assertNotEqual(c['stage'], 'work_done')
+        conn = P._conn()
+        try:
+            self.assertEqual(conn.execute('SELECT case_id FROM pump_docs WHERE id=?', (b['doc_id'],)).fetchone()[0], job)
+        finally:
+            conn.close()
+
     def test_invoice_from_quote_leaves_out_optional_work(self):
         """Huntington #6 (Oct 2026): the draft invoice repeated quote #9160 with its "Optional - if needed" $6,287.97 motor -
         $8,173 for a $1,884.14 quote. Optional work out (unless the approved total

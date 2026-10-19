@@ -2302,6 +2302,63 @@ def _recent_unbilled(conn, exclude=None):
             if r['id'] != exclude and not (json.loads(r['steps'] or '{}').get('vendor_bill') or {}).get('at')]
 
 
+def merge_billed_duplicates(conn, actor='Pumps'):
+    """A bill's own item, already invoiced from (Huntington #5, Oct 2026: #29219 on an item of its own, our
+    invoice #36888 drafted from it, while "Huntington #5 - Check out #5 pump station" - quote #9149, job
+    #14584 - sat on "Waiting on Wettech to do the work"): the bill, our invoice and the steps they ticked
+    go onto that job, and the bill's item is cancelled as merged. Only when exactly one job fits."""
+    merged = []
+    since = (_today() - timedelta(days=REOPEN_DAYS)).isoformat()
+    for dup in conn.execute("SELECT * FROM pump_cases WHERE status IN ('open', 'closed') AND COALESCE(updated_at, '') >= ? "
+                            "AND source NOT IN ('manual', 'jobber', 'service_call')", (since,)).fetchall():
+        dj = json.loads(dup['jobber'] or '{}')
+        if not (dj.get('invoice') or {}).get('id') or any((dj.get(k) or {}).get('id') for k in ('quote', 'job')):
+            continue
+        bill = conn.execute("SELECT * FROM pump_docs WHERE case_id=? AND kind='bill' AND status != 'dismissed' "
+                            "ORDER BY id DESC", (dup['id'],)).fetchone()
+        if not bill:
+            continue
+        rows = [dict(r) for r in conn.execute("SELECT * FROM pump_cases WHERE status='open' AND id != ? "
+                                              "AND source != 'bill'", (dup['id'],))
+                if any((json.loads(r['jobber'] or '{}').get(k) or {}).get('id') for k in ('quote', 'job'))]
+        hit = _bill_by_quote_or_station(_doc_dict(bill), rows)
+        if not hit:
+            continue
+        job = hit[0]
+        jrow = conn.execute('SELECT * FROM pump_cases WHERE id=?', (job,)).fetchone()
+        jj = json.loads(jrow['jobber'] or '{}')
+        jj['invoice'] = dj['invoice']
+        if dj.get('client') and not jj.get('client'):
+            jj['client'] = dj['client']
+        conn.execute('''UPDATE pump_cases SET jobber=?, sei_invoice_number=COALESCE(NULLIF(?, ''), sei_invoice_number),
+                          vendor_bill_number=?, vendor_bill_amount=?, vendor_bill_total=?,
+                          vendor_paid_on=COALESCE(NULLIF(vendor_paid_on, ''), ?), updated_at=? WHERE id=?''',
+                     (json.dumps(jj), dup['sei_invoice_number'] or '', dup['vendor_bill_number'] or '',
+                      dup['vendor_bill_amount'], dup['vendor_bill_total'], dup['vendor_paid_on'] or '', _now_text(), job))
+        conn.execute('UPDATE pump_docs SET case_id=?, updated_at=? WHERE case_id=? AND status != \'dismissed\'',
+                     (job, _now_text(), dup['id']))
+        conn.execute('UPDATE pump_jobber_items SET case_id=? WHERE case_id=?', (job, dup['id']))
+        steps = json.loads(dup['steps'] or '{}')
+        for k in ('work_done', 'vendor_bill', 'bill_checked', 'invoice_drafted', 'closed'):
+            if (steps.get(k) or {}).get('at'):
+                _set_step(conn, job, k, at=steps[k]['at'], by=actor)
+        conn.execute("UPDATE pump_cases SET status='cancelled', stage='cancelled', updated_at=? WHERE id=?",
+                     (_now_text(), dup['id']))
+        conn.execute("UPDATE pump_issues SET resolved_at=?, resolved_by=?, resolution=? WHERE case_id=? "
+                     "AND resolved_at IS NULL", (_now_text(), actor, f'Merged into item #{job}', dup['id']))
+        conn.execute("UPDATE pump_todos SET done_at=?, done_by=? WHERE done_at IS NULL AND key LIKE ?",
+                     (_now_text(), actor, f'%:{dup["id"]}'))
+        num = (dj.get('invoice') or {}).get('number') or dup['sei_invoice_number'] or ''
+        _event(conn, actor, 'merged', f"Bill #{bill['doc_number'] or '?'} and our invoice #{num} are item #{job}'s "
+                                      f"({hit[1]}) - moved there", case_id=dup['id'])
+        _event(conn, actor, 'merged', f"Bill #{bill['doc_number'] or '?'} and our invoice #{num} came from item "
+                                      f"#{dup['id']} - moved here", case_id=job)
+        merged.append((dup['id'], job))
+    if merged:
+        conn.commit()
+    return merged
+
+
 def move_early_bills(conn, actor='Pumps'):
     """A bill that made an item of its own as "came before its quote" when its job was open all
     along (Huntington #29218 -> "Huntington #6 - Check out #6 pump station", Oct 2026): moved to
@@ -7084,6 +7141,7 @@ def work_queue(conn):
     # A report on an item of its own that belongs to a bill's item: joined first, so neither is a to-do.
     merge_all_report_items(conn)
     move_early_bills(conn)
+    merge_billed_duplicates(conn)
     cases = list_cases(conn, 'open')
     issues = [dict(r) for r in conn.execute('''SELECT i.*, c.title, c.client_name FROM pump_issues i
                                                LEFT JOIN pump_cases c ON c.id = i.case_id
