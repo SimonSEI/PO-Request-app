@@ -1294,12 +1294,30 @@ async function moveCase(sel){
   if (j.success) { curCase = j.case; renderCase(); toast('Moved to: ' + label); } else toast(j.error || 'Not moved', true);
 }
 // A bill or report on the wrong job (Lely: the quarterly bill on the valve repair): off it, filed again.
+// Wrong job: pick the job it belongs on (Huntington #5's bill, Oct 2026), or let the app file it again.
 async function refileDoc(id){
-  if (!confirm("Take this document off this job and file it again?\n\nWhat it ticked here is undone. It goes on the job it fits, or a new one.")) return;
-  const j = await api('/docs/' + id + '/refile', {method:'POST'});
+  openModal('Move to another job', `
+    <div class="note">Find the job this document belongs on - search by site, job, quote or invoice number. What it ticked on this job is undone.</div>
+    <div class="toolbar" style="margin:6px 0"><input type="text" id="mvQ" placeholder="e.g. Huntington #5" style="flex:1" oninput="liveSearch(() => refileSearch(${id}))"></div>
+    <div id="mvList"><div class="note">Type to search open and closed jobs.</div></div>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn" onclick="refileTo(${id}, null)">Let the app pick</button>`);
+  const q = document.getElementById('mvQ'); if (q) { q.value = (curCase && curCase.client_name || '').split(' - ')[0]; q.focus(); refileSearch(id); }
+}
+async function refileSearch(id){
+  const q = (document.getElementById('mvQ') || {}).value?.trim() || '';
+  if (!q) return;
+  const j = await api('/cases?status=all&q=' + encodeURIComponent(q));
+  if (((document.getElementById('mvQ') || {}).value || '').trim() !== q) return;   // still typing
+  const box = document.getElementById('mvList');
+  if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
+  const cs = (j.cases || []).filter(c => !curCase || c.id !== curCase.id).slice(0, 25);
+  box.innerHTML = cs.length ? cs.map(c => `<div class="row" style="cursor:pointer" onclick="refileTo(${id}, ${c.id})"><div class="main"><div class="tt">${esc(c.client_name || '')} · ${esc(c.title || '')}</div><div class="sub">${esc(c.status)} · opened ${esc(c.opened_on || '')}${c.vendor_quote_number ? ' · quote #' + esc(c.vendor_quote_number) : ''}${c.sei_invoice_number ? ' · our invoice #' + esc(c.sei_invoice_number) : ''}</div></div></div>`).join('') : '<div class="note">No job matches.</div>';
+}
+async function refileTo(id, caseId){
+  const j = await api('/docs/' + id + '/refile', {method:'POST', body: caseId ? {case_id: caseId} : {}});
   if (!j.success) { toast(j.error, true); return; }
-  toast('Filed again' + (j.case_id ? ' - opening that job' : ''));
-  if (j.case_id) openCase(j.case_id);
+  closeModal(); toast('Moved' + (j.case_id ? ' - opening that job' : ''));
+  if (j.case_id) openCase(j.case_id); else loadToday();
 }
 function setStep(k, v){ patchCase({steps: {[k]: v === 'today' ? new Date().toISOString().slice(0,10) : v}}); }
 function stepMenu(k, sel){
