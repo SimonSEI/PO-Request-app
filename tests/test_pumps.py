@@ -2947,7 +2947,10 @@ class PumpsTest(unittest.TestCase):
             if 'filter: { status: approved }' in q:
                 return {'quotes': {'nodes': [node('Q9136', 'Proposal to inspect suction line',
                                                   'Field service to check out pump station, found pipe had melted', 'Greenscapes'),
-                                             node('Q9500', 'Sod and irrigation repairs', 'Replace sod by the clubhouse', 'Some HOA')],
+                                             node('Q9500', 'Sod and irrigation repairs', 'Replace sod by the clubhouse', 'Some HOA'),
+                                             node('Q8443', 'Estimate to replace broken valve boxes and a gate valve',
+                                                  'Irrigation Valve Box Inspection Report', 'Barrington Cove'),
+                                             node('Q8444', 'Proposal', 'Replace the float switch', 'Barrington Cove')],
                                    'pageInfo': {'hasNextPage': False}}}
             return {'quotes': {'nodes': [], 'pageInfo': {'hasNextPage': False}}}
         saved = P.jobber_gql
@@ -2961,6 +2964,9 @@ class PumpsTest(unittest.TestCase):
         self.assertIn('Q9136', seen, 'pump station in the line - kept')
         self.assertEqual((seen['Q9136']['status'], seen['Q9136']['category']), ('approved', 'pump'))
         self.assertNotIn('Q9500', seen, 'sod work for someone else - left out')
+        # One of our accounts (Oct 19 2026): only when it's about pump equipment, not their valve boxes.
+        self.assertNotIn('Q8443', seen, "The Reserve @ Estero's valve boxes - irrigation work, not pumps")
+        self.assertIn('Q8444', seen, 'a float switch at one of our accounts - kept')
 
     def test_sarasota_county_is_billed_the_county_way(self):
         doc = {'line_items': [{'description': 'Field service to furnish and install new 15 HP vertical hollow shaft '
@@ -3612,6 +3618,48 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(old[b1['case_id']]['paid_on'], P._today().isoformat())
         self.assertTrue(old[b1['case_id']]['emailed_at'])
         self.assertIn(b2['case_id'], {b['case_id'] for g in j['vendors'] for b in g['bills']}, 'not sent: still to pay')
+
+    def test_ok_a_bill_to_pay_now(self):
+        """Wild Blue (Oct 2026): report-only, billed through the monthly irrigation contract - no invoice to link,
+        and it shouldn't wait for the month's end. OK it by hand: payable, and in the email to Christian."""
+        self.extracts['b-ok1.pdf'] = extraction('bill', '40031', client='Okay Waters HOA', subtotal=250)
+        b = self.upload('b-ok1.pdf')
+        row = lambda: {x['case_id']: x for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors']
+                       for x in g['bills']}[b['case_id']]
+        self.assertFalse(row()['payable'])
+        r = self.c.post('/pumps/api/bills_to_pay/pay_ok', json={'case_ids': [b['case_id']]}).get_json()
+        self.assertTrue(r['success'], r)
+        self.assertTrue(row()['payable'])
+        self.assertIn("OK'd to pay now", row()['why'])
+        e = self.c.post('/pumps/api/bills_to_pay/email', json={'case_ids': [b['case_id']]}).get_json()['email']
+        self.assertIn('#40031', e['body'])
+        self.c.post('/pumps/api/bills_to_pay/pay_ok', json={'case_ids': [b['case_id']], 'undo': True})
+        self.assertFalse(row()['payable'])
+
+    def test_irrigation_quote_items_dropped(self):
+        """Oct 19 2026: The Reserve @ Estero #8443 (valve boxes, a gate valve) was made an item - irrigation work for
+        Install. Cancelled once, the quote ignored, its to-do done; a pump quote's item is left."""
+        conn = P._conn()
+        try:
+            ids = []
+            for jid, title in (('Q8443X', 'Estimate to replace broken valve boxes and a gate valve'),
+                               ('Q8445X', 'Proposal to replace the float switch')):
+                cid = P.create_case(conn, {'title': title, 'client_name': 'Barrington Cove'}, 'test', source='jobber')
+                conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, case_id) "
+                             "VALUES (?, 'quote', ?, ?, 'approved', ?)", (jid, jid[1:5], title, cid))
+                P.add_todo(conn, f'quote-to-job:{cid}', P.quote_to_job_title('Barrington Cove', jid[1:5]), '', {'case_id': cid})
+                ids.append(cid)
+            conn.execute("DELETE FROM pump_state WHERE key='drop_irrigation_quotes_oct26'")
+            P._drop_irrigation_quotes(conn.cursor(), P._now_text())
+            conn.commit()
+            ign = conn.execute("SELECT ignored FROM pump_jobber_items WHERE jobber_id='Q8443X'").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(self.case(ids[0])['status'], 'cancelled')
+        self.assertEqual(ign, 1)
+        self.assertEqual(self.case(ids[1])['status'], 'open')
+        titles = [t['title'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
+        self.assertFalse(any('8443' in t for t in titles))
 
     def test_bills_emailed_before_are_paid(self):
         """Oct 19 2026: bills already emailed to Christian before sending meant paid - marked paid on the day they
