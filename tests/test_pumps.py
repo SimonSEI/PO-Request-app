@@ -4276,6 +4276,11 @@ class PumpsTest(unittest.TestCase):
             todo = lambda: [t for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']
                             if t['key'] == f"gulfshore-unbilled:{r['doc_id']}"]
             self.assertTrue(todo())
+            # Tied to the wrong client before: the invoice's own client is the one remembered.
+            conn = P._conn()
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps({'client': {'id': 'CWRONG'}}), r['case_id']))
+            conn.commit()
+            conn.close()
             j = self.c.post(f"/pumps/api/cases/{r['case_id']}/jobber_invoice", json={'number': '36839'}).get_json()
             self.assertTrue(j['success'], j)
         finally:
