@@ -4298,6 +4298,38 @@ class PumpsTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_invoice_from_quote_leaves_out_optional_work(self):
+        """Huntington #6 (Oct 2026): the draft invoice repeated quote #9160 with its "Optional - if needed" $6,287.97 motor -
+        $8,173 for a $1,884.14 quote. Optional work out (unless the approved total
+        needs it); prices to the dollar as ever (the office's rule)."""
+        lines = [{'name': 'Service Proposal Amount', 'description': 'Control box', 'quantity': 1, 'unitPrice': 2314.14,
+                  'taxable': False, 'optional': False},
+                 {'name': 'Optional - if needed', 'description': 'Motor', 'quantity': 1, 'unitPrice': 6287.97,
+                  'taxable': False, 'optional': True},
+                 {'name': 'Discount Installation', 'description': '', 'quantity': 1, 'unitPrice': -430,
+                  'taxable': False, 'optional': False}]
+        total = [1884.14]
+        saved = P.jobber_gql
+        P.jobber_gql = lambda q, v=None: {'quote': {'quoteNumber': 9160, 'lineItems': {'nodes': lines},
+                                                    'amounts': {'total': total[0]}}}
+        try:
+            q = P.fetch_quote_lines('Q9160')
+            self.assertEqual([li['name'] for li in q['line_items']], ['Service Proposal Amount', 'Discount Installation'])
+            total[0] = 8172.11          # the client took the motor too: it's in the approved total
+            self.assertEqual(len(P.fetch_quote_lines('Q9160')['line_items']), 3)
+            total[0] = 1884.14
+            st = (P.jobber_status, P._invoice_suggestion)
+            P.jobber_status = lambda: {'connected': True}
+            P._invoice_suggestion = lambda doc, case=None, client_id=None: {'line_items': P.fetch_quote_lines('Q9160')['line_items'],
+                                                                            'from_quote': '9160'}
+            try:
+                s2 = P.invoice_suggestion({}, {})
+            finally:
+                P.jobber_status, P._invoice_suggestion = st
+        finally:
+            P.jobber_gql = saved
+        self.assertEqual([li['unit_price'] for li in s2['line_items']], [2315.0, -430.0])
+
     def test_gulfshore_anna_s_place(self):
         """Anna's Place #2491 (Oct 2026): no label in the note, "Ana's Place" twice on the Bill to line; Jobber's client is
         "INC ANA'S PLACE HOMEOWNER'S ASSOCIATION" and our invoice "Pump service - Anna's Place". Found by the invoice's

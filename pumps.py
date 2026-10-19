@@ -5408,7 +5408,8 @@ def auto_draft_quote(doc_id, actor='Pumps (automatic)'):
 
 def fetch_quote_lines(quote_id):
     """Our client quote's lines from Jobber, as the invoice should repeat them."""
-    for lines_spec in ('lineItems { nodes { name description quantity unitPrice taxable } }',
+    for lines_spec in ('lineItems { nodes { name description quantity unitPrice taxable optional } } amounts { total }',
+                       'lineItems { nodes { name description quantity unitPrice taxable } }',
                        'lineItems { name description quantity unitPrice taxable }'):
         try:
             data = jobber_gql(f'query($id: EncodedId!) {{ quote(id: $id) {{ quoteNumber {lines_spec} }} }}',
@@ -5421,8 +5422,18 @@ def fetch_quote_lines(quote_id):
             raw = raw.get('nodes') or []
         lines = [{'name': li.get('name') or '', 'description': li.get('description') or '',
                   'quantity': li.get('quantity') or 1, 'unit_price': li.get('unitPrice'),
-                  'taxable': bool(li.get('taxable'))} for li in raw if li.get('unitPrice') is not None]
-        return {'number': str(q.get('quoteNumber') or ''), 'line_items': lines}
+                  'taxable': bool(li.get('taxable')), 'optional': bool(li.get('optional'))}
+                 for li in raw if li.get('unitPrice') is not None]
+        # Optional work the client didn't take isn't invoiced (Huntington #6 #9160, Oct 2026: the $6,287.97
+        # "Optional - if needed" motor went on the invoice). Kept only when the approved total needs it.
+        total = _money((q.get('amounts') or {}).get('total'))
+        cost = lambda ls: round(sum(float(li['unit_price']) * float(li['quantity'] or 1) for li in ls), 2)
+        required = [li for li in lines if not li['optional']]
+        if not (total is not None and abs(cost(required) - total) > 1 and abs(cost(lines) - total) <= 1):
+            lines = required
+        for li in lines:
+            li.pop('optional', None)
+        return {'number': str(q.get('quoteNumber') or ''), 'line_items': lines, 'total': total}
     return None
 
 
