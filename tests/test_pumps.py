@@ -4063,7 +4063,7 @@ class PumpsTest(unittest.TestCase):
                 'condition and seems to be functioning\nproperly\nTotal $125.00\nWays to pay\n')
         x = P._regex_extract(text, 'gulfshoreyachts@gmail.com', 'New payment request from Gulfshore Yacht Service LLC', name)
         self.assertEqual((x['doc_number'], x['doc_date'], x['total']), ('2498', '2026-10-15', 125.0))
-        self.assertIn('Barrington Cove', x['client_name'], 'Jordan\'s "Barrington" is the Barrington Cove account')
+        self.assertEqual((x['client_name'], x['site']), ('Barrington', 'Barrington, Somewhere'), 'as Jordan writes it')
         self.assertEqual([(i['quantity'], i['unit_price'], i['amount']) for i in x['line_items']], [(2.0, 62.5, 125.0)])
         self.assertTrue(x['line_items'][0]['description'].endswith('functioning properly'))
         above = text.replace('Naples, FL 34120 example.com\n', 'Naples, FL 34120 example.com\nBanyan Bay\n').replace(
@@ -4091,11 +4091,45 @@ class PumpsTest(unittest.TestCase):
         finally:
             P.jobber_status, P.invoice_client, P.client_records, P.invoices_named, P._regex_extract = saved
         c = self.case(r['case_id'])
-        self.assertIn('Barrington Cove', c['client_name'])
+        self.assertIn('Barrington Cove', c['client_name'], 'Jordan\'s "Barrington" is the Barrington Cove account')
         self.assertIn('#2498', c['title'])
         self.assertEqual(c['sei_invoice_number'], '36816')
         q = self.c.get('/pumps/api/summary').get_json()['queue']
         self.assertFalse(any('functioning' in t['title'] for t in q['todos']))
+
+    def test_gulfshore_label_matched_like_a_pump_bill(self):
+        """Caymas #2501 (Oct 2026): Jordan writes "Caymas", Jobber has "Caymas c/o Icon Management" and there's
+        no account by that name. Found the way a pump bill's client is (the Jobber client search); once the
+        invoice confirms it, "Caymas" is a saved site name, so the next bill goes straight there."""
+        name = 'Invoice_2501_from_Gulfshore_Yacht_Service_LLC.pdf'
+        self.texts[name] = ('INVOICE\nGulfshore Yacht Service LLC gulfshore@example.com\n'
+                            '100 Example Dr +1 (239) 555-0100\nNaples, FL 34120 example.com\nQuailmoor\n'
+                            'Bill to Ship to\nStahlman-england Stahlman-england\nInvoice details\n'
+                            'Invoice date: 10/16/2026\n# Date Product or service Description Qty Rate Amount\n'
+                            '1. 10/15/2026 Filter cleaning Quailmoor. Filter is in good physical 2 $87.50 $175.00\n'
+                            'condition and seems to be functioning\nproperly\nTotal $175.00\n')
+        searched = []
+        saved = (P.jobber_status, P.search_clients, P.client_records, P.invoices_named, P._claude_extract)
+        P._claude_extract = lambda *a, **k: None          # read by code
+        P.jobber_status = lambda: {'connected': True}
+        P.search_clients = lambda q: searched.append(q) or [
+            {'id': 'CQM', 'name': 'Quailmoor c/o Example Management', 'score': 1.0, 'is_lead': False}]
+        P.client_records = lambda cid, kind: [{'id': 'IQM', 'number': '36900', 'status': 'awaiting_payment',
+                                               'total': 650.0, 'created': '2026-10-16', 'uri': ''}] if cid == 'CQM' else []
+        P.invoices_named = lambda *a, **k: []
+        try:
+            r = P.ingest_document(name, b'%PDF-1.4 gulf 2501', source='email', actor='email scan',
+                                  email={'uid': 'gs-2501', 'from': 'gulfshore@example.com',
+                                         'subject': 'New payment request from Gulfshore Yacht Service LLC'})
+            P.check_all_diver_bills()
+        finally:
+            P.jobber_status, P.search_clients, P.client_records, P.invoices_named, P._claude_extract = saved
+        c = self.case(r['case_id'])
+        self.assertEqual((c['client_name'], c['vendor_bill_number']), ('Quailmoor', '2501'))
+        self.assertEqual(c['sei_invoice_number'], '36900')
+        self.assertIn('Quailmoor', searched)
+        alias = P.match_site_alias({'client_name': 'Quailmoor'})
+        self.assertEqual((alias or {}).get('client_id'), 'CQM', 'remembered for the next bill')
 
     def test_jobber_query_too_big_for_the_points_limit(self):
         """Oct 2026: the sync's "Jobber kept refusing" errors were queries costing more than Jobber's whole

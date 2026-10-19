@@ -1898,16 +1898,9 @@ def _gulfshore_fields(text, subject, filename, out, conn=None):
         if below and not re.search(r'stahlman', below, re.I):
             named.append(below)
     named = [n for n in named if len(n) >= 3]
-    acct = None
-    for n in named:
-        try:
-            acct = site_account(n, conn)
-        except Exception:
-            acct = None
-        if acct:
-            break
-    out['client_name'] = (acct or (named[0] if named else ''))[:120]
-    out['site'] = out.get('site') or (named[0] if named else '')
+    # As written, like Wettech's "RE:" line: which client it is, is the pump bills' matching (diver_client).
+    out['client_name'] = (named[0] if named else '')[:120]
+    out['site'] = next((n for n in named[1:] if n.lower() != out['client_name'].lower()), out.get('site') or '')[:120]
     return out
 
 
@@ -2322,17 +2315,37 @@ def is_diver_bill(doc):
     return (doc or {}).get('kind') == 'bill' and re.match(r'\s*gulf\s*shore', (doc or {}).get('vendor') or '', re.I) is not None
 
 
+def diver_client(conn, doc):
+    """(account, Jobber client id) for Jordan's site label, matched the way the pump
+    bills are: the office's saved site names first ("Rosewood" -> the Rosewood
+    HOA client), then the account the label names or is part of. The id is
+    None when only the account is known; the invoice check looks the client up
+    then, as for a pump bill."""
+    names = _account_names(conn)
+    names += [a['name'] for a in accounts(conn) if a['name'] not in names]
+    alias = match_site_alias(doc, None, conn)
+    if alias:
+        acct = next((n for n in names if _same_account(n, alias['client_name'] or '')), None)
+        return acct or alias['client_name'] or doc.get('client_name') or '', alias['client_id']
+    for label in (doc.get('client_name'), doc.get('site')):
+        acct = site_account(label, conn) if label else None
+        if acct:
+            return acct, None
+    return doc.get('client_name') or '', None
+
+
 def file_diver_bill(conn, doc, actor):
     """A Gulfshore bill on an item of its own: the visit done, nothing to quote or check."""
     client = doc.get('client_name') or ''
-    names = [a['name'] for a in accounts(conn)]
-    acct = next((n for n in names if _same_account(n, client)), None)
+    acct, client_id = diver_client(conn, doc)
     num = f" #{doc['doc_number']}" if doc.get('doc_number') else ''
     when = doc.get('doc_date') or _today().isoformat()
     cid = create_case(conn, {'title': f"{acct or client or 'Lake'} - lake filter cleaning (Gulfshore{num})"[:160],
                              'category': 'diver', 'client_name': acct or client, 'site': doc.get('site') or '',
                              'vendor': 'Gulfshore', 'description': (doc.get('description') or '').strip()[:1000],
                              'opened_on': when}, actor, source='bill')
+    if client_id:
+        conn.execute('UPDATE pump_cases SET jobber_client_id=? WHERE id=?', (client_id, cid))
     conn.execute("UPDATE pump_docs SET case_id=?, status=CASE WHEN status='new' THEN 'filed' ELSE status END, "
                  "updated_at=? WHERE id=?", (cid, _now_text(), doc['id']))
     _apply(conn, cid, {'vendor_bill_number': doc.get('doc_number') or '', 'vendor_bill_amount': doc.get('subtotal'),
@@ -2418,6 +2431,12 @@ def check_diver_billed(case_id, actor='Pumps'):
         conn.commit()
     finally:
         conn.close()
+    if found and client_id and doc.get('client_name'):
+        # The invoice confirms the client: Jordan's label is remembered like a pump bill's site name.
+        try:
+            remember_choice(doc, client_id, actor=actor)
+        except (JobberError, ValueError):
+            pass
     return {'billed': bool(found), 'invoice': found, 'error': err}
 
 
@@ -2462,16 +2481,18 @@ def reread_diver_bill(conn, case_id, actor='Pumps'):
         return False
     x = _gulfshore_fields(text, row['email_subject'] or '', row['file_name'], {
         'doc_number': row['doc_number'], 'doc_date': row['doc_date'], 'total': row['total'],
-        'subtotal': row['subtotal'], 'tax': row['tax'], 'client_name': ''}, conn)
-    if (x['client_name'], x['doc_number'], x['doc_date']) == (case['client_name'], row['doc_number'], row['doc_date']):
+        'subtotal': row['subtotal'], 'tax': row['tax'], 'client_name': '', 'site': ''}, conn)
+    acct, client_id = diver_client(conn, {**dict(row), **x})
+    if (acct, x['doc_number'], x['doc_date']) == (case['client_name'], row['doc_number'], row['doc_date']):
         return False
-    acct = next((n for n in names if x['client_name'] and _same_account(n, x['client_name'])), None) or x['client_name']
-    conn.execute('UPDATE pump_docs SET client_name=?, doc_number=?, doc_date=?, total=COALESCE(total, ?), '
+    conn.execute('UPDATE pump_docs SET client_name=?, site=?, doc_number=?, doc_date=?, total=COALESCE(total, ?), '
                  'subtotal=COALESCE(subtotal, ?), updated_at=? WHERE id=?',
-                 (x['client_name'], x['doc_number'], x['doc_date'], x['total'], x['subtotal'], _now_text(), row['id']))
+                 (x['client_name'], x['site'], x['doc_number'], x['doc_date'], x['total'], x['subtotal'], _now_text(),
+                  row['id']))
     num = f" #{x['doc_number']}" if x['doc_number'] else ''
-    conn.execute('UPDATE pump_cases SET client_name=?, title=?, vendor_bill_number=? WHERE id=?',
-                 (acct, f"{acct or 'Lake'} - lake filter cleaning (Gulfshore{num})"[:160], x['doc_number'], case_id))
+    conn.execute('UPDATE pump_cases SET client_name=?, title=?, vendor_bill_number=?, jobber_client_id=? WHERE id=?',
+                 (acct, f"{acct or 'Lake'} - lake filter cleaning (Gulfshore{num})"[:160], x['doc_number'],
+                  client_id or case.get('jobber_client_id') or '', case_id))
     for k in ('scheduled', 'work_done', 'vendor_bill'):
         if x['doc_date']:
             _set_step(conn, case_id, k, at=x['doc_date'], by=actor)
