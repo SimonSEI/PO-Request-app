@@ -2408,6 +2408,9 @@ def check_diver_billed(case_id, actor='Pumps'):
             conn.execute('UPDATE pump_cases SET jobber=?, sei_invoice_number=?, jobber_client_id=COALESCE(NULLIF('
                          "jobber_client_id, ''), ?) WHERE id=?", (json.dumps(j), found['number'], client_id or '', case_id))
             _set_step(conn, case_id, 'invoice_drafted', at=_today().isoformat(), by=actor)
+            if found['status'] not in ('draft', 'voided', 'bad_debt'):
+                # Already sent to the client (Rosewood #36816): nothing to send - only Jordan to pay.
+                _set_step(conn, case_id, 'closed', at=_today().isoformat(), by=actor)
             conn.execute('UPDATE pump_todos SET done_at=?, done_by=? WHERE key=? AND done_at IS NULL',
                          (_now_text(), actor, key))
             _event(conn, actor, 'billed out', f"Gulfshore{num} is on our Jobber invoice #{found['number']} to the client - "
@@ -2508,6 +2511,11 @@ def check_all_diver_bills(actor='Jobber sync'):
                                           "AND vendor='Gulfshore' AND COALESCE(json_extract(jobber, '$.invoice.id'), '')=''")]
         for i in ids:
             reread_diver_bill(conn, i, actor)
+        # Linked to an invoice already sent but left on "Send invoice" (before Oct 19 2026): closed.
+        for r in conn.execute("SELECT id FROM pump_cases WHERE status='open' AND category='diver' AND vendor='Gulfshore' "
+                              "AND COALESCE(json_extract(jobber, '$.invoice.status'), 'draft') "
+                              "NOT IN ('draft', 'voided', 'bad_debt')").fetchall():
+            _set_step(conn, r[0], 'closed', at=_today().isoformat(), by=actor)
         conn.commit()
     finally:
         conn.close()

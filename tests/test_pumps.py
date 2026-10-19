@@ -4125,6 +4125,10 @@ class PumpsTest(unittest.TestCase):
         c = self.case(r['case_id'])
         self.assertEqual(c['client_name'], 'Sanctuary @ Blue Heron')
         self.assertEqual((c['vendor_bill_number'], c['sei_invoice_number']), ('2500', '36861'))
+        # #36861 was already sent (Rosewood #36816, Oct 2026): closed, not a "Send invoice" to-do.
+        self.assertEqual(c['status'], 'closed')
+        q = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertNotIn(r['case_id'], [x['id'] for x in q['ready_to_close']])
         bills = {b['case_id']: b for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for b in g['bills']}
         self.assertTrue(bills[r['case_id']]['payable'])
 
