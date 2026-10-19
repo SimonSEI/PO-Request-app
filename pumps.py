@@ -2294,6 +2294,14 @@ def _bill_by_quote_or_station(doc, rows):
     return None
 
 
+def _recent_unbilled(conn, exclude=None):
+    """Jobs closed or cancelled in the last REOPEN_DAYS days that never got their vendor bill."""
+    since = (_today() - timedelta(days=REOPEN_DAYS)).isoformat()
+    return [dict(r) for r in conn.execute("SELECT * FROM pump_cases WHERE status IN ('closed', 'cancelled') "
+                                          "AND COALESCE(updated_at, '') >= ?", (since,))
+            if r['id'] != exclude and not (json.loads(r['steps'] or '{}').get('vendor_bill') or {}).get('at')]
+
+
 def move_early_bills(conn, actor='Pumps'):
     """A bill that made an item of its own as "came before its quote" when its job was open all
     along (Huntington #29218 -> "Huntington #6 - Check out #6 pump station", Oct 2026): moved to
@@ -2309,7 +2317,7 @@ def move_early_bills(conn, actor='Pumps'):
             continue
         rows = [dict(r) for r in conn.execute("SELECT * FROM pump_cases WHERE status='open' AND id != ?", (cid,))]
         doc = _doc_dict(docs[0])
-        if not _bill_by_quote_or_station(doc, rows):
+        if not _bill_by_quote_or_station(doc, rows) and not _bill_by_quote_or_station(doc, _recent_unbilled(conn, cid)):
             continue
         new = refile_document(conn, doc['id'], actor)
         if not conn.execute("SELECT 1 FROM pump_docs WHERE case_id=? AND status != 'dismissed'", (cid,)).fetchone():
@@ -2349,6 +2357,14 @@ def _find_case_for(conn, doc, exclude=None):
     hit = _bill_by_quote_or_station(doc, rows) if kind == 'bill' and not maintenance_bill(doc) else None
     if hit:
         return hit
+    if kind == 'bill' and not maintenance_bill(doc):
+        # Closed or cancelled lately without its bill (Huntington #5, Oct 2026): reopened for it.
+        hit = _bill_by_quote_or_station(doc, _recent_unbilled(conn, exclude))
+        if hit:
+            conn.execute("UPDATE pump_cases SET status='open', updated_at=? WHERE id=?", (_now_text(), hit[0]))
+            _event(conn, 'Pumps', 'reopened', f"Its vendor bill came in ({doc.get('vendor') or 'vendor'} "
+                                              f"#{doc.get('doc_number') or '?'})", case_id=hit[0])
+            return hit[0], hit[1] + ' - reopened'
     # A maintenance visit's bill or report (Lely, Oct 2026: the quarterly bill
     # went on the 10" valve repair waiting on its quote) only goes on a
     # maintenance item by name - otherwise it gets its own.
@@ -2803,7 +2819,7 @@ def file_document(conn, doc_id, actor='system'):
     return _file_on_case(conn, doc, case_id, how, actor)
 
 
-def refile_document(conn, doc_id, actor):
+def refile_document(conn, doc_id, actor, target=None):
     """A document filed on the wrong item: off it - what it put there undone
     (its bill number and amounts, Bill from vendor / Work done when it ticked
     them) - and filed again on another open item or a new one."""
@@ -2835,8 +2851,27 @@ def refile_document(conn, doc_id, actor):
             _refresh_case(conn, old)
         _event(conn, actor, 'moved off', f"{doc.get('file_name')} wasn't for this item", case_id=old, doc_id=doc_id)
     conn.execute("UPDATE pump_docs SET case_id=NULL, status='new', updated_at=? WHERE id=?", (_now_text(), doc_id))
-    case_id, how = _find_case_for(conn, dict(conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()),
-                                  exclude=old)
+    if old:
+        # An item the document made by itself, left with nothing: cancelled, not left on the lists.
+        oc = conn.execute('SELECT * FROM pump_cases WHERE id=?', (old,)).fetchone()
+        oj = json.loads((oc['jobber'] if oc else '') or '{}')
+        if oc and oc['status'] == 'open' and oc['source'] not in ('manual', 'jobber', 'service_call') \
+                and not any((oj.get(k) or {}).get('id') for k in ('quote', 'job', 'invoice')) \
+                and not conn.execute("SELECT 1 FROM pump_docs WHERE case_id=? AND status != 'dismissed'", (old,)).fetchone():
+            conn.execute("UPDATE pump_cases SET status='cancelled', stage='cancelled', updated_at=? WHERE id=?",
+                         (_now_text(), old))
+            conn.execute("UPDATE pump_issues SET resolved_at=?, resolved_by=?, resolution=? WHERE case_id=? "
+                         "AND resolved_at IS NULL", (_now_text(), actor, 'Its document went on another job', old))
+    if target:
+        # The office picked the job (Huntington #5's bill, Oct 2026): that one, reopened if it was closed.
+        if not conn.execute('SELECT 1 FROM pump_cases WHERE id=?', (target,)).fetchone():
+            raise ValueError('No such job')
+        conn.execute("UPDATE pump_cases SET status='open', updated_at=? WHERE id=? AND status != 'open'",
+                     (_now_text(), target))
+        case_id, how = target, 'picked by hand'
+    else:
+        case_id, how = _find_case_for(conn, dict(conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()),
+                                      exclude=old)
     if not case_id:
         case_id = _new_case_for(conn, doc, actor)
         how = 'new item'
@@ -8166,7 +8201,8 @@ def h_doc_refile(actor, doc_id):
         return _office_only(actor, 'Moving a document to another item')
     conn = _conn()
     try:
-        case_id = refile_document(conn, doc_id, actor)
+        target = _json().get('case_id')
+        case_id = refile_document(conn, doc_id, actor, int(target) if str(target or '').isdigit() else None)
         if case_id is None:
             return {'success': False, 'error': 'Not found'}, 404
         conn.commit()

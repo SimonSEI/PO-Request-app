@@ -4280,7 +4280,7 @@ class PumpsTest(unittest.TestCase):
                                                       'amount': 500.0, 'unit_price': 500.0}],
                                       'description': 'Replaced float on pump station #5'}
         conn = P._conn()
-        conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (five,))
+        conn.execute("UPDATE pump_cases SET status='cancelled', updated_at='2000-01-01' WHERE id=?", (five,))
         conn.commit()
         conn.close()
         b5 = self.upload('b-hl5.pdf')
@@ -4297,6 +4297,38 @@ class PumpsTest(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT case_id FROM pump_docs WHERE id=?', (b5['doc_id'],)).fetchone()[0], five)
         finally:
             conn.close()
+
+    def test_bill_reopens_its_closed_job_or_goes_where_picked(self):
+        """Huntington #5 #29219 (Oct 2026): the bill for pump station #5 came after the #5 job was taken off the lists - only
+        open jobs were looked at. A job closed or cancelled lately without its bill is reopened for it. And Wrong job can
+        put a document on the job the office picks; the item it made by itself goes."""
+        conn = P._conn()
+        try:
+            five = P.create_case(conn, {'title': 'Check out #5 pump station', 'client_name': 'Elmbrook #5'}, 'test', source='jobber')
+            conn.execute("UPDATE pump_cases SET status='cancelled', stage='cancelled' WHERE id=?", (five,))
+            other = P.create_case(conn, {'title': 'Float switch', 'client_name': 'Pinecrest Glen'}, 'test', source='jobber')
+            conn.commit()
+        finally:
+            conn.close()
+        items = [{'name': 'Control box', 'description': 'Field service to check out Elmbrook Lakes pump station #5. Furnished '
+                  'and installed new 7.5 HP deluxe control box, wired up and tested. As per quotation.', 'quantity': 1,
+                  'unit_price': 1344.72, 'amount': 1344.72, 'taxable': True, 'is_tax': False}]
+        ex = extraction('bill', '29319', client='Elmbrook Lakes - Collier County', subtotal=1344.72, tax=80.68, items=items)
+        ex['description'] = items[0]['description']
+        self.extracts['b-el5.pdf'] = ex
+        b = self.upload('b-el5.pdf')
+        self.assertEqual(b['case_id'], five)
+        self.assertEqual(self.case(five)['status'], 'open', 'reopened for its bill')
+        # Picked by hand: onto that job; the job it was on keeps nothing of it.
+        r = self.c.post(f"/pumps/api/docs/{b['doc_id']}/refile", json={'case_id': other}).get_json()
+        self.assertTrue(r['success'], r)
+        self.assertEqual(r['case_id'], other)
+        self.extracts['b-el9.pdf'] = {**ex, 'doc_number': '29299', 'client_name': 'Nowhere Pines', 'description': 'Valve',
+                                      'line_items': [{**items[0], 'description': 'Valve'}]}
+        alone = self.upload('b-el9.pdf')
+        r = self.c.post(f"/pumps/api/docs/{alone['doc_id']}/refile", json={'case_id': five}).get_json()
+        self.assertEqual(r['case_id'], five)
+        self.assertEqual(self.case(alone['case_id'])['status'], 'cancelled', 'the item it made by itself goes')
 
     def test_invoice_from_quote_leaves_out_optional_work(self):
         """Huntington #6 (Oct 2026): the draft invoice repeated quote #9160 with its "Optional - if needed" $6,287.97 motor -
