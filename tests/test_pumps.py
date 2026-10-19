@@ -2399,8 +2399,10 @@ class PumpsTest(unittest.TestCase):
             self.assertEqual(sent[0][0], 'christian@example.com')
             self.assertIn('Please pay it.', sent[0][2])
             self.assertEqual(len(sent[0][3]), 1)
+            # Sent = paid (Oct 19 2026): off the list.
             q = self.c.get('/pumps/api/summary').get_json()['queue']['vendor_bills_to_pay']
-            self.assertTrue(next(c for c in q if c['id'] == cid)['pay_email']['sent'])
+            self.assertNotIn(cid, [c['id'] for c in q])
+            self.assertEqual(self.case(cid)['vendor_paid_on'], P._today().isoformat())
 
             def refuse(*a, **k):
                 raise RuntimeError('Microsoft 365 said HTTP 403: Access is denied.')
@@ -3602,13 +3604,34 @@ class PumpsTest(unittest.TestCase):
                 os.environ['CHRISTIAN_EMAIL'] = env
         self.assertTrue(r['success'], r)
         self.assertEqual((r['sent'], sent[0][0]), (1, 'christian@example.com'))
-        got = {b['case_id']: b for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for b in g['bills']}
-        self.assertTrue(got[b1['case_id']]['asked_at'])
         self.assertEqual(count(), before - 1, 'sent to Christian: off the badge')
-        # Paid: off the tab.
-        self.c.patch(f"/pumps/api/cases/{b1['case_id']}", json={'vendor_paid_on': '2026-10-16'})
-        left = {b['case_id'] for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for b in g['bills']}
-        self.assertNotIn(b1['case_id'], left)
+        # Sent to Christian = paid (Oct 19 2026): off the list, in Old vendor bills, saying it was emailed.
+        j = self.c.get('/pumps/api/bills_to_pay').get_json()
+        self.assertNotIn(b1['case_id'], {b['case_id'] for g in j['vendors'] for b in g['bills']})
+        old = {b['case_id']: b for b in j['paid']}
+        self.assertEqual(old[b1['case_id']]['paid_on'], P._today().isoformat())
+        self.assertTrue(old[b1['case_id']]['emailed_at'])
+        self.assertIn(b2['case_id'], {b['case_id'] for g in j['vendors'] for b in g['bills']}, 'not sent: still to pay')
+
+    def test_bills_emailed_before_are_paid(self):
+        """Oct 19 2026: bills already emailed to Christian before sending meant paid - marked paid on the day they
+        were emailed, once, into Old vendor bills. A failed send isn't."""
+        self.extracts['b-sent1.pdf'] = extraction('bill', '40021', client='Sent Lakes HOA', subtotal=200)
+        self.extracts['b-sent2.pdf'] = extraction('bill', '40022', client='Failed Pines HOA', subtotal=100)
+        b1, b2 = self.upload('b-sent1.pdf'), self.upload('b-sent2.pdf')
+        conn = P._conn()
+        try:
+            P._state_set(f"pay_email:{b1['case_id']}", {'at': '2026-10-17 09:00', 'by': 'Simon', 'sent': True}, conn=conn)
+            P._state_set(f"pay_email:{b2['case_id']}", {'at': '2026-10-17 09:00', 'by': 'Simon', 'error': 'x'}, conn=conn)
+            conn.execute("DELETE FROM pump_state WHERE key='paid_once_emailed_oct26'")
+            P._paid_once_emailed(conn.cursor(), P._now_text())
+            conn.commit()
+        finally:
+            conn.close()
+        j = self.c.get('/pumps/api/bills_to_pay/paid_list?q=4002').get_json()
+        paid = {b['case_id']: b for b in j['paid']}
+        self.assertEqual(paid[b1['case_id']]['paid_on'], '2026-10-17')
+        self.assertNotIn(b2['case_id'], paid)
 
     def test_mark_selected_bills_paid(self):
         """Oct 2026: tick bills on the Bills to pay tab and mark them all paid in one click."""
