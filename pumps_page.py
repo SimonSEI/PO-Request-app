@@ -1336,10 +1336,11 @@ const JOB_STATUSES = [['parts_ordered', 'Parts ordered'], ['waiting_vendor', 'Wa
 function statusSec(c){
   const hist = (c.events || []).filter(e => e.action === 'status');
   return `<details class="sec fold"><summary><h4>Status update</h4>${statusLine(c) ? ` <span class="note">${statusLine(c)}</span>` : ' <span class="note">none yet - add one</span>'}</summary>
+    ${(c.job_status || {}).kind ? `<div class="note" style="margin-top:6px">Picked the wrong kind? Change it to: <select onchange="jsRelabel(${c.id}, this.value)"><option value="">-</option>${JOB_STATUSES.filter(([k]) => k !== c.job_status.kind).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></div>` : ''}
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px">
-      <select id="js_kind" onchange="jsKind()">${JOB_STATUSES.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select>
+      <select id="js_kind" onchange="jsKind()">${JOB_STATUSES.map(([k, l]) => `<option value="${k}" ${k === 'note' ? 'selected' : ''}>${l}</option>`).join('')}</select>
       <input type="date" id="js_on" title="When the parts are due / the day it is scheduled">
-      <span id="js_weeks" style="display:flex;gap:4px">${[1, 2, 3, 4].map(w => `<button class="btn s" onclick="jsWeeks(${w})">${w} wk${w > 1 ? 's' : ''}</button>`).join('')}</span>
+      <span id="js_weeks" style="display:none;gap:4px">${[1, 2, 3, 4].map(w => `<button class="btn s" onclick="jsWeeks(${w})">${w} wk${w > 1 ? 's' : ''}</button>`).join('')}</span>
       <input type="text" id="js_text" placeholder="Note - e.g. motor ordered from Wettech, client told by email" style="flex:1;min-width:200px">
       <button class="btn p" onclick="jsAdd(${c.id})">＋ Add update</button></div>
     ${hist.length ? `<div style="margin-top:8px">${hist.map(e => `<div class="note">${esc(niceDay(d10(e.at)))} · ${esc(e.actor || '')} · ${esc(e.detail)}</div>`).join('')}</div>` : ''}</details>`;
@@ -1390,6 +1391,13 @@ async function jsAdd(id){
   const j = await api('/cases/' + id + '/status', {method:'POST', body:{kind: v('js_kind'), on: v('js_on'), text: v('js_text').trim()}});
   if (!j.success) { toast(j.error, true); return; }
   curCase = j.case; renderCase(); toast('Status updated'); loadToday();
+}
+// The latest status was the wrong kind ("Parts ordered" for a call to the client): relabel it, words kept.
+async function jsRelabel(id, kind){
+  if (!kind) return;
+  const j = await api('/cases/' + id + '/status/kind', {method:'POST', body:{kind}});
+  if (!j.success) { toast(j.error, true); return; }
+  curCase = j.case; renderCase(); toast('Changed'); loadToday();
 }
 function addNote(){ const t = prompt('Note for this item:'); if (t) patchCase({note: t}); }
 async function caseDone(id){

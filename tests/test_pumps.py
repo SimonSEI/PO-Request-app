@@ -2988,6 +2988,17 @@ class PumpsTest(unittest.TestCase):
                          ('Service Proposal Amount', 6794.11))
         self.assertEqual(P.gov_missing_refs({'po_number': '1'}), ['WO #'])
 
+    def test_status_picked_as_the_wrong_kind(self):
+        """Oct 2026: "Followed up on friday with the client left a message" was saved as "Parts ordered" (the picker
+        started there). Relabelled as a Note, its words kept."""
+        j = self.c.post('/pumps/api/cases', json={'title': 'Motor', 'client_name': 'Relabel Run'}).get_json()
+        cid = j.get('case_id') or j['case']['id']
+        self.c.post(f'/pumps/api/cases/{cid}/status', json={'kind': 'parts_ordered', 'text': 'Followed up with the client'})
+        r = self.c.post(f'/pumps/api/cases/{cid}/status/kind', json={'kind': 'note'}).get_json()
+        self.assertTrue(r['success'], r)
+        st = self.case(cid)['job_status']
+        self.assertEqual((st['kind'], st['label'], st['text']), ('note', 'Note', 'Followed up with the client'))
+
     def test_status_updates_on_an_approved_job(self):
         j = self.c.post('/pumps/api/cases', json={'title': 'Motor', 'client_name': 'Quail Run'}).get_json()
         cid = j.get('case_id') or j['case']['id']
