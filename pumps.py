@@ -5816,7 +5816,8 @@ def _invoice_suggestion(doc, case=None, client_id=None):
         except JobberError:
             job = None
         if job:
-            # The month the visit was for, in the title: "Pump service - Honda of Ft Myers - October 2026".
+            # The month the visit was for, as the office titles them: "October Pump Maintenance" (Oct 2026;
+            # was "Pump service - Honda of Ft Myers - October 2026").
             y, m = bill_service_month(doc)
             month = date(y, m, 1).strftime('%B %Y')
             if FLOW_ON_INVOICE.search(job.get('instructions') or ''):
@@ -5824,8 +5825,7 @@ def _invoice_suggestion(doc, case=None, client_id=None):
                 lines = _with_flow_readings(job['line_items'], case, doc, y, m)
                 if lines:
                     job = {**job, 'line_items': lines, 'flow_readings': True}
-            if month.lower() not in (sugg.get('subject') or '').lower():
-                sugg['subject'] = f"{sugg.get('subject') or 'Pump service'} - {month}"[:255]
+            sugg['subject'] = f"{date(y, m, 1).strftime('%B')} Pump Maintenance"
             sugg.update(bill_lines=sugg['line_items'], line_items=job['line_items'] if job.get('flow_readings')
                         else _with_bill_notes(job['line_items'], sugg['line_items']),
                         client_id=client_id, markup_pct=0, recurring=True,
