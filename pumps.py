@@ -8657,6 +8657,32 @@ def set_job_status(conn, case_id, actor, kind, text='', on=''):
     return rec
 
 
+@api('/cases/<int:case_id>/status/kind', methods=('POST',))
+def h_case_status_kind(actor, case_id):
+    """{"kind": ...} - the latest status update was picked as the wrong kind ("Parts ordered" for a
+    follow-up with the client, Oct 2026): relabelled, its words and date kept."""
+    kind = str(_json().get('kind') or '')
+    if kind not in JOB_STATUSES:
+        raise ValueError('Pick what the update is')
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT job_status FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+        if not row:
+            return {'success': False, 'error': 'Not found'}, 404
+        rec = json.loads(row['job_status'] or '{}')
+        if not rec.get('kind'):
+            raise ValueError('There is no status update to change')
+        was = rec.get('label') or ''
+        rec.update(kind=kind, label=JOB_STATUSES[kind])
+        conn.execute('UPDATE pump_cases SET job_status=?, updated_at=? WHERE id=?', (json.dumps(rec), _now_text(), case_id))
+        _event(conn, actor, 'status', f"{was} changed to {JOB_STATUSES[kind]}"
+                                      f"{' · ' + rec['text'] if rec.get('text') else ''}", case_id=case_id)
+        conn.commit()
+        return {'case': case_detail(conn, case_id)}
+    finally:
+        conn.close()
+
+
 @api('/cases/<int:case_id>/status', methods=('POST',))
 def h_case_status(actor, case_id):
     """A status update on a job: {"kind": parts_ordered|waiting_vendor|client_notified|scheduled|
