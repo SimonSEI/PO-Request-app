@@ -3006,6 +3006,14 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual([j['number'] for j in r['jobs']], ['14592', '14001'], 'newest first')
         self.assertEqual(r['jobs'][0]['client_name'], 'Woodmere Lake Club')
 
+    def test_rename_an_item(self):
+        """Banyan Bay (Oct 2026): an item's title, made from a report's comments, can be renamed."""
+        j = self.c.post('/pumps/api/cases', json={'title': 'COMMENTS: Input line reactor bad, jumped wires', 'client_name': 'Rename Bay'}).get_json()
+        cid = j.get('case_id') or j['case']['id']
+        r = self.c.patch(f'/pumps/api/cases/{cid}', json={'title': 'New input line reactor and surge arrestor'}).get_json()
+        self.assertTrue(r['success'], r)
+        self.assertEqual(self.case(cid)['title'], 'New input line reactor and surge arrestor')
+
     def test_status_picked_as_the_wrong_kind(self):
         """Oct 2026: "Followed up on friday with the client left a message" was saved as "Parts ordered" (the picker
         started there). Relabelled as a Note, its words kept."""

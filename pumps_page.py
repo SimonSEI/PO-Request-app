@@ -907,7 +907,7 @@ function renderCase(){
   const issues = (c.issues || []).map(i => `<div class="issue ${i.resolved_at ? 'done' : ''}"><div>${esc(i.message)}${i.resolved_at ? `<div class="note">Resolved by ${esc(i.resolved_by)}: ${esc(i.resolution)}</div>` : ''}</div>${i.resolved_at ? '' : `${i.kind === 'no_quote' ? `<button class="btn s p" onclick="billAnyway(${i.id})">Bill it +30%</button> ` : ''}<button class="btn s" onclick="resolveIssue(${i.id})">Resolve…</button>`}</div>`).join('');
   const f = (k, label, type, w) => `<label class="${w ? 'w' : ''}">${label}${type === 'area' ? `<textarea data-f="${k}">${esc(c[k])}</textarea>` : `<input type="${type || 'text'}" data-f="${k}" value="${esc(MONEY.has(k) || k.endsWith('_amount') ? (c[k] ?? '') : c[k])}">`}</label>`;
   document.getElementById('drawer').innerHTML = `
-  <div class="hd"><div><h2>${esc(c.title || c.client_name)}</h2><div class="note">${catChip(c.category)} ${stageChip(c)} ${c.po_number ? 'PO ' + esc(c.po_number) : ''} · opened ${esc(c.opened_on)}</div></div>
+  <div class="hd"><div><h2>${esc(c.title || c.client_name)} <button class="btn s" title="Rename this item" onclick="editTitle()">✎</button></h2><div class="note">${catChip(c.category)} ${stageChip(c)} ${c.po_number ? 'PO ' + esc(c.po_number) : ''} · opened ${esc(c.opened_on)}</div></div>
     <div style="display:flex;gap:6px;align-items:flex-start"><button class="btn" onclick="closeDrawer()">✕</button></div></div>
   <div class="bd">
     ${c.vendor_pay.state === 'due' ? `<div class="sec"><div class="issue">💸 Our client has paid the Jobber invoice - ${esc(v)}'s bill needs to be paid.<button class="btn s p" onclick="markVendorPaid(${c.id})">Mark ${esc(v)} paid</button></div></div>` : ''}
@@ -1422,6 +1422,11 @@ async function jsRelabel(id, kind){
   const j = await api('/cases/' + id + '/status/kind', {method:'POST', body:{kind}});
   if (!j.success) { toast(j.error, true); return; }
   curCase = j.case; renderCase(); toast('Changed'); loadToday();
+}
+// Rename an item - the title it got from a document can be long or say the wrong thing (Banyan Bay, Oct 2026).
+function editTitle(){
+  const t = prompt('Title for this item:', curCase.title || curCase.client_name || '');
+  if (t != null && t.trim() && t.trim() !== curCase.title) patchCase({title: t.trim()}).then(j => { if (j && j.success) { toast('Renamed'); loadToday(); } });
 }
 function addNote(){ const t = prompt('Note for this item:'); if (t) patchCase({note: t}); }
 async function caseDone(id){
