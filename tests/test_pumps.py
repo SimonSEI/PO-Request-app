@@ -3430,7 +3430,7 @@ class PumpsTest(unittest.TestCase):
         finally:
             P.jobber_status, P.invoice_client, P.recurring_jobs, P.job_detail = saved
         self.assertEqual(([li['unit_price'] for li in sugg['line_items']], sugg['job']['id']), ([195.0], 'JRW'))
-        self.assertTrue(sugg['subject'].endswith(' - October 2026'), sugg['subject'])
+        self.assertEqual(sugg['subject'], 'October Pump Maintenance', 'as the office titles them')
         # The bill's notes for the visit go on the line, without "As per quotation" or the report note.
         self.assertEqual(sugg['line_items'][0]['description'],
                          'Service to perform irrigation maintenance to ensure equipment is operating properly. '
