@@ -3431,6 +3431,12 @@ class PumpsTest(unittest.TestCase):
             P.jobber_status, P.invoice_client, P.recurring_jobs, P.job_detail = saved
         self.assertEqual(([li['unit_price'] for li in sugg['line_items']], sugg['job']['id']), ([195.0], 'JRW'))
         self.assertEqual(sugg['subject'], 'October Pump Maintenance', 'as the office titles them')
+        # And the line says the month first (Caymas #36867, Oct 2026).
+        self.assertIn('october', sugg['line_items'][0]['description'].lower(), sugg['line_items'][0])
+        self.assertEqual(P._with_month_line([{'name': 'PUMP SERVICE', 'description': 'Quarterly pump service', 'unit_price': 5}],
+                                            2026, 10)[0]['description'], 'October Pump Maintenance\nQuarterly pump service')
+        self.assertEqual(P._with_month_line([{'name': 'PUMP SERVICE', 'description': 'October visit', 'unit_price': 5}],
+                                            2026, 10)[0]['description'], 'October visit', 'names the month already')
         # The bill's notes for the visit go on the line, without "As per quotation" or the report note.
         self.assertEqual(sugg['line_items'][0]['description'],
                          'Service to perform irrigation maintenance to ensure equipment is operating properly. '
