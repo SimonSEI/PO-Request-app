@@ -2988,6 +2988,24 @@ class PumpsTest(unittest.TestCase):
                          ('Service Proposal Amount', 6794.11))
         self.assertEqual(P.gov_missing_refs({'po_number': '1'}), ['WO #'])
 
+    def test_search_jobber_jobs_by_number_or_client(self):
+        """Oct 2026: a service call is found by its job number or the client's name - their recent jobs listed to pick."""
+        nodes = [{'id': 'J1', 'jobNumber': 14592, 'title': 'Pump Service call', 'jobStatus': 'UPCOMING',
+                  'createdAt': '2026-10-15T10:00:00Z', 'startAt': '2026-10-20T13:00:00Z', 'jobberWebUri': 'u1',
+                  'client': {'id': 'C1', 'name': 'Woodmere Lake Club'}},
+                 {'id': 'J2', 'jobNumber': 14001, 'title': 'Irrigation repair', 'jobStatus': 'ARCHIVED',
+                  'createdAt': '2026-08-01T10:00:00Z', 'startAt': None, 'jobberWebUri': 'u2',
+                  'client': {'id': 'C1', 'name': 'Woodmere Lake Club'}}]
+        saved = (P.jobber_gql, P.jobber_status)
+        P.jobber_status = lambda: {'connected': True}
+        P.jobber_gql = lambda q, v=None: {'jobs': {'nodes': nodes}}
+        try:
+            r = self.c.get('/pumps/api/jobber/jobs?q=Woodmere').get_json()
+        finally:
+            P.jobber_gql, P.jobber_status = saved
+        self.assertEqual([j['number'] for j in r['jobs']], ['14592', '14001'], 'newest first')
+        self.assertEqual(r['jobs'][0]['client_name'], 'Woodmere Lake Club')
+
     def test_status_picked_as_the_wrong_kind(self):
         """Oct 2026: "Followed up on friday with the client left a message" was saved as "Parts ordered" (the picker
         started there). Relabelled as a Note, its words kept."""

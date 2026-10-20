@@ -7771,6 +7771,50 @@ def h_link_jobber_quote(actor, case_id):
     return {'quote': link_jobber_quote(case_id, _json().get('number'), actor)}
 
 
+def search_jobber_jobs(q, limit=25):
+    """Recent Jobber jobs for a job number or a client name (Oct 2026: a service call is found by
+    either, then picked from the list), newest first: [{number, title, client_name, status, date,
+    uri, case_id}]. Jobber's own search, plus the jobs the sync already has."""
+    q = (q or '').strip().lstrip('#')
+    if len(q) < 2:
+        return []
+    found = {}
+    conn = _conn()
+    try:
+        like = f'%{q}%'
+        for r in conn.execute("SELECT * FROM pump_jobber_items WHERE kind='job' AND (number=? OR client_name LIKE ? "
+                              "OR title LIKE ? OR property_label LIKE ?) ORDER BY COALESCE(start_at, created_at) DESC "
+                              "LIMIT ?", (q, like, like, like, limit)):
+            found[r['jobber_id']] = {'number': r['number'], 'title': r['title'] or '', 'client_name': r['client_name'] or '',
+                                     'status': r['status'] or '', 'date': (r['start_at'] or r['created_at'] or '')[:10],
+                                     'uri': r['web_uri'] or '', 'case_id': r['case_id']}
+    finally:
+        conn.close()
+    if jobber_status()['connected']:
+        def make(fields):
+            return f'query($q: String!) {{ jobs(searchTerm: $q, first: {limit}) {{ nodes {{ {fields} }} }} }}'
+        spec = ['id', 'jobNumber', 'title', 'jobStatus', 'createdAt', 'startAt', 'jobberWebUri', ('client', ['id', 'name'])]
+        try:
+            data, _ = _gql_tolerant(make, spec, {'q': q}, required=('id', 'jobNumber'))
+            for n in (data.get('jobs') or {}).get('nodes') or []:
+                found.setdefault(n['id'], {'number': str(n.get('jobNumber') or ''), 'title': n.get('title') or '',
+                                           'client_name': (n.get('client') or {}).get('name') or '',
+                                           'status': (n.get('jobStatus') or '').lower(),
+                                           'date': (n.get('startAt') or n.get('createdAt') or '')[:10],
+                                           'uri': n.get('jobberWebUri') or '', 'case_id': None})
+        except JobberError:
+            pass
+    exact = [j for j in found.values() if j['number'] == q]
+    rest = sorted((j for j in found.values() if j['number'] != q), key=lambda j: j['date'] or '', reverse=True)
+    return (exact + rest)[:limit]
+
+
+@api('/jobber/jobs')
+def h_jobber_jobs(actor):
+    """?q= a job number or client name - recent Jobber jobs to pick from."""
+    return {'jobs': search_jobber_jobs(request.args.get('q') or '')}
+
+
 @api('/service_call', methods=('POST',))
 def h_service_call(actor):
     """Body: {"number": Jobber job #} - follow a service call booked in Jobber: an item

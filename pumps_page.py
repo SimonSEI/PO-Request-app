@@ -1200,23 +1200,47 @@ async function billsSend(){
             () => billsUnpaid(ids));
 }
 // Invoiced straight in Jobber (Enclave @ Palmira): tie that invoice to the job.
-// A service call booked in Jobber: followed from its job - the start of the work, no quote.
-async function addServiceCall(){
-  const n = prompt('Jobber job number of the service call (e.g. 14592):', '');
-  if (!n || !n.trim()) return;
-  const j = await api('/service_call', {method:'POST', body:{number: n.trim()}});
-  if (!j.success) { toast(j.error, true); return; }
-  toast(j.already ? 'Already followed here - opening it.' : 'Service call followed - it starts at the work, no quote.');
-  loadToday(); openCase(j.case_id);
+// Find a Jobber job by its number or the client's name, and pick it from the recent ones.
+function jobPicker(title, onPick, start){
+  openModal(title, `
+    <div class="note">Type the job number or the client's name - their recent Jobber jobs show here; click the one.</div>
+    <div class="toolbar" style="margin:6px 0"><input type="text" id="jpQ" value="${esc(start || '')}" placeholder="e.g. 14592 or Woodmere" style="flex:1" oninput="liveSearch(jobPickerSearch)" onkeydown="if(event.key==='Enter'){event.preventDefault();clearTimeout(window._lsT);jobPickerSearch()}"></div>
+    <div id="jpList"><div class="note">Type to search.</div></div>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button>`);
+  window._jobPick = onPick;
+  const q = document.getElementById('jpQ'); q.focus(); if (start) jobPickerSearch();
 }
-async function linkJob(id){
-  const n = prompt('Jobber job number for this item (e.g. 14592):', '');
-  if (!n || !n.trim()) return;
-  const sc = confirm('Is it a service call that starts the work?\n\nOK = yes: no quote needed, scheduled for the job\'s day.\nCancel = just link the job.');
-  const j = await api('/cases/' + id + '/jobber_job', {method:'POST', body:{number: n.trim(), service_call: sc}});
-  if (!j.success) { toast(j.error, true); return; }
-  toast(`Linked Jobber job #${j.job.number}${sc ? ' - a service call, no quote' : ''}.`);
-  openCase(id); loadToday();
+async function jobPickerSearch(){
+  const q = (document.getElementById('jpQ') || {}).value?.trim() || '';
+  const box = document.getElementById('jpList');
+  if (q.length < 2) { box.innerHTML = '<div class="note">Type to search.</div>'; return; }
+  box.innerHTML = '<div class="note">Searching Jobber…</div>';
+  const j = await api('/jobber/jobs?q=' + encodeURIComponent(q));
+  if (((document.getElementById('jpQ') || {}).value || '').trim() !== q) return;   // still typing
+  if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
+  window._jobList = j.jobs || [];
+  box.innerHTML = window._jobList.length ? window._jobList.map((x, i) => `<div class="row" style="cursor:pointer" onclick="window._jobPick(window._jobList[${i}])"><div class="main"><div class="tt">#${esc(x.number)} · ${esc(x.client_name)}</div><div class="sub">${esc(x.title)}${x.date ? ' · ' + esc(niceDay(x.date)) : ''}${x.status ? ' · ' + esc(x.status.replace(/_/g, ' ')) : ''}${x.case_id ? ' · <b>already followed here</b>' : ''}${x.uri ? ` · <a href="${esc(x.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ↗</a>` : ''}</div></div></div>`).join('')
+    : '<div class="note">No Jobber job matches.</div>';
+}
+// A service call booked in Jobber: followed from its job - the start of the work, no quote.
+function addServiceCall(){
+  jobPicker('Follow a service call', async x => {
+    const j = await api('/service_call', {method:'POST', body:{number: x.number}});
+    if (!j.success) { toast(j.error, true); return; }
+    closeModal();
+    toast(j.already ? 'Already followed here - opening it.' : 'Service call followed - it starts at the work, no quote.');
+    loadToday(); openCase(j.case_id);
+  });
+}
+function linkJob(id){
+  jobPicker('Link a Jobber job to this item', async x => {
+    const sc = confirm('Is it a service call that starts the work?\n\nOK = yes: no quote needed, scheduled for the job\'s day.\nCancel = just link the job.');
+    const j = await api('/cases/' + id + '/jobber_job', {method:'POST', body:{number: x.number, service_call: sc}});
+    if (!j.success) { toast(j.error, true); return; }
+    closeModal();
+    toast(`Linked Jobber job #${j.job.number}${sc ? ' - a service call, no quote' : ''}.`);
+    openCase(id); loadToday();
+  }, (curCase && curCase.id === id && curCase.client_name) || '');
 }
 async function linkInvoice(id){
   const n = prompt('Jobber invoice number for this job (e.g. 36806):', '');
