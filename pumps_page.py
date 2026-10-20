@@ -1339,7 +1339,7 @@ function statusSec(c){
     ${(c.job_status || {}).kind ? `<div class="note" style="margin-top:6px">Picked the wrong kind? Change it to: <select onchange="jsRelabel(${c.id}, this.value)"><option value="">-</option>${JOB_STATUSES.filter(([k]) => k !== c.job_status.kind).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></div>` : ''}
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px">
       <select id="js_kind" onchange="jsKind()">${JOB_STATUSES.map(([k, l]) => `<option value="${k}" ${k === 'note' ? 'selected' : ''}>${l}</option>`).join('')}</select>
-      <input type="date" id="js_on" title="When the parts are due / the day it is scheduled">
+      <input type="date" id="js_on" value="${todayIso()}" title="The day - today unless you change it (when the parts are due / the day it is scheduled)">
       <span id="js_weeks" style="display:none;gap:4px">${[1, 2, 3, 4].map(w => `<button class="btn s" onclick="jsWeeks(${w})">${w} wk${w > 1 ? 's' : ''}</button>`).join('')}</span>
       <input type="text" id="js_text" placeholder="Note - e.g. motor ordered from Wettech, client told by email" style="flex:1;min-width:200px">
       <button class="btn p" onclick="jsAdd(${c.id})">＋ Add update</button></div>
