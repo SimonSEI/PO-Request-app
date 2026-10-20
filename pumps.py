@@ -5774,6 +5774,18 @@ def link_jobber_quote(case_id, number, actor='system'):
         conn.close()
 
 
+def _with_month_line(lines, y, m):
+    """A maintenance invoice's line says the month it's for, first: "October Pump Maintenance" over
+    the job's own description (Caymas #36867, Oct 2026 - the office added it by hand). Left as
+    it is when the line already names the month."""
+    lines = [dict(li) for li in lines or []]
+    month = date(y, m, 1).strftime('%B')
+    first = next((li for li in lines if (li.get('unit_price') or 0) > 0), lines[0] if lines else None)
+    if first is not None and month.lower() not in f"{first.get('name') or ''} {first.get('description') or ''}".lower():
+        first['description'] = f"{month} Pump Maintenance\n{first.get('description') or ''}".strip()
+    return lines
+
+
 def whole_dollars(lines):
     """Our invoice prices rounded up to the dollar - no cents ($1,506.69 ->
     $1,507, Oct 2026)."""
@@ -5826,8 +5838,8 @@ def _invoice_suggestion(doc, case=None, client_id=None):
                 if lines:
                     job = {**job, 'line_items': lines, 'flow_readings': True}
             sugg['subject'] = f"{date(y, m, 1).strftime('%B')} Pump Maintenance"
-            sugg.update(bill_lines=sugg['line_items'], line_items=job['line_items'] if job.get('flow_readings')
-                        else _with_bill_notes(job['line_items'], sugg['line_items']),
+            lines = job['line_items'] if job.get('flow_readings') else _with_bill_notes(job['line_items'], sugg['line_items'])
+            sugg.update(bill_lines=sugg['line_items'], line_items=_with_month_line(lines, y, m),
                         client_id=client_id, markup_pct=0, recurring=True,
                         job={k: job[k] for k in ('id', 'number', 'title', 'uri', 'total', 'status', 'type')})
             return sugg
