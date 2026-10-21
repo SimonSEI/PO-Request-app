@@ -3039,6 +3039,46 @@ class PumpsTest(unittest.TestCase):
         finally:
             P.recurring_jobs, P.job_detail, P.jobber_status = saved
 
+    def test_invoiced_jobs_get_closed(self):
+        """Oct 2026: one-off pump jobs we link sat open in Jobber after they were invoiced. A to-do to close each, with a
+        Close job button; it goes once Jobber shows it closed. Recurring jobs never."""
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': 'Control box', 'client_name': 'Closeout Lakes'}, 'test')
+            rid = P.create_case(conn, {'title': 'Monthly', 'client_name': 'Recurring Pines'}, 'test')
+            for c, jid in ((cid, 'JC1'), (rid, 'JR1')):
+                conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(
+                    {'job': {'id': jid, 'number': jid}, 'invoice': {'id': 'I' + jid, 'number': '37' + jid[-1], 'status': 'awaiting_payment'}}), c))
+            conn.commit()
+        finally:
+            conn.close()
+        status = {'JC1': ('REQUIRES_INVOICING', 'ONE_OFF'), 'JR1': ('ACTIVE', 'RECURRING')}
+        saved = (P.jobber_gql, P.try_mutation)
+        st = lambda i: status.get(i, ('ARCHIVED', 'ONE_OFF'))   # other tests' jobs: closed already
+        P.jobber_gql = lambda q, v=None: {'job': {'jobNumber': v['id'], 'jobStatus': st(v['id'])[0],
+                                                  'jobType': st(v['id'])[1], 'jobberWebUri': 'u'}}
+        closed = []
+        P.try_mutation = lambda names, vals, want=None: closed.append(vals['jobId']) or {'mutation': names[0], 'job': {'jobNumber': 'JC1'}}
+        try:
+            P.jobs_to_close()
+            keys = lambda: [t['key'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
+            self.assertIn('close-job:JC1', keys())
+            self.assertNotIn('close-job:JR1', keys(), 'a recurring job stays open')
+            r = self.c.post('/pumps/api/jobber/jobs/close', json={'job_id': 'JC1'}).get_json()
+            self.assertTrue(r['success'], r)
+            self.assertEqual(closed, ['JC1'])
+            self.assertNotIn('close-job:JC1', keys())
+            # Closed by hand in Jobber instead: the to-do goes on the next sync.
+            conn = P._conn()
+            conn.execute("UPDATE pump_todos SET done_at=NULL WHERE key='close-job:JC1'")
+            conn.commit()
+            conn.close()
+            status['JC1'] = ('ARCHIVED', 'ONE_OFF')
+            P.jobs_to_close()
+            self.assertNotIn('close-job:JC1', keys())
+        finally:
+            P.jobber_gql, P.try_mutation = saved
+
     def test_follow_up_postponed_to_tomorrow(self):
         """Oct 2026: a follow-up can be put off to the next working day - off the list until then."""
         j = self.c.post('/pumps/api/cases', json={'title': 'Fan', 'client_name': 'Snooze Lakes'}).get_json()
