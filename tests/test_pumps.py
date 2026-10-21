@@ -3094,6 +3094,16 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual([x['number'] for x in r['invoices']], ['36500', '36001'], 'newest first')
         self.assertEqual((r['jobs'][0]['type'], r['requests'][0]['title']), ('recurring', 'Pump not running'))
 
+    def test_urgent_quote_moves_up(self):
+        """Oct 2026: quotes wait under "Quotes - not urgent" unless marked urgent."""
+        j = self.c.post('/pumps/api/cases', json={'title': 'Surge arrestor', 'client_name': 'Urgent Lakes'}).get_json()
+        cid = j.get('case_id') or j['case']['id']
+        r = self.c.post(f'/pumps/api/cases/{cid}/urgent', json={'on': True}).get_json()
+        self.assertTrue(r['success'], r)
+        self.assertTrue(self.case(cid)['urgent'])
+        self.c.post(f'/pumps/api/cases/{cid}/urgent', json={'on': False})
+        self.assertFalse(self.case(cid)['urgent'])
+
     def test_invoiced_jobs_get_closed(self):
         """Oct 2026: one-off pump jobs we link sat open in Jobber after they were invoiced. A to-do to close each, with a
         Close job button; it goes once Jobber shows it closed. Recurring jobs never."""

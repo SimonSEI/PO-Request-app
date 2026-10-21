@@ -344,7 +344,7 @@ details.fold[open] > summary h4::before { content: '▾ '; }
     <button class="btn s" title="It syncs on its own - this just does it now" onclick="syncJobber()">↻ Sync now</button>
   </div>
   <div class="scroll" style="max-height:45vh"><table class="t"><thead><tr><th>Job</th><th>Where it is</th><th>Vendor</th><th class="num">Vendor quote</th><th>Our quote</th><th class="num">Vendor bill</th><th>Our invoice</th><th>Vendor paid</th><th></th></tr></thead><tbody id="jobsBody"></tbody></table></div>
-  <h3 style="margin:18px 0 8px;font-size:14px">Maintenance this month <span class="chip" id="msCount"></span></h3>
+  <details id="msFold" open ontoggle="window.foldSave && foldSave('ms', this.open)" style="margin-top:18px"><summary style="cursor:pointer;margin-bottom:8px"><h3 style="display:inline;margin:0;font-size:14px">Maintenance this month <span class="chip" id="msCount"></span></h3> <span class="note">click to show or fold away</span></summary>
   <div class="toolbar">
     <select id="msMonth" onchange="loadMaintSchedule()"></select>
     <input type="text" id="msSearch" placeholder="Find an account or address…" oninput="drawMaintSchedule()" style="width:220px">
@@ -356,10 +356,7 @@ details.fold[open] > summary h4::before { content: '▾ '; }
   </div>
   <div class="note" style="margin-bottom:8px">Every pump (Wettech) and lake (Gulfshore) maintenance visit due in the month from the Accounts tab, and whether the subcontractor has been told. Lakes count as told once the month's diver list is emailed.</div>
   <div class="scroll" style="max-height:45vh"><table class="t"><thead><tr><th style="width:28px"><input type="checkbox" id="msAll" title="Select every account shown that isn't fully told yet" onchange="msSelectAll(this.checked)"></th><th>Account</th><th>Client approved</th><th>Justin<div class="note" style="font-weight:400">Wettech pumps</div></th><th>Jordan<div class="note" style="font-weight:400">Gulfshore diving</div></th></tr></thead><tbody id="msBody"></tbody></table></div>
-  <h3 style="margin:18px 0 8px;font-size:14px">Quotes sent - waiting on the client <span class="chip" id="jbSentCount"></span></h3>
-  <div class="toolbar"><input type="text" id="jbSentSearch" placeholder="Find a quote #, client, address or title…" oninput="drawSent()" style="width:280px"></div>
-  <div class="note" style="margin-bottom:8px">Our pump, diver, filter and SCADA quotes in Jobber that have gone to the client and aren't approved yet, newest quote first. They drop off once the client approves (the next Jobber sync).</div>
-  <div class="scroll" style="max-height:40vh"><table class="t"><thead><tr><th>Quote</th><th>Client</th><th class="num">Total</th><th>Status</th><th>Waiting</th><th>Job here</th></tr></thead><tbody id="jbSentBody"></tbody></table></div>
+  </details>
 </div>
 
 <!-- SCADA -->
@@ -2335,44 +2332,44 @@ function jobberNo(c){ const J = c.jobber || {}, r = (J.job && J.job.number) ? ['
   return r ? ` · <a href="${esc(r[1].uri || '#')}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ${r[0]} #${esc(r[1].number)} ↗</a>` : ''; }
 // A document's number with its amount, e.g. "#Q-5521 $950.00".
 function numAmt(num, amt){ const n = num ? `<span class="note">#${esc(String(num).replace(/^#/, ''))}</span>` : ''; const a = amt != null ? `<b>${money(amt)}</b>` : ''; return [n, a].filter(Boolean).join(' '); }
+// Sections folded away stay folded (this browser only): the not-urgent quotes, the maintenance list.
+function foldOpen(k){ try { return localStorage.getItem('pumps.fold.' + k) !== 'closed'; } catch (e) { return true; } }
+function foldSave(k, open){ try { localStorage.setItem('pumps.fold.' + k, open ? 'open' : 'closed'); } catch (e) {} }
+(() => { const mf = document.getElementById('msFold'); if (mf && !foldOpen('ms')) mf.open = false; })();
+// The quote steps: an item here is still a quote, not yet a job.
+const QUOTE_STAGES = ['assessment', 'vendor_quote', 'client_quote', 'client_approved'];
+async function setUrgent(id, on){
+  const j = await api('/cases/' + id + '/urgent', {method:'POST', body:{on}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast(on ? 'Urgent - up with the jobs' : 'Back with the quotes that can wait'); loadJobs();
+}
 async function loadJobs(){
   loadMaintSchedule();
   const st = document.getElementById('jbShow').value, q = document.getElementById('jbSearch').value.trim();
   const [j, ji] = await Promise.all([api('/cases?status=' + st + (q ? '&q=' + encodeURIComponent(q) : '')), api('/jobber/items?open=1&kind=quote&show_ignored=1')]);
   if (!j.success) { document.getElementById('jobsBody').innerHTML = `<tr><td colspan="9" class="empty">${esc(j.error)}</td></tr>`; return; }
   const ref = r => r ? (r.uri ? `<a href="${esc(r.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">#${esc(r.number || '')} ↗</a>` : (r.number ? '#' + esc(r.number) : '')) : '';
-  document.getElementById('jobsBody').innerHTML = (j.cases || []).map(c => { const jb = c.jobber || {}, vp = c.vendor_pay || {};
+  // Quotes wait at the bottom under "Quotes - not urgent" unless marked urgent (Oct 2026).
+  const isQuote = c => c.status === 'open' && QUOTE_STAGES.includes(c.stage);
+  const quietQ = c => isQuote(c) && !c.urgent;
+  const all = j.cases || [], main = all.filter(c => !quietQ(c)), quiet = all.filter(quietQ);
+  const row = c => { const jb = c.jobber || {}, vp = c.vendor_pay || {};
     return `<tr class="click" onclick="openCase(${c.id})">
     <td><b title="${esc(c.title || c.client_name)}">${esc(c.short_title || c.title || c.client_name)}</b><div class="note">${esc([c.client_name, c.site].filter(Boolean).join(' · '))}${c.po_number ? ' · PO ' + esc(c.po_number) : ''}${jobberNo(c)}</div></td>
-    <td>${stageChip(c)}${statusLine(c) ? `<div class="note">${statusLine(c)}</div>` : ''}${c.status === 'open' ? lastAction(c) : ''}</td>
+    <td>${c.urgent && isQuote(c) ? '<span class="chip r">urgent</span> ' : ''}${stageChip(c)}${statusLine(c) ? `<div class="note">${statusLine(c)}</div>` : ''}${c.status === 'open' ? lastAction(c) : ''}</td>
     <td>${esc(c.vendor)}</td><td>${numAmt(c.vendor_quote_number, c.vendor_quote_amount ?? c.vendor_quote_total)}</td>
     <td>${ref(jb.quote)}${jb.quote && jb.quote.total != null ? ' <b>' + money(jb.quote.total) + '</b>' : ''}${jb.quote && jb.quote.status ? ` <span class="note">${esc(jb.quote.status.replace(/_/g, ' '))}</span>` : ''}</td>
     <td>${numAmt(c.vendor_bill_number, c.vendor_bill_amount ?? c.vendor_bill_total)}</td>
     <td>${ref(jb.invoice) || (c.sei_invoice_number ? '#' + esc(c.sei_invoice_number) : '')}${(jb.invoice || c.sei_invoice_number) && ((jb.invoice || {}).total ?? c.amount) != null ? ' <b>' + money((jb.invoice || {}).total ?? c.amount) + '</b>' : ''}${jb.invoice && jb.invoice.status ? ` <span class="note">${esc(jb.invoice.status.replace(/_/g, ' '))}</span>` : ''}</td>
     <td>${vp.state === 'paid' ? '<span class="chip g">paid</span>' : vp.state === 'due' ? '<span class="chip r">pay now</span>' : vp.state === 'unpaid' ? '<span class="note">not yet</span>' : ''}</td>
-    <td style="white-space:nowrap">${jb.job && jb.job.uri ? `<a class="btn s" href="${esc(jb.job.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ↗</a> ` : ''}${c.status === 'open' ? `<button class="btn s" title="Mark done" onclick="event.stopPropagation();caseDone(${c.id})">✓ Done</button> <button class="btn s" title="Remove" onclick="event.stopPropagation();caseRemove(${c.id})">✕</button>` : `<button class="btn s" onclick="event.stopPropagation();caseReopen(${c.id})">↺ Reopen</button>`}</td></tr>`; }).join('') || '<tr><td colspan="9" class="empty">No jobs.</td></tr>';
+    <td style="white-space:nowrap">${isQuote(c) ? (c.urgent ? `<button class="btn s" title="Back to Quotes - not urgent" onclick="event.stopPropagation();setUrgent(${c.id}, false)">⬇ Not urgent</button> ` : `<button class="btn s" title="Move it up with the jobs" onclick="event.stopPropagation();setUrgent(${c.id}, true)">⬆ Urgent</button> `) : ''}${jb.job && jb.job.uri ? `<a class="btn s" href="${esc(jb.job.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ↗</a> ` : ''}${c.status === 'open' ? `<button class="btn s" title="Mark done" onclick="event.stopPropagation();caseDone(${c.id})">✓ Done</button> <button class="btn s" title="Remove" onclick="event.stopPropagation();caseRemove(${c.id})">✕</button>` : `<button class="btn s" onclick="event.stopPropagation();caseReopen(${c.id})">↺ Reopen</button>`}</td></tr>`; };
+  document.getElementById('jobsBody').innerHTML = (main.map(row).join('') || '<tr><td colspan="9" class="empty">No jobs.</td></tr>')
+    + (quiet.length ? `<tr class="click" onclick="foldSave('qq', !foldOpen('qq'));loadJobs()"><td colspan="9" style="background:var(--bg);font-weight:700;padding-top:14px">${foldOpen('qq') ? '▾' : '▸'} Quotes - not urgent (${quiet.length}) <span class="note" style="font-weight:400">· click to ${foldOpen('qq') ? 'fold away' : 'show'} · ⬆ Urgent moves one up with the jobs</span></td></tr>` + (foldOpen('qq') ? quiet.map(row).join('') : '') : '');
   const s = ji.sync || {};
   document.getElementById('syncInfo').innerHTML = !JOBBER_OK ? '<b class="warn">Jobber is not connected.</b>' :
     (s.state === 'running' ? `Syncing Jobber… (started ${esc(s.started_at || '')})` : (s.state === 'failed' || s.state === 'interrupted' ? `<b class="bad">Last sync did not finish</b> - it runs again on its own · ` : '') + (s.finished_at ? `Synced with Jobber ${esc(s.finished_at.slice(11, 16))}` + (s.seconds != null && s.state === 'done' ? ` (took ${s.seconds < 90 ? s.seconds + ' sec' : Math.round(s.seconds / 60) + ' min'})` : '') : 'Not synced yet.') + (s.every_min ? ` · syncs on its own every ${s.every_min} min` : '')) + ((s.errors || []).length ? ` · <span class="bad" title="${esc(s.errors.join('\n'))}">${s.errors.length} errors</span>` : '');
   clearTimeout(window._syncPoll);
   if (s.state === 'running') window._syncPoll = setTimeout(() => { if (curTab === 'jobs') loadJobs(); }, 5000);
-  // Our quotes sent to the client, not approved yet - newest quote first.
-  window._sent = (ji.items || []).filter(it => it.kind === 'quote' && ['awaiting_response', 'changes_requested'].includes(it.status))
-    .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '') || (parseInt(b.number) || 0) - (parseInt(a.number) || 0));
-  drawSent();
-}
-function drawSent(){
-  const all = window._sent || [], q = (document.getElementById('jbSentSearch').value || '').trim().toLowerCase().replace(/^#/, '');
-  const sent = q ? all.filter(it => [it.number, it.title, it.client_name, it.property_label, it.category].join(' ').toLowerCase().includes(q)) : all;
-  const days = d => d ? Math.max(0, Math.floor((Date.now() - new Date(d).getTime()) / 86400000)) : null;
-  document.getElementById('jbSentCount').textContent = q ? sent.length + ' of ' + all.length : all.length;
-  document.getElementById('jbSentBody').innerHTML = sent.map(it => { const n = days(it.updated_at || it.created_at); return `<tr${it.case_id ? ` class="click" onclick="openCase(${it.case_id})"` : ''}>
-    <td><a href="${esc(it.web_uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${it.number ? '#' + esc(it.number) + ' ' : ''}${esc(it.title)} ↗</a> ${catChip(it.category)}</td>
-    <td>${esc(it.client_name)}<div class="note">${esc(it.property_label)}</div></td>
-    <td class="num">${it.total != null ? '<b>' + money(it.total) + '</b>' : ''}</td>
-    <td>${it.status === 'changes_requested' ? '<span class="chip a">changes requested</span>' : '<span class="note">sent</span>'}</td>
-    <td>${n == null ? '' : n >= 14 ? `<b class="warn">${n} days</b>` : n + (n === 1 ? ' day' : ' days')}</td>
-    <td>${it.case_id ? `<span class="note">job ${it.case_id}</span>` : ''}</td></tr>`; }).join('') || `<tr><td colspan="6" class="empty">${!JOBBER_OK ? 'Connect Jobber to see quotes.' : q ? 'No quote matches.' : 'No quotes waiting on a client.'}</td></tr>`;
 }
 // Sign the approved vendor quote ("Simon Weardon 10/12/2026" typed on it),
 // save it here and on the Jobber quote, and email it to the vendor.
