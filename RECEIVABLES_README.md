@@ -84,6 +84,12 @@ The Receivables tile in The Office App chases open invoices from the QuickBooks 
 - **It does not mail the notice certified.** Florida service of these notices is by certified mail or delivery, and email alone doesn't count. The Lien deadlines list on Today keeps reminding until both are marked done.
 - **The notice's wording needs an attorney's check before it's relied on.**
 
+## Cash in: money expected each week
+
+- **Setting an ETA.** Each invoice's breakdown has a **Money expected** date (also next to *Add note*). A job's view can set one date for all its open invoices, or for its retainage only.
+- **Which date counts.** Each open invoice counts in the week its money is expected in hand: your ETA, else the date the customer promised (from a reply or your sheet note), else its due date while it isn't due yet.
+- **The Cash in tab** totals the next 13 weeks (Monday to Sunday), split by where the date came from. It also lists invoices whose expected date has passed while they're still open, and those with no expected date (including retainage). Click a week to see its invoices.
+
 ## Going autonomous
 
 Out of the box follow-ups and notices wait as drafts on **Today**, so the first upload doesn't email every customer at once. Once the drafts look right:

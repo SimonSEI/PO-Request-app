@@ -532,6 +532,54 @@ class FollowupTests(Base):
         self.assertIn('owner', msg)
 
 
+class CashInTests(FollowupTests):
+    """ETAs for money in hand, and the money expected each week."""
+
+    def test_expected_date_order(self):
+        base = {'status': 'open', 'open_balance': 100, 'retainage': 0, 'eta_date': '', 'promised_date': '',
+                'due_date': (TODAY + timedelta(days=10)).isoformat(), 'txn_date': ''}
+        self.assertEqual(R.expected_in(base), (TODAY + timedelta(days=10), 'due'))
+        self.assertEqual(R.expected_in(dict(base, promised_date=(TODAY + timedelta(days=3)).isoformat())),
+                         (TODAY + timedelta(days=3), 'promised'))
+        self.assertEqual(R.expected_in(dict(base, promised_date=(TODAY + timedelta(days=3)).isoformat(),
+                                            eta_date=(TODAY + timedelta(days=20)).isoformat())),
+                         (TODAY + timedelta(days=20), 'eta'))
+        late = dict(base, due_date=(TODAY - timedelta(days=5)).isoformat())
+        self.assertEqual(R.expected_in(late), (None, 'none'))  # past due with no ETA: nobody knows
+        self.assertEqual(R.expected_in(dict(base, retainage=1)), (None, 'none'))
+
+    def test_eta_on_invoice_and_job_feeds_the_weeks(self):
+        self.login()
+        a, b = self.inv('36484'), self.inv('36490')
+        week2 = TODAY - timedelta(days=TODAY.weekday()) + timedelta(weeks=2, days=2)
+        r = self.client.post('/receivables/api/invoice', json={'id': a['id'], 'eta': week2.isoformat(), 'note': 'Called Pat'})
+        self.assertTrue(r.get_json()['success'])
+        self.assertEqual(self.inv('36484')['eta_date'], week2.isoformat())
+        self.assertEqual(self.client.post('/receivables/api/invoice', json={'id': b['id'], 'eta': 'soon'}).status_code, 400)
+        key = self.inv('36006')['job_key']
+        self.client.post('/receivables/api/job', json={'key': key, 'eta': (TODAY + timedelta(days=60)).isoformat(),
+                                                       'eta_retainage_only': True})
+        self.assertEqual(self.inv('36007')['eta_date'], (TODAY + timedelta(days=60)).isoformat())  # the retainage
+        self.assertEqual(self.inv('36006')['eta_date'], '')
+        f = self.client.get('/receivables/api/data').get_json()['forecast']
+        self.assertEqual(len(f['weeks']), 13)
+        self.assertEqual(f['weeks'][2]['total'], 150.0)
+        self.assertEqual(f['weeks'][2]['by_source']['eta'], 150.0)
+        self.assertIn(a['id'], f['weeks'][2]['ids'])
+        self.assertIn(self.inv('36007')['id'], [i for w in f['weeks'] for i in w['ids']])
+        self.assertIn(b['id'], f['unknown']['ids'])          # past due, no ETA
+        self.assertIn(self.inv('36006')['id'], f['unknown']['ids'])
+        # An ETA that has passed with the invoice still open shows as late.
+        conn = R._conn()
+        conn.execute("UPDATE ar_invoices SET eta_date=? WHERE id=?", ((TODAY - timedelta(days=9)).isoformat(), a['id']))
+        conn.commit()
+        conn.close()
+        f = self.client.get('/receivables/api/data').get_json()['forecast']
+        self.assertIn(a['id'], f['late']['ids'])
+        self.client.post('/receivables/api/invoice', json={'id': a['id'], 'eta': ''})
+        self.assertEqual(self.inv('36484')['eta_date'], '')
+
+
 class MailboxTests(FollowupTests):
     """Reading simon@'s mailbox: own staff ignored, Jobber notices, emails sent from Outlook, who it's waiting on."""
 

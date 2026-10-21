@@ -289,7 +289,8 @@ def init_db():
     # Added for the A/R Aging Summary upload (one row per customer, with the office's notes).
     for table, cols in (
             ('ar_invoices', (('source', "TEXT DEFAULT 'qb'"), ('snooze_reason', "TEXT DEFAULT ''"),
-                             ('jobber_job', "TEXT DEFAULT '{}'"), ('checkin_at', 'TEXT'))),
+                             ('jobber_job', "TEXT DEFAULT '{}'"), ('checkin_at', 'TEXT'),
+                             ('eta_date', "TEXT DEFAULT ''"), ('eta_by', "TEXT DEFAULT ''"), ('eta_at', 'TEXT'))),
             ('ar_jobs', (('retainage_hold', 'INTEGER DEFAULT 0'), ('sheet_note', "TEXT DEFAULT ''"))),
             ('ar_customers', (('qb_current', 'REAL'), ('qb_1_30', 'REAL'), ('qb_31_60', 'REAL'), ('qb_61_90', 'REAL'),
                               ('qb_91_plus', 'REAL'), ('qb_total', 'REAL'), ('qb_as_of', "TEXT DEFAULT ''"),
@@ -1615,6 +1616,59 @@ def waiting_on(inv):
     return 'Not contacted yet'
 
 
+def expected_in(inv, today=None):
+    """(date, source) the money is expected in hand: the office's ETA, else the date the customer promised,
+    else the due date while it isn't due yet; (None, 'none') when nobody knows."""
+    today = today or _today()
+    if inv.get('status') == 'paid':
+        return None, 'paid'
+    eta = _d(inv.get('eta_date'))
+    if eta:
+        return eta, 'eta'
+    pd = _d(inv.get('promised_date'))
+    if pd and inv.get('status') in ('promised', 'reported_paid', 'open'):
+        return pd, 'promised'
+    due = _due(inv)
+    if due and due >= today and not inv.get('retainage'):
+        return due, 'due'
+    return None, 'none'
+
+
+def cash_forecast(invs, weeks=13, today=None):
+    """Money expected in hand each week (Monday to Sunday) from open invoices, plus what's late or unknown."""
+    today = today or _today()
+    start = today - timedelta(days=today.weekday())
+    rows = [{'start': (start + timedelta(weeks=w)).isoformat(), 'end': (start + timedelta(weeks=w, days=6)).isoformat(),
+             'total': 0.0, 'count': 0, 'by_source': {'eta': 0.0, 'promised': 0.0, 'due': 0.0}, 'ids': []}
+            for w in range(weeks)]
+    late = {'total': 0.0, 'count': 0, 'ids': []}
+    unknown = {'total': 0.0, 'count': 0, 'ids': [], 'retainage': 0.0}
+    later = {'total': 0.0, 'count': 0, 'ids': []}
+    for i in invs:
+        if i.get('status') == 'paid' or (i.get('open_balance') or 0) <= 0.004:
+            continue
+        amt = i['open_balance'] or 0
+        when, src = expected_in(i, today)
+        if not when:
+            bucket = unknown
+            if i.get('retainage'):
+                unknown['retainage'] += amt
+        elif when < start or (when < today and src == 'eta'):
+            bucket = late  # the expected date has passed and it's still open
+        else:
+            n = (when - start).days // 7
+            if n >= weeks:
+                bucket = later
+            else:
+                bucket = rows[n]
+                bucket['by_source'][src] = round(bucket['by_source'][src] + amt, 2)
+        bucket['total'] = round(bucket['total'] + amt, 2)
+        bucket['count'] += 1
+        bucket['ids'].append(i['id'])
+    unknown['retainage'] = round(unknown['retainage'], 2)
+    return {'weeks': rows, 'late': late, 'unknown': unknown, 'later': later}
+
+
 def lien_info(job, invoices, s, today=None):
     """{applies, last_furnished, estimated, deadline, days_left, nonp_due} for a job."""
     today = today or _today()
@@ -2773,8 +2827,10 @@ def api_data():
         job, cust = jobs.get(i['job_key']), custs.get(i['customer_key'])
         p = plan(i, job, cust, s, today)
         i.pop('jobber_lines', None)
+        when, src = expected_in(i, today)
         i.update(plan=p, job_name=(job or {}).get('name', ''), contacts=contacts_for(i, job, cust),
-                 customer_name=_nice_name((cust or {}).get('name') or i['customer']))
+                 customer_name=_nice_name((cust or {}).get('name') or i['customer']),
+                 expected=when.isoformat() if when else '', expected_source=src)
         out_inv.append(i)
     out_jobs = []
     for key, j in jobs.items():
@@ -2820,6 +2876,7 @@ def api_data():
     conn.close()
     return jsonify({'success': True, 'invoices': out_inv, 'jobs': out_jobs, 'customers': out_cust, 'emails': emails,
                     'replies': replies, 'uploads': uploads, 'docs': docs, 'activity': activity, 'settings': s,
+                    'forecast': cash_forecast(out_inv, today=today),
                     'statuses': STATUSES, 'today': today.isoformat(),
                     'status': {'graph': graph_ready(), 'jobber': jobber_ready(), 'claude': claude_ready(),
                                'claude_error': _state('claude_error'),
@@ -2932,6 +2989,13 @@ def api_invoice_update():
                          (key, inv['customer_key'], name, 'install', _stamp()))
         fields['job_key'] = key
         notes.append(f"Moved to job {key or '(none)'}.")
+    if 'eta' in d:
+        eta = _d(d['eta']) if d['eta'] else None
+        if d['eta'] and not eta:
+            conn.close()
+            return jsonify({'success': False, 'error': 'ETA must be a date'}), 400
+        fields.update(eta_date=eta.isoformat() if eta else '', eta_by=who, eta_at=_stamp())
+        notes.append(f"Money expected in hand {_fmt_date(eta)} (ETA set by {who})." if eta else 'ETA cleared.')
     action = d.get('action')
     if action == 'pause':
         fields.update(status='paused')
@@ -3015,6 +3079,22 @@ def api_job():
     if (d.get('note') or '').strip():
         conn = _conn()
         _note(conn, d['note'].strip(), job_key=job['key'], kind='note', by=_who())
+        conn.commit()
+        conn.close()
+    if 'eta' in d:
+        eta = _d(d['eta']) if d['eta'] else None
+        if d['eta'] and not eta:
+            return jsonify({'success': False, 'error': 'ETA must be a date'}), 400
+        conn = _conn()
+        ids = [r[0] for r in conn.execute("SELECT id FROM ar_invoices WHERE job_key=? AND status != 'paid'"
+                                          + (" AND retainage=1" if d.get('eta_retainage_only') else ''), (job['key'],))]
+        for iid in ids:
+            conn.execute("UPDATE ar_invoices SET eta_date=?, eta_by=?, eta_at=? WHERE id=?",
+                         (eta.isoformat() if eta else '', _who(), _stamp(), iid))
+        _note(conn, (f"Money expected in hand {_fmt_date(eta)} for {len(ids)} invoice(s) on this job"
+                     + (' (the retainage)' if d.get('eta_retainage_only') else '') + f" (ETA set by {_who()})."
+                     if eta else f"ETA cleared on {len(ids)} invoice(s) on this job."), job_key=job['key'], kind='note',
+              by=_who())
         conn.commit()
         conn.close()
     if d.get('action') == 'nonp':

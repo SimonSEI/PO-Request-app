@@ -94,6 +94,7 @@ PAGE_TEMPLATE = r'''<!DOCTYPE html>
   <div class="tabs" id="tabs">
     <div class="tab active" data-p="today">Today <span class="n" id="n-today" style="display:none"></span></div>
     <div class="tab" data-p="invoices">Invoices</div>
+    <div class="tab" data-p="cash">Cash in</div>
     <div class="tab" data-p="jobs">Jobs &amp; retainage</div>
     <div class="tab" data-p="customers">Customers</div>
     <div class="tab" data-p="emails">Emails</div>
@@ -118,6 +119,8 @@ PAGE_TEMPLATE = r'''<!DOCTYPE html>
     </div>
     <div class="tbl-wrap card" style="padding:0"><table id="t-inv"></table></div>
   </section>
+
+  <section class="panel" id="p-cash"></section>
 
   <section class="panel" id="p-jobs">
     <p class="muted small">Install jobs: every open invoice on a job, the retainage held on it, and its lien deadline (last day furnished + the lien window on Settings). Click a job to set the owner, the contact, the dates and its documents.</p>
@@ -188,7 +191,7 @@ function render(){
     kpi(money(sum(open)), open.length + ' open invoices') + kpi(money(sum(late)), late.length + ' past due') +
     kpi(money(sum(vlate)), vlate.length + ' over 60 days late') + kpi(money(sum(ret)), ret.length + ' retainage invoices') +
     kpi(open.filter(function(i){ return i.status === 'needs_person' || (i.plan.due_now && !i.contacts.length); }).length, 'need a person');
-  renderToday(); renderInvoices(); renderJobs(); renderCustomers(); renderEmails(); renderDocs(); renderSettings(); renderActivity();
+  renderToday(); renderInvoices(); renderCash(); renderJobs(); renderCustomers(); renderEmails(); renderDocs(); renderSettings(); renderActivity();
 }
 function stageLabel(k){
   return {first: '1st follow-up', second: '2nd follow-up', checkin: 'check-in (not due yet)', very_past_due: 'very past due', final: 'final notice', retainage: 'retainage'}[k] || (k || '').replace('_', ' ');
@@ -294,13 +297,42 @@ function renderInvoices(){
     if(q && (i.number + ' ' + i.customer_name + ' ' + i.job_name + ' ' + (i.jobber_subject || '') + ' ' + (i.memo || '')).toLowerCase().indexOf(q) < 0) return false;
     return true;
   }).sort(function(x,y){ return y.plan.dpd - x.plan.dpd; });
-  var h = '<thead><tr><th>Invoice</th><th>Customer</th><th>Job</th><th>Type</th><th>Date</th><th>Due</th><th>Age</th><th class="num">Amount</th><th class="num">Open</th><th>Status</th><th>Waiting on</th><th>Next</th></tr></thead><tbody>';
+  var h = '<thead><tr><th>Invoice</th><th>Customer</th><th>Job</th><th>Type</th><th>Date</th><th>Due</th><th>Age</th><th class="num">Amount</th><th class="num">Open</th><th>Status</th><th>Waiting on</th><th>Expected</th><th>Next</th></tr></thead><tbody>';
   rows.forEach(function(i){
-    h += '<tr class="click" onclick="openInvoice(' + i.id + ')"><td><b>#' + esc(i.number) + '</b></td><td>' + esc(i.customer_name) + (custOf(i.customer_key).sheet_notes ? '<div class="small muted" title="' + esc(custOf(i.customer_key).sheet_notes) + '">📝 ' + esc(custOf(i.customer_key).sheet_notes.split('\n')[0].replace(/^[^:]{1,12}:\s*/, '').slice(0, 70)) + '</div>' : '') + '</td><td class="small">' + esc(i.job_name) + '</td><td>' + kindBadge(i.kind) + '</td><td>' + md(i.txn_date) + '</td><td>' + md(i.due_date) + '</td><td>' + ageText(i) + '</td><td class="num">' + (i.amount != null ? money(i.amount) : '') + '</td><td class="num"><b>' + money(i.open_balance) + '</b></td><td>' + statusBadge(i) + '</td><td class="small">' + waitText(i.plan.waiting) + '</td><td class="small">' + (i.plan.due_now ? '<b style="color:var(--brand-dark)">Due now</b>' : esc(i.plan.reason)) + '</td></tr>';
+    h += '<tr class="click" onclick="openInvoice(' + i.id + ')"><td><b>#' + esc(i.number) + '</b></td><td>' + esc(i.customer_name) + (custOf(i.customer_key).sheet_notes ? '<div class="small muted" title="' + esc(custOf(i.customer_key).sheet_notes) + '">📝 ' + esc(custOf(i.customer_key).sheet_notes.split('\n')[0].replace(/^[^:]{1,12}:\s*/, '').slice(0, 70)) + '</div>' : '') + '</td><td class="small">' + esc(i.job_name) + '</td><td>' + kindBadge(i.kind) + '</td><td>' + md(i.txn_date) + '</td><td>' + md(i.due_date) + '</td><td>' + ageText(i) + '</td><td class="num">' + (i.amount != null ? money(i.amount) : '') + '</td><td class="num"><b>' + money(i.open_balance) + '</b></td><td>' + statusBadge(i) + '</td><td class="small">' + waitText(i.plan.waiting) + '</td><td class="small">' + (i.expected ? md(i.expected) + '<div class="muted">' + esc(SRC[i.expected_source] || '') + '</div>' : '') + '</td><td class="small">' + (i.plan.due_now ? '<b style="color:var(--brand-dark)">Due now</b>' : esc(i.plan.reason)) + '</td></tr>';
   });
-  if(!rows.length) h += '<tr><td colspan="12" class="empty">No invoices match.</td></tr>';
+  if(!rows.length) h += '<tr><td colspan="13" class="empty">No invoices match.</td></tr>';
   document.getElementById('t-inv').innerHTML = h + '</tbody>';
 }
+
+// ── Cash in: money expected each week ──
+var SRC = {eta: 'your ETA', promised: 'promised', due: 'due date', none: 'no date'};
+var CASH_OPEN = null;
+function renderCash(){
+  var f = D.forecast, byId = {};
+  D.invoices.forEach(function(i){ byId[i.id] = i; });
+  var total = f.weeks.reduce(function(t, w){ return t + w.total; }, 0);
+  var h = '<div class="kpis">' + kpi(money(total), 'expected in the next ' + f.weeks.length + ' weeks') +
+    kpi(money(f.weeks[0].total + (f.weeks[1] ? f.weeks[1].total : 0)), 'this week and next') +
+    kpi(money(f.late.total), f.late.count + ' past their expected date') + kpi(money(f.unknown.total), f.unknown.count + ' with no expected date') + '</div>';
+  h += '<div class="card"><p class="small muted" style="margin-top:0">Each open invoice counts in the week its money is expected in hand: <b>your ETA</b> (set it on the invoice or the job), else the date the customer <b>promised</b>, else its <b>due date</b> while it isn\'t due yet. Click a week to see its invoices.</p><div class="tbl-wrap"><table><thead><tr><th>Week</th><th class="num">Expected</th><th class="num">Invoices</th><th class="num">From your ETAs</th><th class="num">Promised</th><th class="num">Due dates</th></tr></thead><tbody>';
+  var row = function(key, label, b, cls, split){
+    var r = '<tr class="click" onclick="toggleCash(\'' + key + '\')"' + (cls ? ' style="' + cls + '"' : '') + '><td><b>' + label + '</b></td><td class="num"><b>' + money(b.total) + '</b></td><td class="num">' + b.count + '</td>' +
+      (split ? '<td class="num">' + money(b.by_source.eta) + '</td><td class="num">' + money(b.by_source.promised) + '</td><td class="num">' + money(b.by_source.due) + '</td>' : '<td colspan="3" class="small muted">' + (split === false ? '' : '') + '</td>') + '</tr>';
+    if(CASH_OPEN === key && b.ids.length){
+      r += '<tr><td colspan="6" style="background:#F8FAFC"><table><tbody>' + b.ids.map(function(id){ var i = byId[id]; if(!i) return '';
+        return '<tr class="click" onclick="openInvoice(' + i.id + ')"><td>#' + esc(i.number) + '</td><td>' + esc(i.customer_name) + '</td><td class="small">' + esc(i.job_name) + '</td><td class="num">' + money(i.open_balance) + '</td><td>' + (i.expected ? md(i.expected) : '') + ' <span class="muted small">' + esc(SRC[i.expected_source] || '') + '</span></td><td class="small">' + waitText(i.plan.waiting) + '</td></tr>'; }).join('') + '</tbody></table></td></tr>';
+    }
+    return r;
+  };
+  if(f.late.count) h += row('late', 'Past the expected date, still open', f.late, 'background:var(--bad-bg)', false);
+  f.weeks.forEach(function(w, n){ h += row('w' + n, (n === 0 ? 'This week · ' : n === 1 ? 'Next week · ' : '') + md(w.start) + ' – ' + md(w.end), w, '', true); });
+  if(f.later.count) h += row('later', 'Later', f.later, '', false);
+  h += row('unknown', 'No expected date' + (f.unknown.retainage ? ' (incl. ' + money(f.unknown.retainage) + ' retainage)' : ''), f.unknown, 'background:var(--warn-bg)', false);
+  h += '</tbody></table></div></div>';
+  document.getElementById('p-cash').innerHTML = h;
+}
+function toggleCash(k){ CASH_OPEN = CASH_OPEN === k ? null : k; renderCash(); }
 
 // ── Jobs ──
 function renderJobs(){
@@ -489,6 +521,8 @@ function openInvoice(id){
       '<dt>Invoice / due date</dt><dd>' + md(i.txn_date) + ' / ' + md(i.due_date) + (p.dpd > 0 ? ' · <b>' + p.dpd + ' days past due</b>' : '') + '</dd>' +
       '<dt>Stage</dt><dd>' + esc(p.stage_name || '—') + (i.followup_count ? ' · ' + i.followup_count + ' follow-up(s), last ' + esc((i.last_followup_at || '').slice(0,10)) : ' · not followed up yet') + '</dd>' +
       '<dt>Waiting on</dt><dd>' + waitText(p.waiting) + '</dd>' +
+      '<dt>Money expected</dt><dd><div class="row"><input type="date" id="inv-eta" value="' + esc(i.eta_date || '') + '" style="width:auto"><button class="sm primary" onclick="saveEta(' + id + ')">Save ETA</button>' + (i.eta_date ? '<button class="sm" onclick="saveEta(' + id + ', true)">Clear</button>' : '') + '</div>' +
+        '<div class="small muted">' + (i.eta_date ? 'Your ETA' + (i.eta_by ? ', set by ' + esc(i.eta_by) : '') : (i.promised_date ? 'No ETA set: counting the promised date ' + md(i.promised_date) : 'No ETA set: when do you expect the money in hand?')) + ' · shows on the Cash in tab</div></dd>' +
       '<dt>Next step</dt><dd>' + (p.due_now ? '<b>Follow-up due now</b>' : esc(p.reason)) + '</dd>' +
       '<dt>Follow up with</dt><dd>' + (j.contacts.length ? esc(j.contacts.join(', ')) : '<b style="color:var(--bad)">No email address</b>') + (job && job.contact_name ? ' (' + esc(job.contact_name) + ')' : (c.contact_name ? ' (' + esc(c.contact_name) + ')' : '')) + '</dd>' +
       (i.needs_reason ? '<dt>Needs</dt><dd style="color:var(--bad)">' + esc(i.needs_reason) + '</dd>' : '') +
@@ -543,7 +577,7 @@ function openInvoice(id){
     j.docs.forEach(function(d){ if(d.scope === 'job' && i.kind !== 'install') return; h += '📎 <a target="_blank" href="/receivables/docs/' + d.id + '">' + esc(d.filename) + '</a> <span class="muted">(' + esc(d.scope === 'all' ? 'every email' : d.scope) + ')</span> <a href="#" onclick="docDelete(' + d.id + ');return false" style="color:var(--bad)">remove</a><br>'; });
     h += '</div><div class="row" style="margin-top:8px"><button class="sm" onclick="docUpload(\'invoice\',\'' + id + '\',\'invoice_pdf\')">Upload the invoice PDF</button><button class="sm" onclick="docUpload(\'invoice\',\'' + id + '\')">+ Other document</button>' + (job ? '<button class="sm" onclick="docUpload(\'job\',\'' + esc(job.key) + '\')">+ Install document for the job</button>' : '') + '</div></div>';
     // Notes
-    h += '<div class="card"><h3>Notes and history</h3><textarea id="inv-note" placeholder="Add a note" style="min-height:60px"></textarea><div class="row" style="margin:6px 0 10px"><button class="sm primary" onclick="invNote(' + id + ')">Add note</button></div><div class="timeline">';
+    h += '<div class="card"><h3>Notes and history</h3><textarea id="inv-note" placeholder="Add a note" style="min-height:60px"></textarea><div class="row" style="margin:6px 0 10px"><label style="margin:0;font-weight:500">Money expected in hand</label><input type="date" id="inv-note-eta" style="width:auto"><button class="sm primary" onclick="invNote(' + id + ')">Add note</button></div><div class="timeline">';
     j.notes.forEach(function(n){ h += '<div class="t ' + esc(n.kind) + '"><div class="small muted">' + esc(n.at) + ' · ' + esc(n.by) + '</div>' + esc(n.text) + '</div>'; });
     h += '</div></div>';
     if(j.emails.length){ h += '<div class="card"><h3>Emails</h3>'; j.emails.forEach(function(e){ h += '<div class="item small">' + badge(e.status === 'sent' ? 'b-promised' : 'b-open', e.status) + ' ' + esc(e.sent_at || e.created_at) + ' · ' + esc(e.subject) + ' <a href="#" onclick="openEmail(' + e.id + ');return false">open</a></div>'; }); h += '</div>'; }
@@ -561,7 +595,17 @@ function invAction(id, action){
 }
 function invPromise(id){ var d = prompt('Date they said it will be paid (MM/DD/YYYY, or leave blank):', ''); if(d === null) return; post('/receivables/api/invoice', {id:id, action:'promise', date:toIso(d)}).then(function(){ load().then(function(){ openInvoice(id); }); }); }
 function invSnooze(id){ var d = prompt('No follow-ups until (MM/DD/YYYY):', ''); if(!d) return; post('/receivables/api/invoice', {id:id, action:'snooze', date:toIso(d)}).then(function(){ load().then(function(){ openInvoice(id); }); }); }
-function invNote(id){ var t = document.getElementById('inv-note').value.trim(); if(!t) return; post('/receivables/api/invoice', {id:id, note:t}).then(function(){ openInvoice(id); }); }
+function saveEta(id, clear){
+  var v = clear ? '' : document.getElementById('inv-eta').value;
+  if(!clear && !v){ toast('Pick a date'); return; }
+  post('/receivables/api/invoice', {id:id, eta:v}).then(function(){ toast(clear ? 'ETA cleared' : 'ETA saved'); load().then(function(){ openInvoice(id); }); });
+}
+function invNote(id){
+  var t = document.getElementById('inv-note').value.trim(), eta = document.getElementById('inv-note-eta').value;
+  if(!t && !eta) return;
+  var body = {id:id}; if(t) body.note = t; if(eta) body.eta = eta;
+  post('/receivables/api/invoice', body).then(function(){ load().then(function(){ openInvoice(id); }); });
+}
 function toIso(d){ d = (d || '').trim(); var m = d.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/); if(m){ var y = m[3].length === 2 ? '20' + m[3] : m[3]; return y + '-' + ('0' + m[1]).slice(-2) + '-' + ('0' + m[2]).slice(-2); } return d; }
 
 // ── Drawer: a job ──
@@ -592,8 +636,9 @@ function openJob(key){
         (j.nonp_status === 'mailed' || j.nonp_status === 'sent' ? '<button class="sm" onclick="nonpStep(\'' + esc(key) + '\',\'lien_recorded\')">Lien recorded</button>' : '') +
         (j.nonp_status ? '<button class="sm danger" onclick="nonpStep(\'' + esc(key) + '\',\'\')">Reset</button>' : '') + '</div></div>';
     }
-    h += '<div class="card"><h3>Invoices</h3><table><thead><tr><th>Invoice</th><th>Date</th><th class="num">Amount</th><th class="num">Open</th><th>Status</th></tr></thead><tbody>';
-    inv.forEach(function(i){ h += '<tr class="click" onclick="openInvoice(' + i.id + ')"><td>#' + esc(i.number) + ' ' + (i.retainage ? badge('b-ret', 'Retainage') : '') + '</td><td>' + md(i.txn_date) + '</td><td class="num">' + (i.amount != null ? money(i.amount) : '') + '</td><td class="num">' + money(i.open_balance) + '</td><td>' + statusBadge(i) + '</td></tr>'; });
+    h += '<div class="card"><h3>Invoices</h3><div class="row" style="margin-bottom:8px"><label style="margin:0;font-weight:500">Money expected in hand for this job</label><input type="date" id="job-eta" style="width:auto"><select id="job-eta-which" style="width:auto"><option value="all">all open invoices</option><option value="ret">the retainage only</option></select><button class="sm primary" onclick="saveJobEta(\'' + esc(key) + '\')">Set ETA</button><button class="sm" onclick="saveJobEta(\'' + esc(key) + '\', true)">Clear ETAs</button></div>' +
+      '<table><thead><tr><th>Invoice</th><th>Date</th><th class="num">Amount</th><th class="num">Open</th><th>Expected</th><th>Status</th></tr></thead><tbody>';
+    inv.forEach(function(i){ h += '<tr class="click" onclick="openInvoice(' + i.id + ')"><td>#' + esc(i.number) + ' ' + (i.retainage ? badge('b-ret', 'Retainage') : '') + '</td><td>' + md(i.txn_date) + '</td><td class="num">' + (i.amount != null ? money(i.amount) : '') + '</td><td class="num">' + money(i.open_balance) + '</td><td class="small">' + (i.expected ? md(i.expected) + ' <span class="muted">' + esc(SRC[i.expected_source] || '') + '</span>' : '<span class="muted">none</span>') + '</td><td>' + statusBadge(i) + '</td></tr>'; });
     h += '</tbody></table></div>';
     h += '<div class="card"><h3>Install documents</h3><p class="muted small">Attached to every follow-up on this job.</p>';
     x.docs.forEach(function(d){ h += '📎 <a target="_blank" href="/receivables/docs/' + d.id + '">' + esc(d.filename) + '</a> <a href="#" onclick="docDelete(' + d.id + ');return false" style="color:var(--bad)" class="small">remove</a><br>'; });
@@ -603,6 +648,11 @@ function openJob(key){
     h += '</div></div>';
     openDrawer(h); CUR_JOB = key;
   });
+}
+function saveJobEta(key, clear){
+  var v = clear ? '' : document.getElementById('job-eta').value;
+  if(!clear && !v){ toast('Pick a date'); return; }
+  post('/receivables/api/job', {key:key, eta:v, eta_retainage_only: document.getElementById('job-eta-which').value === 'ret'}).then(function(){ toast(clear ? 'ETAs cleared' : 'ETA set'); load().then(function(){ openJob(key); }); });
 }
 function jf(k, label, v){ return '<div><label>' + esc(label) + '</label><input id="j-' + k + '" value="' + esc(v || '') + '"></div>'; }
 function saveJob(key){
