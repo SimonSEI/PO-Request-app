@@ -603,6 +603,11 @@ async function undoAction(id){
   if (await runUndo(id)) showUndo();
 }
 function openAll(uris){ const blocked = uris.filter(u => { const w = window.open(u, '_blank'); if (w) w.opener = null; return !w; }).length; if (blocked) toast('Your browser blocked a tab - allow pop-ups for this site, or use the buttons one at a time.', true); }
+async function followUpTomorrow(id){
+  const j = await api('/cases/' + id + '/follow_up_tomorrow', {method:'POST'});
+  if (!j.success) { toast(j.error, true); return; }
+  toast('Postponed - back on the list ' + niceDay(j.check_on) + '.'); loadToday();
+}
 async function followUpOff(id){
   if (!confirm("No follow-up needed at this step?\n\nIt comes off the list until the job moves on.")) return;
   const j = await api('/cases/' + id + '/follow_up_off', {method:'POST'});
@@ -821,7 +826,7 @@ async function loadToday(){
   // Chase the vendor: jobs to get scheduled / done, and quotes, where nobody has heard back.
   (q.vendor_follow_ups || []).forEach(c => { const ch = c.chase, late = ch.expect_by && ch.expect_by < todayIso();
     todo.push(todoItem('Follow up · ' + (ch.parts_wait ? 'parts' : ch.phase === 'job' ? 'job' : 'quote'), late ? 'r' : 'a', nextBox(c) + caseTitle(c), caseSub(c, esc(stageText(c))) + chaseLine(c),
-      open(c), `<button class="btn s p" onclick="event.stopPropagation();logFollow(${c.id})">📞 Log follow-up</button><button class="btn s" onclick="event.stopPropagation();vendorEmail(${c.id})">✉ Email</button>` + nextBtn(c) + `<button class="btn s" title="No follow-up needed at this step - off the list until the job moves on" onclick="event.stopPropagation();followUpOff(${c.id})">Not needed</button>`, c.todo_key)); });
+      open(c), `<button class="btn s p" onclick="event.stopPropagation();logFollow(${c.id})">📞 Log follow-up</button><button class="btn s" onclick="event.stopPropagation();vendorEmail(${c.id})">✉ Email</button><button class="btn s" title="Postpone - back on the list next working day" onclick="event.stopPropagation();followUpTomorrow(${c.id})">⏭ Tomorrow</button>` + nextBtn(c) + `<button class="btn s" title="No follow-up needed at this step - off the list until the job moves on" onclick="event.stopPropagation();followUpOff(${c.id})">Not needed</button>`, c.todo_key)); });
   q.ready_to_close.forEach(c => todo.push(todoItem('Send invoice', 'a', caseTitle(c), caseSub(c, 'send the invoice from Jobber' + (c.sei_invoice_number ? ' · #' + esc(c.sei_invoice_number) : '')) + followUp(c.follow_up), open(c), invoiceLink(c) + stepBtn(c, 'closed'), c.todo_key)));
   q.reports_to_log.forEach(d => todo.push(todoItem('Log report', 'b', esc(d.client_name || d.file_name), `${esc((d.report_fields||{}).title || 'Report')} · ${esc(d.doc_date)}${((d.jobber || {}).note_pending || {}).reason ? '<br><b class="warn">Not logged by itself: ' + esc(d.jobber.note_pending.reason) + '</b>' : ''}`, d.case_id ? `openCase(${d.case_id})` : `openDoc(${d.id})`,
     `<button class="btn s" onclick="logReport(${d.id})">Log in Jobber</button><button class="btn s" title="Already in Jobber - tick it on the job" onclick="askDone(event, () => reportDone(${d.id}, event))">✓ Done</button>`, d.todo_key)));

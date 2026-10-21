@@ -3014,6 +3014,26 @@ class PumpsTest(unittest.TestCase):
         self.assertTrue(r['success'], r)
         self.assertEqual(self.case(cid)['title'], 'New input line reactor and surge arrestor')
 
+    def test_follow_up_postponed_to_tomorrow(self):
+        """Oct 2026: a follow-up can be put off to the next working day - off the list until then."""
+        j = self.c.post('/pumps/api/cases', json={'title': 'Fan', 'client_name': 'Snooze Lakes'}).get_json()
+        cid = j.get('case_id') or j['case']['id']
+        self.c.patch(f'/pumps/api/cases/{cid}', json={'steps': {'vendor_quote': '2026-09-01', 'client_quote': '2026-09-02',
+                                                                'client_approved': '2026-09-03'}})
+        self.c.post(f'/pumps/api/cases/{cid}/vendor_follow', json={'who': 'Tom', 'how': 'call', 'said': 'shipped',
+                                                                    'expect_by': '2026-09-10'})
+        ids = lambda: [c['id'] for c in self.c.get('/pumps/api/summary').get_json()['queue']['vendor_follow_ups']]
+        self.assertIn(cid, ids())
+        r = self.c.post(f'/pumps/api/cases/{cid}/follow_up_tomorrow').get_json()
+        self.assertTrue(r['success'], r)
+        self.assertNotIn(cid, ids())
+        saved = P._today
+        P._today = lambda: date.fromisoformat(r['check_on'])
+        try:
+            self.assertIn(cid, ids(), 'back the next working day')
+        finally:
+            P._today = saved
+
     def test_status_picked_as_the_wrong_kind(self):
         """Oct 2026: "Followed up on friday with the client left a message" was saved as "Parts ordered" (the picker
         started there). Relabelled as a Note, its words kept."""

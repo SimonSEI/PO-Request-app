@@ -8616,6 +8616,30 @@ def h_follow_up_off(actor, case_id):
         conn.close()
 
 
+@api('/cases/<int:case_id>/follow_up_tomorrow', methods=('POST',))
+def h_follow_up_tomorrow(actor, case_id):
+    """Postpone the follow-up to the next working day (Oct 2026): off the list until then, what the
+    vendor said kept."""
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+        if not row:
+            return {'success': False, 'error': 'Not found'}, 404
+        c = _case_dict(row)
+        phase = CHASE_PHASES.get(c['stage'])
+        f = json.loads(row['vendor_follow'] or '{}')
+        if f.get('phase') != phase:
+            f = {'phase': phase}
+        when = _workdays_after(_today(), 1).isoformat()
+        f['check_on'] = when
+        conn.execute('UPDATE pump_cases SET vendor_follow=?, updated_at=? WHERE id=?', (json.dumps(f), _now_text(), case_id))
+        _event(conn, actor, 'follow-up postponed', f'To {when}', case_id=case_id)
+        conn.commit()
+        return {'check_on': when}
+    finally:
+        conn.close()
+
+
 @api('/cases/<int:case_id>/move', methods=('POST',))
 def h_case_move(actor, case_id):
     """Body: {"stage": step key} - the next step the job is waiting on."""
