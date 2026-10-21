@@ -291,7 +291,8 @@ def init_db():
             ('ar_invoices', (('source', "TEXT DEFAULT 'qb'"), ('snooze_reason', "TEXT DEFAULT ''"),
                              ('jobber_job', "TEXT DEFAULT '{}'"), ('checkin_at', 'TEXT'),
                              ('eta_date', "TEXT DEFAULT ''"), ('eta_by', "TEXT DEFAULT ''"), ('eta_at', 'TEXT'))),
-            ('ar_jobs', (('retainage_hold', 'INTEGER DEFAULT 0'), ('sheet_note', "TEXT DEFAULT ''"))),
+            ('ar_jobs', (('retainage_hold', 'INTEGER DEFAULT 0'), ('sheet_note', "TEXT DEFAULT ''"),
+                         ('jobber_job_number', "TEXT DEFAULT ''"))),
             ('ar_customers', (('qb_current', 'REAL'), ('qb_1_30', 'REAL'), ('qb_31_60', 'REAL'), ('qb_61_90', 'REAL'),
                               ('qb_91_plus', 'REAL'), ('qb_total', 'REAL'), ('qb_as_of', "TEXT DEFAULT ''"),
                               ('sheet_notes', "TEXT DEFAULT ''"), ('sheet_notes_hash', "TEXT DEFAULT ''"),
@@ -1263,7 +1264,8 @@ def _job_for(inv, lines, jobber_job=None):
             return f"name:{inv['customer_key']}:{_squash(name)}", _nice_name(name)
     if jobber_job and jobber_job.get('id'):
         title = (jobber_job.get('title') or '').strip()
-        return f"jobber:{jobber_job['id']}", f"#{jobber_job.get('jobNumber')} {title}".strip()
+        # Named by its title only: a "#14105" in front reads like an invoice number.
+        return f"jobber:{jobber_job['id']}", title or f"Jobber job {jobber_job.get('jobNumber')}"
     for ln in lines:
         first = (ln.get('description') or '').strip().split('\n')[0]
         m = _PROJECT.match(first)
@@ -1316,9 +1318,11 @@ def classify_all(only_ids=None):
         if key and jj.get('id'):
             # What Jobber knows about the job (complete or not, the property) goes on it, whatever it is keyed by.
             conn.execute('''UPDATE ar_jobs SET jobber_job_id=?, jobber_job_uri=?, jobber_status=?, jobber_completed_at=?,
+                            jobber_job_number=?,
                             property_address=CASE WHEN property_address='' THEN ? ELSE property_address END WHERE key=?''',
                          (jj['id'], jj.get('jobberWebUri') or '', (jj.get('jobStatus') or '').lower(),
-                          (jj.get('completedAt') or '')[:10], _addr_text((jj.get('property') or {}).get('address')), key))
+                          (jj.get('completedAt') or '')[:10], str(jj.get('jobNumber') or ''),
+                          _addr_text((jj.get('property') or {}).get('address')), key))
         if fields:
             conn.execute(f"UPDATE ar_invoices SET {', '.join(k + '=?' for k in fields)} WHERE id=?",
                          list(fields.values()) + [inv['id']])
@@ -2061,6 +2065,18 @@ def scan_sent():
     _set_state('last_sent_scan', started)
     if found:
         _log('sent', f'{found} email(s) you sent customers from {mailbox} counted as follow-ups.')
+
+
+def _unnumber_job_names():
+    """Jobs first named "#14105 Title" (Jobber's job number) are renamed "Title"; the number is kept apart."""
+    conn = _conn()
+    for r in conn.execute("SELECT key, name FROM ar_jobs WHERE name LIKE '#%'").fetchall():
+        m = re.match(r'^#(\d+)\s+(.+)$', r['name'] or '')
+        if m:
+            conn.execute("UPDATE ar_jobs SET name=?, jobber_job_number=CASE WHEN jobber_job_number='' THEN ? "
+                         "ELSE jobber_job_number END WHERE key=?", (m.group(2).strip(), m.group(1), r['key']))
+    conn.commit()
+    conn.close()
 
 
 def _withdraw_old_rule_nonps():
@@ -3381,6 +3397,7 @@ def init_receivables(app, db_path, *, data_dir, get_setting, set_setting, graph_
     try:
         _fix_misread_mail()
         _withdraw_old_rule_nonps()
+        _unnumber_job_names()
     except Exception as e:
         print(f"⚠ Receivables: could not tidy misread mail: {e}")
     app.register_blueprint(bp)
