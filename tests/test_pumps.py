@@ -3039,6 +3039,33 @@ class PumpsTest(unittest.TestCase):
         finally:
             P.recurring_jobs, P.job_detail, P.jobber_status = saved
 
+    def test_reports_saying_a_quote_is_coming_are_all_caught(self):
+        """Wild Blue PS1 (Oct 2026): "quote to follow for repairs" on the report - nothing, as Wild Blue's quotes go to
+        Beatriz. Now a to-do says one is coming, to send her; and reports filed before that never got their item do."""
+        comment = ('COMMENTS: This panel appears to have been hit by lightning or has taken a very large surge - all '
+                   'electronics are blown and shorted, motors are questionable and can not be tested further\nwithout '
+                   'replacement of the electrical components - quote to follow for repairs')
+        conn = P._conn()
+        try:
+            ids = []
+            for client in ('Wild Blue', 'Sweepside Lakes'):
+                conn.execute("INSERT INTO pump_docs (kind, status, vendor, client_name, site, doc_date, file_name, "
+                             "text_excerpt, created_at) VALUES ('report', 'filed', 'Wettech', ?, 'PS1', '2026-10-01', "
+                             "'r.pdf', ?, ?)", (client, comment, P._now_text()))
+                ids.append(conn.execute('SELECT last_insert_rowid()').fetchone()[0])
+            conn.commit()
+        finally:
+            conn.close()
+        P.sweep_quote_needed()
+        todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
+        self.assertIn(f'beatriz-quote:{ids[0]}', [t['key'] for t in todos])
+        self.assertTrue(any('Wild Blue' in t['title'] and 'Beatriz' in t['title'] for t in todos))
+        cases = self.c.get('/pumps/api/cases?status=open&q=Sweepside').get_json()['cases']
+        self.assertTrue(any('quote to follow' in c['title'] for c in cases), [c['title'] for c in cases])
+        n = len(cases)
+        P.sweep_quote_needed()
+        self.assertEqual(len(self.c.get('/pumps/api/cases?status=open&q=Sweepside').get_json()['cases']), n, 'once')
+
     def test_invoiced_jobs_get_closed(self):
         """Oct 2026: one-off pump jobs we link sat open in Jobber after they were invoiced. A to-do to close each, with a
         Close job button; it goes once Jobber shows it closed. Recurring jobs never."""
