@@ -137,6 +137,9 @@ ALLOWED_MUTATIONS = frozenset({'quoteCreate', 'invoiceCreate', 'jobCreateNote', 
                                'requestCreateNote', 'quoteCreateNote', 'invoiceCreateNote',
                                # An approved quote made a job, and a service-call visit on a job (Oct 2026).
                                'jobCreate', 'visitCreate', 'jobAddVisit', 'jobCreateVisit', 'jobVisitCreate',
+                               # Closing a one-off pump job that's invoiced, when someone clicks Close job (Oct 2026).
+                               # Only close_jobber_job() uses it.
+                               'jobClose', 'closeJob',
                                # Redoing the lines of OUR OWN quote while it is still a draft, after the
                                # vendor's quote is read again (Oct 2026). update_draft_quote() checks the
                                # quote is a draft right before, and never touches a sent quote.
@@ -4092,6 +4095,10 @@ def _sync_jobber(full=False, actor='system'):
                 refresh_scada_quotes()
             except Exception as e:
                 status['errors'].append(f'SCADA quotes: {e}')
+            try:
+                jobs_to_close()
+            except Exception as e:
+                status['errors'].append(f'Jobs to close: {e}')
             status['errors'] += refresh_client_contacts(conn)
             conn.commit()
             try:
@@ -13131,6 +13138,89 @@ def scada_due_actions(today=None):
 
 
 SCADA_QUOTE_DAYS = 180   # a SCADA renewal quote made this long before counts for the renewal
+
+
+JOB_DONE_STATUSES = ('archived', 'closed')
+INVOICE_OUT = ('awaiting_payment', 'sent_not_due', 'past_due', 'paid', 'bad_debt')
+
+
+def jobs_to_close():
+    """One-off pump jobs we linked that are invoiced but still open in Jobber (Oct 2026: they sat open):
+    a to-do each to close it, with a Close job button; done once Jobber shows it closed."""
+    since = (_today() - timedelta(days=120)).isoformat()
+    conn = _conn()
+    try:
+        cases = [dict(r) for r in conn.execute("SELECT * FROM pump_cases WHERE status != 'cancelled' AND jobber LIKE '%\"job\"%' "
+                                               "AND COALESCE(updated_at, '') >= ?", (since,))]
+        open_todos = {r['key']: r for r in conn.execute("SELECT * FROM pump_todos WHERE key LIKE 'close-job:%' AND done_at IS NULL")}
+    finally:
+        conn.close()
+    want = {}
+    for c in cases:
+        j = json.loads(c['jobber'] or '{}')
+        job, inv = j.get('job') or {}, j.get('invoice') or {}
+        if job.get('id') and (inv.get('status') or '') in INVOICE_OUT:
+            want[job['id']] = (c, job, inv)
+    for key, t in open_todos.items():
+        jid = key.split(':', 1)[1]
+        want.setdefault(jid, None)
+    added = []
+    for jid, it in want.items():
+        try:
+            n = (jobber_gql('query($id: EncodedId!) { job(id: $id) { jobNumber jobStatus jobType jobberWebUri } }',
+                            {'id': jid}).get('job')) or {}
+        except JobberError as e:
+            if not _GONE.search(str(e)):
+                continue
+            n = {'jobStatus': 'archived'}
+        st, kind = (n.get('jobStatus') or '').lower(), (n.get('jobType') or '').lower()
+        conn = _conn()
+        try:
+            key = f'close-job:{jid}'
+            if st in JOB_DONE_STATUSES or kind == 'recurring' or not it:
+                conn.execute('UPDATE pump_todos SET done_at=?, done_by=? WHERE key=? AND done_at IS NULL',
+                             (_now_text(), 'Jobber sync', key))
+            else:
+                c, job, inv = it
+                add_todo(conn, key, f"Close Jobber job #{n.get('jobNumber') or job.get('number') or '?'} - "
+                                    f"{c.get('client_name') or c.get('title')}",
+                         f"Our invoice #{inv.get('number') or c.get('sei_invoice_number') or '?'} has gone out "
+                         f"({inv.get('status', '').replace('_', ' ')}) - nothing left to do on the job, so close it "
+                         "instead of leaving it open in Jobber.",
+                         {'case_id': c['id'], 'close_job': jid, 'uri': n.get('jobberWebUri') or job.get('uri') or '',
+                          'label': 'Open the job in Jobber'})
+                added.append(jid)
+            conn.commit()
+        finally:
+            conn.close()
+    return added
+
+
+def close_jobber_job(job_id, actor):
+    """Close a job in Jobber - when someone clicks Close job on its to-do."""
+    res = try_mutation(('jobClose', 'closeJob'), {'jobId': job_id, 'id': job_id}, want={'job': 'id jobNumber jobStatus'})
+    if res is None:
+        raise ValueError("Jobber's API won't close jobs from here - close it in Jobber (Open the job in Jobber)")
+    conn = _conn()
+    try:
+        conn.execute("UPDATE pump_jobber_items SET status='archived', synced_at=? WHERE jobber_id=?", (_now_text(), job_id))
+        conn.execute('UPDATE pump_todos SET done_at=?, done_by=? WHERE key=? AND done_at IS NULL',
+                     (_now_text(), actor, f'close-job:{job_id}'))
+        for r in conn.execute("SELECT id FROM pump_cases WHERE jobber LIKE ?", (f'%{job_id}%',)).fetchall():
+            _event(conn, actor, 'jobber job closed', f"Job #{(res.get('job') or {}).get('jobNumber') or ''} closed in Jobber",
+                   case_id=r[0])
+        conn.commit()
+    finally:
+        conn.close()
+    return res.get('job') or {}
+
+
+@api('/jobber/jobs/close', methods=('POST',))
+def h_close_jobber_job(actor):
+    """Body: {"job_id"} - close that Jobber job (the Close job button on its to-do)."""
+    if actor == BOT:
+        return _office_only(actor, 'Closing Jobber jobs')
+    return {'job': close_jobber_job(str(_json().get('job_id') or ''), actor)}
 
 
 def refresh_scada_quotes():

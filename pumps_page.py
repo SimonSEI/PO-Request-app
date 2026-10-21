@@ -554,6 +554,7 @@ function todoRow(t){
       ${t.detail || (t.kind === 'manual' && t.due_on) ? `<div class="sub" style="margin-left:24px">${t.kind === 'manual' && t.due_on ? `<b class="${t.due_on < todayIso() ? 'bad' : 'warn'}">due ${esc(niceDay(t.due_on))}</b>${t.detail ? ' · ' : ''}` : ''}${esc(t.detail || '')}</div>` : ''}
       ${t.kind === 'approved_quote' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${t.link.case_id ? `<button class="btn s p" onclick="signQuote(${t.link.case_id})">✍ Sign quote &amp; send to ${esc((t.title.match(/send it to (\S+)/) || [])[1] || 'the vendor')}</button><button class="btn s" onclick="quoteSent(${t.link.case_id})">I already sent it</button>` : ''}${t.link.doc_id ? `<a class="btn s" href="/pumps/api/docs/${t.link.doc_id}/file?version=original" target="_blank" rel="noopener">View quote</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}</div>` : ''}
       ${t.kind !== 'approved_quote' && (t.link.uri || t.link.case_id) ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${(t.link.uris || []).length > 1 ? t.link.uris.map(u => `<a class="btn s" href="${esc(u.uri)}" target="_blank" rel="noopener">Open ${esc(u.label)} ↗</a>`).join('') + `<button class="btn s" onclick='openAll(${JSON.stringify(t.link.uris.map(u => u.uri)).replace(/'/g, "&#39;")})'>Open both ↗</button>` : t.link.uri ? `<a class="btn s" href="${esc(t.link.uri)}" target="_blank" rel="noopener">${esc(t.link.label || 'Open in Jobber')} ↗</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}${t.link.scada_id ? `<button class="btn s" onclick="showTab('scada')">SCADA</button>` : ''}</div>` : ''}
+      ${t.link.close_job ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="closeJobberJob('${esc(t.link.close_job)}', this)">Close job in Jobber</button></div>` : ''}
       ${t.link.draft_scada ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="draftScadaQuote(${t.link.scada_id}, this)">Draft quote in Jobber</button></div>` : ''}
       ${(t.key || '').startsWith('gulfshore-unbilled:') && t.link.case_id ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" title="Billed already - type our Jobber invoice number" onclick="linkInvoice(${t.link.case_id})">🔗 Link our invoice</button><button class="btn s" title="Billed through a contract - no invoice to link" onclick="billsPayOk([${t.link.case_id}])">OK to pay now</button></div>` : ''}
       ${t.kind === 'diver_email' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="diverTodo('${esc(t.link.month || '')}')">Email ready - copy &amp; attach</button><a class="btn s" href="/pumps/api/dives/docx?month=${encodeURIComponent(t.link.month || '')}">⬇ Word list</a></div>` : ''}</div>
@@ -1416,6 +1417,15 @@ async function jsAdd(id){
   const j = await api('/cases/' + id + '/status', {method:'POST', body:{kind: v('js_kind'), on: v('js_on'), text: v('js_text').trim()}});
   if (!j.success) { toast(j.error, true); return; }
   curCase = j.case; renderCase(); toast('Status updated'); loadToday();
+}
+// An invoiced one-off pump job still open in Jobber: closed when someone clicks it.
+async function closeJobberJob(id, btn){
+  if (!confirm('Close this job in Jobber?\n\nIts invoice has gone out - nothing is sent to the client.')) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Closing…'; }
+  const j = await api('/jobber/jobs/close', {method:'POST', body:{job_id: id}});
+  if (btn) { btn.disabled = false; btn.textContent = 'Close job in Jobber'; }
+  if (!j.success) { toast(j.error, true); return; }
+  toast('Closed in Jobber'); loadToday();
 }
 // A SCADA renewal's quote: drafted in Jobber only when someone clicks it (never by itself).
 async function draftScadaQuote(id, btn){
