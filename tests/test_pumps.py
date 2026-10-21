@@ -3147,6 +3147,8 @@ class PumpsTest(unittest.TestCase):
         self.assertIsNone(P.handle_service_call_email('m-5', 'a@b.com', 'Pump order for the shop', 'PO 5512'))
 
     def test_scada_coming_due_is_quoted_at_their_price(self):
+        """A SCADA renewal coming due: a to-do with Draft quote - never drafted by itself (the office, Oct 21 2026:
+        two copies of #9203 were drafted for Stock Development). Clicked, it's drafted at their price, once."""
         today = P._today
         P._today = lambda: P.datetime(2026, 12, 20).date()
         fake = FakeJobber(clients=[{'id': 'CL', 'name': 'LELY CDD', 'isLead': False, 'isArchived': False}])
@@ -3155,20 +3157,47 @@ class PumpsTest(unittest.TestCase):
         try:
             done = P.scada_due_actions()
             self.assertIn('LELY', done)
+            self.assertFalse([1 for qq, _ in fake.calls if 'quoteCreate(' in qq], 'nothing drafted by itself')
+            todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
+            t = next(t for t in todos if t['title'] == 'Quote the SCADA renewal - LELY')
+            sid = t['link']['scada_id']
+            self.assertTrue(t['link'].get('draft_scada'))
+            r = self.c.post(f'/pumps/api/scada/{sid}/draft_quote').get_json()
+            self.assertTrue(r['success'], r)
             q = [v for qq, v in fake.calls if 'quoteCreate(' in qq and v['attributes']['clientId'] == 'CL'][0]['attributes']
             line = q['lineItems'][0]
             self.assertEqual((line['name'], line['unitPrice'], line['taxable']), ('Service Proposal Amount', 600.0, False))
             self.assertIn('for 2027-2028', line['description'])
             n = len([1 for qq, _ in fake.calls if 'quoteCreate(' in qq])
+            r2 = self.c.post(f'/pumps/api/scada/{sid}/draft_quote').get_json()
+            self.assertTrue(r2['quote'].get('already'))
             P.scada_due_actions()
             self.assertEqual(len([1 for qq, _ in fake.calls if 'quoteCreate(' in qq]), n, 'once per renewal')
             todos = [t['title'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
             self.assertIn('Send the SCADA renewal quote #812 - LELY', todos)
+            self.assertNotIn('Quote the SCADA renewal - LELY', todos)
             self.assertIn('SCADA renewal due - AUTUMN WOODS (complimentary)', todos)
             self.assertFalse(any('Quote the SCADA renewal - AUTUMN' in t for t in todos))
         finally:
             P.JOBBER_STATIC_TOKEN = saved
             P._today = today
+
+    def test_scada_already_quoted_in_jobber(self):
+        """Coras (Oct 2026): a SCADA renewal quote already in Jobber from the last few months is the renewal's - no
+        "Quote the SCADA renewal" to-do."""
+        conn = P._conn()
+        try:
+            rows = [r for r in P.scada_rows(conn) if r['active'] and not r.get('complimentary')]
+            r = rows[0]
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_name, created_at) "
+                         "VALUES ('QSC1', 'quote', '9150', 'Proposal to renew the SCADA annual cellular subscription', "
+                         "'awaiting_response', ?, ?)", (r['client'], P._today().isoformat()))
+            conn.commit()
+        finally:
+            conn.close()
+        got = P.existing_scada_quote(r)
+        self.assertEqual((got or {}).get('number'), '9150')
+        self.assertIsNone(P.existing_scada_quote({**r, 'client': 'Nobody Lakes Zz', 'jobber_names': ''}))
 
     def test_scada_vendor_quote_is_not_marked_up(self):
         doc = {'description': 'Renewal of Annual Cellular and cloud subscription for SCADA system', 'client_name': 'Banyan Bay',

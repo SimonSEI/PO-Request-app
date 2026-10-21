@@ -13014,82 +13014,158 @@ def _scada_client(row):
 
 
 def scada_due_actions(today=None):
-    """30 days before a SCADA renewal: draft the client's quote in Jobber at
-    their price from the SCADA sheet (a to-do says to send it), or, for a
+    """30 days before a SCADA renewal: a to-do to draft the client's renewal quote,
+    with a Draft quote button - the app never drafts it by itself (the office, Oct 21
+    2026: two copies of #9203 were drafted for Stock Development); or, for a
     complimentary one, just a reminder."""
     conn = _conn()
     try:
         rows = [r for r in scada_rows(conn) if r['active'] and r['state'] in ('due_soon', 'overdue')]
     finally:
         conn.close()
-    done = []
+    # Already quoted in Jobber lately (Coras, Oct 2026): that quote is this year's - no to-do.
+    found = {}
     for r in rows:
-        year = (r['next_due_on'] or '')[:4]
-        key = f"scada:{r['id']}:{year}"
-        conn = _conn()
-        try:
+        quote = json.loads(r.get('quote') or '{}') if isinstance(r.get('quote'), str) else (r.get('quote') or {})
+        if not r.get('complimentary') and quote.get('year') != (r['next_due_on'] or '')[:4]:
+            try:
+                found[r['id']] = existing_scada_quote(r)
+            except JobberError:
+                pass
+    conn = _conn()
+    try:
+        done = []
+        for r in rows:
+            year = (r['next_due_on'] or '')[:4]
+            key = f"scada:{r['id']}:{year}"
+            if found.get(r['id']):
+                q = {**found[r['id']], 'year': year}
+                conn.execute('UPDATE pump_scada_accounts SET quote=? WHERE id=?', (json.dumps(q), r['id']))
+                conn.execute('UPDATE pump_todos SET done_at=?, done_by=? WHERE key=? AND done_at IS NULL',
+                             (_now_text(), 'Pumps', key))
+                _event(conn, 'Pumps', 'SCADA quote found', f"{r['client']} {year}: Jobber quote #{q['number']} "
+                                                            f"({q['status'].replace('_', ' ')}) is the renewal's")
+                if q['status'] == 'draft':
+                    add_todo(conn, f"scada-send:{r['id']}:{year}", f"Send the SCADA renewal quote #{q['number']} - {r['client']}",
+                             f"Drafted in Jobber already. Renewal due {r['next_due_on']}.",
+                             {'scada_id': r['id'], 'uri': q.get('uri') or ''}, due_on=r['next_due_on'])
+                continue
             if r.get('complimentary'):
                 add_todo(conn, key, f"SCADA renewal due - {r['client']} (complimentary)",
                          f"Due {r['next_due_on']}. Wettech renews it; no client quote. {r.get('notes') or ''}".strip(),
                          {'scada_id': r['id']}, due_on=r['next_due_on'])
-                conn.commit()
                 continue
             quote = json.loads(r.get('quote') or '{}') if isinstance(r.get('quote'), str) else (r.get('quote') or {})
             if quote.get('year') == year:
                 continue
-        finally:
-            conn.close()
-        price = _money(r.get('our_bill'))
-        err = ''
-        if not price:
-            err = 'no price on the SCADA tab'
-        elif not jobber_status()['connected']:
-            err = 'Jobber is not connected'
-        made = None
-        if not err:
-            try:
-                client = _scada_client(r)
-                props = client_jobs(client['id'])['properties'] if client else []
-                prop = props[0] if len(props) == 1 else next(
-                    (p for p in props if place_score(_core_name(r['client']), p['label']) >= 0.99), None)
-                if not client:
-                    err = f"can't tell which Jobber client {r['client']} is - set its Name in Jobber"
-                elif not prop:
-                    err = f"{client['name']} has {len(props)} properties - choose one"
-                else:
-                    y = int(year)
-                    items = _jobber_lines([{'name': 'Service Proposal Amount', 'description':
-                                            SCADA_QUOTE_TEXT.format(y1=y, y2=y + 1), 'quantity': 1,
-                                            'unit_price': price, 'taxable': False}], 'quote')
-                    data = gql_with_lines(QUOTE_CREATE, {'attributes': {
-                        'clientId': client['id'], 'propertyId': prop['id'],
-                        'title': 'Proposal to renew the SCADA annual cellular subscription', 'lineItems': items}}, 'attributes')
-                    payload = data.get('quoteCreate') or {}
-                    if payload.get('userErrors'):
-                        raise JobberError('; '.join(e.get('message', '?') for e in payload['userErrors']))
-                    made = payload.get('quote') or {}
-            except (JobberError, ValueError, TypeError) as e:
-                err = str(e)
+            add_todo(conn, key, f"Quote the SCADA renewal - {r['client']}",
+                     f"Due {r['next_due_on']} at {r.get('our_bill') or 'their price'}. Draft quote makes it in Jobber "
+                     "(nothing is drafted until you click it).",
+                     {'scada_id': r['id'], 'draft_scada': year}, due_on=r['next_due_on'])
+            done.append(r['client'])
+        conn.commit()
+    finally:
+        conn.close()
+    return done
+
+
+SCADA_QUOTE_DAYS = 180   # a SCADA renewal quote made this long before counts for the renewal
+
+
+def existing_scada_quote(r):
+    """A SCADA renewal quote the client already has in Jobber, made in the last SCADA_QUOTE_DAYS
+    days and not archived or declined (Coras, Oct 2026: quoted already, yet a to-do to quote it):
+    {id, number, status, uri} or None. What the sync has seen, else Jobber's search."""
+    since = (_today() - timedelta(days=SCADA_QUOTE_DAYS)).isoformat()
+    names = [n.strip() for n in re.split(r'[;,\n]', r.get('jobber_names') or '') if n.strip()] + [r['client']]
+    ok = lambda title, status, created, client: (
+        re.search(r'\bscada\b', title or '', re.I) and (status or '').lower() not in ('archived', 'rejected')
+        and (created or '')[:10] >= since and any(_same_account(n, client or '') or fuzzy_has(_core_name(n), client or '')
+                                                  for n in names))
+    conn = _conn()
+    try:
+        for it in conn.execute("SELECT * FROM pump_jobber_items WHERE kind='quote' ORDER BY created_at DESC"):
+            if ok(it['title'], it['status'], it['created_at'], it['client_name']):
+                return {'id': it['jobber_id'], 'number': it['number'], 'status': (it['status'] or '').lower(),
+                        'uri': it['web_uri'] or ''}
+    finally:
+        conn.close()
+    if not jobber_status()['connected']:
+        return None
+    for n in names:
+        core = _core_name(n)
+        if len(core) < 3:
+            continue
+        data = jobber_gql('query($q: String) { quotes(first: 20, searchTerm: $q) { nodes { id quoteNumber title '
+                          'quoteStatus createdAt jobberWebUri client { name } } } }', {'q': core})
+        for q in (data.get('quotes') or {}).get('nodes') or []:
+            if ok(q.get('title'), q.get('quoteStatus'), q.get('createdAt'), (q.get('client') or {}).get('name')):
+                return {'id': q['id'], 'number': str(q.get('quoteNumber') or ''),
+                        'status': (q.get('quoteStatus') or '').lower(), 'uri': q.get('jobberWebUri') or ''}
+    return None
+
+
+def draft_scada_quote(scada_id, actor):
+    """The renewal quote, drafted in Jobber when someone clicks Draft quote - once a year:
+    clicked again (or by two people) it returns the quote already drafted."""
+    with _FileLock(f'scada_quote_{scada_id}', blocking=True):
         conn = _conn()
         try:
-            if made:
-                ref = {'year': year, 'id': made.get('id'), 'number': str(made.get('quoteNumber') or ''),
-                       'uri': made.get('jobberWebUri'), 'at': _now_text()}
-                conn.execute('UPDATE pump_scada_accounts SET quote=? WHERE id=?', (json.dumps(ref), r['id']))
-                _event(conn, 'Pumps', 'SCADA quote drafted', f"{r['client']} {year}: Jobber quote #{ref['number']} "
-                       f"${price:,.2f}")
-                add_todo(conn, f"scada-send:{r['id']}:{year}", f"Send the SCADA renewal quote #{ref['number']} - {r['client']}",
-                         f"Drafted in Jobber at ${price:,.2f}. Renewal due {r['next_due_on']}.",
-                         {'scada_id': r['id'], 'uri': ref['uri'] or ''}, due_on=r['next_due_on'])
-                done.append(r['client'])
-            else:
-                add_todo(conn, key, f"Quote the SCADA renewal - {r['client']}",
-                         f"Due {r['next_due_on']} at {r.get('our_bill') or 'their price'}. The app couldn't draft it: {err}.",
-                         {'scada_id': r['id']}, due_on=r['next_due_on'])
+            r = next((x for x in scada_rows(conn) if x['id'] == scada_id), None)
+        finally:
+            conn.close()
+        if not r:
+            raise ValueError('No such SCADA account')
+        year = (r['next_due_on'] or '')[:4]
+        quote = json.loads(r.get('quote') or '{}') if isinstance(r.get('quote'), str) else (r.get('quote') or {})
+        if quote.get('year') == year and quote.get('id'):
+            return {**quote, 'already': True}
+        price = _money(r.get('our_bill'))
+        if not price:
+            raise ValueError('No price on the SCADA tab - add it there first')
+        if not jobber_status()['connected']:
+            raise ValueError('Jobber is not connected')
+        client = _scada_client(r)
+        if not client:
+            raise ValueError(f"Can't tell which Jobber client {r['client']} is - set its Name in Jobber on the SCADA tab")
+        props = client_jobs(client['id'])['properties']
+        prop = props[0] if len(props) == 1 else next(
+            (p for p in props if place_score(_core_name(r['client']), p['label']) >= 0.99), None)
+        if not prop:
+            raise ValueError(f"{client['name']} has {len(props)} properties - choose one in Jobber")
+        y = int(year)
+        items = _jobber_lines([{'name': 'Service Proposal Amount', 'description': SCADA_QUOTE_TEXT.format(y1=y, y2=y + 1),
+                                'quantity': 1, 'unit_price': price, 'taxable': False}], 'quote')
+        data = gql_with_lines(QUOTE_CREATE, {'attributes': {
+            'clientId': client['id'], 'propertyId': prop['id'],
+            'title': 'Proposal to renew the SCADA annual cellular subscription', 'lineItems': items}}, 'attributes')
+        payload = data.get('quoteCreate') or {}
+        if payload.get('userErrors'):
+            raise JobberError('; '.join(e.get('message', '?') for e in payload['userErrors']))
+        made = payload.get('quote') or {}
+        ref = {'year': year, 'id': made.get('id'), 'number': str(made.get('quoteNumber') or ''),
+               'uri': made.get('jobberWebUri'), 'at': _now_text(), 'by': actor}
+        conn = _conn()
+        try:
+            conn.execute('UPDATE pump_scada_accounts SET quote=? WHERE id=?', (json.dumps(ref), scada_id))
+            _event(conn, actor, 'SCADA quote drafted', f"{r['client']} {year}: Jobber quote #{ref['number']} ${price:,.2f}")
+            conn.execute('UPDATE pump_todos SET done_at=?, done_by=? WHERE key=? AND done_at IS NULL',
+                         (_now_text(), actor, f"scada:{scada_id}:{year}"))
+            add_todo(conn, f"scada-send:{scada_id}:{year}", f"Send the SCADA renewal quote #{ref['number']} - {r['client']}",
+                     f"Drafted in Jobber at ${price:,.2f}. Renewal due {r['next_due_on']}.",
+                     {'scada_id': scada_id, 'uri': ref['uri'] or ''}, due_on=r['next_due_on'])
             conn.commit()
         finally:
             conn.close()
-    return done
+        return ref
+
+
+@api('/scada/<int:scada_id>/draft_quote', methods=('POST',))
+def h_scada_draft_quote(actor, scada_id):
+    """Draft the SCADA renewal quote in Jobber - only when someone in the office clicks it."""
+    if actor == BOT:
+        return _office_only(actor, 'Drafting quotes')
+    return {'quote': draft_scada_quote(scada_id, actor)}
 
 
 # ── the daily email ──────────────────────────────────────────────────────────
