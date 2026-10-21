@@ -3182,6 +3182,26 @@ class PumpsTest(unittest.TestCase):
             P.JOBBER_STATIC_TOKEN = saved
             P._today = today
 
+    def test_scada_tab_shows_the_renewal_quote(self):
+        """The SCADA tab (Oct 2026): each renewal's quote - number, status, link - and the sync keeps the status."""
+        conn = P._conn()
+        try:
+            r = next(x for x in P.scada_rows(conn) if x['next_due_on'])
+            q = {'year': r['next_due_on'][:4], 'id': 'QSC9', 'number': '9150', 'uri': 'https://x/q', 'status': 'draft'}
+            conn.execute('UPDATE pump_scada_accounts SET quote=? WHERE id=?', (json.dumps(q), r['id']))
+            conn.commit()
+        finally:
+            conn.close()
+        row = lambda: next(x for x in self.c.get('/pumps/api/scada').get_json()['scada'] if x['id'] == r['id'])
+        self.assertEqual((row()['renewal_quote']['number'], row()['renewal_quote']['status']), ('9150', 'draft'))
+        saved = P.jobber_gql
+        P.jobber_gql = lambda qq, v=None: {'quote': {'quoteNumber': 9150, 'quoteStatus': 'AWAITING_RESPONSE', 'jobberWebUri': 'u'}}
+        try:
+            P.refresh_scada_quotes()
+        finally:
+            P.jobber_gql = saved
+        self.assertEqual(row()['renewal_quote']['status'], 'awaiting_response')
+
     def test_scada_already_quoted_in_jobber(self):
         """Coras (Oct 2026): a SCADA renewal quote already in Jobber from the last few months is the renewal's - no
         "Quote the SCADA renewal" to-do."""

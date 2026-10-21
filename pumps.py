@@ -4088,6 +4088,10 @@ def _sync_jobber(full=False, actor='system'):
                 check_report_only_bills()
             except Exception as e:
                 status['errors'].append(f'Report-only bills: {e}')
+            try:
+                refresh_scada_quotes()
+            except Exception as e:
+                status['errors'].append(f'SCADA quotes: {e}')
             status['errors'] += refresh_client_contacts(conn)
             conn.commit()
             try:
@@ -11440,6 +11444,12 @@ def _scada_row(r, today):
         # A later year was recorded than the sheet's date shows: due a year after it.
         due = _anniversary(due, filled[-1] + 1)
     d['next_due_on'] = due.isoformat() if due else ''
+    # This renewal's quote in Jobber - its number, status and link (the SCADA tab, Oct 2026).
+    try:
+        q = json.loads(d.get('quote') or '{}') if isinstance(d.get('quote'), str) else (d.get('quote') or {})
+    except ValueError:
+        q = {}
+    d['renewal_quote'] = q if q.get('number') and q.get('year') == d['next_due_on'][:4] else None
     d['client_name'], d['site'] = d['client'], ''
     if not d['active']:
         d['state'] = 'inactive'
@@ -13072,6 +13082,36 @@ def scada_due_actions(today=None):
 SCADA_QUOTE_DAYS = 180   # a SCADA renewal quote made this long before counts for the renewal
 
 
+def refresh_scada_quotes():
+    """Each SCADA renewal quote's status from Jobber (draft, sent, approved...), for the SCADA tab."""
+    conn = _conn()
+    try:
+        rows = [(r['id'], json.loads(r['quote'] or '{}')) for r in conn.execute(
+            "SELECT id, quote FROM pump_scada_accounts WHERE COALESCE(quote, '') LIKE '%\"id\"%'")]
+    finally:
+        conn.close()
+    for sid, q in rows:
+        if not q.get('id') or q.get('status') in ('converted', 'archived', 'rejected'):
+            continue
+        try:
+            n = (jobber_gql('query($id: EncodedId!) { quote(id: $id) { quoteNumber quoteStatus jobberWebUri } }',
+                            {'id': q['id']}).get('quote')) or {}
+        except JobberError as e:
+            if _GONE.search(str(e)):
+                n = {'quoteStatus': 'archived'}
+            else:
+                continue
+        st = (n.get('quoteStatus') or '').lower()
+        if st and st != q.get('status'):
+            q.update(status=st, uri=n.get('jobberWebUri') or q.get('uri') or '')
+            conn = _conn()
+            try:
+                conn.execute('UPDATE pump_scada_accounts SET quote=? WHERE id=?', (json.dumps(q), sid))
+                conn.commit()
+            finally:
+                conn.close()
+
+
 def existing_scada_quote(r):
     """A SCADA renewal quote the client already has in Jobber, made in the last SCADA_QUOTE_DAYS
     days and not archived or declined (Coras, Oct 2026: quoted already, yet a to-do to quote it):
@@ -13144,7 +13184,7 @@ def draft_scada_quote(scada_id, actor):
             raise JobberError('; '.join(e.get('message', '?') for e in payload['userErrors']))
         made = payload.get('quote') or {}
         ref = {'year': year, 'id': made.get('id'), 'number': str(made.get('quoteNumber') or ''),
-               'uri': made.get('jobberWebUri'), 'at': _now_text(), 'by': actor}
+               'uri': made.get('jobberWebUri'), 'at': _now_text(), 'by': actor, 'status': 'draft'}
         conn = _conn()
         try:
             conn.execute('UPDATE pump_scada_accounts SET quote=? WHERE id=?', (json.dumps(ref), scada_id))
