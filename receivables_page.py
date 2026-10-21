@@ -190,6 +190,9 @@ function render(){
     kpi(open.filter(function(i){ return i.status === 'needs_person' || (i.plan.due_now && !i.contacts.length); }).length, 'need a person');
   renderToday(); renderInvoices(); renderJobs(); renderCustomers(); renderEmails(); renderDocs(); renderSettings(); renderActivity();
 }
+function stageLabel(k){
+  return {first: '1st follow-up', second: '2nd follow-up', checkin: 'check-in (not due yet)', very_past_due: 'very past due', final: 'final notice', retainage: 'retainage'}[k] || (k || '').replace('_', ' ');
+}
 function waitText(w){
   if(!w) return '';
   if(w.indexOf('needs an answer') >= 0) return '<b style="color:var(--bad)">' + esc(w) + '</b>';
@@ -228,7 +231,7 @@ function renderToday(){
   else {
     h += '<div class="row" style="margin-bottom:6px"><button class="primary sm" onclick="sendAll()">Send all ' + drafts.filter(function(e){ return e.to_email; }).length + ' with an address</button><span class="muted small">Each one can be opened, edited and sent on its own.</span></div>';
     drafts.forEach(function(e){
-      h += '<div class="item"><div class="row"><b>' + esc(e.subject) + '</b>' + (e.kind === 'nonp' ? badge('b-late', 'Notice of Nonpayment') : badge('b-' + (e.stage === 'retainage' ? 'ret' : 'open'), (e.stage || '').replace('_', ' '))) + '</div>' +
+      h += '<div class="item"><div class="row"><b>' + esc(e.subject) + '</b>' + (e.kind === 'nonp' ? badge('b-late', 'Notice of Nonpayment') : badge('b-' + (e.stage === 'retainage' ? 'ret' : 'open'), stageLabel(e.stage))) + '</div>' +
            '<div class="muted small">To ' + (esc(e.to_email) || '<b style="color:var(--bad)">no address</b>') + (e.cc ? ' · cc ' + esc(e.cc) : '') + '</div>' +
            (e.error ? '<div class="small" style="color:var(--bad)">' + esc(e.error) + '</div>' : '') +
            '<div class="row" style="margin-top:6px"><button class="sm" onclick="openEmail(' + e.id + ')">Review</button><button class="sm primary" onclick="sendEmail(' + e.id + ')">Send</button><button class="sm danger" onclick="discardEmail(' + e.id + ')">Discard</button></div></div>';
@@ -428,6 +431,12 @@ function renderSettings(){
     chk('auto_send', 'Send follow-ups automatically (off = they wait on the Today tab for review)', s.auto_send) +
     chk('read_replies', 'Read replies in the sending mailbox and act on them', s.read_replies) +
     chk('enabled', 'Run every hour (Jobber, replies, follow-ups, lien deadlines)', s.enabled) + '</div>';
+  h += '<div class="card"><h3>Your follow-up emails</h3><p class="muted small">"Good morning," or "Good afternoon," is added by the time it goes out; the invoice number, amount, due date and pay-online link, then your signature, go underneath. When one email covers several invoices, "invoice is" reads "invoices are".</p>' +
+    '<label>1st follow-up (past due)</label><textarea id="s-tpl_first">' + esc(s.tpl_first) + '</textarea>' +
+    '<label>2nd follow-up</label><textarea id="s-tpl_second">' + esc(s.tpl_second) + '</textarea>' +
+    '<label>Check-in on a large invoice that isn\'t due yet</label><textarea id="s-tpl_checkin">' + esc(s.tpl_checkin) + '</textarea>' +
+    '<div class="grid2">' + fld('checkin_min_amount', 'Check in on invoices of at least ($)', s.checkin_min_amount, 'number') + fld('checkin_after_days', '... this many days after the invoice date', s.checkin_after_days, 'number') + '</div>' +
+    '<p class="small muted">After the 2nd follow-up, invoices 61+ days late get the firmer "very past due" and "final notice" emails below.</p></div>';
   h += '<div class="card"><h3>Escalation</h3><p class="muted small">Days past due when each stage starts, and how often it repeats. "Payment is coming" replies stop follow-ups until the <b>very past due</b> stage.</p><table><thead><tr><th>Stage</th><th>Starts at (days late)</th><th>Repeat every (days)</th></tr></thead><tbody>';
   s.stages.forEach(function(st, n){ h += '<tr><td><input id="st-name-' + n + '" value="' + esc(st.name) + '" data-key="' + esc(st.key) + '"></td><td><input id="st-from-' + n + '" type="number" value="' + st.from_days + '"></td><td><input id="st-every-' + n + '" type="number" value="' + st.every_days + '"></td></tr>'; });
   h += '</tbody></table><div class="grid2">' + fld('promise_grace_days', 'After a promised date passes, wait (days)', s.promise_grace_days, 'number') +
@@ -449,8 +458,8 @@ function fld(k, label, v, type){ return '<div><label>' + esc(label) + '</label><
 function chk(k, label, v){ return '<label style="display:flex;gap:8px;align-items:center;font-weight:500;color:var(--ink)"><input type="checkbox" id="s-' + k + '" style="width:auto"' + (v ? ' checked' : '') + '>' + esc(label) + '</label>'; }
 function saveSettings(){
   var d = {}, v = function(k){ return document.getElementById('s-' + k); };
-  ['from_email','cc','send_hours','signature','install_words','retainage_range','lien_kinds','company_name','company_address','company_phone','nonp_notify'].forEach(function(k){ d[k] = v(k).value; });
-  ['promise_grace_days','reported_paid_wait_days','min_balance','retainage_every_days','max_attach_mb','lien_days','nonp_lead_days','nonp_min_days_late'].forEach(function(k){ d[k] = v(k).value; });
+  ['from_email','cc','send_hours','signature','tpl_first','tpl_second','tpl_checkin','install_words','retainage_range','lien_kinds','company_name','company_address','company_phone','nonp_notify'].forEach(function(k){ d[k] = v(k).value; });
+  ['promise_grace_days','reported_paid_wait_days','min_balance','checkin_min_amount','checkin_after_days','retainage_every_days','max_attach_mb','lien_days','nonp_lead_days','nonp_min_days_late'].forEach(function(k){ d[k] = v(k).value; });
   ['auto_send','read_replies','enabled'].forEach(function(k){ d[k] = v(k).checked; });
   if(d.auto_send && !D.settings.auto_send && !confirm('Follow-ups will be emailed to customers from ' + d.from_email + ' without review. Turn on?')) return;
   d.stages = D.settings.stages.map(function(st, n){ return {key: st.key, name: document.getElementById('st-name-' + n).value, from_days: document.getElementById('st-from-' + n).value, every_days: document.getElementById('st-every-' + n).value}; });

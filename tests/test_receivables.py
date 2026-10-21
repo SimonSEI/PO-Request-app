@@ -302,13 +302,79 @@ class FollowupTests(Base):
         service = next(e for e in d if e['group_key'] == 'cust:patexample')
         install = next(e for e in d if e['group_key'].startswith('job:'))
         self.assertEqual(len(json.loads(service['invoice_ids'])), 2)
-        self.assertEqual(service['stage'], 'past_due')
-        self.assertIn('Hello Pat Example', service['body'])
+        # The first email to anyone is the office's "friendly reminder", whatever the age.
+        self.assertEqual(service['stage'], 'first')
+        self.assertTrue(service['body'].startswith(('Good morning,', 'Good afternoon,')))
+        self.assertIn('This is a friendly reminder that the attached invoices are past due', service['body'])
+        self.assertIn('payment for these', service['body'])
+        self.assertIn('Invoice #36484', service['body'])
+        self.assertEqual(install['stage'], 'first')
+        self.assertIn('the attached invoice is past due', install['body'])
+        self.assertIn('retainage of $200.00 is also held', install['body'])
+        self.assertEqual(len(json.loads(install['invoice_ids'])), 1)  # retainage waits for completion
+
+    def test_second_then_firmer(self):
+        conn = R._conn()
+        conn.execute("UPDATE ar_invoices SET followup_count=1, last_followup_at=? WHERE number IN ('36484','36490','36006')",
+                     ((TODAY - timedelta(days=30)).isoformat() + ' 09:00:00',))
+        conn.commit()
+        conn.close()
+        R.plan_followups()
+        d = {e['group_key']: e for e in self.drafts()}
+        service = d['cust:patexample']
+        install = next(e for k, e in d.items() if k.startswith('job:'))
+        self.assertEqual(service['stage'], 'second')
+        self.assertIn('This is another friendly reminder', service['body'])
+        self.assertEqual(install['stage'], 'second')
+        # After two, an install 95 days late gets the final notice (Notice of Nonpayment to follow).
+        conn = R._conn()
+        conn.execute("UPDATE ar_invoices SET followup_count=2 WHERE number='36006'")
+        conn.commit()
+        conn.close()
+        R.plan_followups()
+        install = next(e for e in self.drafts() if e['group_key'].startswith('job:'))
         self.assertEqual(install['stage'], 'final')
         self.assertIn('FINAL NOTICE', install['subject'])
         self.assertIn('Notice of Nonpayment', install['body'])
-        self.assertIn('retainage of $200.00 is also held', install['body'])
-        self.assertEqual(len(json.loads(install['invoice_ids'])), 1)  # retainage waits for completion
+
+    def test_large_invoice_checkin_before_due(self):
+        self.upload([
+            (ago(50), 'Invoice', 36484, 'PAT EXAMPLE', ago(45), 150, 150),
+            (ago(50), 'Invoice', 36490, 'PAT EXAMPLE', ago(45), 300, 300),
+            (ago(100), 'Invoice', 36006, 'Sample Builders:Tide Cleaners', ago(95), 2000, 2000),
+            (ago(100), 'Invoice', 36007, 'Sample Builders:Tide Cleaners', ago(95), 2000, 200),
+            (ago(10), 'Invoice', 777, 'PAT EXAMPLE', ago(-20), 15000, 15000),     # $15k, due in 20 days
+                      (ago(3), 'Invoice', 778, 'Lake Example HOA', ago(-27), 12000, 12000),  # too new yet
+                      (ago(10), 'Invoice', 779, 'Lake Example HOA', ago(-20), 9000, 9000)])  # under $10k
+        conn = R._conn()
+        conn.execute("UPDATE ar_customers SET emails='lake@example.com' WHERE key='lakeexamplehoa'")
+        conn.commit()
+        conn.close()
+        s = R.settings()
+        self.assertTrue(R.plan(self.inv('777'), None, None, s)['due_now'])
+        self.assertIn('check-in', R.plan(self.inv('778'), None, None, s)['reason'])
+        self.assertFalse(R.plan(self.inv('779'), None, None, s)['due_now'])
+        R.plan_followups()
+        drafts = self.drafts()
+        checkins = [e for e in drafts if e['stage'] == 'checkin']
+        self.assertEqual(len(checkins), 0)  # Pat's check-in waits: Pat has past-due invoices in a draft right now
+        self.assertEqual(R._plural('the attached invoice is past due; payment for it', 2),
+                         'the attached invoices are past due; payment for them')
+        pat = next(e for e in drafts if e['group_key'] == 'cust:patexample')
+        self.assertNotIn(self.inv('777')['id'], json.loads(pat['invoice_ids']))
+        # Once the past-due ones are handled, the check-in goes out on its own.
+        R.send_email(pat['id'])
+        R.plan_followups()
+        chk = next(e for e in self.drafts() if e['stage'] == 'checkin')
+        self.assertEqual(json.loads(chk['invoice_ids']), [self.inv('777')['id']])
+        self.assertIn('I wanted to check in and ensure that you received the attached invoice', chk['body'])
+        self.assertIn('Invoice #777', chk['subject'])
+        R.send_email(chk['id'])
+        inv = self.inv('777')
+        self.assertTrue(inv['checkin_at'])
+        self.assertEqual(inv['followup_count'], 0)  # a check-in isn't a past-due follow-up
+        self.assertFalse(R.plan(inv, None, None, s)['due_now'])  # only once
+        self.assertIn('Waiting on their reply', R.waiting_on(inv))
 
     def test_send_attaches_invoices_and_job_documents(self):
         R.plan_followups()
@@ -327,7 +393,7 @@ class FollowupTests(Base):
         self.assertEqual(self.graph.attachments(), ['Invoice-36006.pdf', 'As-built.pdf'])
         inv = self.inv('36006')
         self.assertEqual(inv['followup_count'], 1)
-        self.assertEqual(inv['last_stage'], 'final')
+        self.assertEqual(inv['last_stage'], 'first')
         conn = R._conn()
         e = dict(conn.execute("SELECT * FROM ar_emails WHERE id=?", (install['id'],)).fetchone())
         conn.close()
