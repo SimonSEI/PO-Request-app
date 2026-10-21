@@ -880,15 +880,7 @@ const MONEY = new Set(['vendor_quote_amount','vendor_quote_total','vendor_bill_a
 function renderCase(){
   const c = curCase, v = c.vendor || 'Wettech';
   const J = c.jobber || {};
-  const jl = ['request','quote','job','invoice'].filter(k => J[k]).map(k => `<a href="${esc(J[k].uri || '#')}" target="_blank" rel="noopener" class="chip b">${k} ${esc(J[k].number || '')}${J[k].status ? ' · ' + esc(J[k].status) : ''}</a>`).join(' ');
-  const steps = c.step_list.map(s => {
-    const done = !!s.at, na = !!s.na, cur = c.stage === s.key;
-    return `<div class="step ${done ? 'done' : ''} ${na ? 'na' : ''} ${cur ? 'cur' : ''}">
-      <div class="dot" title="${done ? 'Mark not done' : 'Mark done today'}" onclick="setStep('${s.key}', ${done ? 'null' : "'today'"})">${done ? '✓' : ''}</div>
-      <div class="lbl">${esc(s.label)}</div>
-      <div class="when">${done ? esc(s.at) + (s.by ? ' · ' + esc(s.by) : '') : (na ? 'not needed' : (s.due ? 'visit ' + esc(s.due) : ''))}</div>
-      <select class="s" onchange="stepMenu('${s.key}', this)" style="padding:2px 4px;font-size:11px"><option value="">⋯</option><option value="date">Done on a date…</option><option value="${na ? 'needed' : 'na'}">${na ? 'Needed after all' : 'Not needed'}</option>${done ? '<option value="undo">Not done</option>' : ''}</select>
-    </div>`; }).join('');
+  const jl = ['request','job'].filter(k => J[k]).map(k => `<a href="${esc(J[k].uri || '#')}" target="_blank" rel="noopener" class="chip b">Jobber ${k} #${esc(J[k].number || '')} ↗</a>`).join(' ');
   const docs = (c.docs || []).map(d => `<div class="d">${kindChip(d.kind)} <b>${esc(d.file_name)}</b>
       <span class="note">${d.doc_number ? '#' + esc(d.doc_number) + ' · ' : ''}${d.total != null ? money(d.total) : ''} ${esc(d.doc_date)}</span>
       <span style="flex:1"></span>
@@ -906,9 +898,8 @@ function renderCase(){
       ${(d.kind === 'quote' || d.kind === 'bill') ? `<button class="btn s" title="Read the file again with today's reader" onclick="readAgain(${d.id})">↻ Read again</button>` : ''}
       <button class="btn s" onclick="openDoc(${d.id})">Details</button></div>`).join('') || '<div class="note">No documents yet.</div>';
   const issues = (c.issues || []).map(i => `<div class="issue ${i.resolved_at ? 'done' : ''}"><div>${esc(i.message)}${i.resolved_at ? `<div class="note">Resolved by ${esc(i.resolved_by)}: ${esc(i.resolution)}</div>` : ''}</div>${i.resolved_at ? '' : `${i.kind === 'no_quote' ? `<button class="btn s p" onclick="billAnyway(${i.id})">Bill it +30%</button> ` : ''}<button class="btn s" onclick="resolveIssue(${i.id})">Resolve…</button>`}</div>`).join('');
-  const f = (k, label, type, w) => `<label class="${w ? 'w' : ''}">${label}${type === 'area' ? `<textarea data-f="${k}">${esc(c[k])}</textarea>` : `<input type="${type || 'text'}" data-f="${k}" value="${esc(MONEY.has(k) || k.endsWith('_amount') ? (c[k] ?? '') : c[k])}">`}</label>`;
   document.getElementById('drawer').innerHTML = `
-  <div class="hd"><div><h2>${esc(c.title || c.client_name)} <button class="btn s" title="Rename this item" onclick="editTitle()">✎</button></h2><div class="note">${catChip(c.category)} ${stageChip(c)} ${c.po_number ? 'PO ' + esc(c.po_number) : ''} · opened ${esc(c.opened_on)}</div></div>
+  <div class="hd"><div><h2>${esc(c.title || c.client_name)} <button class="btn s" title="Rename this item" onclick="editTitle()">✎</button></h2><div class="note">${catChip(c.category)} <a href="#" title="Set the PO #" onclick="event.preventDefault();editPo()">${c.po_number ? 'PO ' + esc(c.po_number) : '+ PO #'}</a> · opened ${esc(c.opened_on)} ${jl}</div></div>
     <div style="display:flex;gap:6px;align-items:flex-start"><button class="btn" onclick="closeDrawer()">✕</button></div></div>
   <div class="bd">
     ${c.vendor_pay.state === 'due' ? `<div class="sec"><div class="issue">💸 Our client has paid the Jobber invoice - ${esc(v)}'s bill needs to be paid.<button class="btn s p" onclick="markVendorPaid(${c.id})">Mark ${esc(v)} paid</button></div></div>` : ''}
@@ -919,8 +910,8 @@ function renderCase(){
       <button class="btn ${['assessment','vendor_quote','scheduled','vendor_bill'].includes(c.stage) ? 'p' : ''}" onclick="vendorEmail(${c.id})">✉️ ${esc(({assessment: 'Ask ' + v + ' to assess', vendor_quote: 'Ask ' + v + ' for the quote', scheduled: 'Ask ' + v + ' to schedule', vendor_bill: 'Ask ' + v + ' for the invoice'})[c.stage] || 'Email ' + v)}</button>
       ${c.chase ? `<button class="btn ${c.chase.state === 'follow_up' ? 'p' : ''}" onclick="logFollow(${c.id})">📞 Log follow-up</button>` : ''}
       ${c.chase && c.chase.parts_wait && !c.chase.last_at ? `<button class="btn" onclick="quoteSent(${c.id})">📤 Approved quote sent to ${esc(c.chase.who || c.vendor || 'the vendor')}</button>` : ''}
-      ${c.stage === 'client_quote' ? `<button class="btn" onclick="linkQuote(${c.id})">🔗 Quote's already in Jobber? Link it</button>` : ''}
       ${c.stage === 'vendor_quote' && !((c.steps || {}).assessment && !c.steps.assessment.na) ? `<button class="btn" onclick="needsVisit()">🔍 ${esc(v)} needs to visit first</button>` : ''}
+      <select class="btn" onchange="linkMenu(${c.id}, this)" title="Tie a Jobber quote, invoice or job to this item"><option value="">🔗 Link Jobber…</option><option value="quote">${J.quote ? 'A different Jobber quote' : 'A Jobber quote'}</option><option value="invoice">${J.invoice ? 'A different Jobber invoice' : 'A Jobber invoice'}</option><option value="job">${J.job ? 'A different Jobber job' : 'A Jobber job (service call)'}</option></select>
       <button class="btn" onclick="uploadForCase()">⬆ Add document</button>
       <button class="btn" onclick="addNote()">✎ Add note</button>
       ${c.status === 'open' ? `<button class="btn p" onclick="caseDone(${c.id})">✓ Mark done</button><button class="btn danger" onclick="caseRemove(${c.id})">✕ Remove</button>` : `<button class="btn" onclick="caseReopen(${c.id})">↺ Reopen</button>`}
@@ -928,19 +919,6 @@ function renderCase(){
     <div class="sec"><h4>Documents</h4><div class="docs">${docs}</div></div>
     ${statusSec(c)}
     <details class="sec fold"><summary><h4>History</h4> <span class="note">everything that has happened, oldest first</span></summary>${journeyHtml(c, 'history')}</details>
-    <details class="sec fold"><summary><h4>Edit steps</h4> <span class="note">tick or untick a step, or move the job along</span></summary><div style="margin:8px 0"><select class="s" onchange="moveCase(this)" title="Out of step? Bring the job up to where it really is - the steps before are ticked done today." style="padding:2px 4px;font-size:12px"><option value="">Move to…</option>${c.step_list.filter(s => !s.na).map(s => `<option value="${s.key}">${esc(s.label)}</option>`).join('')}</select></div><div class="steps">${steps}</div></details>
-    <details class="sec fold"><summary><h4>Edit details</h4> <span class="note">names, numbers, amounts, notes, Jobber links</span></summary><div class="fields" style="margin-top:8px">
-      ${f('title','Title','text',1)}
-      <label>Kind of work<select data-f="category">${CATS.map(x => `<option ${x === c.category ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
-      ${f('po_number','PO #')}${f('client_name','Client')}${f('site','Pump / location')}${f('vendor','Vendor')}${f('approved_by','Approved by')}
-      ${f('scheduled_for','Scheduled for','date')}${f('wo_number','Work order # (W/O)')}
-      ${f('vendor_quote_number','Vendor quote #')}${f('vendor_quote_amount','Vendor quote $ (before tax)','number')}
-      ${f('vendor_bill_number','Vendor bill #')}${f('vendor_bill_amount','Vendor bill $ (before tax)','number')}
-      ${f('sei_invoice_number','Our (Jobber) invoice #')}${f('amount','Our invoice $','number')}
-      ${f('jobber_request_made','Jobber request made')}${f('opened_on','Opened','date')}
-      ${f('description','Description of work','area',1)}${f('notes','Notes','area',1)}
-      <label class="w">Jobber ${jl || '<span class="note">nothing linked - Track it from the Jobber tab</span>'} <a href="#" onclick="event.preventDefault();linkQuote(${c.id})">${J.quote ? 'Use a different Jobber quote…' : 'Link a Jobber quote…'}</a> · <a href="#" onclick="event.preventDefault();linkInvoice(${c.id})">${J.invoice ? 'Use a different Jobber invoice…' : 'Link a Jobber invoice…'}</a> · <a href="#" onclick="event.preventDefault();linkJob(${c.id})">${J.job ? 'Use a different Jobber job…' : 'Link a Jobber job (service call)…'}</a></label>
-    </div><div style="margin-top:10px"><button class="btn p" onclick="saveCaseFields()">Save details</button></div></details>
   </div>`;
 }
 // The job's journey: where it is on its steps, and everything that has
@@ -956,8 +934,9 @@ function journeyIcon(action){ const a = (action || '').toLowerCase(); for (const
 function journeyHtml(c, part){
   const steps = c.step_list.filter(s => !s.na);
   const curIdx = steps.findIndex(s => s.key === c.stage);
-  const track = `<div class="track">${steps.map((s, i) => { const st = s.at ? 'done' : (i === curIdx ? 'cur' : '');
-    return `<div class="n ${st}" title="${esc(s.label)}${s.at ? ' - ' + esc(s.at) : ''}"><div class="b">${s.at ? '✓' : ''}</div>${esc(s.label)}${s.at ? `<div class="d">${esc(s.at.slice(5))}</div>` : (s.due ? `<div class="d">${esc(s.due.slice(5))}</div>` : '')}</div>`; }).join('')}</div>`;
+  const skipped = c.step_list.filter(s => s.na);
+  const track = (skipped.length ? `<div class="note" style="margin-bottom:4px">Not needed: ${skipped.map(s => `<a href="#" onclick="event.preventDefault();stepPop(event, '${s.key}')">${esc(s.label)}</a>`).join(' · ')}</div>` : '') + `<div class="track">${steps.map((s, i) => { const st = s.at ? 'done' : (i === curIdx ? 'cur' : '');
+    return `<div class="n ${st}" style="cursor:pointer" onclick="stepPop(event, '${s.key}')" title="${esc(s.label)}${s.at ? ' - ' + esc(s.at) : ''} - click to change"><div class="b">${s.at ? '✓' : ''}</div>${esc(s.label)}${s.at ? `<div class="d">${esc(s.at.slice(5))}</div>` : (s.due ? `<div class="d">${esc(s.due.slice(5))}</div>` : '')}</div>`; }).join('')}</div>`;
   const items = [];
   const KIND = {quote: ['Quote', '📝', 'b'], bill: ['Invoice', '🧾', 'a'], report: ['Service report', '📋', 'g']};
   (c.docs || []).filter(d => d.status !== 'dismissed').forEach(d => { const [name, ic, cls] = KIND[d.kind] || ['Document', '📄', ''];
@@ -1344,16 +1323,31 @@ async function refileTo(id, caseId){
   closeModal(); toast('Moved' + (j.case_id ? ' - opening that job' : ''));
   if (j.case_id) openCase(j.case_id); else loadToday();
 }
+// A step on the track, clicked: done today, done on a date, not needed, or not done.
+function stepPop(ev, k){
+  ev.stopPropagation();
+  document.querySelectorAll('.stepPop').forEach(x => x.remove());
+  const s = curCase.step_list.find(x => x.key === k) || {};
+  const d = document.createElement('div');
+  d.className = 'stepPop';
+  d.style.cssText = `position:fixed;z-index:99;left:${Math.min(ev.clientX, innerWidth - 220)}px;top:${ev.clientY + 8}px;background:var(--card, #fff);border:1px solid var(--border);border-radius:10px;padding:6px;box-shadow:0 6px 24px rgba(0,0,0,.18);display:flex;flex-direction:column;gap:4px;min-width:200px`;
+  const opts = [];
+  if (!s.at) opts.push(['✓ Done today', () => setStep(k, 'today')]);
+  opts.push(['Done on a date…', () => stepMenu(k, {value: 'date'})]);
+  if (s.at) opts.push(['Not done', () => setStep(k, null)]);
+  opts.push([s.na ? 'Needed after all' : 'Not needed', () => setStep(k, s.na ? null : 'na')]);
+  d.innerHTML = `<div class="note" style="padding:2px 6px"><b>${esc(s.label || k)}</b>${s.at ? ' · done ' + esc(s.at) : ''}</div>`;
+  opts.forEach(([label, fn]) => { const b = document.createElement('button'); b.className = 'btn s'; b.style.textAlign = 'left'; b.textContent = label; b.onclick = () => { d.remove(); fn(); }; d.appendChild(b); });
+  document.body.appendChild(d);
+  setTimeout(() => document.addEventListener('click', function off(e){ if (!d.contains(e.target)) { d.remove(); document.removeEventListener('click', off); } }), 0);
+}
+function linkMenu(id, sel){ const v = sel.value; sel.value = ''; if (v === 'quote') linkQuote(id); else if (v === 'invoice') linkInvoice(id); else if (v === 'job') linkJob(id); }
+function editPo(){ const v = prompt('PO # for this item:', curCase.po_number || ''); if (v != null && v.trim() !== (curCase.po_number || '')) patchCase({po_number: v.trim()}); }
 function setStep(k, v){ patchCase({steps: {[k]: v === 'today' ? new Date().toISOString().slice(0,10) : v}}); }
 function stepMenu(k, sel){
   const v = sel.value; sel.value = '';
   if (v === 'na') setStep(k, 'na'); else if (v === 'needed' || v === 'undo') setStep(k, null);
   else if (v === 'date') { const d = prompt('Date it was done (YYYY-MM-DD):', new Date().toISOString().slice(0,10)); if (d) setStep(k, d); }
-}
-function saveCaseFields(){
-  const data = {};
-  document.querySelectorAll('#drawer [data-f]').forEach(el => data[el.dataset.f] = el.value);
-  patchCase(data).then(j => { if (j.success) { toast('Saved'); closeDrawer(); } });
 }
 // Status of an approved job: parts ordered (and when they're due), client
 // notified, scheduled, work done… newest on top, every update in the log.
@@ -1399,7 +1393,8 @@ function glanceHtml(c){
     ${c.chase ? `<div class="note" style="margin-bottom:8px">${chaseLine(c).replace(/^<br>/, '')}</div>` : ''}
     <div class="money">${quoteCard}${billCard}${card('Our invoice', ourInv, invSub)}${`<div class="m"><div class="k">${esc(v)} paid?</div>${vendorPayHtml(c)}</div>`}</div>
     ${cmpText ? `<div class="cmp ${esc(cmp.state)}">${cmpText}</div>` : ''}
-    <div style="margin-top:10px">${journeyHtml(c, 'track')}</div></div>`;
+    <div style="margin-top:10px">${journeyHtml(c, 'track')}</div>
+    <div class="note" style="margin-top:4px">Click a step to tick it, untick it or mark it not needed · <select class="s" onchange="moveCase(this)" title="Out of step? Bring the job up to where it really is - the steps before are ticked done today." style="padding:2px 4px;font-size:12px"><option value="">Move to…</option>${c.step_list.filter(s => !s.na).map(s => `<option value="${s.key}">${esc(s.label)}</option>`).join('')}</select></div></div>`;
 }
 // The related vendor invoice, from a job: the Vendor invoices tab, searched for its site.
 function findVendorInvoice(name){
