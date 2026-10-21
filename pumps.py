@@ -255,6 +255,27 @@ def _quote_needed_in(texts):
     return ''
 
 
+def sweep_quote_needed(days=60, actor='Pumps'):
+    """Reports and bills of the last `days` days that say a quote is needed but never got their
+    "quote needed" item (Wild Blue PS1, Oct 2026 - and ones filed before the check existed)."""
+    since = (_today() - timedelta(days=days)).isoformat()
+    conn = _conn()
+    made = []
+    try:
+        for r in conn.execute("SELECT * FROM pump_docs d WHERE kind IN ('report', 'bill') AND status != 'dismissed' "
+                              "AND COALESCE(created_at, '') >= ? AND NOT EXISTS "
+                              "(SELECT 1 FROM pump_events e WHERE e.doc_id = d.id AND e.action='quote needed')",
+                              (since,)).fetchall():
+            doc = _doc_dict(r)
+            if quote_needed_note(doc):
+                new = _quote_needed_item(conn, doc, doc['case_id'], actor)
+                made.append(new or doc['id'])
+        conn.commit()
+    finally:
+        conn.close()
+    return made
+
+
 def quote_needed_note(doc):
     """The line of a vendor bill - or the comments of a pump report - that
     says a quote is needed, or ''."""
@@ -287,9 +308,18 @@ def _quote_needed_item(conn, doc, case_id, actor):
     if not note or conn.execute("SELECT 1 FROM pump_events WHERE doc_id=? AND action='quote needed'",
                                 (doc['id'],)).fetchone():
         return None
-    if beatrice_site(doc.get('client_name'), doc.get('site')):
-        return None   # Wettech quotes those to Beatriz - nothing to track
-    case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone())
+    where = beatrice_site(doc.get('client_name'), doc.get('site'))
+    if where:
+        # Wettech quotes those to Beatriz - nothing to track, but the office is told a quote is
+        # coming, to send on when it does (Wild Blue PS1's lightning damage, Oct 2026).
+        add_todo(conn, f"beatriz-quote:{doc['id']}", f"{where}: {doc.get('vendor') or 'Wettech'} quote to follow - "
+                                                     f"send it to {BEATRICE} when it comes",
+                 f"{note} (from the {'pump report' if doc.get('kind') == 'report' else 'bill'}"
+                 f"{' of ' + doc['doc_date'] if doc.get('doc_date') else ''})", {'case_id': case_id, 'doc_id': doc['id']})
+        _event(conn, actor, 'quote needed', f"{note} - goes to {BEATRICE}", case_id=case_id, doc_id=doc['id'])
+        return None
+    row = conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone() if case_id else None
+    case = dict(row) if row else {}
     client = doc.get('client_name') or case.get('client_name') or ''
     vendor = doc.get('vendor') or case.get('vendor') or ''
     num = f" #{doc['doc_number']}" if doc.get('doc_number') else ''
@@ -4099,6 +4129,10 @@ def _sync_jobber(full=False, actor='system'):
                 jobs_to_close()
             except Exception as e:
                 status['errors'].append(f'Jobs to close: {e}')
+            try:
+                sweep_quote_needed()
+            except Exception as e:
+                status['errors'].append(f'Quotes needed: {e}')
             status['errors'] += refresh_client_contacts(conn)
             conn.commit()
             try:
