@@ -84,6 +84,16 @@ DEFAULT_SETTINGS = {
     'promise_grace_days': 7,        # after a promised date passes, wait this long before following up
     'reported_paid_wait_days': 14,  # "we paid": wait this long for it to show up before following up again
     'min_balance': 1.0,
+    # The office's own wording (Oct 2026). "Good morning,"/"Good afternoon," is added by the time it is sent, the
+    # invoice list and signature after; "invoice is" reads "invoices are" when an email covers several.
+    'tpl_first': 'This is a friendly reminder that the attached invoice is past due. Please confirm when we may receive '
+                 'payment for this or let us know if there are any issues that we can help with. Thank you!',
+    'tpl_second': 'This is another friendly reminder that the attached invoice is past due. Please confirm when we may '
+                  'receive payment for this or let us know if there are any issues that we can help with. Thank you!',
+    'tpl_checkin': 'I wanted to check in and ensure that you received the attached invoice. If so, could you please let '
+                   'us know when we may receive payment for it. Thank you so much for the update!',
+    'checkin_min_amount': 10000,    # invoices this large get one check-in before they are due
+    'checkin_after_days': 7,        # ... this many days after the invoice date
     'retainage_range': '2-12',      # an install invoice with this share (%) still open is retainage
     'retainage_every_days': 30,     # once the job is complete
     'install_words': 'pay app, install, installation, proposal, retainage, retention',
@@ -279,7 +289,8 @@ def init_db():
     # Added for the A/R Aging Summary upload (one row per customer, with the office's notes).
     for table, cols in (
             ('ar_invoices', (('source', "TEXT DEFAULT 'qb'"), ('snooze_reason', "TEXT DEFAULT ''"),
-                             ('jobber_job', "TEXT DEFAULT '{}'"))),
+                             ('jobber_job', "TEXT DEFAULT '{}'"), ('checkin_at', 'TEXT'),
+                             ('eta_date', "TEXT DEFAULT ''"), ('eta_by', "TEXT DEFAULT ''"), ('eta_at', 'TEXT'))),
             ('ar_jobs', (('retainage_hold', 'INTEGER DEFAULT 0'), ('sheet_note', "TEXT DEFAULT ''"))),
             ('ar_customers', (('qb_current', 'REAL'), ('qb_1_30', 'REAL'), ('qb_31_60', 'REAL'), ('qb_61_90', 'REAL'),
                               ('qb_91_plus', 'REAL'), ('qb_total', 'REAL'), ('qb_as_of', "TEXT DEFAULT ''"),
@@ -1553,6 +1564,18 @@ def plan(inv, job, cust, s, today=None):
             first = int(s['stages'][0]['from_days'])
             out['reason'] = 'Not past due yet'
             out['next'] = (due + timedelta(days=first)).isoformat() if due else ''
+            # A large invoice gets one check-in before it is due ("did you receive it?").
+            big = float(s.get('checkin_min_amount') or 0)
+            if big > 0 and (inv['open_balance'] or 0) >= big and not inv.get('checkin_at') and not inv.get('last_followup_at'):
+                issued = _d(inv.get('txn_date'))
+                start = issued + timedelta(days=int(s.get('checkin_after_days') or 7)) if issued else today
+                snooze = _d(inv.get('snooze_until'))
+                if today >= start and not (snooze and today < snooze):
+                    out.update(due_now=True, stage='checkin', stage_name='Large invoice check-in', next=today.isoformat(),
+                               reason=f"Over {_money_text(big)}: a check-in before it is due")
+                else:
+                    out.update(reason=f"Not past due yet; check-in {_fmt_date(max(start, today))}",
+                               next=max(start, today).isoformat())
             return out
         every = int(st.get('every_days') or 7)
     snooze = _d(inv.get('snooze_until'))
@@ -1580,7 +1603,8 @@ def plan(inv, job, cust, s, today=None):
 
 def waiting_on(inv):
     """Who the invoice is waiting on, from the last email each way."""
-    out, back = inv.get('last_followup_at') or '', inv.get('last_reply_at') or ''
+    out = max(inv.get('last_followup_at') or '', inv.get('checkin_at') or '')
+    back = inv.get('last_reply_at') or ''
     if inv.get('status') == 'paid':
         return ''
     if inv.get('status') == 'needs_person' and back and back >= out:
@@ -1590,6 +1614,59 @@ def waiting_on(inv):
     if back:
         return f"They replied {_fmt_date(back)}"
     return 'Not contacted yet'
+
+
+def expected_in(inv, today=None):
+    """(date, source) the money is expected in hand: the office's ETA, else the date the customer promised,
+    else the due date while it isn't due yet; (None, 'none') when nobody knows."""
+    today = today or _today()
+    if inv.get('status') == 'paid':
+        return None, 'paid'
+    eta = _d(inv.get('eta_date'))
+    if eta:
+        return eta, 'eta'
+    pd = _d(inv.get('promised_date'))
+    if pd and inv.get('status') in ('promised', 'reported_paid', 'open'):
+        return pd, 'promised'
+    due = _due(inv)
+    if due and due >= today and not inv.get('retainage'):
+        return due, 'due'
+    return None, 'none'
+
+
+def cash_forecast(invs, weeks=13, today=None):
+    """Money expected in hand each week (Monday to Sunday) from open invoices, plus what's late or unknown."""
+    today = today or _today()
+    start = today - timedelta(days=today.weekday())
+    rows = [{'start': (start + timedelta(weeks=w)).isoformat(), 'end': (start + timedelta(weeks=w, days=6)).isoformat(),
+             'total': 0.0, 'count': 0, 'by_source': {'eta': 0.0, 'promised': 0.0, 'due': 0.0}, 'ids': []}
+            for w in range(weeks)]
+    late = {'total': 0.0, 'count': 0, 'ids': []}
+    unknown = {'total': 0.0, 'count': 0, 'ids': [], 'retainage': 0.0}
+    later = {'total': 0.0, 'count': 0, 'ids': []}
+    for i in invs:
+        if i.get('status') == 'paid' or (i.get('open_balance') or 0) <= 0.004:
+            continue
+        amt = i['open_balance'] or 0
+        when, src = expected_in(i, today)
+        if not when:
+            bucket = unknown
+            if i.get('retainage'):
+                unknown['retainage'] += amt
+        elif when < start or (when < today and src == 'eta'):
+            bucket = late  # the expected date has passed and it's still open
+        else:
+            n = (when - start).days // 7
+            if n >= weeks:
+                bucket = later
+            else:
+                bucket = rows[n]
+                bucket['by_source'][src] = round(bucket['by_source'][src] + amt, 2)
+        bucket['total'] = round(bucket['total'] + amt, 2)
+        bucket['count'] += 1
+        bucket['ids'].append(i['id'])
+    unknown['retainage'] = round(unknown['retainage'], 2)
+    return {'weeks': rows, 'late': late, 'unknown': unknown, 'later': later}
 
 
 def lien_info(job, invoices, s, today=None):
@@ -2056,9 +2133,47 @@ def _inv_line(inv, today):
     return line
 
 
+def _time_greeting(now=None):
+    return 'Good morning,' if (now or _now()).hour < 12 else 'Good afternoon,'
+
+
+def _plural(text, n):
+    """The office's wording, for an email that covers several invoices."""
+    if n <= 1:
+        return text
+    text = re.sub(r'\binvoice is\b', 'invoices are', text)
+    text = re.sub(r'\binvoice\b', 'invoices', text)
+    text = re.sub(r'\bpayment for this\b', 'payment for these', text)
+    return re.sub(r'\bpayment for it\b', 'payment for them', text)
+
+
 def compose(group_invoices, stage_key, cust, job, s, today=None, other_open=None):
     """(subject, body) for one follow-up email."""
     today = today or _today()
+    if stage_key in ('first', 'second', 'checkin'):
+        n = len(group_invoices)
+        nums = ', '.join(f"#{i['number']}" for i in group_invoices[:6]) + (' and more' if n > 6 else '')
+        word = 'invoices' if n > 1 else 'invoice'
+        subject = {'first': f"Past due {word} {nums} - Stahlman-England Irrigation",
+                   'second': f"Reminder: past due {word} {nums} - Stahlman-England Irrigation",
+                   'checkin': f"{word.capitalize()} {nums} - Stahlman-England Irrigation"}[stage_key]
+        text = s.get('tpl_' + stage_key) or DEFAULT_SETTINGS['tpl_' + stage_key]
+        lines = [_time_greeting(), '', _plural(text.strip(), n), '']
+        for i in group_invoices:
+            lines.append('  ' + _inv_line(i, today))
+        if n > 1:
+            lines.append(f"  Total: {_money_text(sum(i['open_balance'] or 0 for i in group_invoices))}")
+        promised = [i for i in group_invoices if i.get('promised_on')]
+        if promised:
+            p = promised[0]
+            when = f" for {_fmt_date(p['promised_date'])}" if p.get('promised_date') else ''
+            lines += ['', f"On {_fmt_date(p['promised_on'])} you let us know payment{when} was on the way, but we "
+                          f"haven't received it yet."]
+        if other_open:
+            held = sum(i['open_balance'] or 0 for i in other_open)
+            lines += ['', f"For your records, retainage of {_money_text(held)} is also held on this job until completion."]
+        lines += ['', s.get('signature') or 'Stahlman-England Irrigation']
+        return subject[:250], '\n'.join(lines)
     total = sum(i['open_balance'] or 0 for i in group_invoices)
     nums = ', '.join(f"#{i['number']}" for i in group_invoices[:6]) + (' and more' if len(group_invoices) > 6 else '')
     where = f" - {job['name']}" if job and job.get('name') and job.get('kind') == 'install' else ''
@@ -2220,9 +2335,15 @@ def plan_followups(force_invoice_id=None):
         job = jobs.get(first['job_key']) if gk.startswith('job:') else None
         cust = custs.get(first['customer_key'])
         regular = [i for i in members if not i['retainage']]
-        if regular:
-            group_invs = regular
-            stage = max((i['_stage'] for i in regular), key=lambda k: _stage_rank(k, s))
+        overdue = [i for i in regular if i['_stage'] != 'checkin']
+        if overdue:
+            # Past due: the 1st and 2nd follow-ups use the office's wording, later ones get firmer with age.
+            group_invs = overdue
+            age = max((i['_stage'] for i in overdue), key=lambda k: _stage_rank(k, s))
+            sent = max(int(i.get('followup_count') or 0) for i in overdue)
+            stage = 'first' if sent == 0 else ('second' if sent == 1 or age not in ('very_past_due', 'final') else age)
+        elif regular:
+            group_invs, stage = regular, 'checkin'
         else:
             group_invs, stage = members, 'retainage'
         held = []
@@ -2321,7 +2442,8 @@ def send_email(email_id, by='', approved_by=''):
         else:
             kind = 'install' if e['job_key'] else (invs[0]['kind'] if invs else 'service')
             atts, dropped = attachments_for(invs, e['job_key'], e['customer_key'], kind, s)
-        mid, conv = _send_mail(s['from_email'].strip(), to, cc, e['subject'], e['body'], atts)
+        body = re.sub(r'^Good (morning|afternoon),', _time_greeting(), e['body'], count=1)
+        mid, conv = _send_mail(s['from_email'].strip(), to, cc, e['subject'], body, atts)
     except Exception as ex:
         conn = _conn()
         conn.execute("UPDATE ar_emails SET error=? WHERE id=?", (str(ex)[:500], email_id))
@@ -2340,9 +2462,14 @@ def send_email(email_id, by='', approved_by=''):
             _note(conn, f"Notice of Nonpayment emailed to {', '.join(to)}.", inv['id'], job_key=e['job_key'],
                   customer_key=inv['customer_key'], kind='email')
             continue
-        conn.execute("UPDATE ar_invoices SET last_followup_at=?, last_stage=?, followup_count=followup_count+1 WHERE id=?",
-                     (now, e['stage'], inv['id']))
-        _note(conn, f"Follow-up ({e['stage'].replace('_', ' ')}) emailed to {', '.join(to)} with "
+        if e['stage'] == 'checkin':
+            conn.execute("UPDATE ar_invoices SET checkin_at=? WHERE id=?", (now, inv['id']))
+        else:
+            conn.execute("UPDATE ar_invoices SET last_followup_at=?, last_stage=?, followup_count=followup_count+1 "
+                         "WHERE id=?", (now, e['stage'], inv['id']))
+        label = {'first': '1st follow-up', 'second': '2nd follow-up', 'checkin': 'check-in before it is due'}.get(
+            e['stage'], e['stage'].replace('_', ' '))
+        _note(conn, f"Follow-up ({label}) emailed to {', '.join(to)} with "
                     f"{len(atts)} attachment(s).", inv['id'], customer_key=inv['customer_key'], kind='email',
               by=by or 'office')
     if e['kind'] == 'nonp' and e['job_key']:
@@ -2700,8 +2827,10 @@ def api_data():
         job, cust = jobs.get(i['job_key']), custs.get(i['customer_key'])
         p = plan(i, job, cust, s, today)
         i.pop('jobber_lines', None)
+        when, src = expected_in(i, today)
         i.update(plan=p, job_name=(job or {}).get('name', ''), contacts=contacts_for(i, job, cust),
-                 customer_name=_nice_name((cust or {}).get('name') or i['customer']))
+                 customer_name=_nice_name((cust or {}).get('name') or i['customer']),
+                 expected=when.isoformat() if when else '', expected_source=src)
         out_inv.append(i)
     out_jobs = []
     for key, j in jobs.items():
@@ -2747,6 +2876,7 @@ def api_data():
     conn.close()
     return jsonify({'success': True, 'invoices': out_inv, 'jobs': out_jobs, 'customers': out_cust, 'emails': emails,
                     'replies': replies, 'uploads': uploads, 'docs': docs, 'activity': activity, 'settings': s,
+                    'forecast': cash_forecast(out_inv, today=today),
                     'statuses': STATUSES, 'today': today.isoformat(),
                     'status': {'graph': graph_ready(), 'jobber': jobber_ready(), 'claude': claude_ready(),
                                'claude_error': _state('claude_error'),
@@ -2859,6 +2989,13 @@ def api_invoice_update():
                          (key, inv['customer_key'], name, 'install', _stamp()))
         fields['job_key'] = key
         notes.append(f"Moved to job {key or '(none)'}.")
+    if 'eta' in d:
+        eta = _d(d['eta']) if d['eta'] else None
+        if d['eta'] and not eta:
+            conn.close()
+            return jsonify({'success': False, 'error': 'ETA must be a date'}), 400
+        fields.update(eta_date=eta.isoformat() if eta else '', eta_by=who, eta_at=_stamp())
+        notes.append(f"Money expected in hand {_fmt_date(eta)} (ETA set by {who})." if eta else 'ETA cleared.')
     action = d.get('action')
     if action == 'pause':
         fields.update(status='paused')
@@ -2942,6 +3079,22 @@ def api_job():
     if (d.get('note') or '').strip():
         conn = _conn()
         _note(conn, d['note'].strip(), job_key=job['key'], kind='note', by=_who())
+        conn.commit()
+        conn.close()
+    if 'eta' in d:
+        eta = _d(d['eta']) if d['eta'] else None
+        if d['eta'] and not eta:
+            return jsonify({'success': False, 'error': 'ETA must be a date'}), 400
+        conn = _conn()
+        ids = [r[0] for r in conn.execute("SELECT id FROM ar_invoices WHERE job_key=? AND status != 'paid'"
+                                          + (" AND retainage=1" if d.get('eta_retainage_only') else ''), (job['key'],))]
+        for iid in ids:
+            conn.execute("UPDATE ar_invoices SET eta_date=?, eta_by=?, eta_at=? WHERE id=?",
+                         (eta.isoformat() if eta else '', _who(), _stamp(), iid))
+        _note(conn, (f"Money expected in hand {_fmt_date(eta)} for {len(ids)} invoice(s) on this job"
+                     + (' (the retainage)' if d.get('eta_retainage_only') else '') + f" (ETA set by {_who()})."
+                     if eta else f"ETA cleared on {len(ids)} invoice(s) on this job."), job_key=job['key'], kind='note',
+              by=_who())
         conn.commit()
         conn.close()
     if d.get('action') == 'nonp':
@@ -3062,7 +3215,7 @@ def api_settings():
         return _forbidden()
     d = request.get_json(silent=True) or {}
     s = settings()
-    for k in ('from_email', 'cc', 'signature', 'retainage_range', 'install_words', 'lien_kinds', 'company_name', 'nonp_notify',
+    for k in ('from_email', 'cc', 'signature', 'tpl_first', 'tpl_second', 'tpl_checkin', 'retainage_range', 'install_words', 'lien_kinds', 'company_name', 'nonp_notify',
               'company_address', 'company_phone', 'send_hours'):
         if k in d:
             s[k] = str(d[k]).strip()[:3000]
@@ -3070,14 +3223,14 @@ def api_settings():
         if k in d:
             s[k] = bool(d[k])
     for k in ('promise_grace_days', 'reported_paid_wait_days', 'retainage_every_days', 'lien_days', 'nonp_lead_days',
-              'nonp_min_days_late',
+              'nonp_min_days_late', 'checkin_after_days',
               'max_attach_mb'):
         if k in d:
             try:
                 s[k] = max(0, int(d[k]))
             except (TypeError, ValueError):
                 return jsonify({'success': False, 'error': f'{k} must be a whole number'}), 400
-    for k in ('min_balance',):
+    for k in ('min_balance', 'checkin_min_amount'):
         if k in d:
             try:
                 s[k] = max(0.0, float(d[k]))

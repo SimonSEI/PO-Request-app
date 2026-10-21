@@ -42,7 +42,13 @@ The Receivables tile in The Office App chases open invoices from the QuickBooks 
 
    Type, retainage and job can all be set by hand on the invoice.
 4. **Retainage.** Only install invoices carry retainage: pay apps, proposals, install work, QuickBooks sub-customer projects, and anything on a job with those. An install invoice paid all but a small share is retainage: 2-12% still open, so the usual 5% or 10% and anything near it (Settings). So is any invoice that says "retainage" or "retention". A short-paid service call is never retainage; it stays an ordinary past-due invoice. The Jobs tab totals it per job. Retainage isn't chased while the job is open. Once the job is complete (Jobber marks it complete, or you set it on the job) a *Retainage release* email goes out every 30 days.
-5. **Follow-ups.** Due follow-ups are grouped into one email per install job and one per customer for service calls. They are sent from **simon@stahlman-england.com** (Settings → *Send from*; any mailbox in the Microsoft 365 tenant works). The tone gets firmer the later the invoice is:
+5. **The office's wording.** These three emails use the office's own messages, editable on Settings:
+   - **1st follow-up:** "This is a friendly reminder that the attached invoice is past due…"
+   - **2nd follow-up:** "This is another friendly reminder…"
+   - **Check-in:** once, 7 days after the invoice date, on an invoice of **$10,000 or more** that isn't due yet: "I wanted to check in and ensure that you received the attached invoice…".
+
+   Each opens with "Good morning,"/"Good afternoon," by the time it is sent, with the invoices and signature underneath. After the 2nd follow-up, invoices 61+ days late get the firmer emails below.
+6. **Follow-ups.** Due follow-ups are grouped into one email per install job and one per customer for service calls. They are sent from **simon@stahlman-england.com** (Settings → *Send from*; any mailbox in the Microsoft 365 tenant works). The tone gets firmer the later the invoice is:
 
    | Stage | Starts (days past due) | Repeats every |
    |---|---|---|
@@ -77,6 +83,12 @@ The Receivables tile in The Office App chases open invoices from the QuickBooks 
 - **It does not record the lien.** Recording is done with the county.
 - **It does not mail the notice certified.** Florida service of these notices is by certified mail or delivery, and email alone doesn't count. The Lien deadlines list on Today keeps reminding until both are marked done.
 - **The notice's wording needs an attorney's check before it's relied on.**
+
+## Cash in: money expected each week
+
+- **Setting an ETA.** Each invoice's breakdown has a **Money expected** date (also next to *Add note*). A job's view can set one date for all its open invoices, or for its retainage only.
+- **Which date counts.** Each open invoice counts in the week its money is expected in hand: your ETA, else the date the customer promised (from a reply or your sheet note), else its due date while it isn't due yet.
+- **The Cash in tab** totals the next 13 weeks (Monday to Sunday), split by where the date came from. It also lists invoices whose expected date has passed while they're still open, and those with no expected date (including retainage). Click a week to see its invoices.
 
 ## Going autonomous
 
