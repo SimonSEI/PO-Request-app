@@ -1615,7 +1615,27 @@ async function draftInvoice(docId){
   drawLines(); findClients();
 }
 function jobMatchHtml(job){
-  return job ? `<div class="safe" id="jobMatch">Matches Jobber job <a href="${esc(job.uri)}" target="_blank" rel="noopener"><b>#${esc(job.number)} ${esc(job.title)}</b> ↗</a> (${esc((job.status || '').replace(/_/g, ' '))}, ${money(job.total)}) - the invoice goes on that job at its price${job.type === 'recurring' ? ", and the job's visit for the bill's month is marked complete" : ''}. <button class="btn s" onclick="dropJobMatch()">Not this job - bill + 30%</button></div>` : '';
+  return job ? `<div class="safe" id="jobMatch">Matches Jobber job <a href="${esc(job.uri)}" target="_blank" rel="noopener"><b>#${esc(job.number)} ${esc(job.title)}</b> ↗</a> (${esc((job.status || '').replace(/_/g, ' '))}, ${money(job.total)}) - the invoice goes on that job at its price${job.type === 'recurring' ? ", and the job's visit for the bill's month is marked complete" : ''}. <button class="btn s" onclick="dropJobMatch()">Not this job - bill + 30%</button> <button class="btn s" onclick="otherJobs()">Use a different job…</button><div id="otherJobs"></div></div>` : (inv.client_id ? `<div class="note"><button class="btn s" onclick="otherJobs()">Put it on one of the client's recurring jobs…</button><div id="otherJobs"></div></div>` : '');
+}
+// The client's other recurring jobs, to put the invoice on a different one (Caymas, Oct 2026: it took the $0
+// "Monthly Water Reading" job).
+async function otherJobs(){
+  const box = document.getElementById('otherJobs');
+  if (!inv.client_id) { toast('Pick the Jobber client first.', true); return; }
+  box.innerHTML = '<div class="note">Looking up the recurring jobs…</div>';
+  const j = await api('/jobber/recurring_jobs?client_id=' + encodeURIComponent(inv.client_id));
+  if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
+  box.innerHTML = (j.jobs || []).length ? `<select onchange="useJob(this.value)" style="margin-top:6px;max-width:100%"><option value="">Pick the job…</option>${j.jobs.map(x => `<option value="${esc(x.id)}" ${inv.job && inv.job.id === x.id ? 'selected' : ''}>#${esc(x.number)} ${esc(x.title)} - ${money(x.price)}${x.property_label ? ' · ' + esc(x.property_label) : ''}</option>`).join('')}</select>` : '<div class="note">This client has no live recurring jobs in Jobber.</div>';
+}
+async function useJob(jobId){
+  if (!jobId) return;
+  const j = await api('/docs/' + inv.doc.id + '/invoice_suggestion?client_id=' + encodeURIComponent(inv.client_id) + '&job_id=' + encodeURIComponent(jobId));
+  const s = j.success && j.suggestion;
+  if (!s || !s.job) { toast((j && j.error) || "That job has no priced lines to invoice from", true); return; }
+  inv.dropped = false; inv.job = s.job; inv.lines = s.line_items.map(x => Object.assign({}, x)); inv.bill_lines = s.bill_lines || inv.bill_lines;
+  const subj = document.getElementById('invSubject'); if (subj && s.subject) subj.value = s.subject;
+  document.getElementById('jobMatchBox').innerHTML = jobMatchHtml(inv.job);
+  drawLines(); toast('Now on job #' + s.job.number);
 }
 // The client is picked: a maintenance bill takes that client's recurring job price (Rosewood, Oct 2026).
 async function invForClient(id){

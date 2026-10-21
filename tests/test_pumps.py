@@ -3014,6 +3014,31 @@ class PumpsTest(unittest.TestCase):
         self.assertTrue(r['success'], r)
         self.assertEqual(self.case(cid)['title'], 'New input line reactor and surge arrestor')
 
+    def test_recurring_job_with_a_price_and_one_picked(self):
+        """Caymas (Oct 2026): the invoice took "#10912 Monthly Water Reading" at $0 - a priced recurring job is taken over a
+        $0 one, and the office can put it on a different recurring job of the client's."""
+        jobs = {'J0': {'id': 'J0', 'number': '10912', 'title': 'Monthly Water Reading', 'type': 'recurring', 'status': 'upcoming',
+                       'uri': '', 'total': 0, 'instructions': '', 'property_label': '',
+                       'line_items': [{'name': 'PUMP SERVICE', 'description': 'Water reading', 'quantity': 1, 'unit_price': 0, 'taxable': False}]},
+                'J1': {'id': 'J1', 'number': '9654', 'title': 'Quarterly Pump Maintenance', 'type': 'recurring', 'status': 'upcoming',
+                       'uri': '', 'total': 3706.25, 'instructions': '', 'property_label': '',
+                       'line_items': [{'name': 'PUMP SERVICE', 'description': 'Quarterly pump service', 'quantity': 1,
+                                       'unit_price': 3706.25, 'taxable': False}]}}
+        saved = (P.recurring_jobs, P.job_detail, P.jobber_status)
+        P.recurring_jobs = lambda cid: [{'id': 'J0', 'number': 10912, 'title': 'Monthly Water Reading', 'status': 'upcoming',
+                                         'type': 'recurring'},
+                                        {'id': 'J1', 'number': 9654, 'title': 'Quarterly Pump Maintenance', 'status': 'upcoming',
+                                         'type': 'recurring'}]
+        P.job_detail = lambda jid: dict(jobs[jid])
+        P.jobber_status = lambda: {'connected': True}
+        try:
+            self.assertEqual(P.recurring_job_price({}, {}, 'CC')['number'], '9654', 'the priced one')
+            self.assertEqual(P.recurring_job_price({}, {}, 'CC', 'J0')['number'], '10912', 'the one picked')
+            r = self.c.get('/pumps/api/jobber/recurring_jobs?client_id=CC').get_json()
+            self.assertEqual([(j['number'], j['price']) for j in r['jobs']], [('10912', 0.0), ('9654', 3706.25)])
+        finally:
+            P.recurring_jobs, P.job_detail, P.jobber_status = saved
+
     def test_follow_up_postponed_to_tomorrow(self):
         """Oct 2026: a follow-up can be put off to the next working day - off the list until then."""
         j = self.c.post('/pumps/api/cases', json={'title': 'Fan', 'client_name': 'Snooze Lakes'}).get_json()
@@ -4535,7 +4560,7 @@ class PumpsTest(unittest.TestCase):
             total[0] = 1884.14
             st = (P.jobber_status, P._invoice_suggestion)
             P.jobber_status = lambda: {'connected': True}
-            P._invoice_suggestion = lambda doc, case=None, client_id=None: {'line_items': P.fetch_quote_lines('Q9160')['line_items'],
+            P._invoice_suggestion = lambda doc, case=None, client_id=None, job_id=None: {'line_items': P.fetch_quote_lines('Q9160')['line_items'],
                                                                             'from_quote': '9160'}
             try:
                 s2 = P.invoice_suggestion({}, {})

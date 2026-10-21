@@ -5797,10 +5797,10 @@ def whole_dollars(lines):
             if isinstance(li.get('unit_price'), (int, float)) else li for li in lines or []]
 
 
-def invoice_suggestion(doc, case=None, client_id=None):
+def invoice_suggestion(doc, case=None, client_id=None, job_id=None):
     """The invoice for a bill (see _invoice_suggestion), prices in whole
     dollars - except the county's, whose line shows its cost math in cents."""
-    sugg = _invoice_suggestion(doc, case, client_id)
+    sugg = _invoice_suggestion(doc, case, client_id, job_id)
     if not sugg.get('gov'):
         for k in ('line_items', 'bill_lines'):
             if sugg.get(k):
@@ -5808,7 +5808,7 @@ def invoice_suggestion(doc, case=None, client_id=None):
     return sugg
 
 
-def _invoice_suggestion(doc, case=None, client_id=None):
+def _invoice_suggestion(doc, case=None, client_id=None, job_id=None):
     """The invoice for a bill: when the bill matches the vendor's quote and
     the item has our client quote in Jobber, the client is invoiced what they
     were quoted (and approved). Otherwise the bill's lines plus any markup."""
@@ -5823,12 +5823,12 @@ def _invoice_suggestion(doc, case=None, client_id=None):
         if q and q['line_items']:
             sugg.update(line_items=q['line_items'], from_quote=q['number'] or True)
             return sugg
-    if jobber_status()['connected'] and (case.get('category') in ('maintenance', 'inspection') or
+    if jobber_status()['connected'] and (job_id or case.get('category') in ('maintenance', 'inspection') or
                                          maintenance_bill(doc) or maint_visit_bill(doc, case)):
         # A maintenance visit: the client pays their recurring job's price, not the bill plus markup.
         try:
             client_id = client_id or invoice_client(doc, case)
-            job = recurring_job_price(doc, case, client_id) if client_id else None
+            job = recurring_job_price(doc, case, client_id, job_id) if (client_id or job_id) else None
         except JobberError:
             job = None
         if job:
@@ -5987,11 +5987,20 @@ def maint_visit_bill(doc, case=None):
     return not _names_a_quote(words)
 
 
-def recurring_job_price(doc, case, client_id):
+def _job_priced(d):
+    return sum(float(li.get('unit_price') or 0) * float(li.get('quantity') or 1) for li in d.get('line_items') or []) > 0
+
+
+def recurring_job_price(doc, case, client_id, job_id=None):
     """The client's recurring maintenance job a maintenance bill is for, with
     its line items (the visit price): the item's own job when it is recurring,
     a remembered site's job, else the client's live recurring jobs - pump /
     maintenance ones first. None when it has no priced lines."""
+    if job_id:
+        # The office picked the job in the draft window (Caymas, Oct 2026).
+        d = job_detail(job_id)
+        return d if d.get('id') and d['line_items'] else None
+    case = case or {}
     j = json.loads(case.get('jobber') or '{}') if isinstance(case.get('jobber'), str) else (case.get('jobber') or {})
     ids = [(j.get('job') or {}).get('id'), (match_site_alias(doc, case) or {}).get('job_id')]
     live = [x for x in recurring_jobs(client_id) if x.get('status') != 'archived']
@@ -5999,15 +6008,18 @@ def recurring_job_price(doc, case, client_id):
                                   re.search(r'quarterly|monthly|maint', x.get('title') or '', re.I)),
                              -(int(x.get('number') or 0))))
     ids += [x['id'] for x in live]
-    seen = set()
+    seen, free = set(), None
     for jid in ids:
         if not jid or jid in seen:
             continue
         seen.add(jid)
         d = job_detail(jid)
         if d.get('type') == 'recurring' and d.get('status') != 'archived' and d['line_items']:
-            return d
-    return None
+            # A $0 job ("Monthly Water Reading", Caymas #10912) only when none has a price.
+            if _job_priced(d):
+                return d
+            free = free or d
+    return free
 
 
 def invoice_client(doc, case=None):
@@ -8357,7 +8369,22 @@ def h_doc_invoice_suggestion(actor, doc_id):
         case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (d['case_id'],)).fetchone()) if d['case_id'] else None
     finally:
         conn.close()
-    return {'suggestion': invoice_suggestion(d, case, request.args.get('client_id') or None)}
+    return {'suggestion': invoice_suggestion(d, case, request.args.get('client_id') or None,
+                                             request.args.get('job_id') or None)}
+
+
+@api('/jobber/recurring_jobs')
+def h_recurring_jobs(actor):
+    """?client_id= - the client's live recurring jobs with their price, to pick the one an invoice goes on."""
+    out = []
+    for x in recurring_jobs(request.args.get('client_id') or ''):
+        if x.get('status') == 'archived':
+            continue
+        d = job_detail(x['id'])
+        price = sum(float(li.get('unit_price') or 0) * float(li.get('quantity') or 1) for li in d['line_items'])
+        out.append({'id': x['id'], 'number': str(x.get('number') or ''), 'title': x.get('title') or '',
+                    'property_label': x.get('property_label') or '', 'price': round(price, 2), 'uri': d.get('uri') or ''})
+    return {'jobs': out}
 
 
 @api('/docs/<int:doc_id>')
