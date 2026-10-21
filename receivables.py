@@ -1549,6 +1549,14 @@ def plan(inv, job, cust, s, today=None):
     if (inv['open_balance'] or 0) < float(s.get('min_balance') or 0):
         out['reason'] = f"Balance under {_money_text(float(s.get('min_balance') or 0))}"
         return out
+    # The office has an ETA for the money: no follow-ups (or check-in) until a few days after it.
+    eta = _d(inv.get('eta_date'))
+    if eta:
+        resume = eta + timedelta(days=int(s.get('promise_grace_days') or 7))
+        if today < resume:
+            out['reason'] = f"Your ETA {_fmt_date(eta)}: no follow-ups until {_fmt_date(resume)}"
+            out['next'] = resume.isoformat()
+            return out
     last = _d(inv.get('last_followup_at'))
     if inv['retainage']:
         if (job and job.get('retainage_hold')) or (cust and cust.get('retainage_hold')):
@@ -3034,6 +3042,8 @@ def api_invoice_update():
     conn.close()
     if 'kind' in d or 'retainage' in d:
         classify_all()
+    if 'eta' in d:
+        _close_stale_drafts()
     if action == 'draft':
         made = plan_followups(force_invoice_id=inv['id'])
         return jsonify({'success': True, 'drafts': made})
@@ -3097,6 +3107,7 @@ def api_job():
               by=_who())
         conn.commit()
         conn.close()
+        _close_stale_drafts()
     if d.get('action') == 'nonp':
         ok, msg = prepare_nonp(job['key'], by=_who())
         if not ok:

@@ -87,6 +87,7 @@ The Receivables tile in The Office App chases open invoices from the QuickBooks 
 ## Cash in: money expected each week
 
 - **Setting an ETA.** Each invoice's breakdown has a **Money expected** date (also next to *Add note*). A job's view can set one date for all its open invoices, or for its retainage only.
+- **Follow-ups pause.** An invoice with an ETA gets no follow-ups (or check-in) until a few days after it (*After a promised date passes, wait*, 7 by default). Any draft waiting for it is dropped when the ETA is saved. If the money hasn't come by then, follow-ups start again.
 - **Which date counts.** Each open invoice counts in the week its money is expected in hand: your ETA, else the date the customer promised (from a reply or your sheet note), else its due date while it isn't due yet.
 - **The Cash in tab** totals the next 13 weeks (Monday to Sunday), split by where the date came from. It also lists invoices whose expected date has passed while they're still open, and those with no expected date (including retainage). Click a week to see its invoices.
 
