@@ -14202,6 +14202,17 @@ def account_history(conn, name):
                                                'case_id', 'has_branded', 'created_at')}
                         | {'signed_at': (d['jobber'] or {}).get('approved_at') or '',
                            'signed_sent_at': (d['jobber'] or {}).get('signed_sent_at') or ''})
+    # Every vendor invoice for it - on its jobs, or naming it (Oct 2026: the account page shows them all).
+    vendor_bills = []
+    case_info = {c['id']: c for c in jobs}
+    for r in conn.execute("SELECT * FROM pump_docs WHERE kind='bill' AND status != 'dismissed' "
+                          "ORDER BY COALESCE(doc_date, created_at) DESC, id DESC"):
+        if r['case_id'] in job_ids or about(' '.join(x for x in (r['client_name'], r['site']) if x)):
+            c = case_info.get(r['case_id']) or {}
+            vendor_bills.append({'id': r['id'], 'vendor': r['vendor'] or '', 'number': r['doc_number'] or '',
+                                 'date': r['doc_date'] or (r['created_at'] or '')[:10], 'total': r['total'],
+                                 'subtotal': r['subtotal'], 'case_id': r['case_id'], 'title': c.get('title') or '',
+                                 'our_invoice': c.get('sei_invoice_number') or '', 'paid_on': c.get('vendor_paid_on') or ''})
     # Where it is in Jobber: the client, and its recurring maintenance job(s).
     client, recurring = None, []
     for r in conn.execute("SELECT * FROM pump_jobber_items WHERE client_id != '' ORDER BY updated_at DESC"):
@@ -14227,7 +14238,9 @@ def account_history(conn, name):
         'name': a['name'],
         'account': {k: a.get(k) for k in ('pump', 'lake', 'scada', 'active')},
         'docs': docs,
-        'jobber': {'client': client, 'recurring': recurring[:4]},
+        'vendor_bills': vendor_bills,
+        'jobber': {'client': client, 'recurring': recurring[:4],
+                   'client_ids': [x for x in dict.fromkeys([(client or {}).get('id'), (a.get('lake') or {}).get('jobber_client_id')]) if x]},
         'todos': todos,
         'jobs': [{'id': c['id'], 'title': c['title'], 'client_name': c['client_name'], 'site': c['site'],
                   'vendor': c['vendor'], 'category': c['category'], 'stage': c['stage'], 'status': c['status'],
@@ -14236,6 +14249,55 @@ def account_history(conn, name):
         'notices': notices,
         'open_todos': sum(1 for t in todos if not t['done_at']),
     }
+
+
+def client_jobber_history(client_id):
+    """Everything we've done for a Jobber client, newest first: its invoices, jobs and requests."""
+    out = {}
+    specs = {'invoices': ['id', 'invoiceNumber', 'subject', 'invoiceStatus', 'issuedDate', 'createdAt', 'jobberWebUri',
+                          ('amounts', ['total'])],
+             'jobs': ['id', 'jobNumber', 'title', 'jobStatus', 'jobType', 'startAt', 'createdAt', 'total', 'jobberWebUri'],
+             'requests': ['id', 'title', 'requestStatus', 'createdAt', 'jobberWebUri']}
+    for conn_name, spec in specs.items():
+        def make(fields, conn_name=conn_name):
+            return f'query($id: EncodedId!) {{ client(id: $id) {{ id {conn_name}(first: 100) {{ nodes {{ {fields} }} }} }} }}'
+        try:
+            data, _ = _gql_tolerant(make, spec, {'id': client_id}, required=('id',))
+        except JobberError:
+            out[conn_name] = []
+            continue
+        nodes = (((data.get('client') or {}).get(conn_name)) or {}).get('nodes') or []
+        rows = []
+        for n in nodes:
+            if conn_name == 'invoices':
+                rows.append({'number': str(n.get('invoiceNumber') or ''), 'title': n.get('subject') or '',
+                             'status': (n.get('invoiceStatus') or '').lower(),
+                             'date': (n.get('issuedDate') or n.get('createdAt') or '')[:10],
+                             'total': _money((n.get('amounts') or {}).get('total')), 'uri': n.get('jobberWebUri') or ''})
+            elif conn_name == 'jobs':
+                rows.append({'number': str(n.get('jobNumber') or ''), 'title': n.get('title') or '',
+                             'status': (n.get('jobStatus') or '').lower(), 'type': (n.get('jobType') or '').lower(),
+                             'date': (n.get('startAt') or n.get('createdAt') or '')[:10], 'total': _money(n.get('total')),
+                             'uri': n.get('jobberWebUri') or ''})
+            else:
+                rows.append({'number': '', 'title': n.get('title') or '', 'status': (n.get('requestStatus') or '').lower(),
+                             'date': (n.get('createdAt') or '')[:10], 'total': None, 'uri': n.get('jobberWebUri') or ''})
+        out[conn_name] = sorted(rows, key=lambda x: x['date'], reverse=True)
+    return out
+
+
+@api('/accounts/jobber_history')
+def h_account_jobber_history(actor):
+    """?client_id=...&client_id=... - every invoice, job and request in Jobber for the account's client(s)."""
+    if not jobber_status()['connected']:
+        raise ValueError('Jobber is not connected')
+    out = {'invoices': [], 'jobs': [], 'requests': []}
+    for cid in request.args.getlist('client_id')[:3]:
+        for k, rows in client_jobber_history(cid).items():
+            out[k] += rows
+    for k in out:
+        out[k].sort(key=lambda x: x['date'], reverse=True)
+    return out
 
 
 @api('/accounts/history')

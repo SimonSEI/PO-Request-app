@@ -3066,6 +3066,34 @@ class PumpsTest(unittest.TestCase):
         P.sweep_quote_needed()
         self.assertEqual(len(self.c.get('/pumps/api/cases?status=open&q=Sweepside').get_json()['cases']), n, 'once')
 
+    def test_account_page_shows_its_jobber_history_and_vendor_invoices(self):
+        """Oct 2026: an account shows every invoice, job and service request in Jobber, and every vendor invoice."""
+        self.extracts['b-acct1.pdf'] = extraction('bill', '40051', client='Banyan Bay', subtotal=320)
+        b = self.upload('b-acct1.pdf')
+        h = self.c.get('/pumps/api/accounts/history?name=Banyan Bay').get_json()
+        self.assertIn('40051', [x['number'] for x in h['vendor_bills']])
+        def fake(q, v=None):
+            if 'invoices(' in q:
+                return {'client': {'id': 'C', 'invoices': {'nodes': [
+                    {'id': 'I1', 'invoiceNumber': 36001, 'subject': 'October Pump Maintenance', 'invoiceStatus': 'PAID',
+                     'issuedDate': '2026-10-02', 'createdAt': '2026-10-01', 'jobberWebUri': 'u', 'amounts': {'total': 450}},
+                    {'id': 'I2', 'invoiceNumber': 36500, 'subject': 'Repair', 'invoiceStatus': 'AWAITING_PAYMENT',
+                     'issuedDate': '2026-10-15', 'createdAt': '2026-10-15', 'jobberWebUri': 'u', 'amounts': {'total': 900}}]}}}
+            if 'jobs(' in q:
+                return {'client': {'id': 'C', 'jobs': {'nodes': [{'id': 'J', 'jobNumber': 14000, 'title': 'Quarterly 400',
+                        'jobStatus': 'ACTIVE', 'jobType': 'RECURRING', 'startAt': '2026-01-01', 'createdAt': '2026-01-01',
+                        'total': 400, 'jobberWebUri': 'u'}]}}}
+            return {'client': {'id': 'C', 'requests': {'nodes': [{'id': 'R', 'title': 'Pump not running',
+                    'requestStatus': 'NEW', 'createdAt': '2026-10-18T10:00:00Z', 'jobberWebUri': 'u'}]}}}
+        saved = (P.jobber_gql, P.jobber_status)
+        P.jobber_gql, P.jobber_status = fake, (lambda: {'connected': True})
+        try:
+            r = self.c.get('/pumps/api/accounts/jobber_history?client_id=C').get_json()
+        finally:
+            P.jobber_gql, P.jobber_status = saved
+        self.assertEqual([x['number'] for x in r['invoices']], ['36500', '36001'], 'newest first')
+        self.assertEqual((r['jobs'][0]['type'], r['requests'][0]['title']), ('recurring', 'Pump not running'))
+
     def test_invoiced_jobs_get_closed(self):
         """Oct 2026: one-off pump jobs we link sat open in Jobber after they were invoiced. A to-do to close each, with a
         Close job button; it goes once Jobber shows it closed. Recurring jobs never."""
@@ -5387,7 +5415,7 @@ class PumpsTest(unittest.TestCase):
         # The account page carries its setup too: the pump schedule, the lake, its Jobber links.
         self.assertEqual(h['account']['pump']['months'], '1,4,7,10')
         self.assertIn('docs', h)
-        self.assertEqual(set(h['jobber']), {'client', 'recurring'})
+        self.assertEqual(set(h['jobber']), {'client', 'recurring', 'client_ids'})
         self.assertEqual(P._jobber_client_uri('Z2lkOi8vSm9iYmVyL0NsaWVudC80OTAwNzI1OA=='),
                          'https://secure.getjobber.com/clients/49007258')
         self.assertEqual(self.c.get('/pumps/api/accounts/history?name=Nobody').status_code, 400)
