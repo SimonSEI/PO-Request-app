@@ -3094,6 +3094,33 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual([x['number'] for x in r['invoices']], ['36500', '36001'], 'newest first')
         self.assertEqual((r['jobs'][0]['type'], r['requests'][0]['title']), ('recurring', 'Pump not running'))
 
+    def test_approved_quote_needs_the_same_client_not_just_the_price(self):
+        """CORSA (Oct 2026): Maria Peralta's approved $556.40 quote #9175 went on CORSA's SCADA renewal ($428 + 30%) on price
+        alone - Sign quote and Convert quote to-dos for the wrong client. The client must match too; one put on wrong is
+        taken off once."""
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': 'SCADA annual renewal - CORSA', 'client_name': 'CORSA (formerly Estero Crossing)',
+                                       'category': 'scada', 'vendor_quote_amount': 428.0}, 'test', source='scada')
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id, client_name, "
+                         "total, created_at, updated_at) VALUES ('Q9175', 'quote', '9175', 'New Irrigation System Installation', "
+                         "'approved', 'CMP', 'Maria Peralta', 556.4, ?, ?)", (P._now_text(), P._now_text()))
+            it = dict(conn.execute("SELECT * FROM pump_jobber_items WHERE jobber_id='Q9175'").fetchone())
+            self.assertIsNone(P.job_for_quote_price(conn, it), "Maria Peralta's quote isn't CORSA's")
+            # Linked wrongly before: taken off, its to-dos done.
+            P._link_item(conn, 'Q9175', cid, 'Jobber sync')
+            P.add_todo(conn, f'sign-quote:{cid}', 'Sign the approved quote and send it to Tom - CORSA', '', {'case_id': cid})
+            conn.execute("DELETE FROM pump_state WHERE key='unhook_wrong_client_oct26'")
+            P._unhook_wrong_client_quotes(conn.cursor(), P._now_text())
+            conn.commit()
+            back = conn.execute("SELECT case_id FROM pump_jobber_items WHERE jobber_id='Q9175'").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertIsNone(back)
+        self.assertFalse((self.case(cid)['jobber'] or {}).get('quote'))
+        titles = [t['title'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
+        self.assertNotIn('Sign the approved quote and send it to Tom - CORSA', titles)
+
     def test_urgent_quote_moves_up(self):
         """Oct 2026: quotes wait under "Quotes - not urgent" unless marked urgent."""
         j = self.c.post('/pumps/api/cases', json={'title': 'Surge arrestor', 'client_name': 'Urgent Lakes'}).get_json()

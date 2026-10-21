@@ -11510,6 +11510,7 @@ def init_account_tables(c):
     _stop_tracking_beatrice(c, now)
     _paid_once_emailed(c, now)
     _drop_irrigation_quotes(c, now)
+    _unhook_wrong_client_quotes(c, now)
     _seed_contracts(c, now)
     _spell_beatriz(c, now)
     if not seeded('office_answers_oct26'):
@@ -12858,9 +12859,69 @@ def job_for_quote_price(conn, it):
                               "AND status != 'dismissed'", (c['id'],)):
             prices |= {p for p in (d['subtotal'], d['total']) if p}
         pcts = (GOV_MARKUP_PCT,) if gov_client(None, {'client_name': it.get('client_name')}) else (QUOTE_MARKUP_PCT,)
-        if any(abs(p * (1 + m / 100) - total) <= 1.0 for p in prices for m in pcts):
+        if any(abs(p * (1 + m / 100) - total) <= 1.0 for p in prices for m in pcts) and _same_client(conn, c['id'], it):
             hits.append(c['id'])
     return hits[0] if len(hits) == 1 else None
+
+
+def _same_client(conn, case_id, it, by_name=False):
+    """Is a Jobber record for this item's client - its Jobber client, or the name (the client's,
+    or the property's)? A price alone isn't enough: Maria Peralta's $556.40 quote #9175 went on
+    CORSA's SCADA renewal ($428 + 30%) (Oct 2026)."""
+    c = conn.execute('SELECT client_name, site, title, jobber_client_id, jobber FROM pump_cases WHERE id=?',
+                     (case_id,)).fetchone()
+    if not c:
+        return False
+    cid = c['jobber_client_id'] or (json.loads(c['jobber'] or '{}').get('client') or {}).get('id') or ''
+    if cid and it.get('client_id') and not by_name:
+        return cid == it['client_id']
+    theirs = f"{it.get('client_name') or ''} {it.get('property_label') or ''}"
+    for name in (c['client_name'], c['site']):
+        if name and (similarity(name, it.get('client_name') or '') >= 0.85 or
+                     similarity(name, it.get('property_label') or '') >= 0.85 or
+                     (len(_core_name(name)) >= 4 and fuzzy_has(_core_name(name), theirs))):
+            return True
+    return False
+
+
+def _unhook_wrong_client_quotes(c, now):
+    """Once (Oct 21 2026): approved quotes the sync put on another client's item by price alone
+    (#9175, Maria Peralta, on CORSA's SCADA renewal) - taken off, the item back to waiting, its
+    Sign-quote and Convert-quote to-dos done, the quote free to go on its own client's."""
+    if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pump_jobber_items'").fetchone():
+        return
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('unhook_wrong_client_oct26', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    conn = c.connection
+    for r in c.execute("SELECT * FROM pump_cases WHERE status='open' AND jobber LIKE '%\"quote\"%'").fetchall():
+        j = json.loads(r['jobber'] or '{}')
+        qid = (j.get('quote') or {}).get('id')
+        it = c.execute("SELECT * FROM pump_jobber_items WHERE jobber_id=?", (qid,)).fetchone() if qid else None
+        if not it or not (it['client_name'] or it['client_id']):
+            continue
+        by_sync = c.execute("SELECT 1 FROM pump_events WHERE case_id=? AND actor='Jobber sync' "
+                            "AND action IN ('linked', 'linked Jobber') AND detail LIKE ?",
+                            (r['id'], f"%{it['number']}%")).fetchone()
+        # By name: the wrong link may have set the item's Jobber client from that very quote.
+        if not by_sync or _same_client(conn, r['id'], dict(it), by_name=True):
+            continue
+        j.pop('quote', None)
+        if (j.get('client') or {}).get('id') == it['client_id']:
+            j.pop('client', None)
+            c.execute("UPDATE pump_cases SET jobber_client_id='' WHERE id=? AND jobber_client_id=?", (r['id'], it['client_id']))
+        steps = json.loads(r['steps'] or '{}')
+        for k in ('client_quote', 'client_approved'):
+            if (steps.get(k) or {}).get('by') == 'Jobber sync':
+                steps.pop(k, None)
+        c.execute('UPDATE pump_cases SET jobber=?, steps=?, updated_at=? WHERE id=?',
+                  (json.dumps(j), json.dumps(steps), _now_text(), r['id']))
+        c.execute('UPDATE pump_jobber_items SET case_id=NULL WHERE jobber_id=?', (qid,))
+        c.execute("UPDATE pump_todos SET done_at=?, done_by='Pumps' WHERE done_at IS NULL AND key IN (?, ?)",
+                  (_now_text(), f"sign-quote:{r['id']}", f"quote-to-job:{r['id']}"))
+        c.execute('INSERT INTO pump_events (case_id, doc_id, at, actor, action, detail) VALUES (?,?,?,?,?,?)',
+                  (r['id'], None, _now_text(), 'Pumps', 'unlinked',
+                   f"Jobber quote #{it['number']} is {it['client_name']}'s, not this client's - taken off"))
 
 
 def make_job_from_quote(case_id, actor='Jobber sync'):
