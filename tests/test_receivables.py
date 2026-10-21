@@ -580,6 +580,25 @@ class CashInTests(FollowupTests):
         self.assertEqual(self.inv('36484')['eta_date'], '')
 
 
+class EtaHoldTests(FollowupTests):
+    def test_eta_holds_follow_ups_until_a_few_days_after(self):
+        R.plan_followups()
+        pat = next(e for e in self.drafts() if e['group_key'] == 'cust:patexample')
+        self.login()
+        eta = TODAY + timedelta(days=5)
+        for n in ('36484', '36490'):
+            self.client.post('/receivables/api/invoice', json={'id': self.inv(n)['id'], 'eta': eta.isoformat()})
+        # The waiting draft is dropped and nothing is due until a week after the ETA.
+        self.assertNotIn(pat['id'], [e['id'] for e in self.drafts()])
+        p = R.plan(self.inv('36484'), None, None, R.settings())
+        self.assertFalse(p['due_now'])
+        self.assertIn('Your ETA', p['reason'])
+        self.assertEqual(p['next'], (eta + timedelta(days=7)).isoformat())
+        # Once that has passed with the invoice still open, follow-ups start again.
+        later = TODAY + timedelta(days=13)
+        self.assertTrue(R.plan(self.inv('36484'), None, None, R.settings(), today=later)['due_now'])
+
+
 class MailboxTests(FollowupTests):
     """Reading simon@'s mailbox: own staff ignored, Jobber notices, emails sent from Outlook, who it's waiting on."""
 
