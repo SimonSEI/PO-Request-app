@@ -317,7 +317,7 @@ details.fold[open] > summary h4::before { content: '▾ '; }
     <input type="text" id="caseSearch" placeholder="Find a job, PO, quote or invoice #…" oninput="searchCases(this.value)">
     <div style="display:flex;gap:6px">
       <select id="uploadKind" title="What the files are" style="flex:1;min-width:0"><option value="">Upload: let the app decide</option><option value="quote">Upload quotes</option><option value="bill">Upload bills</option><option value="report">Upload reports</option></select>
-      <button class="btn" onclick="document.getElementById('fileIn').click()">⬆ Upload</button>
+      <button class="btn" onclick="uploadBox()">⬆ Upload</button>
       <input type="file" id="fileIn" multiple accept=".pdf,.docx,.doc" class="hide" onchange="uploadFiles(this.files)"></div>
   </div>
   <div id="searchResults" class="hide"></div>
@@ -1462,7 +1462,7 @@ async function billAnyway(id){
   if (j.doc_id) draftInvoice(j.doc_id); else toast('Alert cleared');
 }
 async function resolveIssue(id){ const r = prompt('How was it resolved? (e.g. "Wettech confirmed extra fittings, client approved")'); if (!r) return; const j = await api('/issues/' + id + '/resolve', {method:'POST', body:{resolution:r}}); if (j.success) openCase(curCase ? curCase.id : null).then(loadToday); else toast(j.error, true); }
-function uploadForCase(){ const i = document.createElement('input'); i.type = 'file'; i.multiple = true; i.accept = '.pdf,.docx,.doc'; i.onchange = () => uploadFiles(i.files, curCase.id); i.click(); }
+function uploadForCase(){ uploadBox(curCase.id); }
 
 function newCase(){
   openModal('New item', `<div class="fields">
@@ -1482,6 +1482,25 @@ async function createCase(){
 }
 
 // ── inbox ─────────────────────────────────────────────
+// Upload: a box to drop files on, or click it to pick them (Oct 2026). What they are comes from the
+// menu beside the button - or pick it here.
+function uploadBox(caseId){
+  const kind = caseId ? '' : document.getElementById('uploadKind').value;
+  openModal('Upload documents', `
+    ${caseId ? '' : `<label class="note" style="display:block;margin-bottom:8px">What they are <select id="upBoxKind" style="margin-left:6px"><option value="">Let the app decide</option><option value="quote">Quotes</option><option value="bill">Bills</option><option value="report">Reports</option></select></label>`}
+    <div id="dropZone" style="border:2px dashed var(--border);border-radius:12px;padding:36px 16px;text-align:center;cursor:pointer">
+      <div style="font-size:28px">📄</div><b>Drag and drop files here</b><div class="note">or click to choose - PDF or Word, several at once</div></div>
+    <input type="file" id="dropIn" multiple accept=".pdf,.docx,.doc" class="hide">`,
+    `<button class="btn" onclick="closeModal()">Cancel</button>`);
+  const sel = document.getElementById('upBoxKind'); if (sel) sel.value = kind;
+  const z = document.getElementById('dropZone'), inp = document.getElementById('dropIn');
+  const go = files => { if (!files || !files.length) return; if (sel) document.getElementById('uploadKind').value = sel.value; closeModal(); uploadFiles(files, caseId); };
+  z.onclick = () => inp.click();
+  inp.onchange = () => go(inp.files);
+  ['dragenter', 'dragover'].forEach(e => z.addEventListener(e, ev => { ev.preventDefault(); z.style.background = 'var(--violet-bg)'; z.style.borderColor = 'var(--violet)'; }));
+  ['dragleave', 'drop'].forEach(e => z.addEventListener(e, ev => { ev.preventDefault(); z.style.background = ''; z.style.borderColor = ''; }));
+  z.addEventListener('drop', ev => go(ev.dataTransfer.files));
+}
 async function uploadFiles(files, caseId){
   if (!files || !files.length) return;
   const fd = new FormData();
