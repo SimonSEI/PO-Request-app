@@ -294,6 +294,7 @@ details.fold[open] > summary h4::before { content: '▾ '; }
   <div class="t"><span class="logo"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.7c3.6 4.3 6 7.7 6 10.8a6 6 0 0 1-12 0c0-3.1 2.4-6.5 6-10.8z"/><path d="M9.2 14.2a2.9 2.9 0 0 0 2.8 2.6"/></svg></span><div>Pumps<small>Pumps, lakes &amp; SCADA</small></div></div>
   <div class="r">
     <button class="btn p" onclick="newCase()">＋ New item</button>
+    <button class="btn" title="Follow a service call booked in Jobber - it's the start of the work, no quote" onclick="addServiceCall()">＋ Service call</button>
     <span class="who" data-i="{{ (full_name or '?')[:1]|upper }}">{{ full_name }}</span>
     <button class="btn" onclick="showUndo()" title="Undo a recent change (Ctrl+Z / ⌘Z undoes your last one)">↶ Undo</button>
     <a class="btn" href="{{ url_for('dashboard') }}">← Dashboard</a>
@@ -316,7 +317,7 @@ details.fold[open] > summary h4::before { content: '▾ '; }
     <input type="text" id="caseSearch" placeholder="Find a job, PO, quote or invoice #…" oninput="searchCases(this.value)">
     <div style="display:flex;gap:6px">
       <select id="uploadKind" title="What the files are" style="flex:1;min-width:0"><option value="">Upload: let the app decide</option><option value="quote">Upload quotes</option><option value="bill">Upload bills</option><option value="report">Upload reports</option></select>
-      <button class="btn" onclick="document.getElementById('fileIn').click()">⬆ Upload</button>
+      <button class="btn" onclick="uploadBox()">⬆ Upload</button>
       <input type="file" id="fileIn" multiple accept=".pdf,.docx,.doc" class="hide" onchange="uploadFiles(this.files)"></div>
   </div>
   <div id="searchResults" class="hide"></div>
@@ -343,7 +344,7 @@ details.fold[open] > summary h4::before { content: '▾ '; }
     <button class="btn s" title="It syncs on its own - this just does it now" onclick="syncJobber()">↻ Sync now</button>
   </div>
   <div class="scroll" style="max-height:45vh"><table class="t"><thead><tr><th>Job</th><th>Where it is</th><th>Vendor</th><th class="num">Vendor quote</th><th>Our quote</th><th class="num">Vendor bill</th><th>Our invoice</th><th>Vendor paid</th><th></th></tr></thead><tbody id="jobsBody"></tbody></table></div>
-  <h3 style="margin:18px 0 8px;font-size:14px">Maintenance this month <span class="chip" id="msCount"></span></h3>
+  <details id="msFold" open ontoggle="window.foldSave && foldSave('ms', this.open)" style="margin-top:18px"><summary style="cursor:pointer;margin-bottom:8px"><h3 style="display:inline;margin:0;font-size:14px">Maintenance this month <span class="chip" id="msCount"></span></h3> <span class="note">click to show or fold away</span></summary>
   <div class="toolbar">
     <select id="msMonth" onchange="loadMaintSchedule()"></select>
     <input type="text" id="msSearch" placeholder="Find an account or address…" oninput="drawMaintSchedule()" style="width:220px">
@@ -355,15 +356,12 @@ details.fold[open] > summary h4::before { content: '▾ '; }
   </div>
   <div class="note" style="margin-bottom:8px">Every pump (Wettech) and lake (Gulfshore) maintenance visit due in the month from the Accounts tab, and whether the subcontractor has been told. Lakes count as told once the month's diver list is emailed.</div>
   <div class="scroll" style="max-height:45vh"><table class="t"><thead><tr><th style="width:28px"><input type="checkbox" id="msAll" title="Select every account shown that isn't fully told yet" onchange="msSelectAll(this.checked)"></th><th>Account</th><th>Client approved</th><th>Justin<div class="note" style="font-weight:400">Wettech pumps</div></th><th>Jordan<div class="note" style="font-weight:400">Gulfshore diving</div></th></tr></thead><tbody id="msBody"></tbody></table></div>
-  <h3 style="margin:18px 0 8px;font-size:14px">Quotes sent - waiting on the client <span class="chip" id="jbSentCount"></span></h3>
-  <div class="toolbar"><input type="text" id="jbSentSearch" placeholder="Find a quote #, client, address or title…" oninput="drawSent()" style="width:280px"></div>
-  <div class="note" style="margin-bottom:8px">Our pump, diver, filter and SCADA quotes in Jobber that have gone to the client and aren't approved yet, newest quote first. They drop off once the client approves (the next Jobber sync).</div>
-  <div class="scroll" style="max-height:40vh"><table class="t"><thead><tr><th>Quote</th><th>Client</th><th class="num">Total</th><th>Status</th><th>Waiting</th><th>Job here</th></tr></thead><tbody id="jbSentBody"></tbody></table></div>
+  </details>
 </div>
 
 <!-- SCADA -->
 <div class="panel hide" id="p-scada">
-  <div class="toolbar"><div class="note">The SCADA sheet: <b>Renewal date</b> is when the next renewal is due; each year holds our invoice # or a note. When one's renewed, <b>Renewed…</b> records it and moves the date on a year. Due within {{ scada_days }} days: the app drafts the client's quote in Jobber at their price (complimentary ones are just a reminder) and it shows on Today. Each Jobber sync fills in the year's invoice # from the SCADA renewal invoices it finds.</div><div class="sp"></div>
+  <div class="toolbar"><div class="note">The SCADA sheet: <b>Renewal date</b> is when the next renewal is due; each year holds our invoice # or a note. When one's renewed, <b>Renewed…</b> records it and moves the date on a year. Due within {{ scada_days }} days: a to-do to draft the client's quote (Draft quote makes it in Jobber at their price; a renewal quote already in Jobber counts; complimentary ones are just a reminder). <b>Renewal quote</b> shows this renewal's quote and where it stands; only this year's column shows - <b>all years</b> opens the rest. Each Jobber sync fills in the year's invoice # from the SCADA renewal invoices it finds.</div><div class="sp"></div>
     <select id="scShow" onchange="loadScada()"><option value="active">On SCADA</option><option value="all">All, incl. stopped</option></select>
     <button class="btn" onclick="scadaEdit(0)">＋ Add client</button></div>
   <div class="scroll"><table class="t" id="scadaTable"></table></div>
@@ -553,6 +551,9 @@ function todoRow(t){
       ${t.detail || (t.kind === 'manual' && t.due_on) ? `<div class="sub" style="margin-left:24px">${t.kind === 'manual' && t.due_on ? `<b class="${t.due_on < todayIso() ? 'bad' : 'warn'}">due ${esc(niceDay(t.due_on))}</b>${t.detail ? ' · ' : ''}` : ''}${esc(t.detail || '')}</div>` : ''}
       ${t.kind === 'approved_quote' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${t.link.case_id ? `<button class="btn s p" onclick="signQuote(${t.link.case_id})">✍ Sign quote &amp; send to ${esc((t.title.match(/send it to (\S+)/) || [])[1] || 'the vendor')}</button><button class="btn s" onclick="quoteSent(${t.link.case_id})">I already sent it</button>` : ''}${t.link.doc_id ? `<a class="btn s" href="/pumps/api/docs/${t.link.doc_id}/file?version=original" target="_blank" rel="noopener">View quote</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}</div>` : ''}
       ${t.kind !== 'approved_quote' && (t.link.uri || t.link.case_id) ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${(t.link.uris || []).length > 1 ? t.link.uris.map(u => `<a class="btn s" href="${esc(u.uri)}" target="_blank" rel="noopener">Open ${esc(u.label)} ↗</a>`).join('') + `<button class="btn s" onclick='openAll(${JSON.stringify(t.link.uris.map(u => u.uri)).replace(/'/g, "&#39;")})'>Open both ↗</button>` : t.link.uri ? `<a class="btn s" href="${esc(t.link.uri)}" target="_blank" rel="noopener">${esc(t.link.label || 'Open in Jobber')} ↗</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}${t.link.scada_id ? `<button class="btn s" onclick="showTab('scada')">SCADA</button>` : ''}</div>` : ''}
+      ${t.link.close_job ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="closeJobberJob('${esc(t.link.close_job)}', this)">Close job in Jobber</button></div>` : ''}
+      ${t.link.draft_scada ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="draftScadaQuote(${t.link.scada_id}, this)">Draft quote in Jobber</button></div>` : ''}
+      ${(t.key || '').startsWith('gulfshore-unbilled:') && t.link.case_id ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" title="Billed already - type our Jobber invoice number" onclick="linkInvoice(${t.link.case_id})">🔗 Link our invoice</button><button class="btn s" title="Billed through a contract - no invoice to link" onclick="billsPayOk([${t.link.case_id}])">OK to pay now</button></div>` : ''}
       ${t.kind === 'diver_email' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="diverTodo('${esc(t.link.month || '')}')">Email ready - copy &amp; attach</button><a class="btn s" href="/pumps/api/dives/docx?month=${encodeURIComponent(t.link.month || '')}">⬇ Word list</a></div>` : ''}</div>
       <button class="btn s" title="Edit" onclick='todoEdit(${JSON.stringify({id: t.id, title: t.title, detail: t.detail || "", due_on: t.due_on || ""}).replace(/'/g, "&#39;")})'>✎</button>
       ${t.kind === 'manual' ? `<button class="btn s" title="Delete from my to do list" onclick="todoDelete(${t.id})">✕</button>` : `<button class="btn s" title="Delete from my to do list" onclick="todoHide('${esc(t.todo_key)}')">✕</button>`}</div>`;
@@ -600,6 +601,11 @@ async function undoAction(id){
   if (await runUndo(id)) showUndo();
 }
 function openAll(uris){ const blocked = uris.filter(u => { const w = window.open(u, '_blank'); if (w) w.opener = null; return !w; }).length; if (blocked) toast('Your browser blocked a tab - allow pop-ups for this site, or use the buttons one at a time.', true); }
+async function followUpTomorrow(id){
+  const j = await api('/cases/' + id + '/follow_up_tomorrow', {method:'POST'});
+  if (!j.success) { toast(j.error, true); return; }
+  toast('Postponed - back on the list ' + niceDay(j.check_on) + '.'); loadToday();
+}
 async function followUpOff(id){
   if (!confirm("No follow-up needed at this step?\n\nIt comes off the list until the job moves on.")) return;
   const j = await api('/cases/' + id + '/follow_up_off', {method:'POST'});
@@ -795,8 +801,10 @@ async function loadToday(){
   const urgent = [], todo = [], waiting = [];
   q.issues.forEach(i => (i.kind === 'no_quote' ? waiting : urgent).push(todoItem(i.kind === 'no_quote' ? 'Quote after bill' : 'Fix', i.kind === 'no_quote' ? '' : 'r', esc(i.title || i.client_name || 'Item ' + i.case_id), esc(i.message), `openCase(${i.case_id})`,
     (i.kind === 'no_quote' ? `<button class="btn s p" onclick="billAnyway(${i.id})">Bill it +30%</button>` : '') + `<button class="btn s" onclick="resolveIssue(${i.id})">Resolved</button>`, i.todo_key)));
-  q.vendor_bills_to_pay.forEach(c => urgent.push(todoItem('Pay ' + esc(c.vendor || 'Wettech'), 'r', caseTitle(c), `${esc(c.vendor || 'Wettech')} bill ${c.vendor_bill_number ? '#' + esc(c.vendor_bill_number) + ' · ' : ''}${money(c.vendor_bill_total ?? c.vendor_bill_amount)} · ${(c.vendor_pay || {}).report_only ? 'end of month - their monthly is billed' : 'the client paid our invoice' + (c.sei_invoice_number ? ' #' + esc(c.sei_invoice_number) : '')}${(c.pay_email || {}).sent ? `<br><b class="ok">✓ Emailed Christian ${esc(c.pay_email.at.slice(0, 16))}</b>` : (c.pay_email || {}).error ? `<br><b class="bad">Email not sent: ${esc(c.pay_email.error)}</b>` : ''}`, open(c),
-    `<button class="btn s p" onclick="sendPayEmail(${c.id}, this)">✉ ${(c.pay_email || {}).sent ? 'Send again' : 'Send email'}</button><button class="btn s" onclick="payEmail(${c.id})">Preview</button><button class="btn s" onclick="markVendorPaid(${c.id})">Mark paid</button>`, c.todo_key)));
+  // One to-do for every bill that can be paid (Oct 2026): preview the one email to Christian from here.
+  if (q.bills_to_pay_count) urgent.push(todoItem('Pay vendors', 'r', `${q.bills_to_pay_count} vendor bill${q.bills_to_pay_count > 1 ? 's' : ''} can be paid`,
+    'Email Christian to pay them - sending marks them paid', "showTab('bills')",
+    `<button class="btn s p" onclick="billsEmail([])">✉ Preview email to Christian</button><button class="btn s" onclick="showTab('bills')">See the bills</button>`));
   q.scada_attention.filter(s => s.state === 'overdue').forEach(s => urgent.push(todoItem('SCADA overdue', 'r', esc(s.client_name) + (s.site ? ' · ' + esc(s.site) : ''), 'Renewal overdue since ' + esc(s.next_due_on) + (s.state_note ? ' · ' + esc(s.state_note) : '') + followUp(s.follow_up), "showTab('scada')", '', s.todo_key)));
   q.bills_to_draft.forEach(d => { const ip = (d.jobber || {}).invoice_pending || {}; todo.push(todoItem('Draft invoice', 'a', esc(d.client_name || d.file_name), `${d.account_note ? '<b class="warn">📌 ' + esc(d.account_note) + '</b><br>' : ''}${esc(d.vendor)} bill #${esc(d.doc_number)} · ${money(d.total)}${d.bill_kind ? ' · <b>' + esc(d.bill_kind) + '</b>' : ''}${ip.reason ? ' · <b class="warn">' + esc(ip.reason) + '</b>' : ''}`, `openCase(${d.case_id})`,
     `<button class="btn s p" onclick="draftInvoice(${d.id})">Draft invoice</button>${d.case_id ? `<button class="btn s" title="Already drafted in Jobber - tick it on the job" onclick="askDone(event, () => stepDone(${d.case_id}, 'invoice_drafted', event))">✓ Done</button>` : ''}<a class="btn s" target="_blank" rel="noopener" href="/pumps/api/docs/${d.id}/file?version=original">See vendor invoice</a>${(ip.possible_duplicate || {}).uri ? `<a class="btn s" target="_blank" rel="noopener" href="${esc(ip.possible_duplicate.uri)}">Open #${esc(ip.possible_duplicate.number)} ↗</a>` : ''}`, d.todo_key)); });
@@ -816,7 +824,7 @@ async function loadToday(){
   // Chase the vendor: jobs to get scheduled / done, and quotes, where nobody has heard back.
   (q.vendor_follow_ups || []).forEach(c => { const ch = c.chase, late = ch.expect_by && ch.expect_by < todayIso();
     todo.push(todoItem('Follow up · ' + (ch.parts_wait ? 'parts' : ch.phase === 'job' ? 'job' : 'quote'), late ? 'r' : 'a', nextBox(c) + caseTitle(c), caseSub(c, esc(stageText(c))) + chaseLine(c),
-      open(c), `<button class="btn s p" onclick="event.stopPropagation();logFollow(${c.id})">📞 Log follow-up</button><button class="btn s" onclick="event.stopPropagation();vendorEmail(${c.id})">✉ Email</button>` + nextBtn(c) + `<button class="btn s" title="No follow-up needed at this step - off the list until the job moves on" onclick="event.stopPropagation();followUpOff(${c.id})">Not needed</button>`, c.todo_key)); });
+      open(c), `<button class="btn s p" onclick="event.stopPropagation();logFollow(${c.id})">📞 Log follow-up</button><button class="btn s" onclick="event.stopPropagation();vendorEmail(${c.id})">✉ Email</button><button class="btn s" title="Postpone - back on the list next working day" onclick="event.stopPropagation();followUpTomorrow(${c.id})">⏭ Tomorrow</button>` + nextBtn(c) + `<button class="btn s" title="No follow-up needed at this step - off the list until the job moves on" onclick="event.stopPropagation();followUpOff(${c.id})">Not needed</button>`, c.todo_key)); });
   q.ready_to_close.forEach(c => todo.push(todoItem('Send invoice', 'a', caseTitle(c), caseSub(c, 'send the invoice from Jobber' + (c.sei_invoice_number ? ' · #' + esc(c.sei_invoice_number) : '')) + followUp(c.follow_up), open(c), invoiceLink(c) + stepBtn(c, 'closed'), c.todo_key)));
   q.reports_to_log.forEach(d => todo.push(todoItem('Log report', 'b', esc(d.client_name || d.file_name), `${esc((d.report_fields||{}).title || 'Report')} · ${esc(d.doc_date)}${((d.jobber || {}).note_pending || {}).reason ? '<br><b class="warn">Not logged by itself: ' + esc(d.jobber.note_pending.reason) + '</b>' : ''}`, d.case_id ? `openCase(${d.case_id})` : `openDoc(${d.id})`,
     `<button class="btn s" onclick="logReport(${d.id})">Log in Jobber</button><button class="btn s" title="Already in Jobber - tick it on the job" onclick="askDone(event, () => reportDone(${d.id}, event))">✓ Done</button>`, d.todo_key)));
@@ -875,15 +883,7 @@ const MONEY = new Set(['vendor_quote_amount','vendor_quote_total','vendor_bill_a
 function renderCase(){
   const c = curCase, v = c.vendor || 'Wettech';
   const J = c.jobber || {};
-  const jl = ['request','quote','job','invoice'].filter(k => J[k]).map(k => `<a href="${esc(J[k].uri || '#')}" target="_blank" rel="noopener" class="chip b">${k} ${esc(J[k].number || '')}${J[k].status ? ' · ' + esc(J[k].status) : ''}</a>`).join(' ');
-  const steps = c.step_list.map(s => {
-    const done = !!s.at, na = !!s.na, cur = c.stage === s.key;
-    return `<div class="step ${done ? 'done' : ''} ${na ? 'na' : ''} ${cur ? 'cur' : ''}">
-      <div class="dot" title="${done ? 'Mark not done' : 'Mark done today'}" onclick="setStep('${s.key}', ${done ? 'null' : "'today'"})">${done ? '✓' : ''}</div>
-      <div class="lbl">${esc(s.label)}</div>
-      <div class="when">${done ? esc(s.at) + (s.by ? ' · ' + esc(s.by) : '') : (na ? 'not needed' : (s.due ? 'visit ' + esc(s.due) : ''))}</div>
-      <select class="s" onchange="stepMenu('${s.key}', this)" style="padding:2px 4px;font-size:11px"><option value="">⋯</option><option value="date">Done on a date…</option><option value="${na ? 'needed' : 'na'}">${na ? 'Needed after all' : 'Not needed'}</option>${done ? '<option value="undo">Not done</option>' : ''}</select>
-    </div>`; }).join('');
+  const jl = ['request','job'].filter(k => J[k]).map(k => `<a href="${esc(J[k].uri || '#')}" target="_blank" rel="noopener" class="chip b">Jobber ${k} #${esc(J[k].number || '')} ↗</a>`).join(' ');
   const docs = (c.docs || []).map(d => `<div class="d">${kindChip(d.kind)} <b>${esc(d.file_name)}</b>
       <span class="note">${d.doc_number ? '#' + esc(d.doc_number) + ' · ' : ''}${d.total != null ? money(d.total) : ''} ${esc(d.doc_date)}</span>
       <span style="flex:1"></span>
@@ -901,9 +901,8 @@ function renderCase(){
       ${(d.kind === 'quote' || d.kind === 'bill') ? `<button class="btn s" title="Read the file again with today's reader" onclick="readAgain(${d.id})">↻ Read again</button>` : ''}
       <button class="btn s" onclick="openDoc(${d.id})">Details</button></div>`).join('') || '<div class="note">No documents yet.</div>';
   const issues = (c.issues || []).map(i => `<div class="issue ${i.resolved_at ? 'done' : ''}"><div>${esc(i.message)}${i.resolved_at ? `<div class="note">Resolved by ${esc(i.resolved_by)}: ${esc(i.resolution)}</div>` : ''}</div>${i.resolved_at ? '' : `${i.kind === 'no_quote' ? `<button class="btn s p" onclick="billAnyway(${i.id})">Bill it +30%</button> ` : ''}<button class="btn s" onclick="resolveIssue(${i.id})">Resolve…</button>`}</div>`).join('');
-  const f = (k, label, type, w) => `<label class="${w ? 'w' : ''}">${label}${type === 'area' ? `<textarea data-f="${k}">${esc(c[k])}</textarea>` : `<input type="${type || 'text'}" data-f="${k}" value="${esc(MONEY.has(k) || k.endsWith('_amount') ? (c[k] ?? '') : c[k])}">`}</label>`;
   document.getElementById('drawer').innerHTML = `
-  <div class="hd"><div><h2>${esc(c.title || c.client_name)}</h2><div class="note">${catChip(c.category)} ${stageChip(c)} ${c.po_number ? 'PO ' + esc(c.po_number) : ''} · opened ${esc(c.opened_on)}</div></div>
+  <div class="hd"><div><h2>${esc(c.title || c.client_name)} <button class="btn s" title="Rename this item" onclick="editTitle()">✎</button></h2><div class="note">${catChip(c.category)} <a href="#" title="Set the PO #" onclick="event.preventDefault();editPo()">${c.po_number ? 'PO ' + esc(c.po_number) : '+ PO #'}</a> · opened ${esc(c.opened_on)} ${jl}</div></div>
     <div style="display:flex;gap:6px;align-items:flex-start"><button class="btn" onclick="closeDrawer()">✕</button></div></div>
   <div class="bd">
     ${c.vendor_pay.state === 'due' ? `<div class="sec"><div class="issue">💸 Our client has paid the Jobber invoice - ${esc(v)}'s bill needs to be paid.<button class="btn s p" onclick="markVendorPaid(${c.id})">Mark ${esc(v)} paid</button></div></div>` : ''}
@@ -914,8 +913,8 @@ function renderCase(){
       <button class="btn ${['assessment','vendor_quote','scheduled','vendor_bill'].includes(c.stage) ? 'p' : ''}" onclick="vendorEmail(${c.id})">✉️ ${esc(({assessment: 'Ask ' + v + ' to assess', vendor_quote: 'Ask ' + v + ' for the quote', scheduled: 'Ask ' + v + ' to schedule', vendor_bill: 'Ask ' + v + ' for the invoice'})[c.stage] || 'Email ' + v)}</button>
       ${c.chase ? `<button class="btn ${c.chase.state === 'follow_up' ? 'p' : ''}" onclick="logFollow(${c.id})">📞 Log follow-up</button>` : ''}
       ${c.chase && c.chase.parts_wait && !c.chase.last_at ? `<button class="btn" onclick="quoteSent(${c.id})">📤 Approved quote sent to ${esc(c.chase.who || c.vendor || 'the vendor')}</button>` : ''}
-      ${c.stage === 'client_quote' ? `<button class="btn" onclick="linkQuote(${c.id})">🔗 Quote's already in Jobber? Link it</button>` : ''}
       ${c.stage === 'vendor_quote' && !((c.steps || {}).assessment && !c.steps.assessment.na) ? `<button class="btn" onclick="needsVisit()">🔍 ${esc(v)} needs to visit first</button>` : ''}
+      <select class="btn" onchange="linkMenu(${c.id}, this)" title="Tie a Jobber quote, invoice or job to this item"><option value="">🔗 Link Jobber…</option><option value="quote">${J.quote ? 'A different Jobber quote' : 'A Jobber quote'}</option><option value="invoice">${J.invoice ? 'A different Jobber invoice' : 'A Jobber invoice'}</option><option value="job">${J.job ? 'A different Jobber job' : 'A Jobber job (service call)'}</option></select>
       <button class="btn" onclick="uploadForCase()">⬆ Add document</button>
       <button class="btn" onclick="addNote()">✎ Add note</button>
       ${c.status === 'open' ? `<button class="btn p" onclick="caseDone(${c.id})">✓ Mark done</button><button class="btn danger" onclick="caseRemove(${c.id})">✕ Remove</button>` : `<button class="btn" onclick="caseReopen(${c.id})">↺ Reopen</button>`}
@@ -923,19 +922,6 @@ function renderCase(){
     <div class="sec"><h4>Documents</h4><div class="docs">${docs}</div></div>
     ${statusSec(c)}
     <details class="sec fold"><summary><h4>History</h4> <span class="note">everything that has happened, oldest first</span></summary>${journeyHtml(c, 'history')}</details>
-    <details class="sec fold"><summary><h4>Edit steps</h4> <span class="note">tick or untick a step, or move the job along</span></summary><div style="margin:8px 0"><select class="s" onchange="moveCase(this)" title="Out of step? Bring the job up to where it really is - the steps before are ticked done today." style="padding:2px 4px;font-size:12px"><option value="">Move to…</option>${c.step_list.filter(s => !s.na).map(s => `<option value="${s.key}">${esc(s.label)}</option>`).join('')}</select></div><div class="steps">${steps}</div></details>
-    <details class="sec fold"><summary><h4>Edit details</h4> <span class="note">names, numbers, amounts, notes, Jobber links</span></summary><div class="fields" style="margin-top:8px">
-      ${f('title','Title','text',1)}
-      <label>Kind of work<select data-f="category">${CATS.map(x => `<option ${x === c.category ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
-      ${f('po_number','PO #')}${f('client_name','Client')}${f('site','Pump / location')}${f('vendor','Vendor')}${f('approved_by','Approved by')}
-      ${f('scheduled_for','Scheduled for','date')}${f('wo_number','Work order # (W/O)')}
-      ${f('vendor_quote_number','Vendor quote #')}${f('vendor_quote_amount','Vendor quote $ (before tax)','number')}
-      ${f('vendor_bill_number','Vendor bill #')}${f('vendor_bill_amount','Vendor bill $ (before tax)','number')}
-      ${f('sei_invoice_number','Our (Jobber) invoice #')}${f('amount','Our invoice $','number')}
-      ${f('jobber_request_made','Jobber request made')}${f('opened_on','Opened','date')}
-      ${f('description','Description of work','area',1)}${f('notes','Notes','area',1)}
-      <label class="w">Jobber ${jl || '<span class="note">nothing linked - Track it from the Jobber tab</span>'} <a href="#" onclick="event.preventDefault();linkQuote(${c.id})">${J.quote ? 'Use a different Jobber quote…' : 'Link a Jobber quote…'}</a> · <a href="#" onclick="event.preventDefault();linkInvoice(${c.id})">${J.invoice ? 'Use a different Jobber invoice…' : 'Link a Jobber invoice…'}</a></label>
-    </div><div style="margin-top:10px"><button class="btn p" onclick="saveCaseFields()">Save details</button></div></details>
   </div>`;
 }
 // The job's journey: where it is on its steps, and everything that has
@@ -951,8 +937,9 @@ function journeyIcon(action){ const a = (action || '').toLowerCase(); for (const
 function journeyHtml(c, part){
   const steps = c.step_list.filter(s => !s.na);
   const curIdx = steps.findIndex(s => s.key === c.stage);
-  const track = `<div class="track">${steps.map((s, i) => { const st = s.at ? 'done' : (i === curIdx ? 'cur' : '');
-    return `<div class="n ${st}" title="${esc(s.label)}${s.at ? ' - ' + esc(s.at) : ''}"><div class="b">${s.at ? '✓' : ''}</div>${esc(s.label)}${s.at ? `<div class="d">${esc(s.at.slice(5))}</div>` : (s.due ? `<div class="d">${esc(s.due.slice(5))}</div>` : '')}</div>`; }).join('')}</div>`;
+  const skipped = c.step_list.filter(s => s.na);
+  const track = (skipped.length ? `<div class="note" style="margin-bottom:4px">Not needed: ${skipped.map(s => `<a href="#" onclick="event.preventDefault();stepPop(event, '${s.key}')">${esc(s.label)}</a>`).join(' · ')}</div>` : '') + `<div class="track">${steps.map((s, i) => { const st = s.at ? 'done' : (i === curIdx ? 'cur' : '');
+    return `<div class="n ${st}" style="cursor:pointer" onclick="stepPop(event, '${s.key}')" title="${esc(s.label)}${s.at ? ' - ' + esc(s.at) : ''} - click to change"><div class="b">${s.at ? '✓' : ''}</div>${esc(s.label)}${s.at ? `<div class="d">${esc(s.at.slice(5))}</div>` : (s.due ? `<div class="d">${esc(s.due.slice(5))}</div>` : '')}</div>`; }).join('')}</div>`;
   const items = [];
   const KIND = {quote: ['Quote', '📝', 'b'], bill: ['Invoice', '🧾', 'a'], report: ['Service report', '📋', 'g']};
   (c.docs || []).filter(d => d.status !== 'dismissed').forEach(d => { const [name, ic, cls] = KIND[d.kind] || ['Document', '📄', ''];
@@ -1054,14 +1041,15 @@ async function loadVQuotes(){
 function billsPaidRender(paid, q){
   const box = document.getElementById('billsPaidList');
   const wasOpen = box.querySelector('details')?.open || !!q;
-  box.innerHTML = `<details ${wasOpen ? 'open' : ''}><summary class="grp" style="cursor:pointer">${q ? 'Paid bills matching the search' : 'Paid in the last 60 days'} (${paid.length}) - undo one marked paid by mistake</summary>
+  box.innerHTML = `<details ${wasOpen ? 'open' : ''}><summary class="grp" style="cursor:pointer">Old vendor bills - ${q ? 'paid bills matching the search' : 'paid in the last 60 days'} (${paid.length})</summary>
+    <div class="note">Paid - or emailed to Christian, which marks them paid. Search to find older ones; ↶ Undo paid puts one back on the list.</div>
     <div class="toolbar" style="margin:6px 0"><input type="text" id="billsPaidQ" value="${esc(q)}" placeholder="Search every paid bill: site, job, vendor or invoice #" oninput="liveSearch(billsPaidSearch)" onkeydown="if(event.key==='Enter'){event.preventDefault();clearTimeout(window._lsT);billsPaidSearch()}" style="flex:1"><button class="btn" onclick="clearTimeout(window._lsT);billsPaidSearch()">Search</button>${q ? `<button class="btn s" onclick="document.getElementById('billsPaidQ').value='';billsPaidSearch()">Clear</button>` : ''}</div>
     ${paid.length ? `<table class="t"><thead><tr><th>Job</th><th>Vendor</th><th>Their invoice</th><th class="num">Amount</th><th>Paid</th><th></th></tr></thead><tbody>
     ${paid.map(b => `<tr><td><a href="#" onclick="event.preventDefault();openCase(${b.case_id})">${esc(b.client_name || b.title)}</a><div class="note">${esc(b.title)}</div></td>
       <td>${esc(b.vendor)}</td>
       <td>${b.bill_doc_id ? `<a target="_blank" href="/pumps/api/docs/${b.bill_doc_id}/file">#${esc(b.bill_number || '?')}</a>` : '#' + esc(b.bill_number || '?')}</td>
       <td class="num">${b.amount != null ? money(b.amount) : '?'}</td>
-      <td>${esc(b.paid_on)}${b.paid_by ? `<div class="note">by ${esc(b.paid_by)}</div>` : ''}</td>
+      <td>${esc(b.paid_on)}${b.emailed_at ? `<div class="note">✉ emailed Christian ${esc(b.emailed_at)}</div>` : b.paid_by ? `<div class="note">by ${esc(b.paid_by)}</div>` : ''}</td>
       <td><button class="btn s" title="Marked paid by mistake? Put it back on the list" onclick="billsUnpaid([${b.case_id}])">↶ Undo paid</button></td></tr>`).join('')}
     </tbody></table>` : '<div class="note">No paid bill matches.</div>'}</details>`;
   const inp = document.getElementById('billsPaidQ');
@@ -1108,7 +1096,7 @@ async function loadBills(){
       <td>${b.bill_doc_id ? `<a target="_blank" href="/pumps/api/docs/${b.bill_doc_id}/file">#${esc(b.bill_number || '?')}</a>` : '#' + esc(b.bill_number || '?')}<div class="note">${esc(b.bill_date)}</div></td>
       <td class="num">${b.amount != null ? money(b.amount) : '?'}</td>
       <td>${b.payable ? '<b class="ok">✓ Yes</b> - ' : 'Not yet - '}${esc(b.why)}${b.asked_at ? `<div class="note">✉ Emailed Christian ${esc(b.asked_at.slice(0, 10))}</div>` : ''}</td>
-      <td>${b.payable ? '' : `<button class="btn s" title="Invoiced straight in Jobber? Tie that invoice to this job" onclick="linkInvoice(${b.case_id}).then(loadBills)">Link invoice</button> `}<button class="btn s" onclick="markVendorPaid(${b.case_id}).then(loadBills)">Mark paid</button></td></tr>`; }).join('')}
+      <td>${b.payable ? (b.pay_ok ? `<button class="btn s" title="Back to waiting" onclick="billsPayOk([${b.case_id}], true)">↶ Not yet</button> ` : '') : `<button class="btn s p" title="Billed through a monthly contract, or otherwise fine to pay - pay it now" onclick="billsPayOk([${b.case_id}])">OK to pay now</button> <button class="btn s" title="Invoiced straight in Jobber? Tie that invoice to this job" onclick="linkInvoice(${b.case_id}).then(loadBills)">Link invoice</button> `}<button class="btn s" onclick="markVendorPaid(${b.case_id}).then(loadBills)">Mark paid</button></td></tr>`; }).join('')}
     </tbody></table>`).join('') || '<div class="empty">No vendor bills waiting to be paid. 🎉</div>';
   billsPaidRender(j.paid || [], '');
   setCount('n-bills', j.vendors.reduce((a, g) => a + g.bills.filter(b => b.payable && !b.asked_at).length, 0), false);
@@ -1150,6 +1138,14 @@ async function billsMarkPaid(){
   undoToast(`Marked ${j.marked} bill${j.marked > 1 ? 's' : ''} paid.`, () => billsUnpaid(j.case_ids)); loadBills(); loadToday();
 }
 // Marked paid by mistake: back on the list.
+// A bill nothing says can be paid yet (Wild Blue: billed through the monthly irrigation contract): OK it by hand.
+async function billsPayOk(ids, undo){
+  const j = await api('/bills_to_pay/pay_ok', {method:'POST', body:{case_ids: ids, undo: !!undo}});
+  if (!j.success) { toast(j.error, true); return; }
+  loadBills(); loadToday();
+  if (undo) toast('Back to waiting.');
+  else undoToast('OK to pay - it can go in the email to Christian.', () => billsPayOk(ids, true));
+}
 async function billsUnpaid(ids){
   const j = await api('/bills_to_pay/unpaid', {method:'POST', body:{case_ids: ids}});
   if (!j.success) { toast(j.error, true); return; }
@@ -1163,9 +1159,11 @@ function undoToast(msg, undo){
   b.onclick = () => { d.remove(); undo(); };
   d.append(b); document.body.appendChild(d); setTimeout(() => d.remove(), 10000);
 }
-async function billsEmail(){
-  const ids = billsPicked();
-  if (!ids.length) { toast('Tick the bills to send.', true); return; }
+// ids: the ticked bills on the tab; [] = every bill that can be paid (the Home to-do).
+async function billsEmail(ids){
+  ids = ids || billsPicked();
+  if (!ids.length && !arguments.length) { toast('Tick the bills to send.', true); return; }
+  window._billIds = ids;
   const j = await api('/bills_to_pay/email', {method:'POST', body:{case_ids: ids}});
   if (!j.success) { toast(j.error, true); return; }
   const e = j.email;
@@ -1176,12 +1174,57 @@ async function billsEmail(){
 }
 async function billsSend(){
   const btn = document.getElementById('billsSend'); btn.disabled = true; btn.textContent = 'Sending…';
-  const j = await api('/bills_to_pay/email', {method:'POST', body:{case_ids: billsPicked(), send: true, body: document.getElementById('billsBody').value}});
+  const j = await api('/bills_to_pay/email', {method:'POST', body:{case_ids: window._billIds || billsPicked(), send: true, body: document.getElementById('billsBody').value}});
   btn.disabled = false; btn.textContent = 'Send to Christian';
   if (!j.success) { toast(j.error, true); return; }
-  closeModal(); toast(`Emailed Christian: ${j.sent} bill${j.sent > 1 ? 's' : ''}, ${money(j.total)}.`); loadBills();
+  closeModal(); loadBills(); loadToday();
+  const ids = j.case_ids || [];
+  undoToast(`Emailed Christian: ${j.sent} bill${j.sent > 1 ? 's' : ''}, ${money(j.total)} - marked paid, in Old vendor bills.`,
+            () => billsUnpaid(ids));
 }
 // Invoiced straight in Jobber (Enclave @ Palmira): tie that invoice to the job.
+// Find a Jobber job by its number or the client's name, and pick it from the recent ones.
+function jobPicker(title, onPick, start){
+  openModal(title, `
+    <div class="note">Type the job number or the client's name - their recent Jobber jobs show here; click the one.</div>
+    <div class="toolbar" style="margin:6px 0"><input type="text" id="jpQ" value="${esc(start || '')}" placeholder="e.g. 14592 or Woodmere" style="flex:1" oninput="liveSearch(jobPickerSearch)" onkeydown="if(event.key==='Enter'){event.preventDefault();clearTimeout(window._lsT);jobPickerSearch()}"></div>
+    <div id="jpList"><div class="note">Type to search.</div></div>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button>`);
+  window._jobPick = onPick;
+  const q = document.getElementById('jpQ'); q.focus(); if (start) jobPickerSearch();
+}
+async function jobPickerSearch(){
+  const q = (document.getElementById('jpQ') || {}).value?.trim() || '';
+  const box = document.getElementById('jpList');
+  if (q.length < 2) { box.innerHTML = '<div class="note">Type to search.</div>'; return; }
+  box.innerHTML = '<div class="note">Searching Jobber…</div>';
+  const j = await api('/jobber/jobs?q=' + encodeURIComponent(q));
+  if (((document.getElementById('jpQ') || {}).value || '').trim() !== q) return;   // still typing
+  if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
+  window._jobList = j.jobs || [];
+  box.innerHTML = window._jobList.length ? window._jobList.map((x, i) => `<div class="row" style="cursor:pointer" onclick="window._jobPick(window._jobList[${i}])"><div class="main"><div class="tt">#${esc(x.number)} · ${esc(x.client_name)}</div><div class="sub">${esc(x.title)}${x.date ? ' · ' + esc(niceDay(x.date)) : ''}${x.status ? ' · ' + esc(x.status.replace(/_/g, ' ')) : ''}${x.case_id ? ' · <b>already followed here</b>' : ''}${x.uri ? ` · <a href="${esc(x.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ↗</a>` : ''}</div></div></div>`).join('')
+    : '<div class="note">No Jobber job matches.</div>';
+}
+// A service call booked in Jobber: followed from its job - the start of the work, no quote.
+function addServiceCall(){
+  jobPicker('Follow a service call', async x => {
+    const j = await api('/service_call', {method:'POST', body:{number: x.number}});
+    if (!j.success) { toast(j.error, true); return; }
+    closeModal();
+    toast(j.already ? 'Already followed here - opening it.' : 'Service call followed - it starts at the work, no quote.');
+    loadToday(); openCase(j.case_id);
+  });
+}
+function linkJob(id){
+  jobPicker('Link a Jobber job to this item', async x => {
+    const sc = confirm('Is it a service call that starts the work?\n\nOK = yes: no quote needed, scheduled for the job\'s day.\nCancel = just link the job.');
+    const j = await api('/cases/' + id + '/jobber_job', {method:'POST', body:{number: x.number, service_call: sc}});
+    if (!j.success) { toast(j.error, true); return; }
+    closeModal();
+    toast(`Linked Jobber job #${j.job.number}${sc ? ' - a service call, no quote' : ''}.`);
+    openCase(id); loadToday();
+  }, (curCase && curCase.id === id && curCase.client_name) || '');
+}
 async function linkInvoice(id){
   const n = prompt('Jobber invoice number for this job (e.g. 36806):', '');
   if (!n || !n.trim()) return;
@@ -1258,23 +1301,56 @@ async function moveCase(sel){
   if (j.success) { curCase = j.case; renderCase(); toast('Moved to: ' + label); } else toast(j.error || 'Not moved', true);
 }
 // A bill or report on the wrong job (Lely: the quarterly bill on the valve repair): off it, filed again.
+// Wrong job: pick the job it belongs on (Huntington #5's bill, Oct 2026), or let the app file it again.
 async function refileDoc(id){
-  if (!confirm("Take this document off this job and file it again?\n\nWhat it ticked here is undone. It goes on the job it fits, or a new one.")) return;
-  const j = await api('/docs/' + id + '/refile', {method:'POST'});
-  if (!j.success) { toast(j.error, true); return; }
-  toast('Filed again' + (j.case_id ? ' - opening that job' : ''));
-  if (j.case_id) openCase(j.case_id);
+  openModal('Move to another job', `
+    <div class="note">Find the job this document belongs on - search by site, job, quote or invoice number. What it ticked on this job is undone.</div>
+    <div class="toolbar" style="margin:6px 0"><input type="text" id="mvQ" placeholder="e.g. Huntington #5" style="flex:1" oninput="liveSearch(() => refileSearch(${id}))"></div>
+    <div id="mvList"><div class="note">Type to search open and closed jobs.</div></div>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn" onclick="refileTo(${id}, null)">Let the app pick</button>`);
+  const q = document.getElementById('mvQ'); if (q) { q.value = (curCase && curCase.client_name || '').split(' - ')[0]; q.focus(); refileSearch(id); }
 }
+async function refileSearch(id){
+  const q = (document.getElementById('mvQ') || {}).value?.trim() || '';
+  if (!q) return;
+  const j = await api('/cases?status=all&q=' + encodeURIComponent(q));
+  if (((document.getElementById('mvQ') || {}).value || '').trim() !== q) return;   // still typing
+  const box = document.getElementById('mvList');
+  if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
+  const cs = (j.cases || []).filter(c => !curCase || c.id !== curCase.id).slice(0, 25);
+  box.innerHTML = cs.length ? cs.map(c => `<div class="row" style="cursor:pointer" onclick="refileTo(${id}, ${c.id})"><div class="main"><div class="tt">${esc(c.client_name || '')} · ${esc(c.title || '')}</div><div class="sub">${esc(c.status)} · opened ${esc(c.opened_on || '')}${c.vendor_quote_number ? ' · quote #' + esc(c.vendor_quote_number) : ''}${c.sei_invoice_number ? ' · our invoice #' + esc(c.sei_invoice_number) : ''}</div></div></div>`).join('') : '<div class="note">No job matches.</div>';
+}
+async function refileTo(id, caseId){
+  const j = await api('/docs/' + id + '/refile', {method:'POST', body: caseId ? {case_id: caseId} : {}});
+  if (!j.success) { toast(j.error, true); return; }
+  closeModal(); toast('Moved' + (j.case_id ? ' - opening that job' : ''));
+  if (j.case_id) openCase(j.case_id); else loadToday();
+}
+// A step on the track, clicked: done today, done on a date, not needed, or not done.
+function stepPop(ev, k){
+  ev.stopPropagation();
+  document.querySelectorAll('.stepPop').forEach(x => x.remove());
+  const s = curCase.step_list.find(x => x.key === k) || {};
+  const d = document.createElement('div');
+  d.className = 'stepPop';
+  d.style.cssText = `position:fixed;z-index:99;left:${Math.min(ev.clientX, innerWidth - 220)}px;top:${ev.clientY + 8}px;background:var(--card, #fff);border:1px solid var(--border);border-radius:10px;padding:6px;box-shadow:0 6px 24px rgba(0,0,0,.18);display:flex;flex-direction:column;gap:4px;min-width:200px`;
+  const opts = [];
+  if (!s.at) opts.push(['✓ Done today', () => setStep(k, 'today')]);
+  opts.push(['Done on a date…', () => stepMenu(k, {value: 'date'})]);
+  if (s.at) opts.push(['Not done', () => setStep(k, null)]);
+  opts.push([s.na ? 'Needed after all' : 'Not needed', () => setStep(k, s.na ? null : 'na')]);
+  d.innerHTML = `<div class="note" style="padding:2px 6px"><b>${esc(s.label || k)}</b>${s.at ? ' · done ' + esc(s.at) : ''}</div>`;
+  opts.forEach(([label, fn]) => { const b = document.createElement('button'); b.className = 'btn s'; b.style.textAlign = 'left'; b.textContent = label; b.onclick = () => { d.remove(); fn(); }; d.appendChild(b); });
+  document.body.appendChild(d);
+  setTimeout(() => document.addEventListener('click', function off(e){ if (!d.contains(e.target)) { d.remove(); document.removeEventListener('click', off); } }), 0);
+}
+function linkMenu(id, sel){ const v = sel.value; sel.value = ''; if (v === 'quote') linkQuote(id); else if (v === 'invoice') linkInvoice(id); else if (v === 'job') linkJob(id); }
+function editPo(){ const v = prompt('PO # for this item:', curCase.po_number || ''); if (v != null && v.trim() !== (curCase.po_number || '')) patchCase({po_number: v.trim()}); }
 function setStep(k, v){ patchCase({steps: {[k]: v === 'today' ? new Date().toISOString().slice(0,10) : v}}); }
 function stepMenu(k, sel){
   const v = sel.value; sel.value = '';
   if (v === 'na') setStep(k, 'na'); else if (v === 'needed' || v === 'undo') setStep(k, null);
   else if (v === 'date') { const d = prompt('Date it was done (YYYY-MM-DD):', new Date().toISOString().slice(0,10)); if (d) setStep(k, d); }
-}
-function saveCaseFields(){
-  const data = {};
-  document.querySelectorAll('#drawer [data-f]').forEach(el => data[el.dataset.f] = el.value);
-  patchCase(data).then(j => { if (j.success) { toast('Saved'); closeDrawer(); } });
 }
 // Status of an approved job: parts ordered (and when they're due), client
 // notified, scheduled, work done… newest on top, every update in the log.
@@ -1282,10 +1358,11 @@ const JOB_STATUSES = [['parts_ordered', 'Parts ordered'], ['waiting_vendor', 'Wa
 function statusSec(c){
   const hist = (c.events || []).filter(e => e.action === 'status');
   return `<details class="sec fold"><summary><h4>Status update</h4>${statusLine(c) ? ` <span class="note">${statusLine(c)}</span>` : ' <span class="note">none yet - add one</span>'}</summary>
+    ${(c.job_status || {}).kind ? `<div class="note" style="margin-top:6px">Picked the wrong kind? Change it to: <select onchange="jsRelabel(${c.id}, this.value)"><option value="">-</option>${JOB_STATUSES.filter(([k]) => k !== c.job_status.kind).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></div>` : ''}
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px">
-      <select id="js_kind" onchange="jsKind()">${JOB_STATUSES.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select>
-      <input type="date" id="js_on" title="When the parts are due / the day it is scheduled">
-      <span id="js_weeks" style="display:flex;gap:4px">${[1, 2, 3, 4].map(w => `<button class="btn s" onclick="jsWeeks(${w})">${w} wk${w > 1 ? 's' : ''}</button>`).join('')}</span>
+      <select id="js_kind" onchange="jsKind()">${JOB_STATUSES.map(([k, l]) => `<option value="${k}" ${k === 'note' ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <input type="date" id="js_on" value="${todayIso()}" title="The day - today unless you change it (when the parts are due / the day it is scheduled)">
+      <span id="js_weeks" style="display:none;gap:4px">${[1, 2, 3, 4].map(w => `<button class="btn s" onclick="jsWeeks(${w})">${w} wk${w > 1 ? 's' : ''}</button>`).join('')}</span>
       <input type="text" id="js_text" placeholder="Note - e.g. motor ordered from Wettech, client told by email" style="flex:1;min-width:200px">
       <button class="btn p" onclick="jsAdd(${c.id})">＋ Add update</button></div>
     ${hist.length ? `<div style="margin-top:8px">${hist.map(e => `<div class="note">${esc(niceDay(d10(e.at)))} · ${esc(e.actor || '')} · ${esc(e.detail)}</div>`).join('')}</div>` : ''}</details>`;
@@ -1319,7 +1396,8 @@ function glanceHtml(c){
     ${c.chase ? `<div class="note" style="margin-bottom:8px">${chaseLine(c).replace(/^<br>/, '')}</div>` : ''}
     <div class="money">${quoteCard}${billCard}${card('Our invoice', ourInv, invSub)}${`<div class="m"><div class="k">${esc(v)} paid?</div>${vendorPayHtml(c)}</div>`}</div>
     ${cmpText ? `<div class="cmp ${esc(cmp.state)}">${cmpText}</div>` : ''}
-    <div style="margin-top:10px">${journeyHtml(c, 'track')}</div></div>`;
+    <div style="margin-top:10px">${journeyHtml(c, 'track')}</div>
+    <div class="note" style="margin-top:4px">Click a step to tick it, untick it or mark it not needed · <select class="s" onchange="moveCase(this)" title="Out of step? Bring the job up to where it really is - the steps before are ticked done today." style="padding:2px 4px;font-size:12px"><option value="">Move to…</option>${c.step_list.filter(s => !s.na).map(s => `<option value="${s.key}">${esc(s.label)}</option>`).join('')}</select></div></div>`;
 }
 // The related vendor invoice, from a job: the Vendor invoices tab, searched for its site.
 function findVendorInvoice(name){
@@ -1336,6 +1414,37 @@ async function jsAdd(id){
   const j = await api('/cases/' + id + '/status', {method:'POST', body:{kind: v('js_kind'), on: v('js_on'), text: v('js_text').trim()}});
   if (!j.success) { toast(j.error, true); return; }
   curCase = j.case; renderCase(); toast('Status updated'); loadToday();
+}
+// An invoiced one-off pump job still open in Jobber: closed when someone clicks it.
+async function closeJobberJob(id, btn){
+  if (!confirm('Close this job in Jobber?\n\nIts invoice has gone out - nothing is sent to the client.')) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Closing…'; }
+  const j = await api('/jobber/jobs/close', {method:'POST', body:{job_id: id}});
+  if (btn) { btn.disabled = false; btn.textContent = 'Close job in Jobber'; }
+  if (!j.success) { toast(j.error, true); return; }
+  toast('Closed in Jobber'); loadToday();
+}
+// A SCADA renewal's quote: drafted in Jobber only when someone clicks it (never by itself).
+async function draftScadaQuote(id, btn){
+  if (!confirm('Draft the SCADA renewal quote in Jobber now?\n\nIt is made as a draft - nothing is sent to the client.')) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Drafting…'; }
+  const j = await api('/scada/' + id + '/draft_quote', {method:'POST'});
+  if (btn) { btn.disabled = false; btn.textContent = 'Draft quote in Jobber'; }
+  if (!j.success) { toast(j.error, true); return; }
+  toast(j.quote.already ? `Already drafted - quote #${j.quote.number}` : `Drafted quote #${j.quote.number} in Jobber - send it from there`);
+  loadToday();
+}
+// The latest status was the wrong kind ("Parts ordered" for a call to the client): relabel it, words kept.
+async function jsRelabel(id, kind){
+  if (!kind) return;
+  const j = await api('/cases/' + id + '/status/kind', {method:'POST', body:{kind}});
+  if (!j.success) { toast(j.error, true); return; }
+  curCase = j.case; renderCase(); toast('Changed'); loadToday();
+}
+// Rename an item - the title it got from a document can be long or say the wrong thing (Banyan Bay, Oct 2026).
+function editTitle(){
+  const t = prompt('Title for this item:', curCase.title || curCase.client_name || '');
+  if (t != null && t.trim() && t.trim() !== curCase.title) patchCase({title: t.trim()}).then(j => { if (j && j.success) { toast('Renamed'); loadToday(); } });
 }
 function addNote(){ const t = prompt('Note for this item:'); if (t) patchCase({note: t}); }
 async function caseDone(id){
@@ -1360,7 +1469,7 @@ async function billAnyway(id){
   if (j.doc_id) draftInvoice(j.doc_id); else toast('Alert cleared');
 }
 async function resolveIssue(id){ const r = prompt('How was it resolved? (e.g. "Wettech confirmed extra fittings, client approved")'); if (!r) return; const j = await api('/issues/' + id + '/resolve', {method:'POST', body:{resolution:r}}); if (j.success) openCase(curCase ? curCase.id : null).then(loadToday); else toast(j.error, true); }
-function uploadForCase(){ const i = document.createElement('input'); i.type = 'file'; i.multiple = true; i.accept = '.pdf,.docx,.doc'; i.onchange = () => uploadFiles(i.files, curCase.id); i.click(); }
+function uploadForCase(){ uploadBox(curCase.id); }
 
 function newCase(){
   openModal('New item', `<div class="fields">
@@ -1380,6 +1489,25 @@ async function createCase(){
 }
 
 // ── inbox ─────────────────────────────────────────────
+// Upload: a box to drop files on, or click it to pick them (Oct 2026). What they are comes from the
+// menu beside the button - or pick it here.
+function uploadBox(caseId){
+  const kind = caseId ? '' : document.getElementById('uploadKind').value;
+  openModal('Upload documents', `
+    ${caseId ? '' : `<label class="note" style="display:block;margin-bottom:8px">What they are <select id="upBoxKind" style="margin-left:6px"><option value="">Let the app decide</option><option value="quote">Quotes</option><option value="bill">Bills</option><option value="report">Reports</option></select></label>`}
+    <div id="dropZone" style="border:2px dashed var(--border);border-radius:12px;padding:36px 16px;text-align:center;cursor:pointer">
+      <div style="font-size:28px">📄</div><b>Drag and drop files here</b><div class="note">or click to choose - PDF or Word, several at once</div></div>
+    <input type="file" id="dropIn" multiple accept=".pdf,.docx,.doc" class="hide">`,
+    `<button class="btn" onclick="closeModal()">Cancel</button>`);
+  const sel = document.getElementById('upBoxKind'); if (sel) sel.value = kind;
+  const z = document.getElementById('dropZone'), inp = document.getElementById('dropIn');
+  const go = files => { if (!files || !files.length) return; if (sel) document.getElementById('uploadKind').value = sel.value; closeModal(); uploadFiles(files, caseId); };
+  z.onclick = () => inp.click();
+  inp.onchange = () => go(inp.files);
+  ['dragenter', 'dragover'].forEach(e => z.addEventListener(e, ev => { ev.preventDefault(); z.style.background = 'var(--violet-bg)'; z.style.borderColor = 'var(--violet)'; }));
+  ['dragleave', 'drop'].forEach(e => z.addEventListener(e, ev => { ev.preventDefault(); z.style.background = ''; z.style.borderColor = ''; }));
+  z.addEventListener('drop', ev => go(ev.dataTransfer.files));
+}
 async function uploadFiles(files, caseId){
   if (!files || !files.length) return;
   const fd = new FormData();
@@ -1494,7 +1622,27 @@ async function draftInvoice(docId){
   drawLines(); findClients();
 }
 function jobMatchHtml(job){
-  return job ? `<div class="safe" id="jobMatch">Matches Jobber job <a href="${esc(job.uri)}" target="_blank" rel="noopener"><b>#${esc(job.number)} ${esc(job.title)}</b> ↗</a> (${esc((job.status || '').replace(/_/g, ' '))}, ${money(job.total)}) - the invoice goes on that job at its price${job.type === 'recurring' ? ", and the job's visit for the bill's month is marked complete" : ''}. <button class="btn s" onclick="dropJobMatch()">Not this job - bill + 30%</button></div>` : '';
+  return job ? `<div class="safe" id="jobMatch">Matches Jobber job <a href="${esc(job.uri)}" target="_blank" rel="noopener"><b>#${esc(job.number)} ${esc(job.title)}</b> ↗</a> (${esc((job.status || '').replace(/_/g, ' '))}, ${money(job.total)}) - the invoice goes on that job at its price${job.type === 'recurring' ? ", and the job's visit for the bill's month is marked complete" : ''}. <button class="btn s" onclick="dropJobMatch()">Not this job - bill + 30%</button> <button class="btn s" onclick="otherJobs()">Use a different job…</button><div id="otherJobs"></div></div>` : (inv.client_id ? `<div class="note"><button class="btn s" onclick="otherJobs()">Put it on one of the client's recurring jobs…</button><div id="otherJobs"></div></div>` : '');
+}
+// The client's other recurring jobs, to put the invoice on a different one (Caymas, Oct 2026: it took the $0
+// "Monthly Water Reading" job).
+async function otherJobs(){
+  const box = document.getElementById('otherJobs');
+  if (!inv.client_id) { toast('Pick the Jobber client first.', true); return; }
+  box.innerHTML = '<div class="note">Looking up the recurring jobs…</div>';
+  const j = await api('/jobber/recurring_jobs?client_id=' + encodeURIComponent(inv.client_id));
+  if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
+  box.innerHTML = (j.jobs || []).length ? `<select onchange="useJob(this.value)" style="margin-top:6px;max-width:100%"><option value="">Pick the job…</option>${j.jobs.map(x => `<option value="${esc(x.id)}" ${inv.job && inv.job.id === x.id ? 'selected' : ''}>#${esc(x.number)} ${esc(x.title)} - ${money(x.price)}${x.property_label ? ' · ' + esc(x.property_label) : ''}</option>`).join('')}</select>` : '<div class="note">This client has no live recurring jobs in Jobber.</div>';
+}
+async function useJob(jobId){
+  if (!jobId) return;
+  const j = await api('/docs/' + inv.doc.id + '/invoice_suggestion?client_id=' + encodeURIComponent(inv.client_id) + '&job_id=' + encodeURIComponent(jobId));
+  const s = j.success && j.suggestion;
+  if (!s || !s.job) { toast((j && j.error) || "That job has no priced lines to invoice from", true); return; }
+  inv.dropped = false; inv.job = s.job; inv.lines = s.line_items.map(x => Object.assign({}, x)); inv.bill_lines = s.bill_lines || inv.bill_lines;
+  const subj = document.getElementById('invSubject'); if (subj && s.subject) subj.value = s.subject;
+  document.getElementById('jobMatchBox').innerHTML = jobMatchHtml(inv.job);
+  drawLines(); toast('Now on job #' + s.job.number);
 }
 // The client is picked: a maintenance bill takes that client's recurring job price (Rosewood, Oct 2026).
 async function invForClient(id){
@@ -1720,16 +1868,25 @@ async function loadScada(){
   const show = document.getElementById('scShow').value;
   const lab = {overdue:['r','Overdue'], due_soon:['a','Due soon'], current:['g','Current'], unknown:['','No date'], inactive:['','Stopped']};
   const rows = j.scada.filter(s => show === 'all' || s.state !== 'inactive');
-  const yr = j.years;
+  // Only this year's column, unless "All years" is open (the office, Oct 2026).
+  const cur = String(new Date().getFullYear());
+  const yr = window.SC_ALL_YEARS ? j.years : j.years.filter(y => y === cur);
   const cell = v => !v ? '' : (/^\d{4,6}$/.test(v) ? `<b>${esc(v)}</b>` : `<span class="note">${esc(v)}</span>`);
-  document.getElementById('scadaTable').innerHTML = `<thead><tr><th>Status</th><th>Client</th><th>Renewal date</th><th>Product</th><th class="num">Amount</th><th>Our bill</th><th>Vendor</th>${yr.map(y => `<th>${y}</th>`).join('')}<th></th></tr></thead><tbody>` +
+  const QS = {draft: ['a', 'Draft - send it'], awaiting_response: ['b', 'Sent'], changes_requested: ['a', 'Changes asked'],
+              approved: ['g', 'Approved'], converted: ['g', 'Approved'], archived: ['', 'Archived'], rejected: ['r', 'Declined']};
+  const quoteCell = s => { const q = s.renewal_quote; if (!q) return '<span class="note">-</span>';
+    const [c, l] = QS[q.status] || ['', (q.status || '').replace(/_/g, ' ')];
+    return `${q.uri ? `<a target="_blank" rel="noopener" href="${esc(q.uri)}">#${esc(q.number)} ↗</a>` : '#' + esc(q.number)}${l ? ` <span class="chip ${c}">${esc(l)}</span>` : ''}`; };
+  const yearsBtn = `<a href="#" onclick="event.preventDefault();window.SC_ALL_YEARS=!window.SC_ALL_YEARS;loadScada()">${window.SC_ALL_YEARS ? 'just ' + cur : 'all years'}</a>`;
+  document.getElementById('scadaTable').innerHTML = `<thead><tr><th>Status</th><th>Client</th><th>Renewal date</th><th>Product</th><th class="num">Amount</th><th>Our bill</th><th>Vendor</th><th>Renewal quote</th>${yr.map((y, i) => `<th>${y}${i === yr.length - 1 ? ` <span class="note" style="font-weight:400">· ${yearsBtn}</span>` : ''}</th>`).join('')}<th></th></tr></thead><tbody>` +
     (rows.map(s => `<tr>
       <td><span class="chip ${lab[s.state][0]}">${lab[s.state][1]}</span>${s.complimentary ? ' <span class="chip">complimentary</span>' : ''}${s.days_left != null && s.state !== 'current' && s.state !== 'inactive' ? `<div class="note">${s.days_left < 0 ? -s.days_left + ' days late' : 'in ' + s.days_left + ' days'}</div>` : ''}</td>
       <td><b>${esc(s.client)}</b>${s.notes ? `<div class="note">${esc(s.notes)}</div>` : ''}</td>
       <td style="white-space:nowrap">${esc(s.next_due_on)}</td><td class="note">${esc(s.product)}</td>
       <td class="num">${money(s.vendor_cost)}</td><td>${esc(s.our_bill)}</td><td>${esc(s.vendor)}</td>
+      <td style="white-space:nowrap">${quoteCell(s)}</td>
       ${yr.map(y => `<td>${cell(s.years[y])}</td>`).join('')}
-      <td style="white-space:nowrap">${s.state !== 'inactive' ? `<button class="btn s p" onclick="scadaRenewed(${s.id})">Renewed…</button> ` : ''}${['overdue','due_soon'].includes(s.state) ? `<button class="btn s" onclick="scadaRenew(${s.id})">${s.case_id ? 'Open item' : 'Start item'}</button> ` : ''}<button class="btn s" onclick="scadaEdit(${s.id})">Edit</button></td></tr>`).join('') || `<tr><td colspan="${8 + yr.length}" class="empty">No SCADA clients.</td></tr>`) + '</tbody>';
+      <td style="white-space:nowrap">${s.state !== 'inactive' ? `<button class="btn s p" onclick="scadaRenewed(${s.id})">Renewed…</button> ` : ''}${['overdue','due_soon'].includes(s.state) ? `<button class="btn s" onclick="scadaRenew(${s.id})">${s.case_id ? 'Open item' : 'Start item'}</button> ` : ''}<button class="btn s" onclick="scadaEdit(${s.id})">Edit</button></td></tr>`).join('') || `<tr><td colspan="${9 + yr.length}" class="empty">No SCADA clients.</td></tr>`) + '</tbody>';
 }
 async function scadaRenew(id){ const j = await api('/scada/' + id, {method:'POST', body:{action:'renewal_item'}}); if (j.success) openCase(j.case_id); else toast(j.error, true); }
 async function scadaRenewed(id){
@@ -2175,44 +2332,44 @@ function jobberNo(c){ const J = c.jobber || {}, r = (J.job && J.job.number) ? ['
   return r ? ` · <a href="${esc(r[1].uri || '#')}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ${r[0]} #${esc(r[1].number)} ↗</a>` : ''; }
 // A document's number with its amount, e.g. "#Q-5521 $950.00".
 function numAmt(num, amt){ const n = num ? `<span class="note">#${esc(String(num).replace(/^#/, ''))}</span>` : ''; const a = amt != null ? `<b>${money(amt)}</b>` : ''; return [n, a].filter(Boolean).join(' '); }
+// Sections folded away stay folded (this browser only): the not-urgent quotes, the maintenance list.
+function foldOpen(k){ try { return localStorage.getItem('pumps.fold.' + k) !== 'closed'; } catch (e) { return true; } }
+function foldSave(k, open){ try { localStorage.setItem('pumps.fold.' + k, open ? 'open' : 'closed'); } catch (e) {} }
+(() => { const mf = document.getElementById('msFold'); if (mf && !foldOpen('ms')) mf.open = false; })();
+// The quote steps: an item here is still a quote, not yet a job.
+const QUOTE_STAGES = ['assessment', 'vendor_quote', 'client_quote', 'client_approved'];
+async function setUrgent(id, on){
+  const j = await api('/cases/' + id + '/urgent', {method:'POST', body:{on}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast(on ? 'Urgent - up with the jobs' : 'Back with the quotes that can wait'); loadJobs();
+}
 async function loadJobs(){
   loadMaintSchedule();
   const st = document.getElementById('jbShow').value, q = document.getElementById('jbSearch').value.trim();
   const [j, ji] = await Promise.all([api('/cases?status=' + st + (q ? '&q=' + encodeURIComponent(q) : '')), api('/jobber/items?open=1&kind=quote&show_ignored=1')]);
   if (!j.success) { document.getElementById('jobsBody').innerHTML = `<tr><td colspan="9" class="empty">${esc(j.error)}</td></tr>`; return; }
   const ref = r => r ? (r.uri ? `<a href="${esc(r.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">#${esc(r.number || '')} ↗</a>` : (r.number ? '#' + esc(r.number) : '')) : '';
-  document.getElementById('jobsBody').innerHTML = (j.cases || []).map(c => { const jb = c.jobber || {}, vp = c.vendor_pay || {};
+  // Quotes wait at the bottom under "Quotes - not urgent" unless marked urgent (Oct 2026).
+  const isQuote = c => c.status === 'open' && QUOTE_STAGES.includes(c.stage);
+  const quietQ = c => isQuote(c) && !c.urgent;
+  const all = j.cases || [], main = all.filter(c => !quietQ(c)), quiet = all.filter(quietQ);
+  const row = c => { const jb = c.jobber || {}, vp = c.vendor_pay || {};
     return `<tr class="click" onclick="openCase(${c.id})">
     <td><b title="${esc(c.title || c.client_name)}">${esc(c.short_title || c.title || c.client_name)}</b><div class="note">${esc([c.client_name, c.site].filter(Boolean).join(' · '))}${c.po_number ? ' · PO ' + esc(c.po_number) : ''}${jobberNo(c)}</div></td>
-    <td>${stageChip(c)}${statusLine(c) ? `<div class="note">${statusLine(c)}</div>` : ''}${c.status === 'open' ? lastAction(c) : ''}</td>
+    <td>${c.urgent && isQuote(c) ? '<span class="chip r">urgent</span> ' : ''}${stageChip(c)}${statusLine(c) ? `<div class="note">${statusLine(c)}</div>` : ''}${c.status === 'open' ? lastAction(c) : ''}</td>
     <td>${esc(c.vendor)}</td><td>${numAmt(c.vendor_quote_number, c.vendor_quote_amount ?? c.vendor_quote_total)}</td>
     <td>${ref(jb.quote)}${jb.quote && jb.quote.total != null ? ' <b>' + money(jb.quote.total) + '</b>' : ''}${jb.quote && jb.quote.status ? ` <span class="note">${esc(jb.quote.status.replace(/_/g, ' '))}</span>` : ''}</td>
     <td>${numAmt(c.vendor_bill_number, c.vendor_bill_amount ?? c.vendor_bill_total)}</td>
     <td>${ref(jb.invoice) || (c.sei_invoice_number ? '#' + esc(c.sei_invoice_number) : '')}${(jb.invoice || c.sei_invoice_number) && ((jb.invoice || {}).total ?? c.amount) != null ? ' <b>' + money((jb.invoice || {}).total ?? c.amount) + '</b>' : ''}${jb.invoice && jb.invoice.status ? ` <span class="note">${esc(jb.invoice.status.replace(/_/g, ' '))}</span>` : ''}</td>
     <td>${vp.state === 'paid' ? '<span class="chip g">paid</span>' : vp.state === 'due' ? '<span class="chip r">pay now</span>' : vp.state === 'unpaid' ? '<span class="note">not yet</span>' : ''}</td>
-    <td style="white-space:nowrap">${jb.job && jb.job.uri ? `<a class="btn s" href="${esc(jb.job.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ↗</a> ` : ''}${c.status === 'open' ? `<button class="btn s" title="Mark done" onclick="event.stopPropagation();caseDone(${c.id})">✓ Done</button> <button class="btn s" title="Remove" onclick="event.stopPropagation();caseRemove(${c.id})">✕</button>` : `<button class="btn s" onclick="event.stopPropagation();caseReopen(${c.id})">↺ Reopen</button>`}</td></tr>`; }).join('') || '<tr><td colspan="9" class="empty">No jobs.</td></tr>';
+    <td style="white-space:nowrap">${isQuote(c) ? (c.urgent ? `<button class="btn s" title="Back to Quotes - not urgent" onclick="event.stopPropagation();setUrgent(${c.id}, false)">⬇ Not urgent</button> ` : `<button class="btn s" title="Move it up with the jobs" onclick="event.stopPropagation();setUrgent(${c.id}, true)">⬆ Urgent</button> `) : ''}${jb.job && jb.job.uri ? `<a class="btn s" href="${esc(jb.job.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ↗</a> ` : ''}${c.status === 'open' ? `<button class="btn s" title="Mark done" onclick="event.stopPropagation();caseDone(${c.id})">✓ Done</button> <button class="btn s" title="Remove" onclick="event.stopPropagation();caseRemove(${c.id})">✕</button>` : `<button class="btn s" onclick="event.stopPropagation();caseReopen(${c.id})">↺ Reopen</button>`}</td></tr>`; };
+  document.getElementById('jobsBody').innerHTML = (main.map(row).join('') || '<tr><td colspan="9" class="empty">No jobs.</td></tr>')
+    + (quiet.length ? `<tr class="click" onclick="foldSave('qq', !foldOpen('qq'));loadJobs()"><td colspan="9" style="background:var(--bg);font-weight:700;padding-top:14px">${foldOpen('qq') ? '▾' : '▸'} Quotes - not urgent (${quiet.length}) <span class="note" style="font-weight:400">· click to ${foldOpen('qq') ? 'fold away' : 'show'} · ⬆ Urgent moves one up with the jobs</span></td></tr>` + (foldOpen('qq') ? quiet.map(row).join('') : '') : '');
   const s = ji.sync || {};
   document.getElementById('syncInfo').innerHTML = !JOBBER_OK ? '<b class="warn">Jobber is not connected.</b>' :
     (s.state === 'running' ? `Syncing Jobber… (started ${esc(s.started_at || '')})` : (s.state === 'failed' || s.state === 'interrupted' ? `<b class="bad">Last sync did not finish</b> - it runs again on its own · ` : '') + (s.finished_at ? `Synced with Jobber ${esc(s.finished_at.slice(11, 16))}` + (s.seconds != null && s.state === 'done' ? ` (took ${s.seconds < 90 ? s.seconds + ' sec' : Math.round(s.seconds / 60) + ' min'})` : '') : 'Not synced yet.') + (s.every_min ? ` · syncs on its own every ${s.every_min} min` : '')) + ((s.errors || []).length ? ` · <span class="bad" title="${esc(s.errors.join('\n'))}">${s.errors.length} errors</span>` : '');
   clearTimeout(window._syncPoll);
   if (s.state === 'running') window._syncPoll = setTimeout(() => { if (curTab === 'jobs') loadJobs(); }, 5000);
-  // Our quotes sent to the client, not approved yet - newest quote first.
-  window._sent = (ji.items || []).filter(it => it.kind === 'quote' && ['awaiting_response', 'changes_requested'].includes(it.status))
-    .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '') || (parseInt(b.number) || 0) - (parseInt(a.number) || 0));
-  drawSent();
-}
-function drawSent(){
-  const all = window._sent || [], q = (document.getElementById('jbSentSearch').value || '').trim().toLowerCase().replace(/^#/, '');
-  const sent = q ? all.filter(it => [it.number, it.title, it.client_name, it.property_label, it.category].join(' ').toLowerCase().includes(q)) : all;
-  const days = d => d ? Math.max(0, Math.floor((Date.now() - new Date(d).getTime()) / 86400000)) : null;
-  document.getElementById('jbSentCount').textContent = q ? sent.length + ' of ' + all.length : all.length;
-  document.getElementById('jbSentBody').innerHTML = sent.map(it => { const n = days(it.updated_at || it.created_at); return `<tr${it.case_id ? ` class="click" onclick="openCase(${it.case_id})"` : ''}>
-    <td><a href="${esc(it.web_uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${it.number ? '#' + esc(it.number) + ' ' : ''}${esc(it.title)} ↗</a> ${catChip(it.category)}</td>
-    <td>${esc(it.client_name)}<div class="note">${esc(it.property_label)}</div></td>
-    <td class="num">${it.total != null ? '<b>' + money(it.total) + '</b>' : ''}</td>
-    <td>${it.status === 'changes_requested' ? '<span class="chip a">changes requested</span>' : '<span class="note">sent</span>'}</td>
-    <td>${n == null ? '' : n >= 14 ? `<b class="warn">${n} days</b>` : n + (n === 1 ? ' day' : ' days')}</td>
-    <td>${it.case_id ? `<span class="note">job ${it.case_id}</span>` : ''}</td></tr>`; }).join('') || `<tr><td colspan="6" class="empty">${!JOBBER_OK ? 'Connect Jobber to see quotes.' : q ? 'No quote matches.' : 'No quotes waiting on a client.'}</td></tr>`;
 }
 // Sign the approved vendor quote ("Simon Weardon 10/12/2026" typed on it),
 // save it here and on the Jobber quote, and email it to the vendor.
@@ -2334,7 +2491,7 @@ let ACH = null;
 async function openAccount(name){
   const j = await api('/accounts/history?name=' + encodeURIComponent(name));
   if (!j.success) { toast(j.error || 'Not found', true); return; }
-  ACH = j; renderAccount();
+  ACH = j; window._acJName = null; renderAccount();
   document.getElementById('drawerWrap').classList.remove('hide');
 }
 function renderAccount(){
@@ -2361,7 +2518,7 @@ function renderAccount(){
   const where = (p && p.address) || (l && l.address) || '';
   const links = [jb.client && jb.client.uri ? `<a class="btn s" href="${esc(jb.client.uri)}" target="_blank" rel="noopener">${esc(jb.client.name)} in Jobber ↗</a>` : '',
     ...(jb.recurring || []).filter(r => r.uri).map(r => `<a class="btn s" href="${esc(r.uri)}" target="_blank" rel="noopener">Job #${esc(r.number)} ${esc(r.title || '')} ↗</a>`)].filter(Boolean).join(' ');
-  const docs = (a.docs || []).map(d => `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--border)">${kindChip(d.kind)} <span style="flex:1;min-width:160px"><b>${esc(d.file_name)}</b> <span class="note">${d.doc_number ? '#' + esc(d.doc_number) + ' · ' : ''}${d.total != null ? money(d.total) + ' · ' : ''}${esc(d.doc_date || d10(d.created_at))}${d.signed_sent_at ? ' · signed &amp; sent ' + esc(d10(d.signed_sent_at)) : d.signed_at ? ' · signed ' + esc(d10(d.signed_at)) : ''}</span></span>
+  const docs = (a.docs || []).filter(d => d.kind !== 'bill').map(d => `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--border)">${kindChip(d.kind)} <span style="flex:1;min-width:160px"><b>${esc(d.file_name)}</b> <span class="note">${d.doc_number ? '#' + esc(d.doc_number) + ' · ' : ''}${d.total != null ? money(d.total) + ' · ' : ''}${esc(d.doc_date || d10(d.created_at))}${d.signed_sent_at ? ' · signed &amp; sent ' + esc(d10(d.signed_sent_at)) : d.signed_at ? ' · signed ' + esc(d10(d.signed_at)) : ''}</span></span>
       <a class="btn s" href="/pumps/api/docs/${d.id}/file" target="_blank">Open</a>${d.has_branded ? ` <a class="btn s" target="_blank" href="/pumps/api/docs/${d.id}/file?version=branded_pdf">SE report PDF</a>` : ''}${d.signed_at ? ` <a class="btn s" href="/pumps/api/docs/${d.id}/file?version=approved&download=1">⬇ Signed</a>` : ''}${d.case_id ? ` <a href="#" onclick="event.preventDefault();openCase(${d.case_id})">job ↗</a>` : ''}</div>`).join('');
   const vis = (AC && AC.accounts.find(x => x.name === a.name) || {}).visit;
   document.getElementById('drawer').dataset.account = a.name;
@@ -2369,19 +2526,53 @@ function renderAccount(){
   <div class="hd"><div><h2>${esc(a.name)}${ac.active === false ? ' <span class="chip">former</span>' : ''}</h2><div class="note">${where ? esc(where) + ' · ' : ''}${open.length} open to-do${open.length === 1 ? '' : 's'} · ${a.todos.length} in all · ${a.jobs.length} job${a.jobs.length === 1 ? '' : 's'}</div></div>
     <div><button class="btn" onclick="closeDrawer()">✕</button></div></div>
   <div class="bd">
-    <div class="sec"><h4>Setup</h4><div style="display:flex;gap:8px;flex-wrap:wrap">${setup}</div>
+    <div class="sec"><h4>In Jobber</h4><div id="acJobber">${(jb.client_ids || []).length ? '<div class="note">Loading invoices, jobs and requests from Jobber…</div>' : '<div class="note">Not linked to a Jobber client yet - link it in Setup below.</div>'}</div></div>
+    <div class="sec"><h4>Vendor invoices (${(a.vendor_bills || []).length})</h4>${vendorBillsHtml(a.vendor_bills || [])}</div>
+    <details class="sec fold"><summary><h4>Setup</h4> <span class="note">pump, lake and SCADA - what they have and the prices</span></summary><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">${setup}</div>
       ${ac.active && ((p && p.active) || (l && l.active !== 0)) ? `<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn s ${vis ? '' : 'p'}" onclick="accountReady(${q(a.name)})">✓ Ready - client approved</button>${vis ? `<span class="note">✓ Client approved ${esc((vis.link || {}).since || '')} · waiting on ${esc(((vis.link || {}).vendors || []).filter(x => !((vis.link || {}).reported || []).includes(x)).join(' and '))}</span>` : ''}</div>` : ''}
-      ${links ? `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">${links}</div>` : ''}</div>
+      ${links ? `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">${links}</div>` : ''}</details>
     <div class="sec"><h4>Add a to-do for ${esc(a.name)}</h4><div style="display:flex;gap:6px;flex-wrap:wrap">
       <input type="text" id="acTodoTitle" placeholder="What needs doing" style="flex:1;min-width:180px">
       <input type="date" id="acTodoDue" title="Due (optional)">
       <button class="btn p" onclick="accountTodoAdd(${q(a.name)})">＋ Add</button></div></div>
     <div class="sec"><h4>To do (${open.length})</h4><div style="display:flex;flex-direction:column;gap:8px">${open.map(todo).join('') || '<div class="note">Nothing open.</div>'}</div></div>
     <div class="sec"><h4>Done (${done.length})</h4><div style="display:flex;flex-direction:column;gap:8px">${done.map(todo).join('') || '<div class="note">Nothing done yet.</div>'}</div></div>
-    <div class="sec"><h4>Jobs (${a.jobs.length})</h4>${jobs || '<div class="note">No jobs.</div>'}</div>
-    <div class="sec"><h4>Documents (${(a.docs || []).length})</h4>${docs || '<div class="note">No quotes, bills or reports yet.</div>'}</div>
+    <div class="sec"><h4>Items followed here (${a.jobs.length})</h4>${jobs || '<div class="note">None.</div>'}</div>
+    <div class="sec"><h4>Reports and quotes (${(a.docs || []).filter(d => d.kind !== 'bill').length})</h4>${docs || '<div class="note">No reports or quotes yet.</div>'}</div>
     ${notices ? `<div class="sec"><h4>Maintenance - subcontractor notified</h4>${notices}</div>` : ''}
   </div>`;
+  // Jobber's history: fetched once per account, kept while its page re-draws.
+  if (window._acJName === a.name && window._acJ) acJobberShow(window._acJTab || 'invoices');
+  else { window._acJ = null; window._acJName = a.name; loadAccountJobber(jb.client_ids || []); }
+}
+// Every vendor invoice for the account: what, when, how much, our invoice, paid.
+function vendorBillsHtml(bills){
+  if (!bills.length) return '<div class="note">No vendor invoices yet.</div>';
+  return `<table class="t"><thead><tr><th>Date</th><th>Vendor</th><th>Their invoice</th><th class="num">Amount</th><th>Our invoice</th><th>Paid</th><th></th></tr></thead><tbody>${bills.map(b => `<tr>
+    <td>${esc(b.date)}</td><td>${esc(b.vendor)}</td><td><a target="_blank" href="/pumps/api/docs/${b.id}/file">#${esc(b.number || '?')}</a></td>
+    <td class="num">${money(b.total ?? b.subtotal)}</td><td>${b.our_invoice ? '#' + esc(b.our_invoice) : '<span class="note">-</span>'}</td>
+    <td>${b.paid_on ? '<span class="chip g">paid ' + esc(b.paid_on) + '</span>' : '<span class="note">not yet</span>'}</td>
+    <td>${b.case_id ? `<a href="#" onclick="event.preventDefault();openCase(${b.case_id})">job ↗</a>` : ''}</td></tr>`).join('')}</tbody></table>`;
+}
+// The account's Jobber history: invoices, jobs and requests, newest first - one click between them.
+async function loadAccountJobber(ids){
+  const box = document.getElementById('acJobber');
+  if (!box || !ids.length) return;
+  const j = await api('/accounts/jobber_history?' + ids.map(i => 'client_id=' + encodeURIComponent(i)).join('&'));
+  if (!document.getElementById('acJobber')) return;
+  if (!j.success) { box.innerHTML = `<div class="note">${esc(j.error)}</div>`; return; }
+  window._acJ = j; acJobberShow(window._acJTab || 'invoices');
+}
+function acJobberShow(tab){
+  window._acJTab = tab;
+  const j = window._acJ, box = document.getElementById('acJobber'); if (!j || !box) return;
+  const tabs = [['invoices', 'Invoices'], ['jobs', 'Jobs'], ['requests', 'Service requests']];
+  const rows = j[tab] || [];
+  box.innerHTML = `<div style="display:flex;gap:6px;margin-bottom:8px">${tabs.map(([k, l]) => `<button class="btn s ${k === tab ? 'p' : ''}" onclick="acJobberShow('${k}')">${l} (${(j[k] || []).length})</button>`).join('')}</div>`
+    + (rows.length ? `<table class="t"><thead><tr><th>Date</th><th>#</th><th>Title</th><th>Status</th><th class="num">Amount</th></tr></thead><tbody>${rows.map(r => `<tr>
+      <td>${esc(r.date)}</td><td>${r.uri ? `<a target="_blank" rel="noopener" href="${esc(r.uri)}">${r.number ? '#' + esc(r.number) : 'open'} ↗</a>` : esc(r.number)}</td>
+      <td>${esc(r.title)}${r.type === 'recurring' ? ' <span class="chip">recurring</span>' : ''}</td><td>${esc((r.status || '').replace(/_/g, ' '))}</td>
+      <td class="num">${r.total != null ? money(r.total) : ''}</td></tr>`).join('')}</tbody></table>` : '<div class="note">None in Jobber.</div>');
 }
 // Edit an account's pump, lake or SCADA from its page (the same forms as before).
 async function acEdit(kind, id){

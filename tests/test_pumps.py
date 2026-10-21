@@ -8,6 +8,7 @@ is replaced by a fake that records every request, and documents are "read"
 from canned text. All names below are made up.
 """
 import atexit
+import inspect
 import io
 import json
 import os
@@ -2398,8 +2399,10 @@ class PumpsTest(unittest.TestCase):
             self.assertEqual(sent[0][0], 'christian@example.com')
             self.assertIn('Please pay it.', sent[0][2])
             self.assertEqual(len(sent[0][3]), 1)
+            # Sent = paid (Oct 19 2026): off the list.
             q = self.c.get('/pumps/api/summary').get_json()['queue']['vendor_bills_to_pay']
-            self.assertTrue(next(c for c in q if c['id'] == cid)['pay_email']['sent'])
+            self.assertNotIn(cid, [c['id'] for c in q])
+            self.assertEqual(self.case(cid)['vendor_paid_on'], P._today().isoformat())
 
             def refuse(*a, **k):
                 raise RuntimeError('Microsoft 365 said HTTP 403: Access is denied.')
@@ -2944,7 +2947,10 @@ class PumpsTest(unittest.TestCase):
             if 'filter: { status: approved }' in q:
                 return {'quotes': {'nodes': [node('Q9136', 'Proposal to inspect suction line',
                                                   'Field service to check out pump station, found pipe had melted', 'Greenscapes'),
-                                             node('Q9500', 'Sod and irrigation repairs', 'Replace sod by the clubhouse', 'Some HOA')],
+                                             node('Q9500', 'Sod and irrigation repairs', 'Replace sod by the clubhouse', 'Some HOA'),
+                                             node('Q8443', 'Estimate to replace broken valve boxes and a gate valve',
+                                                  'Irrigation Valve Box Inspection Report', 'Barrington Cove'),
+                                             node('Q8444', 'Proposal', 'Replace the float switch', 'Barrington Cove')],
                                    'pageInfo': {'hasNextPage': False}}}
             return {'quotes': {'nodes': [], 'pageInfo': {'hasNextPage': False}}}
         saved = P.jobber_gql
@@ -2958,6 +2964,9 @@ class PumpsTest(unittest.TestCase):
         self.assertIn('Q9136', seen, 'pump station in the line - kept')
         self.assertEqual((seen['Q9136']['status'], seen['Q9136']['category']), ('approved', 'pump'))
         self.assertNotIn('Q9500', seen, 'sod work for someone else - left out')
+        # One of our accounts (Oct 19 2026): only when it's about pump equipment, not their valve boxes.
+        self.assertNotIn('Q8443', seen, "The Reserve @ Estero's valve boxes - irrigation work, not pumps")
+        self.assertIn('Q8444', seen, 'a float switch at one of our accounts - kept')
 
     def test_sarasota_county_is_billed_the_county_way(self):
         doc = {'line_items': [{'description': 'Field service to furnish and install new 15 HP vertical hollow shaft '
@@ -2978,6 +2987,220 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual((other['line_items'][0]['name'], other['line_items'][0]['unit_price']),
                          ('Service Proposal Amount', 6794.11))
         self.assertEqual(P.gov_missing_refs({'po_number': '1'}), ['WO #'])
+
+    def test_search_jobber_jobs_by_number_or_client(self):
+        """Oct 2026: a service call is found by its job number or the client's name - their recent jobs listed to pick."""
+        nodes = [{'id': 'J1', 'jobNumber': 14592, 'title': 'Pump Service call', 'jobStatus': 'UPCOMING',
+                  'createdAt': '2026-10-15T10:00:00Z', 'startAt': '2026-10-20T13:00:00Z', 'jobberWebUri': 'u1',
+                  'client': {'id': 'C1', 'name': 'Woodmere Lake Club'}},
+                 {'id': 'J2', 'jobNumber': 14001, 'title': 'Irrigation repair', 'jobStatus': 'ARCHIVED',
+                  'createdAt': '2026-08-01T10:00:00Z', 'startAt': None, 'jobberWebUri': 'u2',
+                  'client': {'id': 'C1', 'name': 'Woodmere Lake Club'}}]
+        saved = (P.jobber_gql, P.jobber_status)
+        P.jobber_status = lambda: {'connected': True}
+        P.jobber_gql = lambda q, v=None: {'jobs': {'nodes': nodes}}
+        try:
+            r = self.c.get('/pumps/api/jobber/jobs?q=Woodmere').get_json()
+        finally:
+            P.jobber_gql, P.jobber_status = saved
+        self.assertEqual([j['number'] for j in r['jobs']], ['14592', '14001'], 'newest first')
+        self.assertEqual(r['jobs'][0]['client_name'], 'Woodmere Lake Club')
+
+    def test_rename_an_item(self):
+        """Banyan Bay (Oct 2026): an item's title, made from a report's comments, can be renamed."""
+        j = self.c.post('/pumps/api/cases', json={'title': 'COMMENTS: Input line reactor bad, jumped wires', 'client_name': 'Rename Bay'}).get_json()
+        cid = j.get('case_id') or j['case']['id']
+        r = self.c.patch(f'/pumps/api/cases/{cid}', json={'title': 'New input line reactor and surge arrestor'}).get_json()
+        self.assertTrue(r['success'], r)
+        self.assertEqual(self.case(cid)['title'], 'New input line reactor and surge arrestor')
+
+    def test_recurring_job_with_a_price_and_one_picked(self):
+        """Caymas (Oct 2026): the invoice took "#10912 Monthly Water Reading" at $0 - a priced recurring job is taken over a
+        $0 one, and the office can put it on a different recurring job of the client's."""
+        jobs = {'J0': {'id': 'J0', 'number': '10912', 'title': 'Monthly Water Reading', 'type': 'recurring', 'status': 'upcoming',
+                       'uri': '', 'total': 0, 'instructions': '', 'property_label': '',
+                       'line_items': [{'name': 'PUMP SERVICE', 'description': 'Water reading', 'quantity': 1, 'unit_price': 0, 'taxable': False}]},
+                'J1': {'id': 'J1', 'number': '9654', 'title': 'Quarterly Pump Maintenance', 'type': 'recurring', 'status': 'upcoming',
+                       'uri': '', 'total': 3706.25, 'instructions': '', 'property_label': '',
+                       'line_items': [{'name': 'PUMP SERVICE', 'description': 'Quarterly pump service', 'quantity': 1,
+                                       'unit_price': 3706.25, 'taxable': False}]}}
+        saved = (P.recurring_jobs, P.job_detail, P.jobber_status)
+        P.recurring_jobs = lambda cid: [{'id': 'J0', 'number': 10912, 'title': 'Monthly Water Reading', 'status': 'upcoming',
+                                         'type': 'recurring'},
+                                        {'id': 'J1', 'number': 9654, 'title': 'Quarterly Pump Maintenance', 'status': 'upcoming',
+                                         'type': 'recurring'}]
+        P.job_detail = lambda jid: dict(jobs[jid])
+        P.jobber_status = lambda: {'connected': True}
+        try:
+            self.assertEqual(P.recurring_job_price({}, {}, 'CC')['number'], '9654', 'the priced one')
+            self.assertEqual(P.recurring_job_price({}, {}, 'CC', 'J0')['number'], '10912', 'the one picked')
+            r = self.c.get('/pumps/api/jobber/recurring_jobs?client_id=CC').get_json()
+            self.assertEqual([(j['number'], j['price']) for j in r['jobs']], [('10912', 0.0), ('9654', 3706.25)])
+        finally:
+            P.recurring_jobs, P.job_detail, P.jobber_status = saved
+
+    def test_reports_saying_a_quote_is_coming_are_all_caught(self):
+        """Wild Blue PS1 (Oct 2026): "quote to follow for repairs" on the report - nothing, as Wild Blue's quotes go to
+        Beatriz. Now a to-do says one is coming, to send her; and reports filed before that never got their item do."""
+        comment = ('COMMENTS: This panel appears to have been hit by lightning or has taken a very large surge - all '
+                   'electronics are blown and shorted, motors are questionable and can not be tested further\nwithout '
+                   'replacement of the electrical components - quote to follow for repairs')
+        conn = P._conn()
+        try:
+            ids = []
+            for client in ('Wild Blue', 'Sweepside Lakes'):
+                conn.execute("INSERT INTO pump_docs (kind, status, vendor, client_name, site, doc_date, file_name, "
+                             "text_excerpt, created_at) VALUES ('report', 'filed', 'Wettech', ?, 'PS1', '2026-10-01', "
+                             "'r.pdf', ?, ?)", (client, comment, P._now_text()))
+                ids.append(conn.execute('SELECT last_insert_rowid()').fetchone()[0])
+            conn.commit()
+        finally:
+            conn.close()
+        P.sweep_quote_needed()
+        todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
+        self.assertIn(f'beatriz-quote:{ids[0]}', [t['key'] for t in todos])
+        self.assertTrue(any('Wild Blue' in t['title'] and 'Beatriz' in t['title'] for t in todos))
+        cases = self.c.get('/pumps/api/cases?status=open&q=Sweepside').get_json()['cases']
+        self.assertTrue(any('quote to follow' in c['title'] for c in cases), [c['title'] for c in cases])
+        n = len(cases)
+        P.sweep_quote_needed()
+        self.assertEqual(len(self.c.get('/pumps/api/cases?status=open&q=Sweepside').get_json()['cases']), n, 'once')
+
+    def test_account_page_shows_its_jobber_history_and_vendor_invoices(self):
+        """Oct 2026: an account shows every invoice, job and service request in Jobber, and every vendor invoice."""
+        self.extracts['b-acct1.pdf'] = extraction('bill', '40051', client='Banyan Bay', subtotal=320)
+        b = self.upload('b-acct1.pdf')
+        h = self.c.get('/pumps/api/accounts/history?name=Banyan Bay').get_json()
+        self.assertIn('40051', [x['number'] for x in h['vendor_bills']])
+        def fake(q, v=None):
+            if 'invoices(' in q:
+                return {'client': {'id': 'C', 'invoices': {'nodes': [
+                    {'id': 'I1', 'invoiceNumber': 36001, 'subject': 'October Pump Maintenance', 'invoiceStatus': 'PAID',
+                     'issuedDate': '2026-10-02', 'createdAt': '2026-10-01', 'jobberWebUri': 'u', 'amounts': {'total': 450}},
+                    {'id': 'I2', 'invoiceNumber': 36500, 'subject': 'Repair', 'invoiceStatus': 'AWAITING_PAYMENT',
+                     'issuedDate': '2026-10-15', 'createdAt': '2026-10-15', 'jobberWebUri': 'u', 'amounts': {'total': 900}}]}}}
+            if 'jobs(' in q:
+                return {'client': {'id': 'C', 'jobs': {'nodes': [{'id': 'J', 'jobNumber': 14000, 'title': 'Quarterly 400',
+                        'jobStatus': 'ACTIVE', 'jobType': 'RECURRING', 'startAt': '2026-01-01', 'createdAt': '2026-01-01',
+                        'total': 400, 'jobberWebUri': 'u'}]}}}
+            return {'client': {'id': 'C', 'requests': {'nodes': [{'id': 'R', 'title': 'Pump not running',
+                    'requestStatus': 'NEW', 'createdAt': '2026-10-18T10:00:00Z', 'jobberWebUri': 'u'}]}}}
+        saved = (P.jobber_gql, P.jobber_status)
+        P.jobber_gql, P.jobber_status = fake, (lambda: {'connected': True})
+        try:
+            r = self.c.get('/pumps/api/accounts/jobber_history?client_id=C').get_json()
+        finally:
+            P.jobber_gql, P.jobber_status = saved
+        self.assertEqual([x['number'] for x in r['invoices']], ['36500', '36001'], 'newest first')
+        self.assertEqual((r['jobs'][0]['type'], r['requests'][0]['title']), ('recurring', 'Pump not running'))
+
+    def test_approved_quote_needs_the_same_client_not_just_the_price(self):
+        """CORSA (Oct 2026): Maria Peralta's approved $556.40 quote #9175 went on CORSA's SCADA renewal ($428 + 30%) on price
+        alone - Sign quote and Convert quote to-dos for the wrong client. The client must match too; one put on wrong is
+        taken off once."""
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': 'SCADA annual renewal - CORSA', 'client_name': 'CORSA (formerly Estero Crossing)',
+                                       'category': 'scada', 'vendor_quote_amount': 428.0}, 'test', source='scada')
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id, client_name, "
+                         "total, created_at, updated_at) VALUES ('Q9175', 'quote', '9175', 'New Irrigation System Installation', "
+                         "'approved', 'CMP', 'Maria Peralta', 556.4, ?, ?)", (P._now_text(), P._now_text()))
+            it = dict(conn.execute("SELECT * FROM pump_jobber_items WHERE jobber_id='Q9175'").fetchone())
+            self.assertIsNone(P.job_for_quote_price(conn, it), "Maria Peralta's quote isn't CORSA's")
+            # Linked wrongly before: taken off, its to-dos done.
+            P._link_item(conn, 'Q9175', cid, 'Jobber sync')
+            P.add_todo(conn, f'sign-quote:{cid}', 'Sign the approved quote and send it to Tom - CORSA', '', {'case_id': cid})
+            conn.execute("DELETE FROM pump_state WHERE key='unhook_wrong_client_oct26'")
+            P._unhook_wrong_client_quotes(conn.cursor(), P._now_text())
+            conn.commit()
+            back = conn.execute("SELECT case_id FROM pump_jobber_items WHERE jobber_id='Q9175'").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertIsNone(back)
+        self.assertFalse((self.case(cid)['jobber'] or {}).get('quote'))
+        titles = [t['title'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
+        self.assertNotIn('Sign the approved quote and send it to Tom - CORSA', titles)
+
+    def test_urgent_quote_moves_up(self):
+        """Oct 2026: quotes wait under "Quotes - not urgent" unless marked urgent."""
+        j = self.c.post('/pumps/api/cases', json={'title': 'Surge arrestor', 'client_name': 'Urgent Lakes'}).get_json()
+        cid = j.get('case_id') or j['case']['id']
+        r = self.c.post(f'/pumps/api/cases/{cid}/urgent', json={'on': True}).get_json()
+        self.assertTrue(r['success'], r)
+        self.assertTrue(self.case(cid)['urgent'])
+        self.c.post(f'/pumps/api/cases/{cid}/urgent', json={'on': False})
+        self.assertFalse(self.case(cid)['urgent'])
+
+    def test_invoiced_jobs_get_closed(self):
+        """Oct 2026: one-off pump jobs we link sat open in Jobber after they were invoiced. A to-do to close each, with a
+        Close job button; it goes once Jobber shows it closed. Recurring jobs never."""
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': 'Control box', 'client_name': 'Closeout Lakes'}, 'test')
+            rid = P.create_case(conn, {'title': 'Monthly', 'client_name': 'Recurring Pines'}, 'test')
+            for c, jid in ((cid, 'JC1'), (rid, 'JR1')):
+                conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(
+                    {'job': {'id': jid, 'number': jid}, 'invoice': {'id': 'I' + jid, 'number': '37' + jid[-1], 'status': 'awaiting_payment'}}), c))
+            conn.commit()
+        finally:
+            conn.close()
+        status = {'JC1': ('REQUIRES_INVOICING', 'ONE_OFF'), 'JR1': ('ACTIVE', 'RECURRING')}
+        saved = (P.jobber_gql, P.try_mutation)
+        st = lambda i: status.get(i, ('ARCHIVED', 'ONE_OFF'))   # other tests' jobs: closed already
+        P.jobber_gql = lambda q, v=None: {'job': {'jobNumber': v['id'], 'jobStatus': st(v['id'])[0],
+                                                  'jobType': st(v['id'])[1], 'jobberWebUri': 'u'}}
+        closed = []
+        P.try_mutation = lambda names, vals, want=None: closed.append(vals['jobId']) or {'mutation': names[0], 'job': {'jobNumber': 'JC1'}}
+        try:
+            P.jobs_to_close()
+            keys = lambda: [t['key'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
+            self.assertIn('close-job:JC1', keys())
+            self.assertNotIn('close-job:JR1', keys(), 'a recurring job stays open')
+            r = self.c.post('/pumps/api/jobber/jobs/close', json={'job_id': 'JC1'}).get_json()
+            self.assertTrue(r['success'], r)
+            self.assertEqual(closed, ['JC1'])
+            self.assertNotIn('close-job:JC1', keys())
+            # Closed by hand in Jobber instead: the to-do goes on the next sync.
+            conn = P._conn()
+            conn.execute("UPDATE pump_todos SET done_at=NULL WHERE key='close-job:JC1'")
+            conn.commit()
+            conn.close()
+            status['JC1'] = ('ARCHIVED', 'ONE_OFF')
+            P.jobs_to_close()
+            self.assertNotIn('close-job:JC1', keys())
+        finally:
+            P.jobber_gql, P.try_mutation = saved
+
+    def test_follow_up_postponed_to_tomorrow(self):
+        """Oct 2026: a follow-up can be put off to the next working day - off the list until then."""
+        j = self.c.post('/pumps/api/cases', json={'title': 'Fan', 'client_name': 'Snooze Lakes'}).get_json()
+        cid = j.get('case_id') or j['case']['id']
+        self.c.patch(f'/pumps/api/cases/{cid}', json={'steps': {'vendor_quote': '2026-09-01', 'client_quote': '2026-09-02',
+                                                                'client_approved': '2026-09-03'}})
+        self.c.post(f'/pumps/api/cases/{cid}/vendor_follow', json={'who': 'Tom', 'how': 'call', 'said': 'shipped',
+                                                                    'expect_by': '2026-09-10'})
+        ids = lambda: [c['id'] for c in self.c.get('/pumps/api/summary').get_json()['queue']['vendor_follow_ups']]
+        self.assertIn(cid, ids())
+        r = self.c.post(f'/pumps/api/cases/{cid}/follow_up_tomorrow').get_json()
+        self.assertTrue(r['success'], r)
+        self.assertNotIn(cid, ids())
+        saved = P._today
+        P._today = lambda: date.fromisoformat(r['check_on'])
+        try:
+            self.assertIn(cid, ids(), 'back the next working day')
+        finally:
+            P._today = saved
+
+    def test_status_picked_as_the_wrong_kind(self):
+        """Oct 2026: "Followed up on friday with the client left a message" was saved as "Parts ordered" (the picker
+        started there). Relabelled as a Note, its words kept."""
+        j = self.c.post('/pumps/api/cases', json={'title': 'Motor', 'client_name': 'Relabel Run'}).get_json()
+        cid = j.get('case_id') or j['case']['id']
+        self.c.post(f'/pumps/api/cases/{cid}/status', json={'kind': 'parts_ordered', 'text': 'Followed up with the client'})
+        r = self.c.post(f'/pumps/api/cases/{cid}/status/kind', json={'kind': 'note'}).get_json()
+        self.assertTrue(r['success'], r)
+        st = self.case(cid)['job_status']
+        self.assertEqual((st['kind'], st['label'], st['text']), ('note', 'Note', 'Followed up with the client'))
 
     def test_status_updates_on_an_approved_job(self):
         j = self.c.post('/pumps/api/cases', json={'title': 'Motor', 'client_name': 'Quail Run'}).get_json()
@@ -3101,6 +3324,8 @@ class PumpsTest(unittest.TestCase):
         self.assertIsNone(P.handle_service_call_email('m-5', 'a@b.com', 'Pump order for the shop', 'PO 5512'))
 
     def test_scada_coming_due_is_quoted_at_their_price(self):
+        """A SCADA renewal coming due: a to-do with Draft quote - never drafted by itself (the office, Oct 21 2026:
+        two copies of #9203 were drafted for Stock Development). Clicked, it's drafted at their price, once."""
         today = P._today
         P._today = lambda: P.datetime(2026, 12, 20).date()
         fake = FakeJobber(clients=[{'id': 'CL', 'name': 'LELY CDD', 'isLead': False, 'isArchived': False}])
@@ -3109,20 +3334,67 @@ class PumpsTest(unittest.TestCase):
         try:
             done = P.scada_due_actions()
             self.assertIn('LELY', done)
+            self.assertFalse([1 for qq, _ in fake.calls if 'quoteCreate(' in qq], 'nothing drafted by itself')
+            todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
+            t = next(t for t in todos if t['title'] == 'Quote the SCADA renewal - LELY')
+            sid = t['link']['scada_id']
+            self.assertTrue(t['link'].get('draft_scada'))
+            r = self.c.post(f'/pumps/api/scada/{sid}/draft_quote').get_json()
+            self.assertTrue(r['success'], r)
             q = [v for qq, v in fake.calls if 'quoteCreate(' in qq and v['attributes']['clientId'] == 'CL'][0]['attributes']
             line = q['lineItems'][0]
             self.assertEqual((line['name'], line['unitPrice'], line['taxable']), ('Service Proposal Amount', 600.0, False))
             self.assertIn('for 2027-2028', line['description'])
             n = len([1 for qq, _ in fake.calls if 'quoteCreate(' in qq])
+            r2 = self.c.post(f'/pumps/api/scada/{sid}/draft_quote').get_json()
+            self.assertTrue(r2['quote'].get('already'))
             P.scada_due_actions()
             self.assertEqual(len([1 for qq, _ in fake.calls if 'quoteCreate(' in qq]), n, 'once per renewal')
             todos = [t['title'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
             self.assertIn('Send the SCADA renewal quote #812 - LELY', todos)
+            self.assertNotIn('Quote the SCADA renewal - LELY', todos)
             self.assertIn('SCADA renewal due - AUTUMN WOODS (complimentary)', todos)
             self.assertFalse(any('Quote the SCADA renewal - AUTUMN' in t for t in todos))
         finally:
             P.JOBBER_STATIC_TOKEN = saved
             P._today = today
+
+    def test_scada_tab_shows_the_renewal_quote(self):
+        """The SCADA tab (Oct 2026): each renewal's quote - number, status, link - and the sync keeps the status."""
+        conn = P._conn()
+        try:
+            r = next(x for x in P.scada_rows(conn) if x['next_due_on'])
+            q = {'year': r['next_due_on'][:4], 'id': 'QSC9', 'number': '9150', 'uri': 'https://x/q', 'status': 'draft'}
+            conn.execute('UPDATE pump_scada_accounts SET quote=? WHERE id=?', (json.dumps(q), r['id']))
+            conn.commit()
+        finally:
+            conn.close()
+        row = lambda: next(x for x in self.c.get('/pumps/api/scada').get_json()['scada'] if x['id'] == r['id'])
+        self.assertEqual((row()['renewal_quote']['number'], row()['renewal_quote']['status']), ('9150', 'draft'))
+        saved = P.jobber_gql
+        P.jobber_gql = lambda qq, v=None: {'quote': {'quoteNumber': 9150, 'quoteStatus': 'AWAITING_RESPONSE', 'jobberWebUri': 'u'}}
+        try:
+            P.refresh_scada_quotes()
+        finally:
+            P.jobber_gql = saved
+        self.assertEqual(row()['renewal_quote']['status'], 'awaiting_response')
+
+    def test_scada_already_quoted_in_jobber(self):
+        """Coras (Oct 2026): a SCADA renewal quote already in Jobber from the last few months is the renewal's - no
+        "Quote the SCADA renewal" to-do."""
+        conn = P._conn()
+        try:
+            rows = [r for r in P.scada_rows(conn) if r['active'] and not r.get('complimentary')]
+            r = rows[0]
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_name, created_at) "
+                         "VALUES ('QSC1', 'quote', '9150', 'Proposal to renew the SCADA annual cellular subscription', "
+                         "'awaiting_response', ?, ?)", (r['client'], P._today().isoformat()))
+            conn.commit()
+        finally:
+            conn.close()
+        got = P.existing_scada_quote(r)
+        self.assertEqual((got or {}).get('number'), '9150')
+        self.assertIsNone(P.existing_scada_quote({**r, 'client': 'Nobody Lakes Zz', 'jobber_names': ''}))
 
     def test_scada_vendor_quote_is_not_marked_up(self):
         doc = {'description': 'Renewal of Annual Cellular and cloud subscription for SCADA system', 'client_name': 'Banyan Bay',
@@ -3282,26 +3554,35 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(case['stage'], 'report_logged')
         drafts = self.c.get('/pumps/api/summary').get_json()['queue']['bills_to_draft']
         self.assertNotIn(b['case_id'], [d['case_id'] for d in drafts])
-        # Wettech is paid once the account's monthly is billed - from the end of the bill's month.
+        # Wettech is paid once the next monthly job is completed (the office, Oct 19 2026): the account's recurring
+        # Jobber job's first visit on or after the bill.
         pay = case['vendor_pay']
         self.assertTrue(pay['report_only'], pay)
-        saved = P._today
-        P._today = lambda: date.fromisoformat(pay['month_end']).replace(day=1)
+        came = case['steps']['vendor_bill']['at']
+        conn = P._conn()
+        conn.execute("UPDATE pump_maint_accounts SET jobber_job_id='JWB' WHERE name='Wild Blue'")
+        conn.commit()
+        conn.close()
+        visits = [{'id': 'V0', 'title': '', 'date': '2000-01-01', 'completed': True},
+                  {'id': 'V1', 'title': '', 'date': came, 'completed': False}]
+        saved = P.job_visits
+        P.job_visits = lambda job_id, pages=6: visits if job_id == 'JWB' else []
         try:
-            self.assertEqual(self.case(b['case_id'])['vendor_pay']['state'], 'unpaid')
-            q = self.c.get('/pumps/api/summary').get_json()['queue']
-            self.assertNotIn(b['case_id'], [c['id'] for c in q['vendor_bills_to_pay']])
+            P.check_report_only_bills()
+            self.assertEqual(self.case(b['case_id'])['vendor_pay']['state'], 'unpaid', 'the next visit is not done')
+            row = {x['case_id']: x for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for x in g['bills']}
+            self.assertIn('once the next monthly job is completed', row[b['case_id']]['why'])
+            visits[1]['completed'] = True
+            P.check_report_only_bills()
         finally:
-            P._today = saved
-        P._today = lambda: date.fromisoformat(pay['month_end'])
-        try:
-            q = self.c.get('/pumps/api/summary').get_json()['queue']
-            self.assertIn(b['case_id'], [c['id'] for c in q['vendor_bills_to_pay']])
-            conn = P._conn()
-            self.assertIn('monthly has been billed', P.vendor_pay_email(conn, b['case_id'])['body'])
-            conn.close()
-        finally:
-            P._today = saved
+            P.job_visits = saved
+        q = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertIn(b['case_id'], [c['id'] for c in q['vendor_bills_to_pay']])
+        row = {x['case_id']: x for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for x in g['bills']}
+        self.assertTrue(row[b['case_id']]['payable'])
+        conn = P._conn()
+        self.assertIn('monthly job', P.vendor_pay_email(conn, b['case_id'])['body'])
+        conn.close()
         # Anyone else's maintenance bill still gets invoiced.
         self.extracts['b-allura2.pdf'] = {**ex, 'doc_number': '29202', 'client_name': 'Allura'}
         a = self.upload('b-allura2.pdf')
@@ -3383,7 +3664,13 @@ class PumpsTest(unittest.TestCase):
         finally:
             P.jobber_status, P.invoice_client, P.recurring_jobs, P.job_detail = saved
         self.assertEqual(([li['unit_price'] for li in sugg['line_items']], sugg['job']['id']), ([195.0], 'JRW'))
-        self.assertTrue(sugg['subject'].endswith(' - October 2026'), sugg['subject'])
+        self.assertEqual(sugg['subject'], 'October Pump Maintenance', 'as the office titles them')
+        # And the line says the month first (Caymas #36867, Oct 2026).
+        self.assertIn('october', sugg['line_items'][0]['description'].lower(), sugg['line_items'][0])
+        self.assertEqual(P._with_month_line([{'name': 'PUMP SERVICE', 'description': 'Quarterly pump service', 'unit_price': 5}],
+                                            2026, 10)[0]['description'], 'October Pump Maintenance\nQuarterly pump service')
+        self.assertEqual(P._with_month_line([{'name': 'PUMP SERVICE', 'description': 'October visit', 'unit_price': 5}],
+                                            2026, 10)[0]['description'], 'October visit', 'names the month already')
         # The bill's notes for the visit go on the line, without "As per quotation" or the report note.
         self.assertEqual(sugg['line_items'][0]['description'],
                          'Service to perform irrigation maintenance to ensure equipment is operating properly. '
@@ -3601,13 +3888,101 @@ class PumpsTest(unittest.TestCase):
                 os.environ['CHRISTIAN_EMAIL'] = env
         self.assertTrue(r['success'], r)
         self.assertEqual((r['sent'], sent[0][0]), (1, 'christian@example.com'))
-        got = {b['case_id']: b for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for b in g['bills']}
-        self.assertTrue(got[b1['case_id']]['asked_at'])
         self.assertEqual(count(), before - 1, 'sent to Christian: off the badge')
-        # Paid: off the tab.
-        self.c.patch(f"/pumps/api/cases/{b1['case_id']}", json={'vendor_paid_on': '2026-10-16'})
-        left = {b['case_id'] for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for b in g['bills']}
-        self.assertNotIn(b1['case_id'], left)
+        # Sent to Christian = paid (Oct 19 2026): off the list, in Old vendor bills, saying it was emailed.
+        j = self.c.get('/pumps/api/bills_to_pay').get_json()
+        self.assertNotIn(b1['case_id'], {b['case_id'] for g in j['vendors'] for b in g['bills']})
+        old = {b['case_id']: b for b in j['paid']}
+        self.assertEqual(old[b1['case_id']]['paid_on'], P._today().isoformat())
+        self.assertTrue(old[b1['case_id']]['emailed_at'])
+        self.assertIn(b2['case_id'], {b['case_id'] for g in j['vendors'] for b in g['bills']}, 'not sent: still to pay')
+
+    def test_big_bill_waits_for_the_client_to_pay(self):
+        """The office (Oct 2026): a vendor bill over $1,500 isn't good to pay until our Jobber invoice shows paid -
+        invoiced isn't enough. Smaller ones still go once invoiced."""
+        self.extracts['b-big1.pdf'] = extraction('bill', '40041', client='Big Lakes HOA', subtotal=1679.35, tax=100.76)
+        self.extracts['b-small1.pdf'] = extraction('bill', '40042', client='Small Pines HOA', subtotal=500)
+        big, small = self.upload('b-big1.pdf'), self.upload('b-small1.pdf')
+        for b, num in ((big, '37101'), (small, '37102')):
+            conn = P._conn()
+            conn.execute('UPDATE pump_cases SET jobber=?, sei_invoice_number=? WHERE id=?',
+                         (json.dumps({'invoice': {'id': 'I' + num, 'number': num, 'status': 'awaiting_payment'}}), num,
+                          b['case_id']))
+            conn.commit()
+            conn.close()
+        row = lambda b: {x['case_id']: x for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors']
+                         for x in g['bills']}[b['case_id']]
+        self.assertFalse(row(big)['payable'])
+        self.assertIn('paid once the client pays our invoice #37101', row(big)['why'])
+        self.assertTrue(row(small)['payable'])
+        conn = P._conn()
+        conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?',
+                     (json.dumps({'invoice': {'id': 'I37101', 'number': '37101', 'status': 'paid'}}), big['case_id']))
+        conn.commit()
+        conn.close()
+        self.assertTrue(row(big)['payable'], 'the client paid')
+
+    def test_ok_a_bill_to_pay_now(self):
+        """Wild Blue (Oct 2026): report-only, billed through the monthly irrigation contract - no invoice to link,
+        and it shouldn't wait for the month's end. OK it by hand: payable, and in the email to Christian."""
+        self.extracts['b-ok1.pdf'] = extraction('bill', '40031', client='Okay Waters HOA', subtotal=250)
+        b = self.upload('b-ok1.pdf')
+        row = lambda: {x['case_id']: x for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors']
+                       for x in g['bills']}[b['case_id']]
+        self.assertFalse(row()['payable'])
+        r = self.c.post('/pumps/api/bills_to_pay/pay_ok', json={'case_ids': [b['case_id']]}).get_json()
+        self.assertTrue(r['success'], r)
+        self.assertTrue(row()['payable'])
+        self.assertIn("OK'd to pay now", row()['why'])
+        e = self.c.post('/pumps/api/bills_to_pay/email', json={'case_ids': [b['case_id']]}).get_json()['email']
+        self.assertIn('#40031', e['body'])
+        self.c.post('/pumps/api/bills_to_pay/pay_ok', json={'case_ids': [b['case_id']], 'undo': True})
+        self.assertFalse(row()['payable'])
+
+    def test_irrigation_quote_items_dropped(self):
+        """Oct 19 2026: The Reserve @ Estero #8443 (valve boxes, a gate valve) was made an item - irrigation work for
+        Install. Cancelled once, the quote ignored, its to-do done; a pump quote's item is left."""
+        conn = P._conn()
+        try:
+            ids = []
+            for jid, title in (('Q8443X', 'Estimate to replace broken valve boxes and a gate valve'),
+                               ('Q8445X', 'Proposal to replace the float switch')):
+                cid = P.create_case(conn, {'title': title, 'client_name': 'Barrington Cove'}, 'test', source='jobber')
+                conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, case_id) "
+                             "VALUES (?, 'quote', ?, ?, 'approved', ?)", (jid, jid[1:5], title, cid))
+                P.add_todo(conn, f'quote-to-job:{cid}', P.quote_to_job_title('Barrington Cove', jid[1:5]), '', {'case_id': cid})
+                ids.append(cid)
+            conn.execute("DELETE FROM pump_state WHERE key='drop_irrigation_quotes_oct26'")
+            P._drop_irrigation_quotes(conn.cursor(), P._now_text())
+            conn.commit()
+            ign = conn.execute("SELECT ignored FROM pump_jobber_items WHERE jobber_id='Q8443X'").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(self.case(ids[0])['status'], 'cancelled')
+        self.assertEqual(ign, 1)
+        self.assertEqual(self.case(ids[1])['status'], 'open')
+        titles = [t['title'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
+        self.assertFalse(any('8443' in t for t in titles))
+
+    def test_bills_emailed_before_are_paid(self):
+        """Oct 19 2026: bills already emailed to Christian before sending meant paid - marked paid on the day they
+        were emailed, once, into Old vendor bills. A failed send isn't."""
+        self.extracts['b-sent1.pdf'] = extraction('bill', '40021', client='Sent Lakes HOA', subtotal=200)
+        self.extracts['b-sent2.pdf'] = extraction('bill', '40022', client='Failed Pines HOA', subtotal=100)
+        b1, b2 = self.upload('b-sent1.pdf'), self.upload('b-sent2.pdf')
+        conn = P._conn()
+        try:
+            P._state_set(f"pay_email:{b1['case_id']}", {'at': '2026-10-17 09:00', 'by': 'Simon', 'sent': True}, conn=conn)
+            P._state_set(f"pay_email:{b2['case_id']}", {'at': '2026-10-17 09:00', 'by': 'Simon', 'error': 'x'}, conn=conn)
+            conn.execute("DELETE FROM pump_state WHERE key='paid_once_emailed_oct26'")
+            P._paid_once_emailed(conn.cursor(), P._now_text())
+            conn.commit()
+        finally:
+            conn.close()
+        j = self.c.get('/pumps/api/bills_to_pay/paid_list?q=4002').get_json()
+        paid = {b['case_id']: b for b in j['paid']}
+        self.assertEqual(paid[b1['case_id']]['paid_on'], '2026-10-17')
+        self.assertNotIn(b2['case_id'], paid)
 
     def test_mark_selected_bills_paid(self):
         """Oct 2026: tick bills on the Bills to pay tab and mark them all paid in one click."""
@@ -3975,6 +4350,484 @@ class PumpsTest(unittest.TestCase):
             P.jobber_status, P.search_clients, P.pick_client, P.client_jobs, P.jobber_gql = saved
         todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
         self.assertTrue(any(t['title'].startswith('Send the SCADA quote #812') for t in todos))
+
+    def test_service_call_is_the_start_of_the_work(self):
+        """Woodmere (Oct 2026): a service call booked in Jobber (#14592 "Pump Service call") is the start of the
+        work, not a quote - followed from its job number, or linked to an item that's already here."""
+        conn = P._conn()
+        conn.execute("INSERT OR REPLACE INTO pump_jobber_items (jobber_id, kind, number, title, status, job_type, client_id, "
+                     "client_name, property_label, created_at, start_at, web_uri, category) VALUES ('JSC1', 'job', "
+                     "'14592', 'Pump Service call', 'today', 'one_off', 'CW', 'WOODMERE LAKE CLUB ASSN.', "
+                     "'5650 Woodmere Lake Circle', '2026-10-19 15:02:08', '2026-10-19', '', 'pump')")
+        conn.commit()
+        conn.close()
+        r = self.c.post('/pumps/api/service_call', json={'number': '#14592'}).get_json()
+        self.assertTrue(r['success'], r)
+        c = self.case(r['case_id'])
+        self.assertEqual(c['stage'], 'work_done', 'scheduled for its day, waiting on the work - no quote')
+        self.assertTrue(c['steps']['vendor_quote'].get('na'))
+        self.assertEqual(c['jobber']['job']['number'], '14592')
+        again = self.c.post('/pumps/api/service_call', json={'number': '14592'}).get_json()
+        self.assertEqual((again['case_id'], again.get('already')), (r['case_id'], True))
+        # Linking a job to an item already here, as a service call.
+        j = self.c.post('/pumps/api/cases', json={'title': 'Pump not running', 'client_name': 'Linkjob Lakes'}).get_json()
+        cid = j.get('case_id') or j['case']['id']
+        conn = P._conn()
+        conn.execute("INSERT OR REPLACE INTO pump_jobber_items (jobber_id, kind, number, title, status, created_at, "
+                     "start_at, category) VALUES ('JSC2', 'job', '14600', 'Check pump', 'upcoming', '2026-10-19', '2026-10-21', 'pump')")
+        conn.commit()
+        conn.close()
+        r = self.c.post(f'/pumps/api/cases/{cid}/jobber_job', json={'number': '14600', 'service_call': True}).get_json()
+        self.assertTrue(r['success'], r)
+        self.assertEqual(self.case(cid)['stage'], 'work_done')
+
+    def test_gulfshore_bill_billed_with_the_pump_service(self):
+        """Magnolia Falls (Oct 2026): Jordan's Gulfshore filter cleaning is billed with the pump service - no quote,
+        no invoice of its own. On our Jobber invoice to the client: Christian's to pay. Not yet: a to-do says so."""
+        ex = extraction('bill', '2497', client='Magnolia Falls Gulftest', subtotal=125, tax=0,
+                        items=[{'name': 'Filter cleaning', 'description': 'Filter is in good physical condition',
+                                'quantity': 1, 'unit_price': 125, 'amount': 125, 'taxable': False, 'is_tax': False}])
+        ex.update(vendor='Gulfshore', doc_date='2026-10-16', description='Filter cleaning')
+        self.extracts['Invoice_2497_from_Gulfshore_Yacht_Service_LLC.pdf'] = ex
+        saved = (P.jobber_status, P.invoice_client, P.client_records, P.invoices_named)
+        P.jobber_status = lambda: {'connected': True}
+        P.invoice_client = lambda doc, case=None: 'CMF'
+        P.client_records = lambda cid, kind: []
+        P.invoices_named = lambda name, lo, hi, client_id=None, labels=(): []
+        try:
+            r = P.ingest_document('Invoice_2497_from_Gulfshore_Yacht_Service_LLC.pdf', b'%PDF-1.4 gulf 2497',
+                                  source='email', actor='email scan',
+                                  email={'uid': 'gs-2497', 'from': 'gulfshoreyachts@gmail.com',
+                                         'subject': 'New payment request from Gulfshore Yacht Service LLC - invoice 2497'})
+            self.assertEqual(r['kind'], 'bill', r)
+            c = self.case(r['case_id'])
+            self.assertEqual((c['category'], c['vendor']), ('diver', 'Gulfshore'))
+            self.assertFalse(r.get('auto_invoice'), 'no invoice of its own')
+            q = self.c.get('/pumps/api/summary').get_json()['queue']
+            self.assertNotIn(r['doc_id'], [d['id'] for d in q['bills_to_draft']])
+            self.assertTrue(any(t['title'].startswith('Gulfshore invoice #2497') and 'not billed out' in t['title'] for t in q['todos']))
+            vi = {x['number']: x for x in self.c.get('/pumps/api/vendor_invoices?q=2497').get_json()['invoices']}
+            self.assertEqual(vi['2497']['state'], 'not_invoiced')
+            # The pump service invoice is made (#36870 wasn't in the client's own list - found by name): billed
+            # out, Christian's to pay, the to-do done.
+            P.invoices_named = lambda name, lo, hi, client_id=None, labels=(): [
+                {'id': 'IMF', 'number': '37555', 'status': 'awaiting_payment', 'total': 450.0,
+                 'created': '2026-10-17', 'uri': ''}] if 'Magnolia' in name and lo <= '2026-10-17' <= hi else []
+            P.check_all_diver_bills()
+        finally:
+            P.jobber_status, P.invoice_client, P.client_records, P.invoices_named = saved
+        q = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertFalse(any(t['title'].startswith('Gulfshore invoice #2497') for t in q['todos']))
+        bills = {b['case_id']: b for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for b in g['bills']}
+        self.assertTrue(bills[r['case_id']]['payable'], bills[r['case_id']])
+        self.assertEqual(self.case(r['case_id'])['sei_invoice_number'], '37555')
+
+    def test_gulfshore_bill_read_without_claude(self):
+        """Rosewood #2498 (Oct 2026): read without Claude, the client came out as a line of Jordan's note
+        ("condition and seems to be functioning") with no number or date, so the invoice that went out was never
+        found. Number from the file name, the date, the account the bill names; one already filed is put right."""
+        name = 'Invoice_2498_from_Gulfshore_Yacht_Service_LLC.pdf'
+        # Jordan's QuickBooks layout: the site on the line above "Bill to" (us) or on the Bill to line itself,
+        # his own label at the start of the note, the number only in the file name.
+        text = ('INVOICE\nGulfshore Yacht Service LLC gulfshore@example.com\n100 Example Dr +1 (239) 555-0100\n'
+                'Naples, FL 34120 example.com\nBill to Ship to\nBarrington, Somewhere Barrington, Somewhere\n'
+                '1 Example Way 1 Example Way\nInvoice details\nInvoice date: 10/16/2026\n'
+                '# Date Product or service Description Qty Rate Amount\n'
+                '1. 10/15/2026 Filter cleaning Barrington. Filter is in good physical 2 $62.50 $125.00\n'
+                'condition and seems to be functioning\nproperly\nTotal $125.00\nWays to pay\n')
+        x = P._regex_extract(text, 'gulfshoreyachts@gmail.com', 'New payment request from Gulfshore Yacht Service LLC', name)
+        self.assertEqual((x['doc_number'], x['doc_date'], x['total']), ('2498', '2026-10-15', 125.0))
+        self.assertEqual((x['client_name'], x['site']), ('Barrington', 'Barrington, Somewhere'), 'as Jordan writes it')
+        self.assertEqual([(i['quantity'], i['unit_price'], i['amount']) for i in x['line_items']], [(2.0, 62.5, 125.0)])
+        self.assertTrue(x['line_items'][0]['description'].endswith('functioning properly'))
+        above = text.replace('Naples, FL 34120 example.com\n', 'Naples, FL 34120 example.com\nBanyan Bay\n').replace(
+            'Barrington, Somewhere Barrington, Somewhere', 'Stahlman-England Stahlman-England').replace(
+            'cleaning Barrington.', 'cleaning Banyan Bay.')
+        self.assertEqual(P._regex_extract(above, 'gulfshore@example.com', '', name)['client_name'], 'Banyan Bay')
+        # Filed before the fix with the note as the client: read again on the next check, the to-do put right.
+        self.texts[name] = text
+        saved = (P.jobber_status, P.invoice_client, P.client_records, P.invoices_named, P._regex_extract)
+        P._regex_extract = lambda t, sender='', subject='', filename='': {
+            **saved[4](t, sender, subject, ''),
+            'client_name': 'condition and seems to be functioning', 'doc_number': '', 'doc_date': ''}
+        P.jobber_status = lambda: {'connected': True}
+        P.invoice_client = lambda doc, case=None: 'CBC' if 'Barrington' in (case or {}).get('client_name', '') else None
+        P.client_records = lambda cid, kind: [{'id': 'IBC', 'number': '36816', 'status': 'awaiting_payment',
+                                               'total': 450.0, 'created': '2026-10-15', 'uri': ''}] if cid == 'CBC' else []
+        P.invoices_named = lambda name, lo, hi, client_id=None, labels=(): []
+        try:
+            r = P.ingest_document(name, b'%PDF-1.4 gulf 2498', source='email', actor='email scan',
+                                  email={'uid': 'gs-2498', 'from': 'gulfshoreyachts@gmail.com',
+                                         'subject': 'New payment request from Gulfshore Yacht Service LLC'})
+            self.assertEqual(self.case(r['case_id'])['client_name'], 'condition and seems to be functioning')
+            P._regex_extract = saved[4]
+            P.check_all_diver_bills()
+        finally:
+            P.jobber_status, P.invoice_client, P.client_records, P.invoices_named, P._regex_extract = saved
+        c = self.case(r['case_id'])
+        self.assertIn('Barrington Cove', c['client_name'], 'Jordan\'s "Barrington" is the Barrington Cove account')
+        self.assertIn('#2498', c['title'])
+        self.assertEqual(c['sei_invoice_number'], '36816')
+        q = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertFalse(any('functioning' in t['title'] for t in q['todos']))
+
+    def test_gulfshore_label_with_a_typo(self):
+        """Sanctuary @ Blue Heron #2500 (Oct 2026): Jordan wrote "Sanctruary @ Blue Heron" with "Blue Heron
+        (Sanctuary)" above Bill to - the account all the same, and on our October pump service invoice."""
+        name = 'Invoice_2500_from_Gulfshore_Yacht_Service_LLC.pdf'
+        self.texts[name] = ('INVOICE\nGulfshore Yacht Service LLC gulfshore@example.com\n'
+                            '100 Example Dr +1 (239) 555-0100\nNaples, FL 34120 example.com\nBlue Heron (Sanctuary)\n'
+                            'Bill to Ship to\nStahlman-England Stahlman-England\n706 Haven Drive 706 Haven Drive\n'
+                            'Invoice details\nInvoice date: 10/16/2026\n'
+                            '# Date Product or service Description Qty Rate Amount\n'
+                            '1. 10/15/2026 Filter cleaning Sanctruary @ Blue Heron. Filter is in 3 $100.00 $300.00\n'
+                            'good physical condition and seems to\nbe functioning properly\nTotal $300.00\n')
+        saved = (P.jobber_status, P.search_clients, P.client_records, P.invoices_named, P._claude_extract)
+        P._claude_extract = lambda *a, **k: None
+        P.jobber_status = lambda: {'connected': True}
+        P.search_clients = lambda q: [{'id': 'CSBH', 'name': 'SANCTUARY AT BLUE HERON', 'score': 1.0, 'is_lead': False}]
+        P.client_records = lambda cid, kind: [{'id': 'ISBH', 'number': '36861', 'status': 'awaiting_payment',
+                                               'total': 550.0, 'created': '2026-10-15', 'uri': ''}] if cid == 'CSBH' else []
+        P.invoices_named = lambda *a, **k: []
+        try:
+            r = P.ingest_document(name, b'%PDF-1.4 gulf 2500', source='email', actor='email scan',
+                                  email={'uid': 'gs-2500', 'from': 'gulfshore@example.com',
+                                         'subject': 'New payment request from Gulfshore Yacht Service LLC'})
+            P.check_all_diver_bills()
+        finally:
+            P.jobber_status, P.search_clients, P.client_records, P.invoices_named, P._claude_extract = saved
+        c = self.case(r['case_id'])
+        self.assertEqual(c['client_name'], 'Sanctuary @ Blue Heron')
+        self.assertEqual((c['vendor_bill_number'], c['sei_invoice_number']), ('2500', '36861'))
+        # #36861 was already sent (Rosewood #36816, Oct 2026): closed, not a "Send invoice" to-do.
+        self.assertEqual(c['status'], 'closed')
+        q = self.c.get('/pumps/api/summary').get_json()['queue']
+        self.assertNotIn(r['case_id'], [x['id'] for x in q['ready_to_close']])
+        bills = {b['case_id']: b for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for b in g['bills']}
+        self.assertTrue(bills[r['case_id']]['payable'])
+
+    def test_gulfshore_lake_account_and_invoice_by_label(self):
+        """Falling Waters II #2495 (Oct 2026): filed on the pump account "Falling Waters II - Watercrest", looked for
+        under the wrong client, and #36834 to "FALLING WATERS II AT FALLING WATERS c/o GUARDIAN" passed over. The lake
+        account by Jordan's label; an invoice whose client starts with his label counts - not Magnolia Falls @
+        Falling Waters'."""
+        self.assertTrue(P._names_with('FALLING WATERS II AT FALLING WATERS c/o GUARDIAN PROPERTY MANAGEMENT', 'Falling Waters II'))
+        self.assertFalse(P._names_with('Magnolia Falls @ Falling Waters C/O Sandcastle', 'Falling Waters II'))
+        self.assertFalse(P._names_with('FALLING WATERS III', 'Falling Waters II'))
+        conn = P._conn()
+        try:
+            self.assertEqual(P.diver_client(conn, {'client_name': 'Falling Waters II', 'site': ''})[0], 'Falling Waters II')
+        finally:
+            conn.close()
+        nodes = [{'id': 'I36834', 'invoiceNumber': 36834, 'invoiceStatus': 'awaiting_payment', 'createdAt': '2026-10-15T15:00:00Z',
+                  'jobberWebUri': '', 'amounts': {'total': 315}, 'client': {'id': 'CFW2', 'name': 'FALLING WATERS II AT FALLING '
+                                                                             'WATERS c/o GUARDIAN PROPERTY MANAGEMENT'}},
+                 {'id': 'I36870', 'invoiceNumber': 36870, 'invoiceStatus': 'awaiting_payment', 'createdAt': '2026-10-16T15:00:00Z',
+                  'jobberWebUri': '', 'amounts': {'total': 450}, 'client': {'id': 'CMF', 'name': 'Magnolia Falls @ Falling Waters'}}]
+        saved = P.jobber_gql
+        P.jobber_gql = lambda q, v=None: {'invoices': {'nodes': nodes}}
+        try:
+            got = P.invoices_named('Falling Waters II - Watercrest', '2026-10-05', '2026-11-29', 'CWATERCREST',
+                                   labels=('Falling Waters II', ''))
+        finally:
+            P.jobber_gql = saved
+        self.assertEqual([r['number'] for r in got], ['36834'])
+
+    def test_bill_finds_its_job_by_quote_amount_or_station(self):
+        """Huntington Lakes #29218 (Oct 2026): "Huntington Lakes - Collier County", $1,679.35 + tax = $1,780.11 for a control box
+        on pump station #6 - an item of its own ("came before its quote") while "Huntington #6 - Check out #6 pump station"
+        held Wettech's $1,780.11 quote, with #5 open too. Its job by the quote's amount, else the station; one already
+        filed on its own is moved and the empty item cancelled."""
+        conn = P._conn()
+        try:
+            five = P.create_case(conn, {'title': 'Check out #5 pump station', 'client_name': 'Oakbrook #5'}, 'test')
+            six = P.create_case(conn, {'title': 'Check out #6 pump station', 'client_name': 'Oakbrook #6'}, 'test')
+            P._apply(conn, six, {'vendor_quote_amount': 1679.35, 'vendor_quote_total': 1780.11})
+            P._set_step(conn, six, 'vendor_quote', at='2026-10-01', by='test')
+            conn.commit()
+        finally:
+            conn.close()
+        items = [{'name': 'Control box', 'description': 'Furnished and installed new 10 HP deluxe control box on Oakbrook '
+                  'Lakes pump station #6, wired up and tested. As per quotation.', 'quantity': 1, 'unit_price': 1679.35,
+                  'amount': 1679.35, 'taxable': True, 'is_tax': False}]
+        ex = extraction('bill', '29218', client='Oakbrook Lakes - Collier County', subtotal=1679.35, tax=100.76, items=items)
+        ex['description'] = items[0]['description']
+        self.extracts['b-hl6.pdf'] = ex
+        b = self.upload('b-hl6.pdf')
+        self.assertEqual(b['case_id'], six, 'its quote is the bill')
+        # No quote amount to go by: the pump station.
+        conn = P._conn()
+        try:
+            rows = [dict(r) for r in conn.execute("SELECT * FROM pump_cases WHERE status='open' AND id IN (?, ?)", (five, six))]
+            conn.execute("UPDATE pump_cases SET steps=json_remove(steps, '$.vendor_bill') WHERE id=?", (six,))
+            rows = [dict(r) for r in conn.execute("SELECT * FROM pump_cases WHERE status='open' AND id IN (?, ?)", (five, six))]
+            for r in rows:
+                r['vendor_quote_total'] = r['vendor_quote_amount'] = None
+            got = P._bill_by_quote_or_station({**ex, 'total': 999.0, 'subtotal': 999.0}, rows)
+        finally:
+            conn.close()
+        self.assertEqual(got[0], six)
+        self.assertIn('station #6', got[1])
+        # Filed on its own before: moved to its job by itself, the empty item cancelled.
+        self.extracts['b-hl5.pdf'] = {**ex, 'doc_number': '29219', 'subtotal': 500.0, 'tax': 30.0, 'total': 530.0,
+                                      'line_items': [{**items[0], 'description': 'Replaced float on pump station #5',
+                                                      'amount': 500.0, 'unit_price': 500.0}],
+                                      'description': 'Replaced float on pump station #5'}
+        conn = P._conn()
+        conn.execute("UPDATE pump_cases SET status='cancelled', updated_at='2000-01-01' WHERE id=?", (five,))
+        conn.commit()
+        conn.close()
+        b5 = self.upload('b-hl5.pdf')
+        alone = b5['case_id']
+        self.assertNotIn(alone, (five, six))
+        conn = P._conn()
+        conn.execute("UPDATE pump_cases SET status='open' WHERE id=?", (five,))
+        conn.commit()
+        conn.close()
+        self.c.get('/pumps/api/summary')
+        self.assertEqual(self.case(alone)['status'], 'cancelled')
+        conn = P._conn()
+        try:
+            self.assertEqual(conn.execute('SELECT case_id FROM pump_docs WHERE id=?', (b5['doc_id'],)).fetchone()[0], five)
+        finally:
+            conn.close()
+
+    def test_bill_reopens_its_closed_job_or_goes_where_picked(self):
+        """Huntington #5 #29219 (Oct 2026): the bill for pump station #5 came after the #5 job was taken off the lists - only
+        open jobs were looked at. A job closed or cancelled lately without its bill is reopened for it. And Wrong job can
+        put a document on the job the office picks; the item it made by itself goes."""
+        conn = P._conn()
+        try:
+            five = P.create_case(conn, {'title': 'Check out #5 pump station', 'client_name': 'Elmbrook #5'}, 'test', source='jobber')
+            conn.execute("UPDATE pump_cases SET status='cancelled', stage='cancelled' WHERE id=?", (five,))
+            other = P.create_case(conn, {'title': 'Float switch', 'client_name': 'Pinecrest Glen'}, 'test', source='jobber')
+            conn.commit()
+        finally:
+            conn.close()
+        items = [{'name': 'Control box', 'description': 'Field service to check out Elmbrook Lakes pump station #5. Furnished '
+                  'and installed new 7.5 HP deluxe control box, wired up and tested. As per quotation.', 'quantity': 1,
+                  'unit_price': 1344.72, 'amount': 1344.72, 'taxable': True, 'is_tax': False}]
+        ex = extraction('bill', '29319', client='Elmbrook Lakes - Collier County', subtotal=1344.72, tax=80.68, items=items)
+        ex['description'] = items[0]['description']
+        self.extracts['b-el5.pdf'] = ex
+        b = self.upload('b-el5.pdf')
+        self.assertEqual(b['case_id'], five)
+        self.assertEqual(self.case(five)['status'], 'open', 'reopened for its bill')
+        # Picked by hand: onto that job; the job it was on keeps nothing of it.
+        r = self.c.post(f"/pumps/api/docs/{b['doc_id']}/refile", json={'case_id': other}).get_json()
+        self.assertTrue(r['success'], r)
+        self.assertEqual(r['case_id'], other)
+        self.extracts['b-el9.pdf'] = {**ex, 'doc_number': '29299', 'client_name': 'Nowhere Pines', 'description': 'Valve',
+                                      'line_items': [{**items[0], 'description': 'Valve'}]}
+        alone = self.upload('b-el9.pdf')
+        r = self.c.post(f"/pumps/api/docs/{alone['doc_id']}/refile", json={'case_id': five}).get_json()
+        self.assertEqual(r['case_id'], five)
+        self.assertEqual(self.case(alone['case_id'])['status'], 'cancelled', 'the item it made by itself goes')
+
+    def test_billed_duplicate_merges_into_its_job(self):
+        """Huntington #5 (Oct 2026): bill #29219 made an item of its own and our invoice #36888 was drafted from it, while
+        "Huntington #5 - Check out #5 pump station" (quote #9149, job #14584) sat on "Waiting on Wettech to do the work".
+        The bill, the invoice and its steps go onto that job; the bill's item is cancelled as merged."""
+        conn = P._conn()
+        try:
+            job = P.create_case(conn, {'title': 'Check out #5 pump station', 'client_name': 'Ashgrove #5'}, 'test',
+                                source='jobber')
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?',
+                         (json.dumps({'quote': {'id': 'QAG5', 'number': '99149'}, 'job': {'id': 'JAG5', 'number': '94584'}}), job))
+            conn.execute("UPDATE pump_cases SET status='cancelled', updated_at='2000-01-01' WHERE id=?", (job,))
+            conn.commit()
+        finally:
+            conn.close()
+        items = [{'name': 'Control box', 'description': 'Field service to check out Ashgrove Lakes pump station #5. Installed '
+                  'new 7.5 HP deluxe control box.', 'quantity': 1, 'unit_price': 1344.72, 'amount': 1344.72,
+                  'taxable': True, 'is_tax': False}]
+        ex = extraction('bill', '29419', client='Ashgrove Lakes - Collier County', subtotal=1344.72, tax=80.68, items=items)
+        ex['description'] = items[0]['description']
+        self.extracts['b-ag5.pdf'] = ex
+        b = self.upload('b-ag5.pdf')
+        dup = b['case_id']
+        self.assertNotEqual(dup, job)
+        conn = P._conn()
+        try:
+            conn.execute('UPDATE pump_cases SET jobber=?, sei_invoice_number=? WHERE id=?',
+                         (json.dumps({'invoice': {'id': 'I36888', 'number': '36888', 'status': 'awaiting_payment'}}), '36888', dup))
+            conn.execute("UPDATE pump_docs SET jobber=? WHERE id=?", (json.dumps({'invoice_id': 'I36888'}), b['doc_id']))
+            P._set_step(conn, dup, 'invoice_drafted', at='2026-10-19', by='test')
+            conn.execute("UPDATE pump_cases SET status='open' WHERE id=?", (job,))
+            conn.commit()
+        finally:
+            conn.close()
+        self.c.get('/pumps/api/summary')
+        self.assertEqual(self.case(dup)['status'], 'cancelled')
+        c = self.case(job)
+        self.assertEqual((c['sei_invoice_number'], c['vendor_bill_number']), ('36888', '29419'))
+        self.assertTrue(c['steps']['vendor_bill'].get('at'))
+        self.assertTrue(c['steps']['invoice_drafted'].get('at'))
+        self.assertNotEqual(c['stage'], 'work_done')
+        conn = P._conn()
+        try:
+            self.assertEqual(conn.execute('SELECT case_id FROM pump_docs WHERE id=?', (b['doc_id'],)).fetchone()[0], job)
+        finally:
+            conn.close()
+
+    def test_invoice_from_quote_leaves_out_optional_work(self):
+        """Huntington #6 (Oct 2026): the draft invoice repeated quote #9160 with its "Optional - if needed" $6,287.97 motor -
+        $8,173 for a $1,884.14 quote. Optional work out (unless the approved total
+        needs it); prices to the dollar as ever (the office's rule)."""
+        lines = [{'name': 'Service Proposal Amount', 'description': 'Control box', 'quantity': 1, 'unitPrice': 2314.14,
+                  'taxable': False, 'optional': False},
+                 {'name': 'Optional - if needed', 'description': 'Motor', 'quantity': 1, 'unitPrice': 6287.97,
+                  'taxable': False, 'optional': True},
+                 {'name': 'Discount Installation', 'description': '', 'quantity': 1, 'unitPrice': -430,
+                  'taxable': False, 'optional': False}]
+        total = [1884.14]
+        saved = P.jobber_gql
+        P.jobber_gql = lambda q, v=None: {'quote': {'quoteNumber': 9160, 'lineItems': {'nodes': lines},
+                                                    'amounts': {'total': total[0]}}}
+        try:
+            q = P.fetch_quote_lines('Q9160')
+            self.assertEqual([li['name'] for li in q['line_items']], ['Service Proposal Amount', 'Discount Installation'])
+            total[0] = 8172.11          # the client took the motor too: it's in the approved total
+            self.assertEqual(len(P.fetch_quote_lines('Q9160')['line_items']), 3)
+            total[0] = 1884.14
+            st = (P.jobber_status, P._invoice_suggestion)
+            P.jobber_status = lambda: {'connected': True}
+            P._invoice_suggestion = lambda doc, case=None, client_id=None, job_id=None: {'line_items': P.fetch_quote_lines('Q9160')['line_items'],
+                                                                            'from_quote': '9160'}
+            try:
+                s2 = P.invoice_suggestion({}, {})
+            finally:
+                P.jobber_status, P._invoice_suggestion = st
+        finally:
+            P.jobber_gql = saved
+        self.assertEqual([li['unit_price'] for li in s2['line_items']], [2315.0, -430.0])
+
+    def test_gulfshore_anna_s_place(self):
+        """Anna's Place #2491 (Oct 2026): no label in the note, "Ana's Place" twice on the Bill to line; Jobber's client is
+        "INC ANA'S PLACE HOMEOWNER'S ASSOCIATION" and our invoice "Pump service - Anna's Place". Found by the invoice's
+        subject; and when one isn't found, linked by hand from the to-do - done, closed, remembered."""
+        name = 'Invoice_2491_from_Gulfshore_Yacht_Service_LLC.pdf'
+        text = ('INVOICE\nGulfshore Yacht Service LLC gulfshore@example.com\n100 Example Dr +1 (239) 555-0100\n'
+                "Naples, FL 34120 example.com\nBill to Ship to\nAna's Place Ana's Place\nStahlman-England Stahlman-England\n"
+                '5897 Ashford lane 5897 Ashford lane\nNaples, FL Naples, FL\nInvoice details\nInvoice date: 10/16/2026\n'
+                '# Date Product or service Description Qty Rate Amount\n'
+                '1. 10/15/2026 Filter cleaning Filter is in good physical condition and 1 $125.00 $125.00\n'
+                'seems to be functioning properly\nTotal $125.00\n')
+        x = P._regex_extract(text, 'gulfshore@example.com', '', name)
+        self.assertEqual((x['client_name'], x['doc_number'], x['total']), ("Ana's Place", '2491', 125.0))
+        conn = P._conn()
+        try:
+            self.assertEqual(P.diver_client(conn, {'client_name': "Ana's Place", 'site': ''})[0], "Anna's Place")
+        finally:
+            conn.close()
+        nodes = [{'id': 'I36839', 'invoiceNumber': 36839, 'subject': "Pump service - Anna's Place", 'invoiceStatus': 'awaiting_payment',
+                  'createdAt': '2026-10-15T19:10:38Z', 'jobberWebUri': '', 'amounts': {'total': 400},
+                  'client': {'id': 'CANA', 'name': "INC ANA'S PLACE HOMEOWNER'S ASSOCIATION"}},
+                 {'id': 'I1', 'invoiceNumber': 1, 'subject': "Pump service - Ann's Pond", 'invoiceStatus': 'awaiting_payment',
+                  'createdAt': '2026-10-15T19:10:38Z', 'jobberWebUri': '', 'amounts': {'total': 1}, 'client': {'id': 'C1', 'name': 'Other'}}]
+        saved = P.jobber_gql
+        P.jobber_gql = lambda q, v=None: {'invoices': {'nodes': nodes}}
+        try:
+            got = P.invoices_named("Anna's Place", '2026-10-05', '2026-11-29', None, labels=("Ana's Place", ''))
+        finally:
+            P.jobber_gql = saved
+        self.assertEqual([r['number'] for r in got], ['36839'])
+        # Not found by itself: the to-do links it by hand.
+        self.texts[name] = text
+        saved = (P.jobber_status, P.invoice_client, P.client_records, P.invoices_named, P._claude_extract, P.find_invoice_by_number)
+        P._claude_extract = lambda *a, **k: None
+        P.jobber_status = lambda: {'connected': True}
+        P.invoice_client = lambda doc, case=None: None
+        P.client_records = lambda cid, kind: []
+        P.invoices_named = lambda *a, **k: []
+        P.find_invoice_by_number = lambda n: {'id': 'I36839', 'invoiceNumber': 36839, 'invoiceStatus': 'awaiting_payment',
+                                              'amounts': {'total': 400}, 'client': {'id': 'CANA', 'name': "INC ANA'S PLACE"}}
+        try:
+            r = P.ingest_document(name, b'%PDF-1.4 gulf 2491', source='email', actor='email scan',
+                                  email={'uid': 'gs-2491', 'from': 'gulfshore@example.com', 'subject': 'Gulfshore invoice'})
+            todo = lambda: [t for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']
+                            if t['key'] == f"gulfshore-unbilled:{r['doc_id']}"]
+            self.assertTrue(todo())
+            # Tied to the wrong client before: the invoice's own client is the one remembered.
+            conn = P._conn()
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps({'client': {'id': 'CWRONG'}}), r['case_id']))
+            conn.commit()
+            conn.close()
+            j = self.c.post(f"/pumps/api/cases/{r['case_id']}/jobber_invoice", json={'number': '36839'}).get_json()
+            self.assertTrue(j['success'], j)
+        finally:
+            (P.jobber_status, P.invoice_client, P.client_records, P.invoices_named, P._claude_extract,
+             P.find_invoice_by_number) = saved
+        self.assertFalse(todo())
+        self.assertEqual(self.case(r['case_id'])['status'], 'closed')
+        self.assertEqual((P.match_site_alias({'client_name': "Ana's Place"}) or {}).get('client_id'), 'CANA')
+
+    def test_gulfshore_label_matched_like_a_pump_bill(self):
+        """Caymas #2501 (Oct 2026): Jordan writes "Caymas", Jobber has "Caymas c/o Icon Management" and there's
+        no account by that name. Found the way a pump bill's client is (the Jobber client search); once the
+        invoice confirms it, "Caymas" is a saved site name, so the next bill goes straight there."""
+        name = 'Invoice_2501_from_Gulfshore_Yacht_Service_LLC.pdf'
+        self.texts[name] = ('INVOICE\nGulfshore Yacht Service LLC gulfshore@example.com\n'
+                            '100 Example Dr +1 (239) 555-0100\nNaples, FL 34120 example.com\nQuailmoor\n'
+                            'Bill to Ship to\nStahlman-england Stahlman-england\nInvoice details\n'
+                            'Invoice date: 10/16/2026\n# Date Product or service Description Qty Rate Amount\n'
+                            '1. 10/15/2026 Filter cleaning Quailmoor. Filter is in good physical 2 $87.50 $175.00\n'
+                            'condition and seems to be functioning\nproperly\nTotal $175.00\n')
+        searched = []
+        saved = (P.jobber_status, P.search_clients, P.client_records, P.invoices_named, P._claude_extract)
+        P._claude_extract = lambda *a, **k: None          # read by code
+        P.jobber_status = lambda: {'connected': True}
+        P.search_clients = lambda q: searched.append(q) or [
+            {'id': 'CQM', 'name': 'Quailmoor c/o Example Management', 'score': 1.0, 'is_lead': False}]
+        P.client_records = lambda cid, kind: [{'id': 'IQM', 'number': '36900', 'status': 'awaiting_payment',
+                                               'total': 650.0, 'created': '2026-10-16', 'uri': ''}] if cid == 'CQM' else []
+        P.invoices_named = lambda *a, **k: []
+        try:
+            r = P.ingest_document(name, b'%PDF-1.4 gulf 2501', source='email', actor='email scan',
+                                  email={'uid': 'gs-2501', 'from': 'gulfshore@example.com',
+                                         'subject': 'New payment request from Gulfshore Yacht Service LLC'})
+            P.check_all_diver_bills()
+        finally:
+            P.jobber_status, P.search_clients, P.client_records, P.invoices_named, P._claude_extract = saved
+        c = self.case(r['case_id'])
+        self.assertEqual((c['client_name'], c['vendor_bill_number']), ('Quailmoor', '2501'))
+        self.assertEqual(c['sei_invoice_number'], '36900')
+        self.assertIn('Quailmoor', searched)
+        alias = P.match_site_alias({'client_name': 'Quailmoor'})
+        self.assertEqual((alias or {}).get('client_id'), 'CQM', 'remembered for the next bill')
+
+    def test_jobber_query_too_big_for_the_points_limit(self):
+        """Oct 2026: the sync's "Jobber kept refusing" errors were queries costing more than Jobber's whole
+        points bucket - never run however long it waits. Said plainly; a merely busy bucket is waited out."""
+        class R:
+            status_code = 200
+            def __init__(self, out): self.out = out
+            def json(self): return self.out
+        def throttled(need, avail):
+            return R({'errors': [{'message': 'Throttled', 'extensions': {'code': 'THROTTLED'}}],
+                      'extensions': {'cost': {'requestedQueryCost': need, 'throttleStatus': {
+                          'maximumAvailable': 10000, 'currentlyAvailable': avail, 'restoreRate': 500}}}})
+        calls, waits, gql = [], [], self._orig[2]    # the real one: other tests leave a fake behind
+        saved = (P.http_requests.post, P._access_token, P.time.sleep)
+        P._access_token = lambda force=False: 'tok'
+        P.time.sleep = waits.append
+        try:
+            P.http_requests.post = lambda *a, **k: calls.append(1) or throttled(26000, 10000)
+            with self.assertRaisesRegex(P.JobberError, 'this big'):
+                gql('query { invoices { nodes { id } } }')
+            self.assertEqual(len(calls), 1, 'not retried')
+            replies = [throttled(3000, 500), R({'data': {'ok': 1}})]
+            P.http_requests.post = lambda *a, **k: replies.pop(0)
+            self.assertEqual(gql('query { ok }'), {'ok': 1})
+            self.assertEqual(waits, [6.0], 'waited for the bucket to refill')
+            # Jobber's server timing out (HTTP 504): a pause and again, not an error at once.
+            class Gateway: status_code = 504
+            replies = [Gateway(), R({'data': {'ok': 2}})]
+            P.http_requests.post = lambda *a, **k: replies.pop(0)
+            self.assertEqual(gql('query { ok }'), {'ok': 2})
+        finally:
+            P.http_requests.post, P._access_token, P.time.sleep = saved
+        self.assertIn('lineItems(first: 10)', inspect.getsource(P.scan_scada_invoices))
 
     def test_download_the_accounts_shown_as_a_sheet(self):
         """Oct 2026: download a sheet of the accounts shown - whatever is selected, in that order."""
@@ -4599,7 +5452,7 @@ class PumpsTest(unittest.TestCase):
         # The account page carries its setup too: the pump schedule, the lake, its Jobber links.
         self.assertEqual(h['account']['pump']['months'], '1,4,7,10')
         self.assertIn('docs', h)
-        self.assertEqual(set(h['jobber']), {'client', 'recurring'})
+        self.assertEqual(set(h['jobber']), {'client', 'recurring', 'client_ids'})
         self.assertEqual(P._jobber_client_uri('Z2lkOi8vSm9iYmVyL0NsaWVudC80OTAwNzI1OA=='),
                          'https://secure.getjobber.com/clients/49007258')
         self.assertEqual(self.c.get('/pumps/api/accounts/history?name=Nobody').status_code, 400)
