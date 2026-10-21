@@ -2494,7 +2494,7 @@ let ACH = null;
 async function openAccount(name){
   const j = await api('/accounts/history?name=' + encodeURIComponent(name));
   if (!j.success) { toast(j.error || 'Not found', true); return; }
-  ACH = j; renderAccount();
+  ACH = j; window._acJName = null; renderAccount();
   document.getElementById('drawerWrap').classList.remove('hide');
 }
 function renderAccount(){
@@ -2521,7 +2521,7 @@ function renderAccount(){
   const where = (p && p.address) || (l && l.address) || '';
   const links = [jb.client && jb.client.uri ? `<a class="btn s" href="${esc(jb.client.uri)}" target="_blank" rel="noopener">${esc(jb.client.name)} in Jobber ↗</a>` : '',
     ...(jb.recurring || []).filter(r => r.uri).map(r => `<a class="btn s" href="${esc(r.uri)}" target="_blank" rel="noopener">Job #${esc(r.number)} ${esc(r.title || '')} ↗</a>`)].filter(Boolean).join(' ');
-  const docs = (a.docs || []).map(d => `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--border)">${kindChip(d.kind)} <span style="flex:1;min-width:160px"><b>${esc(d.file_name)}</b> <span class="note">${d.doc_number ? '#' + esc(d.doc_number) + ' · ' : ''}${d.total != null ? money(d.total) + ' · ' : ''}${esc(d.doc_date || d10(d.created_at))}${d.signed_sent_at ? ' · signed &amp; sent ' + esc(d10(d.signed_sent_at)) : d.signed_at ? ' · signed ' + esc(d10(d.signed_at)) : ''}</span></span>
+  const docs = (a.docs || []).filter(d => d.kind !== 'bill').map(d => `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--border)">${kindChip(d.kind)} <span style="flex:1;min-width:160px"><b>${esc(d.file_name)}</b> <span class="note">${d.doc_number ? '#' + esc(d.doc_number) + ' · ' : ''}${d.total != null ? money(d.total) + ' · ' : ''}${esc(d.doc_date || d10(d.created_at))}${d.signed_sent_at ? ' · signed &amp; sent ' + esc(d10(d.signed_sent_at)) : d.signed_at ? ' · signed ' + esc(d10(d.signed_at)) : ''}</span></span>
       <a class="btn s" href="/pumps/api/docs/${d.id}/file" target="_blank">Open</a>${d.has_branded ? ` <a class="btn s" target="_blank" href="/pumps/api/docs/${d.id}/file?version=branded_pdf">SE report PDF</a>` : ''}${d.signed_at ? ` <a class="btn s" href="/pumps/api/docs/${d.id}/file?version=approved&download=1">⬇ Signed</a>` : ''}${d.case_id ? ` <a href="#" onclick="event.preventDefault();openCase(${d.case_id})">job ↗</a>` : ''}</div>`).join('');
   const vis = (AC && AC.accounts.find(x => x.name === a.name) || {}).visit;
   document.getElementById('drawer').dataset.account = a.name;
@@ -2529,19 +2529,53 @@ function renderAccount(){
   <div class="hd"><div><h2>${esc(a.name)}${ac.active === false ? ' <span class="chip">former</span>' : ''}</h2><div class="note">${where ? esc(where) + ' · ' : ''}${open.length} open to-do${open.length === 1 ? '' : 's'} · ${a.todos.length} in all · ${a.jobs.length} job${a.jobs.length === 1 ? '' : 's'}</div></div>
     <div><button class="btn" onclick="closeDrawer()">✕</button></div></div>
   <div class="bd">
-    <div class="sec"><h4>Setup</h4><div style="display:flex;gap:8px;flex-wrap:wrap">${setup}</div>
+    <div class="sec"><h4>In Jobber</h4><div id="acJobber">${(jb.client_ids || []).length ? '<div class="note">Loading invoices, jobs and requests from Jobber…</div>' : '<div class="note">Not linked to a Jobber client yet - link it in Setup below.</div>'}</div></div>
+    <div class="sec"><h4>Vendor invoices (${(a.vendor_bills || []).length})</h4>${vendorBillsHtml(a.vendor_bills || [])}</div>
+    <details class="sec fold"><summary><h4>Setup</h4> <span class="note">pump, lake and SCADA - what they have and the prices</span></summary><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">${setup}</div>
       ${ac.active && ((p && p.active) || (l && l.active !== 0)) ? `<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn s ${vis ? '' : 'p'}" onclick="accountReady(${q(a.name)})">✓ Ready - client approved</button>${vis ? `<span class="note">✓ Client approved ${esc((vis.link || {}).since || '')} · waiting on ${esc(((vis.link || {}).vendors || []).filter(x => !((vis.link || {}).reported || []).includes(x)).join(' and '))}</span>` : ''}</div>` : ''}
-      ${links ? `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">${links}</div>` : ''}</div>
+      ${links ? `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">${links}</div>` : ''}</details>
     <div class="sec"><h4>Add a to-do for ${esc(a.name)}</h4><div style="display:flex;gap:6px;flex-wrap:wrap">
       <input type="text" id="acTodoTitle" placeholder="What needs doing" style="flex:1;min-width:180px">
       <input type="date" id="acTodoDue" title="Due (optional)">
       <button class="btn p" onclick="accountTodoAdd(${q(a.name)})">＋ Add</button></div></div>
     <div class="sec"><h4>To do (${open.length})</h4><div style="display:flex;flex-direction:column;gap:8px">${open.map(todo).join('') || '<div class="note">Nothing open.</div>'}</div></div>
     <div class="sec"><h4>Done (${done.length})</h4><div style="display:flex;flex-direction:column;gap:8px">${done.map(todo).join('') || '<div class="note">Nothing done yet.</div>'}</div></div>
-    <div class="sec"><h4>Jobs (${a.jobs.length})</h4>${jobs || '<div class="note">No jobs.</div>'}</div>
-    <div class="sec"><h4>Documents (${(a.docs || []).length})</h4>${docs || '<div class="note">No quotes, bills or reports yet.</div>'}</div>
+    <div class="sec"><h4>Items followed here (${a.jobs.length})</h4>${jobs || '<div class="note">None.</div>'}</div>
+    <div class="sec"><h4>Reports and quotes (${(a.docs || []).filter(d => d.kind !== 'bill').length})</h4>${docs || '<div class="note">No reports or quotes yet.</div>'}</div>
     ${notices ? `<div class="sec"><h4>Maintenance - subcontractor notified</h4>${notices}</div>` : ''}
   </div>`;
+  // Jobber's history: fetched once per account, kept while its page re-draws.
+  if (window._acJName === a.name && window._acJ) acJobberShow(window._acJTab || 'invoices');
+  else { window._acJ = null; window._acJName = a.name; loadAccountJobber(jb.client_ids || []); }
+}
+// Every vendor invoice for the account: what, when, how much, our invoice, paid.
+function vendorBillsHtml(bills){
+  if (!bills.length) return '<div class="note">No vendor invoices yet.</div>';
+  return `<table class="t"><thead><tr><th>Date</th><th>Vendor</th><th>Their invoice</th><th class="num">Amount</th><th>Our invoice</th><th>Paid</th><th></th></tr></thead><tbody>${bills.map(b => `<tr>
+    <td>${esc(b.date)}</td><td>${esc(b.vendor)}</td><td><a target="_blank" href="/pumps/api/docs/${b.id}/file">#${esc(b.number || '?')}</a></td>
+    <td class="num">${money(b.total ?? b.subtotal)}</td><td>${b.our_invoice ? '#' + esc(b.our_invoice) : '<span class="note">-</span>'}</td>
+    <td>${b.paid_on ? '<span class="chip g">paid ' + esc(b.paid_on) + '</span>' : '<span class="note">not yet</span>'}</td>
+    <td>${b.case_id ? `<a href="#" onclick="event.preventDefault();openCase(${b.case_id})">job ↗</a>` : ''}</td></tr>`).join('')}</tbody></table>`;
+}
+// The account's Jobber history: invoices, jobs and requests, newest first - one click between them.
+async function loadAccountJobber(ids){
+  const box = document.getElementById('acJobber');
+  if (!box || !ids.length) return;
+  const j = await api('/accounts/jobber_history?' + ids.map(i => 'client_id=' + encodeURIComponent(i)).join('&'));
+  if (!document.getElementById('acJobber')) return;
+  if (!j.success) { box.innerHTML = `<div class="note">${esc(j.error)}</div>`; return; }
+  window._acJ = j; acJobberShow(window._acJTab || 'invoices');
+}
+function acJobberShow(tab){
+  window._acJTab = tab;
+  const j = window._acJ, box = document.getElementById('acJobber'); if (!j || !box) return;
+  const tabs = [['invoices', 'Invoices'], ['jobs', 'Jobs'], ['requests', 'Service requests']];
+  const rows = j[tab] || [];
+  box.innerHTML = `<div style="display:flex;gap:6px;margin-bottom:8px">${tabs.map(([k, l]) => `<button class="btn s ${k === tab ? 'p' : ''}" onclick="acJobberShow('${k}')">${l} (${(j[k] || []).length})</button>`).join('')}</div>`
+    + (rows.length ? `<table class="t"><thead><tr><th>Date</th><th>#</th><th>Title</th><th>Status</th><th class="num">Amount</th></tr></thead><tbody>${rows.map(r => `<tr>
+      <td>${esc(r.date)}</td><td>${r.uri ? `<a target="_blank" rel="noopener" href="${esc(r.uri)}">${r.number ? '#' + esc(r.number) : 'open'} ↗</a>` : esc(r.number)}</td>
+      <td>${esc(r.title)}${r.type === 'recurring' ? ' <span class="chip">recurring</span>' : ''}</td><td>${esc((r.status || '').replace(/_/g, ' '))}</td>
+      <td class="num">${r.total != null ? money(r.total) : ''}</td></tr>`).join('')}</tbody></table>` : '<div class="note">None in Jobber.</div>');
 }
 // Edit an account's pump, lake or SCADA from its page (the same forms as before).
 async function acEdit(kind, id){
