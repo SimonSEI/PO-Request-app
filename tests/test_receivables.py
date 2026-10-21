@@ -213,6 +213,35 @@ class ClassifyTests(Base):
         self.assertEqual(self.inv('5')['status'], 'paid')
 
 
+class JobNumberTests(Base):
+    def test_jobber_job_is_named_by_title_not_its_number(self):
+        self.upload([(ago(50), 'Invoice', 36500, 'Lake Example HOA', ago(40), 3627.75, 3627.75)])
+        R._apply_jobber(self.inv('36500'), {
+            'id': 'J9', 'invoiceStatus': 'past_due', 'subject': 'Stahlman-England Irrigation: Invoice',
+            'amounts': {'total': 3627.75, 'invoiceBalance': 3627.75}, 'client': {'id': 'C', 'name': 'Lake Example HOA'},
+            'lineItems': {'nodes': [{'name': 'Installation', 'description': 'Mainline changes'}]},
+            'jobs': {'nodes': [{'id': 'JOB1', 'jobNumber': 14105, 'title': 'Estimate to make changes to the mainline',
+                                'jobStatus': 'archived', 'completedAt': '2026-09-01T00:00:00Z'}]}})
+        R.classify_all()
+        job = R._job(self.inv('36500')['job_key'])
+        self.assertEqual(job['name'], 'Estimate to make changes to the mainline')
+        self.assertEqual(job['jobber_job_number'], '14105')
+        R.plan_followups()
+        conn = R._conn()
+        subjects = [r[0] for r in conn.execute("SELECT subject FROM ar_emails")]
+        conn.close()
+        self.assertTrue(subjects and all('14105' not in x and '36500' in x for x in subjects), subjects)
+
+    def test_old_numbered_names_are_fixed(self):
+        conn = R._conn()
+        conn.execute("INSERT INTO ar_jobs (key, name) VALUES ('jobber:X', '#14105 Bocce Courts mainline')")
+        conn.commit()
+        conn.close()
+        R._unnumber_job_names()
+        job = R._job('jobber:X')
+        self.assertEqual((job['name'], job['jobber_job_number']), ('Bocce Courts mainline', '14105'))
+
+
 class UploadTests(Base):
     def test_dropped_invoices_close_and_big_drop_asks(self):
         rows = [(ago(50), 'Invoice', 100 + n, f'Customer {n}', ago(40), 100, 100) for n in range(12)]
