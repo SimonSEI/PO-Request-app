@@ -805,7 +805,7 @@ def init_db():
     # When the vendor's bill was paid, and who said so (added after launch).
     # vendor_follow: the last time we chased the vendor and what they said (JSON).
     # job_status: the latest status update on an approved job (JSON) - parts ordered, client told, scheduled...
-    for col in ('vendor_paid_on', 'vendor_paid_by', 'closed_by_hand', 'vendor_follow', 'job_status'):
+    for col in ('vendor_paid_on', 'vendor_paid_by', 'closed_by_hand', 'vendor_follow', 'job_status', 'urgent'):
         try:
             c.execute(f"ALTER TABLE pump_cases ADD COLUMN {col} TEXT DEFAULT ''")
         except sqlite3.OperationalError:
@@ -8680,6 +8680,23 @@ def h_follow_up_off(actor, case_id):
                f"At: {row['stage']}", case_id=case_id)
         conn.commit()
         return {}
+    finally:
+        conn.close()
+
+
+@api('/cases/<int:case_id>/urgent', methods=('POST',))
+def h_case_urgent(actor, case_id):
+    """{"on": true|false} - a quote that's urgent sits with the jobs at the top of the watchlist;
+    the rest wait under "Quotes - not urgent" at the bottom (Oct 2026)."""
+    on = bool(_json().get('on'))
+    conn = _conn()
+    try:
+        if not conn.execute('UPDATE pump_cases SET urgent=?, updated_at=? WHERE id=?',
+                            ('1' if on else '', _now_text(), case_id)).rowcount:
+            return {'success': False, 'error': 'Not found'}, 404
+        _event(conn, actor, 'marked urgent' if on else 'marked not urgent', '', case_id=case_id)
+        conn.commit()
+        return {'urgent': on}
     finally:
         conn.close()
 
