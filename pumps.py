@@ -3812,6 +3812,8 @@ def check_mutation_allowed(query):
     """Refuse anything but the draft-quote, draft-invoice and note mutations."""
     if not re.match(r'\s*mutation\b', query):
         return
+    if not _human_clicked():
+        raise JobberError('Not done by itself - the app only changes Jobber when you click its button')
     fields = _mutation_fields(query)
     bad = [f for f in fields if f not in ALLOWED_MUTATIONS]
     if not fields or bad:
@@ -7510,6 +7512,24 @@ def _bearer_ok():
 _ROUTES = []
 
 
+# Jobber is only ever changed when a person clicks the button that does it (the office, Oct 22
+# 2026: "human involved and confirm every move - 100% of the time"). Those handlers are marked
+# @jobber_button; only a signed-in person's click on one may write to Jobber. Everything else -
+# the mailbox scan, the Jobber sync, the schedule, uploads, the bot - is refused, and what it
+# would have done is left on the to-do list with its button.
+_HUMAN_JOBBER = contextvars.ContextVar('human_jobber', default=False)
+
+
+def _human_clicked():
+    """Is this a person's click on a Jobber button (see jobber_button)?"""
+    return _HUMAN_JOBBER.get()
+
+
+def jobber_button(fn):
+    fn._jobber_button = True
+    return fn
+
+
 def api(path, methods=('GET',)):
     def deco(fn):
         _ROUTES.append((path, methods, fn))
@@ -7523,7 +7543,11 @@ def _register_routes(app, csrf):
             if not pumps_allowed():
                 return jsonify({'success': False, 'error': 'Not signed in to Pumps'}), 401
             actor = session.get('full_name') or session.get('username')
-            return _call(fn, actor, kw)
+            human = _HUMAN_JOBBER.set(bool(getattr(fn, '_jobber_button', False)) and request.method != 'GET')
+            try:
+                return _call(fn, actor, kw)
+            finally:
+                _HUMAN_JOBBER.reset(human)
 
         def bot_view(fn=fn, **kw):
             if not _bearer_ok():
@@ -8242,6 +8266,7 @@ def h_bills_paid(actor):
 
 
 @api('/docs/<int:doc_id>/site_invoices', methods=('POST',))
+@jobber_button
 def h_doc_site_invoices(actor, doc_id):
     """Draft the invoice for each station of the bill that doesn't have one yet."""
     if actor == BOT:
@@ -9092,6 +9117,7 @@ def h_doc_rebrand(actor, doc_id):
 
 
 @api('/docs/<int:doc_id>/invoice', methods=('POST',))
+@jobber_button
 def h_doc_invoice(actor, doc_id):
     """Create the Jobber DRAFT invoice for a bill. Body: {"client_id",
     "line_items": [...], "subject", "job_id"}. Without client_id, the clear
@@ -9204,6 +9230,7 @@ def h_doc_reread(actor, doc_id):
 
 
 @api('/docs/<int:doc_id>/quote', methods=('POST',))
+@jobber_button
 def h_doc_quote(actor, doc_id):
     """Create our DRAFT quote to the client in Jobber from a vendor's quote.
     Body: {"client_id", "property_id", "line_items": [...], "title", "message"}.
@@ -9325,6 +9352,7 @@ def h_doc_report_done(actor, doc_id):
 
 
 @api('/docs/<int:doc_id>/report_note', methods=('POST',))
+@jobber_button
 def h_doc_report_note(actor, doc_id):
     """Log a report as a note in Jobber. Body: {"target_type": "job"|"client",
     "target_id", "message"}. Without a target, the pump's job is found from the
@@ -9388,6 +9416,7 @@ def remember_report_choice(doc, client_id, client_name='', job_id='', job_label=
 
 
 @api('/issues/<int:issue_id>/bill-anyway', methods=('POST',))
+@jobber_button
 def h_issue_bill_anyway(actor, issue_id):
     """The office's override for a bill with no quote: clear the alert and
     invoice the bill plus 30%. Returns the bill to draft."""
@@ -12095,7 +12124,7 @@ def h_maint_delete(actor, aid):
 # ═════════════════════════════════════════════════════════════════════════════
 
 APPROVER = os.environ.get('PUMPS_APPROVER', 'Simon Weardon')
-AUTO_DRAFT_INVOICES = os.environ.get('PUMPS_AUTO_DRAFT_INVOICES', 'true').lower() in ('1', 'true', 'yes', 'on')
+AUTO_DRAFT_INVOICES = False   # never by itself: a bill waits on "Draft invoice" for a person (Oct 22 2026)
 DIGEST_TO = os.environ.get('PUMPS_DIGEST_TO', 'simon@stahlman-england.com')
 DIGEST_HOUR = int(os.environ.get('PUMPS_DIGEST_HOUR', '8') or 8)
 SERVICE_CALL_DAYS = int(os.environ.get('PUMPS_SERVICE_CALL_DAYS', '14') or 14)
@@ -13360,6 +13389,7 @@ def close_jobber_job(job_id, actor):
 
 
 @api('/jobber/jobs/close', methods=('POST',))
+@jobber_button
 def h_close_jobber_job(actor):
     """Body: {"job_id"} - close that Jobber job (the Close job button on its to-do)."""
     if actor == BOT:
@@ -13486,6 +13516,7 @@ def draft_scada_quote(scada_id, actor):
 
 
 @api('/scada/<int:scada_id>/draft_quote', methods=('POST',))
+@jobber_button
 def h_scada_draft_quote(actor, scada_id):
     """Draft the SCADA renewal quote in Jobber - only when someone in the office clicks it."""
     if actor == BOT:
@@ -13677,6 +13708,7 @@ def h_case_approved(actor, case_id):
 
 
 @api('/cases/<int:case_id>/sign_quote', methods=('POST',))
+@jobber_button
 def h_case_sign_quote(actor, case_id):
     """Sign quote: sign the vendor's approved quote, save it here and on the
     Jobber quote, and email it to the vendor asking when it'll be done.
@@ -14088,6 +14120,7 @@ def h_service_quote_draft(actor):
 
 
 @api('/accounts/service_quote', methods=('POST',))
+@jobber_button
 def h_service_quote_create(actor):
     """Body: {name, kind, client_id, property_id, title, line_items} - a DRAFT quote in Jobber
     for a service the account doesn't have, and a to-do to send it."""

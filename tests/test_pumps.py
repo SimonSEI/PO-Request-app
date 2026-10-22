@@ -176,6 +176,16 @@ class PumpsTest(unittest.TestCase):
         # Removed when the whole run ends: other test files share the same app (and this folder).
         atexit.register(shutil.rmtree, TMP, True)
 
+    def as_if_clicked(self):
+        """Jobber is only changed by a person's click on its button (Oct 22 2026); tests of what those
+        clicks do run as one - and with the automatic invoice that bill tests exercise."""
+        saved_h = P._human_clicked
+        P._human_clicked = lambda: True
+        self.addCleanup(setattr, P, '_human_clicked', saved_h)
+        saved = P.AUTO_DRAFT_INVOICES
+        P.AUTO_DRAFT_INVOICES = True
+        self.addCleanup(setattr, P, 'AUTO_DRAFT_INVOICES', saved)
+
     def setUp(self):
         self.c = A.app.test_client()
         A.app.config['WTF_CSRF_ENABLED'] = False
@@ -260,6 +270,7 @@ class PumpsTest(unittest.TestCase):
         """Wettech's Spanish Wells report (Oct 2026): one page per pump, each with Wettech's letterhead,
         "CUSTOMER: Stahlman England", an empty comments box and the technician - rebranded on every page, then
         put on The Lake Club's "Quarterly Pump- 850" job as "October Pump Report"."""
+        self.as_if_clicked()   # the Jobber mechanics, as when a person clicks its button
         from docx import Document
         d = Document()
         for pump in ('Pump #1', 'Pump #2', 'Pump #3', 'Pump #5'):
@@ -553,6 +564,7 @@ class PumpsTest(unittest.TestCase):
 
     # ── Jobber: drafts only, never sent ──────────────────────────────────────
     def test_guard_blocks_everything_but_drafts_and_notes(self):
+        self.as_if_clicked()   # the Jobber mechanics, as when a person clicks its button
         for q in ('mutation { invoiceSend(invoiceId: "1") { invoice { id } } }',
                   'mutation M($id: EncodedId!) { invoiceMarkAsSent(id: $id) { invoice { id } } }',
                   'mutation { x: invoiceMarkAsSent(id: "1") { invoice { id } } }',
@@ -835,6 +847,7 @@ class PumpsTest(unittest.TestCase):
     def test_quote_read_again_redoes_our_draft_in_jobber(self):
         """Our quote is already drafted in Jobber when the vendor's quote is
         read again: the draft's lines are redone - only while it's a draft."""
+        self.as_if_clicked()   # the Jobber mechanics, as when a person clicks its button
         T = lambda name, kind='INPUT_OBJECT': {'kind': kind, 'name': name, 'ofType': None}
         NN = lambda t: {'kind': 'NON_NULL', 'name': None, 'ofType': t}
         LST = lambda t: {'kind': 'LIST', 'name': None, 'ofType': t}
@@ -2758,6 +2771,7 @@ class PumpsTest(unittest.TestCase):
         return out.getvalue()
 
     def test_approved_quote_is_signed_sent_to_the_vendor_and_invoiced_at_the_quoted_price(self):
+        self.as_if_clicked()   # the Jobber mechanics, as when a person clicks its button
         self.extracts['q-0950.pdf'] = extraction('quote', 'Q-950', po='PO951', client='Lakeside Pines', subtotal=1000)
         self.extracts['b-0950.pdf'] = extraction('bill', '30950', po='PO951', client='Lakeside Pines', subtotal=1100)
         fake = FakeJobber(quote_lines=[{'name': 'Service Proposal Amount', 'description': 'Replace check valve',
@@ -3149,6 +3163,21 @@ class PumpsTest(unittest.TestCase):
                          'Pebble Brook 1, 3, and 4 · Fountian #1')
         self.assertFalse(st('Huntington #6', 'Pump Maintenance on Pump #3 & Pool #2 at 6585 Huntington').endswith('&'))
         self.assertEqual(st('Banyan Bay', 'Banayn Bay quote for fiberglass enclosure'), 'Banyan Bay · Fiberglass enclosure')
+
+    def test_jobber_is_only_changed_by_a_persons_click(self):
+        """The office (Oct 22 2026): "human involved and confirm every move - 100% of the time" - University Village's
+        October invoice was drafted by itself. Nothing but a person's click on a Jobber button changes Jobber: not the
+        mailbox, the sync, the schedule, an upload, or the bot."""
+        self.assertFalse(P.AUTO_DRAFT_INVOICES)
+        with self.assertRaisesRegex(P.JobberError, 'only changes Jobber when you click'):
+            P.check_mutation_allowed(P.INVOICE_CREATE)
+        P.check_mutation_allowed('query { quotes { nodes { id } } }')   # reading is fine
+        self.assertTrue(getattr(P.h_doc_invoice, '_jobber_button', False))
+        self.assertFalse(getattr(P.h_doc_upload, '_jobber_button', False))
+        self.assertFalse(getattr(P.h_jobber_sync, '_jobber_button', False))
+        # A Jobber button through the bot's door is still no person's click.
+        r = self.c.post('/api/pumps/docs/1/invoice', json={})
+        self.assertIn(r.status_code, (401, 403))
 
     def test_urgent_quote_moves_up(self):
         """Oct 2026: quotes wait under "Quotes - not urgent" unless marked urgent."""
@@ -4127,6 +4156,7 @@ class PumpsTest(unittest.TestCase):
         """The Carlisle (Greenscapes, Oct 2026): one Wettech report with an Entrance page and an Exit page.
         Each station has its own recurring job (#3249 Entrance, #3250 Exit): each page is its own note on its
         own job, and the bill is invoiced once on each job."""
+        self.as_if_clicked()   # the Jobber mechanics, as when a person clicks its button
         from docx import Document
         d = Document()
         for loc, when, extra in (('Entrance', '10-2-2026', 'CHECK HYDRO-PNEUMATIC TANKS'),
@@ -5232,6 +5262,7 @@ class PumpsTest(unittest.TestCase):
     def test_maintenance_invoice_marks_the_months_visit_complete(self):
         """Oct 2026: invoicing a maintenance bill on the recurring job also completes that job's visit for the
         month the bill is for - the one nearest the bill's date - and anything that can't be done is a to-do."""
+        self.as_if_clicked()   # the Jobber mechanics, as when a person clicks its button
         self.addCleanup(setattr, P, '_SCHEMA_CACHE', {})
         visits = [{'id': 'V9', 'title': 'Monthly Pump 250', 'startAt': '2026-09-25T12:00:00Z', 'completedAt': None},
                   {'id': 'V10', 'title': 'Monthly Pump 250', 'startAt': '2026-10-23T12:00:00Z', 'completedAt': None},
@@ -5372,6 +5403,7 @@ class PumpsTest(unittest.TestCase):
 
     def test_bill_is_invoiced_on_the_matching_jobber_job(self):
         """Wettech bills "Lee Memorial"; Hodges' job #14511 "Replace broken drop pipe" needs invoicing."""
+        self.as_if_clicked()   # the Jobber mechanics, as when a person clicks its button
         HODGES = 'Z2lkOi8vSm9iYmVyL0NsaWVudC8zODg2MDA3MQ=='
 
         class Fake(FakeJobber):
