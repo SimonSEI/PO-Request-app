@@ -547,6 +547,23 @@ def similarity(a, b):
     return round(0.7 * contain + 0.3 * jacc, 3)
 
 
+_SITEONE_STORE = re.compile(r'\s*siteone(?:us)?_\d', re.I)
+
+
+def _dismiss_siteone_store(c, now):
+    """Once (Oct 22 2026): SiteOne store invoices waiting on "Look at" - parts bought, not pump work."""
+    if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pump_docs'").fetchone():
+        return
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('siteone_store_oct26', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    for did, fname in c.execute("SELECT id, file_name FROM pump_docs WHERE case_id IS NULL AND status IN ('new', 'review') "
+                                "AND source='email'").fetchall():
+        if _SITEONE_STORE.match(fname or ''):
+            c.execute("UPDATE pump_docs SET status='dismissed', review_reason=?, updated_at=? WHERE id=?",
+                      ('SiteOne store invoice - not pump work', _now_text(), did))
+
+
 def _vendor_display(text):
     v = pump_reports.vendor_for(text)
     return v.get('display') if v else ''
@@ -3165,6 +3182,10 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
         vendor = _vendor_display(f"{sender}\n{subject}\n{email.get('preview', '')}\n{text[:3000]}")
         if source == 'email' and not vendor and not STRONG_TERMS.search(f'{subject}\n{filename}\n{text[:5000]}'):
             return {'skipped': 'not pump related'}
+        if source == 'email' and _SITEONE_STORE.match(filename or ''):
+            # SiteOne's store invoices (siteoneus_15664_...) are parts bought - the main app's Vendor
+            # Invoices has them, not pump work to look at (Oct 2026).
+            return {'skipped': 'SiteOne store invoice - not pump work'}
         path, sha = _store_file(data, filename)
         rec = {'kind': kind_hint or 'other', 'vendor': vendor, 'line_items': [], 'category': '',
                'doc_number': '', 'doc_date': '', 'po_number': '', 'wo_number': '', 'quote_reference': '',
@@ -11511,6 +11532,7 @@ def init_account_tables(c):
     _paid_once_emailed(c, now)
     _drop_irrigation_quotes(c, now)
     _unhook_wrong_client_quotes(c, now)
+    _dismiss_siteone_store(c, now)
     _seed_contracts(c, now)
     _spell_beatriz(c, now)
     if not seeded('office_answers_oct26'):
