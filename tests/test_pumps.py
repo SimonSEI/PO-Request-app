@@ -3121,6 +3121,27 @@ class PumpsTest(unittest.TestCase):
         titles = [t['title'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
         self.assertNotIn('Sign the approved quote and send it to Tom - CORSA', titles)
 
+    def test_siteone_store_invoices_are_not_pump_work(self):
+        """Oct 2026: SiteOne's store invoices (siteoneus_15664_...) landed on "Look at" with no amount - parts bought, not
+        pump work: skipped from the mailbox, and ones already waiting dismissed once."""
+        name = 'siteoneus_15664_20261022_32529838_154539194.pdf'
+        self.texts[name] = 'INVOICE SiteOne Landscape Supply submersible pump 1 ea'
+        r = P.ingest_document(name, b'%PDF-1.4 siteone', source='email', actor='email scan',
+                              email={'uid': 's1', 'from': 'noreply@siteone.com', 'subject': 'Your SiteOne invoice'})
+        self.assertIn('SiteOne store invoice', r.get('skipped', ''), r)
+        conn = P._conn()
+        try:
+            conn.execute("INSERT INTO pump_docs (kind, status, file_name, source, created_at) VALUES ('bill', 'review', ?, "
+                         "'email', ?)", ('siteoneus_15664_old.pdf', P._now_text()))
+            did = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+            conn.execute("DELETE FROM pump_state WHERE key='siteone_store_oct26'")
+            P._dismiss_siteone_store(conn.cursor(), P._now_text())
+            conn.commit()
+            st = conn.execute('SELECT status FROM pump_docs WHERE id=?', (did,)).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(st, 'dismissed')
+
     def test_urgent_quote_moves_up(self):
         """Oct 2026: quotes wait under "Quotes - not urgent" unless marked urgent."""
         j = self.c.post('/pumps/api/cases', json={'title': 'Surge arrestor', 'client_name': 'Urgent Lakes'}).get_json()
