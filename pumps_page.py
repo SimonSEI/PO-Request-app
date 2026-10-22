@@ -1096,7 +1096,7 @@ async function loadBills(){
       <td>${b.bill_doc_id ? `<a target="_blank" href="/pumps/api/docs/${b.bill_doc_id}/file">#${esc(b.bill_number || '?')}</a>` : '#' + esc(b.bill_number || '?')}<div class="note">${esc(b.bill_date)}</div></td>
       <td class="num">${b.amount != null ? money(b.amount) : '?'}</td>
       <td>${b.payable ? '<b class="ok">✓ Yes</b> - ' : 'Not yet - '}${esc(b.why)}${b.asked_at ? `<div class="note">✉ Emailed Christian ${esc(b.asked_at.slice(0, 10))}</div>` : ''}</td>
-      <td>${b.payable ? (b.pay_ok ? `<button class="btn s" title="Back to waiting" onclick="billsPayOk([${b.case_id}], true)">↶ Not yet</button> ` : '') : `<button class="btn s p" title="Billed through a monthly contract, or otherwise fine to pay - pay it now" onclick="billsPayOk([${b.case_id}])">OK to pay now</button> <button class="btn s" title="Invoiced straight in Jobber? Tie that invoice to this job" onclick="linkInvoice(${b.case_id}).then(loadBills)">Link invoice</button> `}<button class="btn s" onclick="markVendorPaid(${b.case_id}).then(loadBills)">Mark paid</button></td></tr>`; }).join('')}
+      <td>${b.held ? `<button class="btn s" title="Lift the hold - it can be paid again once nothing else stops it" onclick="billsHold([${b.case_id}], true)">↶ Lift hold</button> ` : b.payable ? (b.pay_ok ? `<button class="btn s" title="Back to waiting" onclick="billsPayOk([${b.case_id}], true)">↶ Not yet</button> ` : `<button class="btn s" title="Something's wrong with this one - don't pay it until the hold is lifted" onclick="billsHold([${b.case_id}])">Not OK to pay yet</button> `) : `<button class="btn s p" title="Billed through a monthly contract, or otherwise fine to pay - pay it now" onclick="billsPayOk([${b.case_id}])">OK to pay now</button> <button class="btn s" title="Invoiced straight in Jobber? Tie that invoice to this job" onclick="linkInvoice(${b.case_id}).then(loadBills)">Link invoice</button> `}<button class="btn s" onclick="markVendorPaid(${b.case_id}).then(loadBills)">Mark paid</button></td></tr>`; }).join('')}
     </tbody></table>`).join('') || '<div class="empty">No vendor bills waiting to be paid. 🎉</div>';
   billsPaidRender(j.paid || [], '');
   setCount('n-bills', j.vendors.reduce((a, g) => a + g.bills.filter(b => b.payable && !b.asked_at).length, 0), false);
@@ -1145,6 +1145,15 @@ async function billsPayOk(ids, undo){
   loadBills(); loadToday();
   if (undo) toast('Back to waiting.');
   else undoToast('OK to pay - it can go in the email to Christian.', () => billsPayOk(ids, true));
+}
+async function billsHold(ids, undo){
+  let note = '';
+  if (!undo) { note = prompt("Not OK to pay. Why? (optional - shows on the list)", ''); if (note === null) return; }
+  const j = await api('/bills_to_pay/hold', {method:'POST', body:{case_ids: ids, undo: !!undo, note}});
+  if (!j.success) { toast(j.error, true); return; }
+  loadBills(); loadToday();
+  if (undo) toast('Hold lifted.');
+  else undoToast("Held - not OK to pay. It stays off the email to Christian.", () => billsHold(ids, true));
 }
 async function billsUnpaid(ids){
   const j = await api('/bills_to_pay/unpaid', {method:'POST', body:{case_ids: ids}});

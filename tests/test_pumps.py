@@ -3997,6 +3997,33 @@ class PumpsTest(unittest.TestCase):
         self.c.post('/pumps/api/bills_to_pay/pay_ok', json={'case_ids': [b['case_id']], 'undo': True})
         self.assertFalse(row()['payable'])
 
+    def test_hold_a_bill_not_ok_to_pay(self):
+        """Homewood Suites (Oct 2026): invoiced, so payable - but the office says not OK to pay. Held: not
+        payable, off the email to Christian, the note shown. Lifting the hold makes it payable again."""
+        self.extracts['b-hold1.pdf'] = extraction('bill', '40051', client='Holdfast Pines HOA', subtotal=500)
+        b = self.upload('b-hold1.pdf')
+        conn = P._conn()
+        conn.execute('UPDATE pump_cases SET jobber=?, sei_invoice_number=? WHERE id=?',
+                     (json.dumps({'invoice': {'id': 'I37201', 'number': '37201', 'status': 'draft'}}), '37201',
+                      b['case_id']))
+        conn.commit()
+        conn.close()
+        row = lambda: {x['case_id']: x for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors']
+                       for x in g['bills']}[b['case_id']]
+        self.assertTrue(row()['payable'])
+        r = self.c.post('/pumps/api/bills_to_pay/hold',
+                        json={'case_ids': [b['case_id']], 'note': 'issue with the well'}).get_json()
+        self.assertTrue(r['success'], r)
+        self.assertFalse(row()['payable'])
+        self.assertTrue(row()['held'])
+        self.assertIn('not OK to pay', row()['why'])
+        self.assertIn('issue with the well', row()['why'])
+        e = self.c.post('/pumps/api/bills_to_pay/email', json={'case_ids': [b['case_id']]}).get_json()
+        self.assertNotIn('#40051', (e.get('email') or {}).get('body', ''))
+        self.c.post('/pumps/api/bills_to_pay/hold', json={'case_ids': [b['case_id']], 'undo': True})
+        self.assertTrue(row()['payable'])
+        self.assertFalse(row()['held'])
+
     def test_irrigation_quote_items_dropped(self):
         """Oct 19 2026: The Reserve @ Estero #8443 (valve boxes, a gate valve) was made an item - irrigation work for
         Install. Cancelled once, the quote ignored, its to-do done; a pump quote's item is left."""
