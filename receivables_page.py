@@ -92,18 +92,20 @@ PAGE_TEMPLATE = r'''<!DOCTYPE html>
   <div id="banner"></div>
   <div class="kpis" id="kpis"></div>
   <div class="tabs" id="tabs">
-    <div class="tab active" data-p="today">Today <span class="n" id="n-today" style="display:none"></span></div>
+    <div class="tab active" data-p="accounts">Accounts</div>
+    <div class="tab outreach" data-p="today">Today <span class="n" id="n-today" style="display:none"></span></div>
     <div class="tab" data-p="invoices">Invoices</div>
     <div class="tab" data-p="cash">Cash in</div>
-    <div class="tab" data-p="jobs">Jobs &amp; retainage</div>
-    <div class="tab" data-p="customers">Customers</div>
-    <div class="tab" data-p="emails">Emails</div>
-    <div class="tab" data-p="docs">Documents</div>
+    <div class="tab" data-p="jobs">Projects &amp; retainage</div>
+    <div class="tab outreach" data-p="customers">Customers</div>
+    <div class="tab outreach" data-p="emails">Emails</div>
+    <div class="tab outreach" data-p="docs">Documents</div>
     <div class="tab" data-p="settings">Settings</div>
     <div class="tab" data-p="activity">Activity</div>
   </div>
 
-  <section class="panel active" id="p-today"></section>
+  <section class="panel active" id="p-accounts"></section>
+  <section class="panel" id="p-today"></section>
 
   <section class="panel" id="p-invoices">
     <div class="filters">
@@ -143,7 +145,7 @@ PAGE_TEMPLATE = r'''<!DOCTYPE html>
 <div id="toast"></div>
 
 <script>
-var D = null, TAB = 'today';
+var D = null, TAB = 'accounts';
 var CSRF = document.querySelector('meta[name="csrf-token"]').content;
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
 function money(v){ v = Number(v || 0); return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}); }
@@ -172,6 +174,16 @@ function load(){
 
 function render(){
   var st = D.status, s = D.settings;
+  document.querySelectorAll('.tab.outreach').forEach(function(t){ t.style.display = D.outreach ? '' : 'none'; });
+  if(!D.outreach && ['today','customers','emails','docs'].indexOf(TAB) >= 0) document.querySelector('.tab[data-p=accounts]').click();
+  var up = D.uploads.length ? D.uploads[0] : null;
+  if(!D.outreach){
+    document.getElementById('status').innerHTML =
+      '<span class="chip ' + (st.jobber ? 'ok' : 'no') + '">Jobber ' + (st.jobber ? 'connected' : 'not connected') + '</span>' +
+      '<span class="chip ' + (st.grok_api ? 'ok' : 'warn') + '">' + (st.grok_api ? 'Grok Bot API on' + (st.last_grok ? ' · last update ' + esc(st.last_grok.slice(0, 16)) : ' · no calls yet') : 'Grok Bot API off (set GROK_API_KEY)') + '</span>' +
+      '<span class="chip">Emails off: Grok Bot and the office contact customers</span>' +
+      '<span class="muted small">' + (up ? 'Last A/R sheet ' + esc(up.at.slice(0, 16)) + ' by ' + esc(up.by) + ' (' + esc(up.filename) + ')' : 'No A/R sheet yet') + '</span>';
+  } else
   document.getElementById('status').innerHTML =
     '<span class="chip ' + (st.graph ? 'ok' : 'no') + '">Microsoft 365 ' + (st.graph ? 'connected' : 'not connected') + '</span>' +
     '<span class="chip ' + (st.jobber ? 'ok' : 'no') + '">Jobber ' + (st.jobber ? 'connected' : 'not connected (connect it in Pumps)') + '</span>' +
@@ -180,18 +192,22 @@ function render(){
     '<span class="chip">From ' + esc(s.from_email) + '</span>' +
     '<span class="muted small">Last run ' + esc(st.last_run || 'never') + (D.uploads.length ? ' · Last upload ' + esc(D.uploads[0].at) + ' (' + esc(D.uploads[0].filename) + ')' : '') + '</span>';
   var banner = '';
-  if(!D.uploads.length) banner = '<div class="banner">Start by uploading your A/R sheet: the QuickBooks <b>A/R Aging Summary</b> with your notes typed in (the app reads them and finds each customer\'s invoices in Jobber), or the <b>A/R Aging Detail</b>. Upload a fresh one whenever you like; customers and invoices that drop off are treated as paid.</div>';
+  if(!D.uploads.length) banner = '<div class="banner">Start by uploading the weekly QuickBooks <b>A/R Aging Summary</b> with <b>Upload A/R sheet</b> (Grok Bot can upload it through the API). Each customer\'s invoices are found in Jobber; accounts that drop off the next sheet are treated as paid.</div>';
   document.getElementById('banner').innerHTML = banner;
   var open = D.invoices.filter(function(i){ return i.status !== 'paid'; });
   var sum = function(a){ return a.reduce(function(t,i){ return t + (i.open_balance || 0); }, 0); };
   var late = open.filter(function(i){ return !i.retainage && i.plan.dpd > 0; });
   var vlate = open.filter(function(i){ return !i.retainage && i.plan.dpd > 60; });
   var ret = open.filter(function(i){ return i.retainage; });
-  document.getElementById('kpis').innerHTML =
+  var accts = D.accounts || [];
+  document.getElementById('kpis').innerHTML = !D.outreach ?
+    kpi(money(accts.reduce(function(t, a){ return t + Math.max(a.sheet_total || 0, a.open_balance); }, 0)), accts.length + ' accounts owing') +
+    kpi(money(sum(late)), late.length + ' invoices past due') + kpi(money(sum(vlate)), vlate.length + ' over 60 days late') +
+    kpi(money(sum(ret)), ret.length + ' retainage invoices') + kpi(accts.filter(function(a){ return a.install; }).length, 'install accounts') :
     kpi(money(sum(open)), open.length + ' open invoices') + kpi(money(sum(late)), late.length + ' past due') +
     kpi(money(sum(vlate)), vlate.length + ' over 60 days late') + kpi(money(sum(ret)), ret.length + ' retainage invoices') +
     kpi(open.filter(function(i){ return i.status === 'needs_person' || (i.plan.due_now && !i.contacts.length); }).length, 'need a person');
-  renderToday(); renderInvoices(); renderCash(); renderJobs(); renderCustomers(); renderEmails(); renderDocs(); renderSettings(); renderActivity();
+  renderAccounts(); renderToday(); renderInvoices(); renderCash(); renderJobs(); renderCustomers(); renderEmails(); renderDocs(); renderSettings(); renderActivity();
 }
 function stageLabel(k){
   return {first: '1st follow-up', second: '2nd follow-up', checkin: 'check-in (not due yet)', very_past_due: 'very past due', final: 'final notice', retainage: 'retainage'}[k] || (k || '').replace('_', ' ');
@@ -304,6 +320,63 @@ function renderInvoices(){
   if(!rows.length) h += '<tr><td colspan="13" class="empty">No invoices match.</td></tr>';
   document.getElementById('t-inv').innerHTML = h + '</tbody>';
 }
+
+// ── Accounts: every account owing; install accounts drop down into projects ──
+var OPEN_ACCT = {}, OPEN_PROJ = {}, ACCT_FILTER = 'all';
+var RET_BADGE = {billing: ['b-open', 'still billing'], held: ['b-ret', 'retainage held'], held_ongoing: ['b-paused', 'retainage - project ongoing'], due: ['b-late', 'retainage due'], none: ['b-paid', 'paid']};
+function invRows(list){
+  return '<table><thead><tr><th>Invoice</th><th>Date</th><th class="num">Amount</th><th class="num">Open</th><th>Late</th><th>Expected</th><th>Status</th></tr></thead><tbody>' +
+    list.map(function(i){ return '<tr class="click" onclick="openInvoice(' + i.id + ')"><td><b>#' + esc(i.number) + '</b>' + (i.jobber_subject ? '<div class="small muted">' + esc(i.jobber_subject) + '</div>' : '') + '</td><td>' + md(i.txn_date) + '</td><td class="num">' + (i.amount != null ? money(i.amount) : '') + '</td><td class="num"><b>' + money(i.open_balance) + '</b></td><td>' +
+      (i.retainage ? badge('b-ret', 'retainage' + (i.retainage_pct ? ' ' + i.retainage_pct + '%' : '')) : (i.days_late > 0 ? badge(i.days_late > 60 ? 'b-late' : 'b-install', i.days_late + 'd') : '<span class="muted small">not due</span>')) + '</td><td class="small">' + (i.expected ? md(i.expected) + ' <span class="muted">' + esc(SRC[i.expected_source] || '') + '</span>' : '') + '</td><td>' + badge('b-' + i.status, (D.statuses || {})[i.status] || i.status) + '</td></tr>'; }).join('') + '</tbody></table>';
+}
+function renderAccounts(){
+  var q = ((document.getElementById('a-q') || {}).value || '').toLowerCase();
+  var list = (D.accounts || []).filter(function(a){
+    if(ACCT_FILTER === 'install' && !a.install) return false;
+    if(ACCT_FILTER === 'service' && a.install) return false;
+    if(ACCT_FILTER === 'ret' && !a.retainage_held) return false;
+    if(ACCT_FILTER === 'late' && a.oldest_days_late <= 60) return false;
+    return !q || (a.name + ' ' + a.projects.map(function(p){ return p.name; }).join(' ') + ' ' + a.sheet_notes).toLowerCase().indexOf(q) >= 0;
+  });
+  var asOf = (D.accounts || []).reduce(function(m, a){ return a.as_of > m ? a.as_of : m; }, '');
+  var h = '<div class="filters"><input id="a-q" placeholder="Search account / project / note" value="' + esc(q) + '" oninput="renderAccounts();document.getElementById(\'a-q\').focus()">' +
+    '<select onchange="ACCT_FILTER=this.value;renderAccounts()">' + [['all','All accounts'],['install','Install accounts (pay apps / proposals)'],['service','Service accounts'],['ret','Holding retainage'],['late','Over 60 days late']].map(function(o){ return '<option value="' + o[0] + '"' + (ACCT_FILTER === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>' +
+    '<span class="muted small" style="align-self:center">' + list.length + ' account(s)' + (asOf ? ' · QuickBooks A/R sheet as of ' + md(asOf) : '') + '</span></div>';
+  h += '<div class="card" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th></th><th>Account</th><th class="num">Owed</th><th class="num">Current</th><th class="num">1-30</th><th class="num">31-60</th><th class="num">61-90</th><th class="num">91+</th><th class="num">Retainage</th><th>Expected</th><th>Latest note</th></tr></thead><tbody>';
+  list.forEach(function(a){
+    var open = !!OPEN_ACCT[a.key], k = esc(a.key);
+    var note = a.note ? esc(a.note.text.slice(0, 80)) + ' <span class="muted">(' + esc(a.note.by) + ' ' + md(a.note.at) + ')</span>' : esc((a.sheet_notes || '').replace(/^[^:]{1,12}:\s*/gm, '').slice(0, 80));
+    var ag = function(x){ var v = a.aging[x]; return v ? money(v) : ''; };
+    h += '<tr class="click" onclick="toggleAcct(\'' + k + '\')"><td style="width:22px">' + (open ? '▾' : '▸') + '</td><td><b>' + esc(a.name) + '</b>' + (a.install ? ' ' + badge('b-install', a.projects.filter(function(p){ return p.key; }).length + ' project(s)') : '') +
+      '<div class="small muted">' + a.open_count + ' open invoice(s)' + (a.oldest_days_late > 0 ? ' · oldest ' + a.oldest_days_late + 'd late' : '') + '</div>' + (a.jobber_note ? '<div class="small" style="color:var(--warn)">' + esc(a.jobber_note) + '</div>' : '') + '</td>' +
+      '<td class="num"><b>' + money(a.sheet_total != null && a.as_of ? a.sheet_total : a.open_balance) + '</b></td><td class="num small">' + ag('current') + '</td><td class="num small">' + ag('1-30') + '</td><td class="num small">' + ag('31-60') + '</td><td class="num small">' + ag('61-90') + '</td><td class="num small">' + ag('91+') + '</td>' +
+      '<td class="num">' + (a.retainage_held ? badge('b-ret', money(a.retainage_held)) : '') + '</td><td class="small">' + (a.next_expected ? md(a.next_expected) : '') + '</td><td class="small" style="max-width:260px">' + note + '</td></tr>';
+    if(!open) return;
+    var inner = '<div class="row small" style="margin-bottom:8px">Account type: <select onchange="setAcctType(\'' + k + '\', this.value)" style="width:auto">' +
+      [['', 'Auto (' + (a.install ? 'install' : 'service') + ')'], ['install', 'Install: construction / developer'], ['service', 'Service']].map(function(o){ return '<option value="' + o[0] + '"' + (a.type_set === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>' +
+      (a.emails ? '<span class="muted">· ' + esc(a.emails) + '</span>' : '') + '</div>';
+    if(a.sheet_notes) inner += '<div class="small" style="white-space:pre-wrap;margin-bottom:8px">📝 ' + esc(a.sheet_notes) + '</div>';
+    if(a.install){
+      a.projects.forEach(function(pj){
+        var pk = a.key + '|' + pj.key, popen = !!OPEN_PROJ[pk], rb = RET_BADGE[pj.retainage_state] || ['b-service', ''];
+        inner += '<div class="card" style="margin-bottom:8px"><div class="row click" onclick="toggleProj(\'' + esc(pk) + '\')"><b>' + (popen ? '▾ ' : '▸ ') + esc(pj.name) + '</b>' + (pj.key ? badge(rb[0], rb[1]) : '') + (pj.complete ? badge('b-promised', 'job complete') : '') +
+          '<span>' + pj.count + ' invoice(s) · ' + money(pj.open_balance) + ' open</span>' + (pj.retainage_held ? '<span class="muted small">retainage ' + money(pj.retainage_held) + '</span>' : '') + (pj.next_expected ? '<span class="muted small">expected ' + md(pj.next_expected) + '</span>' : '') +
+          (pj.key ? '<button class="sm" onclick="event.stopPropagation();openJob(\'' + esc(pj.key) + '\')">Open project</button>' : '') + '</div>' +
+          (pj.retainage_text ? '<div class="small" style="margin-top:4px">Retainage: ' + esc(pj.retainage_text) + '</div>' : '') +
+          (pj.note ? '<div class="small muted" style="white-space:pre-wrap">📝 ' + esc(pj.note) + '</div>' : '') +
+          (popen ? '<div style="margin-top:8px">' + invRows(pj.invoices) + '</div>' : '') + '</div>';
+      });
+    } else inner += invRows(a.invoices);
+    inner += '<div class="row" style="margin-top:8px"><input id="an-' + k + '" placeholder="Add a note on this account" style="flex:1"><button class="sm primary" onclick="acctNote(\'' + k + '\')">Add note</button></div>';
+    h += '<tr><td></td><td colspan="10" style="background:#F8FAFC">' + inner + '</td></tr>';
+  });
+  if(!list.length) h += '<tr><td colspan="11" class="empty">No accounts owing.</td></tr>';
+  document.getElementById('p-accounts').innerHTML = h + '</tbody></table></div></div>';
+}
+function toggleAcct(k){ OPEN_ACCT[k] = !OPEN_ACCT[k]; renderAccounts(); }
+function toggleProj(k){ OPEN_PROJ[k] = !OPEN_PROJ[k]; renderAccounts(); }
+function setAcctType(k, v){ post('/receivables/api/customer', {key:k, kind_default:v}).then(function(){ toast('Saved'); load(); }); }
+function acctNote(k){ var el = document.getElementById('an-' + k), t = el.value.trim(); if(!t) return; post('/receivables/api/customer', {key:k, note:t}).then(function(){ toast('Note added'); load(); }); }
 
 // ── Cash in: money expected each week ──
 var SRC = {eta: 'your ETA', promised: 'promised', due: 'due date', none: 'no date'};
@@ -456,8 +529,11 @@ function docDelete(id){ if(!confirm('Remove this document?')) return; post('/rec
 
 // ── Settings ──
 function renderSettings(){
-  var s = D.settings;
-  var h = '<div class="card"><h3>Sending</h3><div class="grid2">' +
+  var s = D.settings, st = D.status;
+  var grok = '<div class="card"><h3>Grok Bot</h3><p class="small muted">Grok Bot keeps Receivables up to date through the API: it uploads the weekly QuickBooks A/R Aging Summary and records notes, ETAs, promises and project details. Everything it changes is noted as "Grok Bot". See RECEIVABLES_API.md in the code for the calls.</p>' +
+    '<div>' + (st.grok_api ? badge('b-promised', 'API on') + (st.last_grok ? ' <span class="small muted">last call ' + esc(st.last_grok) + '</span>' : ' <span class="small muted">no calls yet</span>') : badge('b-install', 'API off') + ' <span class="small muted">Set GROK_API_KEY on Railway and give the same key to Grok Bot.</span>') + '</div>' +
+    (!D.outreach ? '<p class="small muted">Emails from Receivables are off: no follow-ups, check-ins or Notices of Nonpayment are drafted or sent, and the mailbox isn\'t read. (AR_OUTREACH=true on Railway turns them back on.)</p>' : '') + '</div>';
+  var h = grok + (D.outreach ? '' : '<div style="display:none">') + '<div class="card"><h3>Sending</h3><div class="grid2">' +
     fld('from_email', 'Send from (and read replies in)', s.from_email) + fld('cc', 'Cc on every follow-up', s.cc) + fld('send_hours', 'Automatic sending hours (Mon–Fri, e.g. 8-17)', s.send_hours) + '</div>' +
     '<label>Signature</label><textarea id="s-signature">' + esc(s.signature) + '</textarea>' +
     chk('auto_send', 'Send follow-ups automatically (off = they wait on the Today tab for review)', s.auto_send) +
@@ -473,16 +549,17 @@ function renderSettings(){
   s.stages.forEach(function(st, n){ h += '<tr><td><input id="st-name-' + n + '" value="' + esc(st.name) + '" data-key="' + esc(st.key) + '"></td><td><input id="st-from-' + n + '" type="number" value="' + st.from_days + '"></td><td><input id="st-every-' + n + '" type="number" value="' + st.every_days + '"></td></tr>'; });
   h += '</tbody></table><div class="grid2">' + fld('promise_grace_days', 'After a promised date passes, wait (days)', s.promise_grace_days, 'number') +
     fld('reported_paid_wait_days', '"We paid": wait for it to show up (days)', s.reported_paid_wait_days, 'number') + fld('min_balance', 'Ignore balances under ($)', s.min_balance, 'number') + '</div></div>';
+  if(!D.outreach) h += '</div>';
   h += '<div class="card"><h3>Service calls, installs and retainage</h3><div class="grid2">' +
     fld('install_words', 'Words that mark an install invoice', s.install_words) + fld('retainage_range', 'Retainage: share of an install invoice still open (%, e.g. 2-12)', s.retainage_range) + fld('retainage_every_days', 'Ask for retainage every (days, once the job is complete)', s.retainage_every_days, 'number') +
     fld('max_attach_mb', 'Most attachments per email (MB)', s.max_attach_mb, 'number') + '</div></div>';
-  h += '<div class="card"><h3>Liens and the Notice of Nonpayment</h3><p class="muted small">A claim of lien has to be recorded within the lien window after the last day labor or materials were furnished (90 days in Florida). Ahead of that deadline the app prepares a Notice of Nonpayment for the owner. Have your attorney check the wording once; the notice should also go by certified mail, and the lien itself is recorded with the county.</p><div class="grid2">' +
+  h += (D.outreach ? '' : '<div style="display:none">') + '<div class="card"><h3>Liens and the Notice of Nonpayment</h3><p class="muted small">A claim of lien has to be recorded within the lien window after the last day labor or materials were furnished (90 days in Florida). Ahead of that deadline the app prepares a Notice of Nonpayment for the owner. Have your attorney check the wording once; the notice should also go by certified mail, and the lien itself is recorded with the county.</p><div class="grid2">' +
     fld('lien_days', 'Lien window (days after last furnished)', s.lien_days, 'number') + fld('nonp_lead_days', 'Prepare the NONP this many days before the deadline', s.nonp_lead_days, 'number') +
     fld('lien_kinds', 'Applies to (install, service)', s.lien_kinds) + fld('company_name', 'Company name on notices and invoices', s.company_name) +
     fld('company_address', 'Company address', s.company_address) + fld('company_phone', 'Company phone', s.company_phone) + '</div>' +
     '<div class="grid2">' + fld('nonp_min_days_late', 'Draft a Notice of Nonpayment once the job is this many days past due', s.nonp_min_days_late, 'number') +
     fld('nonp_notify', 'Tell this person when one is waiting for approval (blank = the sending address)', s.nonp_notify) + '</div>' +
-    '<p class="small muted">A Notice of Nonpayment is never sent on its own: it waits on the Today tab until someone clicks Approve &amp; send.</p></div>';
+    '<p class="small muted">A Notice of Nonpayment is never sent on its own: it waits on the Today tab until someone clicks Approve &amp; send.</p></div>' + (D.outreach ? '' : '</div>');
   h += '<button class="primary" onclick="saveSettings()">Save settings</button>';
   document.getElementById('p-settings').innerHTML = h;
 }
@@ -519,21 +596,21 @@ function openInvoice(id){
       '<dt>Customer</dt><dd>' + esc(c.name || i.customer) + (i.qb_job ? ' : ' + esc(i.qb_job) : '') + '</dd>' +
       '<dt>Open balance</dt><dd><b>' + money(i.open_balance) + '</b>' + (i.amount != null ? ' of ' + money(i.amount) : '') + '</dd>' +
       '<dt>Invoice / due date</dt><dd>' + md(i.txn_date) + ' / ' + md(i.due_date) + (p.dpd > 0 ? ' · <b>' + p.dpd + ' days past due</b>' : '') + '</dd>' +
-      '<dt>Stage</dt><dd>' + esc(p.stage_name || '—') + (i.followup_count ? ' · ' + i.followup_count + ' follow-up(s), last ' + esc((i.last_followup_at || '').slice(0,10)) : ' · not followed up yet') + '</dd>' +
+      (!D.outreach ? '' : '<dt>Stage</dt><dd>' + esc(p.stage_name || '—') + (i.followup_count ? ' · ' + i.followup_count + ' follow-up(s), last ' + esc((i.last_followup_at || '').slice(0,10)) : ' · not followed up yet') + '</dd>') +
       '<dt>Waiting on</dt><dd>' + waitText(p.waiting) + '</dd>' +
       '<dt>Money expected</dt><dd><div class="row"><input type="date" id="inv-eta" value="' + esc(i.eta_date || '') + '" style="width:auto"><button class="sm primary" onclick="saveEta(' + id + ')">Save ETA</button>' + (i.eta_date ? '<button class="sm" onclick="saveEta(' + id + ', true)">Clear</button>' : '') + '</div>' +
         '<div class="small muted">' + (i.eta_date ? 'Your ETA' + (i.eta_by ? ', set by ' + esc(i.eta_by) : '') : (i.promised_date ? 'No ETA set: counting the promised date ' + md(i.promised_date) : 'No ETA set: when do you expect the money in hand?')) + ' · shows on the Cash in tab; no follow-ups until ' + esc(D.settings.promise_grace_days) + ' days after it</div></dd>' +
-      '<dt>Next step</dt><dd>' + (p.due_now ? '<b>Follow-up due now</b>' : esc(p.reason)) + '</dd>' +
-      '<dt>Follow up with</dt><dd>' + (j.contacts.length ? esc(j.contacts.join(', ')) : '<b style="color:var(--bad)">No email address</b>') + (job && job.contact_name ? ' (' + esc(job.contact_name) + ')' : (c.contact_name ? ' (' + esc(c.contact_name) + ')' : '')) + '</dd>' +
+      (!D.outreach ? '' : '<dt>Next step</dt><dd>' + (p.due_now ? '<b>Follow-up due now</b>' : esc(p.reason)) + '</dd>' +
+      '<dt>Follow up with</dt><dd>' + (j.contacts.length ? esc(j.contacts.join(', ')) : '<b style="color:var(--bad)">No email address</b>') + (job && job.contact_name ? ' (' + esc(job.contact_name) + ')' : (c.contact_name ? ' (' + esc(c.contact_name) + ')' : '')) + '</dd>') +
       (i.needs_reason ? '<dt>Needs</dt><dd style="color:var(--bad)">' + esc(i.needs_reason) + '</dd>' : '') +
       (i.promised_date || i.promised_on ? '<dt>Promise</dt><dd>' + (i.promised_on ? 'Said on ' + md(i.promised_on) : '') + (i.promised_date ? ', for ' + md(i.promised_date) : '') + '</dd>' : '') +
       (i.last_reply_summary ? '<dt>Last reply</dt><dd>' + esc(i.last_reply_summary) + '</dd>' : '') +
       (i.terms ? '<dt>Terms</dt><dd>' + esc(i.terms) + '</dd>' : '') + (i.po ? '<dt>PO #</dt><dd>' + esc(i.po) + '</dd>' : '') + (i.memo ? '<dt>Memo</dt><dd>' + esc(i.memo) + '</dd>' : '') +
       '</dl><div class="row" style="margin-top:10px">' +
-      '<button class="sm primary" onclick="invAction(' + id + ',\'draft\')">Draft a follow-up now</button>' +
-      (i.status === 'open' ? '<button class="sm" onclick="invAction(' + id + ',\'pause\')">Pause follow-ups</button>' : '<button class="sm" onclick="invAction(' + id + ',\'resume\')">Resume follow-ups</button>') +
+      (!D.outreach ? '' : '<button class="sm primary" onclick="invAction(' + id + ',\'draft\')">Draft a follow-up now</button>' +
+      (i.status === 'open' ? '<button class="sm" onclick="invAction(' + id + ',\'pause\')">Pause follow-ups</button>' : '<button class="sm" onclick="invAction(' + id + ',\'resume\')">Resume follow-ups</button>')) +
       '<button class="sm" onclick="invPromise(' + id + ')">Payment promised…</button>' +
-      '<button class="sm" onclick="invSnooze(' + id + ')">Snooze…</button>' +
+      (!D.outreach ? (i.status !== 'open' && i.status !== 'paid' ? '<button class="sm" onclick="invAction(' + id + ',\'resume\')">Back to open</button>' : '') : '<button class="sm" onclick="invSnooze(' + id + ')">Snooze…</button>') +
       '<button class="sm danger" onclick="invAction(' + id + ',\'close\')">Close (paid / written off)</button></div></div>';
     if(c.sheet_notes){
       h += '<div class="card"><h3>📝 Your A/R sheet notes <span class="muted small">as of ' + md(c.qb_as_of) + '</span></h3><div style="white-space:pre-wrap">' + esc(c.sheet_notes) + '</div>' + (c.sheet_summary ? '<div class="small muted" style="margin-top:6px">Read as: ' + esc(c.sheet_summary) + '</div>' : '') + (c.qb_total != null ? '<div class="small muted">Customer total on the sheet: ' + money(c.qb_total) + '</div>' : '') + '</div>';

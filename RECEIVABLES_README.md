@@ -1,6 +1,24 @@
 # Receivables
 
-The Receivables tile in The Office App chases open invoices from the QuickBooks A/R sheet. It sends past-due follow-ups (with the invoice and any install documents attached), reads replies, tracks retainage by job, and watches lien deadlines on install jobs.
+The Receivables tile in The Office App lists **every account with an outstanding invoice**, from the QuickBooks A/R Aging Summary uploaded each week.
+
+- **Install accounts** are construction and developer accounts billed by pay app or proposal. They drop down into their **projects**: each project's outstanding invoices, and where its retainage stands once everything else on the job is paid.
+- **Grok Bot**, the office's agent, keeps it up to date through an API (see `RECEIVABLES_API.md`).
+- **Emails are off** (October 2026). Receivables no longer drafts, sends or reads email; Grok Bot and the office contact customers. `AR_OUTREACH=true` on Railway turns everything under *Follow-ups*, *Replies* and *Liens* below back on.
+
+## Accounts (the main tab)
+
+- **Every account owing,** largest first: what's owed on the latest sheet with its aging (Current, 1-30, 31-60, 61-90, 91+), retainage held, when money is next expected, and the latest note (from the office, Grok Bot or the sheet).
+- **Install accounts drop down into their projects.** An account is an install account when its invoices are pay apps or proposals. You can switch it per account: *Auto*, *Install* or *Service*. For each project you see:
+  - its outstanding invoices;
+  - **where the retainage stands:** still billing, *All invoices paid except retainage: $X held (5%)*, then held until the job is complete, project still going, or job complete and retainage due;
+  - its note, ETA and link to Jobber.
+- **Service accounts** drop down into their invoices.
+- **Notes:** each account takes notes. Invoices (and projects) take an ETA for money in hand, which feeds the **Cash in** tab.
+
+## Grok Bot
+
+Set `GROK_API_KEY` on Railway and give the same key to Grok Bot. It uploads the weekly sheet (`POST /api/receivables/upload`), reads the accounts (`GET /api/receivables/accounts`), and records notes, ETAs, promises and project details. Everything it changes is noted as "Grok Bot". The calls are in `RECEIVABLES_API.md`.
 
 - **Who can open it:** office logins, or only the usernames in `AR_USERS`. Technicians and property managers never can.
 - **Code:** `receivables.py` (logic and API), `receivables_page.py` (the page). It is hooked into `app.py` with `init_receivables(...)` and uses the same SQLite database, in tables starting `ar_`. Uploaded documents are kept in `<DATA_DIR>/receivables_files/`.

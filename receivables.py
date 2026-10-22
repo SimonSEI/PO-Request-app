@@ -40,7 +40,7 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests as http_requests
-from flask import Blueprint, jsonify, redirect, render_template_string, request, send_file, session, url_for
+from flask import Blueprint, g, jsonify, redirect, render_template_string, request, send_file, session, url_for
 from werkzeug.utils import secure_filename
 
 try:
@@ -52,6 +52,12 @@ TZ = ZoneInfo('America/New_York')
 GRAPH = 'https://graph.microsoft.com/v1.0'
 JOBBER_GQL = 'https://api.getjobber.com/api/graphql'
 CLAUDE_MODEL = 'claude-opus-5-5'
+# Customer emails from Receivables (follow-ups, check-ins, Notices of Nonpayment, reading the mailbox).
+# Off since Oct 2026: Grok Bot and the office contact customers; the app is the ledger. AR_OUTREACH=true restores them.
+AR_OUTREACH = os.environ.get('AR_OUTREACH', '').lower() in ('1', 'true', 'yes', 'on')
+# Grok Bot (the office's agent) updates Receivables through /api/receivables/* with "Authorization: Bearer <key>".
+GROK_API_KEY = os.environ.get('GROK_API_KEY', '').strip()
+GROK_NAME = 'Grok Bot'
 # Optional: exactly these usernames get access (e.g. "simon,beatriz"). Unset = every office login.
 AR_USERS = {u.strip().lower() for u in os.environ.get('AR_USERS', '').split(',') if u.strip()}
 
@@ -403,7 +409,9 @@ def _html_to_text(body):
 
 
 def receivables_allowed():
-    """Office logins only (optionally narrowed by AR_USERS)."""
+    """Office logins only (optionally narrowed by AR_USERS), or Grok Bot through the API."""
+    if getattr(g, 'ar_api', False):
+        return True
     if 'username' not in session or session.get('role') != 'office':
         return False
     if AR_USERS:
@@ -2445,6 +2453,8 @@ def send_email(email_id, by='', approved_by=''):
     if not e or e['status'] == 'sent':
         return False, 'Already sent'
     e = dict(e)
+    if not AR_OUTREACH:
+        return False, 'Emails from Receivables are turned off (Grok Bot and the office contact customers)'
     if e['kind'] == 'nonp' and not approved_by:
         return False, 'A Notice of Nonpayment needs a person to approve it before it is sent'
     to, cc = _emails(e['to_email']), _emails(e['cc'])
@@ -2802,14 +2812,112 @@ def run_cycle(manual=False):
             last = _state('last_run')
             if last and (_now().replace(tzinfo=None) - datetime.strptime(last, '%Y-%m-%d %H:%M:%S')) < timedelta(minutes=45):
                 return False  # the other web worker already ran it this hour
-        for step in (sync_summary_invoices, sync_jobber, apply_sheet_notes, scan_sent, scan_replies, _close_stale_drafts,
-                     plan_followups, check_liens):
+        steps = (sync_summary_invoices, sync_jobber, apply_sheet_notes)
+        if AR_OUTREACH:
+            steps += (scan_sent, scan_replies, _close_stale_drafts, plan_followups, check_liens)
+        for step in steps:
             try:
                 step()
             except Exception as e:
                 _log(step.__name__, f'Failed: {e}')
         _set_state('last_run', _stamp())
     return True
+
+
+# ── Accounts: every account owing, install accounts broken down by project ───
+
+def account_is_install(cust, invs):
+    """Construction/developer accounts billed by pay app or proposal. Set by hand on the account, else worked out."""
+    kd = (cust or {}).get('kind_default') or ''
+    if kd in ('install', 'service'):
+        return kd == 'install'
+    return any(i['kind'] == 'install' and i['job_key'] for i in invs)
+
+
+def retainage_status(job, invs, cust):
+    """(state, text) for a project: still billing, retainage only (held / due), or nothing owed."""
+    open_ = [i for i in invs if i['status'] != 'paid' and (i['open_balance'] or 0) > 0.004]
+    ret = [i for i in open_ if i['retainage']]
+    rest = [i for i in open_ if not i['retainage']]
+    held = round(sum(i['open_balance'] or 0 for i in ret), 2)
+    if rest:
+        owed = round(sum(i['open_balance'] or 0 for i in rest), 2)
+        return 'billing', (f"{len(rest)} invoice(s) still open ({_money_text(owed)})"
+                           + (f"; retainage so far {_money_text(held)} on {len(ret)}" if ret else ''))
+    if not ret:
+        return 'none', 'Nothing owed'
+    pcts = [i['retainage_pct'] for i in ret if i.get('retainage_pct')]
+    base = (f"All invoices paid except retainage: {_money_text(held)} held on {len(ret)} invoice(s)"
+            + (f" ({min(pcts):g}%" + (f"-{max(pcts):g}%" if max(pcts) != min(pcts) else '') + ")" if pcts else ''))
+    if (job or {}).get('retainage_hold') or (cust or {}).get('retainage_hold'):
+        return 'held_ongoing', base + ' - project still going'
+    if job_complete(job):
+        return 'due', base + ' - job complete, retainage is due'
+    return 'held', base + ' - held until the job is complete'
+
+
+def _inv_brief(i):
+    return {k: i.get(k) for k in ('id', 'number', 'txn_date', 'due_date', 'amount', 'open_balance', 'retainage',
+                                  'retainage_pct', 'status', 'needs_reason', 'eta_date', 'expected', 'expected_source',
+                                  'jobber_subject', 'jobber_uri', 'client_hub_uri', 'kind', 'job_key')} | {
+        'days_late': (i.get('plan') or {}).get('dpd', 0), 'waiting': (i.get('plan') or {}).get('waiting', '')}
+
+
+def accounts_view(invs, jobs, custs, today=None):
+    """Every account with something owing (on the latest QuickBooks sheet or open here), largest first."""
+    today = today or _today()
+    by_cust = {}
+    for i in invs:
+        if i['status'] != 'paid' and (i['open_balance'] or 0) > 0.004:
+            by_cust.setdefault(i['customer_key'], []).append(i)
+    conn = _conn()
+    last_note = {}
+    for r in conn.execute("SELECT customer_key, at, by, text FROM ar_notes WHERE invoice_id IS NULL AND job_key='' "
+                          "AND kind IN ('note','api') ORDER BY id"):
+        last_note[r['customer_key']] = {'at': r['at'], 'by': r['by'], 'text': r['text']}
+    conn.close()
+    out = []
+    for key, c in custs.items():
+        mine = by_cust.get(key, [])
+        if not mine and not (c.get('qb_total') or 0) > 0.004:
+            continue
+        install = account_is_install(c, mine)
+        exp = sorted(_d(i['expected']) for i in mine if i.get('expected'))
+        acct = {'key': key, 'name': _nice_name(c['name']), 'install': install, 'type_set': c.get('kind_default') or '',
+                'sheet_total': c.get('qb_total'), 'as_of': c.get('qb_as_of') or '',
+                'aging': {k: c.get(f) for k, f in (('current', 'qb_current'), ('1-30', 'qb_1_30'), ('31-60', 'qb_31_60'),
+                                                    ('61-90', 'qb_61_90'), ('91+', 'qb_91_plus'))},
+                'open_count': len(mine), 'open_balance': round(sum(i['open_balance'] or 0 for i in mine), 2),
+                'retainage_held': round(sum(i['open_balance'] or 0 for i in mine if i['retainage']), 2),
+                'past_due': round(sum(i['open_balance'] or 0 for i in mine
+                                      if not i['retainage'] and (i.get('plan') or {}).get('dpd', 0) > 0), 2),
+                'oldest_days_late': max([(i.get('plan') or {}).get('dpd', 0) for i in mine if not i['retainage']] or [0]),
+                'next_expected': exp[0].isoformat() if exp else '',
+                'sheet_notes': c.get('sheet_notes') or '', 'note': last_note.get(key),
+                'jobber_note': c.get('jobber_note') or '', 'emails': c.get('emails') or c.get('jobber_emails') or '',
+                'projects': [], 'invoices': []}
+        if install:
+            groups = {}
+            for i in mine:
+                groups.setdefault(i['job_key'] or '', []).append(i)
+            for jk, members in groups.items():
+                job = jobs.get(jk)
+                state, text = retainage_status(job, members, c) if jk else ('', '')
+                exp = sorted(_d(i['expected']) for i in members if i.get('expected'))
+                acct['projects'].append({
+                    'key': jk, 'name': (job or {}).get('name') or ('Other invoices' if not jk else jk),
+                    'count': len(members), 'open_balance': round(sum(i['open_balance'] or 0 for i in members), 2),
+                    'retainage_held': round(sum(i['open_balance'] or 0 for i in members if i['retainage']), 2),
+                    'retainage_state': state, 'retainage_text': text, 'complete': job_complete(job) if job else False,
+                    'note': (job or {}).get('sheet_note') or '', 'next_expected': exp[0].isoformat() if exp else '',
+                    'jobber_job_uri': (job or {}).get('jobber_job_uri') or '',
+                    'invoices': [_inv_brief(i) for i in sorted(members, key=lambda x: x['txn_date'] or '')]})
+            acct['projects'].sort(key=lambda p: (p['key'] == '', -p['open_balance']))
+        else:
+            acct['invoices'] = [_inv_brief(i) for i in sorted(mine, key=lambda x: x['txn_date'] or '')]
+        out.append(acct)
+    out.sort(key=lambda a: -max(a['sheet_total'] or 0, a['open_balance']))
+    return out
 
 
 # ── Pages and API ────────────────────────────────────────────────────────────
@@ -2825,6 +2933,8 @@ def _forbidden():
 
 
 def _who():
+    if getattr(g, 'ar_api', False):
+        return GROK_NAME
     return session.get('full_name') or session.get('username') or 'office'
 
 
@@ -2839,6 +2949,10 @@ def page():
 def api_data():
     if not receivables_allowed():
         return _forbidden()
+    return jsonify(dashboard())
+
+
+def dashboard():
     s = settings()
     today = _today()
     invs, jobs, custs = _load_all()
@@ -2898,13 +3012,15 @@ def api_data():
                                           "FROM ar_documents WHERE scope IN ('all','customer','job') ORDER BY id DESC")]
     activity = [dict(r) for r in conn.execute("SELECT at, kind, message FROM ar_activity ORDER BY id DESC LIMIT 150")]
     conn.close()
-    return jsonify({'success': True, 'invoices': out_inv, 'jobs': out_jobs, 'customers': out_cust, 'emails': emails,
-                    'replies': replies, 'uploads': uploads, 'docs': docs, 'activity': activity, 'settings': s,
-                    'forecast': cash_forecast(out_inv, today=today),
-                    'statuses': STATUSES, 'today': today.isoformat(),
-                    'status': {'graph': graph_ready(), 'jobber': jobber_ready(), 'claude': claude_ready(),
-                               'claude_error': _state('claude_error'),
-                               'last_run': _state('last_run'), 'last_reply_scan': _state('last_reply_scan')}})
+    return {'success': True, 'invoices': out_inv, 'jobs': out_jobs, 'customers': out_cust, 'emails': emails,
+            'replies': replies, 'uploads': uploads, 'docs': docs, 'activity': activity, 'settings': s,
+            'accounts': accounts_view(out_inv, jobs, custs, today),
+            'forecast': cash_forecast(out_inv, today=today),
+            'statuses': STATUSES, 'today': today.isoformat(), 'outreach': AR_OUTREACH,
+            'status': {'graph': graph_ready(), 'jobber': jobber_ready(), 'claude': claude_ready(),
+                       'claude_error': _state('claude_error'), 'grok_api': bool(GROK_API_KEY),
+                       'last_grok': _state('last_grok'),
+                       'last_run': _state('last_run'), 'last_reply_scan': _state('last_reply_scan')}}
 
 
 @bp.route('/receivables/api/invoice/<int:inv_id>')
@@ -2981,10 +3097,10 @@ def api_upload():
 
 
 @bp.route('/receivables/api/invoice', methods=['POST'])
-def api_invoice_update():
+def api_invoice_update(d=None):
     if not receivables_allowed():
         return _forbidden()
-    d = request.get_json(silent=True) or {}
+    d = d if d is not None else (request.get_json(silent=True) or {})
     conn = _conn()
     inv = conn.execute("SELECT * FROM ar_invoices WHERE id=?", (d.get('id'),)).fetchone()
     if not inv:
@@ -3069,10 +3185,10 @@ def api_invoice_update():
 
 
 @bp.route('/receivables/api/job', methods=['POST'])
-def api_job():
+def api_job(d=None):
     if not receivables_allowed():
         return _forbidden()
-    d = request.get_json(silent=True) or {}
+    d = d if d is not None else (request.get_json(silent=True) or {})
     job = _job(d.get('key') or '')
     if not job:
         return jsonify({'success': False, 'error': 'Not found'}), 404
@@ -3149,10 +3265,10 @@ def api_job_notes():
 
 
 @bp.route('/receivables/api/customer', methods=['POST'])
-def api_customer():
+def api_customer(d=None):
     if not receivables_allowed():
         return _forbidden()
-    d = request.get_json(silent=True) or {}
+    d = d if d is not None else (request.get_json(silent=True) or {})
     conn = _conn()
     if not conn.execute("SELECT 1 FROM ar_customers WHERE key=?", (d.get('key'),)).fetchone():
         conn.close()
@@ -3177,6 +3293,11 @@ def api_customer():
                          "AND job_key=''", (fields['emails'], d['key']))
     conn.commit()
     conn.close()
+    if (d.get('note') or '').strip():
+        conn = _conn()
+        _note(conn, d['note'].strip()[:5000], customer_key=d['key'], kind='note', by=_who())
+        conn.commit()
+        conn.close()
     if 'kind_default' in fields:
         classify_all()
     return jsonify({'success': True})
@@ -3384,9 +3505,96 @@ def nonp_pdf_view():
                      download_name='Notice-of-Nonpayment.pdf')
 
 
+# ── Grok Bot API ─────────────────────────────────────────────────────────────
+# Grok Bot keeps Receivables up to date: it uploads the weekly QuickBooks A/R Aging Summary and records notes,
+# ETAs, promises, retainage and project details. Everything it changes is noted as "Grok Bot". See RECEIVABLES_API.md.
+
+def _grok(view):
+    import hmac
+    from functools import wraps
+
+    @wraps(view)
+    def wrapped(*a, **kw):
+        if not GROK_API_KEY:
+            return jsonify({'success': False, 'error': 'The Receivables API is off (GROK_API_KEY is not set)'}), 404
+        if not hmac.compare_digest(request.headers.get('Authorization', ''), f'Bearer {GROK_API_KEY}'):
+            return jsonify({'success': False, 'error': 'Wrong or missing API key'}), 401
+        g.ar_api = True
+        _set_state('last_grok', _stamp())
+        return view(*a, **kw)
+    return wrapped
+
+
+def _inv_by_number(number):
+    conn = _conn()
+    r = conn.execute("SELECT id FROM ar_invoices WHERE number=?", (str(number).strip(),)).fetchone()
+    conn.close()
+    return r['id'] if r else None
+
+
+@bp.route('/api/receivables/accounts')
+@_grok
+def grok_accounts():
+    d = dashboard()
+    return jsonify({'success': True, 'as_of': max((a['as_of'] for a in d['accounts']), default=''),
+                    'accounts': d['accounts']})
+
+
+@bp.route('/api/receivables/accounts/<key>', methods=['GET', 'POST'])
+@_grok
+def grok_account(key):
+    if request.method == 'POST':
+        body = dict(request.get_json(silent=True) or {}, key=key)
+        if body.get('type') in ('install', 'service', 'auto'):
+            body['kind_default'] = '' if body['type'] == 'auto' else body['type']
+        return api_customer(body)
+    acct = next((a for a in dashboard()['accounts'] if a['key'] == key), None)
+    if not acct:
+        return jsonify({'success': False, 'error': 'No account owing with that key'}), 404
+    return jsonify({'success': True, 'account': acct})
+
+
+@bp.route('/api/receivables/invoices/<number>', methods=['GET', 'POST'])
+@_grok
+def grok_invoice(number):
+    iid = _inv_by_number(number)
+    if not iid:
+        return jsonify({'success': False, 'error': f'No invoice #{number}'}), 404
+    if request.method == 'POST':
+        return api_invoice_update(dict(request.get_json(silent=True) or {}, id=iid))
+    return api_invoice(iid)
+
+
+@bp.route('/api/receivables/projects/<path:key>', methods=['POST'])
+@_grok
+def grok_project(key):
+    return api_job(dict(request.get_json(silent=True) or {}, key=key))
+
+
+@bp.route('/api/receivables/upload', methods=['POST'])
+@_grok
+def grok_upload():
+    return api_upload()
+
+
+@bp.route('/api/receivables/cash-in')
+@_grok
+def grok_cash_in():
+    return jsonify({'success': True, 'forecast': dashboard()['forecast']})
+
+
+@bp.route('/api/receivables/run', methods=['POST'])
+@_grok
+def grok_run():
+    return api_run()
+
+
+GROK_VIEWS = (grok_accounts, grok_account, grok_invoice, grok_project, grok_upload, grok_cash_in, grok_run)
+
+
 def init_receivables(app, db_path, *, data_dir, get_setting, set_setting, graph_token, graph_enabled,
                      jobber_token, jobber_connected, jobber_version, anthropic_client=None, scheduler_cls=None,
-                     website_url=''):
+                     website_url='', csrf=None):
     """Create the tables, register the routes and schedule the cycle every hour.
     jobber_token(force_refresh) hands over an access token from the Jobber app connected for Pumps."""
     _cfg.update(db_path=db_path, data_dir=data_dir, get_setting=get_setting, set_setting=set_setting,
@@ -3401,6 +3609,17 @@ def init_receivables(app, db_path, *, data_dir, get_setting, set_setting, graph_
     except Exception as e:
         print(f"⚠ Receivables: could not tidy misread mail: {e}")
     app.register_blueprint(bp)
+    if csrf is not None:
+        for view in GROK_VIEWS:  # Grok Bot authenticates with its key, not a browser session
+            csrf.exempt(view)
+    if not AR_OUTREACH:
+        conn = _conn()
+        n = conn.execute("UPDATE ar_emails SET status='discarded', error='Emails from Receivables are turned off' "
+                         "WHERE status='draft'").rowcount
+        conn.commit()
+        conn.close()
+        if n:
+            print(f"✓ Receivables: emails are off; {n} waiting draft(s) set aside")
     if scheduler_cls and os.environ.get('AR_AUTO_RUN', 'true').lower() not in ('0', 'false', 'no', 'off'):
         try:
             sched = scheduler_cls()
