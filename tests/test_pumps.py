@@ -3142,6 +3142,14 @@ class PumpsTest(unittest.TestCase):
             conn.close()
         self.assertEqual(st, 'dismissed')
 
+    def test_short_titles_end_cleanly(self):
+        """Oct 2026: titles cut mid-phrase on the lists - "...Field service to furnish", "...on Pump #3 &"."""
+        st = lambda client, title: P.short_title({'client_name': client, 'title': title})
+        self.assertEqual(st('Pebble Brook 1, 3, and 4', 'Fountian #1... Field service to furnish and install new pump'),
+                         'Pebble Brook 1, 3, and 4 · Fountian #1')
+        self.assertFalse(st('Huntington #6', 'Pump Maintenance on Pump #3 & Pool #2 at 6585 Huntington').endswith('&'))
+        self.assertEqual(st('Banyan Bay', 'Banayn Bay quote for fiberglass enclosure'), 'Banyan Bay · Fiberglass enclosure')
+
     def test_urgent_quote_moves_up(self):
         """Oct 2026: quotes wait under "Quotes - not urgent" unless marked urgent."""
         j = self.c.post('/pumps/api/cases', json={'title': 'Surge arrestor', 'client_name': 'Urgent Lakes'}).get_json()

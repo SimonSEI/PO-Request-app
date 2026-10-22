@@ -1106,7 +1106,8 @@ def _stage(steps, status='open'):
 
 _WORK_LEAD = re.compile(r'^(?:service\s+call\s*-\s*|proposal\s*(?:to|for|-)\s*|estimate\s*(?:to|for|-)\s*|'
                         r'quote\s*(?:to|for|-)\s*|field\s+service\s+to\s+)', re.I)
-_TAIL_WORDS = {'a', 'an', 'the', 'and', 'or', 'of', 'to', 'at', 'in', 'on', 'for', 'with', 'is', 'are', 'was', 'not', 'from'}
+_TAIL_WORDS = {'a', 'an', 'the', 'and', 'or', 'of', 'to', 'at', 'in', 'on', 'for', 'with', 'is', 'are', 'was', 'not', 'from',
+               '&', '+', '-', 'needs', 'need', 'by'}
 _CLIENT_TAIL = re.compile(r'\s+(?:master\s+)?(?:association|assoc\.?|hoa|homeowners|condominium|condo|community|'
                           r'inc\.?|llc|property\s+owners)\b.*$', re.I)
 
@@ -1126,7 +1127,16 @@ def short_title(case):
         if name and work.lower().startswith(name.lower()):
             work = work[len(name):].lstrip(' -:·,')
             break
+    else:
+        # Spelled differently at the front ("Banayn Bay quote for ..." at Banyan Bay, Oct 2026).
+        n = len(client.split())
+        if n and difflib.SequenceMatcher(None, ' '.join(work.split()[:n]).lower(), client.lower()).ratio() >= 0.8:
+            work = ' '.join(work.split()[n:]).lstrip(' -:·,')
     work = _WORK_LEAD.sub('', work)
+    # "Fountian #1... Field service to furnish ..." - the part before the dots says what it is.
+    first = re.split(r'\s*(?:\.{2,}|…)\s*', work)[0]
+    if len(first.split()) >= 2:
+        work = first
     if ' - ' in work and len(work.split(' - ')[0].split()) >= 2:
         work = work.split(' - ')[0]
     work = re.split(r'[,.;]\s|\s+(?:and\s+)?(?:wire\s+up|reinstall|program)\b', work)[0]
