@@ -100,6 +100,9 @@ class Base(unittest.TestCase):
         R._cfg['graph_enabled'] = True
         R._cfg['jobber_connected'] = lambda: False
         R._in_send_window = lambda s: True
+        R.AR_OUTREACH = True  # most tests exercise the email features; OutreachOffTests checks them off
+        self.addCleanup(setattr, R, 'AR_OUTREACH', False)
+        R.GROK_API_KEY = ''
         self.client = A.app.test_client()
 
     def login(self, role='office', username='simon'):
@@ -970,6 +973,111 @@ class JobTests(SummaryTests):
         p = R.plan(vintana, R._job(vintana['job_key']), cust, R.settings())
         self.assertIn('still going', p['reason'])
         self.assertEqual(R.plan(harbor, R._job(harbor['job_key']), cust, R.settings())['stage'], 'past_due')
+
+
+class OutreachOffTests(FollowupTests):
+    """Emails from Receivables are off: Grok Bot and the office contact customers."""
+
+    def test_nothing_is_drafted_sent_or_read(self):
+        R.AR_OUTREACH = False
+        calls = []
+        for name in ('plan_followups', 'check_liens', 'scan_replies', 'scan_sent'):
+            orig = getattr(R, name)
+            setattr(R, name, lambda *a, _n=name, **k: calls.append(_n))
+            self.addCleanup(setattr, R, name, orig)
+        A.set_setting('receivables_last_run', '')
+        R.run_cycle(manual=True)
+        self.assertEqual(calls, [])
+        conn = R._conn()
+        eid = conn.execute("INSERT INTO ar_emails (kind, to_email, status, invoice_ids) VALUES ('followup', "
+                           "'pat@example.com', 'draft', '[]')").lastrowid
+        conn.commit()
+        conn.close()
+        ok, err = R.send_email(eid, by='test')
+        self.assertFalse(ok)
+        self.assertIn('turned off', err)
+        self.assertEqual(self.graph.sent(), [])
+
+
+class AccountsTests(JobTests):
+    """Every account owing; install accounts broken down by project with where the retainage stands."""
+
+    def accounts(self):
+        self.login()
+        return {a['key']: a for a in self.client.get('/receivables/api/data').get_json()['accounts']}
+
+    def test_accounts_and_projects(self):
+        self.upload_summary(list(self.ROWS) + [
+            ('Gcx Builders', None, None, None, 'last said they were waiting on the auditors', 4118.88),
+            ('Two Jobs Example', None, None, 3000, 'retainage on vintana ongoing', 1000)])
+        acc = self.accounts()
+        self.assertFalse(acc['patexample']['install'])
+        self.assertEqual([i['number'] for i in acc['patexample']['invoices']], ['501'])
+        gcx = acc['gcxbuilders']
+        self.assertTrue(gcx['install'])
+        self.assertEqual(len(gcx['projects']), 1)
+        riv = gcx['projects'][0]
+        self.assertEqual((riv['name'], riv['count'], riv['retainage_state']), ('Riverdale High School #222058', 3, 'held'))
+        self.assertIn('All invoices paid except retainage: $4,118.88 held on 3 invoice(s) (5%)', riv['retainage_text'])
+        two = {p['name']: p for p in acc['twojobsexample']['projects']}
+        self.assertEqual(two['Vintana Apartments']['retainage_state'], 'held_ongoing')
+        self.assertEqual(two['Harbor Pointe']['retainage_state'], 'billing')
+        # Largest first, and the sheet's total is kept.
+        self.assertEqual(acc['samplebuilders']['sheet_total'], 8000)
+
+    def test_type_switch_per_account(self):
+        self.upload_summary(self.ROWS)
+        self.login()
+        r = self.client.post('/receivables/api/customer', json={'key': 'patexample', 'kind_default': 'install'})
+        self.assertTrue(r.get_json()['success'])
+        self.assertTrue(self.accounts()['patexample']['install'])
+
+
+class GrokApiTests(JobTests):
+    KEY = 'test-grok-key-0123456789'
+
+    def setUp(self):
+        super().setUp()
+        R.GROK_API_KEY = self.KEY
+        self.h = {'Authorization': f'Bearer {self.KEY}'}
+
+    def test_key_required(self):
+        self.assertEqual(self.client.get('/api/receivables/accounts').status_code, 401)
+        self.assertEqual(self.client.get('/api/receivables/accounts', headers={'Authorization': 'Bearer nope'}).status_code, 401)
+        R.GROK_API_KEY = ''
+        self.assertEqual(self.client.get('/api/receivables/accounts', headers=self.h).status_code, 404)
+
+    def test_grok_uploads_reads_and_updates(self):
+        A.app.config['WTF_CSRF_ENABLED'] = True  # the API must work without a browser's CSRF token
+        self.addCleanup(A.app.config.__setitem__, 'WTF_CSRF_ENABLED', False)
+        R.run_cycle = lambda manual=False: True
+        self.addCleanup(setattr, R, 'run_cycle', REAL_RUN_CYCLE)
+        f = aging_summary_xlsx(self.as_of, [('Gcx Builders', None, None, None, 'waiting on the auditors', 4118.88)])
+        r = self.client.post('/api/receivables/upload', headers=self.h, data={'file': (f, 'AR Summary.xlsx')},
+                             content_type='multipart/form-data')
+        self.assertTrue(r.get_json()['success'], r.get_json())
+        R.sync_summary_invoices()
+        R.apply_sheet_notes()
+        acc = self.client.get('/api/receivables/accounts', headers=self.h).get_json()
+        gcx = next(a for a in acc['accounts'] if a['key'] == 'gcxbuilders')
+        key = gcx['projects'][0]['key']
+        eta = (TODAY + timedelta(days=30)).isoformat()
+        r = self.client.post('/api/receivables/invoices/601', headers=self.h, json={'note': 'GC says retainage at closeout',
+                                                                                   'eta': eta})
+        self.assertTrue(r.get_json()['success'], r.get_json())
+        self.assertEqual(self.inv('601')['eta_date'], eta)
+        r = self.client.post(f'/api/receivables/projects/{key}', headers=self.h, json={'complete': True})
+        self.assertTrue(r.get_json()['success'], r.get_json())
+        r = self.client.post('/api/receivables/accounts/gcxbuilders', headers=self.h, json={'note': 'Spoke with AP'})
+        self.assertTrue(r.get_json()['success'], r.get_json())
+        one = self.client.get('/api/receivables/accounts/gcxbuilders', headers=self.h).get_json()['account']
+        self.assertEqual(one['projects'][0]['retainage_state'], 'due')
+        self.assertEqual((one['note']['by'], one['note']['text']), ('Grok Bot', 'Spoke with AP'))
+        notes = self.client.get('/api/receivables/invoices/601', headers=self.h).get_json()['notes']
+        self.assertTrue(any(n['by'] == 'Grok Bot' and 'closeout' in n['text'] for n in notes))
+        self.assertEqual(self.client.post('/api/receivables/invoices/999999', headers=self.h, json={}).status_code, 404)
+        cash = self.client.get('/api/receivables/cash-in', headers=self.h).get_json()['forecast']
+        self.assertIn(self.inv('601')['id'], [i for w in cash['weeks'] for i in w['ids']])
 
 
 class SheetNoteRuleTests(unittest.TestCase):

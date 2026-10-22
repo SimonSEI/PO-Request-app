@@ -39356,7 +39356,7 @@ init_receivables(app, DB_PATH, data_dir=DATA_DIR, get_setting=get_setting, set_s
                                    lambda: _pumps.jobber_status()['connected']),
                  anthropic_client=(anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
                                    if ANTHROPIC_AVAILABLE and ANTHROPIC_API_KEY else None),
-                 scheduler_cls=BackgroundScheduler if SCHEDULER_AVAILABLE else None, website_url=WEBSITE_URL)
+                 scheduler_cls=BackgroundScheduler if SCHEDULER_AVAILABLE else None, website_url=WEBSITE_URL, csrf=csrf)
 
 # Vendor Invoices (the CURRENT VENDOR INVOICES workbook for non-pump vendors) lives in vendor_invoices.py.
 # It reads PO@ with its own scan log, emails Christian through the Microsoft 365 app and reads Jobber
