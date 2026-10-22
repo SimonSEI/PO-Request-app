@@ -8161,12 +8161,18 @@ def bills_to_pay(conn):
             # OK'd by hand (Wild Blue, Oct 2026: billed through the monthly irrigation contract - no invoice to link).
             payable = True
             why = f"OK'd to pay now by {ok.get('by') or 'the office'} ({(ok.get('at') or '')[:10]}) - {why}"
+        hold = _state_get(f"pay_hold:{c['id']}", conn=conn) or {}
+        if hold:
+            # Held by hand (Homewood Suites, Oct 2026: invoiced, but not OK to pay the vendor yet).
+            payable = False
+            why = (f"held - not OK to pay, by {hold.get('by') or 'the office'} ({(hold.get('at') or '')[:10]})"
+                   f"{': ' + hold['note'] if hold.get('note') else ''} - {why}")
         asked = _state_get(f'pay_email:{c["id"]}', conn=conn) or {}
         vendor = c.get('vendor') or 'Wettech'
         groups.setdefault(vendor, []).append({
             'case_id': c['id'], 'title': c.get('title') or '', 'client_name': c.get('client_name') or '',
             'bill_number': number, 'bill_date': (bill['doc_date'] if bill else '') or '', 'amount': amount,
-            'bill_doc_id': bill['id'] if bill else None, 'payable': payable, 'why': why, 'pay_ok': bool(ok),
+            'bill_doc_id': bill['id'] if bill else None, 'payable': payable, 'why': why, 'pay_ok': bool(ok), 'held': bool(hold),
             'invoice_number': inv.get('number') or c.get('sei_invoice_number') or '',
             'asked_at': asked.get('at', '') if asked.get('sent') else ''})
     out = []
@@ -8296,6 +8302,33 @@ def h_bills_pay_ok(actor):
                 _state_set(f'pay_ok:{cid}', {'at': _now_text(), 'by': actor}, conn=conn)
             _event(conn, actor, 'vendor bill not OKd to pay' if data.get('undo') else 'vendor bill OKd to pay',
                    'put back to wait' if data.get('undo') else 'OK to pay now - no invoice to wait on', case_id=cid)
+        conn.commit()
+    finally:
+        conn.close()
+    return {'case_ids': ids}
+
+
+@api('/bills_to_pay/hold', methods=('POST',))
+def h_bills_hold(actor):
+    """Body: {"case_ids": [...], "note": "", "undo": false} - these bills aren't OK to pay, whatever
+    else says they are (a problem with the work, a dispute). Undo lets them be paid again."""
+    if actor == BOT:
+        return _office_only(actor, 'Holding vendor bills')
+    data = _json()
+    ids = [int(x) for x in (data.get('case_ids') or []) if str(x).isdigit()]
+    if not ids:
+        raise ValueError('Pick the bills')
+    note = (data.get('note') or '').strip()
+    conn = _conn()
+    try:
+        for cid in ids:
+            if data.get('undo'):
+                conn.execute('DELETE FROM pump_state WHERE key=?', (f'pay_hold:{cid}',))
+            else:
+                conn.execute('DELETE FROM pump_state WHERE key=?', (f'pay_ok:{cid}',))
+                _state_set(f'pay_hold:{cid}', {'at': _now_text(), 'by': actor, 'note': note}, conn=conn)
+            _event(conn, actor, 'vendor bill hold lifted' if data.get('undo') else 'vendor bill held - not OK to pay',
+                   'can be paid again' if data.get('undo') else (note or 'not OK to pay'), case_id=cid)
         conn.commit()
     finally:
         conn.close()
