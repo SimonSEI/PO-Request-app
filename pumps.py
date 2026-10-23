@@ -8113,31 +8113,66 @@ def h_link_jobber_job(actor, case_id):
         conn.close()
 
 
+def live_recurring_jobs(client_name, case=None):
+    """The client's live recurring jobs in Jobber - the contracts its bills are billed on (University
+    Village Shops: #10700 Monthly 315 and #10136 Quarterly 900, Oct 2026). [] when no one client fits."""
+    case = case or {}
+    j = case.get('jobber') if isinstance(case.get('jobber'), dict) else json.loads(case.get('jobber') or '{}')
+    cid = case.get('jobber_client_id') or (j.get('client') or {}).get('id')
+    if not cid:
+        pick = pick_client(search_clients(client_name or case.get('client_name') or ''))
+        cid = pick['id'] if pick else None
+    if not cid:
+        return []
+    return [x for x in recurring_jobs(cid) if x['status'] != 'archived']
+
+
+def job_invoices(job_id):
+    """A job's invoices in Jobber, newest first."""
+    spec = ['id', 'invoiceNumber', 'invoiceStatus', 'subject', 'issuedDate', 'createdAt', 'jobberWebUri',
+            ('amounts', ['total'])]
+
+    def make(fields):
+        return f'query($id: EncodedId!) {{ job(id: $id) {{ invoices(first: 24) {{ nodes {{ {fields} }} }} }} }}'
+    data, _ = _gql_tolerant(make, spec, {'id': job_id}, required=('id', 'invoiceNumber'))
+    out = [{'id': n['id'], 'number': str(n.get('invoiceNumber') or ''), 'status': (n.get('invoiceStatus') or '').lower(),
+            'subject': n.get('subject') or '', 'date': (n.get('issuedDate') or n.get('createdAt') or '')[:10],
+            'uri': n.get('jobberWebUri') or '', 'total': _money((n.get('amounts') or {}).get('total')), 'client': ''}
+           for n in ((data.get('job') or {}).get('invoices') or {}).get('nodes') or []]
+    return sorted(out, key=lambda x: (x['date'], x['number']), reverse=True)
+
+
+def _job_month(job, ym):
+    """{'job', 'billed', 'latest'}: the job's invoice for the month (None when not billed yet) and its latest."""
+    invs = job_invoices(job['id'])
+    return {'job': {'number': str(job['number'] or ''), 'title': job['title'], 'property': job.get('property_label') or '',
+                    'recurring': True},
+            'billed': next((x for x in invs if x['date'][:7] == ym), None), 'latest': invs[0] if invs else None}
+
+
 def link_invoice_choices(q, case_id=None):
     """What Link invoice shows (Oct 2026): each recurring job once - the monthly contract the item
     syncs to - with its invoice for the bill's month if it's billed yet (else its latest), then the
     invoices that aren't on a recurring job."""
     found = search_jobber_invoices(q)
     year, month = _today().year, _today().month
+    case = {}
     if case_id:
         conn = _conn()
         try:
             row = conn.execute("SELECT * FROM pump_docs WHERE case_id=? AND kind='bill' AND status != 'dismissed' "
                                "ORDER BY id DESC", (case_id,)).fetchone()
+            c = conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+            case = dict(c) if c else {}
         finally:
             conn.close()
         if row:
             year, month = bill_service_month(_doc_dict(row))
     ym = f'{year:04d}-{month:02d}'
-    jobs = {}
-    for x in found:
-        if (x['job'] or {}).get('recurring'):
-            g = jobs.setdefault(x['job']['number'], {**x['job'], 'billed': None, 'latest': None})
-            if x['date'][:7] == ym and not g['billed']:
-                g['billed'] = x
-            if not g['latest']:
-                g['latest'] = x
-    return {'month': date(year, month, 1).strftime('%B %Y'), 'recurring': list(jobs.values()),
+    # Only the client's live recurring jobs, each once (an old job's invoices filled the list, Oct 2026).
+    groups = [_job_month(jb, ym) for jb in live_recurring_jobs(case.get('client_name') or q, case)]
+    jobs = [{**g['job'], 'billed': g['billed'], 'latest': g['latest']} for g in groups]
+    return {'month': date(year, month, 1).strftime('%B %Y'), 'recurring': jobs,
             'invoices': [x for x in found if not (x['job'] or {}).get('recurring')]}
 
 
@@ -8297,16 +8332,16 @@ def month_billed(client, year, month):
     if hit and now - hit[0] < 600:
         return hit[1]
     try:
-        found = search_jobber_invoices(client)
+        jobs = live_recurring_jobs(client)
+        if len(jobs) > 1:
+            # More than one contract (University Village: Monthly 315 irrigation, Quarterly 900 pump):
+            # the pump one is what Wettech's and the lake vendors' bills go with.
+            pump = [jb for jb in jobs if TITLE_PATTERNS['pump'].search(f"{jb['title']} {jb.get('property_label') or ''}")]
+            jobs = pump
+        g = _job_month(jobs[0], key[1]) if len(jobs) == 1 else None
     except JobberError:
         return None
-    jobs = {}
-    for x in found:
-        if (x['job'] or {}).get('recurring'):
-            g = jobs.setdefault(x['job']['number'], {'job': x['job'], 'invoice': None})
-            if x['date'][:7] == key[1] and not g['invoice']:
-                g['invoice'] = x
-    ans = next(iter(jobs.values())) if len(jobs) == 1 else None
+    ans = {'job': g['job'], 'invoice': g['billed']} if g else None
     _MONTH_BILLED[key] = (now, ans)
     return ans
 

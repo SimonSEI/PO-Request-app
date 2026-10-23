@@ -3958,11 +3958,18 @@ class PumpsTest(unittest.TestCase):
                  'issuedDate': '2026-07-01', 'amounts': {'total': 320}, 'client': {'name': 'Banyan Bay'},
                  'jobs': {'nodes': [{'jobNumber': 9654, 'title': 'Quarterly Pump Maintenance', 'jobType': 'RECURRING'}]}}]}}
         P.jobber_gql = fake
+        saved = (P.live_recurring_jobs, P.job_invoices)
+        # Banyan Bay's one live recurring job; an old job's invoices (#9654) aren't listed.
+        P.live_recurring_jobs = lambda name, case=None: [{'id': 'J9700', 'number': 9700, 'title': 'Quarterly 320',
+                                                          'status': 'active', 'property_label': '8125 Banyan Breeze Way'}]
+        P.job_invoices = lambda jid: [{'number': '36990', 'subject': 'October Pump Maintenance', 'date': '2026-10-21',
+                                       'status': 'awaiting_payment', 'uri': '', 'total': 320, 'client': ''}]
+        self.addCleanup(lambda: setattr(P, 'live_recurring_jobs', saved[0]) or setattr(P, 'job_invoices', saved[1]))
         j = self.c.get('/pumps/api/jobber/invoices?q=Banyan').get_json()
         self.assertTrue(j['success'], j)
-        # The monthly job once, with whether this month is billed on it (July's is, so it's "billed" only for July).
-        self.assertEqual([(g['number'], (g['billed'] or {}).get('number'), g['latest']['number']) for g in j['recurring']],
-                         [('9654', None, '36500')])
+        # The live recurring job once, with whether this month is billed on it.
+        self.assertEqual([(g['number'], (g['billed'] or {}).get('number'), g['property']) for g in j['recurring']],
+                         [('9700', '36990', '8125 Banyan Breeze Way')])
         self.assertEqual([x['number'] for x in j['invoices']], ['36990', '36800'], 'the rest, newest first')
         self.assertEqual(j['invoices'][0]['status'], 'awaiting_payment')
         july = P.link_invoice_choices('Banyan')
@@ -3980,24 +3987,29 @@ class PumpsTest(unittest.TestCase):
         conn.commit()
         conn.close()
         found = [{'number': '36379', 'subject': 'Invoice- September', 'date': '2026-09-16', 'status': 'paid', 'uri': '',
-                  'total': 459.5, 'client': 'UNIVERS SHOPS', 'job': {'number': '10504', 'title': 'Monthly 334', 'recurring': True}}]
-        saved = (P.jobber_status, P.search_jobber_invoices)
+                  'total': 900, 'client': ''}]
+        saved = (P.jobber_status, P.live_recurring_jobs, P.job_invoices)
         P.jobber_status = lambda: {'connected': True}
-        P.search_jobber_invoices = lambda q: list(found)
+        # Two contracts: the irrigation monthly and the pump quarterly - the pump one counts.
+        P.live_recurring_jobs = lambda name, case=None: [
+            {'id': 'J10700', 'number': 10700, 'title': 'Monthly 315', 'status': 'active', 'property_label': '19800 Village Center Drive'},
+            {'id': 'J10136', 'number': 10136, 'title': 'Quarterly 900', 'status': 'active',
+             'property_label': '10801 Corkscrew Road PUMP - University Village Shops LLC'}]
+        P.job_invoices = lambda jid: list(found) if jid == 'J10136' else []
         P._MONTH_BILLED.clear()
         row = lambda: {x['case_id']: x for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors']
                        for x in g['bills']}[b['case_id']]
         try:
             self.assertFalse(row()['payable'])
-            self.assertIn('wait until October is billed on job #10504 Monthly 334', row()['why'])
+            self.assertIn('wait until October is billed on job #10136 Quarterly 900', row()['why'])
             found.insert(0, {**found[0], 'number': '37010', 'subject': 'Invoice- October', 'date': '2026-10-22',
                              'status': 'draft'})
             P._MONTH_BILLED.clear()
             self.assertTrue(row()['payable'])
-            self.assertIn('October is billed on job #10504 Monthly 334 - invoice #37010', row()['why'])
+            self.assertIn('October is billed on job #10136 Quarterly 900 - invoice #37010', row()['why'])
             self.assertIn('we can pay it', row()['why'])
         finally:
-            P.jobber_status, P.search_jobber_invoices = saved
+            P.jobber_status, P.live_recurring_jobs, P.job_invoices = saved
             P._MONTH_BILLED.clear()
 
     def test_watercrest_is_water_crest(self):
