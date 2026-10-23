@@ -8113,9 +8113,38 @@ def h_link_jobber_job(actor, case_id):
         conn.close()
 
 
+def link_invoice_choices(q, case_id=None):
+    """What Link invoice shows (Oct 2026): each recurring job once - the monthly contract the item
+    syncs to - with its invoice for the bill's month if it's billed yet (else its latest), then the
+    invoices that aren't on a recurring job."""
+    found = search_jobber_invoices(q)
+    year, month = _today().year, _today().month
+    if case_id:
+        conn = _conn()
+        try:
+            row = conn.execute("SELECT * FROM pump_docs WHERE case_id=? AND kind='bill' AND status != 'dismissed' "
+                               "ORDER BY id DESC", (case_id,)).fetchone()
+        finally:
+            conn.close()
+        if row:
+            year, month = bill_service_month(_doc_dict(row))
+    ym = f'{year:04d}-{month:02d}'
+    jobs = {}
+    for x in found:
+        if (x['job'] or {}).get('recurring'):
+            g = jobs.setdefault(x['job']['number'], {**x['job'], 'billed': None, 'latest': None})
+            if x['date'][:7] == ym and not g['billed']:
+                g['billed'] = x
+            if not g['latest']:
+                g['latest'] = x
+    return {'month': date(year, month, 1).strftime('%B %Y'), 'recurring': list(jobs.values()),
+            'invoices': [x for x in found if not (x['job'] or {}).get('recurring')]}
+
+
 @api('/jobber/invoices')
 def h_jobber_invoices(actor):
-    return {'invoices': search_jobber_invoices(request.args.get('q', ''))}
+    cid = request.args.get('case_id', '')
+    return link_invoice_choices(request.args.get('q', ''), int(cid) if cid.isdigit() else None)
 
 
 @api('/cases/<int:case_id>/jobber_invoice', methods=('POST',))

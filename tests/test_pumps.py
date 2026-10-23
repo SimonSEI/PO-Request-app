@@ -3960,9 +3960,13 @@ class PumpsTest(unittest.TestCase):
         P.jobber_gql = fake
         j = self.c.get('/pumps/api/jobber/invoices?q=Banyan').get_json()
         self.assertTrue(j['success'], j)
-        self.assertEqual([x['number'] for x in j['invoices']], ['36500', '36990', '36800'], 'recurring job first, then newest')
-        self.assertTrue(j['invoices'][0]['job']['recurring'])
-        self.assertEqual(j['invoices'][1]['status'], 'awaiting_payment')
+        # The monthly job once, with whether this month is billed on it (July's is, so it's "billed" only for July).
+        self.assertEqual([(g['number'], (g['billed'] or {}).get('number'), g['latest']['number']) for g in j['recurring']],
+                         [('9654', None, '36500')])
+        self.assertEqual([x['number'] for x in j['invoices']], ['36990', '36800'], 'the rest, newest first')
+        self.assertEqual(j['invoices'][0]['status'], 'awaiting_payment')
+        july = P.link_invoice_choices('Banyan')
+        self.assertTrue(july['month'])
         self.assertEqual(seen[-1], {'q': 'Banyan'})
         self.assertEqual(self.c.get('/pumps/api/jobber/invoices?q=B').get_json()['invoices'], [])
 

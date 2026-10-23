@@ -1255,13 +1255,20 @@ async function linkInvoiceSearch(id){
   const q = document.getElementById('liQ').value.trim(), box = document.getElementById('liList');
   if (q.length < 2) { box.innerHTML = ''; return; }
   box.innerHTML = '<div class="note">Searching Jobber…</div>';
-  const j = await api('/jobber/invoices?q=' + encodeURIComponent(q));
+  const j = await api('/jobber/invoices?q=' + encodeURIComponent(q) + '&case_id=' + id);
   if (!document.getElementById('liQ') || document.getElementById('liQ').value.trim() !== q) return;   // still typing
   if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
-  box.innerHTML = (j.invoices || []).map(x => { const rec = (x.job || {}).recurring;
-    return `<div class="cand" ${rec ? 'style="background:#e8f5e9;border-color:#66bb6a"' : ''} onclick="linkInvoicePick(${id}, '${esc(x.number)}')"><div style="flex:1">
-      <b>#${esc(x.number)} ${esc(x.subject)}</b>${rec ? ' <span class="chip g">recurring job</span>' : ''}<div class="note">${esc(x.client)} · ${esc(x.date)} · ${esc(x.status.replace(/_/g, ' '))}${x.job ? ` · job #${esc(x.job.number)} ${esc(x.job.title)}` : ''}</div></div>
-      <span class="num">${money(x.total)}</span> <a class="note" target="_blank" href="${esc(x.uri)}" onclick="event.stopPropagation()">↗</a></div>`; }).join('')
+  const row = x => `<div class="cand" onclick="linkInvoicePick(${id}, '${esc(x.number)}')"><div style="flex:1">
+      <b>#${esc(x.number)} ${esc(x.subject)}</b><div class="note">${esc(x.client)} · ${esc(x.date)} · ${esc(x.status.replace(/_/g, ' '))}</div></div>
+      <span class="num">${money(x.total)}</span> <a class="note" target="_blank" href="${esc(x.uri)}" onclick="event.stopPropagation()">↗</a></div>`;
+  // The monthly job once, green, saying whether the bill's month is billed on it yet.
+  const rec = (j.recurring || []).map(g => `<div class="cand" style="background:#e8f5e9;border-color:#66bb6a;cursor:default"><div style="flex:1">
+      <b>Job #${esc(g.number)} ${esc(g.title)}</b> <span class="chip g">recurring job</span>
+      <div class="note">${g.billed ? `${esc(j.month)}: billed - invoice #${esc(g.billed.number)} ${esc(g.billed.subject)} · ${esc(g.billed.date)} · ${esc(g.billed.status.replace(/_/g, ' '))} · ${money(g.billed.total)}`
+        : `<b class="bad">${esc(j.month)}: not billed yet</b>${g.latest ? ` - last invoice #${esc(g.latest.number)} · ${esc(g.latest.date)} · ${esc(g.latest.status.replace(/_/g, ' '))}` : ''}`}</div></div>
+      ${g.billed ? `<button class="btn s p" onclick="linkInvoicePick(${id}, '${esc(g.billed.number)}')">Link #${esc(g.billed.number)}</button> <a class="note" target="_blank" href="${esc(g.billed.uri)}">↗</a>` : ''}</div>`).join('');
+  const other = (j.invoices || []).map(row).join('');
+  box.innerHTML = (rec + (other ? (rec ? '<div class="note" style="margin:8px 0 4px">Other invoices</div>' : '') + other : ''))
     || '<div class="note">No Jobber invoices found.</div>';
 }
 async function linkInvoicePick(id, number){
