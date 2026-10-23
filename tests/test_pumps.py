@@ -4048,6 +4048,13 @@ class PumpsTest(unittest.TestCase):
             P.jobber_gql, P.recurring_jobs = saved
         self.assertEqual([j['number'] for j in jobs], [10504, 10136])
         self.assertEqual(seen[-1], {'q': 'University Village Shops'})
+        P.jobber_gql = fake
+        P.recurring_jobs = lambda cid: []
+        try:
+            P.live_recurring_jobs('Westminster Community Association, Inc. c/o Hawk-Eye Management, LLC.', {})
+        finally:
+            P.jobber_gql, P.recurring_jobs = saved
+        self.assertEqual(seen[-1], {'q': 'Westminster Community Association'}, 'a short name for Jobber')
         pump = [j for j in jobs if P.TITLE_PATTERNS['pump'].search(f"{j['title']} {j['property_label']}")]
         self.assertEqual([j['number'] for j in pump], [10136])
 
