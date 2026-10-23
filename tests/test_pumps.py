@@ -1538,6 +1538,32 @@ class PumpsTest(unittest.TestCase):
             P.graph_send = real
         self.assertTrue(any(ev['action'] == 'emailed the vendor' for ev in self.case(cid)['events']))
 
+    def test_follow_up_with_the_client_on_our_quote(self):
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': '3 in flow meter bad', 'client_name': 'Sanctuary at Blue Heron',
+                                       'site': 'Clubhouse', 'vendor': 'Wettech'}, 'test')
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?',
+                         (json.dumps({'quote': {'id': 'Q1', 'number': '9191', 'total': 5724.0}}), cid))
+            conn.commit()
+        finally:
+            conn.close()
+        e = self.c.get(f'/pumps/api/cases/{cid}/client_email').get_json()['email']
+        self.assertIn('#9191', e['subject'])
+        self.assertIn('Quote: #9191 - $5,724.00', e['body'])
+        self.assertIn('Property: Sanctuary at Blue Heron · Clubhouse', e['body'])
+        sent, real = [], P.graph_send
+        P.graph_send = lambda to, subject, html, attachments=None, sender=None: sent.append((to, subject, html))
+        try:
+            r = self.c.post(f'/pumps/api/cases/{cid}/client_email/send',
+                            json={'to': 'board@example.com', 'subject': e['subject'], 'body': e['body']})
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            self.assertEqual(sent[0][0], 'board@example.com')
+            self.assertEqual(self.c.post(f'/pumps/api/cases/{cid}/client_email/send', json={'to': ''}).status_code, 400)
+        finally:
+            P.graph_send = real
+        self.assertTrue(any(ev['action'] == 'followed up with the client' for ev in self.case(cid)['events']))
+
     def test_one_time_fixups_run_once_with_two_workers(self):
         conn = P._conn()
         try:

@@ -339,7 +339,7 @@ details.fold[open] > summary h4::before { content: '▾ '; }
   <h3 style="margin:0 0 8px;font-size:14px">Job Watchlist</h3>
   <div class="toolbar">
     <input type="text" id="jbSearch" placeholder="Find a job, client, PO, quote or invoice #…" oninput="clearTimeout(window._jq);window._jq=setTimeout(loadJobs,300)" style="width:240px">
-    <select id="jbShow" onchange="loadJobs()"><option value="open">Open</option><option value="closed">Done</option><option value="all">All</option></select>
+    <select id="jbShow" onchange="loadJobs()"><option value="open">Open</option><option value="waiting">Waiting on others</option><option value="closed">Done</option><option value="all">All</option></select>
     <div class="sp"></div><span id="syncInfo" class="note"></span>
     <button class="btn s" title="It syncs on its own - this just does it now" onclick="syncJobber()">↻ Sync now</button>
   </div>
@@ -831,20 +831,11 @@ async function loadToday(){
     `<button class="btn s" onclick="logReport(${d.id})">Log in Jobber</button><button class="btn s" title="Already in Jobber - tick it on the job" onclick="askDone(event, () => reportDone(${d.id}, event))">✓ Done</button>`, d.todo_key)));
   q.review_docs.forEach(d => todo.push(todoItem('Look at', 'b', esc(d.client_name || d.file_name), esc(d.review_reason || 'Not filed yet') + ' · ' + esc(d.kind || 'document'), `openDoc(${d.id})`, '', d.todo_key)));
   q.scada_attention.filter(s => s.state !== 'overdue').forEach(s => todo.push(todoItem('SCADA due', 'v', esc(s.client_name) + (s.site ? ' · ' + esc(s.site) : ''), 'Renewal due ' + esc(s.next_due_on) + (s.state_note ? ' · ' + esc(s.state_note) : '') + followUp(s.follow_up), "showTab('scada')", '', s.todo_key)));
-  const v = c => esc(c.vendor || 'Wettech');
-  const logBtn = c => c.chase ? `<button class="btn s" onclick="event.stopPropagation();logFollow(${c.id})">📞 Log</button>` : '';
-  (q.waiting_assessment || []).forEach(c => waiting.push(todoItem(v(c) + ' visit', '', caseTitle(c), caseSub(c, ((c.steps || {}).assessment || {}).due ? 'visit ' + esc(c.steps.assessment.due) : 'visit not booked') + chaseLine(c), open(c), logBtn(c), c.todo_key)));
-  q.waiting_vendor_quote.forEach(c => waiting.push(todoItem(v(c) + ' quote', '', caseTitle(c), caseSub(c) + chaseLine(c), open(c), logBtn(c), c.todo_key)));
-  (q.scheduling_asked || []).forEach(c => { const ch = c.chase || {}, p = ch.parts;
-    // No follow-up needed (or a status since the approval): just waiting on the vendor to do it.
-    if (!c.chase) { waiting.push(todoItem('Waiting', '', caseTitle(c), caseSub(c, `client approved - waiting on ${v(c)} to do the work`), open(c), logBtn(c), c.todo_key)); return; }
-    waiting.push(todoItem(ch.parts_wait ? 'Parts' : 'Schedule', '', caseTitle(c), caseSub(c, ch.parts_wait ? `client approved - waiting on ${v(c)}'s parts` + (p ? ` (${esc(p)})` : '') : 'client approved - asked ' + v(c) + ' for a date') + chaseLine(c), open(c), logBtn(c), c.todo_key)); });
-  q.waiting_approval.forEach(c => waiting.push(todoItem('Client approval', '', caseTitle(c), caseSub(c) + followUp(c.follow_up), open(c), '', c.todo_key)));
-  q.waiting_work.forEach(c => waiting.push(todoItem('Work', '', caseTitle(c), caseSub(c, c.scheduled_for ? 'scheduled ' + esc(c.scheduled_for) : '') + chaseLine(c), open(c), logBtn(c), c.todo_key)));
+  // Jobs waiting on the vendor or the client are kept an eye on in the Job Watchlist
+  // (Show: Waiting on others) - the to do list is for today's actions (Oct 2026).
   (q.waiting_visits || []).forEach(t => { const l = t.link || {}, left = (l.vendors || []).filter(x => !(l.reported || []).includes(x));
     waiting.push(todoItem('Maintenance visit', '', esc(l.account || t.title), `client approved ${esc(l.since || '')} · waiting on ${esc(left.join(' and '))}'s service report${left.length > 1 ? 's' : ''}${(l.reported || []).length ? ' · ✓ ' + esc(l.reported.join(', ')) : ''}`, "showTab('accounts')",
       `<button class="btn s" onclick="askDone(event, () => todoDone(${t.id}, true, event))">✓ Done</button>`, t.todo_key)); });
-  q.waiting_bill.forEach(c => waiting.push(todoItem(v(c) + ' bill', '', caseTitle(c), caseSub(c), open(c), '', c.todo_key)));
   const n = urgent.length + todo.length + q.todos.length;
   document.getElementById('sideCount').textContent = n;
   document.getElementById('sideCount').className = 'chip ' + (urgent.length ? 'r' : n ? 'a' : 'g');
@@ -986,6 +977,27 @@ async function vendorEmail(id){
     <label class="note">Subject<input type="text" id="vmSubject" value="${esc(e.subject)}" style="width:100%"></label>
     <textarea id="vmBody" style="width:100%;min-height:240px;font:inherit">${esc(e.body)}</textarea>`,
     `<button class="btn" onclick="closeModal()">Close</button><button class="btn" onclick="navigator.clipboard.writeText(document.getElementById('vmBody').value);toast('Email copied - paste it into Outlook')">Copy email</button><button class="btn p" id="vmSend" onclick="sendVendorEmail(${id})">✉ Send email</button>`);
+}
+// Follow up with the client on our quote that's waiting on their approval.
+async function clientEmail(id){
+  const j = await api('/cases/' + id + '/client_email');
+  if (!j.success) { toast(j.error, true); return; }
+  const e = j.email;
+  openModal('Follow up with ' + esc(e.name), `
+    <div class="note">Sent from the PO mailbox, so the reply comes back to it. Edit anything first.${e.to ? '' : ' <b class="warn">No email on file for this client - type one in.</b>'}</div>
+    <label class="note">To<input type="text" id="cmTo" value="${esc(e.to)}" style="width:100%"></label>
+    <label class="note">Subject<input type="text" id="cmSubject" value="${esc(e.subject)}" style="width:100%"></label>
+    <textarea id="cmBody" style="width:100%;min-height:240px;font:inherit">${esc(e.body)}</textarea>`,
+    `<button class="btn" onclick="closeModal()">Close</button><button class="btn" onclick="navigator.clipboard.writeText(document.getElementById('cmBody').value);toast('Email copied - paste it into Outlook')">Copy email</button><button class="btn p" id="cmSend" onclick="sendClientEmail(${id})">✉ Send email</button>`);
+}
+async function sendClientEmail(id){
+  const btn = document.getElementById('cmSend'); btn.disabled = true; btn.textContent = 'Sending…';
+  const j = await api('/cases/' + id + '/client_email/send', {method:'POST', body:{to: document.getElementById('cmTo').value, subject: document.getElementById('cmSubject').value, body: document.getElementById('cmBody').value}});
+  btn.disabled = false; btn.textContent = '✉ Send email';
+  if (!j.success) { toast(j.error, true); return; }
+  toast('Sent to ' + j.sent.to); closeModal();
+  if (curTab === 'jobs') loadJobs();
+  if (curCase && curCase.id === id) openCase(id);
 }
 async function sendVendorEmail(id){
   const btn = document.getElementById('vmSend'); btn.disabled = true; btn.textContent = 'Sending…';
@@ -2404,14 +2416,14 @@ async function setUrgent(id, on){
 }
 async function loadJobs(){
   loadMaintSchedule();
-  const st = document.getElementById('jbShow').value, q = document.getElementById('jbSearch').value.trim();
+  const show = document.getElementById('jbShow').value, st = show === 'waiting' ? 'open' : show, q = document.getElementById('jbSearch').value.trim();
   const [j, ji] = await Promise.all([api('/cases?status=' + st + (q ? '&q=' + encodeURIComponent(q) : '')), api('/jobber/items?open=1&kind=quote&show_ignored=1')]);
   if (!j.success) { document.getElementById('jobsBody').innerHTML = `<tr><td colspan="9" class="empty">${esc(j.error)}</td></tr>`; return; }
   const ref = r => r ? (r.uri ? `<a href="${esc(r.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">#${esc(r.number || '')} ↗</a>` : (r.number ? '#' + esc(r.number) : '')) : '';
   // Quotes wait at the bottom under "Quotes - not urgent" unless marked urgent (Oct 2026).
   const isQuote = c => c.status === 'open' && QUOTE_STAGES.includes(c.stage);
   const quietQ = c => isQuote(c) && !c.urgent;
-  const all = j.cases || [], main = all.filter(c => !quietQ(c)), quiet = all.filter(quietQ);
+  const all = (j.cases || []).filter(c => show !== 'waiting' || /waiting/i.test(stageText(c))), main = all.filter(c => !quietQ(c)), quiet = all.filter(quietQ);
   const row = c => { const jb = c.jobber || {}, vp = c.vendor_pay || {};
     return `<tr class="click" onclick="openCase(${c.id})">
     <td><b title="${esc(c.title || c.client_name)}">${esc(c.short_title || c.title || c.client_name)}</b><div class="note">${esc([c.client_name, c.site].filter(Boolean).join(' · '))}${c.po_number ? ' · PO ' + esc(c.po_number) : ''}${jobberNo(c)}</div></td>
@@ -2421,7 +2433,7 @@ async function loadJobs(){
     <td>${numAmt(c.vendor_bill_number, c.vendor_bill_amount ?? c.vendor_bill_total)}</td>
     <td>${ref(jb.invoice) || (c.sei_invoice_number ? '#' + esc(c.sei_invoice_number) : '')}${(jb.invoice || c.sei_invoice_number) && ((jb.invoice || {}).total ?? c.amount) != null ? ' <b>' + money((jb.invoice || {}).total ?? c.amount) + '</b>' : ''}${jb.invoice && jb.invoice.status ? ` <span class="note">${esc(jb.invoice.status.replace(/_/g, ' '))}</span>` : ''}</td>
     <td>${vp.state === 'paid' ? '<span class="chip g">paid</span>' : vp.state === 'due' ? '<span class="chip r">pay now</span>' : vp.state === 'unpaid' ? '<span class="note">not yet</span>' : ''}</td>
-    <td style="white-space:nowrap">${isQuote(c) ? (c.urgent ? `<button class="btn s" title="Back to Quotes - not urgent" onclick="event.stopPropagation();setUrgent(${c.id}, false)">⬇ Not urgent</button> ` : `<button class="btn s" title="Move it up with the jobs" onclick="event.stopPropagation();setUrgent(${c.id}, true)">⬆ Urgent</button> `) : ''}${jb.job && jb.job.uri ? `<a class="btn s" href="${esc(jb.job.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ↗</a> ` : ''}${c.status === 'open' ? `<button class="btn s" title="Mark done" onclick="event.stopPropagation();caseDone(${c.id})">✓ Done</button> <button class="btn s" title="Remove" onclick="event.stopPropagation();caseRemove(${c.id})">✕</button>` : `<button class="btn s" onclick="event.stopPropagation();caseReopen(${c.id})">↺ Reopen</button>`}</td></tr>`; };
+    <td style="white-space:nowrap">${isQuote(c) ? (c.urgent ? `<button class="btn s" title="Back to Quotes - not urgent" onclick="event.stopPropagation();setUrgent(${c.id}, false)">⬇ Not urgent</button> ` : `<button class="btn s" title="Move it up with the jobs" onclick="event.stopPropagation();setUrgent(${c.id}, true)">⬆ Urgent</button> `) : ''}${jb.job && jb.job.uri ? `<a class="btn s" href="${esc(jb.job.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ↗</a> ` : ''}${c.status === 'open' && c.stage === 'client_approved' ? `<button class="btn s p" title="Email the client a follow-up on our quote" onclick="event.stopPropagation();clientEmail(${c.id})">✉ Follow up</button> ` : ''}${c.status === 'open' ? `<button class="btn s" title="Mark done" onclick="event.stopPropagation();caseDone(${c.id})">✓ Done</button> <button class="btn s" title="Remove" onclick="event.stopPropagation();caseRemove(${c.id})">✕</button>` : `<button class="btn s" onclick="event.stopPropagation();caseReopen(${c.id})">↺ Reopen</button>`}</td></tr>`; };
   document.getElementById('jobsBody').innerHTML = (main.map(row).join('') || '<tr><td colspan="9" class="empty">No jobs.</td></tr>')
     + (quiet.length ? `<tr class="click" onclick="foldSave('qq', !foldOpen('qq'));loadJobs()"><td colspan="9" style="background:var(--bg);font-weight:700;padding-top:14px">${foldOpen('qq') ? '▾' : '▸'} Quotes - not urgent (${quiet.length}) <span class="note" style="font-weight:400">· click to ${foldOpen('qq') ? 'fold away' : 'show'} · ⬆ Urgent moves one up with the jobs</span></td></tr>` + (foldOpen('qq') ? quiet.map(row).join('') : '') : '');
   const s = ji.sync || {};
