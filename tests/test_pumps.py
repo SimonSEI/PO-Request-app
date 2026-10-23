@@ -4024,6 +4024,33 @@ class PumpsTest(unittest.TestCase):
             P.jobber_status, P.live_recurring_jobs, P.job_invoices = saved
             P._MONTH_BILLED.clear()
 
+    def test_recurring_jobs_include_one_at_the_clients_property(self):
+        """University Village Shops (Oct 2026): its pump job #10136 is filed under University Village CDD, at
+        "10801 Corkscrew Road, PUMP - University Village Shops LLC" - found by its property, and it's the pump one."""
+        seen = []
+
+        def fake(query, variables=None):
+            seen.append(variables)
+            return {'jobs': {'nodes': [
+                {'id': 'J10136', 'jobNumber': 10136, 'title': 'Quarterly 900', 'jobStatus': 'upcoming', 'jobType': 'RECURRING',
+                 'property': {'address': {'street1': '10801 Corkscrew Road', 'street2': 'PUMP - University Village Shops LLC'}}},
+                {'id': 'J10700', 'jobNumber': 10700, 'title': 'Monthly 315', 'jobStatus': 'upcoming', 'jobType': 'RECURRING',
+                 'property': {'address': {'street1': '19800 Village Center Drive'}}},
+                {'id': 'J30', 'jobNumber': 30, 'title': 'Monthly324', 'jobStatus': 'archived', 'jobType': 'RECURRING',
+                 'property': {'address': {'street2': 'University Village Shops'}}}]}}
+        saved = (P.jobber_gql, P.recurring_jobs)
+        P.jobber_gql = fake
+        P.recurring_jobs = lambda cid: [{'id': 'J10504', 'number': 10504, 'title': 'Monthly 334', 'status': 'requires_invoicing',
+                                         'type': 'recurring', 'property_label': '19800 Village Center Drive, Fort Myers'}]
+        try:
+            jobs = P.live_recurring_jobs('University Village Shops, LLC', {'jobber_client_id': 'CSHOPS'})
+        finally:
+            P.jobber_gql, P.recurring_jobs = saved
+        self.assertEqual([j['number'] for j in jobs], [10504, 10136])
+        self.assertEqual(seen[-1], {'q': 'University Village Shops'})
+        pump = [j for j in jobs if P.TITLE_PATTERNS['pump'].search(f"{j['title']} {j['property_label']}")]
+        self.assertEqual([j['number'] for j in pump], [10136])
+
     def test_watercrest_is_water_crest(self):
         """Oct 2026: Wettech's "Watercrest @ Falling Waters" scored lowest against Jobber's "WATER CREST AT FALLING
         WATERS", so its report went on Falling Waters II. Words run together still match; the wrong pick is undone."""

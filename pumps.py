@@ -8123,12 +8123,36 @@ def live_recurring_jobs(client_name, case=None):
     case = case or {}
     j = case.get('jobber') if isinstance(case.get('jobber'), dict) else json.loads(case.get('jobber') or '{}')
     cid = case.get('jobber_client_id') or (j.get('client') or {}).get('id')
+    name = client_name or case.get('client_name') or ''
     if not cid:
-        pick = pick_client(search_clients(client_name or case.get('client_name') or ''))
+        pick = pick_client(search_clients(name))
         cid = pick['id'] if pick else None
-    if not cid:
-        return []
-    return [x for x in recurring_jobs(cid) if x['status'] != 'archived']
+    jobs = [x for x in recurring_jobs(cid) if x['status'] != 'archived'] if cid else []
+    # A job filed under another client but at this one's property: University Village Shops' pump job
+    # #10136 is the CDD's, at "10801 Corkscrew Road, PUMP - University Village Shops LLC" (Oct 2026).
+    core = _core_name(name)
+    if len(core) >= 4:
+        def make(fields):
+            return f'query($q: String!) {{ jobs(searchTerm: $q, first: 20) {{ nodes {{ {fields} }} }} }}'
+        spec = ['id', 'jobNumber', 'title', 'jobStatus', 'jobType', 'createdAt',
+                ('property', ['id', ('address', ['street1', 'street2', 'city'])])]
+        try:
+            data, _ = _gql_tolerant(make, spec, {'q': ' '.join(re.sub(r'[,.]|\b(?:llc|inc|corp|co)\b', ' ', core,
+                                                                       flags=re.I).split())},
+                                    required=('id', 'jobNumber'))
+        except JobberError:
+            data = {}
+        have = {x['id'] for x in jobs}
+        for n in (data.get('jobs') or {}).get('nodes') or []:
+            label = _prop_label(n.get('property'))
+            if n['id'] in have or (n.get('jobType') or '').upper() != 'RECURRING' or \
+                    (n.get('jobStatus') or '').lower() == 'archived' or not fuzzy_has(core, label):
+                continue
+            jobs.append({'id': n['id'], 'number': n.get('jobNumber'), 'title': n.get('title') or '',
+                         'status': (n.get('jobStatus') or '').lower(), 'type': 'recurring',
+                         'property_id': (n.get('property') or {}).get('id'), 'created': (n.get('createdAt') or '')[:10],
+                         'property_label': label})
+    return jobs
 
 
 def job_invoices(job_id):
