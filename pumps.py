@@ -934,7 +934,9 @@ def _file_quoted_docs(conn):
 def _restage_quoted_jobs(conn):
     """Jobs whose client quote went out but whose vendor quote was never filed
     here showed "Waiting on quote" (Oct 2026): work out their stage again, once."""
-    if not _claim_once(conn, 'restage_quoted_jobs'):
+    # Again for jobs already invoiced that still read "waiting on quote" (Oct 23 2026).
+    first, again = _claim_once(conn, 'restage_quoted_jobs'), _claim_once(conn, 'restage_invoiced_jobs')
+    if not (first or again):
         return
     conn.row_factory = sqlite3.Row
     for r in conn.execute("SELECT id FROM pump_cases WHERE status='open'").fetchall():
@@ -1128,7 +1130,11 @@ def _stage(steps, status='open'):
     steps = dict(_with_optional(steps))
     # Our quote went to the client (Carlisle, #9136): the vendor's visit and price
     # came before it, filed here or not - the job isn't waiting on their quote.
-    for later, earlier in (('client_approved', ('assessment', 'vendor_quote', 'client_quote')),
+    # Our invoice drafted or sent (Homewood #36982, Oct 2026: billed at the bill + 30%):
+    # the job isn't waiting on any quote either.
+    quotes = ('assessment', 'vendor_quote', 'client_quote', 'client_approved')
+    for later, earlier in (('closed', quotes), ('invoice_drafted', quotes),
+                           ('client_approved', ('assessment', 'vendor_quote', 'client_quote')),
                            ('client_quote', ('assessment', 'vendor_quote'))):
         if (steps.get(later) or {}).get('at'):
             for k in earlier:
@@ -4174,6 +4180,7 @@ def _sync_jobber(full=False, actor='system'):
             _follow_invoices(conn)
             duplicate_jobber_invoices(conn)
             reconcile_quote_waits(conn)
+            reconcile_client_names(conn)
             approved = _follow_quotes(conn)
             approved += auto_track_approved(conn)
             close_stale_todos(conn)
@@ -4535,6 +4542,38 @@ def link_pending_quote(conn, case_id, it, actor):
         _set_step(conn, case_id, 'client_quote', at=(it.get('updated_at') or '')[:10] or _today().isoformat(), by=actor)
     _event(conn, actor, 'quote already made', f"Jobber quote #{it['number']} \"{it['title']}\" is for this work "
                                               f"({it['status'].replace('_', ' ')})", case_id=case_id)
+
+
+def reconcile_client_names(conn, actor='Jobber sync'):
+    """An open job filed under the wrong client (University Highlands, Oct 2026: opened
+    as "Village Walk", then our quote #9220 went out to University Highlands): when
+    the client on its Jobber quote or job is the one the vendor's own documents
+    name, and the job's name is neither, the job takes that name. A community
+    quoted under its landscape company keeps its own (its documents name it).
+    Returns the job ids renamed."""
+    done = []
+    for c in conn.execute("SELECT id, client_name, jobber FROM pump_cases WHERE status='open'").fetchall():
+        j = json.loads(c['jobber'] or '{}')
+        ids = [(j.get(k) or {}).get('id') for k in ('quote', 'job')]
+        it = next((conn.execute("SELECT client_name FROM pump_jobber_items WHERE jobber_id=? AND client_name != ''",
+                                (i,)).fetchone() for i in ids if i), None)
+        theirs = (it[0] if it else '') or ''
+        ours = c['client_name'] or ''
+        if not theirs or (ours and similarity(ours, theirs) >= 0.85 or similarity(theirs, ours) >= 0.85):
+            continue
+        named = [r[0] for r in conn.execute("SELECT client_name FROM pump_docs WHERE case_id=? AND status != 'dismissed' "
+                                            "AND client_name != ''", (c['id'],))]
+        if not any(similarity(n, theirs) >= 0.85 for n in named) or \
+                any(ours and similarity(ours, n) >= 0.85 for n in named):
+            continue
+        acct = match_account(theirs, conn)
+        name = acct if acct and similarity(theirs, acct) >= 0.85 else theirs
+        conn.execute('UPDATE pump_cases SET client_name=?, updated_at=? WHERE id=?', (name, _now_text(), c['id']))
+        _event(conn, actor, 'client corrected', f'"{ours}" -> "{name}": the client on its Jobber '
+                                                f'{"quote" if ids[0] else "job"} and on the vendor\'s documents',
+               case_id=c['id'])
+        done.append(c['id'])
+    return done
 
 
 def reconcile_quote_waits(conn, actor='Jobber sync'):
@@ -7762,6 +7801,7 @@ UNDO_HOURS = 24
 UNDO_LABELS = (
     (r'/cases/(\d+)/jobber_quote$', 'Linked a Jobber quote to job #{0}'),
     (r'/cases/(\d+)/vendor_email/send$', 'Emailed the vendor about job #{0}'),
+    (r'/cases/(\d+)/client_email/send$', 'Followed up with the client on job #{0}'),
     (r'/cases/(\d+)/pay_email/send$', 'Emailed Christian to pay for job #{0}'),
     (r'/cases/(\d+)/done$', 'Marked a step on job #{0}'),
     (r'/cases/(\d+)/vendor_follow$', 'Logged a follow-up with the vendor on job #{0}'),
@@ -7798,7 +7838,7 @@ UNDO_OUTSIDE = (
     (r'/docs/\d+/quote$', "The draft quote in Jobber stays - delete it there if you don't want it."),
     (r'/docs/\d+/invoice$', "The draft invoice in Jobber stays - delete it there if you don't want it."),
     (r'/docs/\d+/(read_again|reread)$', "If it drafted in Jobber, that draft stays - delete it there if you don't want it."),
-    (r'/(vendor_email|pay_email|dives|digest)/send$', 'The email was already sent.'),
+    (r'/(vendor_email|client_email|pay_email|dives|digest)/send$', 'The email was already sent.'),
 )
 
 
@@ -8051,6 +8091,33 @@ def vendor_email(conn, case_id, signer=''):
     return {'to': email, 'vendor': vendor, 'stage': stage,
             'subject': f"{subj}: {where}" + (f" - PO {c['po_number']}" if c.get('po_number') else '')
                        + (f' (our job #{job})' if job else ''),
+            'body': '\n'.join(lines)}
+
+
+def client_email(conn, case_id, signer=''):
+    """A follow-up to the client on our quote that's out with them waiting on
+    their approval (Oct 2026: a button on the watchlist instead of Outlook)."""
+    row = conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+    if not row:
+        return None
+    c = _case_dict(row)
+    fu = follow_up_for(conn, c)
+    q = (c.get('jobber') or {}).get('quote') or {}
+    total = _money(q.get('total'))
+    where = ' · '.join(x for x in (c.get('client_name'), c.get('site')) if x) or c.get('title') or ''
+    first = (fu.get('name') or '').split(' ')[0]
+    lines = [f'Hi {first},' if first else 'Hello,', '',
+             'Following up on our quote below - please let us know if you would like us to go ahead, '
+             'or if you have any questions.', '',
+             *([f"Quote: #{q['number']}" + (f' - {money_text(total)}' if total is not None else '')]
+               if q.get('number') else []),
+             f"Property: {where}",
+             *([f"PO: {c['po_number']}"] if c.get('po_number') else []),
+             f"Work: {c.get('description') or c.get('title') or ''}", '',
+             'Thank you,', signer or 'Stahlman-England Irrigation']
+    return {'to': fu.get('email') or '', 'name': fu.get('name') or c.get('client_name') or 'the client',
+            'subject': 'Following up on our quote' + (f" #{q['number']}" if q.get('number') else '')
+                       + (f": {c.get('short_title') or c.get('title')}" if c.get('short_title') or c.get('title') else ''),
             'body': '\n'.join(lines)}
 
 
@@ -8390,6 +8457,40 @@ def h_vendor_email_send(actor, case_id):
             if f.get('expect_by') and f['expect_by'] >= _today().isoformat():
                 f['check_on'] = ''   # a date they gave still stands
             conn.execute('UPDATE pump_cases SET vendor_follow=? WHERE id=?', (json.dumps(f), case_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {'sent': {'to': to, 'subject': subject}}
+
+
+@api('/cases/<int:case_id>/client_email')
+def h_client_email(actor, case_id):
+    conn = _conn()
+    try:
+        e = client_email(conn, case_id, actor if actor != BOT else '')
+        return ({'success': False, 'error': 'Not found'}, 404) if not e else {'email': e}
+    finally:
+        conn.close()
+
+
+@api('/cases/<int:case_id>/client_email/send', methods=('POST',))
+def h_client_email_send(actor, case_id):
+    """Send the quote follow-up from the PO mailbox when someone clicks Send."""
+    import html as _html
+    if actor == BOT:
+        return {'success': False, 'error': 'Only the office can send this'}, 403
+    data = _json()
+    to, subject, body = (str(data.get(k) or '').strip() for k in ('to', 'subject', 'body'))
+    if not (to and subject and body):
+        return {'success': False, 'error': 'To, subject and message are all needed'}, 400
+    try:
+        graph_send(to, subject[:255], '<div style="font-family:Arial,sans-serif;font-size:14px">'
+                   + '<br>'.join(_html.escape(x) for x in body[:20000].split('\n')) + '</div>')
+    except Exception as e:
+        return {'success': False, 'error': f'Not sent - {e}'}, 502
+    conn = _conn()
+    try:
+        _event(conn, actor, 'followed up with the client', f'To {to}: {subject}', case_id=case_id)
         conn.commit()
     finally:
         conn.close()

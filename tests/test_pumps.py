@@ -1538,6 +1538,32 @@ class PumpsTest(unittest.TestCase):
             P.graph_send = real
         self.assertTrue(any(ev['action'] == 'emailed the vendor' for ev in self.case(cid)['events']))
 
+    def test_follow_up_with_the_client_on_our_quote(self):
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': '3 in flow meter bad', 'client_name': 'Sanctuary at Blue Heron',
+                                       'site': 'Clubhouse', 'vendor': 'Wettech'}, 'test')
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?',
+                         (json.dumps({'quote': {'id': 'Q1', 'number': '9191', 'total': 5724.0}}), cid))
+            conn.commit()
+        finally:
+            conn.close()
+        e = self.c.get(f'/pumps/api/cases/{cid}/client_email').get_json()['email']
+        self.assertIn('#9191', e['subject'])
+        self.assertIn('Quote: #9191 - $5,724.00', e['body'])
+        self.assertIn('Property: Sanctuary at Blue Heron · Clubhouse', e['body'])
+        sent, real = [], P.graph_send
+        P.graph_send = lambda to, subject, html, attachments=None, sender=None: sent.append((to, subject, html))
+        try:
+            r = self.c.post(f'/pumps/api/cases/{cid}/client_email/send',
+                            json={'to': 'board@example.com', 'subject': e['subject'], 'body': e['body']})
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            self.assertEqual(sent[0][0], 'board@example.com')
+            self.assertEqual(self.c.post(f'/pumps/api/cases/{cid}/client_email/send', json={'to': ''}).status_code, 400)
+        finally:
+            P.graph_send = real
+        self.assertTrue(any(ev['action'] == 'followed up with the client' for ev in self.case(cid)['events']))
+
     def test_one_time_fixups_run_once_with_two_workers(self):
         conn = P._conn()
         try:
@@ -1854,6 +1880,31 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(P._stage({'client_quote': {'at': '2026-10-01'}}), 'client_approved')
         self.assertEqual(P._stage({}), 'vendor_quote')
         self.assertEqual(P._stage({'vendor_bill': {'at': '2026-10-01'}}), 'vendor_quote', 'bill before quote still waits')
+        # Homewood (Oct 2026): billed at the bill + 30% and our invoice drafted - not waiting on a quote.
+        self.assertEqual(P._stage({'scheduled': {'at': '2026-10-01'}, 'work_done': {'at': '2026-10-01'},
+                                   'vendor_bill': {'at': '2026-10-01'}, 'bill_checked': {'at': '2026-10-02'},
+                                   'invoice_drafted': {'at': '2026-10-02'}}), 'report_logged')
+
+    def test_job_takes_the_client_its_jobber_quote_and_documents_name(self):
+        """University Highlands (Oct 2026): filed as "Village Walk", quoted in Jobber to University Highlands."""
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': 'University Highlands- Field service to remove pump',
+                                       'client_name': 'Village Walk', 'vendor': 'Wettech'}, 'test')
+            keep = P.create_case(conn, {'title': 'Pump #2 rebuild', 'client_name': 'Osprey Point', 'vendor': 'Wettech'}, 'test')
+            for case_id, qid, client, doc_client in ((cid, 'QUH', 'University Highlands', 'University Highlands'),
+                                                     (keep, 'QOP', 'Sunrise Landscaping', 'Osprey Point')):
+                conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps({'quote': {'id': qid}}), case_id))
+                conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, client_name, status) "
+                             "VALUES (?, 'quote', '1', ?, 'awaiting_response')", (qid, client))
+                conn.execute("INSERT INTO pump_docs (kind, status, client_name, case_id, file_name) "
+                             "VALUES ('quote', 'filed', ?, ?, 'q.docx')", (doc_client, case_id))
+            self.assertEqual(P.reconcile_client_names(conn), [cid])
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(self.case(cid)['client_name'], 'University Highlands')
+        self.assertEqual(self.case(keep)['client_name'], 'Osprey Point', 'a community quoted under its landscaper keeps its name')
 
     def test_parts_lead_waits_then_follow_up_after_14_days(self):
         """A quote saying "2-3 weeks": once approved the job waits on parts and
