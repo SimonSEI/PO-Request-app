@@ -3953,12 +3953,16 @@ class PumpsTest(unittest.TestCase):
                 {'id': 'I1', 'invoiceNumber': 36800, 'invoiceStatus': 'PAID', 'subject': 'July Pump Maintenance',
                  'issuedDate': '2026-07-31', 'amounts': {'total': 320}, 'client': {'name': 'Banyan Bay'}},
                 {'id': 'I2', 'invoiceNumber': 36990, 'invoiceStatus': 'AWAITING_PAYMENT', 'subject': 'October Pump Maintenance',
-                 'issuedDate': '2026-10-21', 'amounts': {'total': 320}, 'client': {'name': 'Banyan Bay'}}]}}
+                 'issuedDate': '2026-10-21', 'amounts': {'total': 320}, 'client': {'name': 'Banyan Bay'}},
+                {'id': 'I3', 'invoiceNumber': 36500, 'invoiceStatus': 'PAID', 'subject': 'Quarterly',
+                 'issuedDate': '2026-07-01', 'amounts': {'total': 320}, 'client': {'name': 'Banyan Bay'},
+                 'jobs': {'nodes': [{'jobNumber': 9654, 'title': 'Quarterly Pump Maintenance', 'jobType': 'RECURRING'}]}}]}}
         P.jobber_gql = fake
         j = self.c.get('/pumps/api/jobber/invoices?q=Banyan').get_json()
         self.assertTrue(j['success'], j)
-        self.assertEqual([x['number'] for x in j['invoices']], ['36990', '36800'], 'newest first')
-        self.assertEqual(j['invoices'][0]['status'], 'awaiting_payment')
+        self.assertEqual([x['number'] for x in j['invoices']], ['36500', '36990', '36800'], 'recurring job first, then newest')
+        self.assertTrue(j['invoices'][0]['job']['recurring'])
+        self.assertEqual(j['invoices'][1]['status'], 'awaiting_payment')
         self.assertEqual(seen[-1], {'q': 'Banyan'})
         self.assertEqual(self.c.get('/pumps/api/jobber/invoices?q=B').get_json()['invoices'], [])
 

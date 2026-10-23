@@ -1258,9 +1258,10 @@ async function linkInvoiceSearch(id){
   const j = await api('/jobber/invoices?q=' + encodeURIComponent(q));
   if (!document.getElementById('liQ') || document.getElementById('liQ').value.trim() !== q) return;   // still typing
   if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
-  box.innerHTML = (j.invoices || []).map(x => `<div class="cand" onclick="linkInvoicePick(${id}, '${esc(x.number)}')"><div style="flex:1">
-      <b>#${esc(x.number)} ${esc(x.subject)}</b><div class="note">${esc(x.client)} · ${esc(x.date)} · ${esc(x.status.replace(/_/g, ' '))}</div></div>
-      <span class="num">${money(x.total)}</span> <a class="note" target="_blank" href="${esc(x.uri)}" onclick="event.stopPropagation()">↗</a></div>`).join('')
+  box.innerHTML = (j.invoices || []).map(x => { const rec = (x.job || {}).recurring;
+    return `<div class="cand" ${rec ? 'style="background:#e8f5e9;border-color:#66bb6a"' : ''} onclick="linkInvoicePick(${id}, '${esc(x.number)}')"><div style="flex:1">
+      <b>#${esc(x.number)} ${esc(x.subject)}</b>${rec ? ' <span class="chip g">recurring job</span>' : ''}<div class="note">${esc(x.client)} · ${esc(x.date)} · ${esc(x.status.replace(/_/g, ' '))}${x.job ? ` · job #${esc(x.job.number)} ${esc(x.job.title)}` : ''}</div></div>
+      <span class="num">${money(x.total)}</span> <a class="note" target="_blank" href="${esc(x.uri)}" onclick="event.stopPropagation()">↗</a></div>`; }).join('')
     || '<div class="note">No Jobber invoices found.</div>';
 }
 async function linkInvoicePick(id, number){
