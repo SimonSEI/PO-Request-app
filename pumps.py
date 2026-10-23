@@ -35,6 +35,7 @@ import contextvars
 import difflib
 import hashlib
 import hmac
+import uuid
 import io
 import math
 import json
@@ -7764,6 +7765,8 @@ def _register_routes(app, csrf):
         # Bearer-token calls carry no browser cookie, so no CSRF token either.
         # (The office door keeps CSRF; the bot door ignores the session.)
         csrf.exempt(bot_view)
+    bp.add_url_rule('/pumps/api/assistant/reply', 'assistant_reply', assistant_reply, methods=['POST'])
+    csrf.exempt(assistant_reply)
 
 
 def _call(fn, actor, kw):
@@ -7792,7 +7795,7 @@ def _json():
     return request.get_json(silent=True) or {}
 
 
-UNDO_SKIP = r'/(undo(/\d+)?|scan|jobber/sync|todos/reword)$'  # clicks not put on the undo list
+UNDO_SKIP = r'/(undo(/\d+)?|scan|jobber/sync|todos/reword|assistant/ask)$'  # clicks not put on the undo list
 UNDO_HOURS = 24
 # What a click was, for the Undo list: (path pattern, label). {0} = the number in the path.
 UNDO_LABELS = (
@@ -10305,6 +10308,20 @@ def quote_to_job_title(client, number):
 
 
 def init_todo_table(c):
+    # Questions to Pump Manager (the outside assistant) and its answers, one conversation per person.
+    c.execute('''CREATE TABLE IF NOT EXISTS pump_assistant_messages (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  conversation_id TEXT NOT NULL,
+                  message_id TEXT UNIQUE NOT NULL,
+                  username TEXT NOT NULL,
+                  user_name TEXT DEFAULT '',
+                  question TEXT NOT NULL,
+                  context TEXT DEFAULT '{}',
+                  answer TEXT,
+                  error TEXT DEFAULT '',
+                  asked_at REAL NOT NULL,
+                  answered_at REAL)''')
+    c.execute('CREATE INDEX IF NOT EXISTS pump_assistant_conv ON pump_assistant_messages (username, conversation_id)')
     c.execute('''CREATE TABLE IF NOT EXISTS pump_todos (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   kind TEXT DEFAULT 'manual',
@@ -15122,6 +15139,146 @@ def h_maint_notified(actor):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# Pump Manager - the outside assistant, asked from the panel
+# ═════════════════════════════════════════════════════════════════════════════
+# A question is saved, then sent to Pump Manager's webhook; its answer comes back
+# later (usually 1-2 minutes) to /pumps/api/assistant/reply and the panel picks it
+# up. The webhook's URL and key stay on the server.
+
+PUMP_MANAGER_WEBHOOK_URL = os.environ.get('PUMP_MANAGER_WEBHOOK_URL', '')
+PUMP_MANAGER_WEBHOOK_KEY = os.environ.get('PUMP_MANAGER_WEBHOOK_KEY', '')
+# How the key is sent: "Authorization: Bearer <key>" unless the webhook wants another header
+# (e.g. PUMP_MANAGER_WEBHOOK_AUTH_HEADER=X-Webhook-Key sends the key as is).
+PUMP_MANAGER_AUTH_HEADER = os.environ.get('PUMP_MANAGER_WEBHOOK_AUTH_HEADER', 'Authorization')
+PUMP_APP_REPLY_TOKEN = os.environ.get('PUMP_APP_REPLY_TOKEN', '')
+ASSISTANT_WAIT = 300        # seconds before a question with no answer says "No answer yet"
+ASSISTANT_HISTORY = 6       # earlier messages sent along for context
+
+
+def assistant_allowed():
+    return session.get('role') == 'office'
+
+
+def _assistant_conversation(username, new=False):
+    key = f'assistant_conv:{username.lower()}'
+    conv = None if new else _state_get(key)
+    if not conv:
+        conv = uuid.uuid4().hex
+        _state_set(key, conv)
+    return conv
+
+
+def _assistant_row(r, now=None):
+    now = now or time.time()
+    state = 'answered' if r['answer'] is not None else 'error' if r['error'] else \
+        'timeout' if now - r['asked_at'] > ASSISTANT_WAIT else 'thinking'
+    return {'message_id': r['message_id'], 'question': r['question'], 'answer': r['answer'], 'state': state,
+            'error': r['error'] or '', 'asked_at': datetime.fromtimestamp(r['asked_at']).isoformat(timespec='seconds'),
+            'context': json.loads(r['context'] or '{}')}
+
+
+def assistant_messages(username):
+    conv = _assistant_conversation(username)
+    conn = _conn()
+    try:
+        rows = conn.execute('SELECT * FROM pump_assistant_messages WHERE username=? AND conversation_id=? ORDER BY id',
+                            (username.lower(), conv)).fetchall()
+    finally:
+        conn.close()
+    now = time.time()
+    return {'conversation_id': conv, 'messages': [_assistant_row(r, now) for r in rows],
+            'configured': bool(PUMP_MANAGER_WEBHOOK_URL)}
+
+
+def _webhook_headers():
+    h = {'Content-Type': 'application/json'}
+    if PUMP_MANAGER_WEBHOOK_KEY:
+        h[PUMP_MANAGER_AUTH_HEADER] = (f'Bearer {PUMP_MANAGER_WEBHOOK_KEY}'
+                                       if PUMP_MANAGER_AUTH_HEADER.lower() == 'authorization' else PUMP_MANAGER_WEBHOOK_KEY)
+    return h
+
+
+def assistant_ask(username, user_name, question, context):
+    question = (question or '').strip()
+    if not question:
+        raise ValueError('Type a question')
+    if not PUMP_MANAGER_WEBHOOK_URL:
+        raise ValueError('Pump Manager is not set up yet (PUMP_MANAGER_WEBHOOK_URL)')
+    ctx = {k: str((context or {}).get(k) or '')[:300] for k in ('tab', 'job', 'account')}
+    conv = _assistant_conversation(username)
+    mid = uuid.uuid4().hex
+    conn = _conn()
+    try:
+        history = [{'question': r['question'], 'answer': r['answer'] or ''} for r in reversed(conn.execute(
+            'SELECT question, answer FROM pump_assistant_messages WHERE username=? AND conversation_id=? '
+            'ORDER BY id DESC LIMIT ?', (username.lower(), conv, ASSISTANT_HISTORY)).fetchall())]
+        conn.execute('INSERT INTO pump_assistant_messages (conversation_id, message_id, username, user_name, question, '
+                     'context, asked_at) VALUES (?,?,?,?,?,?,?)',
+                     (conv, mid, username.lower(), user_name, question[:4000], json.dumps(ctx), time.time()))
+        conn.commit()
+    finally:
+        conn.close()
+    body = {'conversation_id': conv, 'message_id': mid, 'user': user_name, 'question': question[:4000],
+            'context': ctx, 'history': history}
+    error = ''
+    try:
+        r = http_requests.post(PUMP_MANAGER_WEBHOOK_URL, json=body, headers=_webhook_headers(), timeout=20)
+        if r.status_code >= 300:
+            error = f'Pump Manager said {r.status_code}'
+    except http_requests.RequestException as e:
+        error = f'Could not reach Pump Manager ({type(e).__name__})'
+    if error:
+        print(f'⚠ Pumps assistant: {error}')
+        conn = _conn()
+        try:
+            conn.execute('UPDATE pump_assistant_messages SET error=? WHERE message_id=?', (error, mid))
+            conn.commit()
+        finally:
+            conn.close()
+    return assistant_messages(username)
+
+
+@api('/assistant/messages')
+def h_assistant_messages(actor):
+    if not assistant_allowed():
+        return {'success': False, 'error': 'Pump Manager is for the office'}, 403
+    return assistant_messages(session['username'])
+
+
+@api('/assistant/ask', methods=('POST',))
+def h_assistant_ask(actor):
+    if actor == BOT or not assistant_allowed():
+        return {'success': False, 'error': 'Pump Manager is for the office'}, 403
+    d = _json()
+    if d.get('new'):
+        _assistant_conversation(session['username'], new=True)
+        return assistant_messages(session['username'])
+    return assistant_ask(session['username'], actor, d.get('question'), d.get('context'))
+
+
+def assistant_reply():
+    """Pump Manager's answer: {"conversation_id", "message_id", "answer"}, with
+    "Authorization: Bearer <PUMP_APP_REPLY_TOKEN>". Anything else is a 401."""
+    if not PUMP_APP_REPLY_TOKEN or not hmac.compare_digest(request.headers.get('Authorization', ''),
+                                                          f'Bearer {PUMP_APP_REPLY_TOKEN}'):
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+    d = request.get_json(silent=True) or {}
+    mid, conv, answer = str(d.get('message_id') or ''), str(d.get('conversation_id') or ''), d.get('answer')
+    if not mid or not isinstance(answer, str):
+        return jsonify({'success': False, 'error': 'message_id and answer are needed'}), 400
+    conn = _conn()
+    try:
+        cur = conn.execute('UPDATE pump_assistant_messages SET answer=?, error=\'\', answered_at=? '
+                           'WHERE message_id=? AND conversation_id=?', (answer[:20000], time.time(), mid, conv))
+        conn.commit()
+    finally:
+        conn.close()
+    if not cur.rowcount:
+        return jsonify({'success': False, 'error': 'No such message'}), 404
+    return jsonify({'success': True})
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # pages and the Jobber sign-in
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -15140,7 +15297,8 @@ def page():
                                   openclaw=bool(OPENCLAW_API_KEY),
                                   markup=MARKUP_PCT,
                                   scada_days=SCADA_DUE_SOON_DAYS, digest_to=DIGEST_TO, digest_hour=DIGEST_HOUR,
-                                  flash_msg=request.args.get('msg', ''), app_version=APP_VERSION)
+                                  flash_msg=request.args.get('msg', ''), app_version=APP_VERSION,
+                                  assistant=assistant_allowed())
 
 
 @bp.route('/pumps/f/<int:doc_id>/<version>/<int:exp>/<sig>')

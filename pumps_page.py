@@ -147,6 +147,23 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 .drawer{position:fixed;top:0;right:0;bottom:0;width:min(740px,100%);background:var(--bg);z-index:61;overflow:auto;
      box-shadow:var(--shadow-lg);animation:slideIn .22s cubic-bezier(.2,.8,.2,1);}
 @keyframes slideIn{from{transform:translateX(40px);opacity:0;}to{transform:none;opacity:1;}}
+/* Pump Manager panel (the outside assistant) */
+.pm{position:fixed;top:0;right:0;bottom:0;width:min(400px,100%);background:var(--card);z-index:62;display:flex;flex-direction:column;
+    box-shadow:var(--shadow-lg);border-left:1px solid var(--border);animation:slideIn .22s cubic-bezier(.2,.8,.2,1);}
+.pm .hd{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--border);}
+.pm .hd b{flex:1;font-size:15px;}
+.pm .msgs{flex:1;overflow:auto;padding:12px 14px;display:flex;flex-direction:column;gap:10px;background:var(--bg);}
+.pm .q{align-self:flex-end;max-width:85%;background:var(--brand);color:#fff;padding:8px 11px;border-radius:12px 12px 2px 12px;white-space:pre-wrap;overflow-wrap:anywhere;}
+.pm .a{align-self:flex-start;max-width:92%;background:var(--card);border:1px solid var(--border);padding:8px 11px;border-radius:12px 12px 12px 2px;overflow-wrap:anywhere;line-height:1.45;}
+.pm .a code{background:var(--slate-bg);padding:1px 4px;border-radius:4px;font-size:12.5px;}
+.pm .a pre{background:var(--slate-bg);padding:8px;border-radius:6px;overflow:auto;white-space:pre-wrap;}
+.pm .a ul{margin:4px 0 4px 18px;}
+.pm .a.wait{color:var(--muted);font-style:italic;}
+.pm .a.bad{color:var(--red);background:var(--red-bg);border-color:transparent;}
+.pm .ctx{font-size:11.5px;color:var(--faint);align-self:flex-end;margin-top:-6px;}
+.pm .ft{border-top:1px solid var(--border);padding:10px 12px;display:flex;gap:8px;align-items:flex-end;}
+.pm .ft textarea{flex:1;resize:none;min-height:40px;max-height:140px;padding:8px 10px;border:1px solid var(--border-2);border-radius:8px;font:inherit;}
+.pmdot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#F59E0B;margin-left:6px;vertical-align:middle;}
 @keyframes fade{from{opacity:0;}to{opacity:1;}}
 .drawer .hd{position:sticky;top:0;background:#fff;border-bottom:1px solid var(--border);padding:18px 22px 14px;display:flex;justify-content:space-between;gap:10px;z-index:2;}
 .drawer .hd h2{font-size:20px;margin-bottom:6px;}
@@ -295,6 +312,7 @@ details.fold[open] > summary h4::before { content: '▾ '; }
   <div class="r">
     <button class="btn p" onclick="newCase()">＋ New item</button>
     <button class="btn" title="Follow a service call booked in Jobber - it's the start of the work, no quote" onclick="addServiceCall()">＋ Service call</button>
+    {% if assistant %}<button class="btn" id="pmBtn" title="Ask Pump Manager, our assistant - answers take a minute or two" onclick="pmToggle()">💬 Ask Pump Manager</button>{% endif %}
     <span class="who" data-i="{{ (full_name or '?')[:1]|upper }}">{{ full_name }}</span>
     <button class="btn" onclick="showUndo()" title="Undo a recent change (Ctrl+Z / ⌘Z undoes your last one)">↶ Undo</button>
     <a class="btn" href="{{ url_for('dashboard') }}">← Dashboard</a>
@@ -2712,5 +2730,88 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (!docum
   setInterval(() => { if (document.getElementById('drawerWrap').classList.contains('hide') && document.getElementById('modalWrap').classList.contains('hide')) { loadToday(); if (curTab === 'jobs') loadJobs(); } }, 60000);
 })();
 </script>
+{% if assistant %}
+<aside class="pm hide" id="pm" aria-label="Pump Manager">
+  <div class="hd"><b>💬 Pump Manager</b><button class="btn s" title="Start a new conversation" onclick="pmNew()">New chat</button><button class="btn s" onclick="pmToggle(false)" title="Close">✕</button></div>
+  <div class="msgs" id="pmMsgs"><div class="note">Ask anything about our pump accounts and jobs. Answers usually take a minute or two.</div></div>
+  <div class="ft"><textarea id="pmQ" rows="2" placeholder="Ask Pump Manager…" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();pmAsk()}"></textarea>
+    <button class="btn p" id="pmSend" onclick="pmAsk()">Send</button></div>
+</aside>
+<script>
+// Pump Manager: questions go out through the server; answers land 1-2 minutes later and are polled for.
+let pmData = {messages: []}, pmTimer = null, pmSeen = 0;
+// Answers are text or markdown: escaped first, then a little formatting - never raw HTML.
+function pmMd(t){
+  const blocks = String(t || '').split(/```/);
+  return blocks.map((b, i) => {
+    if (i % 2) return `<pre><code>${esc(b.replace(/^\w*\n/, ''))}</code></pre>`;
+    const lines = esc(b).split('\n'); let out = '', list = false;
+    for (let ln of lines) {
+      ln = ln.replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/(^|\W)\*([^*\n]+)\*(?=\W|$)/g, '$1<i>$2</i>')
+             .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+      const m = ln.match(/^\s*(?:[-*•]|\d+[.)])\s+(.*)$/), h = ln.match(/^#{1,4}\s+(.*)$/);
+      if (m) { if (!list) { out += '<ul>'; list = true; } out += `<li>${m[1]}</li>`; continue; }
+      if (list) { out += '</ul>'; list = false; }
+      out += h ? `<b>${h[1]}</b><br>` : ln + '<br>';
+    }
+    return out + (list ? '</ul>' : '');
+  }).join('').replace(/(<br>)+$/, '');
+}
+function pmContext(){
+  const open = !document.getElementById('drawerWrap').classList.contains('hide'), dr = document.getElementById('drawer');
+  const acct = open && dr.dataset.account ? dr.dataset.account : '';
+  let job = '';
+  if (open && !acct && curCase) { const jj = (curCase.jobber || {}).job || {}; job = (curCase.title || '') + (jj.number ? ` (Jobber #${jj.number})` : ''); }
+  return {tab: curTab, job, account: acct};
+}
+function pmRender(){
+  const box = document.getElementById('pmMsgs'), ms = pmData.messages || [];
+  if (!pmData.configured && pmData.configured !== undefined) box.innerHTML = '<div class="issue">Pump Manager isn\'t set up yet - the office admin needs to add its webhook.</div>';
+  else box.innerHTML = ms.length ? ms.map(m => {
+    const c = m.context || {}, where = [c.job, c.account].filter(Boolean).join(' · ');
+    const a = m.state === 'answered' ? `<div class="a">${pmMd(m.answer)}</div>`
+      : m.state === 'thinking' ? '<div class="a wait">Pump Manager is thinking…</div>'
+      : m.state === 'error' ? `<div class="a bad">${esc(m.error)} - try again</div>`
+      : '<div class="a bad">No answer yet, try again</div>';
+    return `<div class="q">${esc(m.question)}</div>${where ? `<div class="ctx">${esc(where)}</div>` : ''}${a}`;
+  }).join('') : '<div class="note">Ask anything about our pump accounts and jobs. Answers usually take a minute or two.</div>';
+  box.scrollTop = box.scrollHeight;
+  const dot = document.querySelector('#pmBtn .pmdot'), answered = ms.filter(m => m.state === 'answered').length;
+  const closed = document.getElementById('pm').classList.contains('hide');
+  if (closed && answered > pmSeen && !dot) document.getElementById('pmBtn').insertAdjacentHTML('beforeend', '<span class="pmdot" title="New answer"></span>');
+  if (!closed) { pmSeen = answered; if (dot) dot.remove(); }
+}
+async function pmLoad(){
+  const j = await api('/assistant/messages');
+  if (!j.success) return;
+  pmData = j; pmRender();
+  clearTimeout(pmTimer);
+  // Keep looking while an answer is due (they come 1-2 minutes after asking).
+  if ((j.messages || []).some(m => m.state === 'thinking')) pmTimer = setTimeout(pmLoad, 5000);
+}
+function pmToggle(show){
+  const el = document.getElementById('pm'), on = show === undefined ? el.classList.contains('hide') : show;
+  el.classList.toggle('hide', !on);
+  if (on) { pmLoad(); setTimeout(() => document.getElementById('pmQ').focus(), 50); }
+}
+async function pmAsk(){
+  const q = document.getElementById('pmQ'), text = q.value.trim(), btn = document.getElementById('pmSend');
+  if (!text) return;
+  btn.disabled = true;
+  pmData.messages = (pmData.messages || []).concat([{question: text, state: 'thinking', context: pmContext()}]); pmRender();
+  const j = await api('/assistant/ask', {method:'POST', body:{question: text, context: pmContext()}});
+  btn.disabled = false;
+  if (!j.success) { toast(j.error, true); pmLoad(); return; }
+  q.value = '';
+  pmData = j; pmRender();
+  clearTimeout(pmTimer); pmTimer = setTimeout(pmLoad, 5000);
+}
+async function pmNew(){
+  const j = await api('/assistant/ask', {method:'POST', body:{new: true}});
+  if (j.success) { pmData = j; pmSeen = 0; pmRender(); }
+}
+pmLoad();
+</script>
+{% endif %}
 </body>
 </html>'''
