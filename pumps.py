@@ -6823,7 +6823,8 @@ def section_targets(doc, case=None):
     when the report is one station's, or its pages don't land on different jobs
     (Evergreen's North and South pumps are one job) - it's logged as one note."""
     secs = report_sections(doc)
-    if not secs:
+    if not secs or _report_account(None, doc):
+        # Pebblebrook's pages (Front, Nottingham, Clubhouse, Tot Lot) are one note (Oct 2026).
         return None
     case = case or {}
     j = case.get('jobber') if isinstance(case.get('jobber'), dict) else json.loads(case.get('jobber') or '{}')
@@ -6985,6 +6986,33 @@ def site_invoices_left(doc, case=None):
     return [s for s in sites if s['job_id'] not in have] if len(sites) >= 2 else []
 
 
+# Accounts whose reports for a month go on one note together, every file attached (Pebblebrook,
+# Oct 2026: the irrigation pumps' report and the fountains', as the office logged July's on job #8515).
+# Wettech writes "Pebblebrooke".
+JOINT_REPORT_ACCOUNTS = {'Pebblebrook HOA': re.compile(r'\bpebble\s*brooke?\b', re.I)}
+
+
+def _report_account(conn, doc):
+    text = ' '.join(str(doc.get(k) or '') for k in ('client_name', 'site', 'file_name'))
+    return next((name for name, pat in JOINT_REPORT_ACCOUNTS.items() if pat.search(text)), '')
+
+
+def joint_reports(conn, doc):
+    """The other reports of a JOINT_REPORT_ACCOUNTS account for the same month, ready to log and not
+    logged yet - they go on this report's note."""
+    if not _report_account(conn, doc):
+        return []
+    acct, month = _report_account(conn, doc), (report_month_date(doc) or '')[:7]
+    out = []
+    for r in conn.execute("SELECT * FROM pump_docs WHERE kind='report' AND id != ? AND status NOT IN "
+                          "('dismissed', 'review', 'done') ORDER BY id", (doc['id'],)):
+        d = {**_doc_dict(r), 'branded_path': r['branded_path']}
+        if d['has_branded'] and not (d.get('jobber') or {}).get('note_id') and \
+                _report_account(conn, d) == acct and (report_month_date(d) or '')[:7] == month:
+            out.append(d)
+    return out
+
+
 def log_report_to_jobber(doc_id, target_type, target_id, actor='system', message=None, section=None):
     """Add the report as a note on the pump's job (or the client). Tries to
     attach the rebranded file; if Jobber will not take the attachment, the note
@@ -7013,6 +7041,9 @@ def log_report_to_jobber(doc_id, target_type, target_id, actor='system', message
                               f" - {sec['location']}"
         else:
             text = message or report_note_title(doc)
+        others = [] if sec else joint_reports(conn, doc)
+        if others and not message:
+            text = re.sub(r'Fountain Report$', 'Pump Report', text)
         q = (f'mutation PumpsReportNote($id: EncodedId!, $input: {input_type}!) {{ {mutation}({id_arg}: $id, '
              f'input: $input) {{ {field} {{ id }} userErrors {{ message path }} }} }}')
         # The PDF, as the office attaches them; the Word file when there is no PDF.
@@ -7032,16 +7063,24 @@ def log_report_to_jobber(doc_id, target_type, target_id, actor='system', message
         if url:
             ctype = 'application/pdf' if has_pdf else \
                 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            atts = [_note_attachment(url, fname, ctype)]
+            for o in others:
+                o_pdf = os.path.exists(_branded_pdf_path(o['branded_path'])) or bool(_make_branded_pdf(o['branded_path']))
+                o_name = _vendor_file_name(o['file_name'], '.pdf' if o_pdf else '.docx')
+                o_url = _signed_file_url(o['id'], 'branded_pdf' if o_pdf else 'branded', days=7, name=o_name)
+                if o_url:
+                    atts.append(_note_attachment(o_url, o_name, 'application/pdf' if o_pdf else
+                                                 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'))
             try:
-                data = jobber_gql(q, {'id': target_id, 'input': {'message': text, 'attachments': [
-                    _note_attachment(url, fname, ctype)]}})
+                data = jobber_gql(q, {'id': target_id, 'input': {'message': text, 'attachments': atts}})
                 attached = not ((data.get(mutation) or {}).get('userErrors'))
             except JobberError as e:
                 print(f'  ⚠ Pumps: Jobber would not take the attachment ({e}); saving the note without it')
                 data = None
         if not attached:
             # No file on the note: put the (rebranded) report's text and a link in it.
-            data = jobber_gql(q, {'id': target_id, 'input': {'message': f'{text}\n\n{report_note_text(doc, section)}'
+            body = '\n\n'.join([report_note_text(doc, section)] + [report_note_text(o) for o in others])
+            data = jobber_gql(q, {'id': target_id, 'input': {'message': f'{text}\n\n{body}'
                                                                         if not message else text}})
         payload = data.get(mutation) or {}
         errs = payload.get('userErrors') or []
@@ -7065,6 +7104,14 @@ def log_report_to_jobber(doc_id, target_type, target_id, actor='system', message
             ref = {**ref, 'note_id': next(iter(j['sections'].values()))['note_id']}
         conn.execute('UPDATE pump_docs SET jobber=?, status=?, updated_at=? WHERE id=?',
                      (json.dumps({**j, **ref}), 'done', _now_text(), doc_id))
+        for o in others:
+            # Logged on this report's note.
+            conn.execute('UPDATE pump_docs SET jobber=?, status=?, updated_at=? WHERE id=?',
+                         (json.dumps({**(o.get('jobber') or {}), **ref, 'with_doc': doc_id}), 'done', _now_text(), o['id']))
+            if o.get('case_id'):
+                _set_step(conn, o['case_id'], 'report_logged', at=_today().isoformat(), by=actor)
+                _event(conn, actor, 'report logged in Jobber', f'on one note with {doc["file_name"]}',
+                       case_id=o['case_id'], doc_id=o['id'])
         if doc.get('case_id'):
             _set_step(conn, doc['case_id'], 'report_logged', at=_today().isoformat(), by=actor)
             if target_type == 'job' and not sec:

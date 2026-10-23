@@ -283,6 +283,33 @@ class PumpsTest(unittest.TestCase):
         steps = {s['key']: s for s in self.case(res['case_id'])['step_list']}
         self.assertTrue(steps['report_logged'].get('at'))
 
+    def test_pebblebrook_reports_go_on_one_note(self):
+        """Pebblebrook (Oct 2026): Wettech sends the irrigation pumps' report and the fountains' for the month
+        as two files. Logging one puts both on one note, both files attached, as the office did July's on #8515."""
+        a = self.upload('10-26 Stahlman Pebblebrooke IRR.docx',
+                        make_report(customer='Stahlman-Pebblebrook HOA', location='Irrigation Pumps'))
+        b = self.upload('10-26 Stahlman-Pebblebrooke Fountains.docx',
+                        make_report(customer='Stahlman-Pebblebrook HOA', location='Lake Fountains'))
+        fake = FakeJobber()
+        P.jobber_gql = fake
+        r = self.c.post(f"/pumps/api/docs/{a['doc_id']}/report_note", json={'target_type': 'job', 'target_id': 'J8515'})
+        self.assertTrue(r.get_json()['success'], r.get_json())
+        notes = [v for q, v in fake.calls if 'jobCreateNote' in q]
+        self.assertEqual(len(notes[0]['input']['attachments']), 2, 'both files on the one note')
+        self.assertEqual(notes[0]['input']['message'], 'October Pump Report')
+        # Jobber here refuses attachments: the fallback note carries both reports' text.
+        self.assertIn('Irrigation Pumps', notes[-1]['input']['message'])
+        self.assertIn('Lake Fountains', notes[-1]['input']['message'])
+        other = self.c.get(f"/pumps/api/docs/{b['doc_id']}").get_json()['doc']
+        self.assertEqual(other['status'], 'done')
+        self.assertEqual(other['jobber']['note_id'], 'NOTE1')
+        # Its station pages never split into a note each.
+        self.assertIsNone(P.section_targets({'client_name': 'Pebblebrook HOA', 'file_name': '10-26 Pebblebrooke.docx',
+                                             'report_fields': {'lines': ['PUMP REPORT', 'LOCATION · Tot Lot',
+                                                                         'PUMP REPORT', 'LOCATION · Nottingham']}}))
+        # Another account's reports still get a note each.
+        self.assertEqual(P.joint_reports(P._conn(), {'id': 0, 'client_name': 'Bayview Palms HOA', 'file_name': 'x.docx'}), [])
+
     def test_multi_page_report_like_spanish_wells(self):
         """Wettech's Spanish Wells report (Oct 2026): one page per pump, each with Wettech's letterhead,
         "CUSTOMER: Stahlman England", an empty comments box and the technician - rebranded on every page, then

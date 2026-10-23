@@ -896,7 +896,8 @@ function renderCase(){
       ${d.kind === 'quote' && !(d.jobber||{}).signed_sent_at && ((c.steps || {}).client_approved || {}).at ? `<button class="btn s p" onclick="signQuote(${c.id})">✍ Sign quote</button>` : ''}
       ${d.kind === 'bill' && !(d.jobber||{}).invoice_id ? `<button class="btn s p" onclick="draftInvoice(${d.id})">Draft invoice in Jobber</button>` : ''}
       ${d.kind === 'bill' && (d.jobber||{}).invoice_id ? `<a class="chip g" target="_blank" href="${esc(d.jobber.invoice_uri||'#')}">Jobber draft #${esc(d.jobber.invoice_number)}</a>` : ''}
-      ${d.kind === 'report' && !(d.jobber||{}).note_id ? `<button class="btn s" onclick="logReport(${d.id})">Log in Jobber</button>` : ''}
+      ${d.kind === 'report' ? (!(d.jobber||{}).note_id ? `<button class="btn s" onclick="logReport(${d.id})">Log in Jobber</button>`
+        : `<button class="btn s" title="The notes in Jobber were wrong and you deleted them - add it again" onclick="if (confirm('Add this report to Jobber again? Delete the old notes there first.')) logReport(${d.id})">Log in Jobber again</button>`) : ''}
       ${d.kind === 'report' && (d.jobber||{}).note_id ? '<span class="chip g">logged in Jobber</span>' : ''}
       ${(d.kind === 'quote' || d.kind === 'bill') ? `<button class="btn s" title="Read the file again with today's reader" onclick="readAgain(${d.id})">↻ Read again</button>` : ''}
       <button class="btn s" onclick="openDoc(${d.id})">Details</button></div>`).join('') || '<div class="note">No documents yet.</div>';
