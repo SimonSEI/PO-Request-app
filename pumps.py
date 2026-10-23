@@ -933,7 +933,9 @@ def _file_quoted_docs(conn):
 def _restage_quoted_jobs(conn):
     """Jobs whose client quote went out but whose vendor quote was never filed
     here showed "Waiting on quote" (Oct 2026): work out their stage again, once."""
-    if not _claim_once(conn, 'restage_quoted_jobs'):
+    # Again for jobs already invoiced that still read "waiting on quote" (Oct 23 2026).
+    first, again = _claim_once(conn, 'restage_quoted_jobs'), _claim_once(conn, 'restage_invoiced_jobs')
+    if not (first or again):
         return
     conn.row_factory = sqlite3.Row
     for r in conn.execute("SELECT id FROM pump_cases WHERE status='open'").fetchall():
@@ -1127,7 +1129,11 @@ def _stage(steps, status='open'):
     steps = dict(_with_optional(steps))
     # Our quote went to the client (Carlisle, #9136): the vendor's visit and price
     # came before it, filed here or not - the job isn't waiting on their quote.
-    for later, earlier in (('client_approved', ('assessment', 'vendor_quote', 'client_quote')),
+    # Our invoice drafted or sent (Homewood #36982, Oct 2026: billed at the bill + 30%):
+    # the job isn't waiting on any quote either.
+    quotes = ('assessment', 'vendor_quote', 'client_quote', 'client_approved')
+    for later, earlier in (('closed', quotes), ('invoice_drafted', quotes),
+                           ('client_approved', ('assessment', 'vendor_quote', 'client_quote')),
                            ('client_quote', ('assessment', 'vendor_quote'))):
         if (steps.get(later) or {}).get('at'):
             for k in earlier:
@@ -4173,6 +4179,7 @@ def _sync_jobber(full=False, actor='system'):
             _follow_invoices(conn)
             duplicate_jobber_invoices(conn)
             reconcile_quote_waits(conn)
+            reconcile_client_names(conn)
             approved = _follow_quotes(conn)
             approved += auto_track_approved(conn)
             close_stale_todos(conn)
@@ -4534,6 +4541,38 @@ def link_pending_quote(conn, case_id, it, actor):
         _set_step(conn, case_id, 'client_quote', at=(it.get('updated_at') or '')[:10] or _today().isoformat(), by=actor)
     _event(conn, actor, 'quote already made', f"Jobber quote #{it['number']} \"{it['title']}\" is for this work "
                                               f"({it['status'].replace('_', ' ')})", case_id=case_id)
+
+
+def reconcile_client_names(conn, actor='Jobber sync'):
+    """An open job filed under the wrong client (University Highlands, Oct 2026: opened
+    as "Village Walk", then our quote #9220 went out to University Highlands): when
+    the client on its Jobber quote or job is the one the vendor's own documents
+    name, and the job's name is neither, the job takes that name. A community
+    quoted under its landscape company keeps its own (its documents name it).
+    Returns the job ids renamed."""
+    done = []
+    for c in conn.execute("SELECT id, client_name, jobber FROM pump_cases WHERE status='open'").fetchall():
+        j = json.loads(c['jobber'] or '{}')
+        ids = [(j.get(k) or {}).get('id') for k in ('quote', 'job')]
+        it = next((conn.execute("SELECT client_name FROM pump_jobber_items WHERE jobber_id=? AND client_name != ''",
+                                (i,)).fetchone() for i in ids if i), None)
+        theirs = (it[0] if it else '') or ''
+        ours = c['client_name'] or ''
+        if not theirs or (ours and similarity(ours, theirs) >= 0.85 or similarity(theirs, ours) >= 0.85):
+            continue
+        named = [r[0] for r in conn.execute("SELECT client_name FROM pump_docs WHERE case_id=? AND status != 'dismissed' "
+                                            "AND client_name != ''", (c['id'],))]
+        if not any(similarity(n, theirs) >= 0.85 for n in named) or \
+                any(ours and similarity(ours, n) >= 0.85 for n in named):
+            continue
+        acct = match_account(theirs, conn)
+        name = acct if acct and similarity(theirs, acct) >= 0.85 else theirs
+        conn.execute('UPDATE pump_cases SET client_name=?, updated_at=? WHERE id=?', (name, _now_text(), c['id']))
+        _event(conn, actor, 'client corrected', f'"{ours}" -> "{name}": the client on its Jobber '
+                                                f'{"quote" if ids[0] else "job"} and on the vendor\'s documents',
+               case_id=c['id'])
+        done.append(c['id'])
+    return done
 
 
 def reconcile_quote_waits(conn, actor='Jobber sync'):
