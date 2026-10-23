@@ -274,18 +274,41 @@ def _copy_missing_styles(elements, src, dst):
 
 # ── the clean-up passes ──────────────────────────────────────────────────────
 
+def _is_comment_text(text):
+    """A sentence or more of the tech's comments - not a name, date or label."""
+    return len(text) >= 60 or len(text.split()) > 6 or bool(COMMENTS_LABEL.match(text.split(':')[0] + ':'))
+
+
+def _clear(el):
+    for t in el.iter(qn('w:t')):
+        t.text = ''
+
+
 def _remove_technicians(elements):
     """Remove technician/signature rows and lines; return the names removed."""
     names = set()
     for el in list(elements):
         for tbl in list(el.iter(W_TBL)):
             for tr in list(tbl.iter(W_TR)):
-                cells = [_el_text(tc).strip() for tc in tr.iter(W_TC)]
-                if any(TECH_LABEL.match(c) for c in cells if c):
+                tcs = list(tr.iter(W_TC))
+                cells = [_el_text(tc).strip() for tc in tcs]
+                if not any(TECH_LABEL.match(c) for c in cells if c):
+                    continue
+                if not any(_is_comment_text(c) for c in cells if not TECH_LABEL.match(c)):
                     for c in cells:
                         if c and not TECH_LABEL.match(c) and len(c) < 60:
                             names.add(c)
                     _remove(tr)
+                    continue
+                # Comments share the row with the technician (University Village, Oct 2026):
+                # clear just the label and the name after it, and keep the comments.
+                for i, c in enumerate(cells):
+                    if not (c and TECH_LABEL.match(c)):
+                        continue
+                    _clear(tcs[i])
+                    if i + 1 < len(cells) and cells[i + 1] and not _is_comment_text(cells[i + 1]):
+                        names.add(cells[i + 1])
+                        _clear(tcs[i + 1])
             if tbl.getparent() is not None and not list(tbl.iter(W_TR)):
                 if tbl in elements:
                     elements.remove(tbl)
