@@ -4051,6 +4051,38 @@ class PumpsTest(unittest.TestCase):
         pump = [j for j in jobs if P.TITLE_PATTERNS['pump'].search(f"{j['title']} {j['property_label']}")]
         self.assertEqual([j['number'] for j in pump], [10136])
 
+    def test_linked_invoices_job_is_remembered_for_the_clients_next_bills(self):
+        """Once the office links a bill to an invoice on a recurring job (University Village, Oct 2026), the
+        client's later bills look at that job for their month's invoice."""
+        self.extracts['b-rem1.pdf'] = extraction('bill', '2601', client='Rembrandt Shops LLC', subtotal=125)
+        b = self.upload('b-rem1.pdf')
+        saved = (P.find_invoice_by_number, P.invoice_job, P.jobber_status, P.job_invoices, P.live_recurring_jobs)
+        P.find_invoice_by_number = lambda n: {'id': 'I36985', 'invoiceNumber': 36985, 'invoiceStatus': 'awaiting_payment',
+                                              'client': {'id': 'CCDD', 'name': 'Rembrandt CDD'}}
+        P.invoice_job = lambda iid: {'id': 'J10136', 'number': 10136, 'title': 'Quarterly 900',
+                                     'property_label': '10801 Corkscrew Road', 'recurring': True}
+        try:
+            P.link_jobber_invoice(b['case_id'], '36985', 'Simon')
+            self.assertEqual(P._state_get(P._bill_job_key('Rembrandt Shops, LLC'))['number'], 10136)
+            # Next month's bill: only that job is looked at.
+            P.jobber_status = lambda: {'connected': True}
+            P.live_recurring_jobs = lambda name, case=None: self.fail('the remembered job is used')
+            P.job_invoices = lambda jid: [{'number': '37400', 'subject': 'November Pump Maintenance', 'date': '2026-11-20',
+                                           'status': 'draft', 'uri': '', 'total': 900, 'client': ''}] if jid == 'J10136' else []
+            P._MONTH_BILLED.clear()
+            mb = P.month_billed('Rembrandt Shops LLC', 2026, 11)
+            self.assertEqual((mb['job']['number'], mb['invoice']['number']), ('10136', '37400'))
+            P._MONTH_BILLED.clear()
+            self.assertIsNone(P.month_billed('Rembrandt Shops LLC', 2026, 12)['invoice'], 'December not billed yet')
+            # Or chosen straight from Link invoice ("This is the pump job"), without linking an invoice.
+            r = self.c.post(f"/pumps/api/cases/{b['case_id']}/pump_job",
+                            json={'id': 'J2125', 'number': 2125, 'title': 'Quarterly 300', 'property': '10801 Corkscrew'}).get_json()
+            self.assertTrue(r['success'], r)
+            self.assertEqual(P._state_get(P._bill_job_key('Rembrandt Shops LLC'))['id'], 'J2125')
+        finally:
+            (P.find_invoice_by_number, P.invoice_job, P.jobber_status, P.job_invoices, P.live_recurring_jobs) = saved
+            P._MONTH_BILLED.clear()
+
     def test_watercrest_is_water_crest(self):
         """Oct 2026: Wettech's "Watercrest @ Falling Waters" scored lowest against Jobber's "WATER CREST AT FALLING
         WATERS", so its report went on Falling Waters II. Words run together still match; the wrong pick is undone."""

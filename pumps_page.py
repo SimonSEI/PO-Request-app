@@ -1263,13 +1263,19 @@ async function linkInvoiceSearch(id){
       <span class="num">${money(x.total)}</span> <a class="note" target="_blank" href="${esc(x.uri)}" onclick="event.stopPropagation()">↗</a></div>`;
   // The monthly job once, green, saying whether the bill's month is billed on it yet.
   const rec = (j.recurring || []).map(g => `<div class="cand" style="background:#e8f5e9;border-color:#66bb6a;cursor:default"><div style="flex:1">
-      <b>Job #${esc(g.number)} ${esc(g.title)}</b> <span class="chip g">recurring job</span>${g.property ? `<div class="note">${esc(g.property)}</div>` : ''}
+      <b>Job #${esc(g.number)} ${esc(g.title)}</b> ${g.pump_job ? '<span class="chip g">pump job</span>' : `<span class="chip">recurring job</span> <button class="btn s" title="Its invoices settle this client's bills from now on - you won't have to link them" onclick="setPumpJob(${id}, ${esc(JSON.stringify({id: g.id, number: g.number, title: g.title, property: g.property || ''}))})">This is the pump job</button>`}${g.property ? `<div class="note">${esc(g.property)}</div>` : ''}
       <div class="note">${g.billed ? `${esc(j.month)}: billed - invoice #${esc(g.billed.number)} ${esc(g.billed.subject)} · ${esc(g.billed.date)} · ${esc(g.billed.status.replace(/_/g, ' '))} · ${money(g.billed.total)}`
         : `<b class="bad">${esc(j.month)}: not billed yet</b>${g.latest ? ` - last invoice #${esc(g.latest.number)} · ${esc(g.latest.date)} · ${esc(g.latest.status.replace(/_/g, ' '))}` : ''}`}</div></div>
       ${g.billed ? `<button class="btn s p" onclick="linkInvoicePick(${id}, '${esc(g.billed.number)}')">Link #${esc(g.billed.number)}</button> <a class="note" target="_blank" href="${esc(g.billed.uri)}">↗</a>` : ''}</div>`).join('');
   const other = (j.invoices || []).map(row).join('');
   box.innerHTML = (rec + (other ? (rec ? '<div class="note" style="margin:8px 0 4px">Other invoices</div>' : '') + other : ''))
     || '<div class="note">No Jobber invoices found.</div>';
+}
+async function setPumpJob(id, job){
+  const j = await api('/cases/' + id + '/pump_job', {method:'POST', body: job});
+  if (!j.success) { toast(j.error, true); return; }
+  toast(`Job #${j.job.number} is the pump job - this client's bills wait for its invoice from now on.`);
+  linkInvoiceSearch(id);
 }
 async function linkInvoicePick(id, number){
   const j = await api('/cases/' + id + '/jobber_invoice', {method:'POST', body:{number}});
