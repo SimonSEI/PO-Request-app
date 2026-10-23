@@ -8153,10 +8153,13 @@ def live_recurring_jobs(client_name, case=None):
     j = case.get('jobber') if isinstance(case.get('jobber'), dict) else json.loads(case.get('jobber') or '{}')
     cid = case.get('jobber_client_id') or (j.get('client') or {}).get('id')
     name = client_name or case.get('client_name') or ''
-    if not cid:
-        pick = pick_client(search_clients(name))
-        cid = pick['id'] if pick else None
     jobs = [x for x in recurring_jobs(cid) if x['status'] != 'archived'] if cid else []
+    if not jobs:
+        # No item client, or one with no live contract (Westminster's item was on another Westminster
+        # client, Oct 2026): the client the name clearly is.
+        pick = pick_client(search_clients(name))
+        if pick and pick['id'] != cid:
+            jobs = [x for x in recurring_jobs(pick['id']) if x['status'] != 'archived']
     # A job filed under another client but at this one's property: University Village Shops' pump job
     # #10136 is the CDD's, at "10801 Corkscrew Road, PUMP - University Village Shops LLC" (Oct 2026).
     core = _core_name(name)
@@ -8166,9 +8169,11 @@ def live_recurring_jobs(client_name, case=None):
         spec = ['id', 'jobNumber', 'title', 'jobStatus', 'jobType', 'createdAt', ('client', ['name']),
                 ('property', ['id', ('address', ['street1', 'street2', 'city'])])]
         try:
-            data, _ = _gql_tolerant(make, spec, {'q': ' '.join(re.sub(r'[,.]|\b(?:llc|inc|corp|co)\b', ' ', core,
-                                                                       flags=re.I).split())},
-                                    required=('id', 'jobNumber'))
+            # Jobber matches a short name best: "Westminster Community Association", not
+            # "..., Inc. c/o Hawk-Eye Management, LLC.".
+            term = re.split(r'\s+c/o\s+|\s*,', core, maxsplit=1, flags=re.I)[0]
+            term = ' '.join(re.sub(r'[.]|\b(?:llc|inc|corp|co)\b', ' ', term, flags=re.I).split())
+            data, _ = _gql_tolerant(make, spec, {'q': term}, required=('id', 'jobNumber'))
         except JobberError:
             data = {}
         have = {x['id'] for x in jobs}
