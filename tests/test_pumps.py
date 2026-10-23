@@ -3943,6 +3943,25 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(P.report_comment_problem(['√ · CHECK PIPE AND FITTINGS FOR LEAKS', 'COMMENTS:',
                                                    'All good, no leaks found']), '')
 
+    def test_link_invoice_searches_jobber(self):
+        """Link invoice searches Jobber's invoices (Oct 2026: the office looked the number up in Jobber first)."""
+        seen = []
+
+        def fake(query, variables=None):
+            seen.append(variables)
+            return {'invoices': {'nodes': [
+                {'id': 'I1', 'invoiceNumber': 36800, 'invoiceStatus': 'PAID', 'subject': 'July Pump Maintenance',
+                 'issuedDate': '2026-07-31', 'amounts': {'total': 320}, 'client': {'name': 'Banyan Bay'}},
+                {'id': 'I2', 'invoiceNumber': 36990, 'invoiceStatus': 'AWAITING_PAYMENT', 'subject': 'October Pump Maintenance',
+                 'issuedDate': '2026-10-21', 'amounts': {'total': 320}, 'client': {'name': 'Banyan Bay'}}]}}
+        P.jobber_gql = fake
+        j = self.c.get('/pumps/api/jobber/invoices?q=Banyan').get_json()
+        self.assertTrue(j['success'], j)
+        self.assertEqual([x['number'] for x in j['invoices']], ['36990', '36800'], 'newest first')
+        self.assertEqual(j['invoices'][0]['status'], 'awaiting_payment')
+        self.assertEqual(seen[-1], {'q': 'Banyan'})
+        self.assertEqual(self.c.get('/pumps/api/jobber/invoices?q=B').get_json()['invoices'], [])
+
     def test_watercrest_is_water_crest(self):
         """Oct 2026: Wettech's "Watercrest @ Falling Waters" scored lowest against Jobber's "WATER CREST AT FALLING
         WATERS", so its report went on Falling Waters II. Words run together still match; the wrong pick is undone."""

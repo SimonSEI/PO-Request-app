@@ -5782,6 +5782,26 @@ def find_invoice_by_number(number):
                  if str(n.get('invoiceNumber') or '') == number), None)
 
 
+def search_jobber_invoices(q):
+    """Jobber invoices for "Link invoice" to pick from, newest first (Oct 2026: the office searched in
+    Jobber for the number, then typed it here). q: a client name, invoice number or subject."""
+    q = (q or '').strip().lstrip('#')
+    if len(q) < 2:
+        return []
+    spec = ['id', 'invoiceNumber', 'invoiceStatus', 'subject', 'issuedDate', 'createdAt', 'jobberWebUri',
+            ('amounts', ['total', 'invoiceBalance']), ('client', ['id', 'name'])]
+
+    def make(fields):
+        return f'query($q: String!) {{ invoices(searchTerm: $q, first: 30) {{ nodes {{ {fields} }} }} }}'
+    data, _ = _gql_tolerant(make, spec, {'q': q}, required=('id', 'invoiceNumber'))
+    out = [{'id': n['id'], 'number': str(n.get('invoiceNumber') or ''), 'status': (n.get('invoiceStatus') or '').lower(),
+            'subject': n.get('subject') or '', 'date': (n.get('issuedDate') or n.get('createdAt') or '')[:10],
+            'uri': n.get('jobberWebUri') or '', 'total': _money((n.get('amounts') or {}).get('total')),
+            'client': (n.get('client') or {}).get('name') or ''}
+           for n in (data.get('invoices') or {}).get('nodes') or []]
+    return sorted(out, key=lambda x: (x['date'], x['number']), reverse=True)
+
+
 def link_jobber_invoice(case_id, number, actor='system'):
     """The client was invoiced straight in Jobber (Enclave @ Palmira, Oct 2026):
     tie that invoice to the job - "Draft invoice" is done, the bill leaves the
@@ -8085,6 +8105,11 @@ def h_link_jobber_job(actor, case_id):
         return {'job': {'number': it['number'], 'title': it['title'], 'uri': it.get('web_uri') or ''}}
     finally:
         conn.close()
+
+
+@api('/jobber/invoices')
+def h_jobber_invoices(actor):
+    return {'invoices': search_jobber_invoices(request.args.get('q', ''))}
 
 
 @api('/cases/<int:case_id>/jobber_invoice', methods=('POST',))
