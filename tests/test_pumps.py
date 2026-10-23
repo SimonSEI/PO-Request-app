@@ -3746,6 +3746,11 @@ class PumpsTest(unittest.TestCase):
                                             2026, 10)[0]['description'], 'October Pump Maintenance\nQuarterly pump service')
         self.assertEqual(P._with_month_line([{'name': 'PUMP SERVICE', 'description': 'October visit', 'unit_price': 5}],
                                             2026, 10)[0]['description'], 'October visit', 'names the month already')
+        # A fountain-only account's says Fountain (Miromar Lakes, Oct 2026); a pump account's still says Pump.
+        self.assertEqual(P.maint_word({'client_name': 'Miromar Lakes'}), 'Fountain')
+        self.assertEqual(P.maint_word({'client_name': 'Banyan Bay'}), 'Pump')
+        self.assertEqual(P._with_month_line([{'name': 'FOUNTAIN', 'description': 'Quarterly service', 'unit_price': 5}],
+                                            2026, 10, 'Fountain')[0]['description'], 'October Fountain Maintenance\nQuarterly service')
         # The bill's notes for the visit go on the line, without "As per quotation" or the report note.
         self.assertEqual(sugg['line_items'][0]['description'],
                          'Service to perform irrigation maintenance to ensure equipment is operating properly. '

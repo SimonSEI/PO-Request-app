@@ -5852,7 +5852,20 @@ def link_jobber_quote(case_id, number, actor='system'):
         conn.close()
 
 
-def _with_month_line(lines, y, m):
+def maint_word(doc, case=None):
+    """"Fountain" for an account whose maintenance is fountains only (Miromar Lakes, Oct 2026:
+    "October Fountain Maintenance"), else "Pump"."""
+    text = ' '.join(str((src or {}).get(k) or '') for src in (case, doc) for k in ('client_name', 'title', 'site'))
+    conn = _conn()
+    try:
+        name = match_account(text, conn)
+        row = conn.execute('SELECT kind FROM pump_maint_accounts WHERE name=?', (name,)).fetchone() if name else None
+    finally:
+        conn.close()
+    return 'Fountain' if row and (row['kind'] or '').strip().lower() == 'fountain' else 'Pump'
+
+
+def _with_month_line(lines, y, m, word='Pump'):
     """A maintenance invoice's line says the month it's for, first: "October Pump Maintenance" over
     the job's own description (Caymas #36867, Oct 2026 - the office added it by hand). Left as
     it is when the line already names the month."""
@@ -5860,7 +5873,7 @@ def _with_month_line(lines, y, m):
     month = date(y, m, 1).strftime('%B')
     first = next((li for li in lines if (li.get('unit_price') or 0) > 0), lines[0] if lines else None)
     if first is not None and month.lower() not in f"{first.get('name') or ''} {first.get('description') or ''}".lower():
-        first['description'] = f"{month} Pump Maintenance\n{first.get('description') or ''}".strip()
+        first['description'] = f"{month} {word} Maintenance\n{first.get('description') or ''}".strip()
     return lines
 
 
@@ -5915,9 +5928,10 @@ def _invoice_suggestion(doc, case=None, client_id=None, job_id=None):
                 lines = _with_flow_readings(job['line_items'], case, doc, y, m)
                 if lines:
                     job = {**job, 'line_items': lines, 'flow_readings': True}
-            sugg['subject'] = f"{date(y, m, 1).strftime('%B')} Pump Maintenance"
+            word = maint_word(doc, case)
+            sugg['subject'] = f"{date(y, m, 1).strftime('%B')} {word} Maintenance"
             lines = job['line_items'] if job.get('flow_readings') else _with_bill_notes(job['line_items'], sugg['line_items'])
-            sugg.update(bill_lines=sugg['line_items'], line_items=_with_month_line(lines, y, m),
+            sugg.update(bill_lines=sugg['line_items'], line_items=_with_month_line(lines, y, m, word),
                         client_id=client_id, markup_pct=0, recurring=True,
                         job={k: job[k] for k in ('id', 'number', 'title', 'uri', 'total', 'status', 'type')})
             return sugg
