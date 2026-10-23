@@ -5789,7 +5789,8 @@ def search_jobber_invoices(q):
     if len(q) < 2:
         return []
     spec = ['id', 'invoiceNumber', 'invoiceStatus', 'subject', 'issuedDate', 'createdAt', 'jobberWebUri',
-            ('amounts', ['total', 'invoiceBalance']), ('client', ['id', 'name'])]
+            ('amounts', ['total', 'invoiceBalance']), ('client', ['id', 'name']),
+            ('jobs(first: 3)', [('nodes', ['jobNumber', 'title', 'jobType'])])]
 
     def make(fields):
         return f'query($q: String!) {{ invoices(searchTerm: $q, first: 30) {{ nodes {{ {fields} }} }} }}'
@@ -5797,9 +5798,14 @@ def search_jobber_invoices(q):
     out = [{'id': n['id'], 'number': str(n.get('invoiceNumber') or ''), 'status': (n.get('invoiceStatus') or '').lower(),
             'subject': n.get('subject') or '', 'date': (n.get('issuedDate') or n.get('createdAt') or '')[:10],
             'uri': n.get('jobberWebUri') or '', 'total': _money((n.get('amounts') or {}).get('total')),
-            'client': (n.get('client') or {}).get('name') or ''}
+            'client': (n.get('client') or {}).get('name') or '',
+            'job': next(({'number': str(jb.get('jobNumber') or ''), 'title': jb.get('title') or '',
+                          'recurring': (jb.get('jobType') or '').upper() == 'RECURRING'}
+                         for jb in ((n.get('jobs') or {}).get('nodes') or [])), None)}
            for n in (data.get('invoices') or {}).get('nodes') or []]
-    return sorted(out, key=lambda x: (x['date'], x['number']), reverse=True)
+    # Invoices on a recurring job (the maintenance contracts) first (Oct 2026), then newest first.
+    out.sort(key=lambda x: (x['date'], x['number']), reverse=True)
+    return sorted(out, key=lambda x: not (x['job'] or {}).get('recurring'))
 
 
 def link_jobber_invoice(case_id, number, actor='system'):
