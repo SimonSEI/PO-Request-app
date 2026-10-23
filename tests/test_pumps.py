@@ -3915,6 +3915,34 @@ class PumpsTest(unittest.TestCase):
         # A report that says nothing of a quote adds nothing.
         self.assertEqual(P.quote_needed_note({'kind': 'report', 'report_fields': {}, 'text_excerpt': 'All good.'}), '')
 
+    def test_report_comment_naming_a_problem_goes_on_the_watchlist(self):
+        """Pebblebrook (Oct 2026): "Both LED lights are bad" in the comments, no word of a quote - Wettech's quote
+        to fix it is still coming, so it goes on the watchlist. The checklist's own words never count."""
+        from docx import Document
+        d = Document()
+        for t in ('Water Equipment Technologies of Southwest Florida LLC', 'IRRIGATION PUMP SYSTEM REPORT'):
+            d.add_paragraph(t)
+        t = d.add_table(rows=2, cols=4)
+        t.rows[0].cells[2].text, t.rows[0].cells[3].text = 'DATE', '10-19-2026'
+        for cell, text in zip(t.rows[1].cells, ('CUSTOMER', 'Brightwater HOA', 'LOCATION', 'Ftn #3')):
+            cell.text = text
+        t = d.add_table(rows=1, cols=2)
+        t.rows[0].cells[0].text, t.rows[0].cells[1].text = '√', 'CHECK PIPE AND FITTINGS FOR LEAKS'
+        d.add_paragraph('COMMENTS:')
+        d.add_table(rows=1, cols=1).rows[0].cells[0].text = 'Both LED lights are bad'
+        t = d.add_table(rows=1, cols=2)
+        t.rows[0].cells[0].text, t.rows[0].cells[1].text = 'Service Technician Signature', 'Justin Burnett'
+        buf = io.BytesIO()
+        d.save(buf)
+        P.ingest_document('10-26 Brightwater.docx', buf.getvalue(), source='email', actor='email scan',
+                          email={'uid': 'bw-1', 'from': 'office@wettec.biz', 'subject': 'Inv 29300'})
+        cases = self.c.get('/pumps/api/cases?status=open').get_json()['cases']
+        quoted = [c for c in cases if 'LED lights are bad' in c['title']]
+        self.assertEqual(len(quoted), 1, [c['title'] for c in cases])
+        self.assertEqual(quoted[0]['stage'], 'vendor_quote')
+        self.assertEqual(P.report_comment_problem(['√ · CHECK PIPE AND FITTINGS FOR LEAKS', 'COMMENTS:',
+                                                   'All good, no leaks found']), '')
+
     def test_watercrest_is_water_crest(self):
         """Oct 2026: Wettech's "Watercrest @ Falling Waters" scored lowest against Jobber's "WATER CREST AT FALLING
         WATERS", so its report went on Falling Waters II. Words run together still match; the wrong pick is undone."""

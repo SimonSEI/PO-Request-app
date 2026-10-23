@@ -255,6 +255,42 @@ def _quote_needed_in(texts):
     return ''
 
 
+# Something wrong written in a report's comments ("Both LED lights are bad", Pebblebrook Oct 2026)
+# means Wettech's quote to fix it is coming, said or not. Only the comments - the checklist's own
+# words ("CHECK PIPE AND FITTINGS FOR LEAKS") aren't findings.
+_PROBLEM = re.compile(r'\b(?:bad|broken|broke|fail(?:ed|ing|s)?|failure|leak(?:s|ing)?|leaky|not\s+(?:working|running|'
+                      r'turning|holding|coming\s+on)|(?:isn\'?t|aren\'?t|won\'?t|doesn\'?t|don\'?t)\s+(?:work|run|turn)\w*|'
+                      r'inoperable|worn(?:\s+out)?|damaged|burn(?:t|ed)\s+(?:out|up)|blown|cracked|hole|seized|'
+                      r'faulty|defective|out\s+of\s+service|needs?\s+(?:to\s+be\s+)?replac\w*|should\s+be\s+replaced|'
+                      r'tripp(?:ed|ing)|corroded|rusted\s+out|stuck|noisy|shorted|dead)\b', re.I)
+_NO_PROBLEM = re.compile(r'\b(?:no|none|without|nothing)\b(?!\s+(?:longer|power))|\ball\s+(?:good|ok|fine)\b', re.I)
+
+
+def report_comment_problem(lines):
+    """The first sentence of a report's comments that says something is wrong, or ''."""
+    out, on = [], False
+    for line in lines or []:
+        head = line.split(' · ')[0].strip()
+        if re.match(r'^\s*(?:comments?|notes?|remarks?)\s*:', line, re.I):
+            on = True
+            rest = re.sub(r'^\s*(?:comments?|notes?|remarks?)\s*:\s*', '', line, flags=re.I).strip(' ·')
+            if rest:
+                out.append(rest)
+            continue
+        if not on:
+            continue
+        if pump_reports.TECH_LABEL.match(head) or head in ('√', 'N/A', 'X') or pump_reports.TITLE.search(line):
+            on = False
+            continue
+        out.append(line)
+    for text in out:
+        for part in re.split(r'(?<=[.!?])\s+|\n+', text):
+            part = ' '.join(part.split()).strip(' |·')
+            if _PROBLEM.search(part) and not _NO_PROBLEM.search(part):
+                return part[:300]
+    return ''
+
+
 def sweep_quote_needed(days=60, actor='Pumps'):
     """Reports and bills of the last `days` days that say a quote is needed but never got their
     "quote needed" item (Wild Blue PS1, Oct 2026 - and ones filed before the check existed)."""
@@ -3224,7 +3260,7 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
                 review = f'Could not rebrand this report automatically: {e}'
                 report_fields = {**report_fields, 'lines': []}
             # "Pump #4 check valve has a hole ... - quote to follow" in the comments (Lely, Oct 2026).
-            note = _quote_needed_in([text])
+            note = _quote_needed_in([text]) or report_comment_problem(report_fields.get('lines'))
             if note:
                 report_fields = {**report_fields, 'quote_needed': note}
         elif low.endswith('.doc'):
