@@ -518,7 +518,8 @@ function stageText(c){
     work_done: `Waiting on ${v} to do the work` + (c.scheduled_for ? ' · ' + c.scheduled_for : ''),
     vendor_bill: `Waiting on bill from ${v}`,
     bill_checked: 'Check the bill against the quote',
-    invoice_drafted: 'Draft our invoice in Jobber',
+    // Gulfshore's work goes on the client's pump invoice - nothing of its own to draft (Oct 2026).
+    invoice_drafted: /^gulfshore/i.test(c.vendor || '') ? 'Waiting for the pump invoice (Gulfshore is billed with it)' : 'Draft our invoice in Jobber',
     report_logged: 'Log the report in Jobber',
     closed: 'Send our invoice from Jobber',
     done: 'Done',
