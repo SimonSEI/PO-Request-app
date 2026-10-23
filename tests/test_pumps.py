@@ -4115,6 +4115,67 @@ class PumpsTest(unittest.TestCase):
             (P.find_invoice_by_number, P.invoice_job, P.jobber_status, P.job_invoices, P.live_recurring_jobs) = saved
             P._MONTH_BILLED.clear()
 
+    def test_pump_manager_panel_asks_and_gets_its_answer(self):
+        """The "Ask Pump Manager" panel: the question goes to the webhook from the server (URL and key never reach
+        the browser), the answer comes back to /assistant/reply with the reply token, and anything else is a 401."""
+        sent = []
+
+        class Resp:
+            status_code = 202
+
+        saved = (P.PUMP_MANAGER_WEBHOOK_URL, P.PUMP_MANAGER_WEBHOOK_KEY, P.PUMP_APP_REPLY_TOKEN, P.http_requests.post)
+        P.PUMP_MANAGER_WEBHOOK_URL, P.PUMP_MANAGER_WEBHOOK_KEY = 'https://pm.example/hook', 'sender-key-1'
+        P.PUMP_APP_REPLY_TOKEN = 'reply-token-xyz'
+        P.http_requests.post = lambda url, **kw: sent.append((url, kw)) or Resp()
+        try:
+            page = self.c.get('/pumps').get_data(as_text=True)
+            self.assertIn('Ask Pump Manager', page)
+            self.assertNotIn('pm.example', page)
+            self.assertNotIn('sender-key-1', page)
+            r = self.c.post('/pumps/api/assistant/ask', json={
+                'question': 'what do we charge Miromar Lakes per quarter?',
+                'context': {'tab': 'accounts', 'account': 'Miromar Lakes'}}).get_json()
+            self.assertTrue(r['success'], r)
+            self.assertNotIn('sender-key-1', json.dumps(r))
+            m = r['messages'][-1]
+            self.assertEqual(m['state'], 'thinking')
+            url, kw = sent[-1]
+            self.assertEqual(url, 'https://pm.example/hook')
+            self.assertEqual(kw['headers']['Authorization'], 'Bearer sender-key-1')
+            body = kw['json']
+            self.assertEqual((body['user'], body['question'], body['context']['account'], body['message_id']),
+                             ('Office Tester', 'what do we charge Miromar Lakes per quarter?', 'Miromar Lakes', m['message_id']))
+            self.assertEqual(body['conversation_id'], r['conversation_id'])
+            # Unauthenticated, wrong token, or no token configured: 401.
+            reply = {'conversation_id': r['conversation_id'], 'message_id': m['message_id'], 'answer': '$1,950 per quarter'}
+            anon = A.app.test_client()
+            self.assertEqual(anon.post('/pumps/api/assistant/reply', json=reply).status_code, 401)
+            self.assertEqual(anon.post('/pumps/api/assistant/reply', json=reply,
+                                       headers={'Authorization': 'Bearer nope'}).status_code, 401)
+            self.assertEqual(anon.post('/pumps/api/assistant/reply', json={**reply, 'message_id': 'x'},
+                                       headers={'Authorization': 'Bearer reply-token-xyz'}).status_code, 404)
+            ok = anon.post('/pumps/api/assistant/reply', json=reply, headers={'Authorization': 'Bearer reply-token-xyz'})
+            self.assertEqual(ok.status_code, 200, ok.get_data(as_text=True))
+            m = self.c.get('/pumps/api/assistant/messages').get_json()['messages'][-1]
+            self.assertEqual((m['state'], m['answer']), ('answered', '$1,950 per quarter'))
+            # The next question carries the earlier ones; one with no answer after 5 minutes says so.
+            self.c.post('/pumps/api/assistant/ask', json={'question': 'and per year?', 'context': {'tab': 'accounts'}})
+            self.assertEqual(sent[-1][1]['json']['history'][-1]['answer'], '$1,950 per quarter')
+            conn = P._conn()
+            conn.execute('UPDATE pump_assistant_messages SET asked_at=asked_at-400 WHERE answer IS NULL')
+            conn.commit()
+            conn.close()
+            self.assertEqual(self.c.get('/pumps/api/assistant/messages').get_json()['messages'][-1]['state'], 'timeout')
+            P.PUMP_APP_REPLY_TOKEN = ''
+            self.assertEqual(anon.post('/pumps/api/assistant/reply', json=reply,
+                                       headers={'Authorization': 'Bearer '}).status_code, 401)
+        finally:
+            (P.PUMP_MANAGER_WEBHOOK_URL, P.PUMP_MANAGER_WEBHOOK_KEY, P.PUMP_APP_REPLY_TOKEN, P.http_requests.post) = saved
+        # Office role only.
+        with self.c.session_transaction() as s:
+            s['role'] = 'accounting'
+        self.assertNotEqual(self.c.post('/pumps/api/assistant/ask', json={'question': 'hi'}).status_code, 200)
+
     def test_watercrest_is_water_crest(self):
         """Oct 2026: Wettech's "Watercrest @ Falling Waters" scored lowest against Jobber's "WATER CREST AT FALLING
         WATERS", so its report went on Falling Waters II. Words run together still match; the wrong pick is undone."""
