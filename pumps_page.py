@@ -1243,7 +1243,7 @@ async function linkInvoice(id){
   return new Promise(done => {
     window._liDone = done;
     openModal('Link our Jobber invoice', `
-      <div class="note">Search Jobber by client, invoice number or subject, then pick the invoice for this job.</div>
+      <div class="note"><b>Link to this job</b> on the client's pump job: the bill can be paid once that job is billed for its month - nothing more to do, and the client's later bills follow it too. Or search Jobber by client, invoice number or subject and pick an invoice.</div>
       <div class="toolbar" style="margin:6px 0"><input type="text" id="liQ" value="${esc(name)}" style="flex:1"
         oninput="liveSearch(() => linkInvoiceSearch(${id}))" onkeydown="if(event.key==='Enter'){event.preventDefault();clearTimeout(window._lsT);linkInvoiceSearch(${id})}">
         <button class="btn" onclick="linkInvoiceSearch(${id})">Search</button></div>
@@ -1263,7 +1263,7 @@ async function linkInvoiceSearch(id){
       <span class="num">${money(x.total)}</span> <a class="note" target="_blank" href="${esc(x.uri)}" onclick="event.stopPropagation()">↗</a></div>`;
   // The monthly job once, green, saying whether the bill's month is billed on it yet.
   const rec = (j.recurring || []).map(g => `<div class="cand" style="background:#e8f5e9;border-color:#66bb6a;cursor:default"><div style="flex:1">
-      <b>Job #${esc(g.number)} ${esc(g.title)}</b> ${g.pump_job ? '<span class="chip g">pump job</span>' : `<span class="chip">recurring job</span> <button class="btn s" title="Its invoices settle this client's bills from now on - you won't have to link them" onclick="setPumpJob(${id}, ${esc(JSON.stringify({id: g.id, number: g.number, title: g.title, property: g.property || ''}))})">This is the pump job</button>`}${g.property ? `<div class="note">${esc(g.property)}</div>` : ''}
+      <b>Job #${esc(g.number)} ${esc(g.title)}</b> ${g.pump_job ? '<span class="chip g">linked job</span>' : `<span class="chip">recurring job</span> <button class="btn s p" title="Once this job is billed for the bill's month, the bill can be paid - you won't have to link it again" onclick="setPumpJob(${id}, ${esc(JSON.stringify({id: g.id, number: g.number, title: g.title, property: g.property || ''}))})">Link to this job</button>`}${g.property ? `<div class="note">${esc(g.property)}</div>` : ''}
       <div class="note">${g.billed ? `${esc(j.month)}: billed - invoice #${esc(g.billed.number)} ${esc(g.billed.subject)} · ${esc(g.billed.date)} · ${esc(g.billed.status.replace(/_/g, ' '))} · ${money(g.billed.total)}`
         : `<b class="bad">${esc(j.month)}: not billed yet</b>${g.latest ? ` - last invoice #${esc(g.latest.number)} · ${esc(g.latest.date)} · ${esc(g.latest.status.replace(/_/g, ' '))}` : ''}`}</div></div>
       ${g.billed ? `<button class="btn s p" onclick="linkInvoicePick(${id}, '${esc(g.billed.number)}')">Link #${esc(g.billed.number)}</button> <a class="note" target="_blank" href="${esc(g.billed.uri)}">↗</a>` : ''}</div>`).join('');
@@ -1274,8 +1274,10 @@ async function linkInvoiceSearch(id){
 async function setPumpJob(id, job){
   const j = await api('/cases/' + id + '/pump_job', {method:'POST', body: job});
   if (!j.success) { toast(j.error, true); return; }
-  toast(`Job #${j.job.number} is the pump job - this client's bills wait for its invoice from now on.`);
-  linkInvoiceSearch(id);
+  closeModal();
+  toast(`Linked to job #${j.job.number} - the bill can be paid once its month is billed on that job (this client's later bills too).`);
+  if (curCase && curCase.id === id) openCase(id); else loadToday();
+  if (window._liDone) window._liDone();
 }
 async function linkInvoicePick(id, number){
   const j = await api('/cases/' + id + '/jobber_invoice', {method:'POST', body:{number}});
