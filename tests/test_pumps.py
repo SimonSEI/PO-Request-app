@@ -228,6 +228,23 @@ class PumpsTest(unittest.TestCase):
         # The letterhead's logo came along.
         self.assertTrue(any('image' in rel.reltype for rel in Document(io.BytesIO(out)).part.rels.values()))
 
+    def test_rebrand_keeps_comments_sharing_the_technician_row(self):
+        """University Village North (Oct 2026): the comments sat in the same table row as the technician's
+        label and name, and the whole row was dropped. Only the label and name go now."""
+        d = Document(io.BytesIO(make_report()))
+        t = d.add_table(rows=1, cols=3)
+        for i, v in enumerate(('COMMENTS: Pump #1 bearings are noisy, recommend replacing them before summer',
+                               'TECHNICIAN', 'Dana Whitlock')):
+            t.cell(0, i).text = v
+        buf = io.BytesIO()
+        d.save(buf)
+        out, info = R.rebrand_report(buf.getvalue())
+        text = '\n'.join(R.read_report(out)['lines'])
+        self.assertIn('bearings are noisy, recommend replacing them', text)
+        self.assertNotIn('Whitlock', text)
+        self.assertNotIn('TECHNICIAN', text)
+        self.assertIn('Dana Whitlock', info['technicians_removed'])
+
     def test_read_report_fields(self):
         f = R.read_report(make_report())
         self.assertEqual((f['customer'], f['location'], f['date']), ('Lakeside Pines HOA', 'Pump #2', '9-12-2026'))
@@ -4000,7 +4017,7 @@ class PumpsTest(unittest.TestCase):
     def test_hold_a_bill_not_ok_to_pay(self):
         """Homewood Suites (Oct 2026): invoiced, so payable - but the office says not OK to pay. Held: not
         payable, off the email to Christian, the note shown. Lifting the hold makes it payable again."""
-        self.extracts['b-hold1.pdf'] = extraction('bill', '40051', client='Holdfast Pines HOA', subtotal=500)
+        self.extracts['b-hold1.pdf'] = extraction('bill', '40091', client='Holdfast Pines HOA', subtotal=500)
         b = self.upload('b-hold1.pdf')
         conn = P._conn()
         conn.execute('UPDATE pump_cases SET jobber=?, sei_invoice_number=? WHERE id=?',
@@ -4019,7 +4036,7 @@ class PumpsTest(unittest.TestCase):
         self.assertIn('not OK to pay', row()['why'])
         self.assertIn('issue with the well', row()['why'])
         e = self.c.post('/pumps/api/bills_to_pay/email', json={'case_ids': [b['case_id']]}).get_json()
-        self.assertNotIn('#40051', (e.get('email') or {}).get('body', ''))
+        self.assertNotIn('#40091', (e.get('email') or {}).get('body', ''))
         self.c.post('/pumps/api/bills_to_pay/hold', json={'case_ids': [b['case_id']], 'undo': True})
         self.assertTrue(row()['payable'])
         self.assertFalse(row()['held'])
