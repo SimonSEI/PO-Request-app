@@ -303,6 +303,17 @@ class PumpsTest(unittest.TestCase):
         other = self.c.get(f"/pumps/api/docs/{b['doc_id']}").get_json()['doc']
         self.assertEqual(other['status'], 'done')
         self.assertEqual(other['jobber']['note_id'], 'NOTE1')
+        # Logging it again (the notes were wrong and deleted) still puts both from the email on one note.
+        conn = P._conn()
+        conn.execute("UPDATE pump_docs SET email_uid='M1' WHERE id IN (?, ?)", (a['doc_id'], b['doc_id']))
+        conn.commit()
+        conn.close()
+        fake.calls.clear()
+        r = self.c.post(f"/pumps/api/docs/{b['doc_id']}/report_note", json={'target_type': 'job', 'target_id': 'J8515'})
+        self.assertTrue(r.get_json()['success'], r.get_json())
+        notes = [v for q, v in fake.calls if 'jobCreateNote' in q]
+        self.assertEqual(len(notes[0]['input']['attachments']), 2, 'logged again: still both files')
+        self.assertEqual(notes[0]['input']['message'], 'October Pump Report')
         # Its station pages never split into a note each.
         self.assertIsNone(P.section_targets({'client_name': 'Pebblebrook HOA', 'file_name': '10-26 Pebblebrooke.docx',
                                              'report_fields': {'lines': ['PUMP REPORT', 'LOCATION · Tot Lot',

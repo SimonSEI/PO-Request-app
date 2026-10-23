@@ -6998,17 +6998,24 @@ def _report_account(conn, doc):
 
 
 def joint_reports(conn, doc):
-    """The other reports of a JOINT_REPORT_ACCOUNTS account for the same month, ready to log and not
-    logged yet - they go on this report's note."""
-    if not _report_account(conn, doc):
+    """The other reports of a JOINT_REPORT_ACCOUNTS account that go on this report's note: every one
+    from the same email, logged or not (logging again puts them all back together), and any other
+    of the same month not logged yet."""
+    acct = _report_account(conn, doc)
+    if not acct:
         return []
-    acct, month = _report_account(conn, doc), (report_month_date(doc) or '')[:7]
+    month = (report_month_date(doc) or '')[:7]
+    uid = conn.execute('SELECT email_uid FROM pump_docs WHERE id=?', (doc['id'],)).fetchone()
+    uid = (uid['email_uid'] if uid else '') or ''
     out = []
     for r in conn.execute("SELECT * FROM pump_docs WHERE kind='report' AND id != ? AND status NOT IN "
-                          "('dismissed', 'review', 'done') ORDER BY id", (doc['id'],)):
+                          "('dismissed', 'review') ORDER BY id", (doc['id'],)):
         d = {**_doc_dict(r), 'branded_path': r['branded_path']}
-        if d['has_branded'] and not (d.get('jobber') or {}).get('note_id') and \
-                _report_account(conn, d) == acct and (report_month_date(d) or '')[:7] == month:
+        if not d['has_branded'] or _report_account(conn, d) != acct:
+            continue
+        same_email = bool(uid) and r['email_uid'] == uid
+        if same_email or ((report_month_date(d) or '')[:7] == month and r['status'] != 'done' and
+                          not (d.get('jobber') or {}).get('note_id')):
             out.append(d)
     return out
 
