@@ -1235,13 +1235,41 @@ function linkJob(id){
     openCase(id); loadToday();
   }, (curCase && curCase.id === id && curCase.client_name) || '');
 }
+// Pick the job's Jobber invoice from a search of Jobber, without leaving the app (Oct 2026).
 async function linkInvoice(id){
-  const n = prompt('Jobber invoice number for this job (e.g. 36806):', '');
-  if (!n || !n.trim()) return;
-  const j = await api('/cases/' + id + '/jobber_invoice', {method:'POST', body:{number: n.trim()}});
+  if (!JOBBER_OK) { toast('Connect Jobber first (top of the page).', true); return; }
+  const c = await api('/cases/' + id);
+  const name = c.success ? (c.case.client_name || '') : '';
+  return new Promise(done => {
+    window._liDone = done;
+    openModal('Link our Jobber invoice', `
+      <div class="note">Search Jobber by client, invoice number or subject, then pick the invoice for this job.</div>
+      <div class="toolbar" style="margin:6px 0"><input type="text" id="liQ" value="${esc(name)}" style="flex:1"
+        oninput="liveSearch(() => linkInvoiceSearch(${id}))" onkeydown="if(event.key==='Enter'){event.preventDefault();clearTimeout(window._lsT);linkInvoiceSearch(${id})}">
+        <button class="btn" onclick="linkInvoiceSearch(${id})">Search</button></div>
+      <div id="liList"></div>`, `<button class="btn" onclick="closeModal();window._liDone&&window._liDone()">Cancel</button>`);
+    linkInvoiceSearch(id);
+  });
+}
+async function linkInvoiceSearch(id){
+  const q = document.getElementById('liQ').value.trim(), box = document.getElementById('liList');
+  if (q.length < 2) { box.innerHTML = ''; return; }
+  box.innerHTML = '<div class="note">Searching Jobber…</div>';
+  const j = await api('/jobber/invoices?q=' + encodeURIComponent(q));
+  if (!document.getElementById('liQ') || document.getElementById('liQ').value.trim() !== q) return;   // still typing
+  if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
+  box.innerHTML = (j.invoices || []).map(x => `<div class="cand" onclick="linkInvoicePick(${id}, '${esc(x.number)}')"><div style="flex:1">
+      <b>#${esc(x.number)} ${esc(x.subject)}</b><div class="note">${esc(x.client)} · ${esc(x.date)} · ${esc(x.status.replace(/_/g, ' '))}</div></div>
+      <span class="num">${money(x.total)}</span> <a class="note" target="_blank" href="${esc(x.uri)}" onclick="event.stopPropagation()">↗</a></div>`).join('')
+    || '<div class="note">No Jobber invoices found.</div>';
+}
+async function linkInvoicePick(id, number){
+  const j = await api('/cases/' + id + '/jobber_invoice', {method:'POST', body:{number}});
   if (!j.success) { toast(j.error, true); return; }
+  closeModal();
   toast(`Linked Jobber invoice #${j.invoice.number}${j.invoice.status ? ' (' + j.invoice.status.replace(/_/g, ' ') + ')' : ''}.`);
   if (curCase && curCase.id === id) openCase(id); else loadToday();
+  if (window._liDone) window._liDone();
 }
 async function markVendorPaid(id){
   const d = prompt('Date Wettech\'s bill was paid (YYYY-MM-DD):', new Date().toISOString().slice(0,10));
