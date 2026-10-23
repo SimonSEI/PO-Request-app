@@ -8113,9 +8113,38 @@ def h_link_jobber_job(actor, case_id):
         conn.close()
 
 
+def link_invoice_choices(q, case_id=None):
+    """What Link invoice shows (Oct 2026): each recurring job once - the monthly contract the item
+    syncs to - with its invoice for the bill's month if it's billed yet (else its latest), then the
+    invoices that aren't on a recurring job."""
+    found = search_jobber_invoices(q)
+    year, month = _today().year, _today().month
+    if case_id:
+        conn = _conn()
+        try:
+            row = conn.execute("SELECT * FROM pump_docs WHERE case_id=? AND kind='bill' AND status != 'dismissed' "
+                               "ORDER BY id DESC", (case_id,)).fetchone()
+        finally:
+            conn.close()
+        if row:
+            year, month = bill_service_month(_doc_dict(row))
+    ym = f'{year:04d}-{month:02d}'
+    jobs = {}
+    for x in found:
+        if (x['job'] or {}).get('recurring'):
+            g = jobs.setdefault(x['job']['number'], {**x['job'], 'billed': None, 'latest': None})
+            if x['date'][:7] == ym and not g['billed']:
+                g['billed'] = x
+            if not g['latest']:
+                g['latest'] = x
+    return {'month': date(year, month, 1).strftime('%B %Y'), 'recurring': list(jobs.values()),
+            'invoices': [x for x in found if not (x['job'] or {}).get('recurring')]}
+
+
 @api('/jobber/invoices')
 def h_jobber_invoices(actor):
-    return {'invoices': search_jobber_invoices(request.args.get('q', ''))}
+    cid = request.args.get('case_id', '')
+    return link_invoice_choices(request.args.get('q', ''), int(cid) if cid.isdigit() else None)
 
 
 @api('/cases/<int:case_id>/jobber_invoice', methods=('POST',))
@@ -8254,6 +8283,34 @@ def send_vendor_pay_email(case_id, actor, body=None):
 BIG_BILL = 1500.0   # a vendor bill over this waits for the client to pay our invoice
 
 
+_MONTH_BILLED = {}   # (client, 'YYYY-MM') -> (when looked, answer), so the list doesn't ask Jobber every time
+
+
+def month_billed(client, year, month):
+    """Whether the client's monthly (recurring) job is billed in Jobber for the month (Oct 2026: a vendor
+    bill for a monthly account is paid only once that month is billed out). {'job', 'invoice'} - invoice
+    None when not billed yet - or None when the client has no one recurring job to go by."""
+    key, now = ((client or '').strip().lower(), f'{year:04d}-{month:02d}'), time.time()
+    if not key[0] or not jobber_status()['connected']:
+        return None
+    hit = _MONTH_BILLED.get(key)
+    if hit and now - hit[0] < 600:
+        return hit[1]
+    try:
+        found = search_jobber_invoices(client)
+    except JobberError:
+        return None
+    jobs = {}
+    for x in found:
+        if (x['job'] or {}).get('recurring'):
+            g = jobs.setdefault(x['job']['number'], {'job': x['job'], 'invoice': None})
+            if x['date'][:7] == key[1] and not g['invoice']:
+                g['invoice'] = x
+    ans = next(iter(jobs.values())) if len(jobs) == 1 else None
+    _MONTH_BILLED[key] = (now, ans)
+    return ans
+
+
 def bills_to_pay(conn):
     """Every vendor bill not paid yet, by vendor (Oct 2026). A bill can be paid
     once we've invoiced the client for it (our Jobber invoice exists - nearly
@@ -8285,6 +8342,18 @@ def bills_to_pay(conn):
             num = inv.get('number') or c.get('sei_invoice_number') or ''
             why = (f"invoiced{' #' + num if num else ''}{' (' + inv['status'].replace('_', ' ') + ')' if inv.get('status') else ''}"
                    if invoiced else 'not invoiced yet')
+            if not invoiced and not payable:
+                # A monthly account (University Village, Oct 2026): pay once the month is billed on its job.
+                y, m = bill_service_month(dict(bill)) if bill else (_today().year, _today().month)
+                mb = month_billed(c.get('client_name') or '', y, m)
+                if mb:
+                    label, job = date(y, m, 1).strftime('%B'), f"job #{mb['job']['number']} {mb['job']['title']}".strip()
+                    if mb['invoice']:
+                        payable = True
+                        why = (f"{label} is billed on {job} - invoice #{mb['invoice']['number']} "
+                               f"({mb['invoice']['status'].replace('_', ' ')}) - we can pay it")
+                    else:
+                        why = f"wait until {label} is billed on {job}"
             if amount is not None and amount > BIG_BILL and pay['client_invoice_status'] != 'paid':
                 # Over $1,500 (the office, Oct 2026): paid only once the client has paid our invoice.
                 payable = False

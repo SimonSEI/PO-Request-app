@@ -3960,11 +3960,45 @@ class PumpsTest(unittest.TestCase):
         P.jobber_gql = fake
         j = self.c.get('/pumps/api/jobber/invoices?q=Banyan').get_json()
         self.assertTrue(j['success'], j)
-        self.assertEqual([x['number'] for x in j['invoices']], ['36500', '36990', '36800'], 'recurring job first, then newest')
-        self.assertTrue(j['invoices'][0]['job']['recurring'])
-        self.assertEqual(j['invoices'][1]['status'], 'awaiting_payment')
+        # The monthly job once, with whether this month is billed on it (July's is, so it's "billed" only for July).
+        self.assertEqual([(g['number'], (g['billed'] or {}).get('number'), g['latest']['number']) for g in j['recurring']],
+                         [('9654', None, '36500')])
+        self.assertEqual([x['number'] for x in j['invoices']], ['36990', '36800'], 'the rest, newest first')
+        self.assertEqual(j['invoices'][0]['status'], 'awaiting_payment')
+        july = P.link_invoice_choices('Banyan')
+        self.assertTrue(july['month'])
         self.assertEqual(seen[-1], {'q': 'Banyan'})
         self.assertEqual(self.c.get('/pumps/api/jobber/invoices?q=B').get_json()['invoices'], [])
+
+    def test_monthly_account_bill_paid_once_the_month_is_billed(self):
+        """University Village (Oct 2026): a bill for a monthly account waits until that month is billed on the
+        client's recurring job in Jobber, then says we can pay it."""
+        self.extracts['b-uv1.pdf'] = extraction('bill', '2506', client='Univers Shops LLC', subtotal=125)
+        b = self.upload('b-uv1.pdf')
+        conn = P._conn()
+        conn.execute("UPDATE pump_docs SET doc_date='2026-10-21' WHERE case_id=?", (b['case_id'],))
+        conn.commit()
+        conn.close()
+        found = [{'number': '36379', 'subject': 'Invoice- September', 'date': '2026-09-16', 'status': 'paid', 'uri': '',
+                  'total': 459.5, 'client': 'UNIVERS SHOPS', 'job': {'number': '10504', 'title': 'Monthly 334', 'recurring': True}}]
+        saved = (P.jobber_status, P.search_jobber_invoices)
+        P.jobber_status = lambda: {'connected': True}
+        P.search_jobber_invoices = lambda q: list(found)
+        P._MONTH_BILLED.clear()
+        row = lambda: {x['case_id']: x for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors']
+                       for x in g['bills']}[b['case_id']]
+        try:
+            self.assertFalse(row()['payable'])
+            self.assertIn('wait until October is billed on job #10504 Monthly 334', row()['why'])
+            found.insert(0, {**found[0], 'number': '37010', 'subject': 'Invoice- October', 'date': '2026-10-22',
+                             'status': 'draft'})
+            P._MONTH_BILLED.clear()
+            self.assertTrue(row()['payable'])
+            self.assertIn('October is billed on job #10504 Monthly 334 - invoice #37010', row()['why'])
+            self.assertIn('we can pay it', row()['why'])
+        finally:
+            P.jobber_status, P.search_jobber_invoices = saved
+            P._MONTH_BILLED.clear()
 
     def test_watercrest_is_water_crest(self):
         """Oct 2026: Wettech's "Watercrest @ Falling Waters" scored lowest against Jobber's "WATER CREST AT FALLING
