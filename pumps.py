@@ -8596,8 +8596,9 @@ def h_doc(actor, doc_id):
             d['quote_suggestion'] = suggest_quote(d, case)
         if d['kind'] == 'report':
             done = (d.get('jobber') or {}).get('sections') or {}
-            d['sections'] = [{'section': i, 'location': x['location'], 'date': x['date'],
-                              'logged': bool(done.get(str(i)))} for i, x in enumerate(report_sections(d))]
+            d['sections'] = [] if _report_account(conn, d) else \
+                [{'section': i, 'location': x['location'], 'date': x['date'],
+                  'logged': bool(done.get(str(i)))} for i, x in enumerate(report_sections(d))]
         if case:
             d['case_issues'] = [dict(r) for r in conn.execute(
                 'SELECT id, kind, message FROM pump_issues WHERE case_id=? AND resolved_at IS NULL', (case['id'],))]

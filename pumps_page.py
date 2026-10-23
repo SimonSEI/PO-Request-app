@@ -1825,7 +1825,9 @@ async function repPick(id){
   if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
   const props = Object.fromEntries((j.properties || []).map(p => [p.id, p.label]));
   // A report with a page per pump station (The Carlisle: Entrance and Exit): a note per page, each on its own job.
-  const groups = (rep.doc.sections || []).length > 1 ? rep.doc.sections.filter(g => !g.logged) : [{section: null, location: rep.doc.site || ''}];
+  // Every page logged already (Log in Jobber again): the whole report as one note.
+  const left = (rep.doc.sections || []).filter(g => !g.logged);
+  const groups = (rep.doc.sections || []).length > 1 && left.length ? left : [{section: null, location: rep.doc.site || ''}];
   rep.targets = {};
   box.innerHTML = groups.map((g, gi) => {
     const loc = (g.location || '').toLowerCase();
