@@ -4055,6 +4055,20 @@ class PumpsTest(unittest.TestCase):
         finally:
             P.jobber_gql, P.recurring_jobs = saved
         self.assertEqual(seen[-1], {'q': 'Westminster Community Association'}, 'a short name for Jobber')
+        # Jobber gives nothing back: the jobs synced from it are used.
+        conn = P._conn()
+        conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, job_type, client_name, "
+                     "property_label) VALUES ('J11442', 'job', '11442', 'Quarter 450', 'upcoming', 'recurring', "
+                     "'Westminster Community Association, Inc. c/o Hawk-Eye Management, LLC.', '2199 Berkley Way')")
+        conn.commit()
+        conn.close()
+        P.jobber_gql = lambda q, v=None: {}
+        P.recurring_jobs = lambda cid: []
+        try:
+            west = P.live_recurring_jobs('Westminster Community Association, Inc. c/o Hawk-Eye Management, LLC.', {})
+        finally:
+            P.jobber_gql, P.recurring_jobs = saved
+        self.assertEqual([j['number'] for j in west], ['11442'])
         pump = [j for j in jobs if P.TITLE_PATTERNS['pump'].search(f"{j['title']} {j['property_label']}")]
         self.assertEqual([j['number'] for j in pump], [10136])
 
@@ -4086,6 +4100,17 @@ class PumpsTest(unittest.TestCase):
                             json={'id': 'J2125', 'number': 2125, 'title': 'Quarterly 300', 'property': '10801 Corkscrew'}).get_json()
             self.assertTrue(r['success'], r)
             self.assertEqual(P._state_get(P._bill_job_key('Rembrandt Shops LLC'))['id'], 'J2125')
+            # Or by its job number when it isn't listed.
+            saved_find = P.find_job_by_number
+            P.find_job_by_number = lambda n: {'jobber_id': 'J11442', 'number': '11442', 'title': 'Quarter 450',
+                                              'property_label': '2199 Berkley Way'} if n == '11442' else None
+            try:
+                r = self.c.post(f"/pumps/api/cases/{b['case_id']}/pump_job", json={'number': '11442'}).get_json()
+                self.assertTrue(r['success'], r)
+                self.assertEqual(P._state_get(P._bill_job_key('Rembrandt Shops LLC'))['id'], 'J11442')
+                self.assertFalse(self.c.post(f"/pumps/api/cases/{b['case_id']}/pump_job", json={'number': '9'}).get_json()['success'])
+            finally:
+                P.find_job_by_number = saved_find
         finally:
             (P.find_invoice_by_number, P.invoice_job, P.jobber_status, P.job_invoices, P.live_recurring_jobs) = saved
             P._MONTH_BILLED.clear()

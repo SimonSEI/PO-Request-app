@@ -1268,8 +1268,10 @@ async function linkInvoiceSearch(id){
         : `<b class="bad">${esc(j.month)}: not billed yet</b>${g.latest ? ` - last invoice #${esc(g.latest.number)} · ${esc(g.latest.date)} · ${esc(g.latest.status.replace(/_/g, ' '))}` : ''}`}</div></div>
       ${g.billed ? `<button class="btn s p" onclick="linkInvoicePick(${id}, '${esc(g.billed.number)}')">Link #${esc(g.billed.number)}</button> <a class="note" target="_blank" href="${esc(g.billed.uri)}">↗</a>` : ''}</div>`).join('');
   const other = (j.invoices || []).map(row).join('');
-  box.innerHTML = (rec + (other ? (rec ? '<div class="note" style="margin:8px 0 4px">Other invoices</div>' : '') + other : ''))
-    || '<div class="note">No Jobber invoices found.</div>';
+  const byNum = `<div class="toolbar" style="margin:6px 0"><input type="text" id="liJob" placeholder="Job not listed? Its Jobber job number, e.g. 11442" style="flex:1">
+    <button class="btn s p" onclick="const n = document.getElementById('liJob').value.trim(); if (n) setPumpJob(${id}, {number: n})">Link to this job</button></div>`;
+  box.innerHTML = rec + byNum + ((other ? (rec ? '<div class="note" style="margin:8px 0 4px">Other invoices</div>' : '') + other : '')
+    || '<div class="note">No Jobber invoices found.</div>');
 }
 async function setPumpJob(id, job){
   const j = await api('/cases/' + id + '/pump_job', {method:'POST', body: job});

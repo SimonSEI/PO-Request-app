@@ -8157,9 +8157,27 @@ def live_recurring_jobs(client_name, case=None):
     if not jobs:
         # No item client, or one with no live contract (Westminster's item was on another Westminster
         # client, Oct 2026): the client the name clearly is.
-        pick = pick_client(search_clients(name))
+        try:
+            cands = search_clients(name)
+        except JobberError:
+            cands = []
+        norm = lambda x: ' '.join(_words(x or ''))
+        # Several Westminster clients: the one named exactly so, when no one is a clear best.
+        pick = pick_client(cands) or next((c for c in cands if norm(c['name']) == norm(name)), None)
         if pick and pick['id'] != cid:
             jobs = [x for x in recurring_jobs(pick['id']) if x['status'] != 'archived']
+    if not jobs and len(_core_name(name)) >= 4:
+        # The jobs synced from Jobber, by client name or property.
+        like = f"%{_core_name(name).split(',')[0]}%"
+        conn = _conn()
+        try:
+            jobs = [{'id': r['jobber_id'], 'number': r['number'], 'title': r['title'] or '', 'status': r['status'] or '',
+                     'type': 'recurring', 'property_id': r['property_id'], 'property_label': r['property_label'] or ''}
+                    for r in conn.execute("SELECT * FROM pump_jobber_items WHERE kind='job' AND job_type='recurring' "
+                                          "AND COALESCE(status, '') != 'archived' AND (client_name LIKE ? OR "
+                                          "property_label LIKE ?) ORDER BY number", (like, like))]
+        finally:
+            conn.close()
     # A job filed under another client but at this one's property: University Village Shops' pump job
     # #10136 is the CDD's, at "10801 Corkscrew Road, PUMP - University Village Shops LLC" (Oct 2026).
     core = _core_name(name)
@@ -8255,6 +8273,12 @@ def h_case_pump_job(actor, case_id):
     if actor == BOT:
         return _office_only(actor, 'Choosing the pump job')
     d = _json()
+    if not d.get('id') and d.get('number'):
+        # Typed by number (Westminster's #11442, Oct 2026: not found by name).
+        it = find_job_by_number(d['number'])
+        if not it:
+            raise ValueError(f"No Jobber job #{str(d['number']).lstrip('#')} found")
+        d = {'id': it['jobber_id'], 'number': it['number'], 'title': it['title'] or '', 'property': it['property_label'] or ''}
     if not d.get('id'):
         raise ValueError('Pick the job')
     conn = _conn()
