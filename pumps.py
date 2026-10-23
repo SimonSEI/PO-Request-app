@@ -4202,6 +4202,10 @@ def _sync_jobber(full=False, actor='system'):
                 sweep_quote_needed()
             except Exception as e:
                 status['errors'].append(f'Quotes needed: {e}')
+            try:
+                link_billed_months()
+            except Exception as e:
+                status['errors'].append(f'Months billed: {e}')
             status['errors'] += refresh_client_contacts(conn)
             conn.commit()
             try:
@@ -8346,6 +8350,34 @@ def month_billed(client, year, month):
     return ans
 
 
+def link_billed_months(actor='Pumps'):
+    """Each vendor bill waiting on its month to be billed on the client's pump job: once Jobber has
+    that month's invoice on the job, link it to the bill's item (so it can be paid) and say so on the
+    to-do list (University Village, Oct 2026). Only reads Jobber. Returns the items linked."""
+    conn = _conn()
+    try:
+        waiting = [(g['vendor'], b) for g in bills_to_pay(conn) for b in g['bills'] if b.get('month_invoice')]
+    finally:
+        conn.close()
+    done = []
+    for vendor, b in waiting:
+        try:
+            link_jobber_invoice(b['case_id'], b['month_invoice'], actor)
+        except (ValueError, JobberError):
+            continue
+        conn = _conn()
+        try:
+            add_todo(conn, f"month-billed:{b['case_id']}:{b['month_invoice']}",
+                     f"{b['client_name'] or b['title']}: billed - {vendor} bill #{b['bill_number'] or '?'} can be paid",
+                     f"{b['why']}. Our invoice #{b['month_invoice']} is linked to the job.",
+                     {'case_id': b['case_id']})
+            conn.commit()
+        finally:
+            conn.close()
+        done.append(b['case_id'])
+    return done
+
+
 def bills_to_pay(conn):
     """Every vendor bill not paid yet, by vendor (Oct 2026). A bill can be paid
     once we've invoiced the client for it (our Jobber invoice exists - nearly
@@ -8374,6 +8406,7 @@ def bills_to_pay(conn):
                    + (f" - {mv['note']}" if mv.get('note') else ''))
         else:
             payable = invoiced or pay['state'] == 'due'
+            month_inv = ''
             num = inv.get('number') or c.get('sei_invoice_number') or ''
             why = (f"invoiced{' #' + num if num else ''}{' (' + inv['status'].replace('_', ' ') + ')' if inv.get('status') else ''}"
                    if invoiced else 'not invoiced yet')
@@ -8385,6 +8418,7 @@ def bills_to_pay(conn):
                     label, job = date(y, m, 1).strftime('%B'), f"job #{mb['job']['number']} {mb['job']['title']}".strip()
                     if mb['invoice']:
                         payable = True
+                        month_inv = mb['invoice']['number']
                         why = (f"{label} is billed on {job} - invoice #{mb['invoice']['number']} "
                                f"({mb['invoice']['status'].replace('_', ' ')}) - we can pay it")
                     else:
@@ -8412,6 +8446,7 @@ def bills_to_pay(conn):
             'case_id': c['id'], 'title': c.get('title') or '', 'client_name': c.get('client_name') or '',
             'bill_number': number, 'bill_date': (bill['doc_date'] if bill else '') or '', 'amount': amount,
             'bill_doc_id': bill['id'] if bill else None, 'payable': payable, 'why': why, 'pay_ok': bool(ok), 'held': bool(hold),
+            'month_invoice': '' if pay.get('report_only') else month_inv,
             'invoice_number': inv.get('number') or c.get('sei_invoice_number') or '',
             'asked_at': asked.get('at', '') if asked.get('sent') else ''})
     out = []

@@ -4008,6 +4008,18 @@ class PumpsTest(unittest.TestCase):
             self.assertTrue(row()['payable'])
             self.assertIn('October is billed on job #10136 Quarterly 900 - invoice #37010', row()['why'])
             self.assertIn('we can pay it', row()['why'])
+            # The scan links that invoice to the item and says so on the to-do list.
+            linked = []
+            saved_link = P.link_jobber_invoice
+            P.link_jobber_invoice = lambda cid, num, actor='system': linked.append((cid, num))
+            try:
+                self.assertIn(b['case_id'], P.link_billed_months())
+            finally:
+                P.link_jobber_invoice = saved_link
+            self.assertIn((b['case_id'], '37010'), linked)
+            todos = self.c.get('/pumps/api/summary').get_json()['queue']['todos']
+            self.assertTrue(any(t['key'] == f"month-billed:{b['case_id']}:37010" and 'can be paid' in t['title']
+                                for t in todos), [t['title'] for t in todos])
         finally:
             P.jobber_status, P.live_recurring_jobs, P.job_invoices = saved
             P._MONTH_BILLED.clear()
