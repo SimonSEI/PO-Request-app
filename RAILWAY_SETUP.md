@@ -48,7 +48,7 @@ After setup, you should see these logs when your app starts:
 
 - **First deployment after setup**: Your existing data from before adding the volume will NOT be migrated automatically. You may need to re-enter your data once.
 - **Volume size**: Railway volumes start at 1GB by default (expandable)
-- **Backups**: Consider periodically backing up your data - volumes are persistent but not backed up by Railway
+- **Backups**: Volumes are not backed up by Railway by default. The app copies the database and uploaded files to a separate bucket every 5 minutes - see [BACKUPS_README.md](BACKUPS_README.md)
 
 ## Troubleshooting
 
