@@ -168,11 +168,14 @@ class PumpsTest(unittest.TestCase):
         # OpenClaw is switched off for the office (PUMPS_OPENCLAW); these tests still cover what it could do.
         cls._openclaw = P.OPENCLAW_ENABLED
         P.OPENCLAW_ENABLED = True
+        # Bills go to Christian at once here; test_bills_wait_five_business_days covers the wait.
+        cls._pay_wait, P.PAY_WAIT_DAYS = P.PAY_WAIT_DAYS, 0
 
     @classmethod
     def tearDownClass(cls):
         P.extract_text, P._claude_extract, P.jobber_gql = cls._orig
         P.OPENCLAW_ENABLED = cls._openclaw
+        P.PAY_WAIT_DAYS = cls._pay_wait
         # Removed when the whole run ends: other test files share the same app (and this folder).
         atexit.register(shutil.rmtree, TMP, True)
 
@@ -4488,6 +4491,39 @@ class PumpsTest(unittest.TestCase):
         self.assertIn('#40031', e['body'])
         self.c.post('/pumps/api/bills_to_pay/pay_ok', json={'case_ids': [b['case_id']], 'undo': True})
         self.assertFalse(row()['payable'])
+
+    def test_bills_wait_five_business_days(self):
+        """Christian (Oct 2026): a bill goes to him 5 business days after it's ready to pay, not the day it is."""
+        self.extracts['b-wait1.pdf'] = extraction('bill', '40095', client='Waitfield Pines HOA', subtotal=400)
+        b = self.upload('b-wait1.pdf')
+        row = lambda: {x['case_id']: x for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors']
+                       for x in g['bills']}[b['case_id']]
+        saved_wait, saved_today = P.PAY_WAIT_DAYS, P._today
+        P.PAY_WAIT_DAYS = 5
+        try:
+            saved_now = P._now_text
+            P._today, P._now_text = (lambda: date(2026, 10, 23)), (lambda: '2026-10-23 09:00:00')   # a Friday
+            try:
+                self.c.post('/pumps/api/bills_to_pay/pay_ok', json={'case_ids': [b['case_id']]})
+                r = row()
+            finally:
+                P._now_text = saved_now
+            self.assertTrue(r['payable'])
+            self.assertFalse(r['ready'])
+            self.assertEqual((r['ready_since'], r['email_on']), ('2026-10-23', '2026-10-30'))
+            e = self.c.post('/pumps/api/bills_to_pay/email', json={'case_ids': [b['case_id']]}).get_json()
+            self.assertNotIn('#40095', (e.get('email') or {}).get('body', ''))
+            P._today = lambda: date(2026, 10, 29)
+            self.assertFalse(row()['ready'], 'Thursday: 4 business days')
+            P._today = lambda: date(2026, 10, 30)
+            self.assertTrue(row()['ready'])
+            e = self.c.post('/pumps/api/bills_to_pay/email', json={'case_ids': [b['case_id']]}).get_json()
+            self.assertIn('#40095', e['email']['body'])
+            # Not ready any more: the clock starts again next time.
+            self.c.post('/pumps/api/bills_to_pay/pay_ok', json={'case_ids': [b['case_id']], 'undo': True})
+            self.assertEqual(row()['ready_since'], '')
+        finally:
+            P.PAY_WAIT_DAYS, P._today = saved_wait, saved_today
 
     def test_hold_a_bill_not_ok_to_pay(self):
         """Homewood Suites (Oct 2026): invoiced, so payable - but the office says not OK to pay. Held: not
