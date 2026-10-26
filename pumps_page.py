@@ -1241,23 +1241,24 @@ async function billsSend(){
 function jobPicker(title, onPick, start){
   openModal(title, `
     <div class="note">Type the job number or the client's name - their recent Jobber jobs show here; click the one.</div>
-    <div class="toolbar" style="margin:6px 0"><input type="text" id="jpQ" value="${esc(start || '')}" placeholder="e.g. 14592 or Woodmere" style="flex:1" oninput="liveSearch(jobPickerSearch)" onkeydown="if(event.key==='Enter'){event.preventDefault();clearTimeout(window._lsT);jobPickerSearch()}"></div>
-    <div id="jpList"><div class="note">Type to search.</div></div>`,
+    <div class="toolbar" style="margin:6px 0"><input type="text" id="jpQ" value="${esc(start || '')}" placeholder="e.g. 14592 or Woodmere" style="flex:1" oninput="if (!this.value.trim()) { clearTimeout(window._lsT); jobPickerSearch(); } else liveSearch(jobPickerSearch)" onkeydown="if(event.key==='Enter'){event.preventDefault();clearTimeout(window._lsT);jobPickerSearch()}"></div>
+    <div id="jpList"></div>`,
     `<button class="btn" onclick="closeModal()">Cancel</button>`);
   window._jobPick = onPick;
-  const q = document.getElementById('jpQ'); q.focus(); if (start) jobPickerSearch();
+  const q = document.getElementById('jpQ'); q.focus(); jobPickerSearch();
 }
 async function jobPickerSearch(){
   const q = (document.getElementById('jpQ') || {}).value?.trim() || '';
   const box = document.getElementById('jpList');
-  if (q.length < 2) { box.innerHTML = '<div class="note">Type to search.</div>'; return; }
-  box.innerHTML = '<div class="note">Searching Jobber…</div>';
+  // Nothing typed: the most recently created jobs (Oct 2026).
+  if (q.length === 1) return;
+  box.innerHTML = `<div class="note">${q ? 'Searching Jobber…' : 'Loading the newest Jobber jobs…'}</div>`;
   const j = await api('/jobber/jobs?q=' + encodeURIComponent(q));
   if (((document.getElementById('jpQ') || {}).value || '').trim() !== q) return;   // still typing
   if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
   window._jobList = j.jobs || [];
-  box.innerHTML = window._jobList.length ? window._jobList.map((x, i) => `<div class="row" style="cursor:pointer" onclick="window._jobPick(window._jobList[${i}])"><div class="main"><div class="tt">#${esc(x.number)} · ${esc(x.client_name)}</div><div class="sub">${esc(x.title)}${x.date ? ' · ' + esc(niceDay(x.date)) : ''}${x.status ? ' · ' + esc(x.status.replace(/_/g, ' ')) : ''}${x.case_id ? ' · <b>already followed here</b>' : ''}${x.uri ? ` · <a href="${esc(x.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ↗</a>` : ''}</div></div></div>`).join('')
-    : '<div class="note">No Jobber job matches.</div>';
+  box.innerHTML = (j.recent && window._jobList.length ? '<div class="note" style="margin-bottom:4px">Most recently created - newest first</div>' : '') + (window._jobList.length ? window._jobList.map((x, i) => `<div class="row" style="cursor:pointer" onclick="window._jobPick(window._jobList[${i}])"><div class="main"><div class="tt">#${esc(x.number)} · ${esc(x.client_name)}</div><div class="sub">${esc(x.title)}${x.date ? ' · ' + esc(niceDay(x.date)) : ''}${x.status ? ' · ' + esc(x.status.replace(/_/g, ' ')) : ''}${x.case_id ? ' · <b>already followed here</b>' : ''}${x.uri ? ` · <a href="${esc(x.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ↗</a>` : ''}</div></div></div>`).join('')
+    : '<div class="note">No Jobber job matches.</div>');
 }
 // A service call booked in Jobber: followed from its job - the start of the work, no quote.
 function addServiceCall(){

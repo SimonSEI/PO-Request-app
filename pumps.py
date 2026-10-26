@@ -8236,6 +8236,43 @@ def h_link_jobber_quote(actor, case_id):
     return {'quote': link_jobber_quote(case_id, _json().get('number'), actor)}
 
 
+def recent_jobber_jobs(limit=15):
+    """The most recently created Jobber jobs, newest first (Oct 2026: what Service call shows before
+    anything is typed). Asked of Jobber; the synced jobs when Jobber won't say."""
+    out = []
+    if jobber_status()['connected']:
+        spec = ['id', 'jobNumber', 'title', 'jobStatus', 'createdAt', 'startAt', 'jobberWebUri', ('client', ['id', 'name'])]
+
+        # Newest-first if this Jobber takes the sort, else a bigger page sorted here.
+        for args in (f'first: {limit}, sort: [{{key: CREATED_AT, direction: DESCENDING}}]', 'first: 100'):
+            def make(fields, args=args):
+                return f'query {{ jobs({args}) {{ nodes {{ {fields} }} }} }}'
+            try:
+                data, _ = _gql_tolerant(make, spec, {}, required=('id', 'jobNumber'))
+            except JobberError:
+                continue
+            out = [{'number': str(n.get('jobNumber') or ''), 'title': n.get('title') or '',
+                    'client_name': (n.get('client') or {}).get('name') or '', 'status': (n.get('jobStatus') or '').lower(),
+                    'date': (n.get('startAt') or n.get('createdAt') or '')[:10], 'created': (n.get('createdAt') or '')[:19],
+                    'uri': n.get('jobberWebUri') or '', 'case_id': None}
+                   for n in (data.get('jobs') or {}).get('nodes') or []]
+            if out:
+                break
+    if not out:
+        conn = _conn()
+        try:
+            out = [{'number': r['number'], 'title': r['title'] or '', 'client_name': r['client_name'] or '',
+                    'status': r['status'] or '', 'date': (r['start_at'] or r['created_at'] or '')[:10],
+                    'created': r['created_at'] or '', 'uri': r['web_uri'] or '', 'case_id': r['case_id']}
+                   for r in conn.execute("SELECT * FROM pump_jobber_items WHERE kind='job' "
+                                         "ORDER BY created_at DESC, CAST(number AS INTEGER) DESC LIMIT ?", (limit,))]
+        finally:
+            conn.close()
+    # Newest first, whatever order they came in.
+    return sorted(out, key=lambda j: (j.get('created') or '', int(j['number']) if str(j['number']).isdigit() else 0),
+                  reverse=True)[:limit]
+
+
 def search_jobber_jobs(q, limit=25):
     """Recent Jobber jobs for a job number or a client name (Oct 2026: a service call is found by
     either, then picked from the list), newest first: [{number, title, client_name, status, date,
@@ -8276,8 +8313,9 @@ def search_jobber_jobs(q, limit=25):
 
 @api('/jobber/jobs')
 def h_jobber_jobs(actor):
-    """?q= a job number or client name - recent Jobber jobs to pick from."""
-    return {'jobs': search_jobber_jobs(request.args.get('q') or '')}
+    """?q= a job number or client name - recent Jobber jobs to pick from; no q: the newest created."""
+    q = (request.args.get('q') or '').strip()
+    return {'jobs': search_jobber_jobs(q) if q else recent_jobber_jobs(), 'recent': not q}
 
 
 @api('/service_call', methods=('POST',))
