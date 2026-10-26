@@ -4127,8 +4127,9 @@ class PumpsTest(unittest.TestCase):
         # The live recurring job once, with whether this month is billed on it.
         self.assertEqual([(g['number'], (g['billed'] or {}).get('number'), g['property']) for g in j['recurring']],
                          [('9700', '36990', '8125 Banyan Breeze Way')])
-        self.assertEqual([x['number'] for x in j['invoices']], ['36990', '36800'], 'the rest, newest first')
-        self.assertEqual(j['invoices'][0]['status'], 'awaiting_payment')
+        # Every invoice found is listed too - one on a recurring job included (#36995 Pebblebrooke was hidden, Oct 2026).
+        self.assertEqual([x['number'] for x in j['invoices']], ['36500', '36990', '36800'])
+        self.assertEqual(j['invoices'][1]['status'], 'awaiting_payment')
         july = P.link_invoice_choices('Banyan')
         self.assertTrue(july['month'])
         self.assertEqual(seen[-1], {'q': 'Banyan'})
@@ -4349,6 +4350,56 @@ class PumpsTest(unittest.TestCase):
             P.jobber_gql, P.jobber_status = saved
         self.assertTrue(j['recent'])
         self.assertEqual([x['number'] for x in j['jobs']], ['14650', '14600'])
+
+    def test_vendor_invoice_linking_search_field_restore(self):
+        """Pump Manager (Oct 2026) couldn't link vendor bills to our invoices: the search missed #36995 (Pebblebrooke)
+        and #36712, there was no field to type our invoice #, and a cancelled bill (#29183 Rosewood) couldn't come
+        back. Linking never marks the vendor bill paid."""
+        terms = []
+
+        def fake(query, variables=None):
+            terms.append((variables or {}).get('q'))
+            if 'invoices(searchTerm' in query and (variables or {}).get('q') in ('Pebblebrook', '36995'):
+                return {'invoices': {'nodes': [{'id': 'I36995', 'invoiceNumber': 36995, 'invoiceStatus': 'PAID',
+                                                'subject': 'October Pump Maintenance', 'issuedDate': '2026-10-02',
+                                                'amounts': {'total': 3850}, 'client': {'name': 'Pebblebrook HOA'},
+                                                'jobs': {'nodes': [{'jobNumber': 8515, 'title': 'Quarterly', 'jobType': 'RECURRING'}]}}]}}
+            return {'invoices': {'nodes': []}, 'jobs': {'nodes': []}, 'clients': {'nodes': []}}
+        saved = P.jobber_gql
+        P.jobber_gql = fake
+        conn = P._conn()
+        conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_name, total, created_at) "
+                     "VALUES ('I36712', 'invoice', '36712', 'Invoice', 'paid', 'MIROMAR OUTLETS', 300, '2026-10-05')")
+        conn.commit()
+        conn.close()
+        try:
+            found = P.search_jobber_invoices('Pebblebrooke Quarterly Irrigation & Fountain Maint')
+            self.assertIn('36995', [x['number'] for x in found], terms)
+            self.assertEqual([x['number'] for x in P.search_jobber_invoices('36712')], ['36712'], 'synced, paid, by number')
+            self.assertIn('36712', [x['number'] for x in P.search_jobber_invoices('Miromar')])
+        finally:
+            P.jobber_gql = saved
+        # Cancelled by mistake, restored, then linked by typing our invoice #.
+        self.extracts['b-rose.pdf'] = extraction('bill', '29183', client='Rosewood HOA', subtotal=550)
+        b = self.upload('b-rose.pdf')
+        self.c.post(f"/pumps/api/cases/{b['case_id']}/delete", json={'reason': 'mistake'})
+        vi = lambda: {x['number']: x for x in self.c.get('/pumps/api/vendor_invoices?q=29183').get_json()['invoices']}['29183']
+        self.assertEqual(vi()['state'], 'cancelled')
+        r = self.c.post(f"/pumps/api/cases/{b['case_id']}/restore", json={}).get_json()
+        self.assertTrue(r['success'], r)
+        self.assertEqual(r['case']['status'], 'open')
+        self.assertEqual(vi()['state'], 'not_invoiced')
+        saved_find = P.find_invoice_by_number
+        P.find_invoice_by_number = lambda n: {'id': 'I36816', 'invoiceNumber': 36816, 'invoiceStatus': 'paid',
+                                              'amounts': {'total': 715}, 'client': {'id': 'CR', 'name': 'Rosewood'}}
+        try:
+            r = self.c.post(f"/pumps/api/cases/{b['case_id']}/jobber_invoice", json={'number': '36816'}).get_json()
+        finally:
+            P.find_invoice_by_number = saved_find
+        self.assertTrue(r['success'], r)
+        row = vi()
+        self.assertEqual((row['state'], row['ours']['number'], row['paid_on']), ('invoiced', '36816', ''),
+                         'linked - and not marked paid, even with our invoice paid')
 
     def test_watercrest_is_water_crest(self):
         """Oct 2026: Wettech's "Watercrest @ Falling Waters" scored lowest against Jobber's "WATER CREST AT FALLING
