@@ -14929,9 +14929,11 @@ def account_history(conn, name):
     # Its paperwork: the vendors' service reports, and quotes and bills on its jobs.
     docs = []
     for r in conn.execute("SELECT * FROM pump_docs WHERE status != 'dismissed' ORDER BY COALESCE(doc_date, created_at) DESC, id DESC"):
-        if r['case_id'] in job_ids or (r['kind'] == 'report' and about(' '.join(x for x in (r['client_name'], r['site']) if x))):
+        # Quotes naming it count too, like bills (Oct 2026: the account page's Vendor quotes tab).
+        if r['case_id'] in job_ids or (r['kind'] in ('report', 'quote') and
+                                       about(' '.join(x for x in (r['client_name'], r['site']) if x))):
             d = _doc_dict(r)
-            docs.append({k: d.get(k) for k in ('id', 'kind', 'vendor', 'doc_number', 'doc_date', 'total', 'file_name',
+            docs.append({k: d.get(k) for k in ('id', 'kind', 'vendor', 'doc_number', 'doc_date', 'total', 'subtotal', 'file_name',
                                                'case_id', 'has_branded', 'created_at')}
                         | {'signed_at': (d['jobber'] or {}).get('approved_at') or '',
                            'signed_sent_at': (d['jobber'] or {}).get('signed_sent_at') or ''})

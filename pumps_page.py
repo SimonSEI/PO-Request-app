@@ -571,7 +571,7 @@ function caseRow(c, extra){
 function todoRow(t){
   return `<div class="row"><div class="main"><div class="tt"><label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer"><input type="checkbox" onclick="event.preventDefault();askDone(event, () => todoDone(${t.id}, true, event))" style="margin-top:3px"><span>${esc(t.title)}</span></label></div>
       ${t.detail || (t.kind === 'manual' && t.due_on) ? `<div class="sub" style="margin-left:24px">${t.kind === 'manual' && t.due_on ? `<b class="${t.due_on < todayIso() ? 'bad' : 'warn'}">due ${esc(niceDay(t.due_on))}</b>${t.detail ? ' · ' : ''}` : ''}${esc(t.detail || '')}</div>` : ''}
-      ${t.kind === 'approved_quote' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${t.link.case_id ? `<button class="btn s p" onclick="signQuote(${t.link.case_id})">✍ Sign quote &amp; send to ${esc((t.title.match(/send it to (\S+)/) || [])[1] || 'the vendor')}</button><button class="btn s" onclick="quoteSent(${t.link.case_id})">I already sent it</button>` : ''}${t.link.doc_id ? `<a class="btn s" href="/pumps/api/docs/${t.link.doc_id}/file?version=original" target="_blank" rel="noopener">View quote</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}</div>` : ''}
+      ${t.kind === 'approved_quote' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${t.link.case_id ? `<button class="btn s p" title="Signs it and downloads it - send it yourself, then click I already sent it" onclick="signedQuote(${t.link.case_id}, true)">⬇ Download signed quote</button><button class="btn s" title="Opens the quote already signed" onclick="signedQuote(${t.link.case_id}, false)">See it signed</button><button class="btn s" onclick="quoteSent(${t.link.case_id})">I already sent it</button>` : t.link.doc_id ? `<a class="btn s" href="/pumps/api/docs/${t.link.doc_id}/file?version=original" target="_blank" rel="noopener">View quote</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}</div>` : ''}
       ${t.kind !== 'approved_quote' && (t.link.uri || t.link.case_id) ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${(t.link.uris || []).length > 1 ? t.link.uris.map(u => `<a class="btn s" href="${esc(u.uri)}" target="_blank" rel="noopener">Open ${esc(u.label)} ↗</a>`).join('') + `<button class="btn s" onclick='openAll(${JSON.stringify(t.link.uris.map(u => u.uri)).replace(/'/g, "&#39;")})'>Open both ↗</button>` : t.link.uri ? `<a class="btn s" href="${esc(t.link.uri)}" target="_blank" rel="noopener">${esc(t.link.label || 'Open in Jobber')} ↗</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}${t.link.scada_id ? `<button class="btn s" onclick="showTab('scada')">SCADA</button>` : ''}</div>` : ''}
       ${t.link.close_job ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="closeJobberJob('${esc(t.link.close_job)}', this)">Close job in Jobber</button></div>` : ''}
       ${t.link.draft_scada ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="draftScadaQuote(${t.link.scada_id}, this)">Draft quote in Jobber</button></div>` : ''}
@@ -2484,6 +2484,16 @@ async function signQuote(caseId){
     <textarea id="sq_body" rows="9" style="width:100%;margin-top:8px">${esc(e.body)}</textarea>`,
     `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn" onclick="signQuoteGo(${caseId}, false)">Only sign it</button><button class="btn p" id="sq_go" onclick="signQuoteGo(${caseId}, true)">✍ Sign &amp; send</button>`);
 }
+// The approved quote signed (saved on the job and the Jobber quote, not emailed): downloaded, or opened to look at.
+async function signedQuote(caseId, download){
+  const w = download ? null : window.open('', '_blank');
+  const j = await api('/cases/' + caseId + '/sign_quote', {method:'POST', body:{send: false}});
+  if (!j.success) { if (w) w.close(); toast(j.error, true); if (/upload/i.test(j.error || '')) openCase(caseId); return; }
+  const url = '/pumps/api/docs/' + j.doc_id + '/file?version=approved';
+  if (download) { window.location.href = url + '&download=1'; toast('Signed quote downloaded - send it, then click I already sent it.'); }
+  else if (w) w.location.href = url; else window.open(url, '_blank');
+  loadToday();
+}
 async function signQuoteGo(caseId, send){
   const b = document.getElementById('sq_go'); if (b) { b.disabled = true; b.textContent = 'Sending…'; }
   const j = await api('/cases/' + caseId + '/sign_quote', {method:'POST', body:{send, body: (document.getElementById('sq_body') || {}).value}});
@@ -2593,6 +2603,7 @@ let ACH = null;
 async function openAccount(name){
   const j = await api('/accounts/history?name=' + encodeURIComponent(name));
   if (!j.success) { toast(j.error || 'Not found', true); return; }
+  if (!ACH || ACH.name !== j.name) window._acTab = 'bills';
   ACH = j; window._acJName = null; renderAccount();
   document.getElementById('drawerWrap').classList.remove('hide');
 }
@@ -2628,8 +2639,13 @@ function renderAccount(){
   <div class="hd"><div><h2>${esc(a.name)}${ac.active === false ? ' <span class="chip">former</span>' : ''}</h2><div class="note">${where ? esc(where) + ' · ' : ''}${open.length} open to-do${open.length === 1 ? '' : 's'} · ${a.todos.length} in all · ${a.jobs.length} job${a.jobs.length === 1 ? '' : 's'}</div></div>
     <div><button class="btn" onclick="closeDrawer()">✕</button></div></div>
   <div class="bd">
-    <div class="sec"><h4>In Jobber</h4><div id="acJobber">${(jb.client_ids || []).length ? '<div class="note">Loading invoices, jobs and requests from Jobber…</div>' : '<div class="note">Not linked to a Jobber client yet - link it in Setup below.</div>'}</div></div>
-    <div class="sec"><h4>Vendor invoices (${(a.vendor_bills || []).length})</h4>${vendorBillsHtml(a.vendor_bills || [])}</div>
+    <div class="sec" style="display:flex;gap:6px;flex-wrap:wrap" id="acTabs">${[['bills', `Vendor invoices (${(a.vendor_bills || []).length})`],
+      ['quotes', `Vendor quotes (${(a.docs || []).filter(d => d.kind === 'quote').length})`], ['jobber', 'In Jobber'], ['account', 'Account']]
+      .map(([k, l]) => `<button class="btn s" data-actab="${k}" onclick="acTab('${k}')">${l}</button>`).join('')}</div>
+    <div data-acpane="bills" class="sec"><h4>Vendor invoices (${(a.vendor_bills || []).length})</h4>${vendorBillsHtml(a.vendor_bills || [])}</div>
+    <div data-acpane="quotes" class="sec"><h4>Vendor quotes (${(a.docs || []).filter(d => d.kind === 'quote').length})</h4>${vendorQuotesHtml((a.docs || []).filter(d => d.kind === 'quote'))}</div>
+    <div data-acpane="jobber" class="sec"><h4>In Jobber</h4><div id="acJobber">${(jb.client_ids || []).length ? '<div class="note">Loading invoices, jobs and requests from Jobber…</div>' : '<div class="note">Not linked to a Jobber client yet - link it under Account → Setup.</div>'}</div></div>
+    <div data-acpane="account">
     <details class="sec fold"><summary><h4>Setup</h4> <span class="note">pump, lake and SCADA - what they have and the prices</span></summary><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">${setup}</div>
       ${ac.active && ((p && p.active) || (l && l.active !== 0)) ? `<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn s ${vis ? '' : 'p'}" onclick="accountReady(${q(a.name)})">✓ Ready - client approved</button>${vis ? `<span class="note">✓ Client approved ${esc((vis.link || {}).since || '')} · waiting on ${esc(((vis.link || {}).vendors || []).filter(x => !((vis.link || {}).reported || []).includes(x)).join(' and '))}</span>` : ''}</div>` : ''}
       ${links ? `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">${links}</div>` : ''}</details>
@@ -2642,10 +2658,27 @@ function renderAccount(){
     <div class="sec"><h4>Items followed here (${a.jobs.length})</h4>${jobs || '<div class="note">None.</div>'}</div>
     <div class="sec"><h4>Reports and quotes (${(a.docs || []).filter(d => d.kind !== 'bill').length})</h4>${docs || '<div class="note">No reports or quotes yet.</div>'}</div>
     ${notices ? `<div class="sec"><h4>Maintenance - subcontractor notified</h4>${notices}</div>` : ''}
+    </div>
   </div>`;
+  acTab(window._acTab || 'bills');
   // Jobber's history: fetched once per account, kept while its page re-draws.
   if (window._acJName === a.name && window._acJ) acJobberShow(window._acJTab || 'invoices');
   else { window._acJ = null; window._acJName = a.name; loadAccountJobber(jb.client_ids || []); }
+}
+// The account page in tabs (Oct 2026): Jobber's long history loading in no longer pushes the rest down.
+function acTab(k){
+  window._acTab = k;
+  document.querySelectorAll('#drawer [data-acpane]').forEach(el => el.classList.toggle('hide', el.dataset.acpane !== k));
+  document.querySelectorAll('#acTabs [data-actab]').forEach(b => b.classList.toggle('p', b.dataset.actab === k));
+}
+// Every vendor quote for the account: when, whose, how much, signed, its job.
+function vendorQuotesHtml(qs){
+  if (!qs.length) return '<div class="note">No vendor quotes yet.</div>';
+  return `<table class="t"><thead><tr><th>Date</th><th>Vendor</th><th>Their quote</th><th class="num">Amount</th><th>Signed</th><th></th></tr></thead><tbody>${qs.map(d => `<tr>
+    <td>${esc(d.doc_date || d10(d.created_at))}</td><td>${esc(d.vendor || '')}</td><td><a target="_blank" href="/pumps/api/docs/${d.id}/file">${d.doc_number ? '#' + esc(d.doc_number) : esc(d.file_name)}</a></td>
+    <td class="num">${money(d.total ?? d.subtotal)}</td>
+    <td>${d.signed_at ? `<a class="chip g" href="/pumps/api/docs/${d.id}/file?version=approved&download=1">signed ${esc(d10(d.signed_at))}</a>` : '<span class="note">-</span>'}</td>
+    <td>${d.case_id ? `<a href="#" onclick="event.preventDefault();openCase(${d.case_id})">job ↗</a>` : ''}</td></tr>`).join('')}</tbody></table>`;
 }
 // Every vendor invoice for the account: what, when, how much, our invoice, paid.
 function vendorBillsHtml(bills){
