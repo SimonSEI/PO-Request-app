@@ -72,6 +72,18 @@ DEFAULT_VENDORS = [{
     'sender_match': ['gulfshoreyachts', 'gulfshore yacht', 'gulf shore yacht'],
     'contact_email': 'Gulfshoreyachts@gmail.com',
     'contact_name': 'Jordan',
+}, {
+    # Warm Springs' pump maintenance and repairs (Oct 2026: its bill was taken for an unknown vendor's).
+    'key': 'naples_electric',
+    'display': 'Naples Electric',
+    'names': ['Naples Electric Motor Works, Inc.', 'Naples Electric Motor Works, Inc', 'Naples Electric Motor Works',
+              'Naples Electric'],
+    'emails': ['nemwinc.com'],
+    'phones': ['239-591-1313', '(239) 591-1313', '239.591.1313'],
+    'other': ['2088 J&C Blvd.', '2088 J&C Blvd'],
+    'sender_match': ['nemwinc', 'naples electric'],
+    'contact_email': 'paul@nemwinc.com',
+    'contact_name': 'Paul',
 }]
 
 # A whole cell that is a technician label: "Service Technician Signature",

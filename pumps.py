@@ -627,6 +627,14 @@ def _vendor_email(vendor_name):
 
 # What the office told us (Oct 2026) about one account's names.
 SEED_SITE_ALIASES = [
+    # Naples Electric's bills say "Warm Springs in Compass Landings" (Oct 2026): the Warm Springs
+    # association, its pump job #6720 Quarterly Pump 525.
+    {'place': 'Warm Springs', 'area': '', 'client_id': 'Z2lkOi8vSm9iYmVyL0NsaWVudC83MTU2MDY2OA==',
+     'client_name': 'Warm Springs Comm. Asso., Inc. (Compass Landing) c/o Sandcastle Community Management',
+     'property_id': 'Z2lkOi8vSm9iYmVyL1Byb3BlcnR5Lzc3NDU3NTQ0',
+     'property_label': 'Warm Springs Community Association, Inc. (Compass Landing), 3690 Pilot Circle, Naples',
+     'job_id': 'Z2lkOi8vSm9iYmVyL0pvYi83NTY0NzYzMg==', 'job_label': '#6720 Quarterly Pump 525', 'any_name': 1,
+     'note': 'Warm Springs / Compass Landing(s) - Naples Electric does its pumps.'},
     # The office (Oct 2026): every Huntington quote - "Huntington #6", any
     # phase or "Residence Assoc." - is for the Lakes Master Association.
     # Its 41 properties are the pump locations, picked per quote as usual.
@@ -2347,6 +2355,9 @@ def _clean_extraction(x):
     x = dict(x or {})
     x['kind'] = x.get('kind') if x.get('kind') in ('quote', 'bill', 'report', 'other') else 'other'
     x['po_number'] = clean_po(x.get('po_number'))
+    # "1 Warm Springs in Compass Landings": the quantity column read into the client (Naples Electric, Oct 2026).
+    if isinstance(x.get('client_name'), str):
+        x['client_name'] = re.sub(r'^\s*\d{1,3}\s+(?=[A-Za-z])', '', x['client_name'])
     x['doc_date'] = _iso_date(x.get('doc_date'))
     for k in ('subtotal', 'tax', 'total'):
         x[k] = _money(x.get(k))
@@ -3337,6 +3348,8 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
             rec['quote_ref'] = x.get('quote_reference') or ''
             if not rec['vendor']:
                 rec['vendor'] = x.get('vendor') or vendor
+            # The reader's "Naples Electric Motor Works, Inc." is the vendor we know as "Naples Electric".
+            rec['vendor'] = _vendor_display(rec['vendor'] or '') or rec['vendor']
             if x.get('notes'):
                 rec['notes'] = x['notes']
             if rec['kind'] in ('quote', 'bill') and rec['total'] is None and rec['subtotal'] is None:
