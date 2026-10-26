@@ -13070,9 +13070,9 @@ def add_sign_todo(conn, case, doc=None):
     num = (doc or {}).get('doc_number') or ''
     jq = (json.loads(case.get('jobber') or '{}').get('quote') or {})
     detail = (f"{who} approved our Jobber quote{(' #' + str(jq['number'])) if jq.get('number') else ''}. "
-              + (f"Sign quote types \"{APPROVER} {_today().strftime('%m/%d/%Y')}\" on "
-                 f"{(doc or {}).get('vendor') or 'the vendor'}'s quote{(' #' + num) if num else ''}, saves it here and "
-                 f"on the Jobber quote, and emails it to {name} asking when it'll be done."
+              + (f"Download signed quote types \"{APPROVER} {_today().strftime('%m/%d/%Y')}\" on "
+                 f"{(doc or {}).get('vendor') or 'the vendor'}'s quote{(' #' + num) if num else ''} and saves it here "
+                 f"and on the Jobber quote. Send it to {name} with Message to {name}, then click I already sent it."
                  if doc else f"{case.get('vendor') or 'The vendor'}'s quote isn't saved on this job yet - upload it "
                  f"(or it comes in by email), then click Sign quote."))
     add_todo(conn, f"sign-quote:{case['id']}", f'Sign the approved quote and send it to {name} - {who}', detail,
