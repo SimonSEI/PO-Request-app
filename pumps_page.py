@@ -1136,15 +1136,15 @@ async function loadBills(){
   box.innerHTML = j.vendors.map(g => `<div class="grp">${esc(g.vendor)} · ${money(g.payable_total)} to pay${g.waiting_total ? ' · ' + money(g.waiting_total) + ' waiting' : ''}</div>
     <table class="t"><thead><tr><th><input type="checkbox" title="Tick all of ${esc(g.vendor)}'s payable bills" onchange="billsAll(this, '${esc(g.vendor)}')"></th><th>Job</th><th>Their invoice</th><th class="num">Amount</th><th>Can it be paid?</th><th></th></tr></thead><tbody>
     ${g.bills.map(b => { if (b.payable) { n++; total += b.amount || 0; }
-      return `<tr class="${b.payable ? '' : 'note'}"><td><input type="checkbox" class="billPick" data-vendor="${esc(g.vendor)}" data-payable="${b.payable ? 1 : 0}" value="${b.case_id}" ${b.payable && !b.asked_at ? 'checked' : ''} onclick="billsClick(event, this)"></td>
+      return `<tr class="${b.payable ? '' : 'note'}"><td><input type="checkbox" class="billPick" data-vendor="${esc(g.vendor)}" data-payable="${b.ready ? 1 : 0}" value="${b.case_id}" ${b.ready && !b.asked_at ? 'checked' : ''} onclick="billsClick(event, this)"></td>
       <td><a href="#" onclick="event.preventDefault();openCase(${b.case_id})">${esc(b.client_name || b.title)}</a><div class="note">${esc(b.title)}</div></td>
       <td>${b.bill_doc_id ? `<a target="_blank" href="/pumps/api/docs/${b.bill_doc_id}/file">#${esc(b.bill_number || '?')}</a>` : '#' + esc(b.bill_number || '?')}<div class="note">${esc(b.bill_date)}</div></td>
       <td class="num">${b.amount != null ? money(b.amount) : '?'}</td>
-      <td>${b.payable ? '<b class="ok">✓ Yes</b> - ' : 'Not yet - '}${esc(b.why)}${b.asked_at ? `<div class="note">✉ Emailed Christian ${esc(b.asked_at.slice(0, 10))}</div>` : ''}</td>
+      <td>${b.payable ? '<b class="ok">✓ Yes</b> - ' : 'Not yet - '}${esc(b.why)}${b.payable && !b.ready && b.email_on && !b.asked_at ? `<div class="note">⏳ Ready ${esc(niceDay(b.ready_since))} - goes to Christian ${esc(niceDay(b.email_on))} (5 business days later)</div>` : ''}${b.asked_at ? `<div class="note">✉ Emailed Christian ${esc(b.asked_at.slice(0, 10))}</div>` : ''}</td>
       <td>${b.held ? `<button class="btn s" title="Lift the hold - it can be paid again once nothing else stops it" onclick="billsHold([${b.case_id}], true)">↶ Lift hold</button> ` : b.payable ? (b.pay_ok ? `<button class="btn s" title="Back to waiting" onclick="billsPayOk([${b.case_id}], true)">↶ Not yet</button> ` : `<button class="btn s" title="Something's wrong with this one - don't pay it until the hold is lifted" onclick="billsHold([${b.case_id}])">Not OK to pay yet</button> `) : `<button class="btn s p" title="Billed through a monthly contract, or otherwise fine to pay - pay it now" onclick="billsPayOk([${b.case_id}])">OK to pay now</button> <button class="btn s" title="Invoiced straight in Jobber? Tie that invoice to this job" onclick="linkInvoice(${b.case_id}).then(loadBills)">Link invoice</button> `}<button class="btn s" onclick="markVendorPaid(${b.case_id}).then(loadBills)">Mark paid</button></td></tr>`; }).join('')}
     </tbody></table>`).join('') || '<div class="empty">No vendor bills waiting to be paid. 🎉</div>';
   billsPaidRender(j.paid || [], '');
-  setCount('n-bills', j.vendors.reduce((a, g) => a + g.bills.filter(b => b.payable && !b.asked_at).length, 0), false);
+  setCount('n-bills', j.vendors.reduce((a, g) => a + g.bills.filter(b => b.ready && !b.asked_at).length, 0), false);
   billsInfo();
 }
 // Tick every payable bill (or one vendor's, from its header box), or none.

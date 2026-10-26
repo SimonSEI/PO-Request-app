@@ -8092,7 +8092,7 @@ def h_summary(actor):
         q = work_queue(conn)
         # Bills Christian can pay that he hasn't been sent yet - the Bills to pay tab's badge.
         q['bills_to_pay_count'] = sum(1 for g in bills_to_pay(conn) for b in g['bills']
-                                      if b['payable'] and not b['asked_at'])
+                                      if b['ready'] and not b['asked_at'])
         return {'queue': q, 'counts': {k: len(v) for k, v in q.items() if isinstance(v, list)},
                 'scan': _state_get('scan_status') or {}, 'jobber': {**jobber_status(),
                                                                      'sync': jobber_sync_state()},
@@ -8720,6 +8720,18 @@ def month_billed(client, year, month):
     return ans
 
 
+PAY_WAIT_DAYS = int(os.environ.get('PUMPS_PAY_WAIT_DAYS', '5'))   # business days from ready to pay to Christian's email
+
+
+def add_business_days(d, n):
+    """d plus n working days (Monday-Friday)."""
+    while n > 0:
+        d += timedelta(days=1)
+        if d.weekday() < 5:
+            n -= 1
+    return d
+
+
 def link_billed_months(actor='Pumps'):
     """Each vendor bill waiting on its month to be billed on the client's pump job: once Jobber has
     that month's invoice on the job, link it to the bill's item (so it can be paid) and say so on the
@@ -8752,7 +8764,7 @@ def bills_to_pay(conn):
     """Every vendor bill not paid yet, by vendor (Oct 2026). A bill can be paid
     once we've invoiced the client for it (our Jobber invoice exists - nearly
     always), or a report-only account's month is over. The rest wait."""
-    groups = {}
+    groups, stamped = {}, False
     for c in list_cases(conn, 'all'):
         if c['status'] == 'cancelled' or c['vendor_paid_on']:
             continue
@@ -8810,6 +8822,21 @@ def bills_to_pay(conn):
             payable = False
             why = (f"held - not OK to pay, by {hold.get('by') or 'the office'} ({(hold.get('at') or '')[:10]})"
                    f"{': ' + hold['note'] if hold.get('note') else ''} - {why}")
+        # Ready to pay is stamped the day it happens; Christian gets it PAY_WAIT_DAYS business days later
+        # (Oct 2026, his ask). Not ready any more (unlinked, held) clears the stamp.
+        since = _state_get(f"payable_since:{c['id']}", conn=conn)
+        if payable and not since:
+            # First seen ready: from when it was - OK'd by hand, or our invoice made - else today.
+            drafted = ((c.get('steps') or {}).get('invoice_drafted') or {}).get('at') if invoiced else ''
+            since = min([x for x in ((ok.get('at') or '')[:10], (drafted or '')[:10]) if _iso_date(x)] or
+                        [_today().isoformat()])
+            conn.execute('INSERT OR REPLACE INTO pump_state (key, value) VALUES (?, ?)',
+                         (f"payable_since:{c['id']}", json.dumps(since)))
+            stamped = True
+        elif not payable and since:
+            conn.execute('DELETE FROM pump_state WHERE key=?', (f"payable_since:{c['id']}",))
+            since, stamped = None, True
+        email_on = add_business_days(date.fromisoformat(since[:10]), PAY_WAIT_DAYS).isoformat() if payable and since else ''
         asked = _state_get(f'pay_email:{c["id"]}', conn=conn) or {}
         vendor = c.get('vendor') or 'Wettech'
         groups.setdefault(vendor, []).append({
@@ -8817,14 +8844,17 @@ def bills_to_pay(conn):
             'bill_number': number, 'bill_date': (bill['doc_date'] if bill else '') or '', 'amount': amount,
             'bill_doc_id': bill['id'] if bill else None, 'payable': payable, 'why': why, 'pay_ok': bool(ok), 'held': bool(hold),
             'month_invoice': '' if pay.get('report_only') else month_inv,
+            'ready_since': since or '', 'email_on': email_on, 'ready': bool(email_on) and email_on <= _today().isoformat(),
             'invoice_number': inv.get('number') or c.get('sei_invoice_number') or '',
             'asked_at': asked.get('at', '') if asked.get('sent') else ''})
     out = []
     for vendor in sorted(groups, key=lambda v: (v != 'Wettech', v.lower())):
-        bills = sorted(groups[vendor], key=lambda b: (not b['payable'], b['bill_date'] or '', b['case_id']))
+        bills = sorted(groups[vendor], key=lambda b: (not b['payable'], not b['ready'], b['bill_date'] or '', b['case_id']))
         out.append({'vendor': vendor, 'bills': bills,
                     'payable_total': round(sum(b['amount'] or 0 for b in bills if b['payable']), 2),
                     'waiting_total': round(sum(b['amount'] or 0 for b in bills if not b['payable']), 2)})
+    if stamped:
+        conn.commit()
     return out
 
 
@@ -8871,7 +8901,8 @@ def bills_to_pay_email(conn, case_ids, signer=''):
     picked = set(case_ids or [])
     lines, atts_ids, total, n = ['Hi Christian,', '', 'These vendor bills can be paid - we have invoiced the clients:', ''], [], 0.0, 0
     for g in bills_to_pay(conn):
-        bills = [b for b in g['bills'] if b['payable'] and (not picked or b['case_id'] in picked)]
+        # Only bills ready PAY_WAIT_DAYS business days or more go to Christian.
+        bills = [b for b in g['bills'] if b['ready'] and (not picked or b['case_id'] in picked)]
         if not bills:
             continue
         sub = round(sum(b['amount'] or 0 for b in bills), 2)
@@ -9020,7 +9051,7 @@ def h_bills_to_pay_email(actor):
         files = [dict(r) for r in conn.execute(
             f"SELECT file_name, file_path FROM pump_docs WHERE id IN ({','.join('?' * len(e['doc_ids'])) or 'NULL'})",
             e['doc_ids'])]
-        cases = [b['case_id'] for g in bills_to_pay(conn) for b in g['bills'] if b['payable'] and (not ids or b['case_id'] in ids)]
+        cases = [b['case_id'] for g in bills_to_pay(conn) for b in g['bills'] if b['ready'] and (not ids or b['case_id'] in ids)]
     finally:
         conn.close()
     if not data.get('send'):
