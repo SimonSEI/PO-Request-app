@@ -1071,6 +1071,21 @@ class PumpsTest(unittest.TestCase):
         self.assertNotIn('known pump vendor', d.get('review_reason') or '')
         self.assertEqual(d['client_name'], 'Warm Springs in Compass Landings')
         self.assertEqual(P.match_site_alias(d)['job_label'], '#6720 Quarterly Pump 525')
+        # One read before Naples Electric was known: Read again puts it right and files it.
+        conn = P._conn()
+        conn.execute("UPDATE pump_docs SET vendor='', client_name='1 Warm Springs in Compass Landings', status='review', "
+                     "case_id=NULL, review_reason='Not from a known pump vendor - confirm it belongs here.' WHERE id=?",
+                     (r['doc_id'],))
+        conn.commit()
+        conn.close()
+        out = self.c.post(f"/pumps/api/docs/{r['doc_id']}/read_again").get_json()
+        self.assertTrue(out['success'], out)
+        conn = P._conn()
+        d = P._doc_dict(conn.execute('SELECT * FROM pump_docs WHERE id=?', (r['doc_id'],)).fetchone())
+        conn.close()
+        self.assertEqual((d['vendor'], d['client_name'], d['review_reason']),
+                         ('Naples Electric', 'Warm Springs in Compass Landings', ''))
+        self.assertTrue(out['case_id'], 'filed on an item')
 
     def test_letter_split_before_oct_9_is_one_quote_again(self):
         """Oakmont Woods 2 (was Autumn Woods 2) came in while letters were split: the doc kept the
