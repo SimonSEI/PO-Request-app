@@ -1052,6 +1052,26 @@ class PumpsTest(unittest.TestCase):
         # Nothing highlighted: the whole letter, as before.
         self.assertEqual(P._only_highlighted({'line_items': q['line_items']}, ''), {'line_items': q['line_items']})
 
+    def test_naples_electric_bill_for_warm_springs(self):
+        """Naples Electric Motor Works #28652 (Oct 2026): Warm Springs' quarterly pump maintenance. It was taken
+        for an unknown vendor's, with the client "1 Warm Springs in Compass Landings" (the quantity read in)."""
+        name = 'Invoice_28652_from_Naples_Electric.pdf'
+        self.texts[name] = ('Naples Electric Motor Works, Inc.\n2088 J&C Blvd.\nNaples Fl. 34109\n239-591-1313\n'
+                            'Invoice 28652 10/23/2026\nBill To Stahlman/England Irrigation, Inc.\nP.O. No. Warm Springs\n'
+                            '1 Warm Springs in Compass Landings\n1 Quarterly Pump Station Maintenance October Service '
+                            '250.00 250.00\nSales Tax 6% 0.00\nTotal $250.00\n')
+        self.extracts[name] = {**extraction('bill', '28652', client='1 Warm Springs in Compass Landings', subtotal=250),
+                               'vendor': 'Naples Electric Motor Works, Inc.'}
+        r = P.ingest_document(name, b'%PDF-1.4 nemw 28652', source='email', actor='email scan',
+                              email={'uid': 'ne-1', 'from': 'office@nemwinc.com', 'subject': 'Invoice 28652'})
+        conn = P._conn()
+        d = P._doc_dict(conn.execute('SELECT * FROM pump_docs WHERE id=?', (r['doc_id'],)).fetchone())
+        conn.close()
+        self.assertEqual(d['vendor'], 'Naples Electric')
+        self.assertNotIn('known pump vendor', d.get('review_reason') or '')
+        self.assertEqual(d['client_name'], 'Warm Springs in Compass Landings')
+        self.assertEqual(P.match_site_alias(d)['job_label'], '#6720 Quarterly Pump 525')
+
     def test_letter_split_before_oct_9_is_one_quote_again(self):
         """Oakmont Woods 2 (was Autumn Woods 2) came in while letters were split: the doc kept the
         flow meter and a copy made a job for the surge arrestor. Read again,
