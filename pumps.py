@@ -1848,6 +1848,37 @@ def _note_claude(problem):
         pass
 
 
+def _proposal_fields(text, out):
+    """A one-price proposal (Naples Electric's "PROPOSAL 232310 ... Price $2,543.28 includes tax", Oct 2026):
+    its number, date, price, the site after "Attention:", and the work it names."""
+    m = re.search(r'\bPrice\s*:?\s*\$\s*([\d,]+\.\d{2})([^\n]{0,40})', text, re.I)
+    if not m:
+        return
+    price, tax_in = _money(m.group(1)), bool(re.search(r'includ\w*\s+(?:sales\s+)?tax', m.group(2), re.I))
+    out['kind'] = 'quote' if out['kind'] in ('other', 'quote') else out['kind']
+    n = re.search(r'\bPROPOSAL\s*(?:#|No\.?)?\s*(\d{3,})(?:[ \t]+(\d{1,2}/\d{1,2}/\d{2,4}))?', text, re.I)
+    if n:
+        out['doc_number'] = out['doc_number'] or n.group(1)
+        if n.group(2) and not out['doc_date']:
+            out['doc_date'] = _iso_date(n.group(2))
+    lines = [l.strip() for l in text.splitlines()]
+    att = next((i for i, l in enumerate(lines) if re.match(r'^attention\s*:', l, re.I)), None)
+    after = [l for l in lines[att + 1:] if l and not re.match(r'^[-_=\s]+$', l)] if att is not None else []
+    if after and ':' not in after[0] and not re.search(r'\d+\.\d{2}', after[0]):
+        out['client_name'] = after[0]   # the site, under "Attention:
+    title = after[1] if len(after) > 1 and len(after[1]) < 90 and not after[1].endswith('.') else ''
+    body = re.search(r'(?:will\s+)?(furnish(?:\s+and\s+install)?[^.]*\.)', text, re.I | re.S)
+    work = ' '.join((body.group(1) if body else '').split())
+    desc = ' - '.join(x for x in (title, work[:1].upper() + work[1:]) if x) or 'Proposal'
+    out['line_items'] = [{'name': short_name(title or work) or 'Pump service', 'description': desc, 'quantity': 1.0,
+                          'unit_price': price, 'amount': price, 'taxable': not tax_in, 'is_tax': False}]
+    out['description'] = desc[:300]
+    if tax_in:
+        out.update(total=price, subtotal=None, tax=None, tax_included=True)
+    else:
+        out.update(subtotal=price, total=None)
+
+
 def _regex_extract(text, sender='', subject='', filename=''):
     """A rough reading for when Claude is unavailable, tuned to Wettech's
     invoice layout. Anything read this way is marked for review."""
@@ -1921,6 +1952,8 @@ def _regex_extract(text, sender='', subject='', filename=''):
     if re.search(r'as per quot', text, re.I):
         out['notes'] = 'Bill says "as per quotation".'
     _letter_quote(text, out)
+    if out['total'] is None and out['subtotal'] is None:
+        _proposal_fields(text, out)
     # "Reserve at Estero - Lee County" names the county for tax: drop it.
     out['client_name'] = re.sub(r'\s*[-–]\s*(Lee|Collier|Charlotte|Sarasota|Hendry|Manatee)\s+County\s*$', '',
                                 out['client_name'] or '', flags=re.I)
@@ -3524,12 +3557,16 @@ def read_doc_again(doc_id, actor='system'):
         # bill, Oct 2026: "not from a known pump vendor", client "1 Warm Springs..."): put those right too.
         vendor = _vendor_display(f"{doc['email_from'] or ''}\n{doc['email_subject'] or ''}\n{text[:3000]}") or \
             _vendor_display(x.get('vendor') or '')
-        unknown = (doc.get('review_reason') or '').startswith('Not from a known pump vendor')
+        reason = doc.get('review_reason') or ''
+        unknown = reason.startswith('Not from a known pump vendor')
+        no_amount = reason.startswith('No amount found') and (x.get('total') is not None or x.get('subtotal') is not None)
         if vendor and (unknown or not doc['vendor']):
             conn.execute('UPDATE pump_docs SET vendor=? WHERE id=?', (vendor, doc_id))
-        if x.get('client_name') and (unknown or re.match(r'^\s*\d{1,3}\s+[A-Za-z]', doc['client_name'] or '')):
+        if x.get('client_name') and (unknown or not doc['client_name'] or
+                                     re.match(r'^\s*\d{1,3}\s+[A-Za-z]', doc['client_name'] or '')):
             conn.execute('UPDATE pump_docs SET client_name=? WHERE id=?', (x['client_name'], doc_id))
-        if vendor and unknown and doc['status'] == 'review':
+        if ((vendor and unknown) or no_amount) and doc['status'] == 'review':
+            # What it was held for is read now: filed like a new one.
             conn.execute("UPDATE pump_docs SET status='new', review_reason='' WHERE id=?", (doc_id,))
             doc['status'] = 'new'
         dj = doc.get('jobber') or {}
