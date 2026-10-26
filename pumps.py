@@ -3518,6 +3518,20 @@ def read_doc_again(doc_id, actor='system'):
                                                   doc['file_name']))
         x['kind'] = doc['kind']
         full = x = _letter_prices(text, x)
+        if (doc['file_name'] or '').lower().endswith('.docx'):
+            x = full = _only_highlighted(x, docx_highlighted_text(data))
+        # Today's reader also knows more vendors and reads the client better (Naples Electric's Warm Springs
+        # bill, Oct 2026: "not from a known pump vendor", client "1 Warm Springs..."): put those right too.
+        vendor = _vendor_display(f"{doc['email_from'] or ''}\n{doc['email_subject'] or ''}\n{text[:3000]}") or \
+            _vendor_display(x.get('vendor') or '')
+        unknown = (doc.get('review_reason') or '').startswith('Not from a known pump vendor')
+        if vendor and (unknown or not doc['vendor']):
+            conn.execute('UPDATE pump_docs SET vendor=? WHERE id=?', (vendor, doc_id))
+        if x.get('client_name') and (unknown or re.match(r'^\s*\d{1,3}\s+[A-Za-z]', doc['client_name'] or '')):
+            conn.execute('UPDATE pump_docs SET client_name=? WHERE id=?', (x['client_name'], doc_id))
+        if vendor and unknown and doc['status'] == 'review':
+            conn.execute("UPDATE pump_docs SET status='new', review_reason='' WHERE id=?", (doc_id,))
+            doc['status'] = 'new'
         dj = doc.get('jobber') or {}
         merged = ''
         if 'split_from' in dj or ('letter_parts' in dj and SPLIT_LETTERS):
