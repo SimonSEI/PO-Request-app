@@ -890,6 +890,15 @@ async function openCase(id){
 }
 function closeDrawer(){ document.getElementById('drawerWrap').classList.add('hide'); document.getElementById('drawer').dataset.account = ''; curCase = null; history.replaceState(null, '', '#' + curTab); loadToday(); showTab(curTab); }
 const MONEY = new Set(['vendor_quote_amount','vendor_quote_total','vendor_bill_amount','vendor_bill_total','amount']);
+// The vendor's invoice and quote, one click from the top of the job (Oct 2026): "See Wettech's invoice".
+function vendorDocsHtml(c){
+  const docs = (c.docs || []).filter(d => ['bill', 'quote'].includes(d.kind) && d.status !== 'dismissed');
+  if (!docs.length) return '<div class="sec"><div class="note" style="padding:8px 12px;border:1px dashed var(--border-2);border-radius:10px">No invoice or quote attached to this job</div></div>';
+  const btn = d => { const who = d.vendor || c.vendor || 'the vendor';
+    return `<a class="btn ${d.kind === 'bill' ? 'p' : ''}" target="_blank" href="/pumps/api/docs/${d.id}/file">📄 See ${esc(who)}'s ${d.kind === 'bill' ? 'invoice' : 'quote'}${d.doc_number ? ' #' + esc(d.doc_number) : ''}</a>`; };
+  // Invoices first, then quotes.
+  return `<div class="sec"><div style="display:flex;gap:8px;flex-wrap:wrap">${docs.filter(d => d.kind === 'bill').concat(docs.filter(d => d.kind === 'quote')).map(btn).join('')}</div></div>`;
+}
 function renderCase(){
   const c = curCase, v = c.vendor || 'Wettech';
   const J = c.jobber || {};
@@ -916,6 +925,7 @@ function renderCase(){
   <div class="hd"><div><h2>${esc(c.title || c.client_name)} <button class="btn s" title="Rename this item" onclick="editTitle()">✎</button></h2><div class="note">${catChip(c.category)} <a href="#" title="Set the PO #" onclick="event.preventDefault();editPo()">${c.po_number ? 'PO ' + esc(c.po_number) : '+ PO #'}</a> · opened ${esc(c.opened_on)} ${jl}</div></div>
     <div style="display:flex;gap:6px;align-items:flex-start"><button class="btn" onclick="closeDrawer()">✕</button></div></div>
   <div class="bd">
+    ${vendorDocsHtml(c)}
     ${c.vendor_pay.state === 'due' ? `<div class="sec"><div class="issue">💸 Our client has paid the Jobber invoice - ${esc(v)}'s bill needs to be paid.<button class="btn s p" onclick="markVendorPaid(${c.id})">Mark ${esc(v)} paid</button></div></div>` : ''}
     ${c.account && c.account.notes ? `<div class="sec"><div class="note" style="background:var(--violet-bg);color:var(--violet);padding:8px 12px;border-radius:10px;white-space:pre-line"><b>📋 ${esc(c.account.name)}:</b> ${c.account.repairs_by ? 'repairs by <b>' + esc(c.account.repairs_by) + '</b> · ' : ''}${esc(c.account.notes)}</div></div>` : ''}
     ${issues ? `<div class="sec"><h4>Issues</h4><div style="display:flex;flex-direction:column;gap:8px">${issues}</div></div>` : ''}
