@@ -4330,6 +4330,23 @@ class PumpsTest(unittest.TestCase):
             s['role'] = 'accounting'
         self.assertNotEqual(self.c.post('/pumps/api/assistant/ask', json={'question': 'hi'}).status_code, 200)
 
+    def test_service_call_lists_the_newest_jobs_first(self):
+        """Service call (Oct 2026): with nothing typed, the most recently created Jobber jobs, newest first."""
+        def fake(query, variables=None):
+            return {'jobs': {'nodes': [
+                {'id': 'J1', 'jobNumber': 14600, 'title': 'Old one', 'jobStatus': 'upcoming', 'createdAt': '2026-10-20T10:00:00Z',
+                 'client': {'name': 'A'}},
+                {'id': 'J2', 'jobNumber': 14650, 'title': 'Newest', 'jobStatus': 'upcoming', 'createdAt': '2026-10-26T09:00:00Z',
+                 'client': {'name': 'B'}}]}}
+        saved = (P.jobber_gql, P.jobber_status)
+        P.jobber_gql, P.jobber_status = fake, (lambda: {'connected': True})
+        try:
+            j = self.c.get('/pumps/api/jobber/jobs').get_json()
+        finally:
+            P.jobber_gql, P.jobber_status = saved
+        self.assertTrue(j['recent'])
+        self.assertEqual([x['number'] for x in j['jobs']], ['14650', '14600'])
+
     def test_watercrest_is_water_crest(self):
         """Oct 2026: Wettech's "Watercrest @ Falling Waters" scored lowest against Jobber's "WATER CREST AT FALLING
         WATERS", so its report went on Falling Waters II. Words run together still match; the wrong pick is undone."""
