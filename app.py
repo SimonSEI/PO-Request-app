@@ -3373,6 +3373,65 @@ def edit_office_admin_password():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
+
+# Tables that find a person's records by their username. Renaming someone moves
+# these along with them, so a tech keeps their POs and billing submissions.
+USERNAME_COLUMNS = [('po_requests', 'tech_username'),
+                    ('community_billing_submissions', 'tech_username'),
+                    ('pump_assistant_messages', 'username')]
+
+# Env lists that give named usernames access to an app (Railway variables).
+_ACCESS_LISTS = {'Cash Flow': 'CASHFLOW_USERS', 'FileMaker': 'FILEMAKER_USERS', 'Pumps': 'PUMPS_USERS',
+                 'Receivables': 'AR_USERS', 'Time Off': 'TIMEOFF_USERS', 'Vendor Invoices': 'VI_USERS'}
+
+
+@app.route('/office_admin/rename_user', methods=['POST'])
+def office_admin_rename_user():
+    """Office changes a technician's or office admin's username (their records follow)."""
+    if 'username' not in session or session['role'] != 'office':
+        return jsonify({'success': False, 'error': 'Access denied'}), 401
+    data = request.get_json(silent=True) or {}
+    new_username = str(data.get('username') or '').strip()
+    if not new_username:
+        return jsonify({'success': False, 'error': 'Username is required'})
+    if len(new_username) > 50 or not re.fullmatch(r'[A-Za-z0-9._@-]+', new_username):
+        return jsonify({'success': False, 'error': 'Use letters, numbers and . _ - @ only (no spaces)'})
+    conn = sqlite3.connect(DB_PATH, timeout=15)
+    try:
+        c = conn.cursor()
+        c.execute("SELECT username, full_name FROM users WHERE id = ? AND role IN ('technician', 'office')",
+                  (data.get('user_id'),))
+        user = c.fetchone()
+        if not user:
+            return jsonify({'success': False, 'error': 'User not found'})
+        old_username = user[0]
+        if new_username == old_username:
+            return jsonify({'success': True, 'message': 'Username unchanged'})
+        # Login matches usernames ignoring case, so two can't differ only by case.
+        c.execute("SELECT 1 FROM users WHERE LOWER(username) = LOWER(?) AND id != ?",
+                  (new_username, data.get('user_id')))
+        if c.fetchone():
+            return jsonify({'success': False, 'error': f'Username "{new_username}" is already taken'})
+        c.execute("UPDATE users SET username = ? WHERE id = ?", (new_username, data.get('user_id')))
+        tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for table, column in USERNAME_COLUMNS:
+            if table in tables:
+                c.execute(f"UPDATE {table} SET {column} = ? WHERE {column} = ?", (new_username, old_username))
+        conn.commit()
+    finally:
+        conn.close()
+    if session['username'] == old_username:
+        session['username'] = new_username
+    log_activity(session['username'], 'RENAME_USER', 'user', data.get('user_id'),
+                 f'Username changed from {old_username} to {new_username}')
+    message = f'Username for {user[1] or old_username} changed to {new_username}'
+    lists = [app_name for app_name, var in _ACCESS_LISTS.items()
+             if old_username.lower() in {u.strip().lower() for u in os.environ.get(var, '').split(',')}]
+    if lists:
+        message += (f'. They were named in the access list for {", ".join(lists)} - change '
+                    f'{old_username} to {new_username} there in Railway, or they lose access.')
+    return jsonify({'success': True, 'message': message})
+
 @app.route('/manage_jobs')
 def manage_jobs():
     """Manage Jobs - Display job management interface"""
@@ -7041,7 +7100,7 @@ MANAGE_TECHS_UNIFIED_TEMPLATE = '''
                                 <span style="color: #999;">Added: {{ tech[4][:10] }}</span>
                             </div>
                             <div class="tech-creds">
-                                <p><strong>User:</strong> <span class="code">{{ tech[1] }}</span></p>
+                                <p><strong>User:</strong> <span class="code">{{ tech[1] }}</span> <button type="button" onclick="event.stopPropagation(); renameUser({{ tech[0] }}, this.dataset.username)" data-username="{{ tech[1] }}" style="padding:2px 10px;font-size:12px;border:1px solid #CBD5E1;border-radius:5px;background:#fff;cursor:pointer;">✏️ Change</button></p>
                                 <p><strong>Pass:</strong> <button type="button" onclick="event.stopPropagation(); resetTechPassword({{ tech[0] }}, '{{ tech[2]|replace("'", "\\'") }}')" style="padding:2px 10px;font-size:12px;border:1px solid #CBD5E1;border-radius:5px;background:#fff;cursor:pointer;">🔑 Reset password</button></p>
                                 {% if tech[3] %}<p><strong>Email:</strong> {{ tech[3] }}</p>{% endif %}
                             </div>
@@ -7091,7 +7150,7 @@ MANAGE_TECHS_UNIFIED_TEMPLATE = '''
                                 <span style="color: #999;">Added: {{ tech[4][:10] }}</span>
                             </div>
                             <div class="tech-creds">
-                                <p><strong>User:</strong> <span class="code">{{ tech[1] }}</span></p>
+                                <p><strong>User:</strong> <span class="code">{{ tech[1] }}</span> <button type="button" onclick="event.stopPropagation(); renameUser({{ tech[0] }}, this.dataset.username)" data-username="{{ tech[1] }}" style="padding:2px 10px;font-size:12px;border:1px solid #CBD5E1;border-radius:5px;background:#fff;cursor:pointer;">✏️ Change</button></p>
                                 <p><strong>Pass:</strong> <button type="button" onclick="event.stopPropagation(); resetTechPassword({{ tech[0] }}, '{{ tech[2]|replace("'", "\\'") }}')" style="padding:2px 10px;font-size:12px;border:1px solid #CBD5E1;border-radius:5px;background:#fff;cursor:pointer;">🔑 Reset password</button></p>
                                 {% if tech[3] %}<p><strong>Email:</strong> {{ tech[3] }}</p>{% endif %}
                             </div>
@@ -7237,6 +7296,16 @@ MANAGE_TECHS_UNIFIED_TEMPLATE = '''
         };
     </script>
 <script>
+function renameUser(id, current) {
+    var name = prompt('New username for ' + current + ' (letters, numbers and . _ - @, no spaces).\\nThey sign in with it from now on - their POs move with them.', current);
+    if (name === null || name.trim() === '' || name.trim() === current) return;
+    var csrf = (document.cookie.split('; ').find(function(c){ return c.indexOf('csrf_token=') === 0; }) || '').slice(11);
+    fetch('/office_admin/rename_user', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf},
+                                        body: JSON.stringify({user_id: id, username: name.trim()})})
+        .then(function(r){ return r.json(); })
+        .then(function(j){ alert(j.success ? j.message : ('Could not change the username: ' + j.error)); if (j.success) location.reload(); })
+        .catch(function(){ alert('Could not change the username - please try again'); });
+}
 function resetTechPassword(id, name) {
     var pw = prompt('New password for ' + name + ' (at least 6 characters).\\nTell them the new password yourself - it will not be shown again.');
     if (pw === null) return;
@@ -7544,7 +7613,7 @@ MANAGE_SERVICE_TECHS_TEMPLATE = '''
                     </div>
                     <div class="tech-body" id="body-{{ tech[0] }}">
                         <div style="background: #f0f7ff; padding: 12px; border-radius: 5px; margin-bottom: 15px; border-left: 4px solid #007bff;">
-                            <p style="color: #666; margin-bottom: 8px;"><strong>Username:</strong> <code style="background: white; padding: 2px 6px; border-radius: 3px;">{{ tech[1] }}</code></p>
+                            <p style="color: #666; margin-bottom: 8px;"><strong>Username:</strong> <code style="background: white; padding: 2px 6px; border-radius: 3px;">{{ tech[1] }}</code> <button type="button" onclick="event.stopPropagation(); renameUser({{ tech[0] }}, this.dataset.username)" data-username="{{ tech[1] }}" style="padding:2px 10px;font-size:12px;border:1px solid #CBD5E1;border-radius:5px;background:#fff;cursor:pointer;">✏️ Change</button></p>
                             <p style="color: #666; margin-bottom: 8px;"><strong>Password:</strong> <button type="button" onclick="event.stopPropagation(); resetTechPassword({{ tech[0] }}, '{{ tech[2]|replace("'", "\\'") }}')" style="padding:2px 10px;font-size:12px;border:1px solid #CBD5E1;border-radius:5px;background:#fff;cursor:pointer;">🔑 Reset password</button></p>
                             <p style="color: #666; margin-bottom: 0;"><strong>Email:</strong> {{ tech[3] if tech[3] else "N/A" }}</p>
                         </div>
@@ -7652,6 +7721,16 @@ MANAGE_SERVICE_TECHS_TEMPLATE = '''
     }
 </script>
 <script>
+function renameUser(id, current) {
+    var name = prompt('New username for ' + current + ' (letters, numbers and . _ - @, no spaces).\\nThey sign in with it from now on - their POs move with them.', current);
+    if (name === null || name.trim() === '' || name.trim() === current) return;
+    var csrf = (document.cookie.split('; ').find(function(c){ return c.indexOf('csrf_token=') === 0; }) || '').slice(11);
+    fetch('/office_admin/rename_user', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf},
+                                        body: JSON.stringify({user_id: id, username: name.trim()})})
+        .then(function(r){ return r.json(); })
+        .then(function(j){ alert(j.success ? j.message : ('Could not change the username: ' + j.error)); if (j.success) location.reload(); })
+        .catch(function(){ alert('Could not change the username - please try again'); });
+}
 function resetTechPassword(id, name) {
     var pw = prompt('New password for ' + name + ' (at least 6 characters).\\nTell them the new password yourself - it will not be shown again.');
     if (pw === null) return;
@@ -7831,7 +7910,7 @@ MANAGE_INSTALL_TECHS_TEMPLATE = '''
                     </div>
                     <div class="tech-body" id="body-{{ tech[0] }}">
                         <div style="background: #f0fff4; padding: 12px; border-radius: 5px; margin-bottom: 15px; border-left: 4px solid #28a745;">
-                            <p style="color: #666; margin-bottom: 8px;"><strong>Username:</strong> <code style="background: white; padding: 2px 6px; border-radius: 3px;">{{ tech[1] }}</code></p>
+                            <p style="color: #666; margin-bottom: 8px;"><strong>Username:</strong> <code style="background: white; padding: 2px 6px; border-radius: 3px;">{{ tech[1] }}</code> <button type="button" onclick="event.stopPropagation(); renameUser({{ tech[0] }}, this.dataset.username)" data-username="{{ tech[1] }}" style="padding:2px 10px;font-size:12px;border:1px solid #CBD5E1;border-radius:5px;background:#fff;cursor:pointer;">✏️ Change</button></p>
                             <p style="color: #666; margin-bottom: 8px;"><strong>Password:</strong> <button type="button" onclick="event.stopPropagation(); resetTechPassword({{ tech[0] }}, '{{ tech[2]|replace("'", "\\'") }}')" style="padding:2px 10px;font-size:12px;border:1px solid #CBD5E1;border-radius:5px;background:#fff;cursor:pointer;">🔑 Reset password</button></p>
                             <p style="color: #666; margin-bottom: 0;"><strong>Email:</strong> {{ tech[3] if tech[3] else "N/A" }}</p>
                         </div>
@@ -7939,6 +8018,16 @@ MANAGE_INSTALL_TECHS_TEMPLATE = '''
     }
 </script>
 <script>
+function renameUser(id, current) {
+    var name = prompt('New username for ' + current + ' (letters, numbers and . _ - @, no spaces).\\nThey sign in with it from now on - their POs move with them.', current);
+    if (name === null || name.trim() === '' || name.trim() === current) return;
+    var csrf = (document.cookie.split('; ').find(function(c){ return c.indexOf('csrf_token=') === 0; }) || '').slice(11);
+    fetch('/office_admin/rename_user', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf},
+                                        body: JSON.stringify({user_id: id, username: name.trim()})})
+        .then(function(r){ return r.json(); })
+        .then(function(j){ alert(j.success ? j.message : ('Could not change the username: ' + j.error)); if (j.success) location.reload(); })
+        .catch(function(){ alert('Could not change the username - please try again'); });
+}
 function resetTechPassword(id, name) {
     var pw = prompt('New password for ' + name + ' (at least 6 characters).\\nTell them the new password yourself - it will not be shown again.');
     if (pw === null) return;
@@ -9644,7 +9733,8 @@ MANAGE_OFFICE_ADMINS_TEMPLATE = '''
                             <td>{{ admin[4] or 'N/A' }}</td>
                             <td>{{ admin[5] or 'Never' }}</td>
                             <td>
-                                <button class="action-btn btn-primary" onclick="showEditModal({{ admin[0] }}, '{{ admin[1] }}', '{{ admin[2] }}')">✏️ Edit</button>
+                                <button class="action-btn btn-primary" onclick="showEditModal({{ admin[0] }}, '{{ admin[1] }}', '{{ admin[2] }}')">🔑 Password</button>
+                                <button class="action-btn btn-primary" onclick="renameUser({{ admin[0] }}, this.dataset.username)" data-username="{{ admin[1] }}">✏️ Username</button>
                                 <button class="action-btn btn-danger" onclick="deleteAdmin({{ admin[0] }}, '{{ admin[2] }}')">Delete</button>
                             </td>
                         </tr>
@@ -9720,6 +9810,17 @@ MANAGE_OFFICE_ADMINS_TEMPLATE = '''
             .catch(error => {
                 showMessage('add-message', 'Error: ' + error, 'error');
             });
+        }
+
+        function renameUser(id, current) {
+            var name = prompt('New username for ' + current + ' (letters, numbers and . _ - @, no spaces).\\nThey sign in with it from now on - their POs move with them.', current);
+            if (name === null || name.trim() === '' || name.trim() === current) return;
+            var csrf = (document.cookie.split('; ').find(function(c){ return c.indexOf('csrf_token=') === 0; }) || '').slice(11);
+            fetch('/office_admin/rename_user', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf},
+                                                body: JSON.stringify({user_id: id, username: name.trim()})})
+                .then(function(r){ return r.json(); })
+                .then(function(j){ alert(j.success ? j.message : ('Could not change the username: ' + j.error)); if (j.success) location.reload(); })
+                .catch(function(){ alert('Could not change the username - please try again'); });
         }
 
         function deleteAdmin(adminId, adminName) {
