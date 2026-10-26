@@ -1087,6 +1087,41 @@ class PumpsTest(unittest.TestCase):
                          ('Naples Electric', 'Warm Springs in Compass Landings', ''))
         self.assertTrue(out['case_id'], 'filed on an item')
 
+    def test_one_price_proposal_read_without_claude(self):
+        """Naples Electric's proposal 232310 (Warm Springs' lake intake screen, Oct 2026): "Price $2,543.28 includes
+        tax", no "Your Cost" or "Total" - the built-in reader said "No amount found". Read again fixes it."""
+        name = 'Warm Springs - Intake Screen Replacement.pdf'
+        self.texts[name] = ('Naples Electric Motor Works, Inc.\n2088 J & C Blvd., Naples, FL 34109\n'
+                            'Phone (239) 591-1313 Fax (239) 591-3015\nPROPOSAL 232310 10/23/23\n'
+                            'Company: Stahlman-England\nAttention: Andrea Mitchell\nWarm Springs\n'
+                            'Self-Cleaning Lake Intake Screen Replacement\n'
+                            'Naples Electric Motor Works, Inc. will furnish and install one 6" self-cleaning lake\n'
+                            'intake screen at the Warm Springs irrigation pump station.\n'
+                            'Price $2,543.28 includes tax.\nPrice good for 30 days.\nThank You\n')
+        saved = P._claude_extract
+        P._claude_extract = lambda *a, **k: None
+        try:
+            r = P.ingest_document(name, b'%PDF-1.4 nemw 232310', source='email', actor='email scan',
+                                  email={'uid': 'ne-2', 'from': 'paul@nemwinc.com', 'subject': 'Proposal'})
+            conn = P._conn()
+            d = P._doc_dict(conn.execute('SELECT * FROM pump_docs WHERE id=?', (r['doc_id'],)).fetchone())
+            conn.execute("UPDATE pump_docs SET total=NULL, line_items='[]', status='review', case_id=NULL, "
+                         "review_reason='No amount found - enter it by hand.' WHERE id=?", (r['doc_id'],))
+            conn.commit()
+            conn.close()
+            self.assertEqual((d['kind'], d['vendor'], d['doc_number'], d['client_name'], d['total']),
+                             ('quote', 'Naples Electric', '232310', 'Warm Springs', 2543.28))
+            self.assertIn('Intake Screen', d['description'])
+            out = self.c.post(f"/pumps/api/docs/{r['doc_id']}/read_again").get_json()
+        finally:
+            P._claude_extract = saved
+        self.assertTrue(out['success'], out)
+        conn = P._conn()
+        d = P._doc_dict(conn.execute('SELECT * FROM pump_docs WHERE id=?', (r['doc_id'],)).fetchone())
+        conn.close()
+        self.assertEqual((d['total'], d['review_reason']), (2543.28, ''))
+        self.assertTrue(out['case_id'])
+
     def test_letter_split_before_oct_9_is_one_quote_again(self):
         """Oakmont Woods 2 (was Autumn Woods 2) came in while letters were split: the doc kept the
         flow meter and a copy made a job for the surge arrestor. Read again,
