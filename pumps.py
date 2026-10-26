@@ -37,6 +37,7 @@ import hashlib
 import hmac
 import uuid
 import io
+from html import unescape as _html_unescape
 import math
 import json
 import os
@@ -2122,6 +2123,47 @@ def _letter_prices(text, x):
     return x
 
 
+def docx_highlighted_text(data):
+    """The highlighted (or shaded) text of a Word file, a paragraph per line - '' when nothing is."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            xml = z.read('word/document.xml').decode('utf-8', 'replace')
+    except (KeyError, zipfile.BadZipFile, ValueError):
+        return ''
+    out = []
+    for para in re.findall(r'<w:p[ >].*?</w:p>', xml, re.S):
+        bits = []
+        for run in re.findall(r'<w:r[ >].*?</w:r>', para, re.S):
+            hl = re.search(r'<w:highlight w:val="(?!none)[^"]+"', run) or \
+                re.search(r'<w:shd [^>]*w:fill="(?!auto|FFFFFF|ffffff)[0-9A-Fa-f]{6}"', run)
+            if hl:
+                bits.append(''.join(re.findall(r'<w:t(?: [^>]*)?>([^<]*)</w:t>', run)))
+        if ''.join(bits).strip():
+            out.append(_html_unescape("".join(bits)))
+    return '\n'.join(out)
+
+
+def _only_highlighted(x, highlighted):
+    """A letter quote approved in part (Lely, Oct 2026: the office highlights what it wants): only the
+    priced pieces whose price is highlighted stay - in the total, the description and the jobs made."""
+    amounts = {_money(m.group(2)) for m in _COST_LINE.finditer(highlighted or '')}
+    amounts.discard(None)
+    items = x.get('line_items') or []
+    keep = [i for i in items if i.get('own_price') and i.get('amount') in amounts]
+    if not keep or len(keep) == len([i for i in items if i.get('own_price')]):
+        return x
+    keep = [{k: v for k, v in i.items() if k != 'optional'} for i in keep]
+    total = round(sum(i['amount'] for i in keep), 2)
+    dropped = [i for i in items if i.get('own_price') and i not in keep and i.get('amount') not in amounts]
+    note = 'Approved in part - only the highlighted work: ' + '; '.join(
+        f"{short_name(i['description'], 80)} ${i['amount']:,.2f}" for i in keep) + '. Not approved: ' + '; '.join(
+        f"{short_name(i['description'], 80)} ${i['amount']:,.2f}" for i in dropped) + '.'
+    tax_in = bool(x.get('tax_included')) or x.get('subtotal') is None
+    return dict(x, line_items=keep, description=keep[0]['description'][:300], tax=None,
+                subtotal=None if tax_in else total, total=total if tax_in else None,
+                notes=' '.join(n for n in ((x.get('notes') or '').strip(), note) if n), approved_in_part=True)
+
+
 def _letter_parts(items):
     """The separately priced pieces of work on a vendor letter - "possibly
     needed" ones too: each is its own quote to the client (Oct 2026)."""
@@ -3287,6 +3329,8 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
                 elif not (x.get('client_name') or x.get('po_number') or x.get('wo_number')):
                     review = 'Could not find the client, PO or work order - enter it by hand.'
             x = _letter_prices(text, _clean_extraction(x))
+            if low.endswith('.docx'):
+                x = _only_highlighted(x, docx_highlighted_text(data))
             if kind_hint:
                 x['kind'] = kind_hint
             rec.update({k: v for k, v in x.items() if k in rec})
