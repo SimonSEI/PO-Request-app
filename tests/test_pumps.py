@@ -1019,6 +1019,39 @@ class PumpsTest(unittest.TestCase):
         self.assertIn('surge arrestor', lines[1]['description'])
         self.assertFalse(any(l.get('optional') for l in lines))
 
+    def test_letter_approved_in_part_by_highlighting(self):
+        """Lely (Oct 2026): the office approves only part of a Wettech letter by highlighting it - the check
+        valve, not the cooling fan. Only the highlighted work is priced and named on the job."""
+        from docx import Document
+        from docx.enum.text import WD_COLOR_INDEX
+        lines = [('October 8, 2026', False), ('RE: Lely', False),
+                 ('We are pleased to quote you on the following services', False),
+                 ('Furnish and install new panel cooling fan in first VFD control panel, wire up and test', False),
+                 ('Your Cost ---------------- $ 1704.46', False),
+                 ('Furnish and install new 10 inch wafer check valve on pump #4', True),
+                 ('Your Cost ---------------- $ 2239.07', True),
+                 ('Price includes Sales tax and in freight', False)]
+        d = Document()
+        for text, hl in lines:
+            run = d.add_paragraph().add_run(text)
+            if hl:
+                run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+        buf = io.BytesIO()
+        d.save(buf)
+        self.texts['Lely approved.docx'] = 'Stahlman England\nAttn: Simon\n' + '\n'.join(t for t, _ in lines) + '\n'
+        self.assertIn('wafer check valve', P.docx_highlighted_text(buf.getvalue()))
+        doc = self.upload('Lely approved.docx', buf.getvalue(), kind='quote')
+        case = self.case(doc['case_id'])
+        q = next(x for x in case['docs'] if x['id'] == doc['doc_id'])
+        self.assertEqual([i['amount'] for i in q['line_items']], [2239.07])
+        self.assertEqual(q['total'], 2239.07)
+        self.assertIn('check valve', q['description'])
+        self.assertIn('Approved in part', q['description'])
+        self.assertIn('check valve', case['title'].lower())
+        self.assertNotIn('cooling fan', case['title'].lower())
+        # Nothing highlighted: the whole letter, as before.
+        self.assertEqual(P._only_highlighted({'line_items': q['line_items']}, ''), {'line_items': q['line_items']})
+
     def test_letter_split_before_oct_9_is_one_quote_again(self):
         """Oakmont Woods 2 (was Autumn Woods 2) came in while letters were split: the doc kept the
         flow meter and a copy made a job for the surge arrestor. Read again,
