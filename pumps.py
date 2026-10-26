@@ -5946,7 +5946,19 @@ def search_jobber_invoices(q):
 
     def make(fields):
         return f'query($q: String!) {{ invoices(searchTerm: $q, first: 30) {{ nodes {{ {fields} }} }} }}'
-    data, _ = _gql_tolerant(make, spec, {'q': q}, required=('id', 'invoiceNumber'))
+    # By number, by the whole text, and by the client's name alone - a long item title ("Pebblebrooke Quarterly
+    # Irrigation & Fountain Maint") or the vendor's spelling ("Pebblebrooke" for Pebblebrook) found nothing (Oct 2026).
+    words = [w for w in re.findall(r"[A-Za-z][A-Za-z'&]+", q) if w.lower() not in ('the', 'and', 'of', 'at', 'hoa', 'inc', 'llc')]
+    terms = [q] + ([words[0]] if words and words[0] != q else []) + \
+        ([words[0][:-1]] if words and len(words[0]) >= 7 else [])
+    found = {}
+    for term in dict.fromkeys(terms):
+        try:
+            data, _ = _gql_tolerant(make, spec, {'q': term}, required=('id', 'invoiceNumber'))
+        except JobberError:
+            continue
+        for n in (data.get('invoices') or {}).get('nodes') or []:
+            found.setdefault(n['id'], n)
     out = [{'id': n['id'], 'number': str(n.get('invoiceNumber') or ''), 'status': (n.get('invoiceStatus') or '').lower(),
             'subject': n.get('subject') or '', 'date': (n.get('issuedDate') or n.get('createdAt') or '')[:10],
             'uri': n.get('jobberWebUri') or '', 'total': _money((n.get('amounts') or {}).get('total')),
@@ -5954,7 +5966,35 @@ def search_jobber_invoices(q):
             'job': next(({'number': str(jb.get('jobNumber') or ''), 'title': jb.get('title') or '',
                           'recurring': (jb.get('jobType') or '').upper() == 'RECURRING'}
                          for jb in ((n.get('jobs') or {}).get('nodes') or [])), None)}
-           for n in (data.get('invoices') or {}).get('nodes') or []]
+           for n in found.values()]
+    have = {x['number'] for x in out}
+    # The synced invoices, older and paid ones too, by number or client name.
+    conn = _conn()
+    try:
+        likes = [f'%{t}%' for t in dict.fromkeys(terms)]
+        rows = conn.execute("SELECT * FROM pump_jobber_items WHERE kind='invoice' AND (number=? OR "
+                            + ' OR '.join(['client_name LIKE ? OR title LIKE ?'] * len(likes)) +
+                            ") ORDER BY created_at DESC LIMIT 60", [q] + [x for l in likes for x in (l, l)]).fetchall()
+    finally:
+        conn.close()
+    for r in rows:
+        if r['number'] not in have:
+            have.add(r['number'])
+            out.append({'id': r['jobber_id'], 'number': r['number'], 'status': (r['status'] or '').lower(),
+                        'subject': r['title'] or '', 'date': (r['created_at'] or '')[:10], 'uri': r['web_uri'] or '',
+                        'total': r['total'], 'client': r['client_name'] or '', 'job': None})
+    if q.isdigit() and q not in have:
+        # Not synced yet: Jobber, live.
+        try:
+            inv = find_invoice_by_number(q)
+        except (JobberError, ValueError):
+            inv = None
+        if inv:
+            out.append({'id': inv['id'], 'number': str(inv.get('invoiceNumber') or q),
+                        'status': (inv.get('invoiceStatus') or '').lower(), 'subject': inv.get('subject') or '',
+                        'date': '', 'uri': inv.get('jobberWebUri') or '',
+                        'total': _money((inv.get('amounts') or {}).get('total')),
+                        'client': (inv.get('client') or {}).get('name') or '', 'job': None})
     # Invoices on a recurring job (the maintenance contracts) first (Oct 2026), then newest first.
     out.sort(key=lambda x: (x['date'], x['number']), reverse=True)
     return sorted(out, key=lambda x: not (x['job'] or {}).get('recurring'))
@@ -8478,7 +8518,7 @@ def link_invoice_choices(q, case_id=None):
                      'billed': g['billed'], 'latest': g['latest']})
     jobs.sort(key=lambda x: not x['pump_job'])
     return {'month': date(year, month, 1).strftime('%B %Y'), 'recurring': jobs,
-            'invoices': [x for x in found if not (x['job'] or {}).get('recurring')]}
+            'invoices': found}
 
 
 @api('/cases/<int:case_id>/pump_job', methods=('POST',))
@@ -9674,6 +9714,26 @@ def h_case_delete(actor, case_id):
         _event(conn, actor, 'cancelled', _json().get('reason', ''), case_id=case_id)
         conn.commit()
         return {}
+    finally:
+        conn.close()
+
+
+@api('/cases/<int:case_id>/restore', methods=('POST',))
+def h_case_restore(actor, case_id):
+    """Un-cancel (Oct 2026: WetTech #29183 Rosewood was cancelled by mistake): back to open, where it was."""
+    if actor == BOT:
+        return _office_only(actor, 'Restoring an item')
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT status FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+        if not row:
+            raise ValueError('No such item')
+        if row['status'] == 'cancelled':
+            conn.execute("UPDATE pump_cases SET status='open', updated_at=? WHERE id=?", (_now_text(), case_id))
+            _refresh_case(conn, case_id)
+            _event(conn, actor, 'restored', 'Cancelled by mistake - back in use', case_id=case_id)
+            conn.commit()
+        return {'case': case_detail(conn, case_id)}
     finally:
         conn.close()
 

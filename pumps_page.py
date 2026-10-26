@@ -900,7 +900,10 @@ function vendorDocsHtml(c){
   const btn = d => { const who = d.vendor || c.vendor || 'the vendor';
     return `<a class="btn ${d.kind === 'bill' ? 'p' : ''}" target="_blank" href="/pumps/api/docs/${d.id}/file">📄 See ${esc(who)}'s ${d.kind === 'bill' ? 'invoice' : 'quote'}${d.doc_number ? ' #' + esc(d.doc_number) : ''}</a>`; };
   // Invoices first, then quotes.
-  return `<div class="sec"><div style="display:flex;gap:8px;flex-wrap:wrap">${docs.filter(d => d.kind === 'bill').concat(docs.filter(d => d.kind === 'quote')).map(btn).join('')}</div></div>`;
+  const inv = (c.jobber || {}).invoice || {}, bills = docs.some(d => d.kind === 'bill');
+  const ours = bills ? `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:8px"><span class="note">Our Jobber invoice #</span>${inv.number ? `<b>${inv.uri ? `<a target="_blank" href="${esc(inv.uri)}">#${esc(inv.number)} ↗</a>` : '#' + esc(inv.number)}</b>` : ''}
+    <input type="text" id="csOurs" placeholder="${inv.number ? 'change' : 'e.g. 36995'}" style="width:120px" onkeydown="if(event.key==='Enter')linkOursFromCase(${c.id})"><button class="btn s" onclick="linkOursFromCase(${c.id})">Save</button></div>` : '';
+  return `<div class="sec"><div style="display:flex;gap:8px;flex-wrap:wrap">${docs.filter(d => d.kind === 'bill').concat(docs.filter(d => d.kind === 'quote')).map(btn).join('')}</div>${ours}</div>`;
 }
 function renderCase(){
   const c = curCase, v = c.vendor || 'Wettech';
@@ -941,7 +944,7 @@ function renderCase(){
       <select class="btn" onchange="linkMenu(${c.id}, this)" title="Tie a Jobber quote, invoice or job to this item"><option value="">🔗 Link Jobber…</option><option value="quote">${J.quote ? 'A different Jobber quote' : 'A Jobber quote'}</option><option value="invoice">${J.invoice ? 'A different Jobber invoice' : 'A Jobber invoice'}</option><option value="job">${J.job ? 'A different Jobber job' : 'A Jobber job (service call)'}</option></select>
       <button class="btn" onclick="uploadForCase()">⬆ Add document</button>
       <button class="btn" onclick="addNote()">✎ Add note</button>
-      ${c.status === 'open' ? `<button class="btn p" onclick="caseDone(${c.id})">✓ Mark done</button><button class="btn danger" onclick="caseRemove(${c.id})">✕ Remove</button>` : `<button class="btn" onclick="caseReopen(${c.id})">↺ Reopen</button>`}
+      ${c.status === 'open' ? `<button class="btn p" onclick="caseDone(${c.id})">✓ Mark done</button><button class="btn danger" onclick="caseRemove(${c.id})">✕ Remove</button>` : c.status === 'cancelled' ? `<button class="btn p" onclick="caseRestore(${c.id})">↺ Restore</button>` : `<button class="btn" onclick="caseReopen(${c.id})">↺ Reopen</button>`}
     </div></div>
     <div class="sec"><h4>Documents</h4><div class="docs">${docs}</div></div>
     ${statusSec(c)}
@@ -1124,8 +1127,9 @@ async function loadVInvoices(){
       <td>${esc(x.date)}</td>
       <td><a target="_blank" href="/pumps/api/docs/${x.id}/file">${esc(x.vendor)}${x.number ? ' #' + esc(x.number) : ''}</a></td>
       <td class="num">${money(x.total ?? x.subtotal)}</td>
-      <td>${x.ours.number ? (x.ours.uri ? `<a target="_blank" href="${esc(x.ours.uri)}">#${esc(x.ours.number)} ↗</a>` : '#' + esc(x.ours.number)) + (x.ours.status ? `<div class="note">${esc(x.ours.status.replace('_', ' '))}</div>` : '') : '<span class="note">-</span>'}</td>
-      <td><span class="chip ${cls}">${label}</span>${x.paid_on ? `<div class="note">paid ${esc(x.paid_on)}</div>` : ''}</td></tr>`; }).join('')}</tbody></table>`
+      <td>${x.ours.number ? (x.ours.uri ? `<a target="_blank" href="${esc(x.ours.uri)}">#${esc(x.ours.number)} ↗</a>` : '#' + esc(x.ours.number)) + (x.ours.status ? `<div class="note">${esc(x.ours.status.replace('_', ' '))}</div>` : '') : ''}
+        ${x.case_id ? `<div style="display:flex;gap:4px;margin-top:2px"><input type="text" id="viOurs${x.id}" placeholder="${x.ours.number ? 'Change #' : 'Our Jobber invoice #'}" style="width:130px" onkeydown="if(event.key==='Enter')viLinkOurs(${x.id}, ${x.case_id})"><button class="btn s" onclick="viLinkOurs(${x.id}, ${x.case_id})">Save</button></div>` : '<span class="note">-</span>'}</td>
+      <td><span class="chip ${cls}">${label}</span>${x.paid_on ? `<div class="note">paid ${esc(x.paid_on)}</div>` : ''}${x.state === 'cancelled' && x.case_id ? `<div><button class="btn s" title="Cancelled by mistake? Back to active" onclick="caseRestore(${x.case_id}).then(loadVInvoices)">↺ Restore</button></div>` : ''}</td></tr>`; }).join('')}</tbody></table>`
     : '<div class="empty">No vendor invoices here.</div>';
 }
 async function loadBills(){
@@ -1560,6 +1564,29 @@ async function caseRemove(id){
   const j = await api('/cases/' + id + '/delete', {method:'POST', body:{reason:'Removed'}});
   if (!j.success) { toast(j.error, true); return; }
   toast('Removed'); closeDrawer();
+}
+// Our Jobber invoice # typed on a vendor invoice: looked up (synced, else Jobber) and linked - never marks it paid.
+async function viLinkOurs(docId, caseId){
+  const el = document.getElementById('viOurs' + docId), n = (el.value || '').trim().replace(/^#/, '');
+  if (!n) { el.focus(); return; }
+  const j = await api('/cases/' + caseId + '/jobber_invoice', {method:'POST', body:{number: n}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast(`Linked our Jobber invoice #${j.invoice.number}${j.invoice.status ? ' (' + j.invoice.status.replace(/_/g, ' ') + ')' : ''}.`);
+  loadVInvoices();
+}
+async function caseRestore(id){
+  const j = await api('/cases/' + id + '/restore', {method:'POST', body:{}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast('Restored - back to active.');
+  if (curCase && curCase.id === id) openCase(id);
+  loadToday();
+}
+async function linkOursFromCase(id){
+  const el = document.getElementById('csOurs'), n = (el.value || '').trim().replace(/^#/, '');
+  if (!n) { el.focus(); return; }
+  const j = await api('/cases/' + id + '/jobber_invoice', {method:'POST', body:{number: n}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast(`Linked our Jobber invoice #${j.invoice.number}.`); openCase(id); loadToday();
 }
 async function caseReopen(id){ const j = await api('/cases/' + id + '/done', {method:'POST', body:{reopen:true}}); if (j.success) { toast('Reopened'); openCase(id); } else toast(j.error, true); }
 async function cancelCase(){ const r = prompt('Why is this item being cancelled?'); if (r === null) return; await api('/cases/' + curCase.id + '/delete', {method:'POST', body:{reason:r}}); closeDrawer(); }
