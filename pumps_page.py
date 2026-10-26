@@ -163,6 +163,9 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 .pm .ctx{font-size:11.5px;color:var(--faint);align-self:flex-end;margin-top:-6px;}
 .pm .ft{border-top:1px solid var(--border);padding:10px 12px;display:flex;gap:8px;align-items:flex-end;}
 .pm .ft textarea{flex:1;resize:none;min-height:40px;max-height:140px;padding:8px 10px;border:1px solid var(--border-2);border-radius:8px;font:inherit;}
+.pmmini{position:fixed;right:18px;bottom:18px;z-index:62;display:flex;align-items:center;gap:8px;padding:10px 16px;border-radius:999px;
+    background:var(--brand);color:#fff;border:0;font:inherit;font-weight:600;cursor:pointer;box-shadow:var(--shadow-lg);}
+.pmmini .pmdot{margin-left:0;}
 .pmdot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#F59E0B;margin-left:6px;vertical-align:middle;}
 @keyframes fade{from{opacity:0;}to{opacity:1;}}
 .drawer .hd{position:sticky;top:0;background:#fff;border-bottom:1px solid var(--border);padding:18px 22px 14px;display:flex;justify-content:space-between;gap:10px;z-index:2;}
@@ -2742,11 +2745,12 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (!docum
 </script>
 {% if assistant %}
 <aside class="pm hide" id="pm" aria-label="Pump Manager">
-  <div class="hd"><b>💬 Pump Manager</b><button class="btn s" title="Start a new conversation" onclick="pmNew()">New chat</button><button class="btn s" onclick="pmToggle(false)" title="Close">✕</button></div>
+  <div class="hd"><b>💬 Pump Manager</b><button class="btn s" title="Start a new conversation" onclick="pmNew()">New chat</button><button class="btn s" onclick="pmMinimize()" title="Minimize - keeps the conversation, answers still come in">–</button><button class="btn s" onclick="pmToggle(false)" title="Close">✕</button></div>
   <div class="msgs" id="pmMsgs"><div class="note">Ask anything about our pump accounts and jobs. Answers usually take a minute or two.</div></div>
   <div class="ft"><textarea id="pmQ" rows="2" placeholder="Ask Pump Manager…" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();pmAsk()}"></textarea>
     <button class="btn p" id="pmSend" onclick="pmAsk()">Send</button></div>
 </aside>
+<button class="pmmini hide" id="pmMini" onclick="pmToggle(true)" title="Open Pump Manager">💬 Pump Manager<span id="pmMiniState"></span></button>
 <script>
 // Pump Manager: questions go out through the server; answers land 1-2 minutes later and are polled for.
 let pmData = {messages: []}, pmTimer = null, pmSeen = 0;
@@ -2790,6 +2794,9 @@ function pmRender(){
   const closed = document.getElementById('pm').classList.contains('hide');
   if (closed && answered > pmSeen && !dot) document.getElementById('pmBtn').insertAdjacentHTML('beforeend', '<span class="pmdot" title="New answer"></span>');
   if (!closed) { pmSeen = answered; if (dot) dot.remove(); }
+  const mini = document.getElementById('pmMiniState');
+  if (mini) mini.innerHTML = ms.some(m => m.state === 'thinking') ? ' · thinking…'
+    : (closed && answered > pmSeen ? ' <span class="pmdot" title="New answer"></span>' : '');
 }
 async function pmLoad(){
   const j = await api('/assistant/messages');
@@ -2799,9 +2806,16 @@ async function pmLoad(){
   // Keep looking while an answer is due (they come 1-2 minutes after asking).
   if ((j.messages || []).some(m => m.state === 'thinking')) pmTimer = setTimeout(pmLoad, 5000);
 }
+// Minimized: a small button bottom-right that says when an answer is due or has come in.
+function pmMinimize(){
+  document.getElementById('pm').classList.add('hide');
+  document.getElementById('pmMini').classList.remove('hide');
+  pmRender();
+}
 function pmToggle(show){
   const el = document.getElementById('pm'), on = show === undefined ? el.classList.contains('hide') : show;
   el.classList.toggle('hide', !on);
+  document.getElementById('pmMini').classList.add('hide');
   if (on) { pmLoad(); setTimeout(() => document.getElementById('pmQ').focus(), 50); }
 }
 async function pmAsk(){
