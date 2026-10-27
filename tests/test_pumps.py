@@ -4544,24 +4544,25 @@ class PumpsTest(unittest.TestCase):
         self.assertFalse(row()['payable'])
 
     def test_bills_wait_five_business_days(self):
-        """Christian (Oct 2026): a bill goes to him 5 business days after it's ready to pay, not the day it is."""
+        """The office (Oct 2026): a vendor bill isn't ready to pay - not ticked, not in Christian's email - until
+        5 business days after we got it, however soon it's invoiced or OK'd."""
         self.extracts['b-wait1.pdf'] = extraction('bill', '40095', client='Waitfield Pines HOA', subtotal=400)
         b = self.upload('b-wait1.pdf')
+        conn = P._conn()
+        conn.execute("UPDATE pump_docs SET created_at='2026-10-23 09:00:00', email_date='' WHERE case_id=?", (b['case_id'],))
+        conn.commit()
+        conn.close()
         row = lambda: {x['case_id']: x for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors']
                        for x in g['bills']}[b['case_id']]
         saved_wait, saved_today = P.PAY_WAIT_DAYS, P._today
         P.PAY_WAIT_DAYS = 5
         try:
-            saved_now = P._now_text
-            P._today, P._now_text = (lambda: date(2026, 10, 23)), (lambda: '2026-10-23 09:00:00')   # a Friday
-            try:
-                self.c.post('/pumps/api/bills_to_pay/pay_ok', json={'case_ids': [b['case_id']]})
-                r = row()
-            finally:
-                P._now_text = saved_now
+            P._today = lambda: date(2026, 10, 23)    # got it on a Friday, OK'd the same day
+            self.c.post('/pumps/api/bills_to_pay/pay_ok', json={'case_ids': [b['case_id']]})
+            r = row()
             self.assertTrue(r['payable'])
             self.assertFalse(r['ready'])
-            self.assertEqual((r['ready_since'], r['email_on']), ('2026-10-23', '2026-10-30'))
+            self.assertEqual((r['received'], r['email_on']), ('2026-10-23', '2026-10-30'))
             e = self.c.post('/pumps/api/bills_to_pay/email', json={'case_ids': [b['case_id']]}).get_json()
             self.assertNotIn('#40095', (e.get('email') or {}).get('body', ''))
             P._today = lambda: date(2026, 10, 29)
@@ -4570,9 +4571,9 @@ class PumpsTest(unittest.TestCase):
             self.assertTrue(row()['ready'])
             e = self.c.post('/pumps/api/bills_to_pay/email', json={'case_ids': [b['case_id']]}).get_json()
             self.assertIn('#40095', e['email']['body'])
-            # Not ready any more: the clock starts again next time.
+            # Not payable (the OK undone): not ready, whatever the date.
             self.c.post('/pumps/api/bills_to_pay/pay_ok', json={'case_ids': [b['case_id']], 'undo': True})
-            self.assertEqual(row()['ready_since'], '')
+            self.assertFalse(row()['ready'])
         finally:
             P.PAY_WAIT_DAYS, P._today = saved_wait, saved_today
 
