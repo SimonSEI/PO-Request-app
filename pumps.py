@@ -195,7 +195,9 @@ def _with_optional(steps):
 # A vendor bill for a maintenance visit ("Service to perform quarterly
 # maintenance ... Maintenance Report Attached", Oct 2026) needs no quote - it
 # is billed at the client's recurring job price - unless the bill names one.
-_MAINT_WORDS = re.compile(r'\bmaint(?:enance|\.)?\b', re.I)
+# Not "spoke with maintenance personnel" (Huntington Lakes #29259, Oct 2026: a $150 service call).
+_MAINT_WORDS = re.compile(r'\bmaint(?:enance|\.)?\b(?!\s+(?:personnel|staff|crew|m[ae]n|team|department|dept|'
+                          r'supervisor|manager|director|guys?|tech(?:nician)?s?|workers?|people|person)\b)', re.I)
 _QUOTE_WORDS = re.compile(r'\b(?:quote[sd]?|quotation|estimate|proposal)\b', re.I)
 # "... maintenance ... OCTOBER 2026. As per quotation." (Rosewood, Oct 2026): the
 # month's visit under the contract quote - Wettech's boilerplate, not quoted work.
@@ -6285,6 +6287,18 @@ def _invoice_suggestion(doc, case=None, client_id=None, job_id=None):
             job = recurring_job_price(doc, case, client_id, job_id) if (client_id or job_id) else None
         except JobberError:
             job = None
+        if job and job.get('id') and not job_id:
+            # The month already billed on the job (Huntington Lakes #29259, Oct 2026: a $150 service call taken
+            # for October's maintenance, already billed): a one-off - the bill + markup, not the job's price.
+            y, m = bill_service_month(doc)
+            try:
+                billed = next((x for x in job_invoices(job['id']) if x['date'][:7] == f'{y:04d}-{m:02d}'), None)
+            except Exception:   # Jobber not saying is no reason to hold up the invoice
+                billed = None
+            if billed:
+                sugg['note'] = (f"{date(y, m, 1).strftime('%B')} is already billed on job #{job.get('number')} "
+                                f"(invoice #{billed['number']}) - a service call: the bill + markup.")
+                return sugg
         if job:
             # The month the visit was for, as the office titles them: "October Pump Maintenance" (Oct 2026;
             # was "Pump service - Honda of Ft Myers - October 2026").

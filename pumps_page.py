@@ -1739,6 +1739,7 @@ async function draftInvoice(docId){
     <div class="safe">This creates a DRAFT invoice in Jobber. Nothing is sent to the client - review it in Jobber and send it from there.</div>
     ${d.account_note ? `<div class="issue">📌 <b>${esc(d.account_name || 'Account')}:</b> ${esc(d.account_note)}</div>` : ''}
     ${(d.case_issues || []).map(i => `<div class="issue">⚠️ ${esc(i.message)}</div>`).join('')}
+    ${s.note ? `<div class="issue">ℹ️ ${esc(s.note)}</div>` : ''}
     <div class="note">From ${esc(d.vendor)} bill #${esc(d.doc_number)} - ${money(d.subtotal)} before tax, ${money(d.total)} total. One Service Proposal Amount line: the bill before tax${s.markup_pct ? ' plus ' + s.markup_pct + '%' : ''}; Jobber adds the client's tax.</div>
     <div><b>Jobber client</b><div class="toolbar" style="margin:6px 0"><input type="text" id="cq" oninput="liveSearch(findClients)" onkeydown="if(event.key==='Enter'){event.preventDefault();clearTimeout(window._lsT);findClients()}" value="${esc(d.client_name)}" style="flex:1"><button class="btn" onclick="findClients()">Search</button></div><div id="cands"><div class="note">Searching…</div></div></div>
     <div id="jobMatchBox">${jobMatchHtml(s.job)}</div>
