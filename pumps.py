@@ -3057,12 +3057,96 @@ def file_document(conn, doc_id, actor='system'):
     case_id, how = (doc['case_id'], 'already linked') if doc['case_id'] else _same_email_case(conn, doc)
     if not case_id:
         case_id, how = _find_case_for(conn, doc)
+    if not case_id and kind == 'bill':
+        case_id, how = grok_match_bill(conn, doc)
     if not case_id:
         case_id = _new_case_for(conn, doc, actor)
         how = 'new item'
     conn.execute("UPDATE pump_docs SET case_id=?, status=CASE WHEN status='new' THEN 'filed' ELSE status END, "
                  "updated_at=? WHERE id=?", (case_id, _now_text(), doc_id))
     return _file_on_case(conn, doc, case_id, how, actor)
+
+
+# ── Grok: matching a vendor bill to its open job by what the work was ────────
+# When nothing else ties a vendor bill to an open job (no PO, W/O, quote # or same email), Grok
+# reads the bill and the open jobs still waiting on that vendor's bill and names the one it's for
+# (Oct 2026: the office matched these by hand). Only a confident answer is used; otherwise the bill
+# goes on a new item as before. XAI_API_KEY is xAI's key (not GROK_API_KEY, Grok Bot's own key in).
+XAI_API_KEY = os.environ.get('XAI_API_KEY', '').strip()
+GROK_MODEL = os.environ.get('PUMPS_GROK_MODEL', 'grok-4')
+GROK_URL = os.environ.get('PUMPS_GROK_URL', 'https://api.x.ai/v1/chat/completions')
+GROK_MATCH_MIN = float(os.environ.get('PUMPS_GROK_MATCH_MIN', '0.8'))
+
+
+def _grok_json(system, user):
+    """One question to Grok, answered as JSON. None when it can't be asked or answered."""
+    if not XAI_API_KEY:
+        return None
+    try:
+        r = http_requests.post(GROK_URL, timeout=45, headers={'Authorization': f'Bearer {XAI_API_KEY}'},
+                               json={'model': GROK_MODEL, 'temperature': 0, 'response_format': {'type': 'json_object'},
+                                     'messages': [{'role': 'system', 'content': system},
+                                                  {'role': 'user', 'content': user}]})
+        if r.status_code >= 300:
+            print(f'⚠ Pumps: Grok said {r.status_code}: {r.text[:200]}')
+            return None
+        text = ((r.json().get('choices') or [{}])[0].get('message') or {}).get('content') or ''
+        return json.loads(re.search(r'\{.*\}', text, re.S).group(0))
+    except (http_requests.RequestException, ValueError, AttributeError, KeyError, IndexError) as e:
+        print(f'⚠ Pumps: Grok could not be asked ({type(e).__name__})')
+        return None
+
+
+def grok_match_bill(conn, doc):
+    """(case id, how) - the open job a vendor bill is for, as Grok reads it - or (None, '')."""
+    if not XAI_API_KEY:
+        return None, ''
+    vendor = (doc.get('vendor') or '').strip()
+    rows = [dict(r) for r in conn.execute(
+        "SELECT id, title, client_name, site, vendor, po_number, description, notes, vendor_quote_number, "
+        "vendor_quote_amount, vendor_quote_total, steps, opened_on FROM pump_cases WHERE status='open' "
+        "ORDER BY id DESC LIMIT 300")]
+    cands = []
+    for r in rows:
+        steps = json.loads(r.get('steps') or '{}')
+        if (steps.get('vendor_bill') or {}).get('at') or (vendor and r.get('vendor') and r['vendor'] != vendor):
+            continue   # billed already, or another vendor's work
+        quote = conn.execute("SELECT description FROM pump_docs WHERE case_id=? AND kind='quote' AND status != 'dismissed' "
+                             "ORDER BY id DESC", (r['id'],)).fetchone()
+        cands.append({'id': r['id'], 'client': r.get('client_name') or '', 'site': r.get('site') or '',
+                      'job': r.get('title') or '', 'po': r.get('po_number') or '',
+                      'work': ' '.join(x for x in ((r.get('description') or '')[:300],
+                                                   ((quote['description'] if quote else '') or '')[:300]) if x),
+                      'quote_number': r.get('vendor_quote_number') or '',
+                      'quote_amount': r.get('vendor_quote_total') if r.get('vendor_quote_total') is not None
+                      else r.get('vendor_quote_amount'), 'opened': r.get('opened_on') or ''})
+        if len(cands) >= 60:
+            break
+    if not cands:
+        return None, ''
+    items = doc.get('line_items')
+    items = json.loads(items or '[]') if isinstance(items, str) else (items or [])
+    bill = {'vendor': vendor, 'invoice_number': doc.get('doc_number') or '', 'date': doc.get('doc_date') or '',
+            'client': doc.get('client_name') or '', 'site': doc.get('site') or '', 'po': doc.get('po_number') or '',
+            'work': (doc.get('description') or '')[:600],
+            'lines': [f"{i.get('name') or ''} {i.get('description') or ''}".strip()[:200] for i in items if isinstance(i, dict)][:8],
+            'amount': doc.get('total') if doc.get('total') is not None else doc.get('subtotal'),
+            'quote_reference': doc.get('quote_ref') or ''}
+    ans = _grok_json(
+        'You match a pump subcontractor\'s invoice to the open job it is for, for Stahlman-England Irrigation. '
+        'Compare the client or site and what the work was (and the quote number or amount when given). Answer '
+        'only JSON: {"case_id": <id of the matching job, or null>, "confidence": <0 to 1>, "reason": "<one short '
+        'sentence>"}. Use null unless one job clearly fits - a different site or different work is not a match.',
+        json.dumps({'invoice': bill, 'open_jobs': cands}))
+    if not ans:
+        return None, ''
+    try:
+        cid, conf = int(ans.get('case_id')), float(ans.get('confidence') or 0)
+    except (TypeError, ValueError):
+        return None, ''
+    if conf < GROK_MATCH_MIN or cid not in {c['id'] for c in cands}:
+        return None, ''
+    return cid, f"matched by Grok ({conf:.0%}): {str(ans.get('reason') or '')[:200]}"
 
 
 def refile_document(conn, doc_id, actor, target=None):
@@ -15583,7 +15667,7 @@ def page():
                                   markup=MARKUP_PCT,
                                   scada_days=SCADA_DUE_SOON_DAYS, digest_to=DIGEST_TO, digest_hour=DIGEST_HOUR,
                                   flash_msg=request.args.get('msg', ''), app_version=APP_VERSION,
-                                  assistant=assistant_allowed())
+                                  assistant=assistant_allowed(), grok=bool(XAI_API_KEY))
 
 
 @bp.route('/pumps/f/<int:doc_id>/<version>/<int:exp>/<sig>')
