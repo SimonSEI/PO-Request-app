@@ -5913,6 +5913,37 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual([li['unit_price'] for li in sugg['line_items']], [250.0])
         self.assertEqual(sugg['job']['id'], 'J1450')
 
+    def test_service_call_after_the_month_is_billed_is_not_maintenance(self):
+        """Huntington Lakes #29259 (Oct 2026): Wettech's $150 service call ("spoke with maintenance personnel") was
+        taken for October's maintenance on #7239 Monthly 1850 - already billed. It's the bill + markup."""
+        desc = ('Field service to check out pump station, tested everything. Technician spoke with maintenance '
+                'personnel and they stated the issue was on the irrigation side not with the pump system.')
+        self.assertFalse(P.maintenance_bill({'kind': 'bill', 'description': desc, 'line_items': []}))
+        self.assertTrue(P.maintenance_bill({'kind': 'bill', 'description': 'Quarterly pump maintenance', 'line_items': []}))
+        bill = {'kind': 'bill', 'client_name': 'Huntington Lakes', 'subtotal': 150.0, 'doc_date': '2026-10-24',
+                'description': 'October pump maintenance', 'line_items': [{'name': 'Service', 'description': 'Pump service',
+                                                                           'quantity': 1, 'unit_price': 150.0, 'amount': 150.0}]}
+        job = {'id': 'J7239', 'number': '7239', 'title': 'Monthly 1850', 'uri': '', 'total': 1850.0,
+               'status': 'upcoming', 'type': 'recurring', 'instructions': '', 'property_label': '',
+               'line_items': [{'name': 'MONTHLY IRRIGATION PROGRAM', 'description': '', 'quantity': 1,
+                               'unit_price': 1850.0, 'taxable': False}]}
+        saved = (P.jobber_status, P.invoice_client, P.recurring_jobs, P.job_detail, P.job_invoices)
+        P.jobber_status = lambda: {'connected': True}
+        P.invoice_client = lambda doc, case=None: 'CH'
+        P.recurring_jobs = lambda cid: [{'id': 'J7239', 'number': '7239', 'title': job['title'], 'status': 'active'}]
+        P.job_detail = lambda jid: job
+        P.job_invoices = lambda jid: [{'number': '36910', 'date': '2026-10-05', 'status': 'paid'}]
+        try:
+            sugg = P.invoice_suggestion(bill, {})
+            self.assertFalse(sugg.get('job'), 'not on the monthly job')
+            self.assertNotIn(1850.0, [li['unit_price'] for li in sugg['line_items']])
+            self.assertIn('October is already billed on job #7239 (invoice #36910)', sugg['note'])
+            # Not billed yet that month: the monthly job, as before.
+            P.job_invoices = lambda jid: [{'number': '36500', 'date': '2026-09-05', 'status': 'paid'}]
+            self.assertEqual(P.invoice_suggestion(bill, {})['job']['id'], 'J7239')
+        finally:
+            P.jobber_status, P.invoice_client, P.recurring_jobs, P.job_detail, P.job_invoices = saved
+
     def test_maintenance_invoice_marks_the_months_visit_complete(self):
         """Oct 2026: invoicing a maintenance bill on the recurring job also completes that job's visit for the
         month the bill is for - the one nearest the bill's date - and anything that can't be done is a to-do."""
