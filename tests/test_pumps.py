@@ -4448,6 +4448,75 @@ class PumpsTest(unittest.TestCase):
         finally:
             P.XAI_API_KEY, P.http_requests.post = saved
 
+    def test_pump_manager_matches_vendor_invoices(self):
+        """Oct 2026: each vendor invoice goes to Pump Manager with candidate Jobber jobs, invoices and quotes; its
+        answer comes back to /assistant/match-reply. High confidence links it, the rest is a suggested match to
+        accept or reject - and linking never marks the vendor bill paid."""
+        self.addCleanup(setattr, P, '_SCHEMA_CACHE', {})
+        self.extracts['b-pm1.pdf'] = extraction('bill', '29232', client='Pebblebrooke', subtotal=1700, tax=0)
+        b = self.upload('b-pm1.pdf')
+        self.extracts['b-pm2.pdf'] = extraction('bill', '29231', client='Miromar Outlets', subtotal=175, tax=0)
+        b2 = self.upload('b-pm2.pdf')
+        sent = []
+
+        class Resp:
+            status_code = 202
+        saved = (P.PUMP_MANAGER_MATCH_URL, P.PUMP_MANAGER_MATCH_KEY, P.PUMP_APP_REPLY_TOKEN, P.http_requests.post,
+                 P.pm_match_candidates, P.find_invoice_by_number)
+        P.PUMP_MANAGER_MATCH_URL, P.PUMP_MANAGER_MATCH_KEY, P.PUMP_APP_REPLY_TOKEN = 'https://pm.example/match', 'mk', 'tok'
+        P.http_requests.post = lambda url, **kw: sent.append((url, kw)) or Resp()
+        P.pm_match_candidates = lambda doc: {'jobs': [{'job_number': '8515'}], 'invoices': [{'invoice_number': '36995'}],
+                                             'quotes': []}
+        P.find_invoice_by_number = lambda n: {'id': 'IPM' + n, 'invoiceNumber': int(n), 'invoiceStatus': 'paid',
+                                              'amounts': {'total': 3850}, 'client': {'id': 'CP', 'name': 'Pebblebrook HOA'}}
+        anon = A.app.test_client()
+        doc = lambda i: self.c.get(f"/pumps/api/docs/{i}").get_json()['doc']
+        try:
+            body = P.pm_match_request(b['doc_id'])
+            url, kw = sent[-1]
+            self.assertEqual((url, kw['headers']['Authorization']), ('https://pm.example/match', 'Bearer mk'))
+            for k in ('vendor_invoice_id', 'vendor', 'bill_number', 'date', 'amount', 'client', 'description', 'pdf_text'):
+                self.assertIn(k, kw['json'])
+            self.assertEqual((body['bill_number'], body['candidates']['invoices'][0]['invoice_number']), ('29232', '36995'))
+            self.assertEqual(doc(b['doc_id'])['jobber']['pm_match']['state'], 'sent')
+            reply = {'vendor_invoice_id': b['doc_id'], 'match_type': 'invoice', 'invoice_number': '36995',
+                     'confidence': 'high', 'reason': 'Pebblebrook October maintenance'}
+            self.assertEqual(anon.post('/pumps/api/assistant/match-reply', json=reply).status_code, 401)
+            self.assertEqual(anon.post('/pumps/api/assistant/match-reply', json=reply,
+                                       headers={'Authorization': 'Bearer nope'}).status_code, 401)
+            r = anon.post('/pumps/api/assistant/match-reply', json=reply, headers={'Authorization': 'Bearer tok'}).get_json()
+            self.assertTrue(r['linked'], r)
+            case = self.case(b['case_id'])
+            self.assertEqual(case['sei_invoice_number'], '36995')
+            self.assertFalse(case.get('vendor_paid_on'), 'linked, not paid')
+            self.assertEqual(doc(b['doc_id'])['jobber']['pm_match']['state'], 'linked')
+            # Medium: a suggestion, accepted by a person.
+            r = anon.post('/pumps/api/assistant/match-reply', headers={'Authorization': 'Bearer tok'},
+                          json={'vendor_invoice_id': b2['doc_id'], 'match_type': 'invoice', 'invoice_number': '36712',
+                                'confidence': 'medium', 'reason': 'Same client, October'}).get_json()
+            self.assertTrue(r['suggested'], r)
+            self.assertFalse(self.case(b2['case_id'])['sei_invoice_number'])
+            self.assertEqual(doc(b2['doc_id'])['jobber']['pm_match']['match']['number'], '36712')
+            r = self.c.post(f"/pumps/api/docs/{b2['doc_id']}/pm_match", json={'action': 'accept'}).get_json()
+            self.assertTrue(r['success'], r)
+            self.assertEqual(self.case(b2['case_id'])['sei_invoice_number'], '36712')
+            self.assertFalse(self.case(b2['case_id']).get('vendor_paid_on'))
+            # A garbled answer is an error, logged on the document; rejecting needs a suggestion.
+            r = anon.post('/pumps/api/assistant/match-reply', headers={'Authorization': 'Bearer tok'},
+                          json={'vendor_invoice_id': b2['doc_id'], 'match_type': 'thing', 'confidence': 'sure'})
+            self.assertEqual(r.status_code, 400)
+            self.assertEqual(doc(b2['doc_id'])['jobber']['pm_match']['state'], 'error')
+            self.assertFalse(self.c.post(f"/pumps/api/docs/{b2['doc_id']}/pm_match", json={'action': 'reject'}).get_json()['success'])
+            # Pump Manager down: the error is kept.
+            def down(url, **kw):
+                raise P.http_requests.ConnectionError('down')
+            P.http_requests.post = down
+            P.pm_match_request(b2['doc_id'])
+            self.assertIn('Could not reach Pump Manager', doc(b2['doc_id'])['jobber']['pm_match']['error'])
+        finally:
+            (P.PUMP_MANAGER_MATCH_URL, P.PUMP_MANAGER_MATCH_KEY, P.PUMP_APP_REPLY_TOKEN, P.http_requests.post,
+             P.pm_match_candidates, P.find_invoice_by_number) = saved
+
     def test_watercrest_is_water_crest(self):
         """Oct 2026: Wettech's "Watercrest @ Falling Waters" scored lowest against Jobber's "WATER CREST AT FALLING
         WATERS", so its report went on Falling Waters II. Words run together still match; the wrong pick is undone."""

@@ -3309,6 +3309,8 @@ def ingest_document(filename, data, source='upload', email=None, kind_hint=None,
         # A report sent again (Lely, Oct 2026: the email forwarded to the mailbox
         # once more) that isn't in Jobber yet is tried again.
         res['auto_note'] = auto_log_report(res['doc_id'])
+    if res.get('kind') == 'bill' and res.get('doc_id') and not res.get('skipped'):
+        pm_match_soon(res['doc_id'])   # Pump Manager matches it to its Jobber job, invoice or quote
     if res.get('kind') == 'bill' and res.get('case_id') and not res.get('review'):
         conn = _conn()
         try:
@@ -8065,6 +8067,8 @@ def _register_routes(app, csrf):
         csrf.exempt(bot_view)
     bp.add_url_rule('/pumps/api/assistant/reply', 'assistant_reply', assistant_reply, methods=['POST'])
     csrf.exempt(assistant_reply)
+    bp.add_url_rule('/pumps/api/assistant/match-reply', 'pm_match_reply', pm_match_reply, methods=['POST'])
+    csrf.exempt(pm_match_reply)
 
 
 def _call(fn, actor, kw):
@@ -15659,6 +15663,244 @@ def assistant_reply():
     if not cur.rowcount:
         return jsonify({'success': False, 'error': 'No such message'}), 404
     return jsonify({'success': True})
+
+
+# ── Pump Manager: matching a vendor invoice to its Jobber job, invoice or quote ──
+# Every vendor invoice that comes in (upload or the PO@ scan) goes to Pump Manager with the Jobber jobs,
+# invoices and quotes it could belong to; its answer comes back to /pumps/api/assistant/match-reply.
+# High confidence links it; anything else is a suggested match to accept or reject. Linking never marks
+# the vendor bill paid. What happened is kept on the document's jobber['pm_match'] (Oct 2026).
+PUMP_MANAGER_MATCH_URL = os.environ.get('PUMP_MANAGER_MATCH_WEBHOOK_URL', '')
+PUMP_MANAGER_MATCH_KEY = os.environ.get('PUMP_MANAGER_MATCH_WEBHOOK_KEY', '')
+PM_MATCH_TYPES = ('job', 'invoice', 'quote')
+
+
+def _pm_match_set(doc_id, rec, conn=None, case_id=None, event=None, actor='Pump Manager'):
+    own = conn is None
+    conn = conn or _conn()
+    try:
+        row = conn.execute('SELECT jobber, case_id FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+        if not row:
+            return
+        dj = json.loads(row['jobber'] or '{}')
+        dj['pm_match'] = {**(dj.get('pm_match') or {}), **rec, 'at': _now_text()}
+        conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(dj), doc_id))
+        if event:
+            _event(conn, actor, event[0], event[1], case_id=case_id or row['case_id'], doc_id=doc_id)
+        if own:
+            conn.commit()
+    finally:
+        if own:
+            conn.close()
+
+
+def pm_match_candidates(doc):
+    """The Jobber jobs, invoices and quotes a vendor invoice could belong to: the client's (by name, site
+    and the item's client), recent first. Never raises - what Jobber won't say is left out."""
+    names = [x for x in dict.fromkeys((doc.get('client_name') or '', doc.get('site') or '',
+                                       doc.get('case_client') or '')) if x.strip()]
+    out = {'jobs': [], 'invoices': [], 'quotes': []}
+    seen = {k: set() for k in out}
+    for name in names[:3]:
+        try:
+            for x in search_jobber_invoices(name)[:25]:
+                if x['number'] not in seen['invoices']:
+                    seen['invoices'].add(x['number'])
+                    out['invoices'].append({'invoice_number': x['number'], 'client': x['client'], 'subject': x['subject'],
+                                            'date': x['date'], 'month': x['date'][:7], 'amount': x['total'],
+                                            'status': x['status'], 'job_number': (x.get('job') or {}).get('number') or ''})
+        except Exception as e:
+            print(f'⚠ Pumps: Pump Manager match - invoices for {name!r} not read ({e})')
+        try:
+            for x in search_jobber_jobs(name, limit=15):
+                if str(x['number']) not in seen['jobs']:
+                    seen['jobs'].add(str(x['number']))
+                    out['jobs'].append({'job_number': str(x['number']), 'title': x['title'], 'client': x['client_name'],
+                                        'status': x['status'], 'date': x['date'], 'month': (x['date'] or '')[:7]})
+        except Exception as e:
+            print(f'⚠ Pumps: Pump Manager match - jobs for {name!r} not read ({e})')
+        conn = _conn()
+        try:
+            for r in conn.execute("SELECT * FROM pump_jobber_items WHERE kind='quote' AND (client_name LIKE ? OR "
+                                  "title LIKE ? OR property_label LIKE ?) ORDER BY created_at DESC LIMIT 15",
+                                  (f'%{name}%',) * 3):
+                if r['number'] not in seen['quotes']:
+                    seen['quotes'].add(r['number'])
+                    out['quotes'].append({'quote_number': r['number'], 'title': r['title'] or '', 'client': r['client_name'] or '',
+                                          'status': r['status'] or '', 'date': (r['created_at'] or '')[:10],
+                                          'month': (r['created_at'] or '')[:7], 'amount': r['total']})
+        finally:
+            conn.close()
+    return out
+
+
+def pm_match_request(doc_id):
+    """Send one vendor invoice to Pump Manager to match. Errors are logged and kept on the document."""
+    if not PUMP_MANAGER_MATCH_URL:
+        return None
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+        if not row or row['kind'] != 'bill' or row['status'] == 'dismissed':
+            return None
+        doc = _doc_dict(row)
+        case = conn.execute('SELECT * FROM pump_cases WHERE id=?', (doc['case_id'],)).fetchone() if doc['case_id'] else None
+        case = dict(case) if case else {}
+    finally:
+        conn.close()
+    cj = json.loads(case.get('jobber') or '{}')
+    amount = doc.get('total') if doc.get('total') is not None else doc.get('subtotal')
+    body = {'vendor_invoice_id': doc_id, 'vendor': doc.get('vendor') or '', 'bill_number': doc.get('doc_number') or '',
+            'date': doc.get('doc_date') or '', 'amount': amount, 'subtotal': doc.get('subtotal'),
+            'client': doc.get('client_name') or case.get('client_name') or '', 'site': doc.get('site') or '',
+            'po_number': doc.get('po_number') or '', 'description': doc.get('description') or '',
+            'line_items': [{k: i.get(k) for k in ('name', 'description', 'quantity', 'amount')}
+                           for i in doc.get('line_items') or [] if isinstance(i, dict)][:20],
+            'pdf_text': (doc.get('text_excerpt') or '')[:12000],
+            'pumps_item': {'id': case.get('id'), 'title': case.get('title') or '', 'category': case.get('category') or '',
+                           'linked': {k: (cj.get(k) or {}).get('number') or '' for k in PM_MATCH_TYPES}} if case else None,
+            'candidates': pm_match_candidates({**doc, 'case_client': case.get('client_name') or ''}),
+            'reply_to': f"{(CFG.get('website_url') or '').rstrip('/')}/pumps/api/assistant/match-reply"}
+    headers = {'Content-Type': 'application/json'}
+    if PUMP_MANAGER_MATCH_KEY:
+        headers['Authorization'] = f'Bearer {PUMP_MANAGER_MATCH_KEY}'
+    error = ''
+    try:
+        r = http_requests.post(PUMP_MANAGER_MATCH_URL, json=body, headers=headers, timeout=30)
+        if r.status_code >= 300:
+            error = f'Pump Manager said {r.status_code}'
+    except http_requests.RequestException as e:
+        error = f'Could not reach Pump Manager ({type(e).__name__})'
+    if error:
+        print(f'⚠ Pumps: Pump Manager match for document {doc_id}: {error}')
+        _pm_match_set(doc_id, {'state': 'error', 'error': error}, event=('Pump Manager match not sent', error))
+    else:
+        _pm_match_set(doc_id, {'state': 'sent', 'error': ''}, event=('sent to Pump Manager to match', 'waiting on its answer'))
+    return body
+
+
+def pm_match_soon(doc_id):
+    """The request in the background, so a scan or upload isn't held up."""
+    if PUMP_MANAGER_MATCH_URL:
+        threading.Thread(target=pm_match_request, args=(doc_id,), daemon=True).start()
+
+
+def pm_apply_match(doc_id, kind, number, actor):
+    """Link the vendor invoice's item to the Jobber job, invoice or quote. Never marks the bill paid."""
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT case_id FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row or not row['case_id']:
+        raise ValueError("The vendor invoice isn't on an item yet - file it first")
+    cid = row['case_id']
+    if kind == 'invoice':
+        link_jobber_invoice(cid, number, actor)
+    elif kind == 'quote':
+        link_jobber_quote(cid, number, actor)
+    else:
+        it = find_job_by_number(number)
+        if not it:
+            raise ValueError(f'Jobber has no job #{number}')
+        conn = _conn()
+        try:
+            _link_item(conn, it['jobber_id'], cid, actor)
+            conn.commit()
+        finally:
+            conn.close()
+    return cid
+
+
+def pm_match_reply():
+    """Pump Manager's match: {"vendor_invoice_id", "match_type": job|invoice|quote, "job_number" |
+    "invoice_number" | "quote_number", "confidence": high|medium|low, "reason"}, with
+    "Authorization: Bearer <PUMP_APP_REPLY_TOKEN>". Anything else is a 401."""
+    if not PUMP_APP_REPLY_TOKEN or not hmac.compare_digest(request.headers.get('Authorization', ''),
+                                                          f'Bearer {PUMP_APP_REPLY_TOKEN}'):
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+    d = request.get_json(silent=True) or {}
+    try:
+        doc_id = int(d.get('vendor_invoice_id'))
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'error': 'vendor_invoice_id is needed'}), 400
+    kind = str(d.get('match_type') or '').lower()
+    conf = str(d.get('confidence') or '').lower()
+    number = str(d.get(f'{kind}_number') or d.get('number') or '').strip().lstrip('#')
+    reason = str(d.get('reason') or '')[:500]
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT id, kind FROM pump_docs WHERE id=?", (doc_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row or row['kind'] != 'bill':
+        return jsonify({'success': False, 'error': 'No such vendor invoice'}), 404
+    if kind not in PM_MATCH_TYPES or conf not in ('high', 'medium', 'low') or not number.isdigit():
+        err = 'match_type must be job, invoice or quote, confidence high, medium or low, and the number given'
+        _pm_match_set(doc_id, {'state': 'error', 'error': f'Bad answer from Pump Manager: {err}'},
+                      event=('Pump Manager match not understood', err))
+        return jsonify({'success': False, 'error': err}), 400
+    match = {'type': kind, 'number': number, 'confidence': conf, 'reason': reason}
+    if conf == 'high':
+        try:
+            pm_apply_match(doc_id, kind, number, 'Pump Manager')
+            _pm_match_set(doc_id, {'state': 'linked', 'match': match, 'error': ''},
+                          event=('linked by Pump Manager', f"Jobber {kind} #{number} (high confidence) - {reason}"))
+            return jsonify({'success': True, 'linked': True})
+        except (ValueError, JobberError) as e:
+            # Couldn't link it: kept as a suggestion, with why.
+            _pm_match_set(doc_id, {'state': 'suggested', 'match': match, 'error': f'Not linked automatically: {e}'},
+                          event=('Pump Manager match not linked', str(e)))
+            return jsonify({'success': True, 'linked': False, 'suggested': True, 'error': str(e)})
+    _pm_match_set(doc_id, {'state': 'suggested', 'match': match, 'error': ''},
+                  event=('Pump Manager suggests a match', f"Jobber {kind} #{number} ({conf}) - {reason}"))
+    return jsonify({'success': True, 'linked': False, 'suggested': True})
+
+
+@api('/docs/<int:doc_id>/pm_match', methods=('POST',))
+@jobber_button
+def h_doc_pm_match(actor, doc_id):
+    """{"action": "accept" | "reject" | "resend"} on Pump Manager's suggested match."""
+    if actor == BOT:
+        return _office_only(actor, "Answering Pump Manager's match")
+    action = (_json().get('action') or '').lower()
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT jobber FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return {'success': False, 'error': 'Not found'}, 404
+    pm = (json.loads(row['jobber'] or '{}').get('pm_match') or {})
+    if action == 'resend':
+        if not PUMP_MANAGER_MATCH_URL:
+            raise ValueError('Pump Manager matching is not set up (PUMP_MANAGER_MATCH_WEBHOOK_URL)')
+        pm_match_request(doc_id)
+        return {'ok': True}
+    m = pm.get('match') or {}
+    if pm.get('state') != 'suggested' or not m:
+        raise ValueError('There is no suggested match to answer')
+    if action == 'reject':
+        _pm_match_set(doc_id, {'state': 'rejected', 'by': actor}, event=('Pump Manager match rejected',
+                      f"Jobber {m['type']} #{m['number']}"), actor=actor)
+        return {'ok': True}
+    if action != 'accept':
+        raise ValueError('accept, reject or resend')
+    cid = pm_apply_match(doc_id, m['type'], m['number'], actor)
+    if m['type'] == 'invoice':
+        try:
+            conn = _conn()
+            try:
+                inv = (json.loads(conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (cid,)).fetchone()['jobber']
+                                  or '{}').get('invoice') or {})
+            finally:
+                conn.close()
+            note_vendor_bill_on_invoice(cid, inv.get('id'), invoice_number=m['number'], actor=actor)
+        except Exception as e:
+            print(f'⚠ Pumps: vendor invoice note after accepting the match: {e}')
+    _pm_match_set(doc_id, {'state': 'linked', 'by': actor, 'error': ''},
+                  event=('Pump Manager match accepted', f"Jobber {m['type']} #{m['number']}"), actor=actor)
+    return {'ok': True, 'case_id': cid}
 
 
 # ═════════════════════════════════════════════════════════════════════════════

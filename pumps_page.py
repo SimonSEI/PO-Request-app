@@ -904,7 +904,28 @@ function vendorDocsHtml(c){
   const inv = (c.jobber || {}).invoice || {}, bills = docs.some(d => d.kind === 'bill');
   const ours = bills ? `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:8px"><span class="note">Our Jobber invoice #</span>${inv.number ? `<b>${inv.uri ? `<a target="_blank" href="${esc(inv.uri)}">#${esc(inv.number)} ↗</a>` : '#' + esc(inv.number)}</b>` : ''}
     <input type="text" id="csOurs" placeholder="${inv.number ? 'change' : 'e.g. 36995'}" style="width:120px" onkeydown="if(event.key==='Enter')linkOursFromCase(${c.id})"><button class="btn s" onclick="linkOursFromCase(${c.id})">Save</button></div>` : '';
-  return `<div class="sec"><div style="display:flex;gap:8px;flex-wrap:wrap">${docs.filter(d => d.kind === 'bill').concat(docs.filter(d => d.kind === 'quote')).map(btn).join('')}</div>${ours}</div>`;
+  return `<div class="sec"><div style="display:flex;gap:8px;flex-wrap:wrap">${docs.filter(d => d.kind === 'bill').concat(docs.filter(d => d.kind === 'quote')).map(btn).join('')}</div>${ours}${docs.filter(d => d.kind === 'bill').map(pmMatchHtml).join('')}</div>`;
+}
+// Pump Manager's match for a vendor invoice: linked, suggested (accept / reject), waiting, or what went wrong.
+function pmMatchHtml(d){
+  const pm = (d.jobber || {}).pm_match; if (!pm) return '';
+  const m = pm.match || {}, what = m.type ? `Jobber ${esc(m.type)} #${esc(m.number)}` : '';
+  const why = m.reason ? `<div class="note">${esc(m.reason)}</div>` : '';
+  const head = `🤖 Pump Manager${d.doc_number ? ' · invoice #' + esc(d.doc_number) : ''}: `;
+  let body;
+  if (pm.state === 'linked') body = `<b class="ok">Linked</b> to ${what}${m.confidence ? ' (' + esc(m.confidence) + ' confidence)' : ''}${pm.by ? ' - accepted by ' + esc(pm.by) : ''}${why}`;
+  else if (pm.state === 'suggested') body = `<b>Suggested match:</b> ${what} (${esc(m.confidence)} confidence)${why}${pm.error ? `<div class="note bad">${esc(pm.error)}</div>` : ''}
+      <div style="display:flex;gap:6px;margin-top:6px"><button class="btn s p" onclick="pmMatch(${d.id}, 'accept')">✓ Accept</button><button class="btn s" onclick="pmMatch(${d.id}, 'reject')">✕ Reject</button></div>`;
+  else if (pm.state === 'rejected') body = `suggested ${what} - <span class="note">rejected${pm.by ? ' by ' + esc(pm.by) : ''}</span>`;
+  else if (pm.state === 'sent') body = '<span class="note">sent to match - waiting on its answer</span>';
+  else body = `<b class="bad">${esc(pm.error || 'Something went wrong')}</b> <button class="btn s" onclick="pmMatch(${d.id}, 'resend')">↻ Send again</button>`;
+  return `<div style="margin-top:8px;padding:8px 12px;border:1px solid var(--border);border-radius:10px;background:var(--violet-bg)">${head}${body}</div>`;
+}
+async function pmMatch(docId, action){
+  const j = await api('/docs/' + docId + '/pm_match', {method:'POST', body:{action}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast(action === 'accept' ? 'Linked.' : action === 'reject' ? 'Rejected.' : 'Sent to Pump Manager again.');
+  if (curCase) openCase(curCase.id);
 }
 function renderCase(){
   const c = curCase, v = c.vendor || 'Wettech';
