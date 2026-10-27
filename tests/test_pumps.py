@@ -690,12 +690,16 @@ class PumpsTest(unittest.TestCase):
             self.assertTrue(body['success'], body)
             target = 'invoiceCreateNote' if notes else 'clientCreateNote'
             made = [v for q, v in fake.calls if target in q]
-            self.assertEqual(len(made), 1, target)
+            # The sub's quote, then the vendor's invoice itself (Oct 2026), each once.
+            self.assertEqual(len(made), 2, target)
             self.assertIn(f'Wettech quote #Q-7{n}', made[0]['input']['message'])
-            self.assertEqual(made[0]['id'], 'INV1' if notes else 'C1')
+            self.assertIn(f'Wettech invoice #307{n}', made[1]['input']['message'])
+            self.assertEqual({m['id'] for m in made}, {'INV1' if notes else 'C1'})
             if not notes:
                 self.assertIn('For invoice #5001', made[0]['input']['message'])
-            self.assertIn('sub quote on invoice', [e['action'] for e in self.case(b['case_id'])['events']])
+            actions = [e['action'] for e in self.case(b['case_id'])['events']]
+            self.assertIn('sub quote on invoice', actions)
+            self.assertIn('vendor invoice on our invoice', actions)
 
     def test_non_draft_status_from_jobber_raises_issue(self):
         self.extracts['b-0600.pdf'] = extraction('bill', '29700', po='PO600', client='Sunset Cove', subtotal=400)
@@ -4355,6 +4359,7 @@ class PumpsTest(unittest.TestCase):
         """Pump Manager (Oct 2026) couldn't link vendor bills to our invoices: the search missed #36995 (Pebblebrooke)
         and #36712, there was no field to type our invoice #, and a cancelled bill (#29183 Rosewood) couldn't come
         back. Linking never marks the vendor bill paid."""
+        self.addCleanup(setattr, P, '_SCHEMA_CACHE', {})   # linking asks Jobber's schema (the vendor invoice's note)
         terms = []
 
         def fake(query, variables=None):
@@ -5870,6 +5875,7 @@ class PumpsTest(unittest.TestCase):
         """Oct 2026: invoicing a maintenance bill on the recurring job also completes that job's visit for the
         month the bill is for - the one nearest the bill's date - and anything that can't be done is a to-do."""
         self.as_if_clicked()   # the Jobber mechanics, as when a person clicks its button
+        P._SCHEMA_CACHE = {}   # a schema read by an earlier test's fake Jobber isn't this one's
         self.addCleanup(setattr, P, '_SCHEMA_CACHE', {})
         visits = [{'id': 'V9', 'title': 'Monthly Pump 250', 'startAt': '2026-09-25T12:00:00Z', 'completedAt': None},
                   {'id': 'V10', 'title': 'Monthly Pump 250', 'startAt': '2026-10-23T12:00:00Z', 'completedAt': None},
@@ -5896,7 +5902,7 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(P.bill_service_month({'doc_date': '2026-09-30'}), (2026, 9))
         fake = P.jobber_gql = Visits()
         r = P.complete_visit_for_bill(doc, {}, job, 'test')
-        self.assertTrue(r['completed'], r)
+        self.assertTrue(r.get('completed'), r)
         self.assertEqual(r['visit']['id'], 'V10')
         self.assertEqual([v for q, v in fake.calls if 'visitComplete(' in q], [{'visitId': 'V10'}])
         # Already done: nothing is sent again.

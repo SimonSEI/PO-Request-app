@@ -6818,6 +6818,14 @@ def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', a
                        f"{doc.get('vendor') or 'Vendor'} quote {'attached' if note.get('attached') else 'noted'} "
                        f"on the Jobber {note['on']}", case_id=doc['case_id'], doc_id=note['doc_id'])
                 conn.commit()
+            # And the vendor's invoice itself (Oct 2026).
+            try:
+                bn = note_vendor_bill_on_invoice(doc['case_id'], inv.get('id'), job_id, client_id,
+                                                 ref['invoice_number'], actor)
+            except Exception as e:
+                bn, ref['bill_note_error'] = None, str(e)
+            if bn:
+                ref['bill_note'] = bn
         return {**ref, 'total': total}
     finally:
         conn.close()
@@ -6868,6 +6876,50 @@ NOTE_MUTATION = {
     'quote': ('quoteCreateNote', 'quoteId', 'QuoteCreateNoteInput', 'quoteNote'),
     'invoice': ('invoiceCreateNote', 'invoiceId', 'InvoiceCreateNoteInput', 'invoiceNote'),
 }
+
+
+def note_vendor_bill_on_invoice(case_id, invoice_id, job_id='', client_id='', invoice_number='', actor='Pumps'):
+    """The vendor's own invoice saved as a note on our Jobber invoice, its file attached, like the
+    office keeps the vendor's quote on our quote (Oct 2026) - else on the job, else the client. Once per bill."""
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT * FROM pump_docs WHERE case_id=? AND kind='bill' AND status != 'dismissed' "
+                           "ORDER BY id DESC", (case_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    doc = _doc_dict(row)
+    if (doc.get('jobber') or {}).get('bill_note_id'):
+        return None
+    vendor = doc.get('vendor') or 'Vendor'
+    amount = doc.get('total') if doc.get('total') is not None else doc.get('subtotal')
+    text = '\n'.join(x for x in (
+        f"{vendor} invoice{' #' + doc['doc_number'] if doc.get('doc_number') else ''}"
+        f"{' dated ' + doc['doc_date'] if doc.get('doc_date') else ''}",
+        f"{vendor} amount: ${amount:,.2f}" if amount is not None else '') if x)
+    targets = ([('invoice', invoice_id)] if invoice_id and 'invoiceCreateNote' in _mutation_schema() else []) + \
+        [(t, i) for t, i in (('job', job_id), ('client', client_id)) if i]
+    for target, tid in targets:
+        try:
+            msg = text if target == 'invoice' or not invoice_number else f"For invoice #{invoice_number} - {text}"
+            note = {**note_vendor_file(doc, target, tid, msg), 'on': target, 'doc_id': doc['id']}
+        except JobberError as e:
+            print(f'  ⚠ Pumps: could not put the vendor invoice on the {target} ({e})')
+            continue
+        conn = _conn()
+        try:
+            dj = json.loads(conn.execute('SELECT jobber FROM pump_docs WHERE id=?', (doc['id'],)).fetchone()['jobber'] or '{}')
+            dj.update(bill_note_id=note.get('note_id') or 'noted', bill_note_on=target)
+            conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(dj), doc['id']))
+            _event(conn, actor, 'vendor invoice on our invoice',
+                   f"{vendor} invoice {'attached' if note.get('attached') else 'noted'} on the Jobber {target}",
+                   case_id=case_id, doc_id=doc['id'])
+            conn.commit()
+        finally:
+            conn.close()
+        return note
+    return None
 
 
 def note_sub_quote_on_invoice(case_id, invoice_id, job_id='', client_id='', invoice_number=''):
@@ -8561,12 +8613,18 @@ def h_jobber_invoices(actor):
 
 
 @api('/cases/<int:case_id>/jobber_invoice', methods=('POST',))
+@jobber_button
 def h_link_jobber_invoice(actor, case_id):
     if actor == BOT:
         return _office_only(actor, 'Linking a Jobber invoice')
     inv = link_jobber_invoice(case_id, _json().get('number'), actor)
     diver_invoice_linked(case_id, inv, actor)
-    return {'invoice': inv}
+    # The vendor's invoice saved on the invoice it was linked to (Oct 2026). Never holds up the link.
+    try:
+        note = note_vendor_bill_on_invoice(case_id, inv.get('id'), invoice_number=inv.get('number') or '', actor=actor)
+    except Exception as e:
+        note = {'error': str(e)}
+    return {'invoice': inv, 'bill_note': note}
 
 
 def diver_invoice_linked(case_id, inv, actor):
