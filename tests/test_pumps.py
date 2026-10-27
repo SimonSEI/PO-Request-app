@@ -4406,6 +4406,48 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual((row['state'], row['ours']['number'], row['paid_on']), ('invoiced', '36816', ''),
                          'linked - and not marked paid, even with our invoice paid')
 
+    def test_grok_matches_a_bill_to_its_open_job(self):
+        """Oct 2026: a vendor bill nothing else ties to a job (no PO, quote # or same email) is matched by Grok,
+        from the work described, to the open job waiting on it - when it's confident. Otherwise a new item."""
+        self.extracts['q-grok.pdf'] = extraction('quote', 'Q-881', client='Bayshore Commons HOA', subtotal=1800)
+        q = self.upload('q-grok.pdf')
+        asked = []
+
+        class Resp:
+            status_code = 200
+            text = ''
+
+            def __init__(self, body):
+                self.body = body
+
+            def json(self):
+                return self.body
+        answer = {'case_id': q['case_id'], 'confidence': 0.93, 'reason': 'Same check valve job at Bayshore'}
+        saved = (P.XAI_API_KEY, P.http_requests.post)
+        P.XAI_API_KEY = 'xai-test'
+
+        def post(url, **kw):
+            asked.append(kw)
+            return Resp({'choices': [{'message': {'content': json.dumps(answer)}}]})
+        P.http_requests.post = post
+        try:
+            self.extracts['b-grok1.pdf'] = extraction('bill', '29901', client='Pump station 2 - lakeside entrance',
+                                                       subtotal=1800)
+            b = self.upload('b-grok1.pdf')
+            self.assertEqual(b['case_id'], q['case_id'], 'on the open job Grok named')
+            sent = json.loads(asked[-1]['json']['messages'][1]['content'])
+            self.assertIn(q['case_id'], [c['id'] for c in sent['open_jobs']])
+            self.assertEqual(asked[-1]['headers']['Authorization'], 'Bearer xai-test')
+            self.assertTrue(any('matched by Grok' in (e.get('detail') or '') + (e.get('action') or '')
+                                for e in self.case(q['case_id'])['events']))
+            # Not sure enough: a new item, as before.
+            answer.update(confidence=0.4)
+            self.extracts['b-grok2.pdf'] = extraction('bill', '29902', client='Somewhere Else Entirely', subtotal=90)
+            b2 = self.upload('b-grok2.pdf')
+            self.assertNotEqual(b2['case_id'], q['case_id'])
+        finally:
+            P.XAI_API_KEY, P.http_requests.post = saved
+
     def test_watercrest_is_water_crest(self):
         """Oct 2026: Wettech's "Watercrest @ Falling Waters" scored lowest against Jobber's "WATER CREST AT FALLING
         WATERS", so its report went on Falling Waters II. Words run together still match; the wrong pick is undone."""
