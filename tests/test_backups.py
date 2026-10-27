@@ -276,3 +276,99 @@ class BackupTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SafeCopyTests(unittest.TestCase):
+    """The backup copy must never hold the database long enough to fail someone's save."""
+
+    def test_saves_carry_on_while_a_backup_copies(self):
+        import threading
+        import time
+        d = tempfile.mkdtemp(prefix='backup_lock_')
+        try:
+            db = os.path.join(d, 'live.db')
+            conn = sqlite3.connect(db)
+            conn.execute('CREATE TABLE t (id INTEGER PRIMARY KEY, v BLOB)')
+            conn.executemany('INSERT INTO t (v) VALUES (?)', [(os.urandom(4000),) for _ in range(15000)])
+            conn.commit()
+            conn.close()
+            failed, saved, done = [], [], threading.Event()
+
+            def someone_saving():
+                w = sqlite3.connect(db, timeout=5)  # the app's shortest wait for a lock
+                while not done.is_set():
+                    try:
+                        w.execute('INSERT INTO t (v) VALUES (?)', (b'saved while backing up',))
+                        w.commit()
+                        saved.append(1)
+                    except sqlite3.OperationalError as e:
+                        failed.append(str(e))
+                    time.sleep(0.005)
+                w.close()
+
+            t = threading.Thread(target=someone_saving)
+            t.start()
+            try:
+                time.sleep(0.05)
+                B._copy_db(db, os.path.join(d, 'copy.db'))
+                time.sleep(0.05)
+            finally:
+                done.set()
+                t.join()
+            self.assertEqual(failed, [])
+            self.assertTrue(saved)
+            B.check_db_file(os.path.join(d, 'copy.db'))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+class PrefixTests(unittest.TestCase):
+    """The Pumps service backs up to the same bucket under pumps/, apart from the Office App."""
+
+    def setUp(self):
+        import importlib
+        self.importlib = importlib
+        self.aws = mock_aws()
+        self.aws.start()
+        self.dir = tempfile.mkdtemp(prefix='backup_prefix_')
+        self.db = os.path.join(self.dir, 'pumps.db')
+        conn = sqlite3.connect(self.db)
+        conn.execute('CREATE TABLE pump_cases (id INTEGER PRIMARY KEY, title TEXT)')
+        conn.execute("INSERT INTO pump_cases (title) VALUES ('Pump #1')")
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        self.aws.stop()
+        shutil.rmtree(self.dir, ignore_errors=True)
+        B._clients.clear()
+
+    def _module(self, prefix):
+        env = dict(STORAGE, BACKUP_PREFIX=prefix)
+        with mock.patch.dict(os.environ, env):
+            spec = self.importlib.util.spec_from_file_location(f'backups_{prefix or "office"}',
+                                                              os.path.join(ROOT, 'backups.py'))
+            mod = self.importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        return mod
+
+    def test_pumps_copies_stay_in_their_own_folder(self):
+        pumps_b = self._module('pumps')
+        office_b = self._module('')
+        with mock.patch.dict(os.environ, STORAGE):
+            pumps_b._cfg.update(db_path=self.db, data_dir=self.dir)
+            s3 = pumps_b._s3(pumps_b._dest())
+            s3.create_bucket(Bucket='office-backups')
+            s3.put_object(Bucket='office-backups', Key='db/20260101T000000Z.db.gz', Body=b'office copy')
+            status = pumps_b.run_backup(force=True)
+            self.assertIsNone(status['primary'].get('last_error'))
+            keys = [o['Key'] for o in s3.list_objects_v2(Bucket='office-backups')['Contents']]
+            self.assertTrue(any(k.startswith('pumps/db/') for k in keys), keys)
+            self.assertIn('pumps/files-manifest.json', keys)
+            self.assertIn('db/20260101T000000Z.db.gz', keys, 'the Office copy is untouched')
+            self.assertEqual([s['key'] for s in office_b.list_snapshots()], ['db/20260101T000000Z.db.gz'])
+            self.assertTrue(all(s['key'].startswith('pumps/db/') for s in pumps_b.list_snapshots()))
+            # Pruning on the Pumps side never reaches the Office copies.
+            pumps_b.prune_snapshots(pumps_b._dest(), now=datetime.now(timezone.utc) + timedelta(days=400))
+            keys = [o['Key'] for o in s3.list_objects_v2(Bucket='office-backups')['Contents']]
+            self.assertIn('db/20260101T000000Z.db.gz', keys)

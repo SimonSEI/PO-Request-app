@@ -39,7 +39,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests as http_requests
-from flask import Blueprint, jsonify, redirect, render_template_string, request, session, url_for
+from flask import Blueprint, jsonify, redirect, render_template_string, request, session
 
 try:
     import fcntl
@@ -56,9 +56,14 @@ KEEP_DAILY_DAYS = 90
 HEARTBEAT = timedelta(hours=24)
 # Tell Telegram once backups have failed for this long.
 ALERT_AFTER = timedelta(minutes=30)
-DB_PREFIX = 'db/'
-FILES_PREFIX = 'files/'
-MANIFEST_KEY = 'files-manifest.json'
+# Each service backing up to the same bucket keeps to its own folder: the Office
+# App uses the top level (as it always has), the Pumps service BACKUP_PREFIX=pumps.
+PREFIX = (os.environ.get('BACKUP_PREFIX', '').strip().strip('/') + '/').lstrip('/')
+DB_PREFIX = PREFIX + 'db/'
+FILES_PREFIX = PREFIX + 'files/'
+MANIFEST_KEY = PREFIX + 'files-manifest.json'
+# Who the Telegram alerts are about.
+LABEL = os.environ.get('BACKUP_LABEL', '').strip() or 'Office App'
 
 bp = Blueprint('backups', __name__)
 _cfg = {'db_path': None, 'data_dir': None, 'allowed': None}
@@ -234,14 +239,22 @@ def _key_time(key):
 
 
 def _copy_db(src_path, dst_path):
-    """A consistent copy of a live SQLite database (other workers may be writing)."""
+    """A consistent copy of a live SQLite database (other workers may be writing).
+    One step: it holds the read lock for well under a second even for a few
+    hundred MB, and the app's connections wait 5-30 s for a lock, so a save made
+    during a backup just waits a moment. (A copy in small steps would let SQLite
+    start it over on every save and might never finish on a busy day.)"""
     src = sqlite3.connect(src_path, timeout=30)
     dst = sqlite3.connect(dst_path)
+    t0 = time.time()
     try:
         src.backup(dst)
     finally:
         dst.close()
         src.close()
+    took = time.time() - t0
+    if took > 2:
+        print(f'⚠ Backups: copying the database took {took:.1f}s - saves wait that long while it runs')
 
 
 def check_db_file(path):
@@ -482,7 +495,7 @@ def run_backup(force=False):
                         st['pruned_last'] = prune_snapshots(dest, now)
                         st['last_prune_at'] = _iso(now)
                     if st.get('alerted'):
-                        _telegram(f"✅ Office App backups to {dest['name']} storage are working again.")
+                        _telegram(f"✅ {LABEL} backups to {dest['name']} storage are working again.")
                     st.update(last_ok_at=_iso(now), last_error=None, failing_since=None, alerted=False)
                 except Exception as e:
                     print(f"✗ Backup to {dest['name']} storage failed: {e}")
@@ -491,7 +504,7 @@ def run_backup(force=False):
                     st['failing_since'] = st.get('failing_since') or _iso(now)
                     since = _parse_iso(st['failing_since'])
                     if not st.get('alerted') and since and now - since >= ALERT_AFTER:
-                        _telegram(f"⚠️ Office App backups to {dest['name']} storage have been failing since "
+                        _telegram(f"⚠️ {LABEL} backups to {dest['name']} storage have been failing since "
                                   f"{since.astimezone(TZ):%b %-d %-I:%M %p}: {st['last_error']}")
                         st['alerted'] = True
         finally:
@@ -663,7 +676,7 @@ def _fmt_size(n):
 @bp.route('/backups')
 def backups_page():
     if not _allowed():
-        return redirect(url_for('index')) if 'username' in session else redirect('/')
+        return redirect('/')
     dests = destinations()
     status = load_status()
     rows, list_error = [], None
