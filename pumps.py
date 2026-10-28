@@ -4380,6 +4380,7 @@ def _sync_jobber(full=False, actor='system'):
             reconcile_client_names(conn)
             approved = _follow_quotes(conn)
             approved += auto_track_approved(conn)
+            quotes_needing_jobs(conn)
             close_stale_todos(conn)
             rebuild_scada(conn)
             conn.commit()
@@ -12389,6 +12390,22 @@ def _apply_master_vendors(c, now):
               "WHERE name='Wild Blue'", (now,))
 
 
+def _remind_banyan_bladder(c, now):
+    """Once (Oct 28 2026): Banyan Bay's bladder tank quote #9194 was approved but never made a job (its item
+    was cancelled, so nothing reminded the office)."""
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('banyan_9194_reminder', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    c.execute('INSERT OR IGNORE INTO pump_todos (kind, key, title, detail, due_on, link, created_by, created_at) '
+              'VALUES (?,?,?,?,?,?,?,?)',
+              ('auto', 'convert-quote:9194', 'Convert quote for Banyan Bay (#9194) to a job',
+               'The 20 gallon bladder tank ($1,495) was approved, but Jobber still shows quote #9194 awaiting '
+               'response. Mark it approved in Jobber, then convert it to a job. (Its item here was cancelled - '
+               'restore it from the Cancelled list to follow it.)',
+               '', json.dumps({'uri': 'https://secure.getjobber.com/quotes/67427291', 'label': 'Open quote #9194'}),
+               'Pumps', now))
+
+
 def _apply_wild_blue_oct28(c, now):
     """Once (Oct 28 2026, the office's updated sheet): Wild Blue is 1 pump 2 filters, JAN/APR/JULY/OCT,
     $250, included with pump maintenance (Wettech - still no diver)."""
@@ -12849,6 +12866,7 @@ def init_account_tables(c):
     _apply_repairs_by(c, now)
     _apply_master_vendors(c, now)
     _apply_wild_blue_oct28(c, now)
+    _remind_banyan_bladder(c, now)
     _apply_report_only(c, now)
     _undo_watercrest_mismatch(c, now)
     _fix_quote_needed_dates(c, now)
@@ -13293,6 +13311,36 @@ def recurring_job_for(acct):
     j = jobs[0]
     label = ', '.join(f"#{x['number']}" for x in jobs if x.get('number')) + (f" {j['title']}" if j.get('title') else '')
     return {'id': j['id'], 'label': label.strip()}
+
+
+_APPROVED_STEPS = ('client_approved', 'scheduled', 'work_done', 'vendor_bill')
+
+
+def quotes_needing_jobs(conn):
+    """A job approved here (or already scheduled, done or billed) whose Jobber quote was never made a job -
+    "Convert quote ... to a job" on To do, until the Jobber job is linked or the quote shows converted.
+    Oct 2026: Banyan Bay's bladder quote #9194 was approved but stayed "awaiting response" in Jobber, so the
+    reminder that waits for Jobber's approval never came."""
+    added = 0
+    for r in conn.execute("SELECT id, client_name, steps, jobber FROM pump_cases WHERE status='open' "
+                          "AND jobber LIKE '%quote%'").fetchall():
+        j, steps = json.loads(r['jobber'] or '{}'), json.loads(r['steps'] or '{}')
+        q = j.get('quote') or {}
+        if not q.get('id') or (j.get('job') or {}).get('id'):
+            continue
+        if not any((steps.get(k) or {}).get('at') for k in _APPROVED_STEPS):
+            continue
+        it = conn.execute('SELECT status, web_uri FROM pump_jobber_items WHERE jobber_id=?', (q['id'],)).fetchone()
+        st = ((it and it['status']) or q.get('status') or '').lower()
+        if st in ('converted', 'archived'):
+            continue
+        how = ('Convert it to a job in Jobber.' if st == 'approved' else
+               f"Jobber still shows it {st.replace('_', ' ') or 'not approved'} - mark it approved, then convert it to a job.")
+        add_todo(conn, f"quote-to-job:{r['id']}", quote_to_job_title(r['client_name'], q.get('number')),
+                 f"{r['client_name'] or 'The client'} approved it here. {how}",
+                 {'case_id': r['id'], 'uri': q.get('uri') or (it and it['web_uri']) or ''})
+        added += 1
+    return added
 
 
 # To-dos the app adds about a job, that the job itself can show are done.
