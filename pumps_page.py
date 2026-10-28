@@ -159,6 +159,10 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 .pm .a pre{background:var(--slate-bg);padding:8px;border-radius:6px;overflow:auto;white-space:pre-wrap;}
 .pm .a ul{margin:4px 0 4px 18px;}
 .pm .a.wait{color:var(--muted);font-style:italic;}
+/* The Jobber account leads a job (Oct 2026): its name and address on top, set apart; the job's title under it. */
+.acct{font-family:Georgia,'Times New Roman',serif;font-weight:700;font-size:15px;color:var(--navy-2);letter-spacing:.1px;line-height:1.3;}
+.acct-addr{font-size:12.5px;font-weight:600;color:var(--text);margin-top:1px;}
+.jobt{font-size:13px;font-weight:500;color:var(--muted);margin-top:4px;}
 .pm .pmacts{align-self:flex-start;max-width:92%;display:flex;flex-direction:column;gap:6px;}
 .pm .pmact{display:flex;gap:8px;align-items:center;justify-content:space-between;background:var(--brand-soft);border:1px solid var(--border);padding:6px 9px;border-radius:8px;}
 .pm .pmideas{align-self:flex-start;max-width:92%;background:var(--amber-bg);border:1px solid var(--border);padding:6px 10px;border-radius:8px;}
@@ -955,7 +959,7 @@ function renderCase(){
       <button class="btn s" onclick="openDoc(${d.id})">Details</button></div>`).join('') || '<div class="note">No documents yet.</div>';
   const issues = (c.issues || []).map(i => `<div class="issue ${i.resolved_at ? 'done' : ''}"><div>${esc(i.message)}${i.resolved_at ? `<div class="note">Resolved by ${esc(i.resolved_by)}: ${esc(i.resolution)}</div>` : ''}</div>${i.resolved_at ? '' : `${i.kind === 'no_quote' ? `<button class="btn s p" onclick="billAnyway(${i.id})">Bill it +30%</button> ` : ''}<button class="btn s" onclick="resolveIssue(${i.id})">Resolve…</button>`}</div>`).join('');
   document.getElementById('drawer').innerHTML = `
-  <div class="hd"><div><h2>${esc(c.title || c.client_name)} <button class="btn s" title="Rename this item" onclick="editTitle()">✎</button></h2><div class="note">${catChip(c.category)} <a href="#" title="Set the PO #" onclick="event.preventDefault();editPo()">${c.po_number ? 'PO ' + esc(c.po_number) : '+ PO #'}</a> · opened ${esc(c.opened_on)} ${jl}</div>${c.account_name ? `<div title="The client in Jobber" style="margin-top:4px;font-weight:600">Jobber account: ${esc(c.account_name)}</div>` : ''}</div>
+  <div class="hd"><div><div class="acct" title="The client in Jobber" style="font-size:17px">${esc(c.account_name || c.client_name || '')}</div>${c.site ? `<div class="acct-addr">${esc(c.site)}</div>` : ''}<h2 style="margin-top:4px">${esc(c.title || c.client_name)} <button class="btn s" title="Rename this item" onclick="editTitle()">✎</button></h2><div class="note">${catChip(c.category)} <a href="#" title="Set the PO #" onclick="event.preventDefault();editPo()">${c.po_number ? 'PO ' + esc(c.po_number) : '+ PO #'}</a> · opened ${esc(c.opened_on)} ${jl}</div></div>
     <div style="display:flex;gap:6px;align-items:flex-start"><button class="btn" onclick="closeDrawer()">✕</button></div></div>
   <div class="bd">
     ${vendorDocsHtml(c)}
@@ -2544,7 +2548,7 @@ async function loadJobs(){
   const all = (j.cases || []).filter(c => show !== 'waiting' || /waiting/i.test(stageText(c))), main = all.filter(c => !quietQ(c)), quiet = all.filter(quietQ);
   const row = c => { const jb = c.jobber || {}, vp = c.vendor_pay || {};
     return `<tr class="click" onclick="openCase(${c.id})">
-    <td><b title="${esc(c.title || c.client_name)}">${esc(c.short_title || c.title || c.client_name)}</b><div class="note">${esc([c.client_name, c.site].filter(Boolean).join(' · '))}${c.po_number ? ' · PO ' + esc(c.po_number) : ''}${jobberNo(c)}</div></td>
+    <td><div class="acct">${esc(c.account_name || c.client_name || '')}</div>${c.site ? `<div class="acct-addr">${esc(c.site)}</div>` : ''}<div class="jobt" title="${esc(c.title || c.client_name)}">${esc(c.short_title || c.title || c.client_name)}</div>${c.po_number || jobberNo(c) ? `<div class="note">${(c.po_number ? 'PO ' + esc(c.po_number) : '') + (c.po_number ? jobberNo(c) : jobberNo(c).replace(/^ · /, ''))}</div>` : ''}</td>
     <td>${c.urgent && isQuote(c) ? '<span class="chip r">urgent</span> ' : ''}${stageChip(c)}${statusLine(c) ? `<div class="note">${statusLine(c)}</div>` : ''}${c.status === 'open' ? lastAction(c) : ''}</td>
     <td>${esc(c.vendor)}</td><td>${numAmt(c.vendor_quote_number, c.vendor_quote_amount ?? c.vendor_quote_total)}</td>
     <td>${ref(jb.quote)}${jb.quote && jb.quote.total != null ? ' <b>' + money(jb.quote.total) + '</b>' : ''}${jb.quote && jb.quote.status ? ` <span class="note">${esc(jb.quote.status.replace(/_/g, ' '))}</span>` : ''}</td>
