@@ -4431,8 +4431,16 @@ class PumpsTest(unittest.TestCase):
             self.assertEqual(m['actions'][0]['state'], 'done')
             self.assertFalse(self.c.get(f"/pumps/api/assistant/actions/{m['message_id']}/0").get_json()['success'])
             conn = P._conn()
-            self.assertTrue(conn.execute("SELECT case_id FROM pump_jobber_items WHERE jobber_id='QPM9301'").fetchone()[0])
+            cid = conn.execute("SELECT case_id FROM pump_jobber_items WHERE jobber_id='QPM9301'").fetchone()[0]
+            self.assertTrue(cid)
+            # Tracked on an item that was cancelled since: offered as bringing that item back (Banyan Bay #9194).
+            conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (cid,))
+            conn.commit()
+            a = P.pm_action(conn, {'type': 'track', 'kind': 'quote', 'number': '9301'})
+            self.assertEqual(a['path'], f'/cases/{cid}/restore')
+            self.assertIn('cancelled', a['label'])
             conn.close()
+            self.assertEqual(self.c.post('/pumps/api' + a['path'], json={}).get_json()['case']['status'], 'open')
         finally:
             (P.PUMP_MANAGER_WEBHOOK_URL, P.PUMP_APP_REPLY_TOKEN, P.http_requests.post) = saved
             conn = P._conn()

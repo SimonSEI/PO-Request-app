@@ -16067,7 +16067,18 @@ def pm_action(conn, a):
         if not it:
             raise ValueError(f"Jobber {kind} #{num} isn't synced here yet - sync Jobber, then ask again")
         if it['case_id']:
-            raise ValueError(f'Jobber {kind} #{num} is already on the watchlist (item {it["case_id"]})')
+            # Already followed: say where - and if that item was cancelled or done (so it isn't on the open
+            # watchlist), offer to bring it back (Banyan Bay quote #9194 on cancelled item 79, Oct 2026).
+            c = conn.execute('SELECT id, title, client_name, status FROM pump_cases WHERE id=?', (it['case_id'],)).fetchone()
+            name = (c['title'] or c['client_name'] or '') if c else ''
+            if c and c['status'] == 'cancelled':
+                return {'label': f"Bring back item {c['id']} ({name}, cancelled) - it has Jobber {kind} #{num}",
+                        'method': 'POST', 'path': f"/cases/{c['id']}/restore", 'body': {}}
+            if c and c['status'] == 'closed':
+                return {'label': f"Reopen item {c['id']} ({name}, marked done) - it has Jobber {kind} #{num}",
+                        'method': 'POST', 'path': f"/cases/{c['id']}/done", 'body': {'reopen': True}}
+            raise ValueError(f'Jobber {kind} #{num} is already on the open watchlist (item {it["case_id"]}'
+                             f'{": " + name if name else ""})')
         return {'label': f"Track Jobber {kind} #{num} - {it['client_name'] or it['title'] or ''}".rstrip(' -'),
                 'method': 'POST', 'path': f"/jobber/items/{it['jobber_id']}", 'body': {'action': 'track'}}
     if t == 'link':
