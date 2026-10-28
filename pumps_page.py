@@ -159,6 +159,10 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 .pm .a pre{background:var(--slate-bg);padding:8px;border-radius:6px;overflow:auto;white-space:pre-wrap;}
 .pm .a ul{margin:4px 0 4px 18px;}
 .pm .a.wait{color:var(--muted);font-style:italic;}
+.pm .pmacts{align-self:flex-start;max-width:92%;display:flex;flex-direction:column;gap:6px;}
+.pm .pmact{display:flex;gap:8px;align-items:center;justify-content:space-between;background:var(--brand-soft);border:1px solid var(--border);padding:6px 9px;border-radius:8px;}
+.pm .pmideas{align-self:flex-start;max-width:92%;background:var(--amber-bg);border:1px solid var(--border);padding:6px 10px;border-radius:8px;}
+.pm .pmideas ul{margin:4px 0 0 18px;}
 .pm .a.bad{color:var(--red);background:var(--red-bg);border-color:transparent;}
 .pm .ctx{font-size:11.5px;color:var(--faint);align-self:flex-end;margin-top:-6px;}
 .pm .ft{border-top:1px solid var(--border);padding:10px 12px;display:flex;gap:8px;align-items:flex-end;}
@@ -2907,7 +2911,23 @@ function pmContext(){
   const acct = open && dr.dataset.account ? dr.dataset.account : '';
   let job = '';
   if (open && !acct && curCase) { const jj = (curCase.jobber || {}).job || {}; job = (curCase.title || '') + (jj.number ? ` (Jobber #${jj.number})` : ''); }
-  return {tab: curTab, job, account: acct};
+  return {tab: curTab, job, account: acct, case_id: open && !acct && curCase ? String(curCase.id) : ''};
+}
+// Do it: the action runs through the app's own route, as if clicked there (Jobber changes need this click).
+async function pmAct(mid, i, btn){
+  btn.disabled = true;
+  const a = await api(`/assistant/actions/${mid}/${i}`);
+  if (!a.success) { toast(a.error, true); pmLoad(); return; }
+  const r = await api(a.path, {method: a.method, body: a.body});
+  await pmActSet(mid, i, r.success ? 'done' : 'failed', r.success ? '' : r.error);
+  if (!r.success) { toast(r.error, true); return; }
+  toast('Done: ' + a.label);
+  if (curTab === 'jobs') loadJobs();
+  if (curCase && !document.getElementById('drawerWrap').classList.contains('hide')) openCase(curCase.id);
+}
+async function pmActSet(mid, i, state, result){
+  await api(`/assistant/actions/${mid}/${i}`, {method:'POST', body:{state, result: result || ''}});
+  pmLoad();
 }
 function pmRender(){
   const box = document.getElementById('pmMsgs'), ms = pmData.messages || [];
@@ -2918,7 +2938,13 @@ function pmRender(){
       : m.state === 'thinking' ? '<div class="a wait">Pump Manager is thinking…</div>'
       : m.state === 'error' ? `<div class="a bad">${esc(m.error)} - try again</div>`
       : '<div class="a bad">No answer yet, try again</div>';
-    return `<div class="q">${esc(m.question)}</div>${where ? `<div class="ctx">${esc(where)}</div>` : ''}${a}`;
+    // What Pump Manager offers to do: nothing happens until the office clicks Do it.
+    const acts = m.state === 'answered' && (m.actions || []).length ? `<div class="pmacts">${m.actions.map((x, i) => `<div class="pmact">
+      <div>${esc(x.label)}${x.error ? `<div class="note bad">${esc(x.error)}</div>` : ''}</div>
+      ${x.state === 'proposed' ? `<div style="display:flex;gap:4px"><button class="btn s p" onclick="pmAct('${esc(m.message_id)}', ${i}, this)">Do it</button><button class="btn s" onclick="pmActSet('${esc(m.message_id)}', ${i}, 'skipped')">Skip</button></div>`
+        : `<span class="chip ${x.state === 'done' ? 'g' : ''}">${esc(x.state === 'invalid' ? "can't" : x.state)}</span>`}</div>`).join('')}</div>` : '';
+    const ideas = m.state === 'answered' && (m.suggestions || []).length ? `<div class="pmideas"><b>Ideas to improve the app</b><ul>${m.suggestions.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : '';
+    return `<div class="q">${esc(m.question)}</div>${where ? `<div class="ctx">${esc(where)}</div>` : ''}${a}${acts}${ideas}`;
   }).join('') : '<div class="note">Ask anything about our pump accounts and jobs. Answers usually take a minute or two.</div>';
   box.scrollTop = box.scrollHeight;
   const dot = document.querySelector('#pmBtn .pmdot'), answered = ms.filter(m => m.state === 'answered').length;
