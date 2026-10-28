@@ -403,6 +403,7 @@ details.fold[open] > summary h4::before { content: '▾ '; }
     <button class="btn" onclick="maintEdit(0)">＋ Pump account</button>
     <button class="btn" onclick="editDiveSite()">＋ Lake site</button>
     <button class="btn" title="Look in Jobber for each account's irrigation maintenance job (it's also checked once a day)" onclick="irrigationCheck()">↻ Check Jobber for irrigation</button>
+    <button class="btn" title="Read each site's Guardhouse/Gate code from its Jobber property for the diver's schedule (also once a day; nothing changes in Jobber)" onclick="gateCodes(this)">↻ Gate codes from Jobber</button>
     <button class="btn" title="An Excel sheet of the accounts shown - the filter, Show chips, search and sort you have now" onclick="accountsSheet()">⬇ Download sheet</button>
   </div>
   <div style="margin-bottom:10px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b class="note">Show:</b><span id="svcPicks"></span>
@@ -2440,7 +2441,8 @@ function editDiveSite(id){
     <label>Date joined<input type="text" id="ds_joined" value="${esc(s.joined || '')}"></label>
     <label><span><input type="checkbox" id="ds_active" ${s.active === 0 ? '' : 'checked'}> Active account</span></label>
     <label class="w">Address / where the pumps are<textarea id="ds_address">${esc(s.address)}</textarea></label>
-    <label class="w">Notes for the diver (every month - gate codes, what to check)<textarea id="ds_notes">${esc(s.diver_notes)}</textarea></label>
+    <label>Gate code <span class="note">(${s.gate_code_from === 'hand' ? 'typed here - clear it to use Jobber\'s' : 'from the Jobber property - typing one here keeps yours'})</span><input type="text" id="ds_gate_code" value="${esc(s.gate_code || '')}" data-was="${esc(s.gate_code || '')}"></label>
+    <label class="w">Notes for the diver (every month - what to check)<textarea id="ds_notes">${esc(s.diver_notes)}</textarea></label>
     <label class="w">Before each dive, follow up with… <span class="note">(a to-do about a week ahead)</span><textarea id="ds_follow_up">${esc(s.follow_up || '')}</textarea></label>
     <label>Status<select id="ds_status">${[['active','Normal'],['meet','HOA wants to meet the diver'],['hold','Hold off']].map(([v,l]) => `<option value="${v}" ${s.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <label>Status note<input type="text" id="ds_status_note" value="${esc(s.status_note)}"></label>
@@ -2451,10 +2453,21 @@ function editDiveSite(id){
 async function saveDiveSite(id){
   const v = k => document.getElementById('ds_' + k).value;
   const body = {name: v('name'), equipment: v('equipment'), address: v('address'), diver_notes: v('notes'), follow_up: v('follow_up'), status: v('status'), status_note: v('status_note'), month_note: v('month_note'), needs_dive: document.getElementById('ds_needs').checked, active: document.getElementById('ds_active').checked, diver_cost: v('diver_cost'), our_bill: v('our_bill'), joined: v('joined'), months: [...document.querySelectorAll('.ds_m:checked')].map(x => x.value).join(',')};
+  const gc = document.getElementById('ds_gate_code');
+  if (gc.value.trim() !== gc.dataset.was) body.gate_code = gc.value.trim();   // only when changed: else Jobber's stays Jobber's
   if (id) body.id = id;
   const j = await api('/dives/sites', {method:'POST', body});
   if (!j.success) { toast(j.error, true); return; }
   closeModal(); toast('Saved'); loadDivers(); refreshAccountPage();
+}
+async function gateCodes(btn){
+  btn.disabled = true; toast('Reading gate codes from Jobber…');
+  const j = await api('/dives/gate_codes', {method:'POST', body:{}});
+  btn.disabled = false;
+  if (!j.success) { toast(j.error, true); return; }
+  toast(`Gate codes found for ${j.found.length} sites` + (j.unmatched.length ? ` · not matched in Jobber: ${j.unmatched.join(', ')}` : ''), !!j.unmatched.length);
+  if (typeof refreshAccountPage === 'function') refreshAccountPage();
+  if (typeof refreshAccounts === 'function' && AC) refreshAccounts();
 }
 async function deleteDiveSite(id){ if (!confirm('Remove this site from the diver list?')) return; const j = await api('/dives/sites/' + id + '/delete', {method:'POST', body:{}}); if (j.success) { closeModal(); loadDivers(); } else toast(j.error, true); }
 async function saveDiveSettings(){
@@ -2726,7 +2739,7 @@ function renderAccount(){
   const setup = [
     p ? card('Pump - Wettech' + (!p.active ? ' <span class="chip">former</span>' : ''), row('Type', p.kind) + row('Equipment', p.equipment) + row('Visits', schedText(p) + (p.due_this_month ? ' (due this month)' : '')) + row('Wettech / visit', p.vendor_cost) + row('Naples Electric', p.naples_electric) + row('We bill', p.our_bill) + row('Repairs by', p.repairs_by || 'Wettech') + row('Joined', p.joined) + row('Before service', p.follow_up) + row('Notes', p.notes) + (p.jobber_client_id ? row('Jobber', [p.jobber_client_name, p.jobber_property_label, p.jobber_job_label].filter(Boolean).join(' · ')) : `<div class="note warn" style="margin-top:4px">Not linked to Jobber. <button class="btn s" onclick="acEdit('pump', ${p.id})">🔗 Link to Jobber</button></div>`), `<button class="btn s" onclick="acEdit('pump', ${p.id})">Edit</button>`)
       : card('Pump - Wettech', '<div class="note">No pump maintenance.</div>', `<button class="btn s" onclick="acEdit('pump', 0)">＋ Add</button>`),
-    l ? card('Lake - Gulfshore' + (l.active === 0 ? ' <span class="chip">former</span>' : ''), row('Equipment', l.equipment) + row('Diver', l.needs_dive ? (l.months ? lakeSched(l) : 'Every month') + (l.status === 'hold' ? ' - on hold' : '') : 'No diving') + row('Gulfshore', l.diver_cost) + row('We bill', l.our_bill) + row('Diver notes', l.diver_notes) + row('Status', l.status_note), `<button class="btn s" onclick="acEdit('lake', ${l.id})">Edit</button>`)
+    l ? card('Lake - Gulfshore' + (l.active === 0 ? ' <span class="chip">former</span>' : ''), row('Equipment', l.equipment) + row('Diver', l.needs_dive ? (l.months ? lakeSched(l) : 'Every month') + (l.status === 'hold' ? ' - on hold' : '') : 'No diving') + row('Gate code', l.gate_code ? l.gate_code + (l.gate_code_from === 'jobber' ? ' (from Jobber)' : '') : '') + row('Gulfshore', l.diver_cost) + row('We bill', l.our_bill) + row('Diver notes', l.diver_notes) + row('Status', l.status_note), `<button class="btn s" onclick="acEdit('lake', ${l.id})">Edit</button>`)
       : card('Lake - Gulfshore', '<div class="note">No lake or diver work.</div>', `<button class="btn s" onclick="acEdit('lake', 0)">＋ Add</button>`),
     s ? card('SCADA', row('Status', s.complimentary ? 'complimentary' : (s.state || '').replace('_', ' ')) + row('Next renewal', s.active ? s.next_due_on : 'off SCADA') + row('Wettech', s.vendor_cost) + row('We bill', s.our_bill) + row('Notes', s.notes), `<button class="btn s" onclick="acEdit('scada', ${s.id})">Edit</button>`)
       : card('SCADA', '<div class="note">Not on SCADA.</div>', `<button class="btn s" onclick="acEdit('scada', 0)">＋ Add</button>`)].join('');

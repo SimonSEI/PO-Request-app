@@ -4440,6 +4440,64 @@ class PumpsTest(unittest.TestCase):
             conn.commit()
             conn.close()
 
+    def test_gate_codes_from_jobber_go_on_the_diver_schedule(self):
+        """Oct 2026: each site's gate code is read from its Jobber property's "Guardhouse/Gate code" field and
+        goes on Jordan's monthly schedule. One typed in the app is kept over Jobber's."""
+        conn = P._conn()
+        try:
+            orig = dict(conn.execute("SELECT * FROM pump_dive_sites WHERE name='Tuscany Point Trail Association'").fetchone())
+            conn.execute("UPDATE pump_dive_sites SET jobber_client_id='CTUS', address='Tuscany Pointe Trail, Naples', "
+                         "gate_code='', gate_code_from='', needs_dive=1, active=1, months='' "
+                         "WHERE name='Tuscany Point Trail Association'")
+            sid = conn.execute("SELECT id FROM pump_dive_sites WHERE name='Tuscany Point Trail Association'").fetchone()[0]
+            conn.commit()
+        finally:
+            conn.close()
+        asked = []
+
+        def fake(query, variables=None):
+            asked.append(query)
+            self.assertNotIn('mutation', query)
+            if variables.get('id') != 'CTUS':
+                return {'client': {'id': variables.get('id'), 'properties': []}}
+            return {'client': {'id': 'CTUS', 'properties': [
+                {'id': 'P1', 'address': {'street1': 'Tuscany Pointe Trail', 'city': 'Naples'}, 'customFields': [
+                    {'label': 'Notes', 'valueText': 'Resident service call $75'},
+                    {'label': 'Guardhouse/Gate code', 'valueText': '#1002 or #1001'}, {}]},
+                {'id': 'P2', 'address': {'street1': '14344 Tuscany Pointe CV', 'city': 'Naples'}, 'customFields': [
+                    {'label': 'Guardhouse/Gate code', 'valueText': ''}]}]}}
+        saved = (P.jobber_gql, P.jobber_status, P.search_clients)
+        P.jobber_gql, P.jobber_status, P.search_clients = fake, (lambda: {'connected': True}), (lambda name, limit=8: [])
+        try:
+            r = self.c.post('/pumps/api/dives/gate_codes', json={}).get_json()
+            self.assertTrue(r['success'], r)
+            self.assertIn('Tuscany Point Trail Association', r['found'])
+            site = lambda: [x for x in self.c.get('/pumps/api/dives').get_json()['sites'] if x['id'] == sid][0]
+            self.assertEqual((site()['gate_code'], site()['gate_code_from']), ('#1002 or #1001', 'jobber'))
+            conn = P._conn()
+            try:
+                mail = P.build_dive_email(conn, P._today().replace(day=1))
+            finally:
+                conn.close()
+            self.assertIn('Gate code: #1002 or #1001', mail['text'])
+            # Typed by hand: kept over Jobber's, even when Jobber is read again.
+            self.c.post('/pumps/api/dives/sites', json={'id': sid, 'gate_code': '*4455'})
+            self.c.post('/pumps/api/dives/gate_codes', json={})
+            self.assertEqual((site()['gate_code'], site()['gate_code_from']), ('*4455', 'hand'))
+            # Cleared: Jobber's again.
+            self.c.post('/pumps/api/dives/sites', json={'id': sid, 'gate_code': ''})
+            self.c.post('/pumps/api/dives/gate_codes', json={})
+            self.assertEqual(site()['gate_code'], '#1002 or #1001')
+        finally:
+            P.jobber_gql, P.jobber_status, P.search_clients = saved
+            P._state_set('gate_codes_at', None)
+            conn = P._conn()
+            cols = [k for k in orig if k != 'id']
+            conn.execute(f"UPDATE pump_dive_sites SET {', '.join(k + '=?' for k in cols)} WHERE id=?",
+                         [orig[k] for k in cols] + [orig['id']])
+            conn.commit()
+            conn.close()
+
     def test_service_call_lists_the_newest_jobs_first(self):
         """Service call (Oct 2026): with nothing typed, the most recently created Jobber jobs, newest first."""
         def fake(query, variables=None):
