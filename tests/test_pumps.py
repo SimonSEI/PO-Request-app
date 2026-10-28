@@ -4506,6 +4506,37 @@ class PumpsTest(unittest.TestCase):
             conn.commit()
             conn.close()
 
+    def test_approved_here_but_quote_never_made_a_job_is_a_todo(self):
+        """Oct 2026 (Banyan Bay #9194): approved in the app, but Jobber's quote still awaiting response and no
+        job - "Convert quote ... to a job" on To do, gone once the job is linked."""
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': 'Bladder tank', 'client_name': 'Banyan Bay', 'vendor': 'Wettech'}, 'Office')
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, status, web_uri) "
+                         "VALUES ('QBB9194', 'quote', '9194', 'awaiting_response', 'https://jobber/q/9194')")
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?',
+                         (json.dumps({'quote': {'id': 'QBB9194', 'number': '9194'}}), cid))
+            P.quotes_needing_jobs(conn)
+            self.assertFalse(conn.execute("SELECT 1 FROM pump_todos WHERE key=?", (f'quote-to-job:{cid}',)).fetchone(),
+                             'not approved yet - nothing to convert')
+            P._set_step(conn, cid, 'client_approved', at='2026-10-20', by='Office')
+            P.quotes_needing_jobs(conn)
+            t = conn.execute("SELECT title, detail, link, done_at FROM pump_todos WHERE key=?", (f'quote-to-job:{cid}',)).fetchone()
+            self.assertIn('#9194', t['title'])
+            self.assertIn('awaiting response', t['detail'])
+            self.assertEqual(json.loads(t['link'])['uri'], 'https://jobber/q/9194')
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?',
+                         (json.dumps({'quote': {'id': 'QBB9194', 'number': '9194'}, 'job': {'id': 'J1', 'number': '14700'}}), cid))
+            P.close_stale_todos(conn)
+            self.assertTrue(conn.execute("SELECT done_at FROM pump_todos WHERE key=?", (f'quote-to-job:{cid}',)).fetchone()[0])
+            self.assertTrue(conn.execute("SELECT 1 FROM pump_todos WHERE key='convert-quote:9194'").fetchone(),
+                            "the one-time reminder for Banyan Bay's #9194")
+            conn.execute("DELETE FROM pump_jobber_items WHERE jobber_id='QBB9194'")
+            conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (cid,))
+            conn.commit()
+        finally:
+            conn.close()
+
     def test_service_call_lists_the_newest_jobs_first(self):
         """Service call (Oct 2026): with nothing typed, the most recently created Jobber jobs, newest first."""
         def fake(query, variables=None):
