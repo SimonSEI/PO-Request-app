@@ -4450,6 +4450,49 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual((row['state'], row['ours']['number'], row['paid_on']), ('invoiced', '36816', ''),
                          'linked - and not marked paid, even with our invoice paid')
 
+    def test_invoice_of_another_jobber_client_is_refused_and_unlinked(self):
+        """Oct 2026: Huntington Lakes Phase 3's job got the Master Association's invoice #37064. An invoice
+        for another Jobber client is refused; one linked by mistake can be unlinked; the panel names the account."""
+        self.extracts['b-hph3.pdf'] = extraction('bill', '29261', client='Huntington', subtotal=450)
+        b = self.upload('b-hph3.pdf')
+        conn = P._conn()
+        try:
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, client_id, client_name) "
+                         "VALUES ('JPH3', 'job', '14631', 'CPH3', 'Huntington Lakes Phase 3 C/O Cardinal Management')")
+            conn.execute("UPDATE pump_cases SET jobber=? WHERE id=?",
+                         (json.dumps({'job': {'id': 'JPH3', 'number': '14631'}}), b['case_id']))
+            conn.commit()
+        finally:
+            conn.close()
+        saved_find = P.find_invoice_by_number
+        try:
+            P.find_invoice_by_number = lambda n: {'id': 'IHM37064', 'invoiceNumber': 37064, 'invoiceStatus': 'awaiting_payment',
+                                                  'amounts': {'total': 780}, 'client': {'id': 'CMAS', 'name': 'HUNTINGTON LAKES MASTER ASSOCIATION'}}
+            r = self.c.post(f"/pumps/api/cases/{b['case_id']}/jobber_invoice", json={'number': '37064'}).get_json()
+            self.assertFalse(r['success'])
+            self.assertIn('MASTER', r['error'])
+            P.find_invoice_by_number = lambda n: {'id': 'IHP3', 'invoiceNumber': 37100, 'invoiceStatus': 'draft',
+                                                  'amounts': {'total': 600}, 'client': {'id': 'CPH3', 'name': 'Huntington Lakes Phase 3'}}
+            r = self.c.post(f"/pumps/api/cases/{b['case_id']}/jobber_invoice", json={'number': '37100'}).get_json()
+            self.assertTrue(r['success'], r)
+        finally:
+            P.find_invoice_by_number = saved_find
+        r = self.c.post(f"/pumps/api/cases/{b['case_id']}/unlink_invoice", json={}).get_json()
+        self.assertTrue(r['success'], r)
+        c = self.c.get(f"/pumps/api/cases/{b['case_id']}").get_json()['case']
+        self.assertFalse(c['jobber'].get('invoice'))
+        self.assertFalse(c['sei_invoice_number'])
+        self.assertFalse(c['vendor_paid_on'])
+        self.assertNotIn('invoice_drafted', {k for k, v in (c.get('steps') or {}).items() if (v or {}).get('at')})
+        self.assertFalse([d for d in c['docs'] if d['kind'] == 'bill' and d['jobber'].get('invoice_id')])
+        self.assertEqual(c['account_name'], 'Huntington Lakes Phase 3 C/O Cardinal Management')
+        conn = P._conn()
+        try:
+            conn.execute("DELETE FROM pump_jobber_items WHERE jobber_id IN ('JPH3', 'IHP3')")
+            conn.commit()
+        finally:
+            conn.close()
+
     def test_grok_matches_a_bill_to_its_open_job(self):
         """Oct 2026: a vendor bill nothing else ties to a job (no PO, quote # or same email) is matched by Grok,
         from the work described, to the open job waiting on it - when it's confident. Otherwise a new item."""
