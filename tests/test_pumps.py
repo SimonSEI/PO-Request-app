@@ -701,6 +701,35 @@ class PumpsTest(unittest.TestCase):
             self.assertIn('sub quote on invoice', actions)
             self.assertIn('vendor invoice on our invoice', actions)
 
+    def test_two_bills_on_one_jobber_invoice(self):
+        """Huntington Lakes (Oct 2026): Wettech #29259 ($150) and #29260 ($477), billed on one Jobber invoice and job.
+        Drafting one offers the other; ticked, it's on the same invoice, and both bills are invoiced (not paid)."""
+        self.addCleanup(setattr, P, '_SCHEMA_CACHE', {})
+        self.extracts['b-hl1.pdf'] = extraction('bill', '29259', client='Huntington Lakes', subtotal=150, tax=0)
+        self.extracts['b-hl2.pdf'] = extraction('bill', '29260', client='Huntington Lakes', subtotal=477, tax=0)
+        a, b = self.upload('b-hl1.pdf'), self.upload('b-hl2.pdf')
+        d = self.c.get(f"/pumps/api/docs/{a['doc_id']}").get_json()['doc']
+        others = {o['doc_number']: o for o in d['other_bills']}
+        self.assertIn('29260', others)
+        fake = FakeJobber()
+        P.jobber_gql, P._SCHEMA_CACHE = fake, {}
+        lines = [{'name': 'Service', 'description': 'Field service', 'quantity': 1, 'unit_price': 195.0, 'taxable': False},
+                 {'name': 'Repair', 'description': 'Repair', 'quantity': 1, 'unit_price': 620.1, 'taxable': False}]
+        body = self.c.post(f"/pumps/api/docs/{a['doc_id']}/invoice",
+                           json={'client_id': 'C1', 'line_items': lines, 'subject': 'Pump service', 'job_id': '',
+                                 'also_doc_ids': [b['doc_id']]}).get_json()
+        self.assertTrue(body['success'], body)
+        self.assertEqual(len([q for q, v in fake.calls if 'invoiceCreate(' in q]), 1, 'one invoice')
+        self.assertEqual(body['invoice']['also'], [b['doc_id']])
+        for x in (a, b):
+            case = self.case(x['case_id'])
+            self.assertEqual(case['sei_invoice_number'], '5001')
+            self.assertTrue({s['key']: s for s in case['step_list']}['invoice_drafted'].get('at'))
+            self.assertFalse(case.get('vendor_paid_on'))
+        # Invoiced now: not offered again.
+        d = self.c.get(f"/pumps/api/docs/{a['doc_id']}").get_json()['doc']
+        self.assertNotIn('29260', [o['doc_number'] for o in d.get('other_bills') or []])
+
     def test_non_draft_status_from_jobber_raises_issue(self):
         self.extracts['b-0600.pdf'] = extraction('bill', '29700', po='PO600', client='Sunset Cove', subtotal=400)
         b = self.upload('b-0600.pdf')

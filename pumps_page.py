@@ -1754,7 +1754,7 @@ async function draftInvoice(docId){
   const j = await api('/docs/' + docId);
   if (!j.success) { toast(j.error, true); return; }
   const d = j.doc, s = d.invoice_suggestion || {line_items:[], subject:''};
-  inv = {mode: 'invoice', doc: d, client_id: null, lines: s.line_items.map(x => Object.assign({}, x)), subject: s.subject, job: s.job || null, bill_lines: s.bill_lines || null};
+  inv = {mode: 'invoice', doc: d, client_id: null, lines: s.line_items.map(x => Object.assign({}, x)), subject: s.subject, job: s.job || null, bill_lines: s.bill_lines || null, also: new Set()};
   if (s.from_quote) setTimeout(() => { const n = document.querySelector('#modal .note'); if (n) n.insertAdjacentHTML('afterbegin', `<b>Lines copied from our Jobber quote #${esc(String(s.from_quote))}</b> - the bill matches ${esc(d.vendor)}'s quote, so the client is invoiced what they were quoted. `); }, 0);
   openModal('Draft invoice in Jobber', `
     <div class="safe">This creates a DRAFT invoice in Jobber. Nothing is sent to the client - review it in Jobber and send it from there.</div>
@@ -1768,7 +1768,9 @@ async function draftInvoice(docId){
     <label class="note">Invoice subject<input type="text" id="invSubject" value="${esc(inv.subject)}" style="width:100%"></label>
     <div><b>Line items</b> <span class="note">(edit before creating)</span><table class="t" style="margin-top:6px"><thead><tr><th>Name</th><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th>Tax</th><th></th></tr></thead><tbody id="invLines"></tbody></table>
       <button class="btn s" style="margin-top:6px" onclick="inv.lines.push({name:'',description:'',quantity:1,unit_price:0,taxable:true});drawLines()">＋ Line</button>
-      <div class="foot"><span id="invTotal"></span></div></div>`,
+      <div class="foot"><span id="invTotal"></span></div></div>
+    ${(d.other_bills || []).length ? `<div style="margin-top:10px"><b>Bill on this invoice too</b> <span class="note">- ${esc(d.client_name)}'s other bills not invoiced yet; ticked ones go on this one invoice (and job), their lines added</span>
+      ${d.other_bills.map((o, i) => `<label class="cand" style="cursor:pointer"><input type="checkbox" onchange="invAlso(${i}, this.checked)"><div style="flex:1"><b>${esc(o.vendor)} #${esc(o.doc_number || '?')}</b> · ${money(o.total)} · ${esc(o.doc_date)}<div class="note">${esc(o.description)}</div></div></label>`).join('')}</div>` : ''}`,
     `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" id="invGo" onclick="createInvoice()">Create draft in Jobber</button>`);
   drawLines(); findClients();
 }
@@ -1846,17 +1848,27 @@ function confirmDuplicate(j){
   const d = j.possible_duplicate || {};
   return confirm(`Jobber already has ${j.error.includes('invoice #') ? 'invoice' : 'quote'} #${d.number} for this client at ${money(d.total)} (${(d.status || '').replace(/_/g, ' ')}, ${d.created || ''}).\n\nOK = draft a new one anyway.\nCancel = don't - open it in Jobber${j.error.includes('quote #') ? ', or link it to the job with "Use a different Jobber quote…"' : ''}.`);
 }
+// Another of the client's bills on this invoice: its lines in, or out again (Huntington Lakes, Oct 2026).
+function invAlso(i, on){
+  const o = inv.doc.other_bills[i];
+  inv.lines = inv.lines.filter(l => l._from !== o.id);
+  if (on) { inv.also.add(o.id); (o.line_items || []).forEach(l => inv.lines.push(Object.assign({}, l, {_from: o.id}))); }
+  else inv.also.delete(o.id);
+  drawLines();
+}
 async function createInvoice(){
   if (!inv.client_id) { toast('Choose the Jobber client first.', true); return; }
   const btn = document.getElementById('invGo'); btn.disabled = true; btn.textContent = 'Creating draft…';
   const ibody = {client_id: inv.client_id, client_name: ((document.querySelector('#cands .cand.on b') || {}).textContent || ''), job_id: inv.job ? inv.job.id : (inv.dropped ? '' : null), line_items: inv.lines, subject: document.getElementById('invSubject').value};
+  ibody.line_items = inv.lines.map(({_from, ...l}) => l);
+  ibody.also_doc_ids = [...(inv.also || [])];
   let j = await api('/docs/' + inv.doc.id + '/invoice', {method:'POST', body: ibody});
   if (!j.success && j.possible_duplicate && confirmDuplicate(j)) j = await api('/docs/' + inv.doc.id + '/invoice', {method:'POST', body: {...ibody, force: true}});
   btn.disabled = false; btn.textContent = 'Create draft in Jobber';
   if (!j.success) { if (!j.possible_duplicate) toast(j.error, true); return; }
   closeModal();
   const v = j.invoice.visit || {};
-  toast(`Draft invoice #${j.invoice.invoice_number} created in Jobber (${j.invoice.invoice_status || 'draft'}). Review and send it from Jobber.` +
+  toast(`Draft invoice #${j.invoice.invoice_number} created in Jobber (${j.invoice.invoice_status || 'draft'})${(j.invoice.also || []).length ? ` for ${j.invoice.also.length + 1} bills` : ''}. Review and send it from Jobber.` +
     (v.completed ? ` ${v.month} visit (${v.visit.date}) marked complete.` : v.already_complete ? ` ${v.month} visit was already complete.` : v.pending ? ` Visit not marked complete: ${v.pending} (on To do)` : ''), !!v.pending);
   if (inv.doc.case_id) openCase(inv.doc.case_id); else loadToday();
 }

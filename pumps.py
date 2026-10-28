@@ -6810,6 +6810,59 @@ def _invoice_visit_field():
     return next((k for k in ('visitIds', 'visitsIds', 'visits') if k in have), '')
 
 
+def other_bills_to_invoice(conn, doc, case=None):
+    """The client's other vendor bills not invoiced yet, to bill on the same invoice (Huntington Lakes, Oct 2026:
+    Wettech #29259 and #29260 on one Jobber job), each with its lines as they'd be invoiced on their own."""
+    names = {(x or '').strip().lower() for x in (doc.get('client_name'), (case or {}).get('client_name')) if (x or '').strip()}
+    if not names:
+        return []
+    out = []
+    for r in conn.execute("SELECT d.*, c.client_name AS case_client FROM pump_docs d LEFT JOIN pump_cases c ON c.id=d.case_id "
+                          "WHERE d.kind='bill' AND d.status != 'dismissed' AND d.id != ? AND COALESCE(c.status, 'open') != "
+                          "'cancelled' ORDER BY d.id DESC LIMIT 200", (doc['id'],)):
+        o = _doc_dict(r)
+        if (o.get('jobber') or {}).get('invoice_id') or \
+                not ({(o.get('client_name') or '').strip().lower(), (r['case_client'] or '').strip().lower()} & names):
+            continue
+        out.append({'id': o['id'], 'case_id': o['case_id'], 'vendor': o.get('vendor') or '', 'doc_number': o.get('doc_number') or '',
+                    'doc_date': o.get('doc_date') or '', 'total': o.get('total') if o.get('total') is not None else o.get('subtotal'),
+                    'description': ((o.get('description') or '').strip().splitlines() or [''])[0][:200],
+                    'line_items': suggest_invoice(o, {})['line_items']})
+    return out[:10]
+
+
+def mark_bill_invoiced(doc_id, ref, actor, on_doc_id=None):
+    """A bill billed on another bill's Jobber invoice (one invoice for both): the bill and its item point at
+    that invoice - Draft invoice done, payable once it's billed, never marked paid."""
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+        if not row:
+            return
+        dj = json.loads(row['jobber'] or '{}')
+        dj.update(invoice_id=ref['invoice_id'], invoice_number=ref['invoice_number'], invoice_uri=ref.get('invoice_uri') or '',
+                  invoice_status=ref.get('invoice_status') or '', drafted_by=actor, drafted_at=_now_text(),
+                  billed_with_doc=on_doc_id)
+        conn.execute("UPDATE pump_docs SET jobber=?, status='done', updated_at=? WHERE id=?", (json.dumps(dj), _now_text(), doc_id))
+        cid = row['case_id']
+        if cid:
+            case = conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (cid,)).fetchone()
+            j = json.loads(case['jobber'] or '{}')
+            j['invoice'] = {'id': ref['invoice_id'], 'number': ref['invoice_number'], 'uri': ref.get('invoice_uri') or '',
+                            'status': ref.get('invoice_status') or ''}
+            if ref.get('client_id') and not (j.get('client') or {}).get('id'):
+                j['client'] = {'id': ref['client_id']}
+            conn.execute('UPDATE pump_cases SET jobber=?, sei_invoice_number=?, updated_at=? WHERE id=?',
+                         (json.dumps(j), ref['invoice_number'], _now_text(), cid))
+            _set_step(conn, cid, 'invoice_drafted', at=_today().isoformat(), by=actor)
+            _event(conn, actor, 'billed on one invoice with another bill',
+                   f"Jobber invoice #{ref['invoice_number']} (with {row['vendor'] or 'the vendor'}'s other bill)",
+                   case_id=cid, doc_id=doc_id)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', actor='system', force=False,
                          visit_ids=None, extra=False, ignore_ids=(), site=''):
     """Create the invoice in Jobber as a DRAFT. Nothing is sent: the only
@@ -9394,6 +9447,7 @@ def h_doc(actor, doc_id):
             d['site_invoices_left'] = site_invoices_left(d, case) if jobber_status()['connected'] else []
             acct = account_info(conn, case) if case else None
             d['account_note'], d['account_name'] = (acct or {}).get('notes') or '', (acct or {}).get('name') or ''
+            d['other_bills'] = other_bills_to_invoice(conn, d, case)
         if d['kind'] == 'quote':
             d['quote_suggestion'] = suggest_quote(d, case)
         if d['kind'] == 'report':
@@ -10093,6 +10147,34 @@ def h_doc_invoice(actor, doc_id):
     if on_job:
         invoiced_on_job(doc, case, sugg['job'], actor)
         res['visit'] = visit
+    # Other bills billed on this same invoice (the office ticks them in the window; their lines are in it).
+    also = [int(x) for x in (data.get('also_doc_ids') or []) if str(x).isdigit() and int(x) != doc_id]
+    for other in also:
+        mark_bill_invoiced(other, {**res, 'client_id': client_id}, actor, on_doc_id=doc_id)
+        if job_id:
+            conn = _conn()
+            try:
+                oc = conn.execute('SELECT case_id FROM pump_docs WHERE id=?', (other,)).fetchone()
+                it = conn.execute("SELECT jobber_id FROM pump_jobber_items WHERE jobber_id=?", (job_id,)).fetchone()
+                if oc and oc['case_id'] and it:
+                    _link_item(conn, job_id, oc['case_id'], actor)
+                    conn.commit()
+            finally:
+                conn.close()
+        try:
+            conn = _conn()
+            try:
+                oc = conn.execute('SELECT case_id FROM pump_docs WHERE id=?', (other,)).fetchone()
+            finally:
+                conn.close()
+            if oc and oc['case_id']:
+                # Its vendor invoice saved on the invoice too.
+                note_vendor_bill_on_invoice(oc['case_id'], res.get('invoice_id'), job_id, client_id,
+                                            res.get('invoice_number') or '', actor)
+        except Exception as e:
+            print(f'⚠ Pumps: the other bill not noted on the invoice ({e})')
+    if also:
+        res['also'] = also
     return {'invoice': res}
 
 
