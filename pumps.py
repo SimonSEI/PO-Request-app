@@ -10880,7 +10880,7 @@ SEED_DIVE_SITES = [
      'Second pump and lake filter not used.', 'active', ''),
     ('Watercrest @ Falling Waters', '1 Lake 1 Filter', '2326 Magnolia Lane, Naples', '', 'active', ''),
     ('Westminster HOA', '4 Lakes 9 Filters', '2001 Oxford Ridge Circle, Lehigh Acres', '', 'active', ''),
-    ('Wild Blue', '1 Pump 1 Lake', '8396 Sea Glass Court, Sarasota, Florida 34240', '', 'active', ''),
+    ('Wild Blue', '1 Pump 2 Filters', '8396 Sea Glass Court, Sarasota, Florida 34240', '', 'active', ''),
 ]
 
 
@@ -10973,6 +10973,126 @@ def init_dive_tables(c):
                                updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?)''',
                           (name, equip, addr, notes, status, snote, "Andrea's October list", now))
         c.execute('INSERT OR REPLACE INTO pump_state (key, value) VALUES (?,?)', ('dive_sites_seeded', '"yes"'))
+    # The site's gate code (Oct 2026), from the Jobber property's "Guardhouse/Gate code" field unless typed
+    # here: gate_code_from is 'jobber' or 'hand' (a hand-typed code is never replaced by Jobber's).
+    for col in ('gate_code', 'gate_code_from'):
+        try:
+            c.execute(f"ALTER TABLE pump_dive_sites ADD COLUMN {col} TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
+
+
+# ── Gate codes from Jobber (Oct 2026) ──
+# Each Jobber property has a "Guardhouse/Gate code" field. The app reads it (nothing changes in Jobber) for
+# every active site, at most once a day and on the Accounts button, and the diver's schedule carries it.
+GATE_LABEL = re.compile(r'gate|guard', re.I)
+GATE_REFRESH_HOURS = 20
+
+
+def jobber_gate_codes(client_id):
+    """[{property_id, label, code}] - the client's properties with a gate code in Jobber."""
+    p = 'id address { street1 street2 city } customFields { ... on CustomFieldText { label valueText } }'
+    last = None
+    for shape in ('properties { %s }', 'properties { nodes { %s } }'):
+        try:
+            data = jobber_gql('query($id: EncodedId!) { client(id: $id) { id ' + (shape % p) + ' } }', {'id': client_id})
+            break
+        except JobberError as e:
+            last = e
+    else:
+        raise last
+    props = (data.get('client') or {}).get('properties') or []
+    if isinstance(props, dict):
+        props = props.get('nodes') or []
+    out = []
+    for pr in props:
+        for f in (pr or {}).get('customFields') or []:
+            code = ((f or {}).get('valueText') or '').strip()
+            if code and GATE_LABEL.search((f or {}).get('label') or ''):
+                out.append({'property_id': pr.get('id'), 'label': _prop_label(pr), 'code': code[:200]})
+    return out
+
+
+def _site_jobber_client(conn, site):
+    """(client id, property id) for a site: its own link, the pump account of the same name, a remembered
+    site name, or one clear Jobber client search match. ('', '') when unsure."""
+    if site.get('jobber_client_id'):
+        return site['jobber_client_id'], ''
+    m = conn.execute("SELECT jobber_client_id, jobber_property_id FROM pump_maint_accounts WHERE name=? AND "
+                     "jobber_client_id != ''", (site['name'],)).fetchone()
+    if m:
+        return m['jobber_client_id'], m['jobber_property_id'] or ''
+    a = match_site_alias({'client_name': site['name'], 'site': site.get('address') or ''}, conn=conn)
+    if a and a.get('client_id'):
+        return a['client_id'], a.get('property_id') or ''
+    top = pick_client(search_clients(site['name']))
+    return (top['id'], '') if top else ('', '')
+
+
+def _pick_gate_code(codes, prop_id, address):
+    if not codes:
+        return ''
+    if prop_id:
+        mine = [c for c in codes if c['property_id'] == prop_id]
+        if mine:
+            return mine[0]['code']
+    if address:
+        best = max(codes, key=lambda c: place_score(address, c['label']))
+        if place_score(address, best['label']) >= 0.6:
+            return best['code']
+    distinct = list(dict.fromkeys(c['code'] for c in codes))
+    if len(distinct) == 1:
+        return distinct[0]
+    return '; '.join(f"{c['label']}: {c['code']}" for c in codes[:3])
+
+
+def refresh_gate_codes(force=False, actor='Jobber'):
+    """Fill each active site's gate code from Jobber. Never overwrites one typed by hand."""
+    last = _state_get('gate_codes_at')
+    if not force and last and time.time() - last < GATE_REFRESH_HOURS * 3600:
+        return {'skipped': True}
+    if not jobber_status()['connected']:
+        raise ValueError('Connect Jobber first')
+    _state_set('gate_codes_at', time.time())
+    conn = _conn()
+    try:
+        sites = [dict(r) for r in conn.execute("SELECT * FROM pump_dive_sites WHERE active=1")]
+    finally:
+        conn.close()
+    found, unmatched, errors = [], [], []
+    for site in sites:
+        if site.get('gate_code_from') == 'hand':
+            continue
+        conn = _conn()
+        try:
+            client_id, prop_id = _site_jobber_client(conn, site)
+        except JobberError as e:
+            errors.append(f"{site['name']}: {e}")
+            continue
+        finally:
+            conn.close()
+        if not client_id:
+            unmatched.append(site['name'])
+            continue
+        try:
+            code = _pick_gate_code(jobber_gate_codes(client_id), prop_id, site.get('address') or '')
+        except JobberError as e:
+            errors.append(f"{site['name']}: {e}")
+            continue
+        conn = _conn()
+        try:
+            if code != (site.get('gate_code') or ''):
+                conn.execute("UPDATE pump_dive_sites SET gate_code=?, gate_code_from=?, updated_at=? WHERE id=?",
+                             (code, 'jobber' if code else '', _now_text(), site['id']))
+                _event(conn, actor, 'gate code from Jobber', f"{site['name']}: {code or '(none in Jobber)'}")
+            if not site.get('jobber_client_id'):
+                conn.execute("UPDATE pump_dive_sites SET jobber_client_id=? WHERE id=?", (client_id, site['id']))
+            conn.commit()
+        finally:
+            conn.close()
+        if code:
+            found.append(site['name'])
+    return {'found': found, 'unmatched': unmatched, 'errors': errors[:10]}
 
 
 def dive_settings():
@@ -11020,7 +11140,7 @@ def _site_lines(s):
         head = f"HOLD OFF - {s['status_note'] or 'waiting on the client'} - {s['name']}"
     elif s['status'] == 'meet':
         head = f"{s['name']} - the HOA wants to meet you onsite"
-    lines = [head, s['equipment'], s['address']]
+    lines = [head, s['equipment'], s['address'], f"Gate code: {s['gate_code']}" if s.get('gate_code') else '']
     for note in (s['diver_notes'], s['status_note'] if s['status'] == 'meet' else '', s['month_note']):
         if note:
             lines.append(note)
@@ -11159,6 +11279,10 @@ def _scheduled_dive_email():
     """Hourly: the month's to-do, and (if switched on) the email itself on the
     1st (or the 2nd/3rd if the app was down), from 7am."""
     ensure_monthly_todos()
+    try:
+        refresh_gate_codes()        # once a day: gate codes from Jobber for the diver's list
+    except (ValueError, JobberError) as e:
+        print(f'  ⚠ Pumps: gate codes not read from Jobber: {e}')
     now = _now()
     if not dive_settings()['auto'] or now.day > 3 or now.hour < DIVE_SEND_HOUR:
         return
@@ -11177,7 +11301,8 @@ def _scheduled_dive_email():
 
 
 DIVE_FIELDS = ('name', 'equipment', 'address', 'diver_notes', 'months', 'status_note', 'month_note',
-               'jobber_client_id', 'kind', 'joined', 'diver_cost', 'our_bill', 'naples_electric', 'follow_up')
+               'jobber_client_id', 'kind', 'joined', 'diver_cost', 'our_bill', 'naples_electric', 'follow_up',
+               'gate_code')
 
 
 @api('/dives')
@@ -11225,6 +11350,9 @@ def h_dive_site_save(actor):
         vals['status'] = d['status']
     if 'months' in vals:
         vals['months'] = ','.join(str(m) for m in _month_list(vals['months']))
+    if 'gate_code' in vals:
+        # Typed here: kept over Jobber's. Cleared: Jobber's is used again.
+        vals['gate_code_from'] = 'hand' if vals['gate_code'] else ''
     conn = _conn()
     try:
         if d.get('id'):
@@ -11246,6 +11374,14 @@ def h_dive_site_save(actor):
         return {'sites': dive_sites(conn)}
     finally:
         conn.close()
+
+
+@api('/dives/gate_codes', methods=('POST',))
+def h_dive_gate_codes(actor):
+    """Read every active site's gate code from Jobber now (nothing changes in Jobber)."""
+    if actor == BOT:
+        return _office_only(actor, 'Reading gate codes')
+    return refresh_gate_codes(force=True, actor=actor)
 
 
 @api('/dives/sites/<int:site_id>/delete', methods=('POST',))
@@ -12051,7 +12187,8 @@ SEED_MAINT = [
      '$250.00', '$475.00', 'Naples Electric does this.', 1),
     ('Watercrest @ Falling Waters', 'Pump', '2017-01-01', '2 Filters, pump at the rear of building 2300',
      '2326 Magnolia Lane, Naples', Q, '$75.00', '', '', '', 1),
-    ('Wild Blue', 'Pump', '2026-03-17', '1 Pump', '8396 Sea Glass Court, Sarasota, FL 34240', Q, '$250.00', '', '', '', 1),
+    ('Wild Blue', 'Pump', '2026-03-17', '1 Pump 2 Filters', '8396 Sea Glass Court, Sarasota, FL 34240', Q, '$250.00', '',
+     'Included with pump maintenance', '', 1),
     # Former accounts (the sheet's bottom block; archived in Jobber)
     ('Bentley Village / Retreat at Bentley', 'Pump', '2018-01-01', '1 Lake 6 Filters, 1 Pump',
      'LR 602 Lake Louise Circle (The Retreat)', Q, '$100.00', '', 'N/A', '', 0),
@@ -12250,6 +12387,19 @@ def _apply_master_vendors(c, now):
     c.execute("UPDATE pump_dive_sites SET needs_dive=0, diver_cost='', diver_notes=TRIM(COALESCE(diver_notes, '') || "
               "' No diving - Wettech only (master list).'), updated_by='Master list (Oct 13 2026)', updated_at=? "
               "WHERE name='Wild Blue'", (now,))
+
+
+def _apply_wild_blue_oct28(c, now):
+    """Once (Oct 28 2026, the office's updated sheet): Wild Blue is 1 pump 2 filters, JAN/APR/JULY/OCT,
+    $250, included with pump maintenance (Wettech - still no diver)."""
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('wild_blue_oct28', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    c.execute("UPDATE pump_maint_accounts SET equipment='1 Pump 2 Filters', months=?, vendor_cost='$250.00', "
+              "our_bill='Included with pump maintenance', updated_by='Office sheet (Oct 28 2026)', updated_at=? "
+              "WHERE name='Wild Blue'", (Q, now))
+    c.execute("UPDATE pump_dive_sites SET equipment='1 Pump 2 Filters', updated_by='Office sheet (Oct 28 2026)', "
+              "updated_at=? WHERE name='Wild Blue'", (now,))
 
 
 REPORT_ONLY_ACCOUNTS = ('Autumn Woods', 'The Reserve @ Estero', 'Wild Blue')
@@ -12698,6 +12848,7 @@ def init_account_tables(c):
     _apply_master_list(c, now)
     _apply_repairs_by(c, now)
     _apply_master_vendors(c, now)
+    _apply_wild_blue_oct28(c, now)
     _apply_report_only(c, now)
     _undo_watercrest_mismatch(c, now)
     _fix_quote_needed_dates(c, now)
