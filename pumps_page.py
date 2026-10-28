@@ -2511,7 +2511,7 @@ async function setUrgent(id, on){
 async function loadJobs(){
   loadMaintSchedule();
   const show = document.getElementById('jbShow').value, st = show === 'waiting' ? 'open' : show, q = document.getElementById('jbSearch').value.trim();
-  const [j, ji] = await Promise.all([api('/cases?status=' + st + (q ? '&q=' + encodeURIComponent(q) : '')), api('/jobber/items?open=1&kind=quote&show_ignored=1')]);
+  const [j, ji] = await Promise.all([api('/cases?status=' + st + (q ? '&q=' + encodeURIComponent(q) : '')), api('/jobber/items?sync_only=1')]);
   if (!j.success) { document.getElementById('jobsBody').innerHTML = `<tr><td colspan="9" class="empty">${esc(j.error)}</td></tr>`; return; }
   const ref = r => r ? (r.uri ? `<a href="${esc(r.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">#${esc(r.number || '')} ↗</a>` : (r.number ? '#' + esc(r.number) : '')) : '';
   // Quotes wait at the bottom under "Quotes - not urgent" unless marked urgent (Oct 2026).
@@ -2538,13 +2538,19 @@ async function loadJobs(){
     // An account's jobs sit under its heading with a bar down the left, so a job after them doesn't look like one of them.
     return [...g.values()].map(cs => cs.length > 1 ? `<tr><td colspan="9" style="background:var(--bg);font-weight:700;padding-top:10px;border-left:4px solid var(--border-2)">${esc(acct(cs[0]))} <span class="chip">${cs.length} jobs</span></td></tr>`
       + cs.map(c => row(c).replace('<td>', '<td style="border-left:4px solid var(--border-2);padding-left:14px">')).join('') : row(cs[0])).join(''); };
-  document.getElementById('jobsBody').innerHTML = (grouped(main) || '<tr><td colspan="9" class="empty">No jobs.</td></tr>')
-    + (quiet.length ? `<tr class="click" onclick="foldSave('qq', !foldOpen('qq'));loadJobs()"><td colspan="9" style="background:var(--bg);font-weight:700;padding-top:14px">${foldOpen('qq') ? '▾' : '▸'} Quotes - not urgent (${quiet.length}) <span class="note" style="font-weight:400">· click to ${foldOpen('qq') ? 'fold away' : 'show'} · ⬆ Urgent moves one up with the jobs</span></td></tr>` + (foldOpen('qq') ? grouped(quiet) : '') : '');
-  const s = ji.sync || {};
+  // Folding "Quotes - not urgent" redraws from what's loaded - no reload.
+  (window._jobsRender = () => document.getElementById('jobsBody').innerHTML = (grouped(main) || '<tr><td colspan="9" class="empty">No jobs.</td></tr>')
+    + (quiet.length ? `<tr class="click" onclick="foldSave('qq', !foldOpen('qq'));window._jobsRender()"><td colspan="9" style="background:var(--bg);font-weight:700;padding-top:14px">${foldOpen('qq') ? '▾' : '▸'} Quotes - not urgent (${quiet.length}) <span class="note" style="font-weight:400">· click to ${foldOpen('qq') ? 'fold away' : 'show'} · ⬆ Urgent moves one up with the jobs</span></td></tr>` + (foldOpen('qq') ? grouped(quiet) : '') : ''))();
+  syncInfo(ji.sync || {});
+}
+// While Jobber syncs, check only the sync (light) every 5 sec, and reload the jobs once it's done.
+function syncInfo(s){
   document.getElementById('syncInfo').innerHTML = !JOBBER_OK ? '<b class="warn">Jobber is not connected.</b>' :
     (s.state === 'running' ? `Syncing Jobber… (started ${esc(s.started_at || '')})` : (s.state === 'failed' || s.state === 'interrupted' ? `<b class="bad">Last sync did not finish</b> - it runs again on its own · ` : '') + (s.finished_at ? `Synced with Jobber ${esc(s.finished_at.slice(11, 16))}` + (s.seconds != null && s.state === 'done' ? ` (took ${s.seconds < 90 ? s.seconds + ' sec' : Math.round(s.seconds / 60) + ' min'})` : '') : 'Not synced yet.') + (s.every_min ? ` · syncs on its own every ${s.every_min} min` : '')) + ((s.errors || []).length ? ` · <span class="bad" title="${esc(s.errors.join('\n'))}">${s.errors.length} errors</span>` : '');
   clearTimeout(window._syncPoll);
-  if (s.state === 'running') window._syncPoll = setTimeout(() => { if (curTab === 'jobs') loadJobs(); }, 5000);
+  if (s.state === 'running') window._syncPoll = setTimeout(async () => { if (curTab !== 'jobs') return;
+    const r = await api('/jobber/items?sync_only=1'); if (!r.success) return;
+    if ((r.sync || {}).state === 'running') syncInfo(r.sync); else loadJobs(); }, 5000);
 }
 // Sign the approved vendor quote ("Simon Weardon 10/12/2026" typed on it),
 // save it here and on the Jobber quote, and email it to the vendor.
