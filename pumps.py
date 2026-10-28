@@ -8365,8 +8365,18 @@ def add_account_names(conn, cases):
     job list can group jobs by account: the client on the job's Jobber
     record, else the client of its synced Jobber items, else our own name."""
     by_id, by_case = {}, {}
-    for r in conn.execute("SELECT jobber_id, case_id, client_id, client_name FROM pump_jobber_items "
-                          "WHERE client_name IS NOT NULL AND client_name != ''"):
+    ids, case_ids = set(), {c['id'] for c in cases}
+    for c in cases:
+        J = c.get('jobber') or {}
+        ids.update(str(J[k]['id']) for k in ('client', 'job', 'request', 'quote', 'invoice')
+                   if isinstance(J.get(k), dict) and J[k].get('id'))
+    if not cases:
+        return cases
+    for r in conn.execute(f"SELECT jobber_id, case_id, client_id, client_name FROM pump_jobber_items "
+                          f"WHERE client_name IS NOT NULL AND client_name != '' AND "
+                          f"(case_id IN ({','.join('?' * len(case_ids))}) OR jobber_id IN ({','.join('?' * len(ids)) or "''"})"
+                          f" OR client_id IN ({','.join('?' * len(ids)) or "''"}))",
+                          [*case_ids, *ids, *ids]):
         by_id[r['jobber_id']] = r['client_name']
         if r['client_id']:
             by_id.setdefault('client:' + r['client_id'], r['client_name'])
@@ -9558,6 +9568,8 @@ def h_doc_pdf(actor, doc_id):
 
 @api('/jobber/items')
 def h_jobber_items(actor):
+    if request.args.get('sync_only') == '1':   # the Home tab only wants how the sync is going
+        return {'items': [], 'sync': {**jobber_sync_state(), 'every_min': JOBBER_SYNC_EVERY_MIN}}
     conn = _conn()
     try:
         sql, args = 'SELECT * FROM pump_jobber_items WHERE 1=1', []
