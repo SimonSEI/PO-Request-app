@@ -701,6 +701,21 @@ class PumpsTest(unittest.TestCase):
             self.assertIn('sub quote on invoice', actions)
             self.assertIn('vendor invoice on our invoice', actions)
 
+    def test_job_list_carries_the_jobber_account_name(self):
+        cases = [{'id': 9001, 'client_name': 'Huntington #6', 'jobber': {'job': {'id': 'JACC1', 'number': '14604'}}},
+                 {'id': 9002, 'client_name': 'Huntington', 'jobber': {'client': {'id': 'CACC', 'name': 'Huntington Lakes HOA'}}},
+                 {'id': 9003, 'client_name': 'Annas Place', 'jobber': {}}]
+        conn = P._conn()
+        try:
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, client_id, client_name) "
+                         "VALUES ('JACC1', 'job', '14604', 'CACC', 'Huntington Lakes HOA')")
+            P.add_account_names(conn, cases)
+            conn.execute("DELETE FROM pump_jobber_items WHERE jobber_id='JACC1'")
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual([c['account_name'] for c in cases], ['Huntington Lakes HOA', 'Huntington Lakes HOA', 'Annas Place'])
+
     def test_two_bills_on_one_jobber_invoice(self):
         """Huntington Lakes (Oct 2026): Wettech #29259 ($150) and #29260 ($477), billed on one Jobber invoice and job.
         Drafting one offers the other; ticked, it's on the same invoice, and both bills are invoiced (not paid)."""

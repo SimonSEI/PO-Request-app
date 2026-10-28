@@ -8352,10 +8352,35 @@ def h_summary(actor):
 def h_cases(actor):
     conn = _conn()
     try:
-        return {'cases': list_cases(conn, request.args.get('status', 'open'), request.args.get('month') or None,
-                                    request.args.get('q', '').strip())}
+        cases = list_cases(conn, request.args.get('status', 'open'), request.args.get('month') or None,
+                           request.args.get('q', '').strip())
+        add_account_names(conn, cases)
+        return {'cases': cases}
     finally:
         conn.close()
+
+
+def add_account_names(conn, cases):
+    """Each job's Jobber account (client) name as `account_name`, so the
+    job list can group jobs by account: the client on the job's Jobber
+    record, else the client of its synced Jobber items, else our own name."""
+    by_id, by_case = {}, {}
+    for r in conn.execute("SELECT jobber_id, case_id, client_id, client_name FROM pump_jobber_items "
+                          "WHERE client_name IS NOT NULL AND client_name != ''"):
+        by_id[r['jobber_id']] = r['client_name']
+        if r['client_id']:
+            by_id.setdefault('client:' + r['client_id'], r['client_name'])
+        if r['case_id']:
+            by_case.setdefault(r['case_id'], r['client_name'])
+    for c in cases:
+        J = c.get('jobber') or {}
+        cl = J.get('client') or {}
+        name = cl.get('name') or by_id.get('client:' + str(cl.get('id') or ''))
+        for k in ('job', 'request', 'quote', 'invoice'):
+            if not name and isinstance(J.get(k), dict) and J[k].get('id'):
+                name = by_id.get(J[k]['id'])
+        c['account_name'] = (name or by_case.get(c['id']) or c.get('client_name') or c.get('title') or '').strip()
+    return cases
 
 
 @api('/cases/<int:case_id>')
