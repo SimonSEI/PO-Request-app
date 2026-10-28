@@ -10880,7 +10880,7 @@ SEED_DIVE_SITES = [
      'Second pump and lake filter not used.', 'active', ''),
     ('Watercrest @ Falling Waters', '1 Lake 1 Filter', '2326 Magnolia Lane, Naples', '', 'active', ''),
     ('Westminster HOA', '4 Lakes 9 Filters', '2001 Oxford Ridge Circle, Lehigh Acres', '', 'active', ''),
-    ('Wild Blue', '1 Pump 1 Lake', '8396 Sea Glass Court, Sarasota, Florida 34240', '', 'active', ''),
+    ('Wild Blue', '1 Pump 2 Filters', '8396 Sea Glass Court, Sarasota, Florida 34240', '', 'active', ''),
 ]
 
 
@@ -12051,7 +12051,8 @@ SEED_MAINT = [
      '$250.00', '$475.00', 'Naples Electric does this.', 1),
     ('Watercrest @ Falling Waters', 'Pump', '2017-01-01', '2 Filters, pump at the rear of building 2300',
      '2326 Magnolia Lane, Naples', Q, '$75.00', '', '', '', 1),
-    ('Wild Blue', 'Pump', '2026-03-17', '1 Pump', '8396 Sea Glass Court, Sarasota, FL 34240', Q, '$250.00', '', '', '', 1),
+    ('Wild Blue', 'Pump', '2026-03-17', '1 Pump 2 Filters', '8396 Sea Glass Court, Sarasota, FL 34240', Q, '$250.00', '',
+     'Included with pump maintenance', '', 1),
     # Former accounts (the sheet's bottom block; archived in Jobber)
     ('Bentley Village / Retreat at Bentley', 'Pump', '2018-01-01', '1 Lake 6 Filters, 1 Pump',
      'LR 602 Lake Louise Circle (The Retreat)', Q, '$100.00', '', 'N/A', '', 0),
@@ -12250,6 +12251,19 @@ def _apply_master_vendors(c, now):
     c.execute("UPDATE pump_dive_sites SET needs_dive=0, diver_cost='', diver_notes=TRIM(COALESCE(diver_notes, '') || "
               "' No diving - Wettech only (master list).'), updated_by='Master list (Oct 13 2026)', updated_at=? "
               "WHERE name='Wild Blue'", (now,))
+
+
+def _apply_wild_blue_oct28(c, now):
+    """Once (Oct 28 2026, the office's updated sheet): Wild Blue is 1 pump 2 filters, JAN/APR/JULY/OCT,
+    $250, included with pump maintenance (Wettech - still no diver)."""
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('wild_blue_oct28', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    c.execute("UPDATE pump_maint_accounts SET equipment='1 Pump 2 Filters', months=?, vendor_cost='$250.00', "
+              "our_bill='Included with pump maintenance', updated_by='Office sheet (Oct 28 2026)', updated_at=? "
+              "WHERE name='Wild Blue'", (Q, now))
+    c.execute("UPDATE pump_dive_sites SET equipment='1 Pump 2 Filters', updated_by='Office sheet (Oct 28 2026)', "
+              "updated_at=? WHERE name='Wild Blue'", (now,))
 
 
 REPORT_ONLY_ACCOUNTS = ('Autumn Woods', 'The Reserve @ Estero', 'Wild Blue')
@@ -12698,6 +12712,7 @@ def init_account_tables(c):
     _apply_master_list(c, now)
     _apply_repairs_by(c, now)
     _apply_master_vendors(c, now)
+    _apply_wild_blue_oct28(c, now)
     _apply_report_only(c, now)
     _undo_watercrest_mismatch(c, now)
     _fix_quote_needed_dates(c, now)
