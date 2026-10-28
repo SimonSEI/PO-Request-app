@@ -10905,6 +10905,12 @@ def init_todo_table(c):
                   asked_at REAL NOT NULL,
                   answered_at REAL)''')
     c.execute('CREATE INDEX IF NOT EXISTS pump_assistant_conv ON pump_assistant_messages (username, conversation_id)')
+    # What Pump Manager offers to do (buttons the office clicks) and its ideas to improve the app (Oct 2026).
+    for col in ('actions', 'suggestions'):
+        try:
+            c.execute(f"ALTER TABLE pump_assistant_messages ADD COLUMN {col} TEXT DEFAULT '[]'")
+        except sqlite3.OperationalError:
+            pass
     c.execute('''CREATE TABLE IF NOT EXISTS pump_todos (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   kind TEXT DEFAULT 'manual',
@@ -15757,9 +15763,13 @@ def _assistant_row(r, now=None):
     now = now or time.time()
     state = 'answered' if r['answer'] is not None else 'error' if r['error'] else \
         'timeout' if now - r['asked_at'] > ASSISTANT_WAIT else 'thinking'
+    keys = r.keys()
     return {'message_id': r['message_id'], 'question': r['question'], 'answer': r['answer'], 'state': state,
             'error': r['error'] or '', 'asked_at': datetime.fromtimestamp(r['asked_at']).isoformat(timespec='seconds'),
-            'context': json.loads(r['context'] or '{}')}
+            'context': json.loads(r['context'] or '{}'),
+            'actions': [{k: a.get(k) for k in ('label', 'state', 'error', 'result')}
+                        for a in json.loads((r['actions'] if 'actions' in keys else '') or '[]')],
+            'suggestions': json.loads((r['suggestions'] if 'suggestions' in keys else '') or '[]')}
 
 
 def assistant_messages(username):
@@ -15789,7 +15799,7 @@ def assistant_ask(username, user_name, question, context):
         raise ValueError('Type a question')
     if not PUMP_MANAGER_WEBHOOK_URL:
         raise ValueError('Pump Manager is not set up yet (PUMP_MANAGER_WEBHOOK_URL)')
-    ctx = {k: str((context or {}).get(k) or '')[:300] for k in ('tab', 'job', 'account')}
+    ctx = {k: str((context or {}).get(k) or '')[:300] for k in ('tab', 'job', 'account', 'case_id')}
     conv = _assistant_conversation(username)
     mid = uuid.uuid4().hex
     conn = _conn()
@@ -15804,7 +15814,9 @@ def assistant_ask(username, user_name, question, context):
     finally:
         conn.close()
     body = {'conversation_id': conv, 'message_id': mid, 'user': user_name, 'question': question[:4000],
-            'context': ctx, 'history': history}
+            'context': ctx, 'history': history, 'how_the_app_works': PM_HOW_IT_WORKS,
+            'actions_you_can_offer': {k: {'does': v[0], 'params': v[1]} for k, v in PM_ACTIONS.items()},
+            'reply_format': PM_REPLY_FORMAT}
     error = ''
     try:
         r = http_requests.post(PUMP_MANAGER_WEBHOOK_URL, json=body, headers=_webhook_headers(), timeout=20)
@@ -15841,8 +15853,155 @@ def h_assistant_ask(actor):
     return assistant_ask(session['username'], actor, d.get('question'), d.get('context'))
 
 
+# What Pump Manager can offer to do. It only proposes: each action is a button in the panel, done
+# by the office's own click through the app's usual route (Jobber changes still need that click).
+# Pump Manager names the action and its params; the route is built here, never taken from it.
+PM_ACTIONS = {
+    'track': ('Put a synced Jobber quote, job or request on the Job Watchlist',
+              {'kind': 'quote | job | request', 'number': 'its Jobber number'}),
+    'link': ('Link a Jobber quote, invoice or job to an item on the watchlist',
+             {'case_id': 'the item', 'kind': 'quote | invoice | job', 'number': 'its Jobber number'}),
+    'unlink_invoice': ('Take a wrongly linked Jobber invoice off an item (nothing changes in Jobber)', {'case_id': 'the item'}),
+    'status': ('Post a status update on an item',
+               {'case_id': 'the item', 'kind': 'parts_ordered | waiting_vendor | client_notified | scheduled | '
+                                                'in_progress | work_done | on_hold | note',
+                'text': 'what to say', 'on': 'YYYY-MM-DD (optional)'}),
+    'urgent': ('Move a quote up with the jobs (or back down)', {'case_id': 'the item', 'on': 'true | false'}),
+    'follow_up_tomorrow': ("Postpone an item's vendor follow-up to the next working day", {'case_id': 'the item'}),
+    'done': ('Mark an item done (it leaves the lists)', {'case_id': 'the item', 'note': 'why (optional)'}),
+    'new_item': ('Start a new item on the watchlist',
+                 {'title': 'short title', 'client_name': 'client', 'site': 'pump / location (optional)',
+                  'vendor': 'e.g. Wettech (optional)', 'description': 'the work (optional)'}),
+}
+PM_HOW_IT_WORKS = (
+    "Pumps follows pump, lake and SCADA work from request to paid. Each item on the Job Watchlist (case_id) "
+    "goes: vendor quote (Wettech) -> our Jobber quote to the client -> client approved -> scheduled with the "
+    "vendor -> work done -> vendor bill -> bill checked against the quote -> our Jobber invoice drafted -> sent "
+    "-> client pays -> the vendor is paid (Christian, 5 business days after we receive the vendor bill). "
+    "Vendor quotes, bills and service reports arrive by email to PO@ or upload and are matched to items. "
+    "Jobber is the source for clients, jobs, quotes and invoices; the app only drafts quotes/invoices and adds "
+    "notes in Jobber, and only when a person clicks. Tabs: Home (watchlist, to-do, maintenance this month), "
+    "SCADA, Accounts, Reports, Bills to pay, Quotes, Vendor invoices.")
+PM_REPLY_FORMAT = (
+    'POST {"conversation_id", "message_id", "answer": "text/markdown", "actions": [{"type": one of '
+    'actions_you_can_offer, "label": "button text (optional)", ...its params}] (optional, at most 5; each is '
+    'a button the user clicks - nothing happens until they do), "suggestions": ["an idea to improve how the '
+    'app or the workflow works", ...] (optional, at most 5)}')
+PM_STATUS_KINDS = ('parts_ordered', 'waiting_vendor', 'client_notified', 'scheduled', 'in_progress', 'work_done',
+                   'on_hold', 'note')
+
+
+def pm_action(conn, a):
+    """One action Pump Manager offered -> {label, method, path, body}, or ValueError saying why it can't be."""
+    if not isinstance(a, dict):
+        raise ValueError('Not an action')
+    t = str(a.get('type') or '')
+    if t not in PM_ACTIONS:
+        raise ValueError(f'Pump Manager can\'t do "{t[:40]}"')
+    num = str(a.get('number') or '').strip().lstrip('#')
+    kind = str(a.get('kind') or '').strip().lower()
+
+    def case():
+        cid = str(a.get('case_id') or '').strip()
+        row = conn.execute('SELECT id, title, client_name, status FROM pump_cases WHERE id=?',
+                           (int(cid),)).fetchone() if cid.isdigit() else None
+        if not row:
+            raise ValueError(f'No item {cid or "(none given)"} on the watchlist')
+        return row['id'], row['title'] or row['client_name'] or f'item {row["id"]}'
+    if t == 'track':
+        if kind not in ('quote', 'job', 'request') or not num:
+            raise ValueError('Which Jobber quote, job or request?')
+        it = conn.execute('SELECT jobber_id, case_id, title, client_name FROM pump_jobber_items WHERE kind=? AND number=?',
+                          (kind, num)).fetchone()
+        if not it:
+            raise ValueError(f"Jobber {kind} #{num} isn't synced here yet - sync Jobber, then ask again")
+        if it['case_id']:
+            raise ValueError(f'Jobber {kind} #{num} is already on the watchlist (item {it["case_id"]})')
+        return {'label': f"Track Jobber {kind} #{num} - {it['client_name'] or it['title'] or ''}".rstrip(' -'),
+                'method': 'POST', 'path': f"/jobber/items/{it['jobber_id']}", 'body': {'action': 'track'}}
+    if t == 'link':
+        cid, name = case()
+        if kind not in ('quote', 'invoice', 'job') or not num:
+            raise ValueError('Which Jobber quote, invoice or job?')
+        return {'label': f'Link Jobber {kind} #{num} to {name}', 'method': 'POST',
+                'path': f'/cases/{cid}/jobber_{kind}', 'body': {'number': num}}
+    if t == 'unlink_invoice':
+        cid, name = case()
+        return {'label': f'Unlink the invoice from {name}', 'method': 'POST', 'path': f'/cases/{cid}/unlink_invoice', 'body': {}}
+    if t == 'status':
+        cid, name = case()
+        sk = kind or 'note'
+        if sk not in PM_STATUS_KINDS:
+            raise ValueError(f'Unknown status "{sk[:30]}"')
+        text, on = str(a.get('text') or '')[:500], _iso_date(str(a.get('on') or '')) or ''
+        return {'label': f"Status on {name}: {sk.replace('_', ' ')}" + (f' - {text[:80]}' if text else ''),
+                'method': 'POST', 'path': f'/cases/{cid}/status', 'body': {'kind': sk, 'text': text, 'on': on}}
+    if t == 'urgent':
+        cid, name = case()
+        on = str(a.get('on', True)).lower() not in ('false', '0', 'no', '')
+        return {'label': f"{'Mark' if on else 'Unmark'} {name} urgent", 'method': 'POST', 'path': f'/cases/{cid}/urgent',
+                'body': {'on': on}}
+    if t == 'follow_up_tomorrow':
+        cid, name = case()
+        return {'label': f"Follow up on {name} tomorrow", 'method': 'POST', 'path': f'/cases/{cid}/follow_up_tomorrow', 'body': {}}
+    if t == 'done':
+        cid, name = case()
+        return {'label': f'Mark {name} done', 'method': 'POST', 'path': f'/cases/{cid}/done',
+                'body': {'note': str(a.get('note') or 'Pump Manager')[:300]}}
+    body = {k: str(a.get(k) or '')[:500] for k in ('title', 'client_name', 'site', 'vendor', 'description')}
+    if not (body['title'] or body['client_name']):
+        raise ValueError('A new item needs a title or client')
+    return {'label': f"New item: {body['title'] or body['client_name']}", 'method': 'POST', 'path': '/cases',
+            'body': {k: v for k, v in body.items() if v}}
+
+
+def pm_actions_from_reply(conn, actions):
+    out = []
+    for a in (actions if isinstance(actions, list) else [])[:5]:
+        try:
+            r = pm_action(conn, a)
+            label = str((a or {}).get('label') or '').strip()[:120] if isinstance(a, dict) else ''
+            out.append({**r, 'label': label or r['label'][:160], 'state': 'proposed'})
+        except (ValueError, TypeError) as e:
+            out.append({'label': str((a or {}).get('label') or (a or {}).get('type') or 'Action')[:120]
+                        if isinstance(a, dict) else 'Action', 'state': 'invalid', 'error': str(e)[:200]})
+    return out
+
+
+@api('/assistant/actions/<message_id>/<int:i>', methods=('GET', 'POST'))
+def h_assistant_action(actor, message_id, i):
+    """GET: what the i-th offered action does (the page runs it through the app's own route on the
+    office's click). POST {"state": "done"|"skipped", "result"}: how it went."""
+    if actor == BOT or not assistant_allowed():
+        return {'success': False, 'error': 'Pump Manager is for the office'}, 403
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT actions FROM pump_assistant_messages WHERE message_id=? AND username=?',
+                           (message_id, session['username'].lower())).fetchone()
+        acts = json.loads((row['actions'] if row else '') or '[]')
+        if not row or not 0 <= i < len(acts):
+            return {'success': False, 'error': 'No such action'}, 404
+        a = acts[i]
+        if request.method == 'GET':
+            if a.get('state') != 'proposed':
+                return {'success': False, 'error': f"Already {a.get('state')}"}
+            return {'method': a['method'], 'path': a['path'], 'body': a.get('body') or {}, 'label': a['label']}
+        st = str(_json().get('state') or '')
+        if st not in ('done', 'skipped', 'failed'):
+            raise ValueError('state is done, skipped or failed')
+        a.update(state='proposed' if st == 'failed' else st, result=str(_json().get('result') or '')[:300],
+                 error=str(_json().get('result') or '')[:300] if st == 'failed' else '')
+        conn.execute('UPDATE pump_assistant_messages SET actions=? WHERE message_id=?', (json.dumps(acts), message_id))
+        if st == 'done':
+            _event(conn, actor, 'Pump Manager action', a['label'], case_id=None)
+        conn.commit()
+        return {'actions': [{k: x.get(k) for k in ('label', 'state', 'error', 'result')} for x in acts]}
+    finally:
+        conn.close()
+
+
 def assistant_reply():
-    """Pump Manager's answer: {"conversation_id", "message_id", "answer"}, with
+    """Pump Manager's answer: {"conversation_id", "message_id", "answer", "actions"?, "suggestions"?}, with
     "Authorization: Bearer <PUMP_APP_REPLY_TOKEN>". Anything else is a 401."""
     if not PUMP_APP_REPLY_TOKEN or not hmac.compare_digest(request.headers.get('Authorization', ''),
                                                           f'Bearer {PUMP_APP_REPLY_TOKEN}'):
@@ -15851,10 +16010,14 @@ def assistant_reply():
     mid, conv, answer = str(d.get('message_id') or ''), str(d.get('conversation_id') or ''), d.get('answer')
     if not mid or not isinstance(answer, str):
         return jsonify({'success': False, 'error': 'message_id and answer are needed'}), 400
+    sugg = [str(x).strip()[:500] for x in (d.get('suggestions') if isinstance(d.get('suggestions'), list) else [])
+            if str(x).strip()][:5]
     conn = _conn()
     try:
-        cur = conn.execute('UPDATE pump_assistant_messages SET answer=?, error=\'\', answered_at=? '
-                           'WHERE message_id=? AND conversation_id=?', (answer[:20000], time.time(), mid, conv))
+        acts = pm_actions_from_reply(conn, d.get('actions'))
+        cur = conn.execute('UPDATE pump_assistant_messages SET answer=?, error=\'\', answered_at=?, actions=?, suggestions=? '
+                           'WHERE message_id=? AND conversation_id=?',
+                           (answer[:20000], time.time(), json.dumps(acts), json.dumps(sugg), mid, conv))
         conn.commit()
     finally:
         conn.close()

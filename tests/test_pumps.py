@@ -4382,6 +4382,64 @@ class PumpsTest(unittest.TestCase):
             s['role'] = 'accounting'
         self.assertNotEqual(self.c.post('/pumps/api/assistant/ask', json={'question': 'hi'}).status_code, 200)
 
+    def test_pump_manager_offers_actions_the_office_clicks(self):
+        """Oct 2026: Pump Manager can do tasks - it offers them as buttons (track a Jobber quote, post a status...)
+        and nothing happens until the office clicks Do it, which runs the app's own route. It's told what it can
+        do and how the app works, and its ideas to improve the app show under its answer."""
+        class Resp:
+            status_code = 202
+        sent = []
+        saved = (P.PUMP_MANAGER_WEBHOOK_URL, P.PUMP_APP_REPLY_TOKEN, P.http_requests.post)
+        P.PUMP_MANAGER_WEBHOOK_URL, P.PUMP_APP_REPLY_TOKEN = 'https://pm.example/hook', 'reply-token-act'
+        P.http_requests.post = lambda url, **kw: sent.append(kw['json']) or Resp()
+        conn = P._conn()
+        try:
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id, client_name) "
+                         "VALUES ('QPM9301', 'quote', '9301', 'Fiberglass tank', 'awaiting_response', 'CBB', 'Banyan Bay')")
+            conn.commit()
+        finally:
+            conn.close()
+        try:
+            r = self.c.post('/pumps/api/assistant/ask', json={'question': 'add the fiberglass tank quote to the watchlist',
+                                                              'context': {'tab': 'jobs'}}).get_json()
+            body = sent[-1]
+            self.assertIn('track', body['actions_you_can_offer'])
+            self.assertIn('Job Watchlist', body['how_the_app_works'])
+            m = r['messages'][-1]
+            ok = A.app.test_client().post('/pumps/api/assistant/reply', headers={'Authorization': 'Bearer reply-token-act'}, json={
+                'conversation_id': r['conversation_id'], 'message_id': m['message_id'], 'answer': 'Here it is:',
+                'actions': [{'type': 'track', 'kind': 'quote', 'number': '9301'},
+                            {'type': 'delete_everything'},
+                            {'type': 'status', 'case_id': 999999, 'kind': 'note', 'text': 'x'}],
+                'suggestions': ['Read fiberglass quotes from Wettech too']})
+            self.assertEqual(ok.status_code, 200, ok.get_data(as_text=True))
+            m = self.c.get('/pumps/api/assistant/messages').get_json()['messages'][-1]
+            self.assertEqual([a['state'] for a in m['actions']], ['proposed', 'invalid', 'invalid'])
+            self.assertIn('Banyan Bay', m['actions'][0]['label'])
+            self.assertEqual(m['suggestions'], ['Read fiberglass quotes from Wettech too'])
+            self.assertNotIn('path', m['actions'][0])
+            conn = P._conn()
+            self.assertIsNone(conn.execute("SELECT case_id FROM pump_jobber_items WHERE jobber_id='QPM9301'").fetchone()[0],
+                              'nothing done before the click')
+            conn.close()
+            # Do it: the page gets the route, runs it, and reports back.
+            a = self.c.get(f"/pumps/api/assistant/actions/{m['message_id']}/0").get_json()
+            self.assertEqual((a['method'], a['path'], a['body']), ('POST', '/jobber/items/QPM9301', {'action': 'track'}))
+            self.assertTrue(self.c.post('/pumps/api/jobber/items/QPM9301', json=a['body']).get_json()['success'])
+            self.c.post(f"/pumps/api/assistant/actions/{m['message_id']}/0", json={'state': 'done'})
+            m = self.c.get('/pumps/api/assistant/messages').get_json()['messages'][-1]
+            self.assertEqual(m['actions'][0]['state'], 'done')
+            self.assertFalse(self.c.get(f"/pumps/api/assistant/actions/{m['message_id']}/0").get_json()['success'])
+            conn = P._conn()
+            self.assertTrue(conn.execute("SELECT case_id FROM pump_jobber_items WHERE jobber_id='QPM9301'").fetchone()[0])
+            conn.close()
+        finally:
+            (P.PUMP_MANAGER_WEBHOOK_URL, P.PUMP_APP_REPLY_TOKEN, P.http_requests.post) = saved
+            conn = P._conn()
+            conn.execute("DELETE FROM pump_jobber_items WHERE jobber_id='QPM9301'")
+            conn.commit()
+            conn.close()
+
     def test_service_call_lists_the_newest_jobs_first(self):
         """Service call (Oct 2026): with nothing typed, the most recently created Jobber jobs, newest first."""
         def fake(query, variables=None):
