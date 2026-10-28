@@ -8397,10 +8397,10 @@ def add_account_names(conn, cases):
                    if isinstance(J.get(k), dict) and J[k].get('id'))
     if not cases:
         return cases
-    for r in conn.execute(f"SELECT jobber_id, case_id, client_id, client_name FROM pump_jobber_items "
-                          f"WHERE client_name IS NOT NULL AND client_name != '' AND "
-                          f"(case_id IN ({','.join('?' * len(case_ids))}) OR jobber_id IN ({','.join('?' * len(ids)) or "''"})"
-                          f" OR client_id IN ({','.join('?' * len(ids)) or "''"}))",
+    qc, qi = ','.join('?' * len(case_ids)), ','.join('?' * len(ids)) or "''"
+    for r in conn.execute("SELECT jobber_id, case_id, client_id, client_name FROM pump_jobber_items "
+                          "WHERE client_name IS NOT NULL AND client_name != '' AND "
+                          f"(case_id IN ({qc}) OR jobber_id IN ({qi}) OR client_id IN ({qi}))",
                           [*case_ids, *ids, *ids]):
         by_id[r['jobber_id']] = r['client_name']
         if r['client_id']:
