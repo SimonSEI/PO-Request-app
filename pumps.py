@@ -1580,6 +1580,7 @@ def case_detail(conn, case_id):
         'SELECT * FROM pump_jobber_items WHERE case_id=? ORDER BY updated_at DESC', (case_id,))]
     d['schedule_email'] = _schedule_mailto(d)
     d['account'] = account_info(conn, d)
+    add_account_names(conn, [d])
     return d
 
 
@@ -6104,6 +6105,10 @@ def link_jobber_invoice(case_id, number, actor='system'):
         row = conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (case_id,)).fetchone()
         if not row:
             raise ValueError('No such item')
+        cid, cname = case_client(conn, case_id)
+        if cid and client.get('id') and client['id'] != cid:
+            raise ValueError(f"Invoice #{num} is for {client.get('name') or 'another client'}, but this job is for "
+                             f"{cname or 'another client'} in Jobber - not linked")
         j = json.loads(row['jobber'] or '{}')
         j['invoice'] = {'id': inv['id'], 'number': num, 'uri': inv.get('jobberWebUri') or '', 'status': status,
                         'total': total}
@@ -6810,12 +6815,29 @@ def _invoice_visit_field():
     return next((k for k in ('visitIds', 'visitsIds', 'visits') if k in have), '')
 
 
+def case_client(conn, case_id):
+    """(Jobber client id, name) a job is for, or ('', ''): the client of its linked Jobber job, request or
+    quote - not one taken from an invoice, which can be the wrong one (Huntington Lakes Phase 3, Oct 2026)."""
+    row = conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (case_id,)).fetchone() if case_id else None
+    if not row:
+        return '', ''
+    J = json.loads(row['jobber'] or '{}')
+    for k in ('job', 'request', 'quote'):
+        if isinstance(J.get(k), dict) and J[k].get('id'):
+            it = conn.execute("SELECT client_id, client_name FROM pump_jobber_items WHERE jobber_id=? AND client_id != ''",
+                              (J[k]['id'],)).fetchone()
+            if it:
+                return it['client_id'], it['client_name'] or ''
+    return '', ''               # a client only guessed from a name never blocks a link (Anna's Place)
+
+
 def other_bills_to_invoice(conn, doc, case=None):
     """The client's other vendor bills not invoiced yet, to bill on the same invoice (Huntington Lakes, Oct 2026:
     Wettech #29259 and #29260 on one Jobber job), each with its lines as they'd be invoiced on their own."""
     names = {(x or '').strip().lower() for x in (doc.get('client_name'), (case or {}).get('client_name')) if (x or '').strip()}
     if not names:
         return []
+    mine = case_client(conn, doc.get('case_id'))[0]
     out = []
     for r in conn.execute("SELECT d.*, c.client_name AS case_client FROM pump_docs d LEFT JOIN pump_cases c ON c.id=d.case_id "
                           "WHERE d.kind='bill' AND d.status != 'dismissed' AND d.id != ? AND COALESCE(c.status, 'open') != "
@@ -6824,6 +6846,9 @@ def other_bills_to_invoice(conn, doc, case=None):
         if (o.get('jobber') or {}).get('invoice_id') or \
                 not ({(o.get('client_name') or '').strip().lower(), (r['case_client'] or '').strip().lower()} & names):
             continue
+        theirs = case_client(conn, o.get('case_id'))[0]
+        if mine and theirs and theirs != mine:
+            continue            # same name, another Jobber client (Huntington Lakes Master vs Phase 3)
         out.append({'id': o['id'], 'case_id': o['case_id'], 'vendor': o.get('vendor') or '', 'doc_number': o.get('doc_number') or '',
                     'doc_date': o.get('doc_date') or '', 'total': o.get('total') if o.get('total') is not None else o.get('subtotal'),
                     'description': ((o.get('description') or '').strip().splitlines() or [''])[0][:200],
@@ -8385,10 +8410,12 @@ def add_account_names(conn, cases):
     for c in cases:
         J = c.get('jobber') or {}
         cl = J.get('client') or {}
-        name = cl.get('name') or by_id.get('client:' + str(cl.get('id') or ''))
-        for k in ('job', 'request', 'quote', 'invoice'):
+        name = None
+        for k in ('job', 'request', 'quote'):   # the job's own client before one an invoice brought
             if not name and isinstance(J.get(k), dict) and J[k].get('id'):
                 name = by_id.get(J[k]['id'])
+        name = name or cl.get('name') or by_id.get('client:' + str(cl.get('id') or '')) or \
+            (by_id.get((J.get('invoice') or {}).get('id')) if isinstance(J.get('invoice'), dict) else None)
         c['account_name'] = (name or by_case.get(c['id']) or c.get('client_name') or c.get('title') or '').strip()
     return cases
 
@@ -8815,6 +8842,47 @@ def h_link_jobber_invoice(actor, case_id):
     except Exception as e:
         note = {'error': str(e)}
     return {'invoice': inv, 'bill_note': note}
+
+
+@api('/cases/<int:case_id>/unlink_invoice', methods=('POST',))
+def h_unlink_invoice(actor, case_id):
+    """Our Jobber invoice taken off a job it was linked to by mistake (Huntington Lakes Phase 3 linked to the Master
+    Association's #37064, Oct 2026). Only this app's records change - nothing in Jobber, nothing paid."""
+    if actor == BOT:
+        return _office_only(actor, 'Unlinking a Jobber invoice')
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT jobber, sei_invoice_number FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+        if not row:
+            return {'success': False, 'error': 'Not found'}, 404
+        j = json.loads(row['jobber'] or '{}')
+        inv = j.pop('invoice', None) or {}
+        num = inv.get('number') or row['sei_invoice_number'] or ''
+        if not (inv or num):
+            return {'success': False, 'error': 'No invoice is linked to this job'}
+        if inv.get('id') and (j.get('client') or {}).get('id'):
+            # A client taken from that invoice goes with it.
+            it = conn.execute('SELECT client_id FROM pump_jobber_items WHERE jobber_id=?', (inv['id'],)).fetchone()
+            if it and it['client_id'] == j['client']['id']:
+                j.pop('client')
+        conn.execute("UPDATE pump_cases SET jobber=?, sei_invoice_number='', updated_at=? WHERE id=?",
+                     (json.dumps(j), _now_text(), case_id))
+        for d in conn.execute("SELECT id, jobber FROM pump_docs WHERE case_id=? AND kind='bill'", (case_id,)).fetchall():
+            dj = json.loads(d['jobber'] or '{}')
+            if dj.get('invoice_id') and (dj['invoice_id'] == inv.get('id') or dj.get('invoice_number') == num):
+                for k in ('invoice_id', 'invoice_number', 'invoice_uri', 'invoice_status', 'linked_by', 'billed_with_doc'):
+                    dj.pop(k, None)
+                conn.execute("UPDATE pump_docs SET jobber=?, status='filed', updated_at=? WHERE id=?",
+                             (json.dumps(dj), _now_text(), d['id']))
+        if inv.get('id'):
+            conn.execute('UPDATE pump_jobber_items SET case_id=NULL WHERE jobber_id=? AND case_id=?', (inv['id'], case_id))
+        _set_step(conn, case_id, 'invoice_drafted', na=False, by=actor)
+        _event(conn, actor, 'unlinked Jobber invoice', f"Invoice #{num} was the wrong one - taken off this job "
+                                                        "(nothing changed in Jobber)", case_id=case_id)
+        conn.commit()
+        return {'number': num}
+    finally:
+        conn.close()
 
 
 def diver_invoice_linked(case_id, inv, actor):
@@ -10186,6 +10254,17 @@ def h_doc_invoice(actor, doc_id):
         res['visit'] = visit
     # Other bills billed on this same invoice (the office ticks them in the window; their lines are in it).
     also = [int(x) for x in (data.get('also_doc_ids') or []) if str(x).isdigit() and int(x) != doc_id]
+    conn = _conn()
+    try:
+        def _other_client(o):
+            oc = conn.execute('SELECT case_id FROM pump_docs WHERE id=?', (o,)).fetchone()
+            return case_client(conn, oc['case_id'])[0] if oc else ''
+        skipped = [o for o in also if client_id and _other_client(o) not in ('', client_id)]
+    finally:
+        conn.close()
+    also = [o for o in also if o not in skipped]   # another Jobber client's bill never goes on this invoice
+    if skipped:
+        res['also_skipped'] = skipped
     for other in also:
         mark_bill_invoiced(other, {**res, 'client_id': client_id}, actor, on_doc_id=doc_id)
         if job_id:
