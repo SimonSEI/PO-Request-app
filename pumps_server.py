@@ -23,6 +23,7 @@ from datetime import timedelta
 from flask import Flask, jsonify, redirect, request, session
 from flask_wtf.csrf import CSRFProtect, generate_csrf
 
+import backups
 import pumps
 import pumps_link
 import shared_mail
@@ -136,6 +137,17 @@ if IMPORT_FROM_OFFICE:
     # Fails loudly (the service doesn't start) rather than run on partial data.
     pumps_link.import_bundle(OFFICE_INTERNAL_URL + '/internal/pumps-export', SHARED_SECRET, DB_PATH, DATA_DIR)
 
+# Off-site backups (backups.py), in the bucket's "pumps/" folder so they never mix
+# with the Office App's. Without BACKUP_PREFIX they stay off: unprefixed, this
+# service would read (and restore) the Office App's copies as its own.
+BACKUPS_ON = bool(os.environ.get('BACKUP_S3_BUCKET', '').strip())
+if BACKUPS_ON and not backups.PREFIX:
+    print('⚠ Backups: BACKUP_S3_BUCKET is set but BACKUP_PREFIX is not (use "pumps") - Pumps backups stay off')
+    BACKUPS_ON = False
+if BACKUPS_ON:
+    # A lost volume comes back from the newest copy; after an import the database exists, so this does nothing.
+    backups.restore_if_empty(DB_PATH, DATA_DIR)
+
 pumps.init_pumps(app, csrf, DB_PATH, data_dir=DATA_DIR, secret_key=app.secret_key, website_url=WEBSITE_URL,
                  email_enabled=shared_mail.MONITORING_ENABLED,
                  fetch_emails=lambda **kw: shared_mail.fetch_scan_emails(DB_PATH, **kw),
@@ -143,3 +155,10 @@ pumps.init_pumps(app, csrf, DB_PATH, data_dir=DATA_DIR, secret_key=app.secret_ke
                  scheduler_available=SCHEDULER_AVAILABLE,
                  graph_token=shared_mail.graph_access_token if shared_mail.MS_GRAPH_ENABLED else None,
                  mail_from=shared_mail.PO_EMAIL_ADDRESS)
+
+if BACKUPS_ON:
+    if SCHEDULER_AVAILABLE:
+        from apscheduler.schedulers.background import BackgroundScheduler
+    backups.init_backups(app, csrf, DB_PATH, data_dir=DATA_DIR,
+                         allowed=lambda: session.get('role') == 'office' and pumps.pumps_allowed(),
+                         scheduler_cls=BackgroundScheduler if SCHEDULER_AVAILABLE else None)
