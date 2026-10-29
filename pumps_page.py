@@ -59,7 +59,20 @@ h2,h3{font-weight:700;letter-spacing:-.2px;}
 .ok{color:var(--green);} .warn{color:var(--amber);} .bad{color:var(--red);}
 .flash{margin:14px 24px 0;padding:11px 16px;border-radius:8px;background:var(--amber-bg);color:var(--amber);font-size:13px;border-left:4px solid #E0A100;}
 /* layout */
-.layout{display:grid;grid-template-columns:minmax(300px,380px) minmax(0,1fr);align-items:start;gap:20px;padding:20px 24px 32px;}
+.layout{display:grid;grid-template-columns:minmax(0,1fr);align-items:start;gap:20px;padding:20px 24px 32px;}
+.side.today{position:static;max-height:none;border:none;box-shadow:none;border-radius:0;}
+.side.today .row .tt{-webkit-line-clamp:unset;}
+.gsearch{position:relative;}
+.gsearch input{width:330px;max-width:40vw;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.28);color:#fff;border-radius:8px;padding:7px 10px;font:inherit;}
+.gsearch input::placeholder{color:#C7D2EA;}
+.gsearch #searchResults{position:absolute;top:40px;left:0;width:min(560px,90vw);max-height:70vh;color:var(--text);z-index:50;box-shadow:var(--shadow-lg);}
+.dots{display:flex;gap:3px;align-items:center;}
+.dots i{width:11px;height:11px;border-radius:50%;background:var(--border);display:inline-block;}
+.dots i.d{background:var(--green);} .dots i.c{background:#fff;border:2.5px solid var(--brand);width:13px;height:13px;}
+.dots-l{font-size:12px;color:var(--muted);margin-top:4px;}
+.who-c{font-size:11.5px;font-weight:700;padding:2px 8px;border-radius:999px;margin-right:6px;white-space:nowrap;}
+.who-you{background:var(--brand);color:#fff;} .who-vendor{background:var(--amber-bg);color:var(--amber);}
+.who-client{background:var(--violet-bg);color:var(--violet);} .who-diver{background:var(--green-bg);color:#2E6B1B;}
 .mainc{min-width:0;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden;}
 .side{min-width:0;position:sticky;top:80px;max-height:calc(100vh - 100px);overflow-y:auto;background:var(--card);
      border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);}
@@ -321,6 +334,8 @@ details.fold[open] > summary h4::before { content: '▾ '; }
 <nav class="top">
   <div class="t"><span class="logo"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.7c3.6 4.3 6 7.7 6 10.8a6 6 0 0 1-12 0c0-3.1 2.4-6.5 6-10.8z"/><path d="M9.2 14.2a2.9 2.9 0 0 0 2.8 2.6"/></svg></span><div>Pumps<small>Pumps, lakes &amp; SCADA</small></div></div>
   <div class="r">
+    <div class="gsearch"><input type="search" id="caseSearch" placeholder="Search jobs, accounts, PO, quote or invoice #…" oninput="searchCases(this.value)" onkeydown="if(event.key==='Escape'){this.value='';searchCases('')}"><div id="searchResults" class="side hide"></div></div>
+    <button class="btn" onclick="uploadBox()" title="Add vendor quotes, bills or reports - or drop files anywhere on the page">⬆ Upload</button>
     <button class="btn p" onclick="newCase()">＋ New item</button>
     <button class="btn" title="Follow a service call booked in Jobber - it's the start of the work, no quote" onclick="addServiceCall()">＋ Service call</button>
     {% if assistant %}<button class="btn" id="pmBtn" title="Ask Pump Manager, our assistant - answers take a minute or two" onclick="pmToggle()">💬 Ask Pump Manager</button>{% endif %}
@@ -341,21 +356,12 @@ details.fold[open] > summary h4::before { content: '▾ '; }
 {% if flash_msg %}<div class="flash">{{ flash_msg }}</div>{% endif %}
 
 <div class="layout">
-<aside class="side" id="side">
-  <div class="hd">
-    <h2>✅ To do <span class="chip" id="sideCount"></span><span class="sp" style="flex:1"></span><span class="note" id="sideOpen" style="font-weight:500"></span></h2>
-    <input type="text" id="caseSearch" placeholder="Find a job, PO, quote or invoice #…" oninput="searchCases(this.value)">
-    <div style="display:flex;gap:6px">
-      <select id="uploadKind" title="What the files are" style="flex:1;min-width:0"><option value="">Upload: let the app decide</option><option value="quote">Upload quotes</option><option value="bill">Upload bills</option><option value="report">Upload reports</option></select>
-      <button class="btn" onclick="uploadBox()">⬆ Upload</button>
-      <input type="file" id="fileIn" multiple accept=".pdf,.docx,.doc" class="hide" onchange="uploadFiles(this.files)"></div>
-  </div>
-  <div id="searchResults" class="hide"></div>
-  <div id="todoList"><div class="empty">Loading…</div></div>
-</aside>
+<select id="uploadKind" class="hide"><option value=""></option><option value="quote"></option><option value="bill"></option><option value="report"></option></select>
+<input type="file" id="fileIn" multiple accept=".pdf,.docx,.doc" class="hide" onchange="uploadFiles(this.files)">
 <div class="mainc">
 <div class="tabs" id="tabs">
-  <div class="tab on" data-tab="jobs">Home <span class="n" id="n-jobs"></span></div>
+  <div class="tab on" data-tab="today">Today <span class="n" id="n-today"></span></div>
+  <div class="tab" data-tab="jobs">Jobs <span class="n" id="n-jobs"></span></div>
   <div class="tab" data-tab="scada">SCADA <span class="n" id="n-scada"></span></div>
   <div class="tab" data-tab="accounts">Accounts</div>
   <div class="tab" data-tab="reports">Reports</div>
@@ -364,16 +370,17 @@ details.fold[open] > summary h4::before { content: '▾ '; }
   <div class="tab" data-tab="vinvoices">Vendor invoices</div>
 </div>
 
+<!-- TODAY: what you do now, then what's waiting on whom -->
+<div class="panel" id="p-today"><div class="side today"><div id="todoList"><div class="empty">Loading…</div></div></div></div>
+
 <!-- JOBS -->
-<div class="panel" id="p-jobs">
-  <h3 style="margin:0 0 8px;font-size:14px">Job Watchlist</h3>
+<div class="panel hide" id="p-jobs">
   <div class="toolbar">
-    <input type="text" id="jbSearch" placeholder="Find a job, client, PO, quote or invoice #…" oninput="clearTimeout(window._jq);window._jq=setTimeout(loadJobs,300)" style="width:240px">
-    <select id="jbShow" onchange="loadJobs()"><option value="open">Open</option><option value="waiting">Waiting on others</option><option value="closed">Done</option><option value="all">All</option></select>
+    <select id="jbShow" onchange="loadJobs()"><option value="open">Open</option><option value="closed">Done</option><option value="all">All</option></select>
     <div class="sp"></div><span id="syncInfo" class="note"></span>
     <button class="btn s" title="It syncs on its own - this just does it now" onclick="syncJobber()">↻ Sync now</button>
   </div>
-  <div class="scroll" style="max-height:45vh"><table class="t"><thead><tr><th>Job</th><th>Where it is</th><th>Vendor</th><th class="num">Vendor quote</th><th>Our quote</th><th class="num">Vendor bill</th><th>Our invoice</th><th>Vendor paid</th><th></th></tr></thead><tbody id="jobsBody"></tbody></table></div>
+  <div class="scroll" style="max-height:45vh"><table class="t"><thead><tr><th>Job</th><th>Progress</th><th>Next step</th><th></th></tr></thead><tbody id="jobsBody"></tbody></table></div>
   <details id="msFold" open ontoggle="window.foldSave && foldSave('ms', this.open)" style="margin-top:18px"><summary style="cursor:pointer;margin-bottom:8px"><h3 style="display:inline;margin:0;font-size:14px">Maintenance this month <span class="chip" id="msCount"></span></h3> <span class="note">click to show or fold away</span></summary>
   <div class="toolbar">
     <select id="msMonth" onchange="loadMaintSchedule()"></select>
@@ -556,6 +563,28 @@ function stageText(c){
     done: 'Done',
   })[c.stage] || stepLabel(c.stage, v);
 }
+// Who acts next on a job (Oct 2026 redesign): You, the vendor, the client, or Jordan (Gulfshore, the diver).
+function owner(c){
+  if (c.status !== 'open') return '';
+  const t = stageText(c);
+  if (/waiting on client/i.test(t)) return 'Client';
+  if (/^Waiting for the pump invoice/i.test(t)) return 'You';
+  if (/(^|· )waiting on/i.test(t)) { const w = c.vendor || 'Wettech'; return /gulfshore/i.test(w) ? 'Jordan' : w; }
+  return 'You';
+}
+function ownerChip(c){
+  const o = owner(c); if (!o) return '';
+  const k = o === 'You' ? 'you' : o === 'Client' ? 'client' : o === 'Jordan' ? 'diver' : 'vendor';
+  return `<span class="who-c who-${k}">${esc(o)}</span>`;
+}
+// The job's steps as dots: green done, ringed = where it is now; steps not needed are left out.
+function stepDots(c){
+  const st = c.steps || {}, v = c.vendor || 'Wettech';
+  const keys = STEPS.map(x => x.key).filter(k => !(st[k] || {}).na && !(k === 'assessment' && !st[k]) && k !== 'report_logged');
+  const done = keys.filter(k => (st[k] || {}).at).length;
+  return `<div class="dots" title="${esc(keys.map(k => ((st[k] || {}).at ? '✓ ' : '· ') + stepLabel(k, v)).join('\n'))}">${keys.map(k => `<i class="${(st[k] || {}).at ? 'd' : k === c.stage ? 'c' : ''}"></i>`).join('')}</div>`
+    + `<div class="dots-l">${c.status === 'closed' ? 'Done' : c.status === 'cancelled' ? 'Cancelled' : `${done} of ${keys.length} · ${esc(stepLabel(c.stage, v))}`}</div>`;
+}
 function stageChip(c){ if (c.status === 'closed') return '<span class="chip g">closed</span>'; if (c.status === 'cancelled') return '<span class="chip">cancelled</span>'; const t = stageText(c), red = (c.open_issues || []).some(i => i.kind !== 'no_quote'); return `<span class="chip ${red ? 'r' : /^Waiting/.test(t) ? '' : 'b'}">${esc(t)}</span>`; }
 function kindChip(k){ const m = {quote:'b', bill:'a', report:'g', other:''}; return `<span class="chip ${m[k]||''}">${esc(k)}</span>`; }
 
@@ -565,7 +594,7 @@ function showTab(name){
   curTab = name;
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === name));
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('hide', p.id !== 'p-' + name));
-  if (name === 'jobs') loadJobs(); else if (name === 'scada') loadScada();
+  if (name === 'today') loadToday(); else if (name === 'jobs') loadJobs(); else if (name === 'scada') loadScada();
   else if (name === 'accounts') loadAccounts(); else if (name === 'reports') loadReports(); else if (name === 'bills') loadBills(); else if (name === 'vquotes') loadVQuotes(); else if (name === 'vinvoices') loadVInvoices();
   history.replaceState(null, '', '#' + name);
 }
@@ -817,7 +846,7 @@ function caseTitle(c){ return `<span title="${esc(c.title || '')}">${esc(c.short
 function statusLine(c){ const st = c.job_status || {}; if (!st.kind) return ''; return `<span style="font-weight:700" title="${esc((st.by || '') + ' ' + (st.at || ''))}">📌 <b>${esc(st.label)}</b>${st.text ? ' - ' + esc(st.text) : ''}${st.on ? ' · ' + ({parts_ordered: 'parts due', waiting_vendor: 'expected', scheduled: 'for'}[st.kind] || 'on') + ' ' + esc(niceDay(st.on)) : ''} <span class="note">(${esc(niceDay(d10(st.at)))})</span></span>`; }
 function caseSub(c, extra){ return esc([c.client_name, c.site].filter(Boolean).join(' · ')) + (c.po_number ? ' · PO ' + esc(c.po_number) : '') + jobberNo(c) + (extra ? ' · ' + extra : '') + (c.idle_days >= 7 ? ` · <b class="warn">${c.idle_days}d idle</b>` : '') + (statusLine(c) ? '<br>' + statusLine(c) : ''); }
 async function loadToday(){
-  const j = await api('/summary');
+  const [j, cs] = await Promise.all([api('/summary'), api('/cases?status=open')]);
   checkVersion(j.version);
   const el = document.getElementById('todoList');
   if (!j.success) { el.innerHTML = `<div class="empty">${esc(j.error)}</div>`; return; }
@@ -880,14 +909,20 @@ async function loadToday(){
     waiting.push(todoItem('Maintenance visit', '', esc(l.account || t.title), `client approved ${esc(l.since || '')} · waiting on ${esc(left.join(' and '))}'s service report${left.length > 1 ? 's' : ''}${(l.reported || []).length ? ' · ✓ ' + esc(l.reported.join(', ')) : ''}`, "showTab('accounts')",
       `<button class="btn s" onclick="askDone(event, () => todoDone(${t.id}, true, event))">✓ Done</button>`, t.todo_key)); });
   const n = urgent.length + todo.length + q.todos.length;
-  document.getElementById('sideCount').textContent = n;
-  document.getElementById('sideCount').className = 'chip ' + (urgent.length ? 'r' : n ? 'a' : 'g');
-  document.getElementById('sideOpen').textContent = `${q.open_count} open jobs`;
-  let wasOpen = false; try { wasOpen = localStorage.getItem('pumpsWaitingOpen') === '1'; } catch (e) {}
+  setCount('n-today', n, urgent.length > 0);
+  // Waiting on others, by who has the next move (Oct 2026 redesign): one group each, folded unless opened.
+  const groups = {}, mine = new Set([...(q.vendor_follow_ups || []), ...q.needs_scheduling, ...q.to_quote_client, ...q.ready_to_close].map(c => c.id));
+  ((cs && cs.cases) || []).forEach(c => { const o = owner(c); if (o && o !== 'You' && !mine.has(c.id)) (groups[o] = groups[o] || []).push(c); });
+  const order = Object.keys(groups).sort((a, b) => (a === 'Client') - (b === 'Client') || groups[b].length - groups[a].length);
+  const fold = (k, title, items) => { let on = false; try { on = localStorage.getItem('pumpsWait:' + k) === '1'; } catch (e) {}
+    return `<details ${on ? 'open' : ''} ontoggle="try{localStorage.setItem('pumpsWait:${esc(k)}', this.open ? '1' : '0')}catch(e){}"><summary class="grp"><span class="arr">▸</span> ${title} (${items.length})</summary>${items.join('')}</details>`; };
+  const waitHtml = order.map(o => fold(o, `Waiting on ${esc(o === 'Client' ? 'the client' : o)}`,
+      groups[o].map(c => todoItem(esc(o), o === 'Client' ? 'v' : o === 'Jordan' ? 'g' : 'a', caseTitle(c), caseSub(c, esc(stageText(c))) + chaseLine(c), open(c), '', c.todo_key)))).join('')
+    + (waiting.length ? fold('reports', 'Waiting on service reports', waiting) : '');
   el.innerHTML = (urgent.length ? '<div class="grp">Now</div>' + urgent.join('') : '')
-    + '<div class="grp">To do</div>' + (todo.join('') + q.todos.map(todoRow).join('') || '<div class="empty">Nothing to do. 🎉</div>')
+    + `<div class="grp">You · ${q.open_count} open jobs</div>` + (todo.join('') + q.todos.map(todoRow).join('') || '<div class="empty">Nothing to do. 🎉</div>')
     + `<div class="row" style="cursor:default;align-items:flex-start"><textarea id="todoNew" rows="2" placeholder="Explain what you need to do, in your own words - the app writes the to-do for you…" style="flex:1;min-width:0;font:inherit;resize:vertical" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();todoWrite()}"></textarea><button class="btn s p" id="todoWriteBtn" onclick="todoWrite()">✨ Write to-do</button></div>`
-    + `<details ${wasOpen ? 'open' : ''} ontoggle="try{localStorage.setItem('pumpsWaitingOpen', this.open ? '1' : '0')}catch(e){}"><summary class="grp"><span class="arr">▸</span> Waiting on others (${waiting.length})</summary>${waiting.join('') || '<div class="empty">Nothing waiting.</div>'}</details>`;
+    + waitHtml;
 }
 function setCount(id, n, hot){ const el = document.getElementById(id); el.textContent = n || ''; el.classList.toggle('hot', !!hot); el.style.display = n ? '' : 'none'; }
 let searchTimer = null;
@@ -2550,9 +2585,9 @@ async function setUrgent(id, on){
 }
 async function loadJobs(){
   loadMaintSchedule();
-  const show = document.getElementById('jbShow').value, st = show === 'waiting' ? 'open' : show, q = document.getElementById('jbSearch').value.trim();
+  const show = document.getElementById('jbShow').value, st = show === 'waiting' ? 'open' : show, q = '';   // one search, in the top bar
   const [j, ji] = await Promise.all([api('/cases?status=' + st + (q ? '&q=' + encodeURIComponent(q) : '')), api('/jobber/items?sync_only=1')]);
-  if (!j.success) { document.getElementById('jobsBody').innerHTML = `<tr><td colspan="9" class="empty">${esc(j.error)}</td></tr>`; return; }
+  if (!j.success) { document.getElementById('jobsBody').innerHTML = `<tr><td colspan="4" class="empty">${esc(j.error)}</td></tr>`; return; }
   const ref = r => r ? (r.uri ? `<a href="${esc(r.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">#${esc(r.number || '')} ↗</a>` : (r.number ? '#' + esc(r.number) : '')) : '';
   // Quotes wait at the bottom under "Quotes - not urgent" unless marked urgent (Oct 2026).
   const isQuote = c => c.status === 'open' && QUOTE_STAGES.includes(c.stage);
@@ -2561,12 +2596,8 @@ async function loadJobs(){
   const row = c => { const jb = c.jobber || {}, vp = c.vendor_pay || {};
     return `<tr class="click" onclick="openCase(${c.id})">
     <td><div class="acct">${esc(c.account_name || c.client_name || '')}</div>${jobOnly(c) ? `<div class="jobt" title="${esc(c.title || c.client_name)}">${esc(jobOnly(c))}</div>` : ''}${c.site ? `<div class="acct-addr">${esc(c.site)}</div>` : ''}${c.po_number || jobberNo(c) ? `<div class="note">${(c.po_number ? 'PO ' + esc(c.po_number) : '') + (c.po_number ? jobberNo(c) : jobberNo(c).replace(/^ · /, ''))}</div>` : ''}</td>
-    <td>${c.urgent && isQuote(c) ? '<span class="chip r">urgent</span> ' : ''}${stageChip(c)}${statusLine(c) ? `<div class="note">${statusLine(c)}</div>` : ''}${c.status === 'open' ? lastAction(c) : ''}</td>
-    <td>${esc(c.vendor)}</td><td>${numAmt(c.vendor_quote_number, c.vendor_quote_amount ?? c.vendor_quote_total)}</td>
-    <td>${ref(jb.quote)}${jb.quote && jb.quote.total != null ? ' <b>' + money(jb.quote.total) + '</b>' : ''}${jb.quote && jb.quote.status ? ` <span class="note">${esc(jb.quote.status.replace(/_/g, ' '))}</span>` : ''}</td>
-    <td>${numAmt(c.vendor_bill_number, c.vendor_bill_amount ?? c.vendor_bill_total)}</td>
-    <td>${ref(jb.invoice) || (c.sei_invoice_number ? '#' + esc(c.sei_invoice_number) : '')}${(jb.invoice || c.sei_invoice_number) && ((jb.invoice || {}).total ?? c.amount) != null ? ' <b>' + money((jb.invoice || {}).total ?? c.amount) + '</b>' : ''}${jb.invoice && jb.invoice.status ? ` <span class="note">${esc(jb.invoice.status.replace(/_/g, ' '))}</span>` : ''}</td>
-    <td>${vp.state === 'paid' ? '<span class="chip g">paid</span>' : vp.state === 'due' ? '<span class="chip r">pay now</span>' : vp.state === 'unpaid' ? '<span class="note">not yet</span>' : ''}</td>
+    <td>${stepDots(c)}</td>
+    <td>${c.urgent && isQuote(c) ? '<span class="chip r">urgent</span> ' : ''}${c.status === 'open' ? ownerChip(c) : ''}${stageChip(c)}${statusLine(c) ? `<div class="note">${statusLine(c)}</div>` : ''}${c.status === 'open' ? lastAction(c) : ''}</td>
     <td style="white-space:nowrap">${isQuote(c) ? (c.urgent ? `<button class="btn s" title="Back to Quotes - not urgent" onclick="event.stopPropagation();setUrgent(${c.id}, false)">⬇ Not urgent</button> ` : `<button class="btn s" title="Move it up with the jobs" onclick="event.stopPropagation();setUrgent(${c.id}, true)">⬆ Urgent</button> `) : ''}${jb.job && jb.job.uri ? `<a class="btn s" href="${esc(jb.job.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ↗</a> ` : ''}${c.status === 'open' && c.stage === 'client_approved' ? `<button class="btn s p" title="Email the client a follow-up on our quote" onclick="event.stopPropagation();clientEmail(${c.id})">✉ Follow up</button> ` : ''}${c.status === 'open' ? `<button class="btn s" title="Mark done" onclick="event.stopPropagation();caseDone(${c.id})">✓ Done</button> <button class="btn s" title="Remove" onclick="event.stopPropagation();caseRemove(${c.id})">✕</button>` : `<button class="btn s" onclick="event.stopPropagation();caseReopen(${c.id})">↺ Reopen</button>`}</td></tr>`; };
   // A-Z by Jobber account; an account with several jobs gets its name as a heading over them.
   const acct = c => c.account_name || c.client_name || c.title || '', jobName = c => c.short_title || c.title || c.client_name || '';
@@ -2576,11 +2607,11 @@ async function loadJobs(){
     [...list].sort((a, b) => sortKey(a).localeCompare(sortKey(b), undefined, {sensitivity:'base'}) || jobName(a).localeCompare(jobName(b), undefined, {sensitivity:'base'}))
       .forEach(c => { const k = acct(c).toLowerCase(); if (!g.has(k)) g.set(k, []); g.get(k).push(c); });
     // An account's jobs sit under its heading with a bar down the left, so a job after them doesn't look like one of them.
-    return [...g.values()].map(cs => cs.length > 1 ? `<tr><td colspan="9" style="background:var(--bg);font-weight:700;padding-top:10px;border-left:4px solid var(--border-2)">${esc(acct(cs[0]))} <span class="chip">${cs.length} jobs</span></td></tr>`
+    return [...g.values()].map(cs => cs.length > 1 ? `<tr><td colspan="4" style="background:var(--bg);font-weight:700;padding-top:10px;border-left:4px solid var(--border-2)">${esc(acct(cs[0]))} <span class="chip">${cs.length} jobs</span></td></tr>`
       + cs.map(c => row(c).replace('<td>', '<td style="border-left:4px solid var(--border-2);padding-left:14px">')).join('') : row(cs[0])).join(''); };
   // Folding "Quotes - not urgent" redraws from what's loaded - no reload.
-  (window._jobsRender = () => document.getElementById('jobsBody').innerHTML = (grouped(main) || '<tr><td colspan="9" class="empty">No jobs.</td></tr>')
-    + (quiet.length ? `<tr class="click" onclick="foldSave('qq', !foldOpen('qq'));window._jobsRender()"><td colspan="9" style="background:var(--bg);font-weight:700;padding-top:14px">${foldOpen('qq') ? '▾' : '▸'} Quotes - not urgent (${quiet.length}) <span class="note" style="font-weight:400">· click to ${foldOpen('qq') ? 'fold away' : 'show'} · ⬆ Urgent moves one up with the jobs</span></td></tr>` + (foldOpen('qq') ? grouped(quiet) : '') : ''))();
+  (window._jobsRender = () => document.getElementById('jobsBody').innerHTML = (grouped(main) || '<tr><td colspan="4" class="empty">No jobs.</td></tr>')
+    + (quiet.length ? `<tr class="click" onclick="foldSave('qq', !foldOpen('qq'));window._jobsRender()"><td colspan="4" style="background:var(--bg);font-weight:700;padding-top:14px">${foldOpen('qq') ? '▾' : '▸'} Quotes - not urgent (${quiet.length}) <span class="note" style="font-weight:400">· click to ${foldOpen('qq') ? 'fold away' : 'show'} · ⬆ Urgent moves one up with the jobs</span></td></tr>` + (foldOpen('qq') ? grouped(quiet) : '') : ''))();
   syncInfo(ji.sync || {});
 }
 // While Jobber syncs, check only the sync (light) every 5 sec, and reload the jobs once it's done.
@@ -2897,13 +2928,17 @@ function openModal(title, body, foot){ document.getElementById('modal').innerHTM
 function closeModal(){ document.getElementById('modalWrap').classList.add('hide'); }
 document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (!document.getElementById('modalWrap').classList.contains('hide')) closeModal(); else if (!document.getElementById('drawerWrap').classList.contains('hide')) closeDrawer(); } });
 
+// Files dropped anywhere on the page are uploaded (the app works out what they are).
+document.addEventListener('dragover', e => { if ([...(e.dataTransfer || {}).types || []].includes('Files') && document.getElementById('modalWrap').classList.contains('hide')) e.preventDefault(); });
+document.addEventListener('drop', e => { const f = (e.dataTransfer || {}).files; if (f && f.length && document.getElementById('modalWrap').classList.contains('hide')) { e.preventDefault(); document.getElementById('uploadKind').value = ''; uploadFiles(f); } });
 // ── start ─────────────────────────────────────────────
 (function(){
   const h = location.hash.slice(1);
   if (h.startsWith('item-')) { loadToday(); loadJobs(); openCase(parseInt(h.slice(5))); }
   else if (h.startsWith('doc-')) { loadToday(); loadJobs(); openDoc(parseInt(h.slice(4))); }
-  if (['jobs','scada','accounts','reports','bills'].includes(h)) showTab(h); else if (!h.startsWith('item-') && !h.startsWith('doc-')) showTab('jobs');
-  if (!h || ['jobs','scada','accounts','reports','bills'].includes(h)) loadToday();
+  const TABS = ['today','jobs','scada','accounts','reports','bills','vquotes','vinvoices'];
+  if (TABS.includes(h)) showTab(h); else if (!h.startsWith('item-') && !h.startsWith('doc-')) showTab('today');
+  if (h && h !== 'today' && TABS.includes(h)) loadToday();   // the Today count shows on every tab
   setInterval(() => { if (document.getElementById('drawerWrap').classList.contains('hide') && document.getElementById('modalWrap').classList.contains('hide')) { loadToday(); if (curTab === 'jobs') loadJobs(); } }, 60000);
 })();
 </script>
