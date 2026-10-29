@@ -149,6 +149,10 @@ ALLOWED_MUTATIONS = frozenset({'quoteCreate', 'invoiceCreate', 'jobCreateNote', 
                                # Marking the recurring maintenance job's visit for the bill's month complete,
                                # right before its draft invoice is made (Oct 2026). Only complete_visit_for_bill() uses it.
                                'visitComplete', 'visitMarkComplete', 'completeVisit'})
+# Deleting a closed job's billing reminder ("Job was completed ... but not invoiced"), when someone clicks Close
+# job on a job our invoice covers (Oct 2026). Jobber's name for it is looked up at run time; only names like these.
+# Only clear_job_reminders() uses it.
+REMINDER_MUTATION = re.compile(r'^\w*[Rr]eminders?(Delete|Destroy|Remove|Dismiss|Complete)\w*$')
 
 # What counts as pump work when searching Jobber, by category.
 JOBBER_TERMS = {
@@ -4055,7 +4059,7 @@ def check_mutation_allowed(query):
     if not _human_clicked():
         raise JobberError('Not done by itself - the app only changes Jobber when you click its button')
     fields = _mutation_fields(query)
-    bad = [f for f in fields if f not in ALLOWED_MUTATIONS]
+    bad = [f for f in fields if f not in ALLOWED_MUTATIONS and not REMINDER_MUTATION.match(f)]
     if not fields or bad:
             raise JobberError(f"Blocked Jobber mutation {bad or '(unreadable)'}: "
                           'Pumps only creates draft quotes, draft invoices, notes, jobs from approved quotes '
@@ -13713,7 +13717,7 @@ def try_mutation(candidates, values, want=None, prefer=None):
     _MUTATION_WHY.clear()
     for name in candidates:
         f = schema.get(name)
-        if not f or name not in ALLOWED_MUTATIONS:
+        if not f or (name not in ALLOWED_MUTATIONS and not REMINDER_MUTATION.match(name)):
             continue
         args, decls, ok = {}, [], True
         for a in f.get('args') or []:
@@ -14863,6 +14867,8 @@ def jobs_to_close():
         job, inv = j.get('job') or {}, j.get('invoice') or {}
         if (inv.get('status') or '') not in INVOICE_OUT:
             continue
+        if c.get('category') == 'diver' or re.search(r'gulfshore', c.get('vendor') or '', re.I):
+            continue   # Gulfshore rides the client's pump invoice - its job is someone else's work (Ana's Place #14622)
         if not job.get('id') and inv.get('id'):
             # Only the invoice is linked (Ana's Place, Oct 29 2026: billed the Gulfshore way): its job from Jobber.
             job = _invoice_job(inv['id']) or {}
@@ -14874,7 +14880,7 @@ def jobs_to_close():
     added = []
     for jid, it in want.items():
         try:
-            n = (jobber_gql('query($id: EncodedId!) { job(id: $id) { jobNumber jobStatus jobType jobberWebUri } }',
+            n = (jobber_gql('query($id: EncodedId!) { job(id: $id) { jobNumber jobStatus jobType jobberWebUri total } }',
                             {'id': jid}).get('job')) or {}
         except JobberError as e:
             if not _GONE.search(str(e)):
@@ -14884,7 +14890,11 @@ def jobs_to_close():
         conn = _conn()
         try:
             key = f'close-job:{jid}'
-            if st in JOB_DONE_STATUSES or kind == 'recurring' or not it:
+            # The invoice must cover the job: a job worth more than what's invoiced still has work to bill (Ana's
+            # Place #14622, Oct 29 2026: the $756.25 bladder tank, with only Gulfshore's $125 invoiced on it).
+            short = bool(it) and _money(n.get('total')) is not None and _money((it[2] or {}).get('total')) is not None \
+                and _money(n.get('total')) > _money(it[2].get('total')) + 0.5
+            if st in JOB_DONE_STATUSES or kind == 'recurring' or not it or short:
                 conn.execute('UPDATE pump_todos SET done_at=?, done_by=? WHERE key=? AND done_at IS NULL',
                              (_now_text(), 'Jobber sync', key))
             else:
@@ -14901,6 +14911,38 @@ def jobs_to_close():
         finally:
             conn.close()
     return added
+
+
+def clear_job_reminders(job_id):
+    """Delete a closed job's billing reminders in Jobber (the office, Oct 29 2026: "it should also delete the
+    reminder so it goes away"). Jobber's names for them are found in its schema. Returns (cleared, why_not)."""
+    job_t = _type_fields('Job').get('fields') or []
+    field = next((f['name'] for f in job_t if re.search(r'reminder', f['name'], re.I)), None)
+    names = sorted((n for n in _mutation_schema() if REMINDER_MUTATION.match(n)),
+                   key=lambda n: (not re.search(r'delete|destroy|remove', n, re.I), n))
+    if not field or not names:
+        return 0, "Jobber's API has no way to clear job reminders"
+    try:
+        data = jobber_gql('query($id: EncodedId!) { job(id: $id) { ' + field + ' { nodes { id } } } }', {'id': job_id})
+        nodes = ((data.get('job') or {}).get(field) or {}).get('nodes') or []
+    except JobberError:
+        try:
+            data = jobber_gql('query($id: EncodedId!) { job(id: $id) { ' + field + ' { id } } }', {'id': job_id})
+            nodes = (data.get('job') or {}).get(field) or []
+        except JobberError as e:
+            return 0, f"couldn't read the job's reminders ({e})"
+    cleared = 0
+    for r in nodes:
+        rid = (r or {}).get('id')
+        if not rid:
+            continue
+        try:
+            if try_mutation(tuple(names), {'id': rid, 'reminderId': rid, 'billingReminderId': rid,
+                                           'invoiceReminderId': rid, 'jobId': job_id}) is not None:
+                cleared += 1
+        except JobberError as e:
+            return cleared, f"Jobber kept a reminder ({e})"
+    return cleared, ''
 
 
 def close_jobber_job(job_id, actor):
@@ -14925,7 +14967,11 @@ def close_jobber_job(job_id, actor):
         conn.commit()
     finally:
         conn.close()
-    return res.get('job') or {}
+    try:   # never holds up the close
+        cleared, why = clear_job_reminders(job_id)
+    except Exception as e:
+        cleared, why = 0, f"couldn't clear the job's reminders ({e})"
+    return {**(res.get('job') or {}), 'reminders_cleared': cleared, 'reminders_note': why}
 
 
 @api('/jobber/jobs/close', methods=('POST',))

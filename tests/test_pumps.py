@@ -3463,16 +3463,23 @@ class PumpsTest(unittest.TestCase):
             aid = P.create_case(conn, {'title': 'Pump service', 'client_name': 'Annas Closeout'}, 'test')
             conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(
                 {'invoice': {'id': 'IANA', 'number': '37097', 'status': 'awaiting_payment'}}), aid))
+            # Ana's Place #14622 (Oct 29 2026): $125 invoiced on a $756.25 job - work still to bill, no close.
+            bid = P.create_case(conn, {'title': 'Bladder tank', 'client_name': 'Big Job Lakes'}, 'test')
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(
+                {'job': {'id': 'JBIG', 'number': '14622'}, 'invoice': {'id': 'IBIG', 'number': '37097', 'status': 'awaiting_payment',
+                                                                     'total': 125}}), bid))
             conn.commit()
         finally:
             conn.close()
-        status = {'JC1': ('REQUIRES_INVOICING', 'ONE_OFF'), 'JR1': ('ACTIVE', 'RECURRING'), 'JANA': ('REQUIRES_INVOICING', 'ONE_OFF')}
+        status = {'JC1': ('REQUIRES_INVOICING', 'ONE_OFF'), 'JR1': ('ACTIVE', 'RECURRING'), 'JANA': ('REQUIRES_INVOICING', 'ONE_OFF'),
+                  'JBIG': ('REQUIRES_INVOICING', 'ONE_OFF')}
         saved = (P.jobber_gql, P.try_mutation)
         st = lambda i: status.get(i, ('ARCHIVED', 'ONE_OFF'))   # other tests' jobs: closed already
         P.jobber_gql = lambda q, v=None: ({'invoice': {'id': v['id'], 'jobs': {'nodes': [{'id': 'JANA', 'jobNumber': 14622}]}}}
                                           if 'invoice(id' in q else
                                           {'job': {'jobNumber': v['id'], 'jobStatus': st(v['id'])[0],
-                                                   'jobType': st(v['id'])[1], 'jobberWebUri': 'u'}})
+                                                   'jobType': st(v['id'])[1], 'jobberWebUri': 'u',
+                                                   'total': 756.25 if v['id'] == 'JBIG' else None}})
         closed = []
         P.try_mutation = lambda names, vals, want=None, prefer=None: closed.append(vals['jobId']) or {'mutation': names[0], 'job': {'jobNumber': 'JC1'}}
         try:
@@ -3481,6 +3488,7 @@ class PumpsTest(unittest.TestCase):
             self.assertIn('close-job:JC1', keys())
             self.assertNotIn('close-job:JR1', keys(), 'a recurring job stays open')
             self.assertIn('close-job:JANA', keys(), "the invoice's job, found from the invoice")
+            self.assertNotIn('close-job:JBIG', keys(), 'the job is worth more than what is invoiced')
             r = self.c.post('/pumps/api/jobber/jobs/close', json={'job_id': 'JC1'}).get_json()
             self.assertTrue(r['success'], r)
             self.assertEqual(closed, ['JC1'])
@@ -3504,20 +3512,29 @@ class PumpsTest(unittest.TestCase):
         self.addCleanup(setattr, P, '_SCHEMA_CACHE', {})
         nn = lambda kind, name: {'kind': 'NON_NULL', 'ofType': {'kind': kind, 'name': name}}
         enum = ['COMPLETE_PAST_DESTROY_FUTURE', 'DESTROY_ALL', 'COMPLETE_ALL']
-        sent = []
+        sent, deleted = [], []
 
         def fake(q, v=None):
             P.check_mutation_allowed(q)
             if 'mutationType' in q:
                 return {'__schema': {'mutationType': {'fields': [{'name': 'jobClose', 'type': {'kind': 'OBJECT', 'name': 'JobClosePayload'},
-                        'args': [{'name': 'jobId', 'type': nn('SCALAR', 'EncodedId')}, {'name': 'input', 'type': nn('INPUT_OBJECT', 'JobCloseInput')}]}]}}}
+                        'args': [{'name': 'jobId', 'type': nn('SCALAR', 'EncodedId')}, {'name': 'input', 'type': nn('INPUT_OBJECT', 'JobCloseInput')}]},
+                        {'name': 'billingReminderDelete', 'type': {'kind': 'OBJECT', 'name': 'ReminderPayload'},
+                         'args': [{'name': 'id', 'type': nn('SCALAR', 'EncodedId')}]}]}}}
             if 'enumValues' in q:
                 return {'__type': {'kind': 'ENUM', 'enumValues': [{'name': x} for x in enum]}}
             if '__type' in q:
                 return {'__type': {'JobCloseInput': {'name': 'JobCloseInput', 'inputFields': [
                             {'name': 'modifyIncompleteVisitsBy', 'type': nn('ENUM', 'JobCloseModifyIncompleteVisitsByEnum')}]},
                         'JobClosePayload': {'name': 'JobClosePayload', 'fields': [{'name': 'job', 'type': {}}, {'name': 'userErrors', 'type': {}}]},
-                        'JobCloseModifyIncompleteVisitsByEnum': {'name': 'JobCloseModifyIncompleteVisitsByEnum'}}.get(v['n'], {})}
+                        'JobCloseModifyIncompleteVisitsByEnum': {'name': 'JobCloseModifyIncompleteVisitsByEnum'},
+                        'Job': {'name': 'Job', 'fields': [{'name': 'jobNumber', 'type': {}}, {'name': 'billingReminders', 'type': {}}]},
+                        'ReminderPayload': {'name': 'ReminderPayload', 'fields': [{'name': 'userErrors', 'type': {}}]}}.get(v['n'], {})}
+            if 'billingReminders' in q:
+                return {'job': {'billingReminders': {'nodes': [{'id': 'R1'}]}}}
+            if 'billingReminderDelete' in q:
+                deleted.append(v)
+                return {'billingReminderDelete': {'userErrors': []}}
             sent.append(v)
             return {'jobClose': {'job': {'id': 'JANA', 'jobNumber': 14622, 'jobStatus': 'archived'}, 'userErrors': []}}
         saved = P.jobber_gql
@@ -3526,6 +3543,8 @@ class PumpsTest(unittest.TestCase):
             job = P.close_jobber_job('JANA', 'Simon')
             self.assertEqual(job['jobNumber'], 14622)
             self.assertEqual(sent[-1], {'jobId': 'JANA', 'input': {'modifyIncompleteVisitsBy': 'COMPLETE_PAST_DESTROY_FUTURE'}})
+            # Its "completed but not invoiced" billing reminder is deleted too.
+            self.assertEqual((job['reminders_cleared'], deleted), (1, [{'id': 'R1'}]))
             # A choice it can't answer: the message says what Jobber needs.
             enum[:] = ['SOMETHING_ELSE']
             P._SCHEMA_CACHE = {}

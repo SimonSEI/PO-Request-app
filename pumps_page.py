@@ -1653,7 +1653,9 @@ async function closeJobberJob(id, btn){
   const j = await api('/jobber/jobs/close', {method:'POST', body:{job_id: id}});
   if (btn) { btn.disabled = false; btn.textContent = 'Close job in Jobber'; }
   if (!j.success) { toast(j.error, true); return; }
-  toast('Closed in Jobber'); loadToday();
+  const jb = j.job || {};
+  toast('Closed in Jobber' + (jb.reminders_cleared ? ` · billing reminder deleted` : jb.reminders_note ? ` · reminder not deleted: ${jb.reminders_note} - delete it on the job in Jobber` : ''), !jb.reminders_cleared && !!jb.reminders_note);
+  loadToday();
 }
 // A SCADA renewal's quote: drafted in Jobber only when someone clicks it (never by itself).
 async function draftScadaQuote(id, btn){
