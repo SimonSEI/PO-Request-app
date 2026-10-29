@@ -16886,6 +16886,8 @@ def init_pumps(app, csrf, db_path, *, data_dir, secret_key, website_url, email_e
                           id='pumps_jobber_sync', next_run_time=datetime.now() + timedelta(minutes=2))
             sched.add_job(_safe(check_quote_approvals), 'interval', minutes=QUOTE_CHECK_EVERY_MIN,
                           id='pumps_quote_check', next_run_time=datetime.now() + timedelta(minutes=1))
+            sched.add_job(_safe(check_sent_invoices), 'interval', minutes=QUOTE_CHECK_EVERY_MIN,
+                          id='pumps_invoice_check', next_run_time=datetime.now() + timedelta(minutes=1, seconds=30))
             sched.add_job(_safe(_scheduled_hourly), 'interval', hours=1, id='pumps_hourly',
                           next_run_time=datetime.now() + timedelta(minutes=3))
             sched.start()
@@ -16896,6 +16898,53 @@ def init_pumps(app, csrf, db_path, *, data_dir, secret_key, website_url, email_e
 
 
 QUOTE_CHECK_EVERY_MIN = max(2, int(os.environ.get('PUMPS_QUOTE_CHECK_MINUTES', '5') or 5))
+
+
+def check_sent_invoices(actor='Jobber sync'):
+    """Our draft invoices read straight from Jobber every few minutes, apart from the full sync (Banyan Bay, Oct 29
+    2026: invoices #37111 and #37117 sent, and no "Close job" until the 15-minute sync). Once one is sent, the job
+    moves on and its close-out to-do comes now. Only reads Jobber. Returns the items whose invoice went out."""
+    if not jobber_status()['connected']:
+        return []
+    since = (_today() - timedelta(days=21)).isoformat()
+    conn = _conn()
+    try:
+        drafts = []
+        for r in conn.execute("SELECT id, jobber FROM pump_cases WHERE status != 'cancelled' AND jobber LIKE '%\"invoice\"%' "
+                              "AND COALESCE(updated_at, '') >= ?", (since,)).fetchall():
+            inv = json.loads(r['jobber'] or '{}').get('invoice') or {}
+            if inv.get('id') and (inv.get('status') or 'draft') == 'draft':
+                drafts.append((r['id'], inv))
+    finally:
+        conn.close()
+    sent = []
+    for cid, inv in drafts:
+        try:
+            n = jobber_gql('query($id: EncodedId!) { invoice(id: $id) { id invoiceStatus amounts { total } } }',
+                           {'id': inv['id']}).get('invoice') or {}
+        except JobberError:
+            continue
+        st = (n.get('invoiceStatus') or '').lower()
+        if not st or st == 'draft':
+            continue
+        total = _money((n.get('amounts') or {}).get('total'))
+        conn = _conn()
+        try:
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, status, total, case_id, synced_at) "
+                         "VALUES (?,?,?,?,?,?,?) ON CONFLICT(jobber_id) DO UPDATE SET status=excluded.status, "
+                         "total=COALESCE(excluded.total, pump_jobber_items.total), synced_at=excluded.synced_at",
+                         (inv['id'], 'invoice', inv.get('number') or '', st, total, cid, _now_text()))
+            _follow_invoices(conn)
+            conn.commit()
+        finally:
+            conn.close()
+        sent.append(cid)
+    if sent:
+        try:
+            jobs_to_close()
+        except Exception as e:
+            print(f'  ⚠ Pumps: jobs to close: {e}')
+    return sent
 
 
 def check_quote_approvals(actor='Jobber sync'):
