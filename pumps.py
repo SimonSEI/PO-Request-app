@@ -7718,9 +7718,15 @@ def vendor_chase(case, today=None):
     since = date.fromisoformat(last) if last else _phase_since(case)
     # Approved: the vendor orders the parts, and gives a date once they are in -
     # the job waits on the parts, not on scheduling (Oct 2026).
-    parts_wait = case['stage'] == 'scheduled' and vendor != IN_HOUSE
+    # A service call has no quote and no parts to order: it just waits for the vendor's date (Oct 29 2026).
+    service_call = (((case.get('steps') or {}).get('vendor_quote') or {}).get('na') and
+                    ((case.get('steps') or {}).get('client_quote') or {}).get('na'))
+    parts_wait = case['stage'] == 'scheduled' and vendor != IN_HOUSE and not service_call
     parts = (case.get('parts_lead') or '') if parts_wait else ''
     approved = _iso_date(((case.get('steps') or {}).get('client_approved') or {}).get('at')) or since.isoformat()
+    if service_call and case['stage'] == 'scheduled' and not last:
+        # Booked with the vendor when the call was made: they've been asked - wait for their date.
+        last, since = approved, date.fromisoformat(approved)
     if _iso_date(f.get('check_on')):
         check = date.fromisoformat(f['check_on'])
     elif expect:
@@ -10629,7 +10635,8 @@ _SERVICE_CALL = re.compile(r'\bservice\s*call\b', re.I)
 
 def service_call_steps(conn, cid, it, actor):
     """A service call is the start of the work, not a quote (Woodmere #14592, Oct
-    2026): no quote steps, approved when it was booked, scheduled for its day."""
+    2026): no quote steps, approved when it was booked. Not scheduled: the Jobber
+    visit date isn't the vendor's - it waits for them to give a date (Oct 29 2026)."""
     steps = json.loads(conn.execute('SELECT steps FROM pump_cases WHERE id=?', (cid,)).fetchone()[0] or '{}')
     for k in ('assessment', 'vendor_quote', 'client_quote'):
         if not (steps.get(k) or {}).get('at'):
@@ -10637,11 +10644,6 @@ def service_call_steps(conn, cid, it, actor):
     booked = (it.get('created_at') or '')[:10] or _today().isoformat()
     if not (steps.get('client_approved') or {}).get('at'):
         _set_step(conn, cid, 'client_approved', at=booked, by=actor)
-    if not (steps.get('scheduled') or {}).get('at'):
-        _set_step(conn, cid, 'scheduled', at=(it.get('start_at') or '')[:10] or booked, by=actor)
-    if it.get('start_at'):
-        conn.execute("UPDATE pump_cases SET scheduled_for=? WHERE id=? AND COALESCE(scheduled_for, '')=''",
-                     (it['start_at'][:10], cid))
     _event(conn, actor, 'service call', f"Jobber job #{it.get('number') or ''} {it.get('title') or ''} - the start of "
                                         'the work, no quote', case_id=cid)
 
@@ -12424,6 +12426,31 @@ def _undo_rosewood_14647_done(c, now):
                    '- Work done unticked', r['id']))
 
 
+def _unschedule_service_calls(c, now):
+    """Once (Oct 29 2026): service calls were ticked "Scheduled with Wettech" from the Jobber visit date when
+    they were booked. Open ones not done yet go back to waiting for the vendor's date - unless a date was
+    really given (a status update or the vendor's reply)."""
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('unschedule_service_calls', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    for r in c.execute("SELECT * FROM pump_cases WHERE status='open' AND id IN "
+                       "(SELECT case_id FROM pump_events WHERE action='service call')").fetchall():
+        steps = json.loads(r['steps'] or '{}')
+        if not (steps.get('scheduled') or {}).get('at') or (steps.get('work_done') or {}).get('at'):
+            continue
+        if json.loads((r['job_status'] if 'job_status' in r.keys() else '') or '{}').get('kind') in ('scheduled', 'in_progress', 'parts_ordered'):
+            continue
+        if c.execute("SELECT 1 FROM pump_events WHERE case_id=? AND action IN ('followed up with the vendor', "
+                     "'status update', 'vendor replied')", (r['id'],)).fetchone():
+            continue
+        steps.pop('scheduled', None)
+        c.execute("UPDATE pump_cases SET steps=?, scheduled_for='', updated_at=? WHERE id=?", (json.dumps(steps), now, r['id']))
+        _refresh_case(c, r['id'])
+        c.execute('INSERT INTO pump_events (at, actor, action, detail, case_id) VALUES (?,?,?,?,?)',
+                  (now, 'Pumps', 'not scheduled yet', 'The Jobber visit date was taken as the vendor\'s - '
+                   'waiting for them to schedule it', r['id']))
+
+
 def _apply_wild_blue_oct28(c, now):
     """Once (Oct 28 2026, the office's updated sheet): Wild Blue is 1 pump 2 filters, JAN/APR/JULY/OCT,
     $250, included with pump maintenance (Wettech - still no diver)."""
@@ -12886,6 +12913,7 @@ def init_account_tables(c):
     _apply_wild_blue_oct28(c, now)
     _remind_banyan_bladder(c, now)
     _undo_rosewood_14647_done(c, now)
+    _unschedule_service_calls(c, now)
     _apply_report_only(c, now)
     _undo_watercrest_mismatch(c, now)
     _fix_quote_needed_dates(c, now)
