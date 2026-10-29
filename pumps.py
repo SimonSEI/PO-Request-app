@@ -13644,13 +13644,29 @@ def _type_fields(name):
     return _SCHEMA_CACHE[key]
 
 
-def try_mutation(candidates, values, want=None):
+_MUTATION_WHY = []   # why try_mutation found nothing it could run (for the message to the office)
+
+
+def _pick_enum(tname, prefer):
+    """A required choice Pumps wasn't given: the first of the type's values matching the preferred patterns."""
+    vals = _enum_values(tname) if prefer else []
+    for pat in prefer or ():
+        hit = next((v for v in vals if re.search(pat, v, re.I)), None)
+        if hit:
+            return hit
+    return None
+
+
+def try_mutation(candidates, values, want=None, prefer=None):
     """Run the first of the candidate mutations Jobber has, filling its
     arguments (and its input object's fields) from values by name. Returns
     the payload, or None when none exists or a required field is unknown.
+    prefer: patterns to choose a required option (an enum) nobody named -
+    e.g. what closing a job does with its unfinished visits.
     Raises JobberError when Jobber refuses it."""
     values = {k: v for k, v in values.items() if v not in (None, '')}
     schema = _mutation_schema()
+    _MUTATION_WHY.clear()
     for name in candidates:
         f = schema.get(name)
         if not f or name not in ALLOWED_MUTATIONS:
@@ -13663,16 +13679,26 @@ def try_mutation(candidates, values, want=None):
             else:
                 inner = _type_fields(tname).get('inputFields') if tname else None
                 if inner is None:
-                    if nn:
+                    pick = _pick_enum(tname, prefer) if nn else None
+                    if pick:
+                        args[a['name']] = pick
+                    elif nn:
                         ok = False
+                        _MUTATION_WHY.append(f"{name} needs {a['name']}")
                     continue
                 obj = {}
                 for fld in inner:
-                    fnn = _type_ref(fld['type'])[0]
+                    fnn, _, ftype = _type_ref(fld['type'])
                     if fld['name'] in values:
                         obj[fld['name']] = values[fld['name']]
                     elif fnn:
-                        ok = False
+                        pick = _pick_enum(ftype, prefer)
+                        if pick:
+                            obj[fld['name']] = pick
+                        else:
+                            ok = False
+                            _MUTATION_WHY.append(f"{name} needs {fld['name']}"
+                                                 + (f" ({', '.join(_enum_values(ftype)[:6])})" if _enum_values(ftype) else ''))
                 if not obj and not nn:
                     continue
                 args[a['name']] = obj
@@ -14835,9 +14861,15 @@ def jobs_to_close():
 
 def close_jobber_job(job_id, actor):
     """Close a job in Jobber - when someone clicks Close job on its to-do."""
-    res = try_mutation(('jobClose', 'closeJob'), {'jobId': job_id, 'id': job_id}, want={'job': 'id jobNumber jobStatus'})
+    # Closing asks what to do with visits not done: complete the past ones, remove future ones (Ana's Place
+    # #14622, Oct 29 2026: the button failed because nothing answered that).
+    res = try_mutation(('jobClose', 'closeJob'), {'jobId': job_id, 'id': job_id}, want={'job': 'id jobNumber jobStatus'},
+                       prefer=(r'complete.*past.*(destroy|remove|delete).*future', r'complete.*past', r'(destroy|remove|delete)',
+                               r'complete'))
     if res is None:
-        raise ValueError("Jobber's API won't close jobs from here - close it in Jobber (Open the job in Jobber)")
+        why = '; '.join(_MUTATION_WHY)
+        raise ValueError("Jobber's API won't close jobs from here" + (f" ({why})" if why else '') +
+                         " - close it in Jobber (Open the job in Jobber)")
     conn = _conn()
     try:
         conn.execute("UPDATE pump_jobber_items SET status='archived', synced_at=? WHERE jobber_id=?", (_now_text(), job_id))

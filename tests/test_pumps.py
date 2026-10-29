@@ -3496,6 +3496,45 @@ class PumpsTest(unittest.TestCase):
         finally:
             P.jobber_gql, P.try_mutation = saved
 
+    def test_close_job_answers_what_to_do_with_unfinished_visits(self):
+        """Oct 29 2026 (Ana's Place #14622): Close job in Jobber failed - jobClose needs a choice for unfinished visits
+        that nothing gave. It picks completing past visits / removing future ones; else it says what Jobber needs."""
+        self.as_if_clicked()
+        P._SCHEMA_CACHE = {}
+        self.addCleanup(setattr, P, '_SCHEMA_CACHE', {})
+        nn = lambda kind, name: {'kind': 'NON_NULL', 'ofType': {'kind': kind, 'name': name}}
+        enum = ['COMPLETE_PAST_DESTROY_FUTURE', 'DESTROY_ALL', 'COMPLETE_ALL']
+        sent = []
+
+        def fake(q, v=None):
+            P.check_mutation_allowed(q)
+            if 'mutationType' in q:
+                return {'__schema': {'mutationType': {'fields': [{'name': 'jobClose', 'type': {'kind': 'OBJECT', 'name': 'JobClosePayload'},
+                        'args': [{'name': 'jobId', 'type': nn('SCALAR', 'EncodedId')}, {'name': 'input', 'type': nn('INPUT_OBJECT', 'JobCloseInput')}]}]}}}
+            if 'enumValues' in q:
+                return {'__type': {'kind': 'ENUM', 'enumValues': [{'name': x} for x in enum]}}
+            if '__type' in q:
+                return {'__type': {'JobCloseInput': {'name': 'JobCloseInput', 'inputFields': [
+                            {'name': 'modifyIncompleteVisitsBy', 'type': nn('ENUM', 'JobCloseModifyIncompleteVisitsByEnum')}]},
+                        'JobClosePayload': {'name': 'JobClosePayload', 'fields': [{'name': 'job', 'type': {}}, {'name': 'userErrors', 'type': {}}]},
+                        'JobCloseModifyIncompleteVisitsByEnum': {'name': 'JobCloseModifyIncompleteVisitsByEnum'}}.get(v['n'], {})}
+            sent.append(v)
+            return {'jobClose': {'job': {'id': 'JANA', 'jobNumber': 14622, 'jobStatus': 'archived'}, 'userErrors': []}}
+        saved = P.jobber_gql
+        P.jobber_gql = fake
+        try:
+            job = P.close_jobber_job('JANA', 'Simon')
+            self.assertEqual(job['jobNumber'], 14622)
+            self.assertEqual(sent[-1], {'jobId': 'JANA', 'input': {'modifyIncompleteVisitsBy': 'COMPLETE_PAST_DESTROY_FUTURE'}})
+            # A choice it can't answer: the message says what Jobber needs.
+            enum[:] = ['SOMETHING_ELSE']
+            P._SCHEMA_CACHE = {}
+            with self.assertRaises(ValueError) as e:
+                P.close_jobber_job('JANA', 'Simon')
+            self.assertIn('modifyIncompleteVisitsBy', str(e.exception))
+        finally:
+            P.jobber_gql = saved
+
     def test_follow_up_postponed_to_tomorrow(self):
         """Oct 2026: a follow-up can be put off to the next working day - off the list until then."""
         j = self.c.post('/pumps/api/cases', json={'title': 'Fan', 'client_name': 'Snooze Lakes'}).get_json()
