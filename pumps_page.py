@@ -1972,6 +1972,8 @@ async function createInvoice(){
   if (!j.success) { if (!j.possible_duplicate) toast(j.error, true); return; }
   closeModal();
   const v = j.invoice.visit || {};
+  // Jobber numbered it with a number another invoice has (FGCU #37093, Oct 29 2026): say so now, not later.
+  if (j.invoice.number_taken) alert(`Jobber gave this draft invoice #${j.invoice.invoice_number} - a number ${j.invoice.number_taken.client}'s invoice already has.\n\nIn Jobber, open the draft and change its Invoice # (More, then Edit) before sending it. It's on your To do list.`);
   toast(`Draft invoice #${j.invoice.invoice_number} created in Jobber (${j.invoice.invoice_status || 'draft'})${(j.invoice.also || []).length ? ` for ${j.invoice.also.length + 1} bills` : ''}. Review and send it from Jobber.` +
     (v.completed ? ` ${v.month} visit (${v.visit.date}) marked complete.` : v.already_complete ? ` ${v.month} visit was already complete.` : v.pending ? ` Visit not marked complete: ${v.pending} (on To do)` : ''), !!v.pending);
   if (inv.doc.case_id) openCase(inv.doc.case_id); else loadToday();

@@ -4376,6 +4376,7 @@ def _sync_jobber(full=False, actor='system'):
             status['errors'] += _refresh_linked_records(conn)
             _follow_invoices(conn)
             duplicate_jobber_invoices(conn)
+            recheck_draft_numbers(conn)
             reconcile_quote_waits(conn)
             reconcile_client_names(conn)
             approved = _follow_quotes(conn)
@@ -6889,6 +6890,47 @@ def mark_bill_invoiced(doc_id, ref, actor, on_doc_id=None):
         conn.close()
 
 
+def invoice_number_taken(number, own_id):
+    """Another Jobber invoice with this number, or None. Jobber numbers invoices itself; two made the same second
+    (FGCU's draft and Stoney Enterprises', Oct 29 2026) both got #37093. Never raises - unchecked is None."""
+    if not number:
+        return None
+    try:
+        data = jobber_gql('query($q: String) { invoices(first: 20, searchTerm: $q) { nodes { id invoiceNumber '
+                          'invoiceStatus jobberWebUri client { name } } } }', {'q': str(number)})
+    except JobberError:
+        return None
+    for n in (data.get('invoices') or {}).get('nodes') or []:
+        if str(n.get('invoiceNumber') or '') == str(number) and n.get('id') != own_id:
+            return {'id': n['id'], 'client': (n.get('client') or {}).get('name') or 'another client',
+                    'status': (n.get('invoiceStatus') or '').lower(), 'uri': n.get('jobberWebUri') or ''}
+    return None
+
+
+def _flag_taken_number(conn, cid, ref, taken, doc_id=None):
+    msg = (f"Jobber gave this draft invoice #{ref['invoice_number']}, a number {taken['client']}'s invoice already has. "
+           f"In Jobber, open the draft and change its Invoice # (More, then Edit) before it is sent.")
+    if cid:
+        open_issue(conn, cid, 'dup_number', msg, doc_id=doc_id)
+    add_todo(conn, f"dup-number:{ref['invoice_id']}", f"Change draft invoice #{ref['invoice_number']}'s number in Jobber",
+             msg, {'case_id': cid, 'uri': ref.get('invoice_uri') or '', 'label': f"Open draft #{ref['invoice_number']}"})
+
+
+def recheck_draft_numbers(conn, days=3):
+    """The app's invoice drafts of the last few days, checked again for a number another invoice took - one made
+    a second after ours gets the same number too, so the check when drafting can't see it."""
+    since = (_now() - timedelta(days=days)).strftime('%Y-%m-%d')
+    for d in conn.execute("SELECT id, case_id, jobber FROM pump_docs WHERE kind='bill' AND jobber LIKE '%drafted_at%'").fetchall():
+        dj = json.loads(d['jobber'] or '{}')
+        if not dj.get('invoice_id') or (dj.get('drafted_at') or '') < since or (dj.get('invoice_status') or 'draft') != 'draft':
+            continue
+        if conn.execute('SELECT 1 FROM pump_todos WHERE key=?', (f"dup-number:{dj['invoice_id']}",)).fetchone():
+            continue
+        taken = invoice_number_taken(dj.get('invoice_number'), dj['invoice_id'])
+        if taken:
+            _flag_taken_number(conn, d['case_id'], dj, taken, d['id'])
+
+
 def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', actor='system', force=False,
                          visit_ids=None, extra=False, ignore_ids=(), site=''):
     """Create the invoice in Jobber as a DRAFT. Nothing is sent: the only
@@ -6940,6 +6982,9 @@ def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', a
         ref = {'invoice_id': inv.get('id'), 'invoice_number': str(inv.get('invoiceNumber') or ''),
                'invoice_status': status, 'invoice_uri': inv.get('jobberWebUri'), 'client_id': client_id,
                'job_id': job_id, 'drafted_by': actor, 'drafted_at': _now_text()}
+        taken = invoice_number_taken(ref['invoice_number'], ref['invoice_id'])
+        if taken:
+            ref['number_taken'] = taken
         if site:
             ref['site'] = site
         dj = doc.get('jobber') or {}
@@ -6963,6 +7008,8 @@ def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', a
                 open_issue(conn, cid, 'not_draft',
                            f"Jobber reports invoice #{ref['invoice_number']} as '{status}', not draft. "
                            'Open it in Jobber and check it has not gone to the client.', doc_id=doc_id)
+            if taken:
+                _flag_taken_number(conn, cid, ref, taken, doc_id)
             conn.commit()
             return {**ref, 'total': total}
         if doc.get('case_id'):
@@ -6983,6 +7030,8 @@ def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', a
                 open_issue(conn, cid, 'not_draft',
                            f"Jobber reports invoice #{ref['invoice_number']} as '{status}', not draft. "
                            'Open it in Jobber and check it has not gone to the client.', doc_id=doc_id)
+        if taken:
+            _flag_taken_number(conn, doc.get('case_id'), ref, taken, doc_id)
         conn.commit()
         if doc.get('case_id'):
             # The sub's quote on the invoice, for later. Never holds up the invoice.
