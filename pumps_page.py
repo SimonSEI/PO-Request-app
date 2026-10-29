@@ -2975,7 +2975,9 @@ function statusSummary(){
   const say = ds => ds.map(d => name(d) + ': ' + ((d.querySelector('.bad, .warn') || {}).textContent || '').trim()).join(' · ');
   box.className = 'status ' + (bad.length ? 'bad' : warn.length ? 'warn' : 'ok');
   document.getElementById('statusSum').innerHTML = '<span class="sdot"></span> ' + esc(bad.length ? say(bad) : warn.length ? say(warn) : 'Everything is working - mailbox, Jobber and the document reader')
-    + ' <span class="note" style="font-weight:400">· details</span>';
+    + ' <span class="note" style="font-weight:400">· details</span>'
+    // Scan now, on the line itself (it was only in the folded details) - for an email you're waiting on.
+    + (document.getElementById('scanBtn') ? ` <button class="btn s" id="scanBtn2" style="margin-left:auto" onclick="event.preventDefault();event.stopPropagation();scanNow()">↻ Scan mailbox now</button>` : '');
 }
 function updateScanInfo(s){
   const el = document.getElementById('scanInfo'); if (!el) return;
@@ -2984,7 +2986,8 @@ function updateScanInfo(s){
   if ((s.errors || []).length) el.title = s.errors.join('\n');
 }
 async function scanNow(){
-  const b = document.getElementById('scanBtn'); b.disabled = true;
+  const bs = ['scanBtn', 'scanBtn2'].map(i => document.getElementById(i)).filter(Boolean), b = {set disabled(v){ bs.forEach(x => x.disabled = v); }};
+  b.disabled = true;
   const j = await api('/scan', {method:'POST', body:{}});
   if (!j.success) { toast(j.error, true); b.disabled = false; return; }
   updateScanInfo({state:'running'});
