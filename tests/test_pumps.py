@@ -6363,6 +6363,15 @@ class PumpsTest(unittest.TestCase):
         self.assertIn('Mark the December 2026 visit complete on Jobber job #1450', todos)
         # A one-off job's visits are left alone.
         self.assertIsNone(P.complete_visit_for_bill(doc, {}, {**job, 'type': 'one_off'}, 'test'))
+        # A quarterly job (FGCU PGA, Oct 29 2026): September billed, the quarter's visit on Oct 31 - that one.
+        visits[:] = [{'id': 'Q2', 'title': 'Quarterly Pump Maintenance', 'startAt': '2026-07-31T12:00:00Z', 'completedAt': '2026-07-31T15:00:00Z'},
+                     {'id': 'Q3', 'title': 'Quarterly Pump Maintenance', 'startAt': '2026-10-31T12:00:00Z', 'completedAt': None},
+                     {'id': 'Q4', 'title': 'Quarterly Pump Maintenance', 'startAt': '2027-01-31T12:00:00Z', 'completedAt': None}]
+        fake.calls.clear()
+        r = P.complete_visit_for_bill({'id': None, 'doc_date': '2026-09-30', 'description': 'September pump maintenance',
+                                       'line_items': []}, {}, {**job, 'number': '14358'}, 'test')
+        self.assertTrue(r.get('completed'), r)
+        self.assertEqual([v for q, v in fake.calls if 'visitComplete(' in q], [{'visitId': 'Q3'}])
 
     def test_monthly_marks_the_visit_complete_then_invoices_it_as_a_draft(self):
         """Oct 2026: a monthly/quarterly is invoiced the Jobber way - the recurring job's visit is marked

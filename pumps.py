@@ -13707,6 +13707,7 @@ VISIT_COMPLETE_MUTATIONS = ('visitComplete', 'visitMarkComplete', 'completeVisit
 _MONTH_YEAR = re.compile(r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?,?\s+(20\d\d)\b', re.I)
 _MONTH_ABBR = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
 VISIT_SPEC = ['id', 'title', 'startAt', 'completedAt', 'visitStatus']
+VISIT_NEAR_DAYS = 62   # a billed month with no visit: the open visit up to this far away is the one
 
 
 def bill_service_month(doc):
@@ -13770,13 +13771,24 @@ def complete_visit_for_bill(doc, case, job, actor='system'):
     except JobberError as e:
         return pending(f"Could not read job #{num}'s visits from Jobber ({e}).")
     in_month = [v for v in visits if v['date'][:7] == f'{year:04d}-{month:02d}']
+    billed = _iso_date(doc.get('doc_date'))
+    near = date.fromisoformat(billed) if billed[:7] == f'{year:04d}-{month:02d}' else date(year, month, 15)
+    dates = sorted(date.fromisoformat(v['date']) for v in visits if v['date'])
+    gaps = sorted((b - a).days for a, b in zip(dates, dates[1:]) if (b - a).days > 0)
+    quarterly = bool(gaps) and gaps[len(gaps) // 2] >= 55    # visits two months or more apart, not monthly
+    if not in_month and quarterly:
+        # Quarterly jobs (FGCU PGA, Oct 29 2026: September's maintenance billed, its visit on Oct 31): the open
+        # visit nearest the billed month, up to about two months away, is the one this bill is for. Never on a
+        # monthly job - there a month with no visit is a to-do, not another month's visit.
+        open_near = [v for v in visits if not v['completed'] and v['date']
+                     and abs((date.fromisoformat(v['date']) - near).days) <= VISIT_NEAR_DAYS]
+        if open_near:
+            in_month = [min(open_near, key=lambda v: abs((date.fromisoformat(v['date']) - near).days))]
     if not in_month:
         return pending(f"Jobber job #{num} has no {label} visit.")
     todo = [v for v in in_month if not v['completed']]
     if not todo:
         return {'already_complete': True, 'month': label, 'visit': in_month[0]}
-    billed = _iso_date(doc.get('doc_date'))
-    near = date.fromisoformat(billed) if billed[:7] == f'{year:04d}-{month:02d}' else date(year, month, 15)
     visit = min(todo, key=lambda v: abs((date.fromisoformat(v['date']) - near).days))
     try:
         res = try_mutation(VISIT_COMPLETE_MUTATIONS, {'visitId': visit['id'], 'id': visit['id']},
