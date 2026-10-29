@@ -539,6 +539,10 @@ function stageText(c){
   // The vendor has it lined up (parts in or ordered, booked, under way): what's
   // left is the work itself, not a date (Magnolia Cove, Oct 2026).
   const js = c.job_status || {};
+  // A service call (no quote steps): approved when booked, then it's the vendor's move to give a date (Oct 29 2026).
+  const serviceCall = (st.vendor_quote || {}).na && (st.client_quote || {}).na;
+  if (c.stage === 'scheduled' && serviceCall && !['parts_ordered', 'scheduled', 'in_progress'].includes(js.kind))
+    return ch.expect_by ? `Waiting on ${v} · said by ${niceDay(ch.expect_by)}` : `Waiting on ${v} to schedule it`;
   if (c.stage === 'scheduled' && ['parts_ordered', 'scheduled', 'in_progress'].includes(js.kind))
     return `Waiting on ${ch.who || v} to complete the work` + (js.on || c.scheduled_for ? ' · ' + niceDay(js.on || c.scheduled_for) : '');
   if (c.stage === 'scheduled' && ch.parts_wait) {

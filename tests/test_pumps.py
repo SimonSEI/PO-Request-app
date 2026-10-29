@@ -5414,7 +5414,11 @@ class PumpsTest(unittest.TestCase):
         r = self.c.post('/pumps/api/service_call', json={'number': '#14592'}).get_json()
         self.assertTrue(r['success'], r)
         c = self.case(r['case_id'])
-        self.assertEqual(c['stage'], 'work_done', 'scheduled for its day, waiting on the work - no quote')
+        self.assertEqual(c['stage'], 'scheduled', 'approved, waiting for Wettech to schedule it - no quote (Oct 29 2026: '
+                                                  "the Jobber visit date isn't Wettech's)")
+        self.assertTrue(c['steps']['client_approved'].get('at'))
+        self.assertFalse(c['chase']['parts_wait'], 'no quote, no parts')
+        self.assertEqual(c['chase']['last_at'], c['steps']['client_approved']['at'], 'Wettech asked when it was booked')
         self.assertTrue(c['steps']['vendor_quote'].get('na'))
         self.assertEqual(c['jobber']['job']['number'], '14592')
         again = self.c.post('/pumps/api/service_call', json={'number': '14592'}).get_json()
@@ -5429,7 +5433,7 @@ class PumpsTest(unittest.TestCase):
         conn.close()
         r = self.c.post(f'/pumps/api/cases/{cid}/jobber_job', json={'number': '14600', 'service_call': True}).get_json()
         self.assertTrue(r['success'], r)
-        self.assertEqual(self.case(cid)['stage'], 'work_done')
+        self.assertEqual(self.case(cid)['stage'], 'scheduled')
 
     def test_gulfshore_bill_billed_with_the_pump_service(self):
         """Magnolia Falls (Oct 2026): Jordan's Gulfshore filter cleaning is billed with the pump service - no quote,
