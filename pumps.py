@@ -14759,13 +14759,30 @@ JOB_DONE_STATUSES = ('archived', 'closed')
 INVOICE_OUT = ('awaiting_payment', 'sent_not_due', 'past_due', 'paid', 'bad_debt')
 
 
+def _invoice_job(invoice_id):
+    """{id, number, uri} of the Jobber job an invoice is for, or None (never raises)."""
+    for shape in ('jobs { nodes { id jobNumber jobberWebUri } }', 'jobs { id jobNumber jobberWebUri }'):
+        try:
+            data = jobber_gql('query($id: EncodedId!) { invoice(id: $id) { id ' + shape + ' } }', {'id': invoice_id})
+        except JobberError:
+            continue
+        jobs = (data.get('invoice') or {}).get('jobs') or []
+        if isinstance(jobs, dict):
+            jobs = jobs.get('nodes') or []
+        if jobs and jobs[0].get('id'):
+            return {'id': jobs[0]['id'], 'number': str(jobs[0].get('jobNumber') or ''), 'uri': jobs[0].get('jobberWebUri') or ''}
+        return None
+    return None
+
+
 def jobs_to_close():
     """One-off pump jobs we linked that are invoiced but still open in Jobber (Oct 2026: they sat open):
     a to-do each to close it, with a Close job button; done once Jobber shows it closed."""
     since = (_today() - timedelta(days=120)).isoformat()
     conn = _conn()
     try:
-        cases = [dict(r) for r in conn.execute("SELECT * FROM pump_cases WHERE status != 'cancelled' AND jobber LIKE '%\"job\"%' "
+        cases = [dict(r) for r in conn.execute("SELECT * FROM pump_cases WHERE status != 'cancelled' AND (jobber LIKE '%\"job\"%' "
+                                               "OR jobber LIKE '%\"invoice\"%') "
                                                "AND COALESCE(updated_at, '') >= ?", (since,))]
         open_todos = {r['key']: r for r in conn.execute("SELECT * FROM pump_todos WHERE key LIKE 'close-job:%' AND done_at IS NULL")}
     finally:
@@ -14774,7 +14791,12 @@ def jobs_to_close():
     for c in cases:
         j = json.loads(c['jobber'] or '{}')
         job, inv = j.get('job') or {}, j.get('invoice') or {}
-        if job.get('id') and (inv.get('status') or '') in INVOICE_OUT:
+        if (inv.get('status') or '') not in INVOICE_OUT:
+            continue
+        if not job.get('id') and inv.get('id'):
+            # Only the invoice is linked (Ana's Place, Oct 29 2026: billed the Gulfshore way): its job from Jobber.
+            job = _invoice_job(inv['id']) or {}
+        if job.get('id'):
             want[job['id']] = (c, job, inv)
     for key, t in open_todos.items():
         jid = key.split(':', 1)[1]
