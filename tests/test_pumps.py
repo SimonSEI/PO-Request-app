@@ -4535,6 +4535,34 @@ class PumpsTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_service_call_complete_in_jobber_is_not_the_vendors_work_done(self):
+        """Oct 2026 (Rosewood #14647): a service call Wettech goes out on, marked complete in Jobber the day it
+        was made, isn't Work done - that waits for Wettech's report or bill."""
+        conn = P._conn()
+        try:
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id, client_name, "
+                         "created_at, start_at, completed_at, category) VALUES ('JRW14647', 'job', '14647', "
+                         "'Service call - Lake Level is low', 'requires_invoicing', 'CRW', 'Rosewood HOA', "
+                         "'2026-10-28T14:33:12Z', '2026-10-28T04:00:00Z', '2026-10-28T20:53:16Z', 'pump')")
+            conn.commit()
+        finally:
+            conn.close()
+        r = self.c.post('/pumps/api/jobber/items/JRW14647', json={'action': 'track'}).get_json()
+        self.assertTrue(r['success'], r)
+        conn = P._conn()
+        try:
+            cid = conn.execute("SELECT case_id FROM pump_jobber_items WHERE jobber_id='JRW14647'").fetchone()[0]
+            row = conn.execute('SELECT vendor, steps FROM pump_cases WHERE id=?', (cid,)).fetchone()
+            steps = json.loads(row['steps'])
+            self.assertEqual(row['vendor'], 'Wettech')
+            self.assertTrue((steps.get('client_approved') or {}).get('at'))
+            self.assertFalse((steps.get('work_done') or {}).get('at'), 'Wettech still has to go out')
+            conn.execute("DELETE FROM pump_jobber_items WHERE jobber_id='JRW14647'")
+            conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (cid,))
+            conn.commit()
+        finally:
+            conn.close()
+
     def test_service_call_lists_the_newest_jobs_first(self):
         """Service call (Oct 2026): with nothing typed, the most recently created Jobber jobs, newest first."""
         def fake(query, variables=None):
