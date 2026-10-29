@@ -59,9 +59,7 @@ h2,h3{font-weight:700;letter-spacing:-.2px;}
 .ok{color:var(--green);} .warn{color:var(--amber);} .bad{color:var(--red);}
 .flash{margin:14px 24px 0;padding:11px 16px;border-radius:8px;background:var(--amber-bg);color:var(--amber);font-size:13px;border-left:4px solid #E0A100;}
 /* layout */
-.layout{display:grid;grid-template-columns:minmax(0,1fr);align-items:start;gap:20px;padding:20px 24px 32px;}
-.side.today{position:static;max-height:none;border:none;box-shadow:none;border-radius:0;}
-.side.today .row .tt{-webkit-line-clamp:unset;}
+.layout{display:grid;grid-template-columns:minmax(300px,380px) minmax(0,1fr);align-items:start;gap:20px;padding:20px 24px 32px;}
 .gsearch{position:relative;}
 .gsearch input{width:330px;max-width:40vw;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.28);color:#fff;border-radius:8px;padding:7px 10px;font:inherit;}
 .gsearch input::placeholder{color:#C7D2EA;}
@@ -358,10 +356,13 @@ details.fold[open] > summary h4::before { content: '▾ '; }
 <div class="layout">
 <select id="uploadKind" class="hide"><option value=""></option><option value="quote"></option><option value="bill"></option><option value="report"></option></select>
 <input type="file" id="fileIn" multiple accept=".pdf,.docx,.doc" class="hide" onchange="uploadFiles(this.files)">
+<aside class="side" id="side">
+  <div class="hd"><h2>✅ To do <span class="chip" id="sideCount"></span><span class="sp" style="flex:1"></span><span class="note" id="sideOpen" style="font-weight:500"></span></h2></div>
+  <div id="todoList"><div class="empty">Loading…</div></div>
+</aside>
 <div class="mainc">
 <div class="tabs" id="tabs">
-  <div class="tab on" data-tab="today">Today <span class="n" id="n-today"></span></div>
-  <div class="tab" data-tab="jobs">Jobs <span class="n" id="n-jobs"></span></div>
+  <div class="tab on" data-tab="jobs">Jobs <span class="n" id="n-jobs"></span></div>
   <div class="tab" data-tab="scada">SCADA <span class="n" id="n-scada"></span></div>
   <div class="tab" data-tab="accounts">Accounts</div>
   <div class="tab" data-tab="reports">Reports</div>
@@ -370,11 +371,8 @@ details.fold[open] > summary h4::before { content: '▾ '; }
   <div class="tab" data-tab="vinvoices">Vendor invoices</div>
 </div>
 
-<!-- TODAY: what you do now, then what's waiting on whom -->
-<div class="panel" id="p-today"><div class="side today"><div id="todoList"><div class="empty">Loading…</div></div></div></div>
-
 <!-- JOBS -->
-<div class="panel hide" id="p-jobs">
+<div class="panel" id="p-jobs">
   <div class="toolbar">
     <select id="jbShow" onchange="loadJobs()"><option value="open">Open</option><option value="closed">Done</option><option value="all">All</option></select>
     <div class="sp"></div><span id="syncInfo" class="note"></span>
@@ -594,7 +592,7 @@ function showTab(name){
   curTab = name;
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === name));
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('hide', p.id !== 'p-' + name));
-  if (name === 'today') loadToday(); else if (name === 'jobs') loadJobs(); else if (name === 'scada') loadScada();
+  if (name === 'jobs') loadJobs(); else if (name === 'scada') loadScada();
   else if (name === 'accounts') loadAccounts(); else if (name === 'reports') loadReports(); else if (name === 'bills') loadBills(); else if (name === 'vquotes') loadVQuotes(); else if (name === 'vinvoices') loadVInvoices();
   history.replaceState(null, '', '#' + name);
 }
@@ -909,7 +907,9 @@ async function loadToday(){
     waiting.push(todoItem('Maintenance visit', '', esc(l.account || t.title), `client approved ${esc(l.since || '')} · waiting on ${esc(left.join(' and '))}'s service report${left.length > 1 ? 's' : ''}${(l.reported || []).length ? ' · ✓ ' + esc(l.reported.join(', ')) : ''}`, "showTab('accounts')",
       `<button class="btn s" onclick="askDone(event, () => todoDone(${t.id}, true, event))">✓ Done</button>`, t.todo_key)); });
   const n = urgent.length + todo.length + q.todos.length;
-  setCount('n-today', n, urgent.length > 0);
+  document.getElementById('sideCount').textContent = n;
+  document.getElementById('sideCount').className = 'chip ' + (urgent.length ? 'r' : n ? 'a' : 'g');
+  document.getElementById('sideOpen').textContent = `${q.open_count} open jobs`;
   // Waiting on others, by who has the next move (Oct 2026 redesign): one group each, folded unless opened.
   const groups = {}, mine = new Set([...(q.vendor_follow_ups || []), ...q.needs_scheduling, ...q.to_quote_client, ...q.ready_to_close].map(c => c.id));
   ((cs && cs.cases) || []).forEach(c => { const o = owner(c); if (o && o !== 'You' && !mine.has(c.id)) (groups[o] = groups[o] || []).push(c); });
@@ -920,7 +920,7 @@ async function loadToday(){
       groups[o].map(c => todoItem(esc(o), o === 'Client' ? 'v' : o === 'Jordan' ? 'g' : 'a', caseTitle(c), caseSub(c, esc(stageText(c))) + chaseLine(c), open(c), '', c.todo_key)))).join('')
     + (waiting.length ? fold('reports', 'Waiting on service reports', waiting) : '');
   el.innerHTML = (urgent.length ? '<div class="grp">Now</div>' + urgent.join('') : '')
-    + `<div class="grp">You · ${q.open_count} open jobs</div>` + (todo.join('') + q.todos.map(todoRow).join('') || '<div class="empty">Nothing to do. 🎉</div>')
+    + '<div class="grp">To do</div>' + (todo.join('') + q.todos.map(todoRow).join('') || '<div class="empty">Nothing to do. 🎉</div>')
     + `<div class="row" style="cursor:default;align-items:flex-start"><textarea id="todoNew" rows="2" placeholder="Explain what you need to do, in your own words - the app writes the to-do for you…" style="flex:1;min-width:0;font:inherit;resize:vertical" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();todoWrite()}"></textarea><button class="btn s p" id="todoWriteBtn" onclick="todoWrite()">✨ Write to-do</button></div>`
     + waitHtml;
 }
@@ -2936,9 +2936,9 @@ document.addEventListener('drop', e => { const f = (e.dataTransfer || {}).files;
   const h = location.hash.slice(1);
   if (h.startsWith('item-')) { loadToday(); loadJobs(); openCase(parseInt(h.slice(5))); }
   else if (h.startsWith('doc-')) { loadToday(); loadJobs(); openDoc(parseInt(h.slice(4))); }
-  const TABS = ['today','jobs','scada','accounts','reports','bills','vquotes','vinvoices'];
-  if (TABS.includes(h)) showTab(h); else if (!h.startsWith('item-') && !h.startsWith('doc-')) showTab('today');
-  if (h && h !== 'today' && TABS.includes(h)) loadToday();   // the Today count shows on every tab
+  const TABS = ['jobs','scada','accounts','reports','bills','vquotes','vinvoices'];
+  if (TABS.includes(h)) showTab(h); else if (!h.startsWith('item-') && !h.startsWith('doc-')) showTab('jobs');
+  if (!h || TABS.includes(h)) loadToday();
   setInterval(() => { if (document.getElementById('drawerWrap').classList.contains('hide') && document.getElementById('modalWrap').classList.contains('hide')) { loadToday(); if (curTab === 'jobs') loadJobs(); } }, 60000);
 })();
 </script>
