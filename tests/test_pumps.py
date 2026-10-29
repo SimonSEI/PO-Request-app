@@ -3459,14 +3459,20 @@ class PumpsTest(unittest.TestCase):
             for c, jid in ((cid, 'JC1'), (rid, 'JR1')):
                 conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(
                     {'job': {'id': jid, 'number': jid}, 'invoice': {'id': 'I' + jid, 'number': '37' + jid[-1], 'status': 'awaiting_payment'}}), c))
+            # Only the invoice linked (Ana's Place, Oct 29 2026): its job comes from Jobber.
+            aid = P.create_case(conn, {'title': 'Pump service', 'client_name': 'Annas Closeout'}, 'test')
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(
+                {'invoice': {'id': 'IANA', 'number': '37097', 'status': 'awaiting_payment'}}), aid))
             conn.commit()
         finally:
             conn.close()
-        status = {'JC1': ('REQUIRES_INVOICING', 'ONE_OFF'), 'JR1': ('ACTIVE', 'RECURRING')}
+        status = {'JC1': ('REQUIRES_INVOICING', 'ONE_OFF'), 'JR1': ('ACTIVE', 'RECURRING'), 'JANA': ('REQUIRES_INVOICING', 'ONE_OFF')}
         saved = (P.jobber_gql, P.try_mutation)
         st = lambda i: status.get(i, ('ARCHIVED', 'ONE_OFF'))   # other tests' jobs: closed already
-        P.jobber_gql = lambda q, v=None: {'job': {'jobNumber': v['id'], 'jobStatus': st(v['id'])[0],
-                                                  'jobType': st(v['id'])[1], 'jobberWebUri': 'u'}}
+        P.jobber_gql = lambda q, v=None: ({'invoice': {'id': v['id'], 'jobs': {'nodes': [{'id': 'JANA', 'jobNumber': 14622}]}}}
+                                          if 'invoice(id' in q else
+                                          {'job': {'jobNumber': v['id'], 'jobStatus': st(v['id'])[0],
+                                                   'jobType': st(v['id'])[1], 'jobberWebUri': 'u'}})
         closed = []
         P.try_mutation = lambda names, vals, want=None: closed.append(vals['jobId']) or {'mutation': names[0], 'job': {'jobNumber': 'JC1'}}
         try:
@@ -3474,6 +3480,7 @@ class PumpsTest(unittest.TestCase):
             keys = lambda: [t['key'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
             self.assertIn('close-job:JC1', keys())
             self.assertNotIn('close-job:JR1', keys(), 'a recurring job stays open')
+            self.assertIn('close-job:JANA', keys(), "the invoice's job, found from the invoice")
             r = self.c.post('/pumps/api/jobber/jobs/close', json={'job_id': 'JC1'}).get_json()
             self.assertTrue(r['success'], r)
             self.assertEqual(closed, ['JC1'])
