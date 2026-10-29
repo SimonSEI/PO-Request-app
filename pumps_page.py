@@ -48,6 +48,12 @@ h2,h3{font-weight:700;letter-spacing:-.2px;}
 .btn.danger:hover{background:var(--red-bg);border-color:#F1BDB7;}
 .btn:disabled{opacity:.55;cursor:wait;}
 /* status strip */
+/* One status line (Oct 2026 redesign): green when the mailbox, Jobber and the reader all work; else what's wrong. */
+.status>summary{list-style:none;cursor:pointer;padding:7px 24px;font-size:12.5px;color:var(--muted);background:#fff;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;}
+.status>summary::-webkit-details-marker{display:none;}
+.status .sdot{width:9px;height:9px;border-radius:50%;background:var(--faint);flex:none;}
+.status.ok .sdot{background:var(--green);} .status.warn .sdot{background:#E0A100;} .status.bad .sdot{background:var(--red);}
+.status.bad>summary{color:var(--red);font-weight:600;}
 .strip{display:flex;flex-wrap:wrap;gap:6px 20px;padding:10px 24px;font-size:12.5px;color:var(--muted);background:#fff;border-bottom:1px solid var(--border);}
 .strip>div{display:inline-flex;flex-wrap:wrap;align-items:center;gap:4px 6px;max-width:100%;}
 .strip>div::before{content:'';width:8px;height:8px;border-radius:50%;background:var(--faint);flex:none;margin-right:2px;}
@@ -70,6 +76,10 @@ h2,h3{font-weight:700;letter-spacing:-.2px;}
 .seg button{background:#fff;border:none;border-right:1px solid var(--border);padding:8px 14px;font:inherit;font-size:13.5px;font-weight:600;color:var(--muted);cursor:pointer;display:inline-flex;gap:6px;align-items:center;}
 .seg button:last-child{border-right:none;}
 .seg button.on{background:var(--brand-soft);color:var(--brand-d);}
+.more{position:relative;}
+.more summary{list-style:none;cursor:pointer;}
+.more summary::-webkit-details-marker{display:none;}
+.more .menu{position:absolute;right:0;top:40px;z-index:30;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow-lg);padding:8px;display:grid;gap:6px;width:max-content;}
 .dots{display:flex;gap:3px;align-items:center;}
 .dots i{width:11px;height:11px;border-radius:50%;background:var(--border);display:inline-block;}
 .dots i.d{background:var(--green);} .dots i.c{background:#fff;border:2.5px solid var(--brand);width:13px;height:13px;}
@@ -340,14 +350,14 @@ details.fold[open] > summary h4::before { content: '▾ '; }
   <div class="r">
     <div class="gsearch"><input type="search" id="caseSearch" placeholder="Search jobs, accounts, PO, quote or invoice #…" oninput="searchCases(this.value)" onkeydown="if(event.key==='Escape'){this.value='';searchCases('')}"><div id="searchResults" class="side hide"></div></div>
     <button class="btn" onclick="uploadBox()" title="Add vendor quotes, bills or reports - or drop files anywhere on the page">⬆ Upload</button>
-    <button class="btn p" onclick="newCase()">＋ New item</button>
-    <button class="btn" title="Follow a service call booked in Jobber - it's the start of the work, no quote" onclick="addServiceCall()">＋ Service call</button>
+    <button class="btn p" onclick="newMenu()">＋ New</button>
     {% if assistant %}<button class="btn" id="pmBtn" title="Ask Pump Manager, our assistant - answers take a minute or two" onclick="pmToggle()">💬 Ask Pump Manager</button>{% endif %}
     <span class="who" data-i="{{ (full_name or '?')[:1]|upper }}">{{ full_name }}</span>
     <button class="btn" onclick="showUndo()" title="Undo a recent change (Ctrl+Z / ⌘Z undoes your last one)">↶ Undo</button>
     <a class="btn" href="{{ url_for('dashboard') }}">← Dashboard</a>
   </div>
 </nav>
+<details class="status" id="statusBox"><summary id="statusSum"><span class="sdot"></span> Checking…</summary>
 <div class="strip">
   <div>PO@ mailbox: {% if email %}<b class="ok">connected</b> · <span id="scanInfo">…</span>
     <button class="btn s" id="scanBtn" onclick="scanNow()">Scan now</button> <button class="btn s" onclick="showRecentFiles()" title="What happened to each emailed file">Recent files</button>{% else %}<b class="warn">not configured</b> (upload documents by hand){% endif %}</div>
@@ -356,7 +366,7 @@ details.fold[open] > summary h4::before { content: '▾ '; }
   <div>Matching bills to jobs: {% if grok %}<b class="ok">Grok on</b> (when no PO, quote # or email ties a vendor bill to a job){% else %}<span class="note">by PO, quote # and client only - set XAI_API_KEY to let Grok match the rest</span>{% endif %}</div>
   <div>Daily email: <span id="digestInfo">to {{ digest_to }} at {{ digest_hour }}am on weekdays</span>
     <button class="btn s" onclick="previewDigest()">Preview</button></div>
-</div>
+</div></details>
 {% if flash_msg %}<div class="flash">{{ flash_msg }}</div>{% endif %}
 
 <div class="layout">
@@ -473,9 +483,10 @@ details.fold[open] > summary h4::before { content: '▾ '; }
     <select id="acSort" onchange="try{localStorage.setItem('acSort', this.value)}catch(e){};drawAccounts()" title="Sort the accounts"><option value="name">Sort: Name A-Z</option><option value="type">Sort: Contract type</option><option value="amount">Sort: Contract $ (high to low)</option></select>
     <button class="btn" onclick="maintEdit(0)">＋ Pump account</button>
     <button class="btn" onclick="editDiveSite()">＋ Lake site</button>
-    <button class="btn" title="Look in Jobber for each account's irrigation maintenance job (it's also checked once a day)" onclick="irrigationCheck()">↻ Check Jobber for irrigation</button>
-    <button class="btn" title="Read each site's Guardhouse/Gate code from its Jobber property for the diver's schedule (also once a day; nothing changes in Jobber)" onclick="gateCodes(this)">↻ Gate codes from Jobber</button>
-    <button class="btn" title="An Excel sheet of the accounts shown - the filter, Show chips, search and sort you have now" onclick="accountsSheet()">⬇ Download sheet</button>
+    <details class="more"><summary class="btn" title="More - these also run by themselves once a day">…</summary><div class="menu">
+      <button class="btn" title="Look in Jobber for each account's irrigation maintenance job (it's also checked once a day)" onclick="irrigationCheck()">↻ Check Jobber for irrigation</button>
+      <button class="btn" title="Read each site's Guardhouse/Gate code from its Jobber property for the diver's schedule (also once a day; nothing changes in Jobber)" onclick="gateCodes(this)">↻ Gate codes from Jobber</button>
+      <button class="btn" title="An Excel sheet of the accounts shown - the filter, Show chips, search and sort you have now" onclick="accountsSheet()">⬇ Download sheet</button></div></details>
   </div>
   <div style="margin-bottom:10px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b class="note">Show:</b><span id="svcPicks"></span>
     <span class="note">click to show only accounts with what's ticked &nbsp;·&nbsp; in the list, <span class="svc on" style="cursor:default">green</span> = they have it, <span class="svc off" style="cursor:default">＋ grey</span> = they don't - click it to draft a quote in Jobber</span></div>
@@ -877,7 +888,7 @@ async function loadToday(){
   setCount('n-jobs', q.open_count, false);
   setCount('n-maint', q.scada_attention.length, q.scada_attention.some(s => s.state === 'overdue'));
   setCount('n-bills', q.bills_to_pay_count || 0, false); setCount('n-paper', q.bills_to_pay_count || 0, false);
-  updateScanInfo(j.scan);
+  updateScanInfo(j.scan); statusSummary();
   const open = c => `openCase(${c.id})`;
   // ✓ Done on a to-do ticks that step on its job, so the watchlist moves on with it.
   const stepBtn = (c, step, label) => `<button class="btn s" title="Done - tick it on the job" onclick="askDone(event, () => stepDone(${c.id}, '${step}', event))">✓ ${label || 'Done'}</button>`;
@@ -978,7 +989,7 @@ const MONEY = new Set(['vendor_quote_amount','vendor_quote_total','vendor_bill_a
 // The vendor's invoice and quote, one click from the top of the job (Oct 2026): "See Wettech's invoice".
 function vendorDocsHtml(c){
   const docs = (c.docs || []).filter(d => ['bill', 'quote'].includes(d.kind) && d.status !== 'dismissed');
-  if (!docs.length) return '<div class="sec"><div class="note" style="padding:8px 12px;border:1px dashed var(--border-2);border-radius:10px">No invoice or quote attached to this job</div></div>';
+  if (!docs.length) return '';   // the cards below already say none is in
   const btn = d => { const who = d.vendor || c.vendor || 'the vendor';
     return `<a class="btn ${d.kind === 'bill' ? 'p' : ''}" target="_blank" href="/pumps/api/docs/${d.id}/file">📄 See ${esc(who)}'s ${d.kind === 'bill' ? 'invoice' : 'quote'}${d.doc_number ? ' #' + esc(d.doc_number) : ''}</a>`; };
   // Invoices first, then quotes.
@@ -1595,9 +1606,11 @@ function glanceHtml(c){
   const qAmt = money(c.vendor_quote_amount ?? c.vendor_quote_total ?? (q || {}).subtotal ?? (q || {}).total);
   const bAmt = money(c.vendor_bill_amount ?? c.vendor_bill_total ?? (b || {}).subtotal ?? (b || {}).total);
   const qNum = c.vendor_quote_number || (q || {}).doc_number || '', bNum = c.vendor_bill_number || (b || {}).doc_number || '';
-  const ourQ = J.quote ? `our quote <a target="_blank" href="${esc(jobberUri(J.quote, 'quotes') || '#')}">#${esc(J.quote.number || '')}</a>${J.quote.status ? ' · ' + esc(J.quote.status.replace(/_/g, ' ')) : ''}` : '';
-  const quoteCard = card(`${esc(v)} quote`, qAmt || (q || qNum ? '—' : 'None yet'),
-    [q ? fileLink(q, qNum ? '#' + esc(qNum) : 'Open the quote') : (qNum ? '#' + esc(qNum) : ''), ourQ].filter(Boolean).join('<br>'));
+  const st = c.steps || {}, serviceCall = (st.vendor_quote || {}).na && (st.client_quote || {}).na;
+  const quoteCard = serviceCall ? '' : card(`${esc(v)} quote`, qAmt || (q || qNum ? '—' : 'None yet'),
+    q ? fileLink(q, qNum ? '#' + esc(qNum) : 'Open the quote') : (qNum ? '#' + esc(qNum) : ''));
+  const ourQuoteCard = serviceCall ? '' : card('Our quote', J.quote && J.quote.total != null ? money(J.quote.total) : (J.quote ? '—' : 'Not yet'),
+    J.quote ? `<a target="_blank" href="${esc(jobberUri(J.quote, 'quotes') || '#')}">#${esc(J.quote.number || '')} ↗</a>${J.quote.status ? ' · ' + esc(J.quote.status.replace(/_/g, ' ')) : ''}` : '');
   const findBtn = `<a href="#" onclick="event.preventDefault();findVendorInvoice(${JSON.stringify(c.client_name || c.title || '').replace(/"/g, '&quot;')})">Find it in Vendor invoices</a>`;
   const billCard = card(`${esc(v)} invoice`, bAmt || (b || bNum ? '—' : 'Not in yet'),
     b ? fileLink(b, bNum ? '#' + esc(bNum) : 'Open the invoice') + (b.doc_date ? ' · ' + esc(b.doc_date) : '') : (bNum ? '#' + esc(bNum) + '<br>' : '') + findBtn);
@@ -1608,9 +1621,9 @@ function glanceHtml(c){
     ...(J.site_invoices || []).map(x => `${esc(x.site || '')} <a target="_blank" href="${esc(x.uri || '#')}">#${esc(x.number)}</a>`)].filter(Boolean).join(' · ');
   const cmp = c.compare || {};
   const cmpText = {match: `✓ Bill matches the quote (${money(cmp.bill)})`, over: `Bill is ${money(Math.abs(cmp.diff))} MORE than the quote`, under: `Bill is ${money(Math.abs(cmp.diff))} less than the quote`, no_quote: 'Bill arrived with no quote on file'}[cmp.state];
-  return `<div class="sec"><div style="font-size:15px;margin-bottom:8px"><b>${esc(stageText(c))}</b></div>
+  return `<div class="sec"><div style="font-size:15px;margin-bottom:8px">${c.status === 'open' ? ownerChip(c) : ''}<b>${esc(stageText(c))}</b></div>
     ${c.chase ? `<div class="note" style="margin-bottom:8px">${chaseLine(c).replace(/^<br>/, '')}</div>` : ''}
-    <div class="money">${quoteCard}${billCard}${card('Our invoice', ourInv, invSub)}${`<div class="m"><div class="k">${esc(v)} paid?</div>${vendorPayHtml(c)}</div>`}</div>
+    <div class="money">${quoteCard}${ourQuoteCard}${billCard}${card('Our invoice', ourInv, invSub)}${`<div class="m"><div class="k">${esc(v)} paid?</div>${vendorPayHtml(c)}</div>`}</div>
     ${cmpText ? `<div class="cmp ${esc(cmp.state)}">${cmpText}</div>` : ''}
     <div style="margin-top:10px">${journeyHtml(c, 'track')}</div>
     <div class="note" style="margin-top:4px">Click a step to tick it, untick it or mark it not needed · <select class="s" onchange="moveCase(this)" title="Out of step? Bring the job up to where it really is - the steps before are ticked done today." style="padding:2px 4px;font-size:12px"><option value="">Move to…</option>${c.step_list.filter(s => !s.na).map(s => `<option value="${s.key}">${esc(s.label)}</option>`).join('')}</select></div></div>`;
@@ -2546,6 +2559,13 @@ async function gateCodes(btn){
   if (typeof refreshAccountPage === 'function') refreshAccountPage();
   if (typeof refreshAccounts === 'function' && AC) refreshAccounts();
 }
+// One "+ New" (Oct 2026 redesign): a job to follow, or a service call already booked in Jobber.
+function newMenu(){
+  openModal('New', `<div style="display:grid;gap:10px">
+    <button class="btn" style="justify-content:flex-start;padding:14px;text-align:left" onclick="closeModal();newCase()"><div><b>A job</b><div class="note">Pump work to follow from the vendor's quote - add the details or a PO</div></div></button>
+    <button class="btn" style="justify-content:flex-start;padding:14px;text-align:left" onclick="closeModal();addServiceCall()"><div><b>A service call</b><div class="note">Booked in Jobber - the start of the work, no quote; waits for Wettech to schedule it</div></div></button></div>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button>`);
+}
 async function deleteDiveSite(id){ if (!confirm('Remove this site from the diver list?')) return; const j = await api('/dives/sites/' + id + '/delete', {method:'POST', body:{}}); if (j.success) { closeModal(); loadDivers(); } else toast(j.error, true); }
 async function saveDiveSettings(){
   const j = await api('/dives/settings', {method:'POST', body:{to: document.getElementById('dvTo').value, diver_name: document.getElementById('dvName').value, cc: document.getElementById('dvCc').value, from: document.getElementById('dvFrom').value, signature: document.getElementById('dvSig').value, auto: document.getElementById('dvAuto').checked}});
@@ -2926,6 +2946,16 @@ async function accountTodoDone(id, done, ev){
 }
 
 // ── mailbox scan ─────────────────────────────────────
+function statusSummary(){
+  const box = document.getElementById('statusBox'); if (!box) return;
+  const items = [...box.querySelectorAll('.strip>div')];
+  const name = d => (d.childNodes[0] && d.childNodes[0].textContent || '').replace(/:\s*$/, '').trim();
+  const bad = items.filter(d => d.querySelector('.bad')), warn = items.filter(d => !d.querySelector('.bad') && d.querySelector('.warn'));
+  const say = ds => ds.map(d => name(d) + ': ' + ((d.querySelector('.bad, .warn') || {}).textContent || '').trim()).join(' · ');
+  box.className = 'status ' + (bad.length ? 'bad' : warn.length ? 'warn' : 'ok');
+  document.getElementById('statusSum').innerHTML = '<span class="sdot"></span> ' + esc(bad.length ? say(bad) : warn.length ? say(warn) : 'Everything is working - mailbox, Jobber and the document reader')
+    + ' <span class="note" style="font-weight:400">· details</span>';
+}
 function updateScanInfo(s){
   const el = document.getElementById('scanInfo'); if (!el) return;
   s = s || {};
