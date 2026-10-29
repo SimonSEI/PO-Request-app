@@ -3474,7 +3474,7 @@ class PumpsTest(unittest.TestCase):
                                           {'job': {'jobNumber': v['id'], 'jobStatus': st(v['id'])[0],
                                                    'jobType': st(v['id'])[1], 'jobberWebUri': 'u'}})
         closed = []
-        P.try_mutation = lambda names, vals, want=None: closed.append(vals['jobId']) or {'mutation': names[0], 'job': {'jobNumber': 'JC1'}}
+        P.try_mutation = lambda names, vals, want=None, prefer=None: closed.append(vals['jobId']) or {'mutation': names[0], 'job': {'jobNumber': 'JC1'}}
         try:
             P.jobs_to_close()
             keys = lambda: [t['key'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
