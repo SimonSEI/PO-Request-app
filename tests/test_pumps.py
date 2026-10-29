@@ -3601,6 +3601,39 @@ class PumpsTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_sent_invoice_seen_within_minutes_brings_close_job(self):
+        """Oct 29 2026 (Banyan Bay #37117): an invoice we drafted was sent from Jobber, and no Close job option came
+        until the full sync. The few-minute check reads our draft invoices; once sent, the close-out to-do comes."""
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': 'DC bus', 'client_name': 'Quickclose Bay'}, 'test')
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(
+                {'job': {'id': 'JQC', 'number': '14637'}, 'invoice': {'id': 'IQC', 'number': '37117', 'status': 'draft', 'total': 390}}), cid))
+            conn.commit()
+        finally:
+            conn.close()
+        def fake(q, v=None):
+            if 'invoice(id' in q:
+                return {'invoice': {'id': 'IQC', 'invoiceStatus': 'awaiting_payment', 'amounts': {'total': 390}}}
+            if 'job(id' in q:
+                return {'job': {'jobNumber': 14637, 'jobStatus': 'requires_invoicing' if v['id'] == 'JQC' else 'archived',
+                                'jobType': 'one_off', 'jobberWebUri': 'u', 'total': 0}}
+            return {}
+        saved = (P.jobber_gql, P.jobber_status)
+        P.jobber_gql, P.jobber_status = fake, (lambda: {'connected': True})
+        try:
+            self.assertIn(cid, P.check_sent_invoices())
+        finally:
+            P.jobber_gql, P.jobber_status = saved
+        self.assertEqual(self.case(cid)['jobber']['invoice']['status'], 'awaiting_payment')
+        keys = [t['key'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
+        self.assertIn('close-job:JQC', keys)
+        conn = P._conn()
+        conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (cid,))
+        conn.execute("DELETE FROM pump_jobber_items WHERE jobber_id='IQC'")
+        conn.commit()
+        conn.close()
+
     def test_follow_up_postponed_to_tomorrow(self):
         """Oct 2026: a follow-up can be put off to the next working day - off the list until then."""
         j = self.c.post('/pumps/api/cases', json={'title': 'Fan', 'client_name': 'Snooze Lakes'}).get_json()
