@@ -2417,7 +2417,7 @@ function drawAccounts(){
   const act = AC.accounts.filter(a => a.active);
   const cons = AC.accounts.flatMap(a => (a.contracts || []).filter(c => c.status === 'active'));
   const tot = act.reduce((t, a) => { const k = equipCounts(a); t.p += k.pumps; t.f += k.filters; return t; }, {p: 0, f: 0});
-  document.getElementById('acInfo').innerHTML = `${act.length} active accounts · <b>${tot.p} pumps</b> maintained · <b>${tot.f} filters</b> dived · ${new Set(cons.map(c => c.account)).size} maintenance contracts (${money(cons.reduce((t, c) => t + (c.frequency === 'monthly' ? c.amount || 0 : 0), 0))}/mo) · <b>${act.filter(due).length} due in ${esc(AC.month)}</b>`;
+  document.getElementById('acInfo').innerHTML = `${act.length} active accounts · <b>${tot.p} pumps</b> maintained · <b>${tot.f} lake filter sites</b> · ${new Set(cons.map(c => c.account)).size} maintenance contracts (${money(cons.reduce((t, c) => t + (c.frequency === 'monthly' ? c.amount || 0 : 0), 0))}/mo) · <b>${act.filter(due).length} due in ${esc(AC.month)}</b>`;
   const st = {overdue:'r', due_soon:'a', current:'g', inactive:'', unknown:''};
   const nextDue = a => { const out = [], now = new Date().getMonth() + 1;
     const next = (ms, every) => { if (every) return 'this month'; const m = (ms || '').split(',').filter(Boolean).map(Number); if (!m.length) return '';
@@ -2450,7 +2450,7 @@ function equipCounts(a){
 }
 function equipText(a){
   const k = equipCounts(a), pl = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
-  return [k.pumps ? pl(k.pumps, 'pump') : '', k.filters ? pl(k.filters, 'filter dive') : '', k.fountains ? pl(k.fountains, 'fountain dive') : '', k.lakes ? pl(k.lakes, 'lake dive') : ''].filter(Boolean).join(' · ');
+  return [k.pumps ? pl(k.pumps, 'pump') : '', k.filters ? pl(k.filters, 'lake filter site') : '', k.fountains ? pl(k.fountains, 'lake fountain') : '', k.lakes ? pl(k.lakes, 'lake') : ''].filter(Boolean).join(' · ');
 }
 function rowHtml(a, p, l, s, vis, nextDue){
     const on = svcBadges(a);
