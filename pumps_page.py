@@ -2231,7 +2231,8 @@ function maintEdit(id){
       <div style="display:flex;gap:6px;margin-top:6px"><input type="text" id="mt_jq" placeholder="Find the client in Jobber…" value="${esc(a.jobber_client_name || a.name || '')}" style="flex:1"><button class="btn s" type="button" onclick="mtFindClient()">Find</button></div>
       <div id="mt_jobber" style="margin-top:6px"></div></div>
     <label class="w">Notes<textarea id="mt_notes">${esc(a.notes)}</textarea></label>
-    <label><span><input type="checkbox" id="mt_active" ${a.active ? 'checked' : ''}> Active account</span></label></div>`,
+    <label><span><input type="checkbox" id="mt_active" ${a.active ? 'checked' : ''}> Active account</span></label>
+    <label><span><input type="checkbox" id="mt_report_only" ${a.report_only ? 'checked' : ''}> No separate pump job - billed in the monthly maintenance (Autumn Woods, Wild Blue)</span></label></div>`,
     `${id ? `<button class="btn danger" onclick="maintDelete(${id})">Remove</button>` : ''}<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="maintSave(${id})">Save</button>`);
   mtJobberDraw();
 }
@@ -2268,7 +2269,7 @@ async function mtPickClient(c){
 }
 async function maintSave(id){
   const v = k => document.getElementById('mt_' + k).value;
-  const body = {name: v('name'), kind: v('kind'), joined: v('joined'), equipment: v('equipment'), address: v('address'), vendor_cost: v('vendor_cost'), naples_electric: v('naples_electric'), our_bill: v('our_bill'), notes: v('notes'), repairs_by: v('repairs_by'), follow_up: v('follow_up'), monthly: document.getElementById('mt_monthly').checked, active: document.getElementById('mt_active').checked, months: [...document.querySelectorAll('.mt_m:checked')].map(x => x.value).join(','),
+  const body = {name: v('name'), kind: v('kind'), joined: v('joined'), equipment: v('equipment'), address: v('address'), vendor_cost: v('vendor_cost'), naples_electric: v('naples_electric'), our_bill: v('our_bill'), notes: v('notes'), repairs_by: v('repairs_by'), follow_up: v('follow_up'), monthly: document.getElementById('mt_monthly').checked, active: document.getElementById('mt_active').checked, report_only: document.getElementById('mt_report_only').checked, months: [...document.querySelectorAll('.mt_m:checked')].map(x => x.value).join(','),
     ...Object.fromEntries(Object.entries(MTJ).map(([k, v]) => ['jobber_' + k, v || '']))};
   if (id) body.id = id;
   const j = await api('/maint', {method:'POST', body});
@@ -2454,7 +2455,7 @@ function equipText(a){
 }
 function rowHtml(a, p, l, s, vis, nextDue){
     const on = svcBadges(a);
-    return `<tr class="click" onclick="openAccount(${JSON.stringify(a.name).replace(/"/g, '&quot;')})"><td><b>${esc(a.name)}</b>${!a.active ? ' <span class="chip">former</span>' : ''}${equipText(a) ? `<div style="font-size:13px;font-weight:600;color:var(--brand-d);margin-top:2px">${esc(equipText(a))}</div>` : ''}${vis ? `<div class="note">✓ Client approved ${esc((vis.link || {}).since || '')}</div>` : ''}</td>
+    return `<tr class="click" onclick="openAccount(${JSON.stringify(a.name).replace(/"/g, '&quot;')})"><td><b>${esc(a.name)}</b>${!a.active ? ' <span class="chip">former</span>' : ''}${equipText(a) ? `<div style="font-size:13px;font-weight:600;color:var(--brand-d);margin-top:2px">${esc(equipText(a))}</div>` : ''}${p && p.report_only ? `<div class="note" style="color:var(--amber);font-weight:600">No separate pump job - billed in the monthly maintenance</div>` : ''}${vis ? `<div class="note">✓ Client approved ${esc((vis.link || {}).since || '')}</div>` : ''}</td>
     <td style="white-space:nowrap">${on || '<span class="note">—</span>'}</td>
     <td>${nextDue(a).map(x => /overdue/.test(x) ? `<b class="bad">${esc(x)}</b>` : /this month/.test(x) ? `<b>${esc(x)}</b>` : esc(x)).join('<br>') || '<span class="note">—</span>'}</td>
     <td class="note">${esc((p && p.address) || (l && l.address) || '')}</td></tr>`;
@@ -2850,7 +2851,7 @@ function renderAccount(){
   const row = (label, val) => val ? `<div class="note"><span style="display:inline-block;min-width:110px">${label}</span> <b style="font-weight:600;color:var(--text)">${esc(val)}</b></div>` : '';
   const card = (title, body, btns) => `<div style="flex:1;min-width:220px;border:1px solid var(--border);border-radius:10px;padding:10px 12px"><div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px"><b>${title}</b><span style="display:flex;gap:4px">${btns}</span></div>${body}</div>`;
   const setup = [
-    p ? card('Pump - Wettech' + (!p.active ? ' <span class="chip">former</span>' : ''), row('Type', p.kind) + row('Equipment', p.equipment) + row('Visits', schedText(p) + (p.due_this_month ? ' (due this month)' : '')) + row('Wettech / visit', p.vendor_cost) + row('Naples Electric', p.naples_electric) + row('We bill', p.our_bill) + row('Repairs by', p.repairs_by || 'Wettech') + row('Joined', p.joined) + row('Before service', p.follow_up) + row('Notes', p.notes) + (p.jobber_client_id ? row('Jobber', [p.jobber_client_name, p.jobber_property_label, p.jobber_job_label].filter(Boolean).join(' · ')) : `<div class="note warn" style="margin-top:4px">Not linked to Jobber. <button class="btn s" onclick="acEdit('pump', ${p.id})">🔗 Link to Jobber</button></div>`), `<button class="btn s" onclick="acEdit('pump', ${p.id})">Edit</button>`)
+    p ? card('Pump - Wettech' + (!p.active ? ' <span class="chip">former</span>' : ''), (p.report_only ? '<div class="note" style="color:var(--amber);font-weight:600;margin-bottom:4px">No separate pump job - billed in the monthly maintenance</div>' : '') + row('Type', p.kind) + row('Equipment', p.equipment) + row('Visits', schedText(p) + (p.due_this_month ? ' (due this month)' : '')) + row('Wettech / visit', p.vendor_cost) + row('Naples Electric', p.naples_electric) + row('We bill', p.our_bill) + row('Repairs by', p.repairs_by || 'Wettech') + row('Joined', p.joined) + row('Before service', p.follow_up) + row('Notes', p.notes) + (p.jobber_client_id ? row('Jobber', [p.jobber_client_name, p.jobber_property_label, p.jobber_job_label].filter(Boolean).join(' · ')) : `<div class="note warn" style="margin-top:4px">Not linked to Jobber. <button class="btn s" onclick="acEdit('pump', ${p.id})">🔗 Link to Jobber</button></div>`), `<button class="btn s" onclick="acEdit('pump', ${p.id})">Edit</button>`)
       : card('Pump - Wettech', '<div class="note">No pump maintenance.</div>', `<button class="btn s" onclick="acEdit('pump', 0)">＋ Add</button>`),
     l ? card('Lake - Gulfshore' + (l.active === 0 ? ' <span class="chip">former</span>' : ''), row('Equipment', l.equipment) + row('Diver', l.needs_dive ? (l.months ? lakeSched(l) : 'Every month') + (l.status === 'hold' ? ' - on hold' : '') : 'No diving') + row('Gate code', l.gate_code ? l.gate_code + (l.gate_code_from === 'jobber' ? ' (from Jobber)' : '') : '') + row('Gulfshore', l.diver_cost) + row('We bill', l.our_bill) + row('Diver notes', l.diver_notes) + row('Status', l.status_note), `<button class="btn s" onclick="acEdit('lake', ${l.id})">Edit</button>`)
       : card('Lake - Gulfshore', '<div class="note">No lake or diver work.</div>', `<button class="btn s" onclick="acEdit('lake', 0)">＋ Add</button>`),
@@ -2864,7 +2865,7 @@ function renderAccount(){
   const vis = (AC && AC.accounts.find(x => x.name === a.name) || {}).visit;
   document.getElementById('drawer').dataset.account = a.name;
   document.getElementById('drawer').innerHTML = `
-  <div class="hd"><div><h2>${esc(a.name)}${ac.active === false ? ' <span class="chip">former</span>' : ''}</h2><div class="note">${where ? esc(where) + ' · ' : ''}${open.length} open to-do${open.length === 1 ? '' : 's'} · ${a.todos.length} in all · ${a.jobs.length} job${a.jobs.length === 1 ? '' : 's'}</div></div>
+  <div class="hd"><div><h2>${esc(a.name)}${ac.active === false ? ' <span class="chip">former</span>' : ''}</h2>${p && p.report_only ? '<div style="color:var(--amber);font-weight:600;margin:2px 0">No separate pump job - billed in the monthly maintenance</div>' : ''}<div class="note">${where ? esc(where) + ' · ' : ''}${open.length} open to-do${open.length === 1 ? '' : 's'} · ${a.todos.length} in all · ${a.jobs.length} job${a.jobs.length === 1 ? '' : 's'}</div></div>
     <div><button class="btn" onclick="closeDrawer()">✕</button></div></div>
   <div class="bd">
     <div class="sec" style="display:flex;gap:6px;flex-wrap:wrap" id="acTabs">${[['bills', `Vendor invoices (${(a.vendor_bills || []).length})`],
