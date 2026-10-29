@@ -10707,8 +10707,14 @@ def track_jobber_item(conn, it, actor, service_call=None):
         _set_step(conn, cid, 'client_approved', at=(it['updated_at'] or '')[:10] or None, by=actor)
     if it['kind'] == 'job' and (service_call or (service_call is None and _SERVICE_CALL.search(it['title'] or ''))):
         service_call_steps(conn, cid, dict(it), actor)
-        if it['completed_at'] or it['status'] == 'requires_invoicing':
+        vendor = conn.execute('SELECT vendor FROM pump_cases WHERE id=?', (cid,)).fetchone()['vendor']
+        if (it['completed_at'] or it['status'] == 'requires_invoicing') and not vendor:
             _set_step(conn, cid, 'work_done', at=(it['completed_at'] or it['updated_at'] or '')[:10] or None, by=actor)
+        elif it['completed_at'] or it['status'] == 'requires_invoicing':
+            # Jobber's job being complete isn't the vendor's visit (Rosewood #14647, Oct 2026: completed in
+            # Jobber the day it was made, Wettech still to go out) - Work done waits for their report or bill.
+            _event(conn, actor, 'Jobber shows it complete',
+                   f'Work done waits for {vendor}\'s report or bill (or tick it here)', case_id=cid)
     elif it['kind'] == 'job' and (it['completed_at'] or it['status'] == 'requires_invoicing'):
         _set_step(conn, cid, 'client_approved', at=(it['created_at'] or '')[:10] or None, by=actor)
         _set_step(conn, cid, 'work_done', at=(it['completed_at'] or it['updated_at'] or '')[:10] or None,
@@ -12397,6 +12403,27 @@ def _remind_banyan_bladder(c, now):
               "AND done_at IS NULL", (now,))
 
 
+def _undo_rosewood_14647_done(c, now):
+    """Once (Oct 29 2026): Rosewood's service call (Jobber job #14647, lake level low) was ticked Work done
+    because Jobber marked the job complete the day it was made - Wettech still has to go out."""
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('rosewood_14647_undone', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    for r in c.execute("SELECT id, steps FROM pump_cases WHERE status='open' AND jobber LIKE '%\"number\": \"14647\"%'").fetchall():
+        if c.execute("SELECT 1 FROM pump_docs WHERE case_id=? AND kind IN ('bill', 'report') AND status != 'dismissed'",
+                     (r['id'],)).fetchone():
+            continue
+        steps = json.loads(r['steps'] or '{}')
+        if not (steps.get('work_done') or {}).get('at'):
+            continue
+        steps.pop('work_done', None)
+        c.execute('UPDATE pump_cases SET steps=?, updated_at=? WHERE id=?', (json.dumps(steps), now, r['id']))
+        _refresh_case(c, r['id'])
+        c.execute('INSERT INTO pump_events (at, actor, action, detail, case_id) VALUES (?,?,?,?,?)',
+                  (now, 'Pumps', 'work not done yet', 'Jobber marked job #14647 complete, but Wettech still has to go out '
+                   '- Work done unticked', r['id']))
+
+
 def _apply_wild_blue_oct28(c, now):
     """Once (Oct 28 2026, the office's updated sheet): Wild Blue is 1 pump 2 filters, JAN/APR/JULY/OCT,
     $250, included with pump maintenance (Wettech - still no diver)."""
@@ -12858,6 +12885,7 @@ def init_account_tables(c):
     _apply_master_vendors(c, now)
     _apply_wild_blue_oct28(c, now)
     _remind_banyan_bladder(c, now)
+    _undo_rosewood_14647_done(c, now)
     _apply_report_only(c, now)
     _undo_watercrest_mismatch(c, now)
     _fix_quote_needed_dates(c, now)
