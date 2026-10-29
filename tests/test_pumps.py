@@ -6023,7 +6023,7 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(list(got('sent', 'Quotetab')), ['41002'])
         self.assertEqual(list(got('all', 'Quotetab Lakes')), ['41001'])
         page = self.c.get('/pumps').get_data(as_text=True)
-        self.assertIn('data-tab="vquotes">Quotes', page)
+        self.assertIn('data-v="vquotes"', page, 'Vendor quotes, under Paperwork (Oct 2026 redesign)')
         self.assertIn('Vendor invoices', page)
         # A-Z by site by default; search by vendor or quote number.
         names = [x['client_name'] for x in self.c.get('/pumps/api/vendor_quotes?show=all&q=quotetab').get_json()['quotes']]
