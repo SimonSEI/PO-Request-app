@@ -2593,9 +2593,11 @@ async function loadJobs(){
   const isQuote = c => c.status === 'open' && QUOTE_STAGES.includes(c.stage);
   const quietQ = c => isQuote(c) && !c.urgent;
   const all = (j.cases || []).filter(c => show !== 'waiting' || /waiting/i.test(stageText(c))), main = all.filter(c => !quietQ(c)), quiet = all.filter(quietQ);
-  const row = c => { const jb = c.jobber || {}, vp = c.vendor_pay || {};
+  // In an account's group (several jobs) the heading carries the account (and the address when they share it):
+  // the row leads with the job (Oct 2026: "no need to list the account name on each job").
+  const row = (c, grp) => { const jb = c.jobber || {}, vp = c.vendor_pay || {};
     return `<tr class="click" onclick="openCase(${c.id})">
-    <td><div class="acct">${esc(c.account_name || c.client_name || '')}</div>${jobOnly(c) ? `<div class="jobt" title="${esc(c.title || c.client_name)}">${esc(jobOnly(c))}</div>` : ''}${c.site ? `<div class="acct-addr">${esc(c.site)}</div>` : ''}${c.po_number || jobberNo(c) ? `<div class="note">${(c.po_number ? 'PO ' + esc(c.po_number) : '') + (c.po_number ? jobberNo(c) : jobberNo(c).replace(/^ · /, ''))}</div>` : ''}</td>
+    <td>${grp ? `<div class="acct" style="font-size:14px" title="${esc(c.title || c.client_name)}">${esc(jobOnly(c, true))}</div>` : `<div class="acct">${esc(c.account_name || c.client_name || '')}</div>${jobOnly(c) ? `<div class="jobt" title="${esc(c.title || c.client_name)}">${esc(jobOnly(c))}</div>` : ''}`}${c.site && !(grp && grp.site) ? `<div class="acct-addr">${esc(c.site)}</div>` : ''}${c.po_number || jobberNo(c) ? `<div class="note">${(c.po_number ? 'PO ' + esc(c.po_number) : '') + (c.po_number ? jobberNo(c) : jobberNo(c).replace(/^ · /, ''))}</div>` : ''}</td>
     <td>${stepDots(c)}</td>
     <td>${c.urgent && isQuote(c) ? '<span class="chip r">urgent</span> ' : ''}${c.status === 'open' ? ownerChip(c) : ''}${stageChip(c)}${statusLine(c) ? `<div class="note">${statusLine(c)}</div>` : ''}${c.status === 'open' ? lastAction(c) : ''}</td>
     <td style="white-space:nowrap">${isQuote(c) ? (c.urgent ? `<button class="btn s" title="Back to Quotes - not urgent" onclick="event.stopPropagation();setUrgent(${c.id}, false)">⬇ Not urgent</button> ` : `<button class="btn s" title="Move it up with the jobs" onclick="event.stopPropagation();setUrgent(${c.id}, true)">⬆ Urgent</button> `) : ''}${jb.job && jb.job.uri ? `<a class="btn s" href="${esc(jb.job.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ↗</a> ` : ''}${c.status === 'open' && c.stage === 'client_approved' ? `<button class="btn s p" title="Email the client a follow-up on our quote" onclick="event.stopPropagation();clientEmail(${c.id})">✉ Follow up</button> ` : ''}${c.status === 'open' ? `<button class="btn s" title="Mark done" onclick="event.stopPropagation();caseDone(${c.id})">✓ Done</button> <button class="btn s" title="Remove" onclick="event.stopPropagation();caseRemove(${c.id})">✕</button>` : `<button class="btn s" onclick="event.stopPropagation();caseReopen(${c.id})">↺ Reopen</button>`}</td></tr>`; };
@@ -2607,8 +2609,10 @@ async function loadJobs(){
     [...list].sort((a, b) => sortKey(a).localeCompare(sortKey(b), undefined, {sensitivity:'base'}) || jobName(a).localeCompare(jobName(b), undefined, {sensitivity:'base'}))
       .forEach(c => { const k = acct(c).toLowerCase(); if (!g.has(k)) g.set(k, []); g.get(k).push(c); });
     // An account's jobs sit under its heading with a bar down the left, so a job after them doesn't look like one of them.
-    return [...g.values()].map(cs => cs.length > 1 ? `<tr><td colspan="4" style="background:var(--bg);font-weight:700;padding-top:10px;border-left:4px solid var(--border-2)">${esc(acct(cs[0]))} <span class="chip">${cs.length} jobs</span></td></tr>`
-      + cs.map(c => row(c).replace('<td>', '<td style="border-left:4px solid var(--border-2);padding-left:14px">')).join('') : row(cs[0])).join(''); };
+    return [...g.values()].map(cs => { if (cs.length < 2) return row(cs[0]);
+      const site = cs.every(c => (c.site || '') === (cs[0].site || '')) ? cs[0].site || '' : '', grp = {site};
+      return `<tr><td colspan="4" style="background:var(--bg);padding-top:10px;border-left:4px solid var(--border-2)"><span class="acct">${esc(acct(cs[0]))}</span> <span class="chip">${cs.length} jobs</span>${site ? `<div class="acct-addr">${esc(site)}</div>` : ''}</td></tr>`
+        + cs.map(c => row(c, grp).replace('<td>', '<td style="border-left:4px solid var(--border-2);padding-left:14px">')).join(''); }).join(''); };
   // Folding "Quotes - not urgent" redraws from what's loaded - no reload.
   (window._jobsRender = () => document.getElementById('jobsBody').innerHTML = (grouped(main) || '<tr><td colspan="4" class="empty">No jobs.</td></tr>')
     + (quiet.length ? `<tr class="click" onclick="foldSave('qq', !foldOpen('qq'));window._jobsRender()"><td colspan="4" style="background:var(--bg);font-weight:700;padding-top:14px">${foldOpen('qq') ? '▾' : '▸'} Quotes - not urgent (${quiet.length}) <span class="note" style="font-weight:400">· click to ${foldOpen('qq') ? 'fold away' : 'show'} · ⬆ Urgent moves one up with the jobs</span></td></tr>` + (foldOpen('qq') ? grouped(quiet) : '') : ''))();
