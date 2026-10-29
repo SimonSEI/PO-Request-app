@@ -3585,6 +3585,22 @@ class PumpsTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_invoice_drafted_means_the_bill_was_checked(self):
+        """Oct 29 2026 (Banyan Bay #14650): its invoice was made but it sat on "Check the bill against the quote".
+        Drafting our invoice ticks Bill checked (and the steps before) as implied, so the job moves on."""
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': 'Fiberglass tank', 'client_name': 'Implied Lakes', 'vendor': 'Wettech'}, 'test')
+            P._set_step(conn, cid, 'vendor_bill', at='2026-10-28', by='test')
+            P._set_step(conn, cid, 'invoice_drafted', at='2026-10-29', by='test')
+            steps = json.loads(conn.execute('SELECT steps FROM pump_cases WHERE id=?', (cid,)).fetchone()[0])
+            self.assertEqual(steps['bill_checked']['at'], '2026-10-29')
+            self.assertNotEqual(conn.execute('SELECT stage FROM pump_cases WHERE id=?', (cid,)).fetchone()[0], 'bill_checked')
+            conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (cid,))
+            conn.commit()
+        finally:
+            conn.close()
+
     def test_follow_up_postponed_to_tomorrow(self):
         """Oct 2026: a follow-up can be put off to the next working day - off the list until then."""
         j = self.c.post('/pumps/api/cases', json={'title': 'Fan', 'client_name': 'Snooze Lakes'}).get_json()
