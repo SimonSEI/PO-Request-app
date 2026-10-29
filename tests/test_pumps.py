@@ -4563,6 +4563,38 @@ class PumpsTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_draft_invoice_number_taken_by_another_invoice_is_flagged(self):
+        """Oct 29 2026: Jobber gave the app's FGCU draft #37093, which Stoney Enterprises' invoice made a second
+        earlier already had. The app checks the number and puts it on To do (and the job) to change in Jobber."""
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': 'September Pump Maintenance', 'client_name': 'FGCU Dupcheck'}, 'Office')
+            conn.execute("INSERT INTO pump_docs (kind, status, case_id, client_name, jobber, created_at) VALUES "
+                         "('bill', 'done', ?, 'FGCU Dupcheck', ?, ?)",
+                         (cid, json.dumps({'invoice_id': 'IFG', 'invoice_number': '37093', 'invoice_status': 'draft',
+                                           'invoice_uri': 'https://jobber/i/fg', 'drafted_at': P._now_text()}), P._now_text()))
+            conn.commit()
+            saved = P.jobber_gql
+            P.jobber_gql = lambda q, v=None: {'invoices': {'nodes': [
+                {'id': 'IFG', 'invoiceNumber': '37093', 'client': {'name': 'FGCU - PGA program'}},
+                {'id': 'IST', 'invoiceNumber': '37093', 'invoiceStatus': 'awaiting_payment', 'client': {'name': 'STONEY ENTERPRISES'}},
+                {'id': 'IX', 'invoiceNumber': '370930', 'client': {'name': 'Other'}}]}}
+            try:
+                self.assertEqual(P.invoice_number_taken('37093', 'IFG')['client'], 'STONEY ENTERPRISES')
+                self.assertIsNone(P.invoice_number_taken('370930', 'IX'))
+                P.recheck_draft_numbers(conn)
+            finally:
+                P.jobber_gql = saved
+            t = conn.execute("SELECT title, detail FROM pump_todos WHERE key='dup-number:IFG'").fetchone()
+            self.assertIn('#37093', t['title'])
+            self.assertIn('STONEY ENTERPRISES', t['detail'])
+            self.assertTrue(conn.execute("SELECT 1 FROM pump_issues WHERE case_id=? AND kind='dup_number' AND resolved_at IS NULL",
+                                         (cid,)).fetchone())
+            conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (cid,))
+            conn.commit()
+        finally:
+            conn.close()
+
     def test_service_call_lists_the_newest_jobs_first(self):
         """Service call (Oct 2026): with nothing typed, the most recently created Jobber jobs, newest first."""
         def fake(query, variables=None):
