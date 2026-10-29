@@ -3474,7 +3474,7 @@ class PumpsTest(unittest.TestCase):
                                           {'job': {'jobNumber': v['id'], 'jobStatus': st(v['id'])[0],
                                                    'jobType': st(v['id'])[1], 'jobberWebUri': 'u'}})
         closed = []
-        P.try_mutation = lambda names, vals, want=None: closed.append(vals['jobId']) or {'mutation': names[0], 'job': {'jobNumber': 'JC1'}}
+        P.try_mutation = lambda names, vals, want=None, prefer=None: closed.append(vals['jobId']) or {'mutation': names[0], 'job': {'jobNumber': 'JC1'}}
         try:
             P.jobs_to_close()
             keys = lambda: [t['key'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']]
@@ -3495,6 +3495,76 @@ class PumpsTest(unittest.TestCase):
             self.assertNotIn('close-job:JC1', keys())
         finally:
             P.jobber_gql, P.try_mutation = saved
+
+    def test_close_job_answers_what_to_do_with_unfinished_visits(self):
+        """Oct 29 2026 (Ana's Place #14622): Close job in Jobber failed - jobClose needs a choice for unfinished visits
+        that nothing gave. It picks completing past visits / removing future ones; else it says what Jobber needs."""
+        self.as_if_clicked()
+        P._SCHEMA_CACHE = {}
+        self.addCleanup(setattr, P, '_SCHEMA_CACHE', {})
+        nn = lambda kind, name: {'kind': 'NON_NULL', 'ofType': {'kind': kind, 'name': name}}
+        enum = ['COMPLETE_PAST_DESTROY_FUTURE', 'DESTROY_ALL', 'COMPLETE_ALL']
+        sent = []
+
+        def fake(q, v=None):
+            P.check_mutation_allowed(q)
+            if 'mutationType' in q:
+                return {'__schema': {'mutationType': {'fields': [{'name': 'jobClose', 'type': {'kind': 'OBJECT', 'name': 'JobClosePayload'},
+                        'args': [{'name': 'jobId', 'type': nn('SCALAR', 'EncodedId')}, {'name': 'input', 'type': nn('INPUT_OBJECT', 'JobCloseInput')}]}]}}}
+            if 'enumValues' in q:
+                return {'__type': {'kind': 'ENUM', 'enumValues': [{'name': x} for x in enum]}}
+            if '__type' in q:
+                return {'__type': {'JobCloseInput': {'name': 'JobCloseInput', 'inputFields': [
+                            {'name': 'modifyIncompleteVisitsBy', 'type': nn('ENUM', 'JobCloseModifyIncompleteVisitsByEnum')}]},
+                        'JobClosePayload': {'name': 'JobClosePayload', 'fields': [{'name': 'job', 'type': {}}, {'name': 'userErrors', 'type': {}}]},
+                        'JobCloseModifyIncompleteVisitsByEnum': {'name': 'JobCloseModifyIncompleteVisitsByEnum'}}.get(v['n'], {})}
+            sent.append(v)
+            return {'jobClose': {'job': {'id': 'JANA', 'jobNumber': 14622, 'jobStatus': 'archived'}, 'userErrors': []}}
+        saved = P.jobber_gql
+        P.jobber_gql = fake
+        try:
+            job = P.close_jobber_job('JANA', 'Simon')
+            self.assertEqual(job['jobNumber'], 14622)
+            self.assertEqual(sent[-1], {'jobId': 'JANA', 'input': {'modifyIncompleteVisitsBy': 'COMPLETE_PAST_DESTROY_FUTURE'}})
+            # A choice it can't answer: the message says what Jobber needs.
+            enum[:] = ['SOMETHING_ELSE']
+            P._SCHEMA_CACHE = {}
+            with self.assertRaises(ValueError) as e:
+                P.close_jobber_job('JANA', 'Simon')
+            self.assertIn('modifyIncompleteVisitsBy', str(e.exception))
+        finally:
+            P.jobber_gql = saved
+
+    def test_repair_bill_is_not_billed_by_the_months_maintenance_invoice(self):
+        """Oct 29 2026: Banyan Bay's fiberglass tank (Wettech #29271, quoted repair work) was taken as billed by
+        October's quarterly invoice #36873, so it never got a Draft invoice. Only maintenance bills ride the month's
+        invoice; a repair linked that way is unlinked once."""
+        self.extracts['b-bb-tank.pdf'] = extraction('bill', '29271', client='Banyan Repairtest', subtotal=1495)
+        b = self.upload('b-bb-tank.pdf')
+        conn = P._conn()
+        try:
+            conn.execute("UPDATE pump_docs SET description='Furnish and install new fiberglass 20 gallon bladder tank' "
+                         "WHERE case_id=?", (b['case_id'],))
+            conn.execute("UPDATE pump_cases SET vendor_quote_number='Q-9194', jobber=?, sei_invoice_number='36873' WHERE id=?",
+                         (json.dumps({'invoice': {'id': 'I36873', 'number': '36873', 'status': 'paid'}}), b['case_id']))
+            P.add_todo(conn, f"month-billed:{b['case_id']}:36873", 'Banyan Repairtest: billed', '', {'case_id': b['case_id']})
+            P._state_set('undo_repair_month_links', None, conn=conn)
+            conn.commit()
+            saved = P.month_billed
+            P.month_billed = lambda name, y, m: {'job': {'number': '11210', 'title': 'Quarterly 780'},
+                                                 'invoice': {'number': '36873', 'status': 'paid'}}
+            try:
+                self.assertEqual(P.undo_repair_month_links(conn), [b['case_id']])
+                c = conn.execute('SELECT jobber, sei_invoice_number FROM pump_cases WHERE id=?', (b['case_id'],)).fetchone()
+                self.assertFalse(json.loads(c['jobber']).get('invoice'))
+                self.assertFalse(c['sei_invoice_number'])
+                row = [x for g in P.bills_to_pay(conn) for x in g['bills'] if x['case_id'] == b['case_id']][0]
+                self.assertEqual(row['month_invoice'], '', 'a repair is never billed by the month')
+                self.assertFalse(row['payable'])
+            finally:
+                P.month_billed = saved
+        finally:
+            conn.close()
 
     def test_follow_up_postponed_to_tomorrow(self):
         """Oct 2026: a follow-up can be put off to the next working day - off the list until then."""
@@ -4196,7 +4266,10 @@ class PumpsTest(unittest.TestCase):
         self.extracts['b-uv1.pdf'] = extraction('bill', '2506', client='Univers Shops LLC', subtotal=125)
         b = self.upload('b-uv1.pdf')
         conn = P._conn()
-        conn.execute("UPDATE pump_docs SET doc_date='2026-10-21' WHERE case_id=?", (b['case_id'],))
+        conn.execute("UPDATE pump_docs SET doc_date='2026-10-21', description='Service to perform quarterly maintenance', "
+                     "line_items=? WHERE case_id=?",   # a maintenance bill (only those ride the month's invoice)
+                     (json.dumps([{'name': 'Quarterly maintenance', 'description': 'Service to perform quarterly maintenance',
+                                   'quantity': 1, 'unit_price': 125, 'amount': 125}]), b['case_id']))
         conn.commit()
         conn.close()
         found = [{'number': '36379', 'subject': 'Invoice- September', 'date': '2026-09-16', 'status': 'paid', 'uri': '',

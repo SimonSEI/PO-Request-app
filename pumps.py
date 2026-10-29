@@ -8908,37 +8908,46 @@ def h_unlink_invoice(actor, case_id):
         return _office_only(actor, 'Unlinking a Jobber invoice')
     conn = _conn()
     try:
-        row = conn.execute('SELECT jobber, sei_invoice_number FROM pump_cases WHERE id=?', (case_id,)).fetchone()
-        if not row:
+        if not conn.execute('SELECT 1 FROM pump_cases WHERE id=?', (case_id,)).fetchone():
             return {'success': False, 'error': 'Not found'}, 404
-        j = json.loads(row['jobber'] or '{}')
-        inv = j.pop('invoice', None) or {}
-        num = inv.get('number') or row['sei_invoice_number'] or ''
-        if not (inv or num):
+        num = unlink_case_invoice(conn, case_id, actor)
+        if num is None:
             return {'success': False, 'error': 'No invoice is linked to this job'}
-        if inv.get('id') and (j.get('client') or {}).get('id'):
-            # A client taken from that invoice goes with it.
-            it = conn.execute('SELECT client_id FROM pump_jobber_items WHERE jobber_id=?', (inv['id'],)).fetchone()
-            if it and it['client_id'] == j['client']['id']:
-                j.pop('client')
-        conn.execute("UPDATE pump_cases SET jobber=?, sei_invoice_number='', updated_at=? WHERE id=?",
-                     (json.dumps(j), _now_text(), case_id))
-        for d in conn.execute("SELECT id, jobber FROM pump_docs WHERE case_id=? AND kind='bill'", (case_id,)).fetchall():
-            dj = json.loads(d['jobber'] or '{}')
-            if dj.get('invoice_id') and (dj['invoice_id'] == inv.get('id') or dj.get('invoice_number') == num):
-                for k in ('invoice_id', 'invoice_number', 'invoice_uri', 'invoice_status', 'linked_by', 'billed_with_doc'):
-                    dj.pop(k, None)
-                conn.execute("UPDATE pump_docs SET jobber=?, status='filed', updated_at=? WHERE id=?",
-                             (json.dumps(dj), _now_text(), d['id']))
-        if inv.get('id'):
-            conn.execute('UPDATE pump_jobber_items SET case_id=NULL WHERE jobber_id=? AND case_id=?', (inv['id'], case_id))
-        _set_step(conn, case_id, 'invoice_drafted', na=False, by=actor)
-        _event(conn, actor, 'unlinked Jobber invoice', f"Invoice #{num} was the wrong one - taken off this job "
-                                                        "(nothing changed in Jobber)", case_id=case_id)
         conn.commit()
         return {'number': num}
     finally:
         conn.close()
+
+
+def unlink_case_invoice(conn, case_id, actor, why='was the wrong one'):
+    """Take the linked Jobber invoice off an item (the bill goes back to Draft invoice). Returns its number,
+    or None when none was linked. Nothing changes in Jobber."""
+    row = conn.execute('SELECT jobber, sei_invoice_number FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+    j = json.loads(row['jobber'] or '{}')
+    inv = j.pop('invoice', None) or {}
+    num = inv.get('number') or row['sei_invoice_number'] or ''
+    if not (inv or num):
+        return None
+    if inv.get('id') and (j.get('client') or {}).get('id'):
+        # A client taken from that invoice goes with it.
+        it = conn.execute('SELECT client_id FROM pump_jobber_items WHERE jobber_id=?', (inv['id'],)).fetchone()
+        if it and it['client_id'] == j['client']['id']:
+            j.pop('client')
+    conn.execute("UPDATE pump_cases SET jobber=?, sei_invoice_number='', updated_at=? WHERE id=?",
+                 (json.dumps(j), _now_text(), case_id))
+    for d in conn.execute("SELECT id, jobber FROM pump_docs WHERE case_id=? AND kind='bill'", (case_id,)).fetchall():
+        dj = json.loads(d['jobber'] or '{}')
+        if dj.get('invoice_id') and (dj['invoice_id'] == inv.get('id') or dj.get('invoice_number') == num):
+            for k in ('invoice_id', 'invoice_number', 'invoice_uri', 'invoice_status', 'linked_by', 'billed_with_doc'):
+                dj.pop(k, None)
+            conn.execute("UPDATE pump_docs SET jobber=?, status='filed', updated_at=? WHERE id=?",
+                         (json.dumps(dj), _now_text(), d['id']))
+    if inv.get('id'):
+        conn.execute('UPDATE pump_jobber_items SET case_id=NULL WHERE jobber_id=? AND case_id=?', (inv['id'], case_id))
+    _set_step(conn, case_id, 'invoice_drafted', na=False, by=actor)
+    _event(conn, actor, 'unlinked Jobber invoice', f"Invoice #{num} {why} - taken off this job "
+                                                    "(nothing changed in Jobber)", case_id=case_id)
+    return num
 
 
 def diver_invoice_linked(case_id, inv, actor):
@@ -9144,12 +9153,43 @@ def add_business_days(d, n):
     return d
 
 
+def undo_repair_month_links(conn, actor='Pumps'):
+    """Once (Oct 29 2026): repair bills that were taken as billed by the month's maintenance invoice (Banyan Bay's
+    fiberglass tank, Wettech #29271, linked to October's quarterly #36873) - that invoice comes off, so the bill
+    gets its own Draft invoice. Only this app's records change."""
+    if _state_get('undo_repair_month_links', conn=conn):
+        return []
+    undone = []
+    for t in conn.execute("SELECT id, key FROM pump_todos WHERE key LIKE 'month-billed:%'").fetchall():
+        parts = t['key'].split(':')
+        if len(parts) < 3 or not parts[1].isdigit():
+            continue
+        cid, num = int(parts[1]), parts[2]
+        c = conn.execute('SELECT * FROM pump_cases WHERE id=?', (cid,)).fetchone()
+        bill = conn.execute("SELECT * FROM pump_docs WHERE case_id=? AND kind='bill' AND status != 'dismissed' "
+                            "ORDER BY id DESC", (cid,)).fetchone()
+        if not c or not bill or c['vendor_paid_on']:
+            continue
+        j = json.loads(c['jobber'] or '{}')
+        quoted = bool(c['vendor_quote_number'] or (j.get('quote') or {}).get('id'))
+        linked = str((j.get('invoice') or {}).get('number') or c['sei_invoice_number'] or '')
+        if linked != num or (maintenance_bill(dict(bill)) and not quoted):
+            continue
+        unlink_case_invoice(conn, cid, actor, why="was the month's maintenance invoice, not this repair's")
+        conn.execute("UPDATE pump_todos SET done_at=?, done_by=? WHERE id=? AND done_at IS NULL", (_now_text(), actor, t['id']))
+        undone.append(cid)
+    _state_set('undo_repair_month_links', _now_text(), conn=conn)
+    conn.commit()
+    return undone
+
+
 def link_billed_months(actor='Pumps'):
     """Each vendor bill waiting on its month to be billed on the client's pump job: once Jobber has
     that month's invoice on the job, link it to the bill's item (so it can be paid) and say so on the
     to-do list (University Village, Oct 2026). Only reads Jobber. Returns the items linked."""
     conn = _conn()
     try:
+        undo_repair_month_links(conn)
         waiting = [(g['vendor'], b) for g in bills_to_pay(conn) for b in g['bills'] if b.get('month_invoice')]
     finally:
         conn.close()
@@ -9186,7 +9226,8 @@ def bills_to_pay(conn):
         inv = (c.get('jobber') or {}).get('invoice') or {}
         invoiced = bool(inv.get('id') or (c.get('sei_invoice_number') or '').strip() or
                         ((c.get('steps') or {}).get('invoice_drafted') or {}).get('at'))
-        bill = conn.execute("SELECT id, doc_number, doc_date, total, subtotal, file_name, email_date, created_at FROM pump_docs WHERE case_id=? "
+        bill = conn.execute("SELECT id, kind, doc_number, doc_date, total, subtotal, file_name, email_date, created_at, description, "
+                            "line_items FROM pump_docs WHERE case_id=? "
                             "AND kind='bill' AND status != 'dismissed' ORDER BY id DESC", (c['id'],)).fetchone()
         number = c.get('vendor_bill_number') or (bill['doc_number'] if bill else '') or ''
         amount = next((v for v in (c.get('vendor_bill_total'), c.get('vendor_bill_amount'),
@@ -9204,9 +9245,12 @@ def bills_to_pay(conn):
             num = inv.get('number') or c.get('sei_invoice_number') or ''
             why = (f"invoiced{' #' + num if num else ''}{' (' + inv['status'].replace('_', ' ') + ')' if inv.get('status') else ''}"
                    if invoiced else 'not invoiced yet')
-            if not invoiced and not payable:
+            quoted = bool(c.get('vendor_quote_number') or ((c.get('jobber') or {}).get('quote') or {}).get('id'))
+            if not invoiced and not payable and bill and maintenance_bill(_doc_dict(bill)) and not quoted:
                 # A monthly account (University Village, Oct 2026): pay once the month is billed on its job.
-                y, m = bill_service_month(dict(bill)) if bill else (_today().year, _today().month)
+                # Maintenance bills only - never quoted repair work (Banyan Bay's fiberglass tank, #29271, Oct 29
+                # 2026, was taken as billed by October's quarterly invoice and never drafted).
+                y, m = bill_service_month(_doc_dict(bill)) if bill else (_today().year, _today().month)
                 mb = month_billed(c.get('client_name') or '', y, m)
                 if mb:
                     label, job = date(y, m, 1).strftime('%B'), f"job #{mb['job']['number']} {mb['job']['title']}".strip()
@@ -13644,13 +13688,29 @@ def _type_fields(name):
     return _SCHEMA_CACHE[key]
 
 
-def try_mutation(candidates, values, want=None):
+_MUTATION_WHY = []   # why try_mutation found nothing it could run (for the message to the office)
+
+
+def _pick_enum(tname, prefer):
+    """A required choice Pumps wasn't given: the first of the type's values matching the preferred patterns."""
+    vals = _enum_values(tname) if prefer else []
+    for pat in prefer or ():
+        hit = next((v for v in vals if re.search(pat, v, re.I)), None)
+        if hit:
+            return hit
+    return None
+
+
+def try_mutation(candidates, values, want=None, prefer=None):
     """Run the first of the candidate mutations Jobber has, filling its
     arguments (and its input object's fields) from values by name. Returns
     the payload, or None when none exists or a required field is unknown.
+    prefer: patterns to choose a required option (an enum) nobody named -
+    e.g. what closing a job does with its unfinished visits.
     Raises JobberError when Jobber refuses it."""
     values = {k: v for k, v in values.items() if v not in (None, '')}
     schema = _mutation_schema()
+    _MUTATION_WHY.clear()
     for name in candidates:
         f = schema.get(name)
         if not f or name not in ALLOWED_MUTATIONS:
@@ -13663,16 +13723,26 @@ def try_mutation(candidates, values, want=None):
             else:
                 inner = _type_fields(tname).get('inputFields') if tname else None
                 if inner is None:
-                    if nn:
+                    pick = _pick_enum(tname, prefer) if nn else None
+                    if pick:
+                        args[a['name']] = pick
+                    elif nn:
                         ok = False
+                        _MUTATION_WHY.append(f"{name} needs {a['name']}")
                     continue
                 obj = {}
                 for fld in inner:
-                    fnn = _type_ref(fld['type'])[0]
+                    fnn, _, ftype = _type_ref(fld['type'])
                     if fld['name'] in values:
                         obj[fld['name']] = values[fld['name']]
                     elif fnn:
-                        ok = False
+                        pick = _pick_enum(ftype, prefer)
+                        if pick:
+                            obj[fld['name']] = pick
+                        else:
+                            ok = False
+                            _MUTATION_WHY.append(f"{name} needs {fld['name']}"
+                                                 + (f" ({', '.join(_enum_values(ftype)[:6])})" if _enum_values(ftype) else ''))
                 if not obj and not nn:
                     continue
                 args[a['name']] = obj
@@ -14835,9 +14905,15 @@ def jobs_to_close():
 
 def close_jobber_job(job_id, actor):
     """Close a job in Jobber - when someone clicks Close job on its to-do."""
-    res = try_mutation(('jobClose', 'closeJob'), {'jobId': job_id, 'id': job_id}, want={'job': 'id jobNumber jobStatus'})
+    # Closing asks what to do with visits not done: complete the past ones, remove future ones (Ana's Place
+    # #14622, Oct 29 2026: the button failed because nothing answered that).
+    res = try_mutation(('jobClose', 'closeJob'), {'jobId': job_id, 'id': job_id}, want={'job': 'id jobNumber jobStatus'},
+                       prefer=(r'complete.*past.*(destroy|remove|delete).*future', r'complete.*past', r'(destroy|remove|delete)',
+                               r'complete'))
     if res is None:
-        raise ValueError("Jobber's API won't close jobs from here - close it in Jobber (Open the job in Jobber)")
+        why = '; '.join(_MUTATION_WHY)
+        raise ValueError("Jobber's API won't close jobs from here" + (f" ({why})" if why else '') +
+                         " - close it in Jobber (Open the job in Jobber)")
     conn = _conn()
     try:
         conn.execute("UPDATE pump_jobber_items SET status='archived', synced_at=? WHERE jobber_id=?", (_now_text(), job_id))
