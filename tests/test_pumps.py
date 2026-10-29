@@ -3535,6 +3535,37 @@ class PumpsTest(unittest.TestCase):
         finally:
             P.jobber_gql = saved
 
+    def test_repair_bill_is_not_billed_by_the_months_maintenance_invoice(self):
+        """Oct 29 2026: Banyan Bay's fiberglass tank (Wettech #29271, quoted repair work) was taken as billed by
+        October's quarterly invoice #36873, so it never got a Draft invoice. Only maintenance bills ride the month's
+        invoice; a repair linked that way is unlinked once."""
+        self.extracts['b-bb-tank.pdf'] = extraction('bill', '29271', client='Banyan Repairtest', subtotal=1495)
+        b = self.upload('b-bb-tank.pdf')
+        conn = P._conn()
+        try:
+            conn.execute("UPDATE pump_docs SET description='Furnish and install new fiberglass 20 gallon bladder tank' "
+                         "WHERE case_id=?", (b['case_id'],))
+            conn.execute("UPDATE pump_cases SET vendor_quote_number='Q-9194', jobber=?, sei_invoice_number='36873' WHERE id=?",
+                         (json.dumps({'invoice': {'id': 'I36873', 'number': '36873', 'status': 'paid'}}), b['case_id']))
+            P.add_todo(conn, f"month-billed:{b['case_id']}:36873", 'Banyan Repairtest: billed', '', {'case_id': b['case_id']})
+            P._state_set('undo_repair_month_links', None, conn=conn)
+            conn.commit()
+            saved = P.month_billed
+            P.month_billed = lambda name, y, m: {'job': {'number': '11210', 'title': 'Quarterly 780'},
+                                                 'invoice': {'number': '36873', 'status': 'paid'}}
+            try:
+                self.assertEqual(P.undo_repair_month_links(conn), [b['case_id']])
+                c = conn.execute('SELECT jobber, sei_invoice_number FROM pump_cases WHERE id=?', (b['case_id'],)).fetchone()
+                self.assertFalse(json.loads(c['jobber']).get('invoice'))
+                self.assertFalse(c['sei_invoice_number'])
+                row = [x for g in P.bills_to_pay(conn) for x in g['bills'] if x['case_id'] == b['case_id']][0]
+                self.assertEqual(row['month_invoice'], '', 'a repair is never billed by the month')
+                self.assertFalse(row['payable'])
+            finally:
+                P.month_billed = saved
+        finally:
+            conn.close()
+
     def test_follow_up_postponed_to_tomorrow(self):
         """Oct 2026: a follow-up can be put off to the next working day - off the list until then."""
         j = self.c.post('/pumps/api/cases', json={'title': 'Fan', 'client_name': 'Snooze Lakes'}).get_json()
@@ -4235,7 +4266,10 @@ class PumpsTest(unittest.TestCase):
         self.extracts['b-uv1.pdf'] = extraction('bill', '2506', client='Univers Shops LLC', subtotal=125)
         b = self.upload('b-uv1.pdf')
         conn = P._conn()
-        conn.execute("UPDATE pump_docs SET doc_date='2026-10-21' WHERE case_id=?", (b['case_id'],))
+        conn.execute("UPDATE pump_docs SET doc_date='2026-10-21', description='Service to perform quarterly maintenance', "
+                     "line_items=? WHERE case_id=?",   # a maintenance bill (only those ride the month's invoice)
+                     (json.dumps([{'name': 'Quarterly maintenance', 'description': 'Service to perform quarterly maintenance',
+                                   'quantity': 1, 'unit_price': 125, 'amount': 125}]), b['case_id']))
         conn.commit()
         conn.close()
         found = [{'number': '36379', 'subject': 'Invoice- September', 'date': '2026-09-16', 'status': 'paid', 'uri': '',
