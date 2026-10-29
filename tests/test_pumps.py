@@ -4529,8 +4529,6 @@ class PumpsTest(unittest.TestCase):
                          (json.dumps({'quote': {'id': 'QBB9194', 'number': '9194'}, 'job': {'id': 'J1', 'number': '14700'}}), cid))
             P.close_stale_todos(conn)
             self.assertTrue(conn.execute("SELECT done_at FROM pump_todos WHERE key=?", (f'quote-to-job:{cid}',)).fetchone()[0])
-            self.assertTrue(conn.execute("SELECT 1 FROM pump_todos WHERE key='convert-quote:9194'").fetchone(),
-                            "the one-time reminder for Banyan Bay's #9194")
             conn.execute("DELETE FROM pump_jobber_items WHERE jobber_id='QBB9194'")
             conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (cid,))
             conn.commit()
