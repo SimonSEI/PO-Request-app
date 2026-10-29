@@ -12391,19 +12391,10 @@ def _apply_master_vendors(c, now):
 
 
 def _remind_banyan_bladder(c, now):
-    """Once (Oct 28 2026): Banyan Bay's bladder tank quote #9194 was approved but never made a job (its item
-    was cancelled, so nothing reminded the office)."""
-    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('banyan_9194_reminder', ?)", (json.dumps(now),))
-    if c.rowcount != 1:
-        return
-    c.execute('INSERT OR IGNORE INTO pump_todos (kind, key, title, detail, due_on, link, created_by, created_at) '
-              'VALUES (?,?,?,?,?,?,?,?)',
-              ('auto', 'convert-quote:9194', 'Convert quote for Banyan Bay (#9194) to a job',
-               'The 20 gallon bladder tank ($1,495) was approved, but Jobber still shows quote #9194 awaiting '
-               'response. Mark it approved in Jobber, then convert it to a job. (Its item here was cancelled - '
-               'restore it from the Cancelled list to follow it.)',
-               '', json.dumps({'uri': 'https://secure.getjobber.com/quotes/67427291', 'label': 'Open quote #9194'}),
-               'Pumps', now))
+    """Undo (Oct 29 2026): the "Convert quote for Banyan Bay (#9194)" to-do added on Oct 28 was wrong - the
+    bladder tank quote was never approved. Closed if still open."""
+    c.execute("UPDATE pump_todos SET done_at=?, done_by='Pumps (added by mistake)' WHERE key='convert-quote:9194' "
+              "AND done_at IS NULL", (now,))
 
 
 def _apply_wild_blue_oct28(c, now):

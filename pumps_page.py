@@ -160,9 +160,9 @@ table.sheet{border-collapse:collapse;width:100%;font-size:12.5px;min-width:1350p
 .pm .a ul{margin:4px 0 4px 18px;}
 .pm .a.wait{color:var(--muted);font-style:italic;}
 /* The Jobber account leads a job (Oct 2026): its name and address on top, set apart; the job's title under it. */
-.acct{font-family:Georgia,'Times New Roman',serif;font-weight:700;font-size:15px;color:var(--navy-2);letter-spacing:.1px;line-height:1.3;}
-.acct-addr{font-size:12.5px;font-weight:600;color:var(--text);margin-top:1px;}
-.jobt{font-size:13px;font-weight:500;color:var(--muted);margin-top:4px;}
+.acct{font-weight:700;font-size:15px;color:var(--text);line-height:1.3;}
+.acct-addr{font-size:13px;color:var(--text);margin-top:1px;}
+.jobt{font-size:13px;font-weight:600;color:var(--brand-d);margin-top:5px;}
 .pm .pmacts{align-self:flex-start;max-width:92%;display:flex;flex-direction:column;gap:6px;}
 .pm .pmact{display:flex;gap:8px;align-items:center;justify-content:space-between;background:var(--brand-soft);border:1px solid var(--border);padding:6px 9px;border-radius:8px;}
 .pm .pmideas{align-self:flex-start;max-width:92%;background:var(--amber-bg);border:1px solid var(--border);padding:6px 10px;border-radius:8px;}
