@@ -76,10 +76,12 @@ h2,h3{font-weight:700;letter-spacing:-.2px;}
 .seg button{background:#fff;border:none;border-right:1px solid var(--border);padding:8px 14px;font:inherit;font-size:13.5px;font-weight:600;color:var(--muted);cursor:pointer;display:inline-flex;gap:6px;align-items:center;}
 .seg button:last-child{border-right:none;}
 .seg button.on{background:var(--brand-soft);color:var(--brand-d);}
-.more{position:relative;}
+/* "…" opens its buttons in line, in the toolbar - never a floating box that the page can cut off. */
+.more{display:inline-flex;flex-wrap:wrap;gap:6px;align-items:center;}
 .more summary{list-style:none;cursor:pointer;}
 .more summary::-webkit-details-marker{display:none;}
-.more .menu{position:absolute;right:0;top:40px;z-index:30;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow-lg);padding:8px;display:grid;gap:6px;width:max-content;}
+.more[open] summary{background:var(--brand-soft);}
+.more .menu{display:inline-flex;flex-wrap:wrap;gap:6px;margin-left:6px;}
 .dots{display:flex;gap:3px;align-items:center;}
 .dots i{width:11px;height:11px;border-radius:50%;background:var(--border);display:inline-block;}
 .dots i.d{background:var(--green);} .dots i.c{background:#fff;border:2.5px solid var(--brand);width:13px;height:13px;}
@@ -2414,7 +2416,8 @@ function drawAccounts(){
   const rows = AC.accounts.filter(a => ok(a) && (allSvc || [...SVC_ON].some(k => hasSvc(a, k))) && (!q || JSON.stringify([a.name, a.pump && a.pump.address, a.lake && a.lake.address, (a.contracts || []).map(c => c.account + ' ' + c.line)]).toLowerCase().includes(q)));
   const act = AC.accounts.filter(a => a.active);
   const cons = AC.accounts.flatMap(a => (a.contracts || []).filter(c => c.status === 'active'));
-  document.getElementById('acInfo').innerHTML = `${act.length} active accounts · ${act.filter(a => a.pump && a.pump.active).length} pump · ${act.filter(a => a.lake && a.lake.active !== 0).length} lake · ${new Set(cons.map(c => c.account)).size} maintenance contracts (${money(cons.reduce((t, c) => t + (c.frequency === 'monthly' ? c.amount || 0 : 0), 0))}/mo) · <b>${act.filter(due).length} due in ${esc(AC.month)}</b>`;
+  const tot = act.reduce((t, a) => { const k = equipCounts(a); t.p += k.pumps; t.f += k.filters; return t; }, {p: 0, f: 0});
+  document.getElementById('acInfo').innerHTML = `${act.length} active accounts · <b>${tot.p} pumps</b> maintained · <b>${tot.f} filters</b> dived · ${new Set(cons.map(c => c.account)).size} maintenance contracts (${money(cons.reduce((t, c) => t + (c.frequency === 'monthly' ? c.amount || 0 : 0), 0))}/mo) · <b>${act.filter(due).length} due in ${esc(AC.month)}</b>`;
   const st = {overdue:'r', due_soon:'a', current:'g', inactive:'', unknown:''};
   const nextDue = a => { const out = [], now = new Date().getMonth() + 1;
     const next = (ms, every) => { if (every) return 'this month'; const m = (ms || '').split(',').filter(Boolean).map(Number); if (!m.length) return '';
@@ -2434,9 +2437,24 @@ function drawAccounts(){
     lastType = t[1];
     return head + rowHtml(a, p, l, s, vis, nextDue); }).join('') || '<tr><td colspan="4" class="empty">None.</td></tr>';
 }
+// How many pumps Wettech maintains and filters Jordan dives on, read from the account's equipment
+// ("3 Lakes 9 Filters 3 Pump Stations (4 Pumps)" -> 4 pumps, 9 filters) - Oct 2026.
+function equipNum(text, re){ let n = 0, hit = false; for (const m of (text || '').matchAll(re)) { hit = true; n = Math.max(n, parseInt(m[1] || '1', 10)); } return hit ? n : 0; }
+function equipCounts(a){
+  const p = a.pump && a.pump.active ? a.pump : null, l = a.lake && a.lake.active !== 0 && a.lake.needs_dive ? a.lake : null;
+  const pumps = p ? equipNum(p.equipment || (a.lake || {}).equipment, /(?:(\d+)\s*)?(?:pump\s*stations?|pumps?)\b/gi) || 1 : 0;
+  const filters = l ? equipNum(l.equipment || (a.pump || {}).equipment, /(?:(\d+)\s*)?(?:lake\s*)?filters?\b/gi) : 0;
+  const fountains = l && !filters ? equipNum(l.equipment, /(?:(\d+)\s*)?(?:lake\s*)?fountains?\b/gi) : 0;
+  const lakes = l && !filters && !fountains ? equipNum(l.equipment, /(\d+)\s*lakes?\b(?!\s*fountain)/gi) || 1 : 0;
+  return {pumps, filters, fountains, lakes};
+}
+function equipText(a){
+  const k = equipCounts(a), pl = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  return [k.pumps ? pl(k.pumps, 'pump') : '', k.filters ? pl(k.filters, 'filter dive') : '', k.fountains ? pl(k.fountains, 'fountain dive') : '', k.lakes ? pl(k.lakes, 'lake dive') : ''].filter(Boolean).join(' · ');
+}
 function rowHtml(a, p, l, s, vis, nextDue){
     const on = svcBadges(a);
-    return `<tr class="click" onclick="openAccount(${JSON.stringify(a.name).replace(/"/g, '&quot;')})"><td><b>${esc(a.name)}</b>${!a.active ? ' <span class="chip">former</span>' : ''}${vis ? `<div class="note">✓ Client approved ${esc((vis.link || {}).since || '')}</div>` : ''}</td>
+    return `<tr class="click" onclick="openAccount(${JSON.stringify(a.name).replace(/"/g, '&quot;')})"><td><b>${esc(a.name)}</b>${!a.active ? ' <span class="chip">former</span>' : ''}${equipText(a) ? `<div style="font-size:13px;font-weight:600;color:var(--brand-d);margin-top:2px">${esc(equipText(a))}</div>` : ''}${vis ? `<div class="note">✓ Client approved ${esc((vis.link || {}).since || '')}</div>` : ''}</td>
     <td style="white-space:nowrap">${on || '<span class="note">—</span>'}</td>
     <td>${nextDue(a).map(x => /overdue/.test(x) ? `<b class="bad">${esc(x)}</b>` : /this month/.test(x) ? `<b>${esc(x)}</b>` : esc(x)).join('<br>') || '<span class="note">—</span>'}</td>
     <td class="note">${esc((p && p.address) || (l && l.address) || '')}</td></tr>`;
