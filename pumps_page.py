@@ -64,6 +64,12 @@ h2,h3{font-weight:700;letter-spacing:-.2px;}
 .gsearch input{width:330px;max-width:40vw;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.28);color:#fff;border-radius:8px;padding:7px 10px;font:inherit;}
 .gsearch input::placeholder{color:#C7D2EA;}
 .gsearch #searchResults{position:absolute;top:40px;left:0;width:min(560px,90vw);max-height:70vh;color:var(--text);z-index:50;box-shadow:var(--shadow-lg);}
+.sec{font-size:15px;margin:22px 0 10px;padding-top:14px;border-top:1px solid var(--border);}
+.panel>.sec:first-child{margin-top:0;padding-top:0;border-top:none;}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:14px;}
+.seg button{background:#fff;border:none;border-right:1px solid var(--border);padding:8px 14px;font:inherit;font-size:13.5px;font-weight:600;color:var(--muted);cursor:pointer;display:inline-flex;gap:6px;align-items:center;}
+.seg button:last-child{border-right:none;}
+.seg button.on{background:var(--brand-soft);color:var(--brand-d);}
 .dots{display:flex;gap:3px;align-items:center;}
 .dots i{width:11px;height:11px;border-radius:50%;background:var(--border);display:inline-block;}
 .dots i.d{background:var(--green);} .dots i.c{background:#fff;border:2.5px solid var(--brand);width:13px;height:13px;}
@@ -363,12 +369,9 @@ details.fold[open] > summary h4::before { content: '▾ '; }
 <div class="mainc">
 <div class="tabs" id="tabs">
   <div class="tab on" data-tab="jobs">Jobs <span class="n" id="n-jobs"></span></div>
-  <div class="tab" data-tab="scada">SCADA <span class="n" id="n-scada"></span></div>
+  <div class="tab" data-tab="maint">Maintenance <span class="n" id="n-maint"></span></div>
+  <div class="tab" data-tab="paper">Paperwork <span class="n" id="n-paper"></span></div>
   <div class="tab" data-tab="accounts">Accounts</div>
-  <div class="tab" data-tab="reports">Reports</div>
-  <div class="tab" data-tab="bills">Bills to pay <span class="n" id="n-bills"></span></div>
-  <div class="tab" data-tab="vquotes">Quotes <span class="n" id="n-vquotes"></span></div>
-  <div class="tab" data-tab="vinvoices">Vendor invoices</div>
 </div>
 
 <!-- JOBS -->
@@ -379,7 +382,12 @@ details.fold[open] > summary h4::before { content: '▾ '; }
     <button class="btn s" title="It syncs on its own - this just does it now" onclick="syncJobber()">↻ Sync now</button>
   </div>
   <div class="scroll" style="max-height:45vh"><table class="t"><thead><tr><th>Job</th><th>Progress</th><th>Next step</th><th></th></tr></thead><tbody id="jobsBody"></tbody></table></div>
-  <details id="msFold" open ontoggle="window.foldSave && foldSave('ms', this.open)" style="margin-top:18px"><summary style="cursor:pointer;margin-bottom:8px"><h3 style="display:inline;margin:0;font-size:14px">Maintenance this month <span class="chip" id="msCount"></span></h3> <span class="note">click to show or fold away</span></summary>
+</div>
+
+
+<!-- MAINTENANCE: this month's recurring work - Wettech visits, Jordan's diver list, SCADA renewals -->
+<div class="panel hide" id="p-maint">
+  <h3 class="sec">This month's visits <span class="chip" id="msCount"></span></h3>
   <div class="toolbar">
     <select id="msMonth" onchange="loadMaintSchedule()"></select>
     <input type="text" id="msSearch" placeholder="Find an account or address…" oninput="drawMaintSchedule()" style="width:220px">
@@ -391,17 +399,71 @@ details.fold[open] > summary h4::before { content: '▾ '; }
   </div>
   <div class="note" style="margin-bottom:8px">Every pump (Wettech) and lake (Gulfshore) maintenance visit due in the month from the Accounts tab, and whether the subcontractor has been told. Lakes count as told once the month's diver list is emailed.</div>
   <div class="scroll" style="max-height:45vh"><table class="t"><thead><tr><th style="width:28px"><input type="checkbox" id="msAll" title="Select every account shown that isn't fully told yet" onchange="msSelectAll(this.checked)"></th><th>Account</th><th>Client approved</th><th>Justin<div class="note" style="font-weight:400">Wettech pumps</div></th><th>Jordan<div class="note" style="font-weight:400">Gulfshore diving</div></th></tr></thead><tbody id="msBody"></tbody></table></div>
-  </details>
-</div>
-
-<!-- SCADA -->
-<div class="panel hide" id="p-scada">
+  <h3 class="sec" id="sec-diver">Jordan's diver list</h3>
+  <div class="toolbar"><span id="diveInfo" class="note"></span><div class="sp"></div>
+    <button class="btn" onclick="diverTodo(diveMonth())">Email ready to copy</button>
+    <a class="btn" id="diveDocx" href="#">⬇ Word list</a>
+    <button class="btn" onclick="sendDiveEmail()" title="Send it from the PO mailbox">Send from PO@…</button></div>
+  <details style="margin-top:8px"><summary class="note" style="cursor:pointer">Email settings - who it goes to, cc, signature, sending on the 1st</summary><div class="fields" id="diveSettings" style="margin-top:8px"></div></details>
+  <div class="scroll" style="max-height:30vh;margin-top:10px"><table class="t"><thead><tr><th>Month</th><th>Sent</th><th>By</th><th>To</th><th class="num">Sites</th><th>Result</th></tr></thead><tbody id="diveSent"></tbody></table></div>
+  <h3 class="sec" id="sec-scada">SCADA renewals</h3>
   <div class="toolbar"><div class="note">The SCADA sheet: <b>Renewal date</b> is when the next renewal is due; each year holds our invoice # or a note. When one's renewed, <b>Renewed…</b> records it and moves the date on a year. Due within {{ scada_days }} days: a to-do to draft the client's quote (Draft quote makes it in Jobber at their price; a renewal quote already in Jobber counts; complimentary ones are just a reminder). <b>Renewal quote</b> shows this renewal's quote and where it stands; only this year's column shows - <b>all years</b> opens the rest. Each Jobber sync fills in the year's invoice # from the SCADA renewal invoices it finds.</div><div class="sp"></div>
     <select id="scShow" onchange="loadScada()"><option value="active">On SCADA</option><option value="all">All, incl. stopped</option></select>
     <button class="btn" onclick="scadaEdit(0)">＋ Add client</button></div>
   <div class="scroll"><table class="t" id="scadaTable"></table></div>
 </div>
-
+<!-- PAPERWORK: everything vendors send - one list, one filter -->
+<div class="panel hide" id="p-paper">
+  <div class="seg" id="paperSeg"><button data-v="bills" onclick="paperShow('bills')">Bills to pay <span class="n" id="n-bills"></span></button><button data-v="vinvoices" onclick="paperShow('vinvoices')">Vendor invoices</button><button data-v="vquotes" onclick="paperShow('vquotes')">Vendor quotes <span class="n" id="n-vquotes"></span></button><button data-v="reports" onclick="paperShow('reports')">Service reports</button></div>
+  <div id="pp-bills">
+  <div class="toolbar">
+    <button class="btn p" id="billsGo" onclick="billsEmail()">✉ Email Christian</button>
+    <button class="btn" id="billsPaid" onclick="billsMarkPaid()">✓ Mark selected paid</button>
+    <button class="btn s" onclick="billsAll(null, null, true)">Select all</button><button class="btn s" onclick="billsAll(null, null, false)">Select none</button>
+    <span class="note">Shift-click to tick a run of bills</span>
+    <div class="sp"></div><span class="note" id="billsInfo"></span>
+  </div>
+  <div class="note" style="margin-bottom:10px">Every vendor bill not paid yet, by vendor. A bill can be paid once we've invoiced the client for it; ticked ones go in one email to Christian, with the bills attached. Mark each paid when it is.</div>
+  <div id="billsList"><div class="empty">Loading…</div></div>
+  <div id="billsPaidList" style="margin-top:16px"></div>
+  </div>
+  <div id="pp-vinvoices" class="hide">
+  <div class="toolbar">
+    <select id="viShow" onchange="loadVInvoices()">
+      <option value="all">All</option><option value="unpaid">Not paid yet</option><option value="not_invoiced">Not invoiced to the client</option>
+      <option value="invoiced">Invoiced, not paid</option><option value="paid">Paid</option><option value="cancelled">Cancelled</option></select>
+    <select id="viSort" onchange="loadVInvoices()" title="Sort"><option value="az">Site A-Z</option><option value="new">Newest first</option><option value="vendor">Vendor A-Z</option></select>
+    <input type="text" id="viSearch" placeholder="Search vendor, invoice #, site, work…" oninput="clearTimeout(window._vi);window._vi=setTimeout(loadVInvoices,300)" style="width:240px">
+    <div class="sp"></div><span class="note" id="viInfo"></span>
+  </div>
+  <div class="note" style="margin-bottom:10px">Every vendor invoice on file, with our invoice to the client and whether the vendor is paid.</div>
+  <div id="viList"><div class="empty">Loading…</div></div>
+  </div>
+  <div id="pp-vquotes" class="hide">
+  <div class="toolbar">
+    <select id="vqShow" onchange="loadVQuotes()">
+      <option value="open">Open (to quote, draft, with the client)</option><option value="to_quote">Our quote not made</option>
+      <option value="draft">Draft - to send</option><option value="sent">With the client</option>
+      <option value="approved">Approved</option><option value="done">Done</option><option value="cancelled">Cancelled</option>
+      <option value="all">All</option></select>
+    <select id="vqSort" onchange="loadVQuotes()" title="Sort"><option value="az">Site A-Z</option><option value="new">Newest first</option><option value="vendor">Vendor A-Z</option></select>
+    <input type="text" id="vqSearch" placeholder="Search vendor, quote #, site, work…" oninput="clearTimeout(window._vq);window._vq=setTimeout(loadVQuotes,300)" style="width:240px">
+    <div class="sp"></div><span class="note" id="vqInfo"></span>
+  </div>
+  <div class="note" style="margin-bottom:10px">Every vendor quote, with our Jobber quote for it and where it stands.</div>
+  <div id="vqList"><div class="empty">Loading…</div></div>
+  </div>
+  <div id="pp-reports" class="hide">
+  <div class="toolbar">
+    <select id="repYear" onchange="loadReports()"></select>
+    <input type="text" id="repSearch" placeholder="Find a site…" oninput="clearTimeout(window._rq);window._rq=setTimeout(loadReports,300)" style="width:200px">
+    <div class="sp"></div><span class="note" id="repInfo"></span>
+    <a class="btn s" href="/pumps/api/reports/archive.zip" title="Every pump report ever, in one zip: a folder per month, plus a spreadsheet index">⬇ Download all reports</a>
+  </div>
+  <div class="note" style="margin-bottom:10px">Every service report from Wettech, rebranded (our letterhead, no Wettech details, no technician, not "Stahlman England" as the customer), by month. Each one goes on the site's pump job in Jobber as "&lt;Month&gt; Pump Report" with the PDF, named as Wettech sent it.</div>
+  <div id="repBody"></div>
+  </div>
+</div>
 <!-- ACCOUNTS -->
 <div class="panel hide" id="p-accounts">
   <div class="toolbar">
@@ -418,14 +480,6 @@ details.fold[open] > summary h4::before { content: '▾ '; }
   <div style="margin-bottom:10px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b class="note">Show:</b><span id="svcPicks"></span>
     <span class="note">click to show only accounts with what's ticked &nbsp;·&nbsp; in the list, <span class="svc on" style="cursor:default">green</span> = they have it, <span class="svc off" style="cursor:default">＋ grey</span> = they don't - click it to draft a quote in Jobber</span></div>
   <div class="scroll"><table class="t"><thead><tr><th>Account</th><th>Pump · Filter · SCADA · Irrigation</th><th>Next due</th><th>Where</th></tr></thead><tbody id="acBody"></tbody></table></div>
-  <details style="margin-top:22px"><summary style="cursor:pointer;font-size:14px;font-weight:600">Monthly email to the diver</summary>
-  <div class="toolbar"><span id="diveInfo" class="note"></span><div class="sp"></div>
-    <button class="btn" onclick="diverTodo(diveMonth())">Email ready to copy</button>
-    <a class="btn" id="diveDocx" href="#">⬇ Word list</a>
-    <button class="btn" onclick="sendDiveEmail()" title="Send it from the PO mailbox">Send from PO@…</button></div>
-  <div class="fields" id="diveSettings"></div>
-  <div class="scroll" style="max-height:30vh;margin-top:10px"><table class="t"><thead><tr><th>Month</th><th>Sent</th><th>By</th><th>To</th><th class="num">Sites</th><th>Result</th></tr></thead><tbody id="diveSent"></tbody></table></div>
-  </details>
   <details style="margin-top:14px"><summary style="cursor:pointer;font-size:14px;font-weight:600">Site names (how vendors write a site)</summary>
   <div class="toolbar"><button class="btn" onclick="siteNameAdd()">＋ Site name</button></div>
   <div class="note" style="margin-bottom:8px">How a site is written on the vendors' paperwork, so quotes and reports go to the right Jobber client and job - e.g. "Carlisle" is on the Greenscapes account. Add one from <b>Draft quote</b> (tick "Remember").</div>
@@ -434,54 +488,6 @@ details.fold[open] > summary h4::before { content: '▾ '; }
 </div>
 
 <!-- REPORTS -->
-<div class="panel hide" id="p-bills">
-  <div class="toolbar">
-    <button class="btn p" id="billsGo" onclick="billsEmail()">✉ Email Christian</button>
-    <button class="btn" id="billsPaid" onclick="billsMarkPaid()">✓ Mark selected paid</button>
-    <button class="btn s" onclick="billsAll(null, null, true)">Select all</button><button class="btn s" onclick="billsAll(null, null, false)">Select none</button>
-    <span class="note">Shift-click to tick a run of bills</span>
-    <div class="sp"></div><span class="note" id="billsInfo"></span>
-  </div>
-  <div class="note" style="margin-bottom:10px">Every vendor bill not paid yet, by vendor. A bill can be paid once we've invoiced the client for it; ticked ones go in one email to Christian, with the bills attached. Mark each paid when it is.</div>
-  <div id="billsList"><div class="empty">Loading…</div></div>
-  <div id="billsPaidList" style="margin-top:16px"></div>
-</div>
-<div class="panel hide" id="p-vquotes">
-  <div class="toolbar">
-    <select id="vqShow" onchange="loadVQuotes()">
-      <option value="open">Open (to quote, draft, with the client)</option><option value="to_quote">Our quote not made</option>
-      <option value="draft">Draft - to send</option><option value="sent">With the client</option>
-      <option value="approved">Approved</option><option value="done">Done</option><option value="cancelled">Cancelled</option>
-      <option value="all">All</option></select>
-    <select id="vqSort" onchange="loadVQuotes()" title="Sort"><option value="az">Site A-Z</option><option value="new">Newest first</option><option value="vendor">Vendor A-Z</option></select>
-    <input type="text" id="vqSearch" placeholder="Search vendor, quote #, site, work…" oninput="clearTimeout(window._vq);window._vq=setTimeout(loadVQuotes,300)" style="width:240px">
-    <div class="sp"></div><span class="note" id="vqInfo"></span>
-  </div>
-  <div class="note" style="margin-bottom:10px">Every vendor quote, with our Jobber quote for it and where it stands.</div>
-  <div id="vqList"><div class="empty">Loading…</div></div>
-</div>
-<div class="panel hide" id="p-vinvoices">
-  <div class="toolbar">
-    <select id="viShow" onchange="loadVInvoices()">
-      <option value="all">All</option><option value="unpaid">Not paid yet</option><option value="not_invoiced">Not invoiced to the client</option>
-      <option value="invoiced">Invoiced, not paid</option><option value="paid">Paid</option><option value="cancelled">Cancelled</option></select>
-    <select id="viSort" onchange="loadVInvoices()" title="Sort"><option value="az">Site A-Z</option><option value="new">Newest first</option><option value="vendor">Vendor A-Z</option></select>
-    <input type="text" id="viSearch" placeholder="Search vendor, invoice #, site, work…" oninput="clearTimeout(window._vi);window._vi=setTimeout(loadVInvoices,300)" style="width:240px">
-    <div class="sp"></div><span class="note" id="viInfo"></span>
-  </div>
-  <div class="note" style="margin-bottom:10px">Every vendor invoice on file, with our invoice to the client and whether the vendor is paid.</div>
-  <div id="viList"><div class="empty">Loading…</div></div>
-</div>
-<div class="panel hide" id="p-reports">
-  <div class="toolbar">
-    <select id="repYear" onchange="loadReports()"></select>
-    <input type="text" id="repSearch" placeholder="Find a site…" oninput="clearTimeout(window._rq);window._rq=setTimeout(loadReports,300)" style="width:200px">
-    <div class="sp"></div><span class="note" id="repInfo"></span>
-    <a class="btn s" href="/pumps/api/reports/archive.zip" title="Every pump report ever, in one zip: a folder per month, plus a spreadsheet index">⬇ Download all reports</a>
-  </div>
-  <div class="note" style="margin-bottom:10px">Every service report from Wettech, rebranded (our letterhead, no Wettech details, no technician, not "Stahlman England" as the customer), by month. Each one goes on the site's pump job in Jobber as "&lt;Month&gt; Pump Report" with the PDF, named as Wettech sent it.</div>
-  <div id="repBody"></div>
-</div>
 
 </div>
 </div>
@@ -592,13 +598,28 @@ function kindChip(k){ const m = {quote:'b', bill:'a', report:'g', other:''}; ret
 
 // ── tabs ───────────────────────────────────────────────
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => showTab(t.dataset.tab));
+// 4 tabs (Oct 2026 redesign): Jobs, Maintenance (visits, diver list, SCADA), Paperwork (bills to pay, vendor
+// invoices, quotes, reports), Accounts. The old tab names still work - they open where that list now lives.
+const OLD_TABS = {scada: ['maint', 'sec-scada'], bills: ['paper', 'bills'], vinvoices: ['paper', 'vinvoices'],
+                  vquotes: ['paper', 'vquotes'], reports: ['paper', 'reports']};
 function showTab(name){
+  const old = OLD_TABS[name];
+  if (old) name = old[0];
   curTab = name;
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === name));
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('hide', p.id !== 'p-' + name));
-  if (name === 'jobs') loadJobs(); else if (name === 'scada') loadScada();
-  else if (name === 'accounts') loadAccounts(); else if (name === 'reports') loadReports(); else if (name === 'bills') loadBills(); else if (name === 'vquotes') loadVQuotes(); else if (name === 'vinvoices') loadVInvoices();
+  if (name === 'jobs') loadJobs();
+  else if (name === 'maint') { loadMaintSchedule(); loadDivers(); loadScada();
+    if (old) setTimeout(() => { const el = document.getElementById(old[1]); if (el) el.scrollIntoView({block: 'start'}); }, 300); }
+  else if (name === 'paper') paperShow(old ? old[1] : (window._paperView || 'bills'));
+  else if (name === 'accounts') loadAccounts();
   history.replaceState(null, '', '#' + name);
+}
+function paperShow(v){
+  window._paperView = v;
+  document.querySelectorAll('#paperSeg button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
+  ['bills', 'vinvoices', 'vquotes', 'reports'].forEach(k => document.getElementById('pp-' + k).classList.toggle('hide', k !== v));
+  ({bills: loadBills, vinvoices: loadVInvoices, vquotes: loadVQuotes, reports: loadReports})[v]();
 }
 
 // ── today ──────────────────────────────────────────────
@@ -854,8 +875,8 @@ async function loadToday(){
   if (!j.success) { el.innerHTML = `<div class="empty">${esc(j.error)}</div>`; return; }
   const q = j.queue;
   setCount('n-jobs', q.open_count, false);
-  setCount('n-scada', q.scada_attention.length, q.scada_attention.some(s => s.state === 'overdue'));
-  setCount('n-bills', q.bills_to_pay_count || 0, false);
+  setCount('n-maint', q.scada_attention.length, q.scada_attention.some(s => s.state === 'overdue'));
+  setCount('n-bills', q.bills_to_pay_count || 0, false); setCount('n-paper', q.bills_to_pay_count || 0, false);
   updateScanInfo(j.scan);
   const open = c => `openCase(${c.id})`;
   // ✓ Done on a to-do ticks that step on its job, so the watchlist moves on with it.
@@ -928,7 +949,7 @@ async function loadToday(){
     + `<div class="row" style="cursor:default;align-items:flex-start"><textarea id="todoNew" rows="2" placeholder="Explain what you need to do, in your own words - the app writes the to-do for you…" style="flex:1;min-width:0;font:inherit;resize:vertical" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();todoWrite()}"></textarea><button class="btn s p" id="todoWriteBtn" onclick="todoWrite()">✨ Write to-do</button></div>`
     + waitHtml;
 }
-function setCount(id, n, hot){ const el = document.getElementById(id); el.textContent = n || ''; el.classList.toggle('hot', !!hot); el.style.display = n ? '' : 'none'; }
+function setCount(id, n, hot){ const el = document.getElementById(id); if (!el) return; el.textContent = n || ''; el.classList.toggle('hot', !!hot); el.style.display = n ? '' : 'none'; }
 let searchTimer = null;
 function searchCases(v){
   clearTimeout(searchTimer);
@@ -1230,7 +1251,8 @@ async function loadBills(){
       <td>${b.held ? `<button class="btn s" title="Lift the hold - it can be paid again once nothing else stops it" onclick="billsHold([${b.case_id}], true)">↶ Lift hold</button> ` : b.payable ? (b.pay_ok ? `<button class="btn s" title="Back to waiting" onclick="billsPayOk([${b.case_id}], true)">↶ Not yet</button> ` : `<button class="btn s" title="Something's wrong with this one - don't pay it until the hold is lifted" onclick="billsHold([${b.case_id}])">Not OK to pay yet</button> `) : `<button class="btn s p" title="Billed through a monthly contract, or otherwise fine to pay - pay it now" onclick="billsPayOk([${b.case_id}])">OK to pay now</button> <button class="btn s" title="Invoiced straight in Jobber? Tie that invoice to this job" onclick="linkInvoice(${b.case_id}).then(loadBills)">Link invoice</button> `}<button class="btn s" onclick="markVendorPaid(${b.case_id}).then(loadBills)">Mark paid</button></td></tr>`; }).join('')}
     </tbody></table>`).join('') || '<div class="empty">No vendor bills waiting to be paid. 🎉</div>';
   billsPaidRender(j.paid || [], '');
-  setCount('n-bills', j.vendors.reduce((a, g) => a + g.bills.filter(b => b.ready && !b.asked_at).length, 0), false);
+  const nb = j.vendors.reduce((a, g) => a + g.bills.filter(b => b.ready && !b.asked_at).length, 0);
+  setCount('n-bills', nb, false); setCount('n-paper', nb, false);
   billsInfo();
 }
 // Tick every payable bill (or one vendor's, from its header box), or none.
@@ -2579,7 +2601,6 @@ function numAmt(num, amt){ const n = num ? `<span class="note">#${esc(String(num
 // Sections folded away stay folded (this browser only): the not-urgent quotes, the maintenance list.
 function foldOpen(k){ try { return localStorage.getItem('pumps.fold.' + k) !== 'closed'; } catch (e) { return true; } }
 function foldSave(k, open){ try { localStorage.setItem('pumps.fold.' + k, open ? 'open' : 'closed'); } catch (e) {} }
-(() => { const mf = document.getElementById('msFold'); if (mf && !foldOpen('ms')) mf.open = false; })();
 // The quote steps: an item here is still a quote, not yet a job.
 const QUOTE_STAGES = ['assessment', 'vendor_quote', 'client_quote', 'client_approved'];
 async function setUrgent(id, on){
@@ -2588,7 +2609,6 @@ async function setUrgent(id, on){
   toast(on ? 'Urgent - up with the jobs' : 'Back with the quotes that can wait'); loadJobs();
 }
 async function loadJobs(){
-  loadMaintSchedule();
   const show = document.getElementById('jbShow').value, st = show === 'waiting' ? 'open' : show, q = '';   // one search, in the top bar
   const [j, ji] = await Promise.all([api('/cases?status=' + st + (q ? '&q=' + encodeURIComponent(q) : '')), api('/jobber/items?sync_only=1')]);
   if (!j.success) { document.getElementById('jobsBody').innerHTML = `<tr><td colspan="4" class="empty">${esc(j.error)}</td></tr>`; return; }
@@ -2944,7 +2964,7 @@ document.addEventListener('drop', e => { const f = (e.dataTransfer || {}).files;
   const h = location.hash.slice(1);
   if (h.startsWith('item-')) { loadToday(); loadJobs(); openCase(parseInt(h.slice(5))); }
   else if (h.startsWith('doc-')) { loadToday(); loadJobs(); openDoc(parseInt(h.slice(4))); }
-  const TABS = ['jobs','scada','accounts','reports','bills','vquotes','vinvoices'];
+  const TABS = ['jobs','maint','paper','accounts','scada','reports','bills','vquotes','vinvoices'];
   if (TABS.includes(h)) showTab(h); else if (!h.startsWith('item-') && !h.startsWith('doc-')) showTab('jobs');
   if (!h || TABS.includes(h)) loadToday();
   setInterval(() => { if (document.getElementById('drawerWrap').classList.contains('hide') && document.getElementById('modalWrap').classList.contains('hide')) { loadToday(); if (curTab === 'jobs') loadJobs(); } }, 60000);
