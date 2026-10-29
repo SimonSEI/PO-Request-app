@@ -13295,7 +13295,7 @@ def h_maint_save(actor):
         vals['joined'] = _iso_date(vals['joined']) or vals['joined']
     if 'months' in vals:
         vals['months'] = ','.join(str(x) for x in _month_list(vals['months']))
-    for k in ('active', 'monthly'):
+    for k in ('active', 'monthly', 'report_only'):
         if k in d:
             vals[k] = 1 if d[k] in (True, 1, '1', 'true', 'on') else 0
     conn = _conn()
