@@ -1339,7 +1339,11 @@ def _refresh_case(conn, case_id):
 # scheduled, and a bill means the work is done. (Quotes and the bill check are
 # never assumed - those gaps are the point of tracking.)
 IMPLIED = {'vendor_quote': ['assessment'], 'client_quote': ['assessment'], 'work_done': ['scheduled'], 'vendor_bill': ['scheduled', 'work_done'],
-           'report_logged': ['scheduled', 'work_done']}
+           'report_logged': ['scheduled', 'work_done'],
+           # Our invoice drafted or linked means the bill was checked (Banyan Bay #14650, Oct 29 2026: it sat on
+           # "Check the bill against the quote" after its invoice was made); sending it, the same and the draft.
+           'invoice_drafted': ['scheduled', 'work_done', 'vendor_bill', 'bill_checked'],
+           'closed': ['scheduled', 'work_done', 'vendor_bill', 'bill_checked', 'invoice_drafted']}
 
 
 def _set_step(conn, case_id, key, at=None, by='system', na=None):
@@ -12548,6 +12552,22 @@ def _unschedule_service_calls(c, now):
                    'waiting for them to schedule it', r['id']))
 
 
+def _bill_checked_when_invoiced(c, now):
+    """Once (Oct 29 2026): open items whose invoice is drafted but "Bill checked" isn't ticked (Banyan Bay's
+    fiberglass tank #14650) - it's ticked as implied, so they move on."""
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('bill_checked_when_invoiced', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    for r in c.execute("SELECT id, steps FROM pump_cases WHERE status='open'").fetchall():
+        steps = json.loads(r['steps'] or '{}')
+        drafted = (steps.get('invoice_drafted') or {}).get('at')
+        bc = steps.get('bill_checked') or {}
+        if drafted and not bc.get('at') and not bc.get('na'):
+            steps['bill_checked'] = {'at': drafted, 'by': 'Pumps (implied - invoiced)'}
+            c.execute('UPDATE pump_cases SET steps=?, updated_at=? WHERE id=?', (json.dumps(steps), now, r['id']))
+            _refresh_case(c, r['id'])
+
+
 def _apply_wild_blue_oct28(c, now):
     """Once (Oct 28 2026, the office's updated sheet): Wild Blue is 1 pump 2 filters, JAN/APR/JULY/OCT,
     $250, included with pump maintenance (Wettech - still no diver)."""
@@ -13011,6 +13031,7 @@ def init_account_tables(c):
     _remind_banyan_bladder(c, now)
     _undo_rosewood_14647_done(c, now)
     _unschedule_service_calls(c, now)
+    _bill_checked_when_invoiced(c, now)
     _apply_report_only(c, now)
     _undo_watercrest_mismatch(c, now)
     _fix_quote_needed_dates(c, now)
