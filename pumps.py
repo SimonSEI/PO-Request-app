@@ -4575,6 +4575,9 @@ def untracked_jobber_items(conn, others=False):
     # Quotes for Beatriz's sites are never tracked here.
     rows = [r for r in rows if not (r['kind'] == 'quote' and
                                     beatrice_site(r.get('client_name'), r.get('property_label'), r.get('title')))]
+    # Irrigation work on a pump account (a Rain Bird controller, #9195) is not ours to act on.
+    rows = [r for r in rows if not (r.get('category') not in ('pump', 'diver', 'filter', 'scada')
+                                    and _irrigation_title(r.get('title')))]
     return [r for r in rows if on_account_sheets(conn, r, names) != others]
 
 
@@ -12574,6 +12577,30 @@ def _bill_checked_when_invoiced(c, now):
             _refresh_case(c, r['id'])
 
 
+def _drop_irrigation_quote_items(c, now):
+    """Once (Oct 30 2026): approved irrigation quotes on pump accounts followed by mistake (Huntington Lakes
+    Master's "Controller Replacement - Rain Bird", #9195) - cancelled here if nothing else is on them, and the
+    Jobber record set aside. Nothing changes in Jobber."""
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('drop_irrigation_quotes', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    for it in c.execute("SELECT jobber_id, case_id, title, category FROM pump_jobber_items WHERE kind='quote' "
+                        "AND status IN ('approved', 'converted')").fetchall():
+        t = it['title'] or ''
+        if it['category'] in ('pump', 'diver', 'filter', 'scada') or TITLE_PATTERNS['pump'].search(t) \
+                or not re.search(r'controllers?\b|rain\s*bird|decoders?|backflow', t, re.I):
+            continue
+        c.execute('UPDATE pump_jobber_items SET ignored=1, case_id=NULL WHERE jobber_id=?', (it['jobber_id'],))
+        cid = it['case_id']
+        if cid and not c.execute("SELECT 1 FROM pump_docs WHERE case_id=? AND status != 'dismissed'", (cid,)).fetchone() \
+                and c.execute("SELECT 1 FROM pump_cases WHERE id=? AND status='open'", (cid,)).fetchone():
+            c.execute("UPDATE pump_cases SET status='cancelled', updated_at=? WHERE id=?", (now, cid))
+            c.execute("UPDATE pump_todos SET done_at=?, done_by='Pumps (not pump work)' WHERE done_at IS NULL "
+                      "AND link LIKE ?", (now, f'%"case_id": {cid}%'))
+            c.execute('INSERT INTO pump_events (at, actor, action, detail, case_id) VALUES (?,?,?,?,?)',
+                      (now, 'Pumps', 'not pump work', f'{t} is irrigation work, not pump work - taken off', cid))
+
+
 def _apply_wild_blue_oct28(c, now):
     """Once (Oct 28 2026, the office's updated sheet): Wild Blue is 1 pump 2 filters, JAN/APR/JULY/OCT,
     $250, included with pump maintenance (Wettech - still no diver)."""
@@ -13038,6 +13065,7 @@ def init_account_tables(c):
     _undo_rosewood_14647_done(c, now)
     _unschedule_service_calls(c, now)
     _bill_checked_when_invoiced(c, now)
+    _drop_irrigation_quote_items(c, now)
     _apply_report_only(c, now)
     _undo_watercrest_mismatch(c, now)
     _fix_quote_needed_dates(c, now)
@@ -14375,6 +14403,12 @@ def note_expected_date(case_id, who, when, said=''):
     return False
 
 
+def _irrigation_title(title):
+    """A Jobber title that reads as irrigation field work, not pump work."""
+    t = title or ''
+    return bool(_IRRIGATION_ONLY.search(t)) and not TITLE_PATTERNS['pump'].search(t)
+
+
 def auto_track_approved(conn, actor='Jobber sync'):
     """Approved quotes in Jobber (the sync only reads pump, Wettech, diver,
     filter and SCADA work) that no item follows yet: follow them, so they're on
@@ -14392,8 +14426,10 @@ def auto_track_approved(conn, actor='Jobber sync'):
                 _link_item(conn, it['jobber_id'], cid, actor)
                 _set_step(conn, cid, 'client_quote', at=(it['created_at'] or '')[:10] or None, by=actor)
                 _set_step(conn, cid, 'client_approved', at=(it['updated_at'] or '')[:10] or None, by=actor)
-            elif it.get('category') in ('pump', 'diver', 'filter', 'scada') or _tracked_account(conn, it) \
-                    or _quote_is_pump_work(it['jobber_id']):
+            elif it.get('category') in ('pump', 'diver', 'filter', 'scada') or _quote_is_pump_work(it['jobber_id']) \
+                    or (_tracked_account(conn, it) and not _irrigation_title(it.get('title'))):
+                # A pump account's quote is followed unless it reads as irrigation work (Huntington Lakes Master's
+                # "Controller Replacement - Rain Bird", #9195, Oct 30 2026).
                 cid = track_jobber_item(conn, it, actor)
             else:
                 continue
@@ -14406,7 +14442,9 @@ _PUMP_HINTS = re.compile(r'\bsuction\b|\bdischarge\b|\bimpeller|\bmotors?\b|\bfl
                          r'pressure\s+(?:tank|switch|transducer)|pump\s*station|\bstation\b|\bfilters?\b|'
                          r'\bscreens?\b|\bscada\b|\bdivers?\b|\bwet\s*well|\bstarter\b|\bvfd\b|\baerat', re.I)
 # Irrigation field work - valve boxes, heads, sod - that isn't ours (#8443).
-_IRRIGATION_ONLY = re.compile(r'valve\s+box|sprinkler|\bsod\b|spray\s+heads?|\brotors?\b|\bdrip\b|'
+_IRRIGATION_ONLY = re.compile(r'controllers?\b|rain\s*bird|\bhunter\b|\bclocks?\b|\btimers?\b|decoders?|[2two][- ]wire|'
+                              r'\bwir(?:e|es|ing)\b|backflow|'   # Huntington Lakes Master #9195, Oct 30 2026: "Controller Replacement - Rain Bird"
+                              r'valve\s+box|sprinkler|\bsod\b|spray\s+heads?|\brotors?\b|\bdrip\b|'
                               r'\bheads?\b|\bzones?\b|landscap', re.I)
 _VENDOR_WORDS = re.compile(r'\bwe?t+e?ch\b|\bwater\s+equipment\s+tech|\bgulfshore\b', re.I)
 
