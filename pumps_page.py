@@ -1776,7 +1776,13 @@ async function uploadFiles(files, caseId){
   if (!j.success) { toast(j.error || 'Upload failed', true); return; }
   const msgs = j.results.map(r => r.skipped ? `${r.file}: ${r.skipped}` : `${r.file}: ${r.kind}${r.review ? ' - ' + r.review : ''}`);
   toast(msgs.join(' | '));
-  if (caseId) openCase(caseId); else loadToday();
+  // Show where it went (Lee Memorial well 6, Oct 30 2026: "uploaded" but nowhere to be seen): one file on a job
+  // opens that job; a file with no job opens the document.
+  const one = j.results.length === 1 ? j.results[0] : null;
+  if (caseId) openCase(caseId);
+  else if (one && one.case_id) { loadToday(); openCase(one.case_id); }
+  else if (one && one.doc_id && !one.skipped) { loadToday(); openDoc(one.doc_id); }
+  else loadToday();
 }
 async function openDoc(id){
   const j = await api('/docs/' + id);
