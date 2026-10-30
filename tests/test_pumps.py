@@ -3656,6 +3656,39 @@ class PumpsTest(unittest.TestCase):
         conn.commit()
         conn.close()
 
+    def test_irrigation_quote_on_a_pump_account_is_not_pump_work(self):
+        """Oct 30 2026: Huntington Lakes Master's approved "Controller Replacement - Rain Bird" (#9195) came up to act
+        on because it's a pump account. A pump account's quote must itself read as pump work to be followed."""
+        conn = P._conn()
+        try:
+            now = P._now_text()
+            for jid, num, title in (('QRB', '9195', 'Controller Replacement - Rain Bird'),
+                                    ('QBT', '9154', 'Proposal - Furnish and install new bladder tank')):
+                conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id, client_name, "
+                             "created_at, updated_at, category, ignored) VALUES (?, 'quote', ?, ?, 'approved', 'CHL', "
+                             "'Huntington Irrtest', ?, ?, '', 0)", (jid, num, title, now, now))
+            conn.commit()
+            saved = (P._tracked_account, P.jobber_status, P.on_account_sheets)
+            P._tracked_account = lambda conn, it: True
+            P.jobber_status = lambda: {'connected': False}
+            P.on_account_sheets = lambda conn, r, names: True
+            try:
+                listed = [r['jobber_id'] for r in P.untracked_jobber_items(conn)]
+                self.assertNotIn('QRB', listed)
+                self.assertIn('QBT', listed)
+                P.auto_track_approved(conn)
+                got = dict(conn.execute("SELECT jobber_id, case_id FROM pump_jobber_items WHERE jobber_id IN ('QRB','QBT')").fetchall())
+                self.assertIsNone(got['QRB'], 'irrigation work is not followed')
+                self.assertTrue(got['QBT'], 'a bladder tank on the pump account is')
+            finally:
+                P._tracked_account, P.jobber_status, P.on_account_sheets = saved
+            conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id IN (SELECT case_id FROM pump_jobber_items "
+                         "WHERE jobber_id IN ('QRB','QBT'))")
+            conn.execute("DELETE FROM pump_jobber_items WHERE jobber_id IN ('QRB','QBT')")
+            conn.commit()
+        finally:
+            conn.close()
+
     def test_follow_up_postponed_to_tomorrow(self):
         """Oct 2026: a follow-up can be put off to the next working day - off the list until then."""
         j = self.c.post('/pumps/api/cases', json={'title': 'Fan', 'client_name': 'Snooze Lakes'}).get_json()
