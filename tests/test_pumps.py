@@ -3634,6 +3634,28 @@ class PumpsTest(unittest.TestCase):
         conn.commit()
         conn.close()
 
+    def test_service_call_moved_back_to_needing_a_quote(self):
+        """Oct 30 2026: a service call where Wettech has to go back out - it needs a quote. Move to "Quote from
+        Wettech" switches the quote steps back on; approval and scheduling wait for the new quote."""
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': 'Pump not running', 'client_name': 'Requote Lakes', 'vendor': 'Wettech'}, 'test')
+            P.service_call_steps(conn, cid, {'number': '14700', 'title': 'Service call', 'created_at': '2026-10-30'}, 'test')
+            P._set_step(conn, cid, 'scheduled', at='2026-10-30', by='test')
+            self.assertTrue(P.move_case_to(conn, cid, 'vendor_quote', 'Simon'))
+            conn.commit()
+        finally:
+            conn.close()
+        c = self.case(cid)
+        self.assertEqual(c['stage'], 'vendor_quote')
+        for k in ('vendor_quote', 'client_quote', 'client_approved', 'scheduled'):
+            self.assertFalse((c['steps'].get(k) or {}).get('na') or (c['steps'].get(k) or {}).get('at'), k)
+        self.assertFalse(c['chase']['parts_wait'])
+        conn = P._conn()
+        conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (cid,))
+        conn.commit()
+        conn.close()
+
     def test_follow_up_postponed_to_tomorrow(self):
         """Oct 2026: a follow-up can be put off to the next working day - off the list until then."""
         j = self.c.post('/pumps/api/cases', json={'title': 'Fan', 'client_name': 'Snooze Lakes'}).get_json()

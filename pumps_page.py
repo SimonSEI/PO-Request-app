@@ -1628,7 +1628,7 @@ function glanceHtml(c){
     <div class="money">${quoteCard}${ourQuoteCard}${billCard}${card('Our invoice', ourInv, invSub)}${`<div class="m"><div class="k">${esc(v)} paid?</div>${vendorPayHtml(c)}</div>`}</div>
     ${cmpText ? `<div class="cmp ${esc(cmp.state)}">${cmpText}</div>` : ''}
     <div style="margin-top:10px">${journeyHtml(c, 'track')}</div>
-    <div class="note" style="margin-top:4px">Click a step to tick it, untick it or mark it not needed · <select class="s" onchange="moveCase(this)" title="Out of step? Bring the job up to where it really is - the steps before are ticked done today." style="padding:2px 4px;font-size:12px"><option value="">Move to…</option>${c.step_list.filter(s => !s.na).map(s => `<option value="${s.key}">${esc(s.label)}</option>`).join('')}</select></div></div>`;
+    <div class="note" style="margin-top:4px">Click a step to tick it, untick it or mark it not needed · <select class="s" onchange="moveCase(this)" title="Out of step? Bring the job up to where it really is - the steps before are ticked done today." style="padding:2px 4px;font-size:12px"><option value="">Move to…</option>${c.step_list.filter(s => !s.na || ['vendor_quote', 'client_quote', 'client_approved'].includes(s.key)).map(s => `<option value="${s.key}">${esc(s.label)}${s.na && s.key === 'vendor_quote' ? ' - needs a quote (they go back out)' : ''}</option>`).join('')}</select></div></div>`;
 }
 // The related vendor invoice, from a job: the Vendor invoices tab, searched for its site.
 function findVendorInvoice(name){
