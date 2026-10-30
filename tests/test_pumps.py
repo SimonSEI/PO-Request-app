@@ -3689,6 +3689,41 @@ class PumpsTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_new_vendor_quote_on_a_job_past_quoting_gets_draft_quote(self):
+        """Oct 30 2026 (Lee Memorial well 6, filed on the Hodges job): a new vendor quote on a job past "send our
+        quote" - its own Jobber quote already made - still gets a Draft quote to-do."""
+        self.extracts['q-hodges1.pdf'] = extraction('quote', 'Q-501', client='Hodges Quotetest', subtotal=900)
+        a = self.upload('q-hodges1.pdf')
+        cid = a['case_id']
+        conn = P._conn()
+        try:
+            conn.execute("UPDATE pump_docs SET jobber=? WHERE id=?", (json.dumps({'quote_id': 'QH1', 'quote_number': '9300'}), a['doc_id']))
+            conn.execute("UPDATE pump_cases SET jobber=? WHERE id=?", (json.dumps({'quote': {'id': 'QH1', 'number': '9300'}}), cid))
+            P._set_step(conn, cid, 'client_approved', at='2026-10-29', by='test')
+            conn.commit()
+        finally:
+            conn.close()
+        ids = lambda: [d['id'] for d in self.c.get('/pumps/api/summary').get_json()['queue']['quotes_to_draft']]
+        self.assertNotIn(a['doc_id'], ids())
+        self.extracts['q-hodges2.pdf'] = extraction('quote', '', client='Hodges Quotetest', subtotal=6183.05)
+        b = self.upload('q-hodges2.pdf', case_id=cid) if 'case_id' in self.upload.__code__.co_varnames else None
+        if not b:
+            conn = P._conn()
+            try:
+                conn.execute("INSERT INTO pump_docs (kind, status, case_id, client_name, total, doc_number, created_at) "
+                             "VALUES ('quote', 'filed', ?, 'Lee Memorial well 6', 6183.05, '', ?)", (cid, P._now_text()))
+                did = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+                conn.commit()
+            finally:
+                conn.close()
+        else:
+            did = b['doc_id']
+        self.assertIn(did, ids())
+        conn = P._conn()
+        conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (cid,))
+        conn.commit()
+        conn.close()
+
     def test_follow_up_postponed_to_tomorrow(self):
         """Oct 2026: a follow-up can be put off to the next working day - off the list until then."""
         j = self.c.post('/pumps/api/cases', json={'title': 'Fan', 'client_name': 'Snooze Lakes'}).get_json()

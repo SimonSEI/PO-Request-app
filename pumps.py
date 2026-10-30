@@ -1569,8 +1569,9 @@ def list_cases(conn, status='open', month=None, q=''):
         sql += (' AND (title LIKE ? OR client_name LIKE ? OR po_number LIKE ? OR site LIKE ? OR description LIKE ?'
                 ' OR vendor_quote_number LIKE ? OR vendor_bill_number LIKE ? OR wo_number LIKE ?'
                 ' OR sei_invoice_number LIKE ? OR jobber LIKE ?'
-                ' OR id IN (SELECT case_id FROM pump_docs WHERE doc_number LIKE ? AND case_id IS NOT NULL))')
-        args += [f'%{q}%'] * 9 + [f'%"number": "{q}%', f'%{q}%']
+                ' OR id IN (SELECT case_id FROM pump_docs WHERE (doc_number LIKE ? OR client_name LIKE ? OR file_name LIKE ? '
+                'OR site LIKE ?) AND case_id IS NOT NULL))')
+        args += [f'%{q}%'] * 9 + [f'%"number": "{q}%'] + [f'%{q}%'] * 4
     sql += ' ORDER BY opened_on, id'
     return [_case_dict(r, conn) for r in conn.execute(sql, args).fetchall()]
 
@@ -7946,9 +7947,28 @@ def work_queue(conn):
         d['account_note'] = (acct or {}).get('notes') or ''
         d['account_name'] = (acct or {}).get('name') or ''
     to_quote_ids = {c['id'] for c in by_stage.get('client_quote', []) if not (c['jobber'].get('quote') or {}).get('id')}
+    open_by_id, recent = {c['id']: c for c in cases}, (_today() - timedelta(days=30)).isoformat()
+
+    def wants_quote(d):
+        # Also a new vendor quote on a job already past "send our quote" - a service call that now needs one, or
+        # a second quote (Lee Memorial well 6 on the Hodges job, Oct 30 2026: filed, but no Draft quote to-do).
+        if d['case_id'] in to_quote_ids:
+            return True
+        c = open_by_id.get(d['case_id'])
+        if not c or (d.get('created_at') or '')[:10] < recent:
+            return False
+        if not (c['jobber'].get('quote') or {}).get('id'):
+            return True
+        if conn.execute("SELECT 1 FROM pump_docs WHERE case_id=? AND kind='quote' AND id != ? AND jobber LIKE '%quote_id%'",
+                        (d['case_id'], d['id'])).fetchone():
+            return True   # another of the job's quotes is the one drafted - this one is new
+        same = (d.get('doc_number') and d['doc_number'] == (c.get('vendor_quote_number') or '')) or \
+            (not d.get('doc_number') and (d.get('subtotal') if d.get('subtotal') is not None else d.get('total'))
+             in (c.get('vendor_quote_amount'), c.get('vendor_quote_total')))
+        return not same
     quotes_to_draft = [d for d in (_doc_dict(r) for r in conn.execute(
         "SELECT * FROM pump_docs WHERE kind='quote' AND status != 'dismissed' "
-        "AND (jobber IS NULL OR jobber NOT LIKE '%quote_id%') ORDER BY id")) if d['case_id'] in to_quote_ids]
+        "AND (jobber IS NULL OR jobber NOT LIKE '%quote_id%') ORDER BY id")) if wants_quote(d)]
     vendor_bills_to_pay = [{**c, 'pay_email': _state_get(f"pay_email:{c['id']}", conn=conn) or {}}
                            for c in list_cases(conn, 'all') if c['status'] != 'cancelled'
                            and c['vendor_pay']['state'] == 'due']
