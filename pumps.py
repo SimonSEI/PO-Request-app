@@ -9855,6 +9855,9 @@ def h_case_create(actor):
         conn.close()
 
 
+QUOTE_PATH = ('vendor_quote', 'client_quote', 'client_approved')
+
+
 def move_case_to(conn, case_id, stage, actor):
     """Bring a job that's out of step up to (or back to) a stage by hand
     (Carlisle, Oct 2026: Wettech said the work was done while it still read
@@ -9872,7 +9875,10 @@ def move_case_to(conn, case_id, stage, actor):
         if not (steps.get(k) or {}).get('at') and not (steps.get(k) or {}).get('na'):
             _set_step(conn, case_id, k, at=today, by=f'{actor} (moved up)')
     for k in STEP_KEYS[at:]:
-        if (steps.get(k) or {}).get('at'):
+        st = steps.get(k) or {}
+        if st.get('at') or (st.get('na') and k in QUOTE_PATH):
+            # Back to the quote on a service call (Oct 30 2026: Wettech has to go back out, so it needs a quote):
+            # the quote steps are needed again, and approval and scheduling wait for the new quote.
             _set_step(conn, case_id, k, by=actor, na=False)
     _refresh_case(conn, case_id)
     label = dict(STEPS)[stage].format(vendor='the vendor')
