@@ -1817,6 +1817,15 @@ class PumpsTest(unittest.TestCase):
     def test_job_made_in_jobber_shows_up_to_track(self):
         """A pump job made straight in Jobber (no request) is listed to track, and
         tracking it makes an item that is already scheduled."""
+        # Pinned to before the Oct 13 visit: after it, the job is a follow-up instead (Nov 2026).
+        today = P._today
+        P._today = lambda: P.datetime(2026, 10, 8).date()
+        try:
+            self._job_made_in_jobber_shows_up_to_track()
+        finally:
+            P._today = today
+
+    def _job_made_in_jobber_shows_up_to_track(self):
         conn = P._conn()
         try:
             conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, job_type, client_id, "
@@ -3651,6 +3660,52 @@ class PumpsTest(unittest.TestCase):
         for k in ('vendor_quote', 'client_quote', 'client_approved', 'scheduled'):
             self.assertFalse((c['steps'].get(k) or {}).get('na') or (c['steps'].get(k) or {}).get('at'), k)
         self.assertFalse(c['chase']['parts_wait'])
+        conn = P._conn()
+        conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (cid,))
+        conn.commit()
+        conn.close()
+
+    def test_service_call_14657_set_to_waiting_on_wettech_quote(self):
+        """Nov 2026, Florida SouthWestern State College #14657: the service call is done and Wettech has to quote
+        follow-up work. "Waiting on Wettech quote" switches the steps to Service call done -> Quote from Wettech ->
+        ... -> Return visit scheduled, keeps what was ticked, and sets a follow-up date. Wettech's quote filed on the
+        job then moves it to "Quote received - send to client"; the client's OK to wait on gets its own status."""
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': 'Pump service call', 'client_name': 'Florida SouthWestern State College',
+                                       'vendor': 'Wettech'}, 'test')
+            P.service_call_steps(conn, cid, {'number': '14657', 'title': 'Pump service call', 'created_at': '2026-10-28'}, 'test')
+            P._set_step(conn, cid, 'scheduled', at='2026-10-28', by='test')
+            P._set_step(conn, cid, 'work_done', at='2026-10-30', by='test')
+            conn.commit()
+        finally:
+            conn.close()
+        r = self.c.post(f'/pumps/api/cases/{cid}/status', json={'kind': 'waiting_quote', 'text': 'Asked Tom for the quote',
+                                                                 'on': '2026-11-05'})
+        self.assertTrue(r.get_json()['success'], r.get_data(as_text=True))
+        c = self.case(cid)
+        self.assertEqual(c['stage'], 'vendor_quote')
+        self.assertEqual(c['flow'], 'service_followup')
+        self.assertEqual(c['job_status']['kind'], 'waiting_quote')
+        self.assertEqual(c['chase']['check_on'], '2026-11-05')
+        self.assertEqual(c['steps']['assessment']['at'], '2026-10-30', 'the visit made is "Service call done"')
+        for k in ('vendor_quote', 'client_quote', 'client_approved', 'scheduled', 'work_done'):
+            self.assertFalse((c['steps'].get(k) or {}).get('na') or (c['steps'].get(k) or {}).get('at'), k)
+        labels = [s['label'] for s in c['step_list']]
+        self.assertEqual(labels[0], 'Service call done')
+        self.assertIn('Return visit scheduled with Wettech', labels)
+        self.assertLess(labels.index('Quote from Wettech') if 'Quote from Wettech' in labels else 1,
+                        labels.index('Return visit scheduled with Wettech'))
+        # Wettech's quote filed on the job: "Quote received - send to client".
+        self.extracts['q-fsw-14657.pdf'] = extraction('quote', 'Q-14657', client='Florida SouthWestern State College', subtotal=2400)
+        self.upload('q-fsw-14657.pdf', case_id=cid)
+        c = self.case(cid)
+        self.assertEqual(c['job_status']['kind'], 'quote_received')
+        self.assertEqual(c['stage'], 'client_quote')
+        # Sent: waiting on the client to approve it.
+        r = self.c.post(f'/pumps/api/cases/{cid}/status', json={'kind': 'waiting_approval'})
+        c = self.case(cid)
+        self.assertEqual((c['stage'], c['job_status']['kind']), ('client_approved', 'waiting_approval'))
         conn = P._conn()
         conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (cid,))
         conn.commit()

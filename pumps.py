@@ -874,7 +874,9 @@ def init_db():
     # When the vendor's bill was paid, and who said so (added after launch).
     # vendor_follow: the last time we chased the vendor and what they said (JSON).
     # job_status: the latest status update on an approved job (JSON) - parts ordered, client told, scheduled...
-    for col in ('vendor_paid_on', 'vendor_paid_by', 'closed_by_hand', 'vendor_follow', 'job_status', 'urgent'):
+    # flow: 'service_followup' - a service call that turned into quoted work (Nov 2026: Service call done ->
+    # Quote from Wettech -> ... -> Return visit), '' otherwise.
+    for col in ('vendor_paid_on', 'vendor_paid_by', 'closed_by_hand', 'vendor_follow', 'job_status', 'urgent', 'flow'):
         try:
             c.execute(f"ALTER TABLE pump_cases ADD COLUMN {col} TEXT DEFAULT ''")
         except sqlite3.OperationalError:
@@ -1224,8 +1226,9 @@ def _case_dict(row, conn=None):
     d['compare'] = compare_amounts(d)
     d['vendor_pay'] = vendor_pay_state(d)
     vendor = d.get('vendor') or 'vendor'
-    d['step_list'] = [{'key': k, 'label': label.format(vendor=vendor), **(_with_optional(d['steps']).get(k) or {})}
-                      for k, label in STEPS]
+    names = {**dict(STEPS), **(FOLLOWUP_LABELS if d.get('flow') == 'service_followup' else {})}
+    d['step_list'] = [{'key': k, 'label': names[k].format(vendor=vendor), **(_with_optional(d['steps']).get(k) or {})}
+                      for k, _ in STEPS]
     last = d.get('last_activity_at') or d.get('updated_at') or d.get('created_at') or ''
     try:
         d['idle_days'] = (_now().replace(tzinfo=None) - datetime.strptime(last[:19], '%Y-%m-%d %H:%M:%S')).days
@@ -3259,7 +3262,16 @@ def _file_on_case(conn, doc, case_id, how, actor):
         fill.update(vendor_quote_number=doc.get('doc_number') or '', vendor_quote_amount=doc.get('subtotal'),
                     vendor_quote_total=doc.get('total'))
         _apply(conn, case_id, fill)
+        st = json.loads(case.get('steps') or '{}')
+        followup = case.get('flow') == 'service_followup' or (st.get('vendor_quote') or {}).get('na')
+        if followup:
+            # A Wettech quote on a service call: it needs that quote sent (Florida SouthWestern, Nov 2026).
+            needs_quote_followup(conn, case_id, actor)
         _set_step(conn, case_id, 'vendor_quote', at=date_, by=actor)
+        if followup:
+            rec = {'kind': 'quote_received', 'label': JOB_STATUSES['quote_received'], 'text': doc.get('doc_number') and
+                   f"#{doc['doc_number']}" or '', 'on': '', 'at': _now_text(), 'by': actor or ''}
+            conn.execute('UPDATE pump_cases SET job_status=? WHERE id=?', (json.dumps(rec), case_id))
         lead = parts_lead_in(delivery_note(doc))
         if lead:
             conn.execute('UPDATE pump_cases SET parts_lead=? WHERE id=?', (lead, case_id))
@@ -10037,7 +10049,40 @@ JOB_STATUSES = {
     'work_done': 'Work done',
     'on_hold': 'On hold',
     'note': 'Note',
+    # A service call that needs a quote (Florida SouthWestern #14657, Nov 2026).
+    'waiting_quote': 'Waiting on Wettech quote',
+    'quote_received': 'Quote received - send to client',
+    'waiting_approval': 'Waiting on client to approve quote',
 }
+QUOTE_STATUS_STAGE = {'waiting_quote': 'vendor_quote', 'quote_received': 'client_quote', 'waiting_approval': 'client_approved'}
+FOLLOWUP_LABELS = {'assessment': 'Service call done', 'scheduled': 'Return visit scheduled with {vendor}'}
+
+
+def needs_quote_followup(conn, case_id, actor, since=None):
+    """A service call that needs a quote / more work (Nov 2026): its steps become Service call done -> Quote from
+    Wettech -> Quote sent to client -> Client approved -> Return visit scheduled -> Work done -> Bill -> Bill checked
+    -> Draft invoice -> Invoice sent. The visit made so far is "Service call done"; the quote, the client's approval
+    of it and the return visit are still to come. Bills, invoices and paid status are left alone."""
+    row = conn.execute('SELECT steps, flow FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+    if not row:
+        return False
+    steps = json.loads(row['steps'] or '{}')
+    if row['flow'] != 'service_followup':
+        done = (since or (steps.get('work_done') or {}).get('at') or (steps.get('scheduled') or {}).get('at')
+                or _today().isoformat())
+        _set_step(conn, case_id, 'assessment', at=done, by=f'{actor} (service call)')
+        for k in ('client_approved', 'scheduled', 'work_done'):
+            # These were the service call's own; the quote's approval and the return visit come again.
+            if not any((steps.get(x) or {}).get('at') for x in ('vendor_bill', 'bill_checked', 'invoice_drafted')):
+                _set_step(conn, case_id, k, by=actor, na=False)
+        conn.execute("UPDATE pump_cases SET flow='service_followup', scheduled_for='', updated_at=? WHERE id=?",
+                     (_now_text(), case_id))
+        _event(conn, actor, 'needs a quote', 'Service call done - Wettech to quote the follow-up work', case_id=case_id)
+    for k in QUOTE_PATH:
+        if (steps.get(k) or {}).get('na'):
+            _set_step(conn, case_id, k, by=actor, na=False)
+    _refresh_case(conn, case_id)
+    return True
 
 
 def set_job_status(conn, case_id, actor, kind, text='', on=''):
@@ -10058,6 +10103,13 @@ def set_job_status(conn, case_id, actor, kind, text='', on=''):
         raise ValueError('Say what day it is scheduled for')
     c = _case_dict(row)
     today = _today().isoformat()
+    if kind in QUOTE_STATUS_STAGE:
+        # The quote statuses put the job on that step of the quote (switching a service call over first).
+        steps = c['steps']
+        if (steps.get('vendor_quote') or {}).get('na') or c.get('flow') == 'service_followup' or \
+                ((steps.get('client_quote') or {}).get('na')):
+            needs_quote_followup(conn, case_id, actor)
+        move_case_to(conn, case_id, QUOTE_STATUS_STAGE[kind], actor)
     rec = {'kind': kind, 'label': JOB_STATUSES[kind], 'text': text, 'on': on, 'at': _now_text(), 'by': actor or ''}
     conn.execute('UPDATE pump_cases SET job_status=?, last_activity_at=?, updated_at=? WHERE id=?',
                  (json.dumps(rec), _now_text(), _now_text(), case_id))
@@ -10075,8 +10127,15 @@ def set_job_status(conn, case_id, actor, kind, text='', on=''):
              'who': _vendor_contact(c.get('vendor') or 'Wettech')[0], 'how': '',
              'said': f"{JOB_STATUSES[kind]}{': ' + text if text else ''}", 'expect_by': on,
              'check_on': '' if on else _workdays_after(_today(), VENDOR_FOLLOW_DAYS).isoformat()}), case_id))
+    if kind in ('waiting_quote', 'waiting_approval'):
+        # Follow up on the date given, or after the usual few working days.
+        conn.execute('UPDATE pump_cases SET vendor_follow=? WHERE id=?', (json.dumps(
+            {'phase': CHASE_PHASES.get(QUOTE_STATUS_STAGE[kind]) or 'quote', 'at': _now_text(), 'by': actor or '',
+             'who': _vendor_contact(c.get('vendor') or 'Wettech')[0] if kind == 'waiting_quote' else 'the client',
+             'how': '', 'said': JOB_STATUSES[kind] + (': ' + text if text else ''), 'expect_by': '',
+             'check_on': on or _workdays_after(_today(), VENDOR_FOLLOW_DAYS).isoformat()}), case_id))
     when = {'parts_ordered': 'parts due', 'waiting_vendor': 'expected', 'scheduled': 'for',
-            'work_done': 'on'}.get(kind, 'on')
+            'work_done': 'on', 'waiting_quote': 'follow up', 'waiting_approval': 'follow up'}.get(kind, 'on')
     _event(conn, actor, 'status', ' · '.join(x for x in (JOB_STATUSES[kind], text,
                                                         f'{when} {on}' if on else '') if x), case_id=case_id)
     return rec
@@ -10102,6 +10161,20 @@ def h_case_status_kind(actor, case_id):
         conn.execute('UPDATE pump_cases SET job_status=?, updated_at=? WHERE id=?', (json.dumps(rec), _now_text(), case_id))
         _event(conn, actor, 'status', f"{was} changed to {JOB_STATUSES[kind]}"
                                       f"{' · ' + rec['text'] if rec.get('text') else ''}", case_id=case_id)
+        conn.commit()
+        return {'case': case_detail(conn, case_id)}
+    finally:
+        conn.close()
+
+
+@api('/cases/<int:case_id>/needs_quote', methods=('POST',))
+def h_case_needs_quote(actor, case_id):
+    """A service call that needs a quote / follow-up work: switch its steps and wait on Wettech's quote."""
+    conn = _conn()
+    try:
+        if not needs_quote_followup(conn, case_id, actor):
+            return {'success': False, 'error': 'Not found'}, 404
+        set_job_status(conn, case_id, actor, 'waiting_quote', str(_json().get('text') or ''), str(_json().get('on') or ''))
         conn.commit()
         return {'case': case_detail(conn, case_id)}
     finally:
